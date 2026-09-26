@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
@@ -234,9 +236,18 @@ from codex_web.services.event_transport import (
 from codex_web.services.replicated_ownership import ReplicatedOwnershipService
 from codex_web.services.codex_auth_delegation import CodexAuthDelegationService
 from codex_web.services.anthropic_auth_delegation import AnthropicAuthDelegationService
+from codex_web.services.mammouth_auth_delegation import MammouthAuthDelegationService
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
 from codex_web.services.codex_cli_agent_runtime import CodexCliAgentRuntimeAdapter
 from codex_web.services.claude_agent_runtime import ClaudeAgentRuntimeAdapter
+from codex_web.services.mammouth_agent_runtime import MammouthCliAgentRuntimeAdapter
+from codex_web.mammouth_cli_runtime import MammouthCliAdapter, MammouthModelCatalog
+from codex_web.cli_runtime import CliRuntimeProbe
+from codex_web.services.mammouth_worker_session import (
+    AssignmentBoundMammouthSessionManager,
+    MammouthCliSandboxTurnExecutor,
+    MammouthWorkerHomeRegistry,
+)
 from codex_web.services.codex_worker_configuration import CODEX_WORKER_ACCESS_TOKEN_CONFIG, install_codex_worker_configuration
 from codex_web.services.anthropic_worker_configuration import ANTHROPIC_WORKER_API_KEY_CONFIG, install_anthropic_worker_configuration
 from codex_web.services.mammouth_worker_configuration import install_mammouth_worker_configuration
@@ -1202,9 +1213,27 @@ claude_execution_runtime_binding = ExecutionRuntimeBinding(
     runtime_id="claude-code",
     capability_revision=1,
 )
+mammouth_execution_runtime_binding = ExecutionRuntimeBinding(
+    provider_id="mammouth-ai",
+    runtime_id="mammouth-cli",
+    capability_revision=1,
+    sandbox_profiles=("read-only", "workspace-write", "danger-full-access"),
+)
 
 project_bootstrap_store = ProjectBootstrapStore(state_store)
 project_readiness_store = ProjectReadinessStore(state_store)
+
+
+def _local_codex_session_available() -> bool:
+    """Return whether the trusted local Codex app-server is ready.
+
+    The trusted-local authentication mode is backed by the operator-owned
+    Codex session.  Keep readiness and turn binding on the same canonical
+    runtime signal instead of treating the mode as unsupported merely because
+    no delegated secret is configured.
+    """
+    runtime = getattr(app.state, "codex_runtime", None)
+    return bool(runtime is not None and runtime.ready.is_set())
 
 
 def _project_readiness_environment(project, actor):
@@ -1245,6 +1274,7 @@ project_readiness_service = ProjectReadinessService(
     environment_probe=_project_readiness_environment,
     configuration=configuration_service,
     runtime_binding=codex_execution_runtime_binding,
+    local_session_probe=_local_codex_session_available,
 )
 app.state.project_bootstrap_store = project_bootstrap_store
 app.state.project_readiness_store = project_readiness_store
@@ -1329,6 +1359,7 @@ turn_execution_binding_service = TurnExecutionBindingService(
     control_actor=identity_service.local_trusted_actor(),
     runtime_binding=codex_execution_runtime_binding,
     secrets=secret_broker,
+    local_session_probe=_local_codex_session_available,
     execution_profiles=execution_profile_definition_service,
     control_plane_available=lambda: (
         control_plane_broker_factory.service is not None
@@ -1626,6 +1657,30 @@ anthropic_auth_delegation_service = AnthropicAuthDelegationService(secret_broker
 app.state.codex_auth_delegation_service = codex_auth_delegation_service
 app.state.anthropic_auth_delegation_service = anthropic_auth_delegation_service
 
+_ambient_codex_home = Path.home() / ".codex"
+_standalone_codex_executable = Path.home() / ".local" / "bin" / "codex"
+if _standalone_codex_executable.is_file() and os.access(
+    _standalone_codex_executable,
+    os.X_OK,
+):
+    _ambient_codex_executable = str(_standalone_codex_executable.resolve())
+else:
+    _ambient_codex_executable = shutil.which("codex")
+trusted_local_codex_delegation = None
+if (
+    _ambient_codex_home.is_dir()
+    and _ambient_codex_executable
+):
+    from codex_web.services.codex_worker_session import (
+        TrustedLocalCodexCredentialProvider,
+    )
+
+    trusted_local_codex_delegation = TrustedLocalCodexCredentialProvider(
+        codex_home=_ambient_codex_home,
+        executable=str(Path(_ambient_codex_executable).resolve()),
+    )
+app.state.trusted_local_codex_delegation = trusted_local_codex_delegation
+
 local_execution_worker_runtime = LocalExecutionWorkerRuntime(
     execution_worker_service,
     execution_workspace_service,
@@ -1635,6 +1690,7 @@ local_execution_worker_runtime = LocalExecutionWorkerRuntime(
     control_actor=identity_service.local_trusted_actor(),
     artifact_evidence=artifact_evidence_service,
     codex_auth_delegation=codex_auth_delegation_service,
+    trusted_local_codex_delegation=trusted_local_codex_delegation,
 )
 app.state.local_execution_worker_runtime = local_execution_worker_runtime
 
@@ -1712,6 +1768,59 @@ assignment_bound_claude_session_manager = AssignmentBoundClaudeSessionManager(
     control_plane_broker_factory=control_plane_broker_factory,
 )
 app.state.assignment_bound_claude_session_manager = assignment_bound_claude_session_manager
+
+mammouth_auth_delegation_service = MammouthAuthDelegationService(
+    secret_broker,
+    max_delegation_seconds=24 * 60 * 60,
+)
+app.state.mammouth_auth_delegation_service = mammouth_auth_delegation_service
+
+
+def _mammouth_model_egress_endpoints():
+    providers = model_gateway_service.list_providers(
+        identity_service.local_trusted_actor()
+    )
+    active = [
+        provider
+        for provider in providers
+        if getattr(provider.status, "value", provider.status) == "active"
+        and provider.adapter_type == "mammouth"
+    ]
+    return model_egress_endpoints_from_base_urls(
+        [provider.base_url for provider in active],
+        default_endpoints=(
+            AgentRuntimeModelEgressEndpoint("api.mammouth.ai", 443),
+        ),
+    )
+
+
+mammouth_worker_homes = MammouthWorkerHomeRegistry()
+assignment_bound_mammouth_session_manager = (
+    AssignmentBoundMammouthSessionManager(
+        local_execution_worker_runtime,
+        runtime_binding=mammouth_execution_runtime_binding,
+        worker_homes=mammouth_worker_homes,
+    )
+)
+app.state.assignment_bound_mammouth_session_manager = (
+    assignment_bound_mammouth_session_manager
+)
+app.state.mammouth_worker_homes = mammouth_worker_homes
+
+mammouth_cli_turn_executor = MammouthCliSandboxTurnExecutor(
+    local_execution_worker_runtime,
+    session_manager=assignment_bound_mammouth_session_manager,
+    delegation=mammouth_auth_delegation_service,
+    worker_homes=mammouth_worker_homes,
+    egress_endpoints_resolver=_mammouth_model_egress_endpoints,
+)
+mammouth_agent_adapter = MammouthCliAgentRuntimeAdapter(
+    cli=MammouthCliAdapter(),
+    probe=CliRuntimeProbe(
+        environment_allowlist=("HOME", "XDG_CONFIG_HOME", "PATH"),
+    ),
+    run_command=mammouth_cli_turn_executor,
+)
 
 capacity_store = CapacityStore(state_store)
 capacity_service = CapacityService(
@@ -1940,6 +2049,8 @@ def _assignment_runtime_adapter(binding, session):
         return codex_cli_agent_adapter
     if key == ("anthropic", "claude-code"):
         return ClaudeAgentRuntimeAdapter(session)
+    if key == ("mammouth-ai", "mammouth-cli"):
+        return mammouth_agent_adapter
     raise RuntimeError(
         f"unsupported assignment-bound agent runtime: {binding.provider_id}/{binding.runtime_id}"
     )
@@ -1949,6 +2060,7 @@ assignment_session_managers = {
     ("openai", "codex"): assignment_bound_codex_session_manager,
     ("openai", "codex-cli"): assignment_bound_codex_cli_session_manager,
     ("anthropic", "claude-code"): assignment_bound_claude_session_manager,
+    ("mammouth-ai", "mammouth-cli"): assignment_bound_mammouth_session_manager,
 }
 
 gitlab_client = GitLabClient()
@@ -2518,6 +2630,27 @@ goal_continuation_event_unsubscribers.append(
     )
 )
 
+agent_runtime_registry.register(
+    mammouth_agent_adapter,
+    capability_revision=1,
+    sandbox_profiles=("read-only", "workspace-write", "danger-full-access"),
+    network_profiles=("brokered-model-egress",),
+)
+app.state.mammouth_agent_runtime_adapter = agent_runtime_registry.get(
+    "mammouth-ai",
+    "mammouth-cli",
+)
+agent_runtime_telemetry_service.subscribe(
+    app.state.mammouth_agent_runtime_adapter
+)
+goal_continuation_event_unsubscribers.append(
+    _subscribe_goal_continuation_events(
+        app.state.mammouth_agent_runtime_adapter,
+        provider_id="mammouth-ai",
+        runtime_id="mammouth-cli",
+    )
+)
+
 if not any(
     provider.id == "openai"
     and provider.organization_id == identity_service.local_trusted_actor().organization_id
@@ -2530,6 +2663,23 @@ if not any(
             display_name="OpenAI Codex",
             declared_capabilities=codex_agent_adapter.capabilities,
             granted_capabilities=codex_agent_adapter.capabilities,
+            health=AgentProviderHealth.HEALTHY,
+        ),
+        actor=identity_service.local_trusted_actor(),
+    )
+
+if not any(
+    provider.id == "mammouth-ai"
+    and provider.organization_id == identity_service.local_trusted_actor().organization_id
+    and provider.workspace_id == identity_service.local_trusted_actor().workspace_id
+    for provider in agent_provider_store.list()
+):
+    agent_provider_service.upsert(
+        AgentProviderUpsert(
+            id="mammouth-ai",
+            display_name="Mammouth Code",
+            declared_capabilities=mammouth_agent_adapter.capabilities,
+            granted_capabilities=mammouth_agent_adapter.capabilities,
             health=AgentProviderHealth.HEALTHY,
         ),
         actor=identity_service.local_trusted_actor(),
@@ -2824,6 +2974,15 @@ def _codex_cli_thread_event(event):
         turn_execution_service.record_agent_runtime_event(thread_id, event)
 
 codex_cli_agent_adapter.subscribe_events(_codex_cli_thread_event)
+
+def _mammouth_cli_thread_event(event):
+    thread_id = mammouth_agent_adapter.logical_session_id_for(
+        event.provider_native_session_id
+    )
+    if thread_id:
+        turn_execution_service.record_agent_runtime_event(thread_id, event)
+
+mammouth_agent_adapter.subscribe_events(_mammouth_cli_thread_event)
 
 async def _existing_thread_runtime_request(method, params):
     values = dict(params or {})
@@ -3761,9 +3920,17 @@ def _compatibility_state_metrics() -> dict[str, object]:
     }
 
 
+mammouth_model_catalog = MammouthModelCatalog()
+
+
+def _mammouth_model_entries():
+    return list(mammouth_model_catalog.models())
+
+
 runtime_service = RuntimeService(
     codex=codex_runtime,
     static_version=static_asset_version_service.version,
+    extra_model_sources=(_mammouth_model_entries,),
     runtime_health=runtime_health_service.health,
     load_active_turns=runtime_state.active_turns.load,
     load_turn_queues=turn_queue_repository.load,

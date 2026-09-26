@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Sequence, TypeVar
+from typing import Any, Callable, Sequence, TypeVar
 
 from codex_web.artifact_evidence import EvidenceCreate, EvidenceResult, EvidenceType
 from codex_web.execution_workers import (
@@ -63,6 +63,7 @@ class LocalExecutionWorkerRuntime:
         control_actor: AuthenticationActor,
         artifact_evidence: ArtifactEvidenceService | None = None,
         codex_auth_delegation: CodexAuthDelegationService | None = None,
+        trusted_local_codex_delegation: Any | None = None,
         heartbeat_interval_seconds: float = 30.0,
         renew_margin_seconds: float = 45.0,
     ) -> None:
@@ -74,6 +75,7 @@ class LocalExecutionWorkerRuntime:
         self.control_actor = control_actor
         self.artifact_evidence = artifact_evidence
         self.codex_auth_delegation = codex_auth_delegation
+        self.trusted_local_codex_delegation = trusted_local_codex_delegation
         self.heartbeat_interval_seconds = max(5.0, heartbeat_interval_seconds)
         self.renew_margin_seconds = max(10.0, renew_margin_seconds)
 

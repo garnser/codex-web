@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
 from codex_web.execution_workers import (
+    AssignmentClaimRequest,
+    AssignmentStartRequest,
     AssignmentStatus,
     ExecutionAssignmentCreate,
     ExecutionRuntimeBinding,
@@ -533,6 +536,146 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.backend.spawned, [])
         self.assertEqual(provider.use_calls, 0)
+
+    async def test_generic_process_session_accepts_enriched_assignment_binding(self) -> None:
+        provider = _FakeAlternateCredentialProvider()
+        session = AssignmentBoundAgentProcessSession(
+            self.local_worker,
+            SimpleNamespace(),
+            self._create_assignment(
+                runtime_binding=ExecutionRuntimeBinding(
+                    provider_id="provider-alt",
+                    runtime_id="alternate",
+                    capability_revision=1,
+                    sandbox_profiles=("read-only", "workspace-write"),
+                    authentication_mode="trusted_local_session",
+                )
+            ).id,
+            runtime_factory=_FakeAlternateRuntime,
+            credential_provider=provider,
+            runtime_binding=ExecutionRuntimeBinding(
+                provider_id="provider-alt",
+                runtime_id="alternate",
+                capability_revision=1,
+            ),
+            watchdog_interval_seconds=60,
+            clock=lambda: provider.now,
+            monotonic=lambda: provider.now,
+        )
+
+        await session.start()
+
+        self.assertEqual(len(self.backend.spawned), 1)
+        self.assertEqual(provider.use_calls, 1)
+        await session.stop()
+
+    async def test_trusted_local_dispatch_launches_ambient_codex_without_secrets(self) -> None:
+        from codex_web.services.codex_worker_session import (
+            TrustedLocalCodexCredentialProvider,
+        )
+
+        assignment = self._create_assignment(
+            runtime_binding=ExecutionRuntimeBinding(
+                provider_id="openai",
+                runtime_id="codex",
+                capability_revision=1,
+                authentication_mode="trusted_local_session",
+            )
+        )
+        codex_home = self.temp_path = self.workspace_path / "ambient-codex"
+        codex_home.mkdir()
+        executable_dir = self.workspace_path / "codex-bin"
+        executable_dir.mkdir()
+        executable = executable_dir / "codex"
+        executable.write_text("#!/bin/sh\n", encoding="utf-8")
+        executable.chmod(0o755)
+        trusted = TrustedLocalCodexCredentialProvider(
+            codex_home=codex_home,
+            executable=str(executable),
+        )
+        self.local_worker.trusted_local_codex_delegation = trusted
+        session = await self._session(assignment)
+        try:
+            launch = self.backend.spawned[0]
+            self.assertEqual(launch["argv"][0], str(executable))
+            self.assertIn("--config", launch["argv"])
+            self.assertEqual(launch["argv"][-1], "app-server")
+            self.assertEqual(
+                launch["environment"].get("CODEX_HOME"),
+                str(codex_home),
+            )
+            self.assertFalse(launch["access_token_present"])
+            writable_mounts = {
+                (source, destination)
+                for source, destination in launch["trusted_writable_mounts"]
+            }
+            self.assertIn((codex_home, codex_home), writable_mounts)
+            self.assertIn((executable_dir, executable_dir), {
+                (source, destination)
+                for source, destination in launch["trusted_readonly_mounts"]
+            })
+            self.assertEqual(self.delegation.use_calls, 0)
+        finally:
+            await session.stop()
+
+    async def test_dispatch_rejects_stale_trusted_local_grant(self) -> None:
+        from codex_web.services.codex_worker_session import (
+            DispatchingCodexCredentialProvider,
+            TrustedLocalCodexCredentialProvider,
+        )
+
+        assignment = self._create_assignment(
+            runtime_binding=ExecutionRuntimeBinding(
+                provider_id="openai",
+                runtime_id="codex",
+                capability_revision=1,
+                authentication_mode="trusted_local_session",
+            )
+        )
+        trusted = TrustedLocalCodexCredentialProvider(
+            codex_home=self.workspace_path,
+            executable="/usr/bin/codex",
+        )
+        dispatch = DispatchingCodexCredentialProvider(
+            delegated=self.delegation,
+            trusted_local=trusted,
+        )
+        claimed = self.worker_service.claim(
+            self.worker.id,
+            AssignmentClaimRequest(lease_seconds=600),
+            actor=self.worker_actor,
+            assignment_id=assignment.id,
+        )
+        started = self.worker_service.start(
+            self.worker.id,
+            assignment.id,
+            AssignmentStartRequest(
+                lease_token=claimed.lease.lease_token,
+                fence=claimed.fence,
+            ),
+            actor=self.worker_actor,
+        )
+        grant = trusted._grant(
+            started,
+            worker_id=self.worker.id,
+            fence=started.fence,
+        )
+
+        with self.assertRaisesRegex(
+            AssignmentBoundCodexSessionStaleError,
+            "lease/fence is stale",
+        ):
+            dispatch.validate_current(
+                dataclasses.replace(grant, fence=grant.fence + 1),
+                started,
+                actor=self.worker_actor,
+            )
+        self.delegation.now += 10
+        dispatch.validate_current(
+            grant,
+            started,
+            actor=self.worker_actor,
+        )
 
     async def test_generic_process_session_stops_when_runtime_revision_changes(self) -> None:
         expected = ExecutionRuntimeBinding(

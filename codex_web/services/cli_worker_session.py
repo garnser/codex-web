@@ -16,7 +16,10 @@ from codex_web.execution_workers import (
     WorkerHeartbeatRequest,
     WorkerLifecycle,
 )
-from codex_web.services.agent_worker_session import AssignmentBoundAgentSessionStatus
+from codex_web.services.agent_worker_session import (
+    AssignmentBoundAgentSessionStatus,
+    runtime_binding_identity_matches,
+)
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
 
 
@@ -44,6 +47,7 @@ class AssignmentBoundCliSession:
         *,
         runtime_binding: ExecutionRuntimeBinding,
         watchdog_interval_seconds: float = 1.0,
+        allow_coordinated_repository_layouts: bool = False,
         clock=time.time,
         monotonic=time.monotonic,
         sleep=asyncio.sleep,
@@ -54,6 +58,9 @@ class AssignmentBoundCliSession:
         self.watchdog_interval_seconds = max(
             0.05,
             float(watchdog_interval_seconds),
+        )
+        self.allow_coordinated_repository_layouts = (
+            allow_coordinated_repository_layouts
         )
         self._clock = clock
         self._monotonic = monotonic
@@ -105,7 +112,10 @@ class AssignmentBoundCliSession:
 
     def _current_assignment(self) -> ExecutionAssignment:
         assignment = self.local_worker._pending_assignment(self.assignment_id)
-        if assignment.runtime_binding != self.runtime_binding:
+        if not runtime_binding_identity_matches(
+            assignment.runtime_binding,
+            self.runtime_binding,
+        ):
             raise AssignmentBoundCliSessionStaleError(
                 "CLI assignment runtime binding changed"
             )
@@ -126,7 +136,11 @@ class AssignmentBoundCliSession:
     @staticmethod
     def _require_supported_repository_layout(
         assignment: ExecutionAssignment,
+        *,
+        allow_coordinated_repository_layouts: bool = False,
     ) -> None:
+        if allow_coordinated_repository_layouts:
+            return
         scope = assignment.repository_scope
         target = assignment.repository_target
         if scope is not None:
@@ -147,11 +161,19 @@ class AssignmentBoundCliSession:
 
     def _prepare_assignment(self) -> tuple[ExecutionAssignment, Path]:
         assignment = self.local_worker._pending_assignment(self.assignment_id)
-        if assignment.runtime_binding != self.runtime_binding:
+        if not runtime_binding_identity_matches(
+            assignment.runtime_binding,
+            self.runtime_binding,
+        ):
             raise AssignmentBoundCliSessionStaleError(
                 "CLI assignment runtime binding is incompatible"
             )
-        self._require_supported_repository_layout(assignment)
+        self._require_supported_repository_layout(
+            assignment,
+            allow_coordinated_repository_layouts=(
+                self.allow_coordinated_repository_layouts
+            ),
+        )
         workspace_path = self.local_worker._workspace_path(assignment)
 
         worker = self._current_worker()
@@ -380,10 +402,14 @@ class AssignmentBoundCliSessionManager:
         *,
         runtime_binding: ExecutionRuntimeBinding,
         watchdog_interval_seconds: float = 1.0,
+        allow_coordinated_repository_layouts: bool = False,
     ) -> None:
         self.local_worker = local_worker
         self.runtime_binding = runtime_binding
         self.watchdog_interval_seconds = watchdog_interval_seconds
+        self.allow_coordinated_repository_layouts = (
+            allow_coordinated_repository_layouts
+        )
         self.sessions: dict[str, AssignmentBoundCliSession] = {}
         self._lock = asyncio.Lock()
 
@@ -401,6 +427,9 @@ class AssignmentBoundCliSessionManager:
                 assignment_id,
                 runtime_binding=self.runtime_binding,
                 watchdog_interval_seconds=self.watchdog_interval_seconds,
+                allow_coordinated_repository_layouts=(
+                    self.allow_coordinated_repository_layouts
+                ),
             )
             await session.start()
             self.sessions[assignment_id] = session

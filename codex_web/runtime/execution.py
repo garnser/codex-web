@@ -78,6 +78,19 @@ class _ThreadRuntimeTransport:
         )
 
 
+def _runtime_for_model(model: str | None) -> tuple[str, str] | None:
+    """Map a model's provider prefix onto its execution runtime.
+
+    Deterministic affinity only: the model prefix selects the runtime family
+    that can execute it. It never grants authority or widens routing policy.
+    """
+
+    value = str(model or "").strip()
+    if value.startswith("mammouth-ai/"):
+        return ("mammouth-ai", "mammouth-cli")
+    return None
+
+
 class TurnExecutionService:
     """Own turn execution, queue draining, activity and terminal recovery state."""
 
@@ -1323,6 +1336,7 @@ class TurnExecutionService:
                     },
                 )
             bootstrap = self._bootstrap_binding_for_thread(thread_id)
+            desired_runtime = _runtime_for_model(effective_model)
             canonical_repository_resource_id: str | None = None
             agent_profile_binding = None
             if bootstrap is not None:
@@ -1331,6 +1345,55 @@ class TurnExecutionService:
                 )
                 assignment = session.validate_current()
                 runtime_binding = getattr(assignment, "runtime_binding", None)
+                if desired_runtime is not None:
+                    bound_runtime = (
+                        (
+                            runtime_binding.provider_id,
+                            runtime_binding.runtime_id,
+                        )
+                        if runtime_binding is not None
+                        else None
+                    )
+                    if bound_runtime != desired_runtime:
+                        bound_label = (
+                            f"{bound_runtime[0]}/{bound_runtime[1]}"
+                            if bound_runtime is not None
+                            else "an unpinned runtime"
+                        )
+                        raise HTTPException(
+                            status_code=503,
+                            detail={
+                                "code": "execution_preflight_blocked",
+                                "message": (
+                                    f"model {effective_model} requires the "
+                                    f"{desired_runtime[0]}/{desired_runtime[1]} "
+                                    f"runtime, but the thread is bound to {bound_label}"
+                                ),
+                                "blockers": [
+                                    {
+                                        "code": "model_runtime_mismatch",
+                                        "message": (
+                                            f"model {effective_model} requires the "
+                                            f"{desired_runtime[0]}/{desired_runtime[1]} "
+                                            "runtime, but the thread is bound to "
+                                            f"{bound_label}"
+                                        ),
+                                        "retryable": False,
+                                        "target_type": "agent_runtime",
+                                        "target_id": (
+                                            f"{desired_runtime[0]}/{desired_runtime[1]}"
+                                        ),
+                                        "remediation": (
+                                            "Start a new thread with this model "
+                                            "selected, or switch the model to one "
+                                            "provided by the thread's runtime."
+                                        ),
+                                        "remediation_route": "/api/threads",
+                                    }
+                                ],
+                                "retryable": False,
+                            },
+                        )
                 agent_profile_binding = getattr(
                     assignment,
                     "agent_profile",
@@ -1473,18 +1536,31 @@ class TurnExecutionService:
                 assignment_id = bootstrap.assignment_id
                 workspace_id = bootstrap.execution_workspace_id
             else:
-                runtime_binding, agent_profile_binding = (
-                    await self._select_runtime_binding(
-                        project_id=project.id,
-                        sandbox=effective_sandbox,
-                        trusted_local_codex_session=(
-                            trusted_local_codex_requested
+                desired_runtime = _runtime_for_model(effective_model)
+                if desired_runtime is not None:
+                    runtime_binding = ExecutionRuntimeBinding(
+                        provider_id=desired_runtime[0],
+                        runtime_id=desired_runtime[1],
+                        capability_revision=1,
+                        sandbox_profiles=(
+                            "read-only",
+                            "workspace-write",
+                            "danger-full-access",
                         ),
-                        actor=actor,
-                        agent_profile_id=agent_profile_id,
-                        agent_profile_revision=agent_profile_revision,
                     )
-                )
+                else:
+                    runtime_binding, agent_profile_binding = (
+                        await self._select_runtime_binding(
+                            project_id=project.id,
+                            sandbox=effective_sandbox,
+                            trusted_local_codex_session=(
+                                trusted_local_codex_requested
+                            ),
+                            actor=actor,
+                            agent_profile_id=agent_profile_id,
+                            agent_profile_revision=agent_profile_revision,
+                        )
+                    )
                 if (
                     agent_profile_binding is not None
                     and agent_profile_binding.execution_profile_id
@@ -2448,6 +2524,32 @@ class TurnExecutionService:
             return 600.0
         return max(30.0, value)
 
+    _unrecoverable_turn_error_markers = (
+        "authentication",
+        "unauthorized",
+        "401",
+        "403",
+        "invalid api key",
+        "incorrect api key",
+        "model not found",
+        "unsupported model",
+        "unknown model",
+        "no such model",
+        "context length",
+        "context window",
+        "quota exceeded",
+        "insufficient_quota",
+        "billing",
+        "permission denied",
+    )
+
+    @staticmethod
+    def is_unrecoverable_turn_error(error: str) -> bool:
+        text = str(error or "").casefold()
+        return any(marker in text for marker in (
+            TurnExecutionService._unrecoverable_turn_error_markers
+        ))
+
     def schedule_terminal_thread_recovery(self, thread_id: str, error: str) -> bool:
         h = self.host
         if (
@@ -2620,6 +2722,7 @@ def install_turn_execution_service(
         app.state.turn_execution_service = service
 
     host._enqueue_turn = service.enqueue_turn
+    host._is_unrecoverable_turn_error = service.is_unrecoverable_turn_error
     host._find_duplicate_queued_turn = service.find_duplicate_queued_turn
     host._pop_next_queued_turn = service.pop_next_queued_turn
     host._pop_latest_queued_turn = service.pop_latest_queued_turn

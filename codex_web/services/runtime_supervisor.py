@@ -693,6 +693,14 @@ class RuntimeSupervisor:
         if worker_sessions is not None:
             await worker_sessions.stop_all()
 
+        mammouth_worker_sessions = getattr(
+            self.app.state,
+            "assignment_bound_mammouth_session_manager",
+            None,
+        )
+        if mammouth_worker_sessions is not None:
+            await mammouth_worker_sessions.stop_all()
+
         task_source_writeback = getattr(
             self.app.state,
             "task_source_writeback_service",
