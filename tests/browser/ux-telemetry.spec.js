@@ -85,7 +85,7 @@ test("coarse route classification never emits resource identifiers", async ({ pa
   expect(routes).toEqual([
     "project_overview",
     "project_threads",
-    "project_overview",
+    "project_automation",
     "administration",
   ]);
   expect(JSON.stringify(routes)).not.toContain("private-project-123");
