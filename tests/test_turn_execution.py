@@ -344,6 +344,14 @@ class _BindingService:
             workspace_id="workspace-1",
         )
 
+    def prepare_bootstrap(self, **kwargs):
+        self.calls.append({"kind": "bootstrap", **kwargs})
+        return SimpleNamespace(
+            assignment_id="assignment-1",
+            workspace_id="workspace-1",
+            execution_id=kwargs.get("execution_id", "bootstrap-exec"),
+        )
+
 
 class _CredentialMissingBindingService(_BindingService):
     def prepare(self, **kwargs):
@@ -446,6 +454,7 @@ class _SessionManager:
 class _BootstrapBindings:
     def __init__(self, thread_id: str | None = None) -> None:
         self.thread_id = thread_id
+        self.rebinds = []
 
     def get_by_thread(self, thread_id, actor):
         if self.thread_id != thread_id:
@@ -459,6 +468,10 @@ class _BootstrapBindings:
             assignment_id="assignment-1",
             execution_workspace_id="workspace-1",
         )
+
+    def rebind(self, **kwargs):
+        self.rebinds.append(kwargs)
+        return SimpleNamespace(**kwargs)
 
 
 class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):

@@ -81,6 +81,72 @@ class IsolatedTurnAcceptanceTests(unittest.IsolatedAsyncioTestCase):
             {"decision": "approved"},
         )
 
+    async def test_bootstrap_rebind_supersedes_previous_thread_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            sqlite = SQLiteStateStore(Path(temp) / "state.sqlite3")
+            identity = IdentityService(IdentityStateStore(sqlite))
+            identity.bootstrap_local()
+            actor = identity.local_trusted_actor()
+            bindings = ThreadBootstrapBindingService(
+                ThreadBootstrapBindingStore(sqlite)
+            )
+            original = bindings.bind(
+                bootstrap_id="bootstrap-original",
+                thread_id="thread-switch",
+                execution_id="exec-original",
+                assignment_id="assignment-original",
+                execution_workspace_id="execws-original",
+                actor=actor,
+            )
+
+            replacement = bindings.rebind(
+                bootstrap_id="bootstrap-switched",
+                thread_id="thread-switch",
+                execution_id="exec-switched",
+                assignment_id="assignment-switched",
+                execution_workspace_id="execws-switched",
+                actor=actor,
+            )
+
+            self.assertEqual(replacement.bootstrap_id, "bootstrap-switched")
+            current = bindings.get_by_thread("thread-switch", actor)
+            self.assertEqual(current.bootstrap_id, "bootstrap-switched")
+            with self.assertRaises(Exception):
+                bindings.get_by_bootstrap("bootstrap-original", actor)
+            scoped = [
+                item
+                for item in bindings.store.load().bindings
+                if item.thread_id == "thread-switch"
+            ]
+            self.assertEqual(len(scoped), 1)
+
+    async def test_bootstrap_bind_still_rejects_duplicate_thread(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            sqlite = SQLiteStateStore(Path(temp) / "state.sqlite3")
+            identity = IdentityService(IdentityStateStore(sqlite))
+            identity.bootstrap_local()
+            actor = identity.local_trusted_actor()
+            bindings = ThreadBootstrapBindingService(
+                ThreadBootstrapBindingStore(sqlite)
+            )
+            bindings.bind(
+                bootstrap_id="bootstrap-a",
+                thread_id="thread-dup",
+                execution_id="exec-a",
+                assignment_id="assignment-a",
+                execution_workspace_id="execws-a",
+                actor=actor,
+            )
+            with self.assertRaises(Exception):
+                bindings.bind(
+                    bootstrap_id="bootstrap-b",
+                    thread_id="thread-dup",
+                    execution_id="exec-b",
+                    assignment_id="assignment-b",
+                    execution_workspace_id="execws-b",
+                    actor=actor,
+                )
+
     async def test_restart_with_durable_bootstrap_binding_and_no_session_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             sqlite = SQLiteStateStore(Path(temp) / "state.sqlite3")

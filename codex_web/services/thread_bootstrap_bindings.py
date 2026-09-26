@@ -45,6 +45,98 @@ class ThreadBootstrapBindingService:
             and binding.workspace_id == actor.workspace_id
         )
 
+    def rebind(
+        self,
+        *,
+        bootstrap_id: str,
+        thread_id: str,
+        execution_id: str,
+        assignment_id: str,
+        execution_workspace_id: str,
+        actor: AuthenticationActor,
+    ) -> ThreadBootstrapBinding:
+        """Bind a thread to a new bootstrap, superseding any prior binding.
+
+        Runtime switches intentionally replace a thread's bootstrap: the
+        canonical thread identity, settings and work-item context persist
+        while the execution assignment/native session starts fresh on the
+        selected runtime. The superseded binding is removed in the same
+        atomic update; its assignment is completed by the caller.
+        """
+
+        bootstrap_id = self._value(bootstrap_id, "bootstrap_id")
+        thread_id = self._value(thread_id, "thread_id")
+        execution_id = self._value(execution_id, "execution_id")
+        assignment_id = self._value(assignment_id, "assignment_id")
+        execution_workspace_id = self._value(
+            execution_workspace_id,
+            "execution_workspace_id",
+        )
+        candidate = ThreadBootstrapBinding(
+            id=deterministic_thread_bootstrap_binding_id(
+                actor.organization_id,
+                actor.workspace_id,
+                bootstrap_id,
+            ),
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+            bootstrap_id=bootstrap_id,
+            thread_id=thread_id,
+            execution_id=execution_id,
+            assignment_id=assignment_id,
+            execution_workspace_id=execution_workspace_id,
+            created_by=actor.identity_id,
+        )
+
+        def apply(state):
+            scoped = [
+                item
+                for item in state.bindings
+                if self._scope_matches(item, actor)
+            ]
+            existing_bootstrap = next(
+                (
+                    item
+                    for item in scoped
+                    if item.bootstrap_id == bootstrap_id
+                ),
+                None,
+            )
+            if existing_bootstrap is not None:
+                immutable_values = (
+                    "thread_id",
+                    "execution_id",
+                    "assignment_id",
+                    "execution_workspace_id",
+                )
+                if not all(
+                    getattr(existing_bootstrap, field)
+                    == getattr(candidate, field)
+                    for field in immutable_values
+                ):
+                    raise ThreadBootstrapBindingConflictError(
+                        "thread bootstrap is already bound to different "
+                        "canonical execution state"
+                    )
+                return state
+            state.bindings = [
+                item
+                for item in state.bindings
+                if not (
+                    self._scope_matches(item, actor)
+                    and item.thread_id == thread_id
+                )
+            ]
+            state.bindings.append(candidate)
+            return state
+
+        self.store.update(apply)
+        return next(
+            item
+            for item in self.store.load().bindings
+            if item.id == candidate.id
+        )
+
     def bind(
         self,
         *,

@@ -6,6 +6,7 @@ import json
 import os
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from fastapi import HTTPException
@@ -17,7 +18,12 @@ from codex_web.agent_runtime import (
     AgentRuntimeTurnRequest,
 )
 from codex_web.agent_routing import AgentRoutingRequest
-from codex_web.execution_workers import ExecutionRuntimeBinding
+from codex_web.execution_workers import (
+    AssignmentCompleteRequest,
+    AssignmentStatus,
+    ExecutionRuntimeBinding,
+)
+from codex_web.execution_workspaces import ExecutionWorkspaceRelease
 from codex_web.identity import AuthenticationActor
 from codex_web.models import ActiveThreadTurn, BotBinding, BotReplyTarget, Project, QueuedTurn
 from codex_web.paths import SLACK_RELAY_NOTICE
@@ -83,12 +89,30 @@ def _runtime_for_model(model: str | None) -> tuple[str, str] | None:
 
     Deterministic affinity only: the model prefix selects the runtime family
     that can execute it. It never grants authority or widens routing policy.
+    Unprefixed model ids stay on the thread's current runtime.
     """
 
     value = str(model or "").strip()
     if value.startswith("mammouth-ai/"):
         return ("mammouth-ai", "mammouth-cli")
+    if value.startswith("codex/"):
+        return ("openai", "codex")
     return None
+
+
+def _runtime_model_id(model: str | None, runtime_binding) -> str | None:
+    """Strip the provider prefix a runtime must not see.
+
+    Codex model values are namespaced (``codex/gpt-5.6-sol``) so both
+    catalogs can be listed unambiguously; the codex app-server itself
+    expects the bare model id.
+    """
+
+    value = str(model or "").strip()
+    provider = getattr(runtime_binding, "provider_id", None)
+    if provider == "openai" and value.startswith("codex/"):
+        return value[len("codex/"):]
+    return value or None
 
 
 class TurnExecutionService:
@@ -1337,16 +1361,98 @@ class TurnExecutionService:
                 )
             bootstrap = self._bootstrap_binding_for_thread(thread_id)
             desired_runtime = _runtime_for_model(effective_model)
+            if bootstrap is None:
+                bootstrap = await self._convert_legacy_thread_to_bootstrap(
+                    thread_id=thread_id,
+                    project=project,
+                    desired_runtime=desired_runtime,
+                    sandbox=effective_sandbox,
+                    approval_policy=effective_approval_policy,
+                    execution_profile_id=effective_execution_profile_id,
+                    explicit_repository_id=(
+                        repository_resource_id or settings.repository_resource_id
+                    ),
+                    writable_repository_ids=tuple(
+                        effective_writable_repositories
+                    ),
+                    read_only_repository_ids=tuple(
+                        read_only_repository_resource_ids
+                        or settings.read_only_repository_resource_ids
+                    ),
+                    trusted_local_codex_requested=trusted_local_codex_requested,
+                    actor=actor,
+                    agent_profile_id=agent_profile_id,
+                    agent_profile_revision=agent_profile_revision,
+                )
             canonical_repository_resource_id: str | None = None
             agent_profile_binding = None
             if bootstrap is not None:
-                session_manager, session = self._session_for_assignment(
-                    bootstrap.assignment_id
+                session_manager = None
+                session = None
+                assignment = None
+                runtime_binding = None
+                try:
+                    session_manager, session = self._session_for_assignment(
+                        bootstrap.assignment_id
+                    )
+                    assignment = session.validate_current()
+                    runtime_binding = getattr(
+                        assignment,
+                        "runtime_binding",
+                        None,
+                    )
+                except HTTPException:
+                    assignment = self._assignment_record(
+                        bootstrap.assignment_id
+                    )
+                    runtime_binding = (
+                        getattr(assignment, "runtime_binding", None)
+                        if assignment is not None
+                        else None
+                    )
+                switch_needed = (
+                    desired_runtime is not None
+                    and (
+                        runtime_binding is None
+                        or (
+                            runtime_binding.provider_id,
+                            runtime_binding.runtime_id,
+                        )
+                        != desired_runtime
+                    )
                 )
-                assignment = session.validate_current()
-                runtime_binding = getattr(assignment, "runtime_binding", None)
-                if desired_runtime is not None:
-                    bound_runtime = (
+                if not switch_needed and assignment is not None:
+                    requested_primary = (
+                        repository_resource_id or settings.repository_resource_id
+                    )
+                    assignment_primary = getattr(
+                        getattr(assignment, "repository_target", None),
+                        "mutable_repository_id",
+                        None,
+                    )
+                    target_drift = (
+                        requested_primary is not None
+                        and assignment_primary != requested_primary
+                    )
+                    scope_drift = bool(
+                        effective_writable_repositories
+                        and set(effective_writable_repositories)
+                        != set(
+                            getattr(
+                                getattr(
+                                    assignment,
+                                    "repository_scope",
+                                    None,
+                                ),
+                                "writable_repository_ids",
+                                (),
+                            )
+                        )
+                    )
+                    if target_drift or scope_drift:
+                        switch_needed = True
+                if switch_needed:
+                    switch_runtime = desired_runtime or (
                         (
                             runtime_binding.provider_id,
                             runtime_binding.runtime_id,
@@ -1354,46 +1460,162 @@ class TurnExecutionService:
                         if runtime_binding is not None
                         else None
                     )
-                    if bound_runtime != desired_runtime:
-                        bound_label = (
-                            f"{bound_runtime[0]}/{bound_runtime[1]}"
-                            if bound_runtime is not None
-                            else "an unpinned runtime"
-                        )
+                    if switch_runtime is None:
                         raise HTTPException(
                             status_code=503,
-                            detail={
-                                "code": "execution_preflight_blocked",
-                                "message": (
-                                    f"model {effective_model} requires the "
-                                    f"{desired_runtime[0]}/{desired_runtime[1]} "
-                                    f"runtime, but the thread is bound to {bound_label}"
-                                ),
-                                "blockers": [
-                                    {
-                                        "code": "model_runtime_mismatch",
-                                        "message": (
-                                            f"model {effective_model} requires the "
-                                            f"{desired_runtime[0]}/{desired_runtime[1]} "
-                                            "runtime, but the thread is bound to "
-                                            f"{bound_label}"
-                                        ),
-                                        "retryable": False,
-                                        "target_type": "agent_runtime",
-                                        "target_id": (
-                                            f"{desired_runtime[0]}/{desired_runtime[1]}"
-                                        ),
-                                        "remediation": (
-                                            "Start a new thread with this model "
-                                            "selected, or switch the model to one "
-                                            "provided by the thread's runtime."
-                                        ),
-                                        "remediation_route": "/api/threads",
-                                    }
-                                ],
-                                "retryable": False,
-                            },
+                            detail=(
+                                "thread bootstrap binding has no live agent "
+                                "runtime session"
+                            ),
                         )
+                    bootstrap = await self._supersede_thread_bootstrap(
+                        thread_id=thread_id,
+                        project=project,
+                        runtime_binding=ExecutionRuntimeBinding(
+                            provider_id=switch_runtime[0],
+                            runtime_id=switch_runtime[1],
+                            capability_revision=1,
+                            sandbox_profiles=(
+                                "read-only",
+                                "workspace-write",
+                                "danger-full-access",
+                            ),
+                        ),
+                        sandbox=effective_sandbox,
+                        approval_policy=effective_approval_policy,
+                        execution_profile_id=getattr(
+                            assignment,
+                            "execution_profile_id",
+                            effective_execution_profile_id,
+                        ),
+                        agent_profile=getattr(
+                            assignment,
+                            "agent_profile",
+                            None,
+                        ),
+                        explicit_repository_id=getattr(
+                            getattr(
+                                assignment,
+                                "repository_target",
+                                None,
+                            ),
+                            "mutable_repository_id",
+                            None,
+                        )
+                        or repository_resource_id
+                        or settings.repository_resource_id,
+                        writable_repository_ids=tuple(
+                            effective_writable_repositories
+                        ),
+                        read_only_repository_ids=tuple(
+                            read_only_repository_resource_ids
+                            or settings.read_only_repository_resource_ids
+                        ),
+                        previous_assignment_id=bootstrap.assignment_id,
+                    )
+                    runtime_binding = ExecutionRuntimeBinding(
+                        provider_id=switch_runtime[0],
+                        runtime_id=switch_runtime[1],
+                        capability_revision=1,
+                    )
+                    session_manager = None
+                    session = None
+                    assignment = None
+                if session is None:
+                    try:
+                        session_manager = self._manager_for_binding(
+                            runtime_binding
+                        )
+                        session = await session_manager.start(
+                            bootstrap.assignment_id
+                        )
+                        assignment = session.validate_current()
+                        runtime_binding = getattr(
+                            assignment,
+                            "runtime_binding",
+                            None,
+                        )
+                    except Exception:
+                        session = None
+                        assignment = None
+                if session is not None:
+                    status = session.status()
+                    if not getattr(status, "running", True):
+                        session = None
+                        assignment = None
+                if session is None:
+                    # The binding cannot be re-acquired (for example its
+                    # workspace was discarded after a restart): heal the
+                    # thread by superseding onto the bound or desired runtime
+                    # with a fresh assignment and workspace.
+                    heal_runtime = desired_runtime or (
+                        (
+                            runtime_binding.provider_id,
+                            runtime_binding.runtime_id,
+                        )
+                        if runtime_binding is not None
+                        else None
+                    )
+                    if heal_runtime is None:
+                        raise HTTPException(
+                            status_code=503,
+                            detail=(
+                                "thread bootstrap binding has no live agent "
+                                "runtime session"
+                            ),
+                        )
+                    bootstrap = await self._supersede_thread_bootstrap(
+                        thread_id=thread_id,
+                        project=project,
+                        runtime_binding=(
+                            runtime_binding
+                            if desired_runtime is None
+                            else ExecutionRuntimeBinding(
+                                provider_id=desired_runtime[0],
+                                runtime_id=desired_runtime[1],
+                                capability_revision=1,
+                                sandbox_profiles=(
+                                    "read-only",
+                                    "workspace-write",
+                                    "danger-full-access",
+                                ),
+                            )
+                        ),
+                        sandbox=effective_sandbox,
+                        approval_policy=effective_approval_policy,
+                        execution_profile_id=effective_execution_profile_id,
+                        agent_profile=None,
+                        explicit_repository_id=(
+                            repository_resource_id
+                            or settings.repository_resource_id
+                        ),
+                        writable_repository_ids=tuple(
+                            effective_writable_repositories
+                        ),
+                        read_only_repository_ids=tuple(
+                            read_only_repository_resource_ids
+                            or settings.read_only_repository_resource_ids
+                        ),
+                        previous_assignment_id=bootstrap.assignment_id,
+                    )
+                    session_manager = self._manager_for_binding(
+                        runtime_binding
+                        if desired_runtime is None
+                        else ExecutionRuntimeBinding(
+                            provider_id=desired_runtime[0],
+                            runtime_id=desired_runtime[1],
+                            capability_revision=1,
+                        )
+                    )
+                    session = await session_manager.start(
+                        bootstrap.assignment_id
+                    )
+                    assignment = session.validate_current()
+                    runtime_binding = getattr(
+                        assignment,
+                        "runtime_binding",
+                        None,
+                    )
                 agent_profile_binding = getattr(
                     assignment,
                     "agent_profile",
@@ -1493,7 +1715,11 @@ class TurnExecutionService:
                     effective_writable = tuple(
                         getattr(scope, "writable_repository_ids", ())
                     )
-                    if effective_writable_repositories != effective_writable:
+                    # Repository authority is a set: ordering differences from
+                    # policy resolution must not invalidate a thread binding.
+                    if set(effective_writable_repositories) != set(
+                        effective_writable
+                    ):
                         raise HTTPException(
                             status_code=409,
                             detail={
@@ -1790,6 +2016,10 @@ class TurnExecutionService:
                 ),
             }
             resume_params["cwd"] = workspace_cwd
+            effective_runtime_model = _runtime_model_id(
+                effective_model,
+                runtime_binding,
+            )
             if effective_sandbox:
                 resume_params["sandboxPolicy"] = h._sandbox_policy(
                     effective_sandbox,
@@ -1806,7 +2036,7 @@ class TurnExecutionService:
                 assignment_id=assignment_id,
                 execution_workspace_id=workspace_id,
                 worker_id=worker_id,
-                model=effective_model,
+                model=effective_runtime_model,
                 developer_instructions=effective_developer_instructions,
             )
             runtime_adapter = self._adapter_for_binding(
@@ -1882,8 +2112,8 @@ class TurnExecutionService:
                 "input": [{"type": "text", "text": message, "text_elements": []}],
                 "cwd": workspace_cwd,
             }
-            if effective_model:
-                params["model"] = effective_model
+            if effective_runtime_model:
+                params["model"] = effective_runtime_model
             if effective_reasoning_effort:
                 params["effort"] = effective_reasoning_effort
             if effective_developer_instructions:
@@ -1901,7 +2131,7 @@ class TurnExecutionService:
             )
             runtime_turn_request = AgentRuntimeTurnRequest(
                 message=params["input"][0]["text"],
-                model=effective_model,
+                model=effective_runtime_model,
                 reasoning_effort=effective_reasoning_effort,
                 workspace_cwd=workspace_cwd,
                 approval_policy=effective_approval_policy,
@@ -2515,6 +2745,227 @@ class TurnExecutionService:
         for thread_id in queue_ids:
             if not self.thread_is_active(thread_id):
                 self.schedule_queue_drain(thread_id)
+
+    def _assignment_record(self, assignment_id: str):
+        for manager in dict(self.session_managers or {}).values():
+            local_worker = getattr(manager, "local_worker", None)
+            if local_worker is None:
+                continue
+            try:
+                return local_worker._pending_assignment(assignment_id)
+            except Exception:
+                continue
+        return None
+
+    async def _supersede_thread_bootstrap(
+        self,
+        *,
+        thread_id: str,
+        project: Any,
+        runtime_binding: ExecutionRuntimeBinding,
+        sandbox: str,
+        approval_policy: str,
+        execution_profile_id: str | None,
+        agent_profile: Any | None,
+        explicit_repository_id: str | None,
+        writable_repository_ids: tuple[str, ...] = (),
+        read_only_repository_ids: tuple[str, ...] = (),
+        previous_assignment_id: str | None,
+    ):
+        """Replace a thread's bootstrap with one bound to a different runtime.
+
+        The canonical thread identity, settings and work-item context persist;
+        the superseded assignment/session is completed (releasing its lease
+        and workspace) and the thread rebinds to a fresh assignment on the
+        selected runtime with a fresh provider-native session.
+        """
+
+        h = self.host
+        if previous_assignment_id:
+            released = False
+            for manager in dict(self.session_managers or {}).values():
+                if manager.get(previous_assignment_id) is not None:
+                    with contextlib.suppress(Exception):
+                        await manager.complete(
+                            previous_assignment_id,
+                            succeeded=False,
+                            failure_code="thread_runtime_switched",
+                            failure_message=(
+                                "thread superseded onto a different agent runtime"
+                            ),
+                        )
+                    released = True
+                    break
+            if not released:
+                local_worker = getattr(
+                    next(iter(dict(self.session_managers or {}).values()), None),
+                    "local_worker",
+                    None,
+                )
+                if local_worker is not None:
+                    with contextlib.suppress(Exception):
+                        local_worker.worker_service.recover_expired(
+                            actor=self.control_actor
+                        )
+                    with contextlib.suppress(Exception):
+                        local_worker.workspace_service.recover_expired()
+                    with contextlib.suppress(Exception):
+                        superseded_assignment = (
+                            local_worker._pending_assignment(
+                                previous_assignment_id
+                            )
+                        )
+                        superseded_workspace_id = (
+                            superseded_assignment.execution_workspace_id
+                        )
+                        if superseded_workspace_id:
+                            local_worker.workspace_service.release(
+                                superseded_workspace_id,
+                                ExecutionWorkspaceRelease(
+                                    discard=True,
+                                    reason=(
+                                        "thread superseded onto a different "
+                                        "agent runtime"
+                                    ),
+                                ),
+                                actor=self.control_actor,
+                            )
+                    with contextlib.suppress(Exception):
+                        assignment = local_worker._pending_assignment(
+                            previous_assignment_id
+                        )
+                        lease = assignment.lease
+                        if lease is not None and assignment.status in (
+                            AssignmentStatus.CLAIMED,
+                            AssignmentStatus.RUNNING,
+                        ):
+                            local_worker.worker_service.complete(
+                                assignment.assigned_worker_id,
+                                assignment.id,
+                                AssignmentCompleteRequest(
+                                    lease_token=lease.lease_token,
+                                    fence=assignment.fence,
+                                    succeeded=False,
+                                    failure_code="thread_runtime_switched",
+                                    failure_message=(
+                                        "thread superseded onto a different "
+                                        "agent runtime"
+                                    ),
+                                ),
+                                actor=local_worker.worker_actor,
+                            )
+        h._append_bot_event(
+            {
+                "type": "thread_runtime_switched",
+                "thread_id": thread_id,
+                "project_id": project.id,
+                "target_runtime": (
+                    f"{runtime_binding.provider_id}/{runtime_binding.runtime_id}"
+                ),
+            }
+        )
+        token = __import__("uuid").uuid4().hex
+        binding = self.binding_service.prepare_bootstrap(
+            bootstrap_id=f"bootstrap-{token}",
+            execution_id=f"thread-bootstrap-{token}",
+            project_id=project.id,
+            sandbox=sandbox,
+            approval_policy=approval_policy,
+            runtime_binding=runtime_binding,
+            explicit_repository_id=explicit_repository_id,
+            writable_repository_ids=writable_repository_ids,
+            read_only_repository_ids=read_only_repository_ids,
+            execution_profile_id=execution_profile_id,
+            agent_profile=agent_profile,
+        )
+        self.bootstrap_bindings.rebind(
+            bootstrap_id=f"bootstrap-{token}",
+            thread_id=thread_id,
+            execution_id=binding.execution_id,
+            assignment_id=binding.assignment_id,
+            execution_workspace_id=binding.workspace_id,
+            actor=self.control_actor,
+        )
+        return self._bootstrap_binding_for_thread(thread_id)
+
+    async def _convert_legacy_thread_to_bootstrap(
+        self,
+        *,
+        thread_id: str,
+        project: Any,
+        desired_runtime: tuple[str, str] | None,
+        sandbox: str,
+        approval_policy: str,
+        execution_profile_id: str | None,
+        explicit_repository_id: str | None,
+        writable_repository_ids: tuple[str, ...] = (),
+        read_only_repository_ids: tuple[str, ...] = (),
+        trusted_local_codex_requested: bool,
+        actor: Any | None,
+        agent_profile_id: str | None,
+        agent_profile_revision: int | None,
+    ):
+        """Convert a legacy/non-bootstrap thread to the bootstrap mechanism.
+
+        Legacy threads keep their canonical identity but gain a bootstrap
+        binding so model/runtime switching works without creating new
+        threads. The runtime comes from the model affinity when present,
+        otherwise from deterministic routing.
+        """
+
+        if self.binding_service is None or self.bootstrap_bindings is None:
+            return None
+        if desired_runtime is not None:
+            runtime_binding: ExecutionRuntimeBinding | None = (
+                ExecutionRuntimeBinding(
+                    provider_id=desired_runtime[0],
+                    runtime_id=desired_runtime[1],
+                    capability_revision=1,
+                    sandbox_profiles=(
+                        "read-only",
+                        "workspace-write",
+                        "danger-full-access",
+                    ),
+                )
+            )
+            agent_profile_binding = None
+        else:
+            runtime_binding, agent_profile_binding = (
+                await self._select_runtime_binding(
+                    project_id=project.id,
+                    sandbox=sandbox,
+                    trusted_local_codex_session=False,
+                    actor=actor,
+                    agent_profile_id=agent_profile_id,
+                    agent_profile_revision=agent_profile_revision,
+                )
+            )
+        if runtime_binding is None:
+            return None
+        h = self.host
+        h._append_bot_event(
+            {
+                "type": "legacy_thread_converted_to_bootstrap",
+                "thread_id": thread_id,
+                "project_id": project.id,
+                "runtime": (
+                    f"{runtime_binding.provider_id}/{runtime_binding.runtime_id}"
+                ),
+            }
+        )
+        return await self._supersede_thread_bootstrap(
+            thread_id=thread_id,
+            project=project,
+            runtime_binding=runtime_binding,
+            sandbox=sandbox,
+            approval_policy=approval_policy,
+            execution_profile_id=execution_profile_id,
+            agent_profile=agent_profile_binding,
+            explicit_repository_id=explicit_repository_id,
+            writable_repository_ids=writable_repository_ids,
+            read_only_repository_ids=read_only_repository_ids,
+            previous_assignment_id=None,
+        )
 
     @staticmethod
     def terminal_failure_window_seconds() -> float:
