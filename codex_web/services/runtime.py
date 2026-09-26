@@ -50,6 +50,7 @@ class RuntimeService:
         task_source_writeback_status: Callable[[], dict[str, Any]] | None = None,
         native_recovery_status: Callable[[], dict[str, Any]] | None = None,
         continuity_background_status: Callable[[], dict[str, Any]] | None = None,
+        extra_model_sources: tuple[Callable[[], list[dict[str, Any]]], ...] = (),
     ) -> None:
         if host is not None:
             codex = codex or getattr(host, "codex", None)
@@ -168,6 +169,7 @@ class RuntimeService:
         if codex is None:
             raise TypeError("RuntimeService requires a runtime transport")
         self.codex = codex
+        self.extra_model_sources = tuple(extra_model_sources)
         self.static_version = static_version or (lambda: "unknown")
         self.runtime_health = runtime_health or (
             lambda: {"ok": True, "problems": []}
@@ -541,13 +543,49 @@ class RuntimeService:
         *,
         include_hidden: bool = False,
     ) -> dict[str, Any]:
+        codex_error: str | None = None
+        codex_models: list[Any] = []
         try:
-            return await self.codex.request(
+            response = await self.codex.request(
                 "model/list",
                 {"includeHidden": include_hidden, "limit": 100},
             )
+            if isinstance(response, dict):
+                codex_models = list(response.get("data") or [])
         except Exception as exc:
+            codex_error = str(exc)
             self.event_sink(
-                {"type": "model_list_failed", "error": str(exc)}
+                {"type": "model_list_failed", "error": codex_error}
             )
-            return {"data": [], "nextCursor": None, "error": str(exc)}
+
+        merged: list[Any] = list(codex_models)
+        seen: set[str] = set()
+        for item in merged:
+            if isinstance(item, dict):
+                value = str(item.get("model") or item.get("id") or "")
+                if value:
+                    seen.add(value)
+                item["displayName"] = f"Codex · {item.get('displayName') or value}"
+        for source in self.extra_model_sources:
+            try:
+                entries = await asyncio.to_thread(source)
+            except Exception as exc:
+                self.event_sink(
+                    {
+                        "type": "model_source_failed",
+                        "error": str(exc),
+                    }
+                )
+                continue
+            for entry in entries or []:
+                if not isinstance(entry, dict):
+                    continue
+                value = str(entry.get("model") or entry.get("id") or "")
+                if not value or value in seen:
+                    continue
+                seen.add(value)
+                entry["displayName"] = (
+                    f"Mammouth · {entry.get('displayName') or value}"
+                )
+                merged.append(entry)
+        return {"data": merged, "nextCursor": None, "error": codex_error}

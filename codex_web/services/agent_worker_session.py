@@ -4,11 +4,36 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, TypeVar, runtime_checkable
 
-from codex_web.execution_workers import ExecutionAssignment
+from codex_web.execution_workers import ExecutionAssignment, ExecutionRuntimeBinding
 from codex_web.identity import AuthenticationActor
 
 
 T = TypeVar("T")
+
+
+def runtime_binding_identity_matches(
+    assignment_binding: ExecutionRuntimeBinding | None,
+    session_binding: ExecutionRuntimeBinding | None,
+) -> bool:
+    """Compare the runtime identity a session serves against an assignment.
+
+    Routing enriches assignment bindings with per-execution details such as
+    sandbox profiles and Codex authentication mode. Those are execution
+    facts, not runtime identity: a session pins the provider, runtime and
+    capability revision and tolerates the enriched fields. A session without
+    a pinned binding constrains nothing.
+    """
+
+    if session_binding is None:
+        return True
+    if assignment_binding is None:
+        return False
+    return (
+        assignment_binding.provider_id == session_binding.provider_id
+        and assignment_binding.runtime_id == session_binding.runtime_id
+        and assignment_binding.capability_revision
+        == session_binding.capability_revision
+    )
 
 
 @dataclass(frozen=True, slots=True)

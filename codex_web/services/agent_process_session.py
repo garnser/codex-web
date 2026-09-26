@@ -5,7 +5,7 @@ import contextlib
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from codex_web.execution_workers import (
     AssignmentCompleteRequest,
@@ -27,6 +27,7 @@ from codex_web.services.agent_worker_session import (
     AssignmentRuntimeCredentialGrant,
     AssignmentRuntimeCredentialProvider,
     AssignmentRuntimeLaunchInput,
+    runtime_binding_identity_matches,
 )
 from codex_web.services.agent_model_egress import (
     AGENT_MODEL_EGRESS_RELAY_SCRIPT,
@@ -45,6 +46,30 @@ class AssignmentBoundAgentProcessSessionError(RuntimeError):
 
 class AssignmentBoundAgentProcessSessionStaleError(AssignmentBoundAgentProcessSessionError):
     pass
+
+
+def _executable_mount_destination(command: tuple[str, ...]) -> Path | None:
+    raw = str(command[0]) if command else ""
+    if not raw or "/" not in raw:
+        return None
+    candidate = Path(raw).resolve().parent
+    if not candidate.is_dir():
+        return None
+    return candidate
+
+
+def _merge_trusted_mounts(
+    *groups: Sequence[tuple[Path, Path]],
+) -> tuple[tuple[Path, Path], ...]:
+    merged: list[tuple[Path, Path]] = []
+    seen: set[Path] = set()
+    for group in groups:
+        for source, destination in group:
+            if destination in seen:
+                continue
+            seen.add(destination)
+            merged.append((source, destination))
+    return tuple(merged)
 
 
 class _OneShotProcessFactory:
@@ -164,9 +189,9 @@ class AssignmentBoundAgentProcessSession:
 
     def _current_assignment(self) -> ExecutionAssignment:
         assignment = self.local_worker._pending_assignment(self.assignment_id)
-        if (
-            self.runtime_binding is not None
-            and assignment.runtime_binding != self.runtime_binding
+        if not runtime_binding_identity_matches(
+            assignment.runtime_binding,
+            self.runtime_binding,
         ):
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime binding changed or is incompatible"
@@ -187,9 +212,9 @@ class AssignmentBoundAgentProcessSession:
 
     def _prepare_assignment(self) -> tuple[ExecutionAssignment, Path]:
         assignment = self.local_worker._pending_assignment(self.assignment_id)
-        if (
-            self.runtime_binding is not None
-            and assignment.runtime_binding != self.runtime_binding
+        if not runtime_binding_identity_matches(
+            assignment.runtime_binding,
+            self.runtime_binding,
         ):
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime binding is incompatible"
@@ -282,6 +307,22 @@ class AssignmentBoundAgentProcessSession:
                     else ()
                 )
                 trusted_writable_mounts = ()
+            trusted_mounts = _merge_trusted_mounts(
+                trusted_mounts,
+                tuple(getattr(launch_input, "trusted_mounts", ()) or ()),
+            )
+            trusted_writable_mounts = _merge_trusted_mounts(
+                trusted_writable_mounts,
+                tuple(
+                    getattr(launch_input, "trusted_writable_mounts", ()) or (),
+                ),
+            )
+            executable_dir = _executable_mount_destination(command)
+            if executable_dir is not None:
+                trusted_mounts = _merge_trusted_mounts(
+                    trusted_mounts,
+                    ((executable_dir, executable_dir),),
+                )
             if trusted_mounts:
                 environment["CODEX_READONLY_REPOSITORIES"] = ":".join(
                     str(destination)
