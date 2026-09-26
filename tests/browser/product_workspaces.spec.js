@@ -462,6 +462,89 @@ test('Administration shell remains within the viewport at phone width', async ({
 });
 
 
+test('denied Administration access also removes the Administer workflow preference', async ({ page }) => {
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, 'product_workspaces_fixture.html'), 'utf8');
+
+  await page.addInitScript(() => localStorage.setItem('codex-web-workspace-mode', 'administer'));
+  await page.route('**/projects/**', async (route) => {
+    if (route.request().resourceType() !== 'document') return route.continue();
+    await route.fulfill({ status: 200, contentType: 'text/html', body: html });
+  });
+  await page.route('**/api/identity/me', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        identity_id: 'human-user',
+        organization_id: 'org-a',
+        workspace_id: 'workspace-a',
+      }),
+    });
+  });
+  await page.route('**/api/identity', async (route) => {
+    await route.fulfill({
+      status: 403,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: 'administrator required' }),
+    });
+  });
+
+  await page.goto('http://127.0.0.1:18766/projects/home/overview');
+  const mode = page.locator('#product-workspace-mode');
+  await expect(mode).toHaveValue('work');
+  const option = mode.locator('option[value="administer"]');
+  await expect(option).toBeDisabled();
+  await expect(option).toBeHidden();
+  await expect(page.locator('[data-project-nav-group="work-group"]')).toHaveAttribute('open', '');
+});
+
+test('administrator can select Administer without changing the canonical Project routes', async ({ page }) => {
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, 'product_workspaces_fixture.html'), 'utf8');
+
+  await page.route('**/projects/**', async (route) => {
+    if (route.request().resourceType() !== 'document') return route.continue();
+    await route.fulfill({ status: 200, contentType: 'text/html', body: html });
+  });
+  await page.route('**/api/identity/me', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        identity_id: 'human-admin',
+        organization_id: 'org-a',
+        workspace_id: 'workspace-a',
+      }),
+    });
+  });
+  await page.route('**/api/identity', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        organizations: [{ id: 'org-a', name: 'Organization A' }],
+        workspaces: [{ id: 'workspace-a', organization_id: 'org-a', name: 'Workspace A' }],
+        humans: [],
+        memberships: [],
+      }),
+    });
+  });
+
+  await page.goto('http://127.0.0.1:18766/projects/home/overview');
+  const mode = page.locator('#product-workspace-mode');
+  const option = mode.locator('option[value="administer"]');
+  await expect(option).toBeEnabled();
+  await expect(option).toBeVisible();
+  await mode.selectOption('administer');
+  await expect(mode).toHaveValue('administer');
+  await expect(page).toHaveURL(/\/projects\/home\/overview$/);
+  await expect(page.locator('[data-project-nav-node="work-items"]')).toHaveCount(1);
+  await expect(page.locator('[data-project-nav-node="administration"]')).toBeVisible();
+});
+
 test('global Administration entry is hidden when canonical identity denies admin access', async ({ page }) => {
   const fs = require('fs');
   const path = require('path');
