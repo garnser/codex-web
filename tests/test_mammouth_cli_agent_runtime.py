@@ -4,7 +4,7 @@ import asyncio
 import unittest
 from pathlib import Path
 
-from codex_web.agent_runtime import AgentRuntimeHealth, AgentRuntimeTurnRequest
+from codex_web.agent_runtime import (\n    AgentRuntimeHealth,\n    AgentRuntimeSessionRequest,\n    AgentRuntimeTurnRequest,\n)
 from codex_web.cli_runtime import (
     CliRuntimeOutput,
     CliRuntimeReadiness,
@@ -181,6 +181,37 @@ class MammouthCliAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
         second = runner.commands[1][0].argv
         self.assertIn("--session", second)
         self.assertEqual(second[second.index("--session") + 1], "native-1")
+
+    async def test_explicit_resume_on_fresh_adapter_uses_native_session(self) -> None:
+        runner = _Runner(
+            ['{"type":"turn.started","sessionID":"native-existing","turnID":"turn-2"}']
+        )
+        adapter = MammouthCliAgentRuntimeAdapter(
+            probe=_Probe(_ready()),
+            runner=runner,
+            execution_authorizer=_contained,
+        )
+        resumed = await adapter.resume_session(
+            "native-existing",
+            AgentRuntimeSessionRequest(
+                project_id="project-1",
+                workspace_cwd="/workspace/repo",
+            ),
+        )
+        self.assertTrue(resumed.payload["resumed"])
+
+        await adapter.start_turn(
+            "native-existing",
+            AgentRuntimeTurnRequest(
+                message="Continue existing session",
+                workspace_cwd="/workspace/repo",
+            ),
+        )
+        await asyncio.sleep(0)
+
+        argv = runner.commands[0][0].argv
+        self.assertIn("--session", argv)
+        self.assertEqual(argv[argv.index("--session") + 1], "native-existing")
 
     async def test_nonzero_exit_after_session_start_emits_safe_failure(self) -> None:
         runner = _Runner(
