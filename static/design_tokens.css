@@ -25,6 +25,12 @@
   --cw-control-lg: 2.75rem;
   --cw-content-narrow: 42rem;
   --cw-content-wide: 72rem;
+  --cw-content-max: 96rem;
+  --cw-grid-gap: 1rem;
+  --cw-toolbar-gap: 0.75rem;
+  --cw-field-compact: 10rem;
+  --cw-field-standard: 18rem;
+  --cw-field-wide: 32rem;
 
   /* Radius, borders and elevation */
   --cw-radius-sm: 0.375rem;

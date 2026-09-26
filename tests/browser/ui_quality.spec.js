@@ -160,3 +160,22 @@ test('Work Item operator has named dialog/status semantics and remains usable on
   expect(focusStyle.outlineStyle).not.toBe('none');
   expect(parseFloat(focusStyle.outlineWidth)).toBeGreaterThan(0);
 });
+
+test('wide workspace uses available content width without wrapping compact controls', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+  await page.evaluate(() => window.CodexProductUI.openWorkspace('overview'));
+
+  const panel = page.locator('.product-workspace-panel:visible');
+  const panelBox = await panel.boundingBox();
+  expect(panelBox.width).toBeGreaterThan(900);
+
+  const headerButtons = page.locator('.product-workspace-header-actions button:visible');
+  const wrapped = await headerButtons.evaluateAll((buttons) => buttons.filter((button) => button.scrollHeight > button.clientHeight + 1).map((button) => button.textContent.trim()));
+  expect(wrapped).toEqual([]);
+
+  const header = page.locator('.product-workspace-header:visible');
+  const headerBox = await header.boundingBox();
+  expect(headerBox.width).toBeGreaterThan(900);
+  await expectNoPageOverflow(page, 'wide workspace density');
+});
