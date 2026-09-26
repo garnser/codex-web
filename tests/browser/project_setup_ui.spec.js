@@ -68,6 +68,29 @@ test('plan/apply uses canonical bootstrap API and normalized resource topology',
   expect(JSON.parse(apply.body).expected_plan_id).toBe('bootstrap-plan-1');
 });
 
+test('plan apply acknowledges once, prevents duplicate submission, and confirms canonical readiness', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/project_setup_ui_fixture.html?explicit=1');
+  await page.locator('#project-setup-launch').click();
+  const dialog = page.locator('#project-setup-dialog');
+  await dialog.locator('[data-setup-tab="plan"]').click();
+  await dialog.locator('[data-setup-plan]').click();
+  await dialog.locator('[data-setup-apply]').click();
+  await expect(dialog.locator('[data-setup-action-feedback] [data-action-state="succeeded"]')).toContainText('Canonical readiness now reports execution ready');
+  expect(await page.evaluate(() => window.fixture.applyCalls)).toBe(1);
+});
+
+test('plan apply exposes recovery context when canonical apply fails', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/project_setup_ui_fixture.html?failApply=1');
+  await page.locator('#project-setup-launch').click();
+  const dialog = page.locator('#project-setup-dialog');
+  await dialog.locator('[data-setup-tab="plan"]').click();
+  await dialog.locator('[data-setup-plan]').click();
+  await dialog.locator('[data-setup-apply]').click();
+  await expect(dialog.locator('[data-setup-action-feedback] [data-action-state="failed"]')).toContainText('worker stopped during apply');
+  await expect(dialog.locator('[data-setup-tab="plan"]')).toBeVisible();
+});
+
+
 test('setup UI never renders raw credential-shaped fixture data', async ({ page }) => {
   await page.goto('http://127.0.0.1:18766/tests/browser/project_setup_ui_fixture.html');
   await page.locator('#project-setup-launch').click();
