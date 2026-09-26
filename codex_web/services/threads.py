@@ -14,6 +14,7 @@ from codex_web.agent_runtime import AgentRuntimeListRequest, AgentRuntimeSession
 from codex_web.agent_routing import AgentRoutingRequest
 from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.identity import AuthenticationActor
+from codex_web.runtime.execution import _runtime_for_model
 from codex_web.models import (
     IndexedThread,
     ThreadPrimaryChannelUpdate,
@@ -782,6 +783,10 @@ class ThreadService:
             profile_execution_id or execution_profile_id
         )
         effective_approval_policy = approval_policy or project.approval_policy
+        if provider_id is None and runtime_id is None:
+            desired = _runtime_for_model(model)
+            if desired is not None:
+                provider_id, runtime_id = desired
         runtime_binding, agent_profile_binding = await self._select_runtime_route(
             project_id=project.id,
             sandbox=effective_sandbox,
