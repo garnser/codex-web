@@ -366,6 +366,16 @@ async function mockProjectScopedGoalReads(page, { listDelay = {} } = {}) {
   }));
   await page.route('**/api/goals/**', async (route) => {
     const url = new URL(route.request().url());
+    if (
+      url.pathname === '/api/goals/events'
+      || url.pathname === '/api/goals/runtime-objectives/unbound'
+    ) {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [], count: 0 }),
+      });
+      return;
+    }
     const parts = url.pathname.split('/').filter(Boolean);
     const goalId = parts[2];
     const snapshot = Object.values(snapshots).find((item) => item.goal.id === goalId);
