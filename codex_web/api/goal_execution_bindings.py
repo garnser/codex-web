@@ -79,6 +79,8 @@ def build_goal_execution_bindings_router(
         return actor
 
     def require_project_goal(goal_id: str, project_id: str | None, actor):
+        if project_id is None:
+            return
         try:
             return goals.get(
                 goal_id,
