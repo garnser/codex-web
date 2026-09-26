@@ -45,6 +45,25 @@ A missing Thread deep link, lost Project scope, repeated Project choice, or inab
 
 The number of scope re-selections and page transitions is a useful baseline for workflow review, but approvals, explicit repository choice, and verification are not accidental clicks to optimize away. A context loss, unclear next action, or repeated entry of already-known values is a candidate for remediation.
 
+## Workflow friction baseline
+
+The baseline below counts deliberate route transitions and repeated scope choices in the current happy path. It does not count approval, authorization, repository-target, readiness, reconciliation, or Evidence checks as removable friction. The counts are a stable manual baseline for comparing UI changes until the privacy-governed product telemetry in #856 is available.
+
+| User goal | Entry → useful outcome | Route transitions | Repeated Project choices | Current next action | Remediation/evidence |
+| --- | --- | ---: | ---: | --- | --- |
+| Start useful Project work | Home → Setup when blocked → Threads or Work Items → Run/Evidence | 2–4 | 0 | Home readiness card | Home next-step coverage |
+| Execute a Work Item | Work Items → item → execute/continue → Run/Evidence | 2–3 | 0 | Canonical enabled action | Work Item and Run browser coverage |
+| Start or resume a Thread | Threads → selected conversation → Run/Evidence | 1–2 | 0 | New/select Thread | #853 and #859; deep-link browser coverage |
+| Understand a Run | Work Item or Runs → Run timeline → retry/reconcile/remediate | 1–2 | 0 | Outcome-specific action | Run/Work Item browser coverage |
+| Resolve Attention | Attention → authoritative source → approve/remediate → refreshed state | 2–3 | 0 | Requested human action | Attention browser coverage |
+| Configure an Agent Profile | Team → Agent Profiles → create/edit → use in work | 2–3 | 0 | Contextual create/edit | #845 |
+| Configure a Team | Team → Teams → create/edit membership → use in work | 2–3 | 0 | Contextual create/edit | #845 |
+| Create or inspect Automation | Automation → create/edit → Run Now → resulting Run | 2–3 | 0 | Contextual create/run | Action-feedback browser coverage |
+| Change effective configuration | Configuration/resource → edit/reset → refreshed effective state | 1–2 | 0 | Edit or Reset | Configuration browser coverage and #845 |
+| Move between product areas | Shared Project navigation → destination → related deep link | 1 per move | 0 | Hierarchical navigation | Routed-navigation and Back/Forward coverage |
+
+The target for these paths is zero redundant Project re-selection and no loss of the selected Project/object across related routes. A future change regresses this baseline if it adds a route transition or repeated choice without a documented safety, authority, or verification reason. Privacy-safe completion, abandonment, and elapsed-time comparisons remain owned by #856 rather than being inferred from clicks.
+
 Screenshot fixture: **work-items-and-handoffs**.
 
 ## Team: understand Agents, Teams, and Skills
