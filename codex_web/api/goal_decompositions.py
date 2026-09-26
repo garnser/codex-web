@@ -127,6 +127,7 @@ def build_goal_decompositions_router(
     ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            require_project_goal(goal_id, project_id, actor)
             rows = service.events(
                 goal_id,
                 scope=actor.tenant,
