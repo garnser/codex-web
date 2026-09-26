@@ -36,10 +36,60 @@ function onboardingDismissed(id) {
   return Boolean(onboardingPreferences()[id]?.dismissed);
 }
 
-function setOnboardingDismissed(id, dismissed) {
+function updateOnboardingPreference(id, patch) {
   const preferences = onboardingPreferences();
-  preferences[id] = { ...(preferences[id] || {}), dismissed: Boolean(dismissed) };
+  preferences[id] = { ...(preferences[id] || {}), ...patch };
   localStorage.setItem(ONBOARDING_KEY, JSON.stringify(preferences));
+  return preferences[id];
+}
+
+function setOnboardingDismissed(id, dismissed) {
+  updateOnboardingPreference(id, { dismissed: Boolean(dismissed) });
+}
+
+function observeOnboarding(payload) {
+  const progress = onboardingProgress(payload);
+  if (!progress.ready) return;
+  const id = payload.project?.id || projectId();
+  const preferences = onboardingPreferences();
+  let state = preferences[id] || {};
+
+  // Existing Projects that already have useful completed work are not retroactively
+  // treated as newly activated.
+  if (progress.completed && !state.telemetryStartedAt) return;
+
+  if (!state.telemetryStartedAt) {
+    state = updateOnboardingPreference(id, {
+      telemetryStartedAt: Date.now(),
+      telemetryJourneyId: journeyId(),
+      telemetryStarted: true,
+    });
+    void trackUx("onboarding_started", {
+      workflow: "onboarding",
+      step: "execution_ready",
+      journey: state.telemetryJourneyId,
+    });
+  }
+
+  if (progress.started && !state.telemetryFirstWorkflow) {
+    state = updateOnboardingPreference(id, { telemetryFirstWorkflow: true });
+    void trackUx("onboarding_step_completed", {
+      workflow: "onboarding",
+      step: "first_workflow_started",
+      journey: state.telemetryJourneyId,
+    });
+  }
+
+  if (progress.completed && !state.telemetryCompleted) {
+    const durationMs = Math.max(0, Date.now() - Number(state.telemetryStartedAt || Date.now()));
+    state = updateOnboardingPreference(id, { telemetryCompleted: true });
+    void trackUx("onboarding_completed", {
+      workflow: "onboarding",
+      step: "first_useful_outcome",
+      durationMs,
+      journey: state.telemetryJourneyId,
+    });
+  }
 }
 
 function onboardingProgress(payload) {
@@ -142,7 +192,14 @@ function renderOnboarding(payload) {
 function wireOnboarding(host, payload) {
   const id = payload.project?.id || projectId();
   host.querySelector("[data-onboarding-skip]")?.addEventListener("click", () => {
+    const state = onboardingPreferences()[id] || {};
     setOnboardingDismissed(id, true);
+    void trackUx("onboarding_skipped", {
+      workflow: "onboarding",
+      step: "first_useful_outcome",
+      durationMs: state.telemetryStartedAt ? Date.now() - Number(state.telemetryStartedAt) : null,
+      journey: state.telemetryJourneyId || journeyId(),
+    });
     renderPayload(host, payload);
   });
   host.querySelector("[data-onboarding-reopen]")?.addEventListener("click", () => {
@@ -312,6 +369,7 @@ function renderPayload(host, payload) {
   header.append(titleBox, statusBadge(payload.status));
   host.appendChild(header);
 
+  observeOnboarding(payload);
   const onboarding = renderOnboarding(payload);
   if (onboarding) host.appendChild(onboarding);
 
