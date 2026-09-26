@@ -19,13 +19,19 @@ export function coarseRoute(locationLike = window.location) {
   const path = String(locationLike?.pathname || "");
   const hash = String(locationLike?.hash || "");
   if (path.includes("/administration") || hash.startsWith("#administration")) return "administration";
+  if (hash.includes("workspace/work")) return "project_work";
+  if (hash.includes("workspace/threads")) return "project_threads";
+  if (hash.includes("workspace/agents")) return "project_agents";
+  if (hash.includes("workspace/autonomy")) return "project_automation";
+  if (hash.includes("workspace/operations")) return "project_operations";
+  if (hash.includes("workspace/setup")) return "project_setup";
+  if (path.includes("/work-items")) return "project_work";
+  if (path.includes("/threads")) return "project_threads";
+  if (path.includes("/agents")) return "project_agents";
+  if (path.includes("/automations")) return "project_automation";
+  if (path.includes("/operations")) return "project_operations";
+  if (path.includes("/setup")) return "project_setup";
   if (path.includes("/projects/") && path.includes("/overview")) return "project_overview";
-  if (path.includes("/work-items") || hash.includes("workspace/work")) return "project_work";
-  if (path.includes("/threads") || hash.includes("workspace/threads")) return "project_threads";
-  if (path.includes("/agents") || hash.includes("workspace/agents")) return "project_agents";
-  if (path.includes("/automations") || hash.includes("workspace/autonomy")) return "project_automation";
-  if (path.includes("/operations") || hash.includes("workspace/operations")) return "project_operations";
-  if (path.includes("/setup") || hash.includes("workspace/setup")) return "project_setup";
   return "other";
 }
 
