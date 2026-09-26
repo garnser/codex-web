@@ -1026,7 +1026,7 @@
     },
     "agent-team-skill": {
       "width": 1440,
-      "height": 1528,
+      "height": 1594,
       "grid": 8,
       "luma": [
         243,
@@ -1095,9 +1095,9 @@
         255
       ],
       "provenance": {
-        "source": "browser signature after compact contextual Agent/Team actions",
-        "workflow_run_id": 36225874339,
-        "git_revision": "issue-845-contextual-crud-v2"
+        "source": "browser signature after contextual Team membership controls",
+        "workflow_run_id": 36259734240,
+        "git_revision": "issue-845-contextual-team-membership"
       }
     },
     "attention-inbox": {
