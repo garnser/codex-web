@@ -1314,14 +1314,27 @@ function installKeyboard() {
 async function syncAdministrationEntryVisibility() {
   if (legacyStaticRoutingContext()) return;
   const entry = document.querySelector('[data-project-nav-node="administration"]');
+  const selector = document.getElementById("product-workspace-mode");
+  const administerOption = selector?.querySelector('option[value="administer"]');
   if (!entry) return;
+
+  const applyAccess = (allowed) => {
+    entry.hidden = !allowed;
+    entry.disabled = !allowed;
+    if (administerOption) {
+      administerOption.hidden = !allowed;
+      administerOption.disabled = !allowed;
+    }
+    if (!allowed && workspaceMode() === "administer") {
+      applyWorkspaceMode("work");
+    }
+  };
+
   try {
     const context = await loadAdministrationContext(administrationApi);
-    entry.hidden = !context.allowed;
-    entry.disabled = !context.allowed;
+    applyAccess(Boolean(context.allowed));
   } catch {
-    entry.hidden = true;
-    entry.disabled = true;
+    applyAccess(false);
   }
 }
 
