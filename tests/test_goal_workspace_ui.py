@@ -41,7 +41,7 @@ class GoalWorkspaceUiTests(unittest.TestCase):
 
         # Refresh is deterministic GET-only; model planning is bound to the
         # explicit .goal-generate click handler.
-        refresh_start = javascript.index("async function refreshAll()")
+        refresh_start = javascript.index("async function refreshAll(")
         refresh_end = javascript.index("function renderGoalList()", refresh_start)
         refresh_body = javascript[refresh_start:refresh_end]
         self.assertNotIn("/decompositions/generate", refresh_body)
