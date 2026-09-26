@@ -338,7 +338,8 @@ def build_goal_execution_bindings_router(
         goal_id: str,
         payload: GoalExecutionBindingCreate,
         request: Request,
-        project_id: str | None = Query(default=None, min_length=1)    ) -> dict[str, Any]:
+        project_id: str | None = Query(default=None, min_length=1),
+    ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
             require_project_goal(goal_id, project_id, actor)
@@ -358,7 +359,8 @@ def build_goal_execution_bindings_router(
         binding_id: str,
         payload: GoalExecutionBindingUpdate,
         request: Request,
-        project_id: str | None = Query(default=None, min_length=1)    ) -> dict[str, Any]:
+        project_id: str | None = Query(default=None, min_length=1),
+    ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
             require_project_goal(goal_id, project_id, actor)
@@ -391,7 +393,8 @@ def build_goal_execution_bindings_router(
         binding_id: str,
         payload: RuntimeBindingControlRequest,
         request: Request,
-        project_id: str | None = Query(default=None, min_length=1)    ) -> dict[str, Any]:
+        project_id: str | None = Query(default=None, min_length=1),
+    ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
             require_project_goal(goal_id, project_id, actor)
@@ -421,7 +424,8 @@ def build_goal_execution_bindings_router(
         binding_id: str,
         payload: RuntimeBindingControlRequest,
         request: Request,
-        project_id: str | None = Query(default=None, min_length=1)    ) -> dict[str, Any]:
+        project_id: str | None = Query(default=None, min_length=1),
+    ) -> dict[str, Any]:
         if continuation is None:
             raise HTTPException(
                 status_code=503,
@@ -458,7 +462,8 @@ def build_goal_execution_bindings_router(
         binding_id: str,
         payload: RuntimeBindingControlRequest,
         request: Request,
-        project_id: str | None = Query(default=None, min_length=1)    ) -> dict[str, Any]:
+        project_id: str | None = Query(default=None, min_length=1),
+    ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
             require_project_goal(goal_id, project_id, actor)
@@ -488,7 +493,8 @@ def build_goal_execution_bindings_router(
         binding_id: str,
         payload: GoalExecutionBindingReconcile,
         request: Request,
-        project_id: str | None = Query(default=None, min_length=1)    ) -> dict[str, Any]:
+        project_id: str | None = Query(default=None, min_length=1),
+    ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
             require_project_goal(goal_id, project_id, actor)
