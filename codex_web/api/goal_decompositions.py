@@ -27,6 +27,7 @@ from codex_web.services.goal_decompositions import (
     GoalDecompositionService,
 )
 from codex_web.services.identity import AuthorizationError, IdentityService
+from codex_web.services.goals import GoalNotFoundError
 
 
 def _error(exc: Exception) -> HTTPException:
@@ -66,12 +67,24 @@ def build_goal_decompositions_router(
         )
         return actor
 
+    def require_project_goal(goal_id: str, project_id: str | None, actor) -> None:
+        try:
+            service.goals.get(
+                goal_id,
+                scope=actor.tenant,
+                project_id=project_id,
+            )
+        except GoalNotFoundError as exc:
+            raise GoalDecompositionNotFoundError("goal not found") from exc
+
     @router.get("")
     async def list_proposals(
         goal_id: str,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         actor = request_actor(request)
+        require_project_goal(goal_id, project_id, actor)
         try:
             rows = service.list(goal_id, scope=actor.tenant)
         except (GoalDecompositionError, ValueError) as exc:
@@ -86,9 +99,11 @@ def build_goal_decompositions_router(
         goal_id: str,
         payload: GoalDecompositionProposalCreate,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
+            require_project_goal(goal_id, project_id, actor)
             proposal = service.create(
                 goal_id,
                 payload,
@@ -108,6 +123,7 @@ def build_goal_decompositions_router(
         goal_id: str,
         request: Request,
         limit: int = Query(default=100, ge=1, le=500),
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
@@ -129,9 +145,11 @@ def build_goal_decompositions_router(
             goal_id: str,
             payload: GoalDecompositionGenerationRequest,
             request: Request,
-        ) -> dict[str, Any]:
+            project_id: str | None = Query(default=None, min_length=1),
+    ) -> dict[str, Any]:
             try:
                 actor = mutation_actor(request)
+            require_project_goal(goal_id, project_id, actor)
                 proposal = await generation.generate(
                     goal_id,
                     payload,
@@ -150,8 +168,10 @@ def build_goal_decompositions_router(
         goal_id: str,
         proposal_id: str,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         actor = request_actor(request)
+        require_project_goal(goal_id, project_id, actor)
         try:
             proposal = service.get(proposal_id, scope=actor.tenant)
             if proposal.goal_id != goal_id:
@@ -168,9 +188,11 @@ def build_goal_decompositions_router(
         proposal_id: str,
         payload: GoalDecompositionProposalRevise,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
+            require_project_goal(goal_id, project_id, actor)
             current = service.get(proposal_id, scope=actor.tenant)
             if current.goal_id != goal_id:
                 raise GoalDecompositionNotFoundError(
@@ -196,9 +218,11 @@ def build_goal_decompositions_router(
         proposal_id: str,
         payload: GoalDecompositionReview,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
+            require_project_goal(goal_id, project_id, actor)
             current = service.get(proposal_id, scope=actor.tenant)
             if current.goal_id != goal_id:
                 raise GoalDecompositionNotFoundError(
@@ -225,9 +249,11 @@ def build_goal_decompositions_router(
             proposal_id: str,
             payload: GoalDecompositionCommitRequest,
             request: Request,
-        ) -> dict[str, Any]:
+            project_id: str | None = Query(default=None, min_length=1),
+    ) -> dict[str, Any]:
             try:
                 actor = mutation_actor(request)
+            require_project_goal(goal_id, project_id, actor)
                 current = service.get(proposal_id, scope=actor.tenant)
                 if current.goal_id != goal_id:
                     raise GoalDecompositionNotFoundError(
@@ -252,9 +278,11 @@ def build_goal_decompositions_router(
             proposal_id: str,
             payload: GoalDecompositionCommitRequest,
             request: Request,
-        ) -> dict[str, Any]:
+            project_id: str | None = Query(default=None, min_length=1),
+    ) -> dict[str, Any]:
             try:
                 actor = mutation_actor(request)
+            require_project_goal(goal_id, project_id, actor)
                 current = service.get(proposal_id, scope=actor.tenant)
                 if current.goal_id != goal_id:
                     raise GoalDecompositionNotFoundError(
@@ -278,8 +306,10 @@ def build_goal_decompositions_router(
         goal_id: str,
         proposal_id: str,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         actor = request_actor(request)
+        require_project_goal(goal_id, project_id, actor)
         try:
             current = service.get(proposal_id, scope=actor.tenant)
             if current.goal_id != goal_id:
