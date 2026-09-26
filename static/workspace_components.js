@@ -233,6 +233,7 @@ export const WorkspaceComponents = Object.freeze({
   identityChip,
   objectHeader,
   metadataGrid,
+  actionFeedback,
   statePanel,
   skeleton,
   timeline,
