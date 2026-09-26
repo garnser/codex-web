@@ -1,4 +1,5 @@
 import { actionFeedback } from "./workspace_components.js";
+import { trackUx } from "./ux_telemetry.js";
 
 const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
 const state = { projectId: "", project: null, resources: [], readiness: null, bootstrap: null, plan: null, error: null, actionState: null, applying: false };
@@ -153,6 +154,8 @@ async function planning(kind) {
 async function applyPlan() {
   const plan = state.plan?.plan;
   if (!plan?.id || state.applying) return;
+  const telemetryStartedAt = performance.now();
+  void trackUx("workflow_started", { workflow: "project_setup", step: "apply_plan" });
   state.applying = true;
   state.actionState = { state: "acknowledged", title: "Request received", detail: "Applying the reviewed Project setup plan." };
   render();
@@ -164,14 +167,29 @@ async function applyPlan() {
     await refresh();
     if (!state.error && state.readiness?.execution_ready) {
       state.actionState = { state: "succeeded", title: "Project setup completed", detail: "Canonical readiness now reports execution ready." };
+      void trackUx("workflow_completed", {
+        workflow: "project_setup",
+        step: "apply_plan",
+        durationMs: performance.now() - telemetryStartedAt,
+      });
       setPanel("readiness");
     } else {
       state.actionState = { state: "needs_attention", title: "Project setup needs attention", detail: "Review the refreshed readiness checks before continuing." };
+      void trackUx("action_failed", {
+        workflow: "project_setup",
+        step: "apply_plan",
+        durationMs: performance.now() - telemetryStartedAt,
+      });
       setPanel("readiness");
     }
   } catch (error) {
     state.error = error.message;
     state.actionState = { state: "failed", title: "Project setup failed", detail: error.message };
+    void trackUx("action_failed", {
+      workflow: "project_setup",
+      step: "apply_plan",
+      durationMs: performance.now() - telemetryStartedAt,
+    });
     render(); setPanel("plan");
   } finally {
     state.applying = false;
@@ -185,7 +203,16 @@ function wire(body) {
   body.querySelector("[data-setup-plan]")?.addEventListener("click", () => planning("plan"));
   body.querySelector("[data-setup-apply]")?.addEventListener("click", applyPlan);
   body.querySelector("[data-setup-reset]")?.addEventListener("click", () => { const textarea = body.querySelector("[data-project-setup-manifest]"); if (textarea) textarea.value = JSON.stringify(inferredManifest(), null, 2); });
-  body.querySelector("[data-setup-fresh]")?.addEventListener("click", async () => { try { await api("/api/projects/" + encodeURIComponent(state.projectId) + "/fresh-bootstrap", { method: "POST" }); await refresh(); } catch (error) { state.error = error.message; render(); } });
+  body.querySelector("[data-setup-fresh]")?.addEventListener("click", async () => {
+    void trackUx("recovery_action_used", { workflow: "project_setup", step: "retry_setup" });
+    try {
+      await api("/api/projects/" + encodeURIComponent(state.projectId) + "/fresh-bootstrap", { method: "POST" });
+      await refresh();
+    } catch (error) {
+      state.error = error.message;
+      render();
+    }
+  });
 }
 async function refresh() {
   state.projectId = activeProjectId();
