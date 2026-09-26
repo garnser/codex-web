@@ -21,16 +21,18 @@ Headless worker authentication is configured through the reference-only `mammout
 
 `MammouthAuthDelegationService` resolves that secret only inside `SecretBroker.use()`. It injects only `HOME` and `MAMMOUTH_API_KEY` into the future sandbox launch, binds the metadata-only grant to the canonical assignment/worker/fence, and fails closed when the lease, fence, secret rotation, expiry, tenant, or worker authority changes. Public status contains the secret reference identifier but never credential material. The browser must never receive Mammouth credentials.
 
-## Sandbox and integration status
+## AgentRuntime lifecycle and sandbox status
 
-The adapter intentionally is not registered as an execution-ready application runtime yet. Mammouth Code does not expose the same CLI-native sandbox flags used by the Codex CLI adapter, so registering it directly on the application host would risk bypassing codex-web's canonical worker/sandbox boundary.
+`MammouthCliAgentRuntimeAdapter` now composes the CLI command/event contract with the provider-neutral AgentRuntime lifecycle. It covers structured event streaming, explicit session continuation, model selection, non-zero exits, synthetic terminal events and cancellation through the bounded CLI runner.
+
+Execution remains deliberately fail-closed by default. The adapter requires an explicit `execution_authorizer` for the selected workspace before it will launch a Mammouth process. It is not registered as an execution-ready application runtime yet. Mammouth Code does not expose the same CLI-native sandbox flags used by the Codex CLI adapter, so registering it directly on the application host would risk bypassing codex-web's canonical worker/sandbox boundary. A CLI that is installed and authenticated therefore remains diagnostically usable but is not enough to make production execution eligible.
 
 Before enabling end-to-end routing, #844 still requires:
 
-1. connecting the implemented fenced credential delegation to a Mammouth process launched inside the assignment's canonical worker/sandbox rather than as an unrestricted host subprocess;
-2. wiring runtime/provider registration and Agent Profile selection;
+1. connecting the implemented fenced credential delegation and AgentRuntime adapter to a Mammouth process launched inside the assignment's canonical worker/sandbox rather than as an unrestricted host subprocess;
+2. wiring runtime/provider registration and Agent Profile selection only after that containment gate is satisfied;
 3. exposing readiness/version/diagnostics in the existing Operations UI;
-4. mapping non-zero exits into the canonical failure taxonomy;
+4. mapping assignment-level launch/exit failures into the canonical failure taxonomy when production routing is connected;
 5. verifying cancellation kills the full Mammouth process tree inside the worker;
 6. clean-host verification of install, authentication, execution, cancellation and explicit continuation.
 
