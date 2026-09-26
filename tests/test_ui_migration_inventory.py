@@ -13,7 +13,7 @@ class UiMigrationInventoryTests(unittest.TestCase):
         text = INVENTORY.read_text(encoding="utf-8")
         for marker in (
             "static/styles.css",
-            "#projects",
+            "canonical Project switcher",
             "#threads",
             ".developer-card",
             "static/work_items_ui.js",

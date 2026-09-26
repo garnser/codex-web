@@ -14,7 +14,6 @@ import {
 const WORKSPACES = [
   { id: "overview", label: "Home", group: "Home", kind: "embedded", description: "Current workspace orientation, status vocabulary, explainability and shortcuts." },
   { id: "inbox", label: "Attention", group: "Home", kind: "launcher", selector: "[data-attention-launch]", dialogSelector: ".attention-dialog", description: "Canonical human-intervention queue." },
-  { id: "projects", label: "Projects", group: "Home", kind: "focus", selector: "#projects", description: "Project selection and creation." },
   { id: "setup", label: "Project Setup / Readiness", group: "Home", kind: "launcher", selector: "#project-setup-launch", dialogSelector: "#project-setup-dialog", description: "Bootstrap, migration planning, readiness blockers and guided remediation." },
   { id: "threads", label: "Threads", group: "Work", kind: "focus", selector: "#thread-search", description: "Fast conversational work remains directly accessible." },
   { id: "work", label: "Work", group: "Work", kind: "embedded", description: "Canonical work graph and execution continuity." },
@@ -1054,6 +1053,10 @@ function buildShell() {
       <select id="product-project-switcher" aria-label="Current Project">
         <option value="">Loading projects…</option>
       </select>
+      <div class="product-project-actions">
+        <button id="new-project" type="button" class="ghost-button">Add Project</button>
+        <button type="button" class="ghost-button" data-project-bot-integration>Project bot integration</button>
+      </div>
       <button type="button" class="ghost-button product-all-workspaces" data-workspace-switcher-launch="true">All workspaces</button>
       <label class="product-workspace-mode-label" for="product-workspace-mode">Primary workflow</label>
       <select id="product-workspace-mode" aria-label="Primary workflow">
