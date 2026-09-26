@@ -271,6 +271,23 @@ class RuntimeAuthenticationRequirementTests(unittest.TestCase):
             "anthropic.worker.api_key_secret",
         )
 
+    def test_mammouth_runtime_uses_reference_only_worker_credential(self) -> None:
+        binding = ExecutionRuntimeBinding(
+            provider_id="mammouth-ai",
+            runtime_id="mammouth-cli",
+            capability_revision=1,
+        )
+
+        requirement = runtime_authentication_requirement(binding)
+
+        self.assertIsNotNone(requirement)
+        assert requirement is not None
+        self.assertEqual(requirement.source, "runtime_credential_mapping")
+        self.assertEqual(
+            requirement.credential_config_key,
+            "mammouth.worker.api_key_secret",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
