@@ -484,6 +484,16 @@ class AssignmentBoundCliSessionManager:
             actor=self.local_worker.worker_actor,
         )
         await self.stop(assignment_id)
+        if assignment.execution_workspace_id:
+            with contextlib.suppress(Exception):
+                self.local_worker.workspace_service.release(
+                    assignment.execution_workspace_id,
+                    ExecutionWorkspaceRelease(
+                        discard=True,
+                        reason="assignment completed",
+                    ),
+                    actor=self.local_worker.worker_actor,
+                )
         return completed
 
     async def stop(self, assignment_id: str) -> None:

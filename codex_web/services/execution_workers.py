@@ -683,6 +683,7 @@ class ExecutionWorkerService:
         version: str,
         capabilities: tuple,
         actor: AuthenticationActor,
+        max_concurrency: int = 8,
         supported_execution_contract_versions: tuple[str, ...] = ("1.0",),
         supported_sandbox_profiles: tuple[str, ...] = (
             "read-only",
@@ -721,6 +722,7 @@ class ExecutionWorkerService:
                         "capabilities": normalized_capabilities,
                         "last_heartbeat_at": time.time(),
                         "lifecycle": lifecycle,
+                        "max_concurrency": max_concurrency,
                         "supported_execution_contract_versions": (
                             supported_execution_contract_versions
                         ),
