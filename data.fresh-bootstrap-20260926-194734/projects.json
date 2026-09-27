@@ -1,0 +1,14 @@
+[
+  {
+    "id": "home",
+    "organization_id": "local",
+    "workspace_id": "default",
+    "name": "Home",
+    "path": ".",
+    "model": null,
+    "sandbox": "workspace-write",
+    "approval_policy": "on-request",
+    "repository_selection_policy": "deterministic",
+    "authoritative_task_source": null
+  }
+]
