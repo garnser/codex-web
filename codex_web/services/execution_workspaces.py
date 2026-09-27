@@ -1217,6 +1217,82 @@ class ExecutionWorkspaceService:
         self._sync_work_item(updated)
         return updated
 
+    def release_stale_thread_bootstraps(
+        self,
+        *,
+        project_id: str,
+        repository_resource_id: str,
+        keep_execution_id: str | None = None,
+        actor: AuthenticationActor,
+    ) -> list[str]:
+        """Release active thread-bootstrap workspaces blocking a repository.
+
+        Bootstrap leases can outlive their assignments (restarts, superseded
+        sessions, failed creations). This releases active thread-bootstrap
+        workspaces whose lease has expired or is absent, scoped to the
+        project/repository, so new bootstraps are not blocked by stale
+        leases. Live leases are never touched.
+        """
+
+        current = time.time()
+        released: list[str] = []
+
+        def apply(state):
+            for index, workspace in enumerate(state.workspaces):
+                if workspace.status != ExecutionWorkspaceStatus.ACTIVE:
+                    continue
+                if workspace.project_id != project_id:
+                    continue
+                if (
+                    workspace.subject is not None
+                    and workspace.subject.kind != "thread_bootstrap"
+                ):
+                    continue
+                if repository_resource_id not in (
+                    workspace.resource_ids or ()
+                ):
+                    continue
+                if keep_execution_id and (
+                    workspace.execution_id == keep_execution_id
+                ):
+                    continue
+                lease = next(
+                    (
+                        lease
+                        for lease in state.leases
+                        if lease.id == workspace.lease_id
+                        and lease.released_at is None
+                    ),
+                    None,
+                )
+                if lease is not None and lease.expires_at > current:
+                    continue
+                released.append(workspace.id)
+                state.workspaces[index] = workspace.model_copy(
+                    update={
+                        "status": ExecutionWorkspaceStatus.DISCARDED,
+                        "cleaned_at": current,
+                        "lease_id": None,
+                    }
+                )
+                for lease_index, lease_item in enumerate(state.leases):
+                    if (
+                        lease_item.id == workspace.lease_id
+                        and lease_item.released_at is None
+                    ):
+                        state.leases[lease_index] = lease_item.model_copy(
+                            update={
+                                "released_at": current,
+                                "release_reason": (
+                                    "stale thread-bootstrap workspace released"
+                                ),
+                            }
+                        )
+            return state
+
+        self.store.update(apply)
+        return released
+
     def release(
         self,
         workspace_id: str,

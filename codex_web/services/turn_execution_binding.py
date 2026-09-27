@@ -1275,26 +1275,64 @@ class TurnExecutionBindingService:
                         },
                     )
                 writable_ids = repository_scope.writable_repository_ids
-                workspace = self.workspaces.acquire(
-                    ExecutionWorkspaceAcquire(
-                        subject=subject,
-                        execution_id=normalized_execution_id,
+                try:
+                    workspace = self.workspaces.acquire(
+                        ExecutionWorkspaceAcquire(
+                            subject=subject,
+                            execution_id=normalized_execution_id,
+                            project_id=project.id,
+                            resource_ids=(
+                                *writable_ids,
+                                *repository_scope.read_only_repository_ids,
+                            ),
+                            repository_resource_id=repository_target.mutable_repository_id,
+                            writable_repository_ids=writable_ids,
+                            read_only_repository_ids=(
+                                repository_scope.read_only_repository_ids
+                            ),
+                            lease_mode=lease_mode,
+                            ttl_seconds=session_seconds,
+                            requested_disk_bytes=effective_limits.disk_bytes,
+                        ),
+                        actor=self.control_actor,
+                    )
+                except (
+                    ExecutionWorkspaceLeaseError,
+                    ExecutionWorkspaceConflictError,
+                ):
+                    # Bootstrap leases can outlive their assignments (restarts,
+                    # superseded sessions, failed creations). Release stale
+                    # thread-bootstrap workspaces holding the same
+                    # project/repository and retry once; live turns on other
+                    # threads keep their workspaces.
+                    self.workspaces.release_stale_thread_bootstraps(
                         project_id=project.id,
-                        resource_ids=(
-                            *writable_ids,
-                            *repository_scope.read_only_repository_ids,
+                        repository_resource_id=(
+                            repository_target.mutable_repository_id
                         ),
-                        repository_resource_id=repository_target.mutable_repository_id,
-                        writable_repository_ids=writable_ids,
-                        read_only_repository_ids=(
-                            repository_scope.read_only_repository_ids
+                        keep_execution_id=normalized_execution_id,
+                        actor=self.control_actor,
+                    )
+                    workspace = self.workspaces.acquire(
+                        ExecutionWorkspaceAcquire(
+                            subject=subject,
+                            execution_id=normalized_execution_id,
+                            project_id=project.id,
+                            resource_ids=(
+                                *writable_ids,
+                                *repository_scope.read_only_repository_ids,
+                            ),
+                            repository_resource_id=repository_target.mutable_repository_id,
+                            writable_repository_ids=writable_ids,
+                            read_only_repository_ids=(
+                                repository_scope.read_only_repository_ids
+                            ),
+                            lease_mode=lease_mode,
+                            ttl_seconds=session_seconds,
+                            requested_disk_bytes=effective_limits.disk_bytes,
                         ),
-                        lease_mode=lease_mode,
-                        ttl_seconds=session_seconds,
-                        requested_disk_bytes=effective_limits.disk_bytes,
-                    ),
-                    actor=self.control_actor,
-                )
+                        actor=self.control_actor,
+                    )
         except TurnExecutionBindingError:
             raise
         except ExecutionWorkspaceQuotaError as exc:
