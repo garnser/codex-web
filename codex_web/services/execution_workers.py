@@ -766,7 +766,7 @@ class ExecutionWorkerService:
                     supported_execution_contract_versions
                 ),
                 supported_sandbox_profiles=supported_sandbox_profiles,
-                max_concurrency=1,
+                max_concurrency=8,
             ),
             actor=actor,
         )
