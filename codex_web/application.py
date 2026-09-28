@@ -1091,7 +1091,7 @@ github_action_provider = GitHubActionProvider(
 action_provider_registry.register(github_action_provider)
 app.state.github_action_provider = github_action_provider
 gitlab_action_api_base = os.environ.get(
-    "CODEX_WEB_GITLAB_API_BASE",
+    "CODEX_WEB_GITLAB_ACTION_API_BASE",
     "https://dev.veridataops.com/gitlab/api/v4",
 )
 gitlab_action_provider = GitLabActionProvider(

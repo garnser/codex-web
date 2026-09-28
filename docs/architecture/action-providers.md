@@ -153,6 +153,12 @@ the trusted provider process. The token is environment-scoped to that subprocess
 and is absent from the remote URL, command line, worker, ActionRequest, receipt,
 Evidence, and logs.
 
+GitLab action delivery uses `CODEX_WEB_GITLAB_ACTION_API_BASE` (and optionally
+`CODEX_WEB_GITLAB_WEB_BASE`) rather than the read-side
+`CODEX_WEB_GITLAB_API_BASE`. This keeps credentials for governed mutations on an
+HTTPS endpoint even when discovery and webhook development use a trusted local
+HTTP proxy.
+
 ## API and UI
 
 The administration API exposes provider/binding catalogs and prepare previews:
