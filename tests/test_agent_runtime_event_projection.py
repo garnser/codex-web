@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from codex_web.agent_runtime import AgentRuntimeEvent
 from codex_web.runtime.execution import TurnExecutionService
@@ -88,6 +89,30 @@ class AgentRuntimeEventProjectionTests(unittest.TestCase):
             message["params"]["error"],
             "agent runtime turn failed",
         )
+
+    def test_history_projection_failure_does_not_block_live_event_handling(self) -> None:
+        events = []
+
+        class FailingHistory:
+            @staticmethod
+            def project_message(_thread_id, _message):
+                raise RuntimeError("storage unavailable")
+
+        service = TurnExecutionService(
+            SimpleNamespace(_append_bot_event=events.append),
+            thread_history=FailingHistory(),
+        )
+
+        service._publish_agent_runtime_message(
+            {
+                "method": "item/agentMessage/delta",
+                "params": {"threadId": "thread-web", "delta": "visible"},
+            }
+        )
+
+        self.assertEqual(events[0]["type"], "thread_history_projection_failed")
+        self.assertEqual(events[0]["thread_id"], "thread-web")
+        self.assertEqual(events[0]["error_type"], "RuntimeError")
 
 
 if __name__ == "__main__":
