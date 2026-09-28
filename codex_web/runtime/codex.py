@@ -61,6 +61,10 @@ def redact_codex_diagnostic(value: object) -> str:
 # state itself, but repository-controlled shell commands must not inherit
 # credential carriers or a login shell that can reconstruct them.
 TRUSTED_LOCAL_CHILD_ENVIRONMENT_CONFIG = (
+    # Repository workers use codex-web's governed control-plane tools. Avoid
+    # making ChatGPT Apps discovery a pre-sampling network dependency inside
+    # the assignment-bound, network-isolated runtime.
+    "features.apps=false",
     'shell_environment_policy.inherit="none"',
     "shell_environment_policy.ignore_default_excludes=false",
     'shell_environment_policy.set={PATH="/usr/local/bin:/usr/bin:/bin",HOME="/tmp/codex-local-shell-home"}',

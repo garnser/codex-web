@@ -196,6 +196,8 @@ class CodexAuthDelegationService:
             "--config",
             'cli_auth_credentials_store="ephemeral"',
             "--config",
+            "features.apps=false",
+            "--config",
             'shell_environment_policy.inherit="none"',
             "--config",
             "shell_environment_policy.ignore_default_excludes=false",

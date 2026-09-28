@@ -166,6 +166,7 @@ class CodexAuthDelegationTests(unittest.TestCase):
         self.assertEqual(command[-1], "app-server")
         joined = " ".join(command)
         self.assertIn('cli_auth_credentials_store="ephemeral"', joined)
+        self.assertIn("features.apps=false", joined)
         self.assertIn('shell_environment_policy.inherit="none"', joined)
         self.assertIn("shell_environment_policy.ignore_default_excludes=false", joined)
         self.assertIn(
