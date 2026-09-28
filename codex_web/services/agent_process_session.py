@@ -139,6 +139,7 @@ class AssignmentBoundAgentProcessSession:
         self.fence: int | None = None
         self.workspace_path: Path | None = None
         self.git_metadata_path: Path | None = None
+        self.git_worktree_metadata_path: Path | None = None
         self.started_monotonic: float | None = None
         self.last_heartbeat_monotonic: float | None = None
         self.last_error: str | None = None
@@ -340,12 +341,28 @@ class AssignmentBoundAgentProcessSession:
             git_metadata = self.local_worker.backend.discover_git_metadata(
                 workspace_path
             )
+            worktree_metadata_resolver = getattr(
+                self.local_worker.backend,
+                "discover_git_worktree_metadata",
+                None,
+            )
+            git_worktree_metadata = (
+                worktree_metadata_resolver(workspace_path)
+                if callable(worktree_metadata_resolver)
+                else git_metadata
+            )
             if (
                 assignment.sandbox != "read-only"
                 and git_metadata is not None
                 and git_metadata not in writable_destinations
             ):
                 writable_destinations.append(git_metadata)
+            if (
+                assignment.sandbox != "read-only"
+                and git_worktree_metadata is not None
+                and git_worktree_metadata not in writable_destinations
+            ):
+                writable_destinations.append(git_worktree_metadata)
             if writable_destinations:
                 environment["CODEX_WRITABLE_REPOSITORIES"] = ":".join(
                     str(destination) for destination in writable_destinations
@@ -524,6 +541,16 @@ class AssignmentBoundAgentProcessSession:
                 self.workspace_path = workspace_path
                 self.git_metadata_path = self.local_worker.backend.discover_git_metadata(
                     workspace_path
+                )
+                worktree_metadata_resolver = getattr(
+                    self.local_worker.backend,
+                    "discover_git_worktree_metadata",
+                    None,
+                )
+                self.git_worktree_metadata_path = (
+                    worktree_metadata_resolver(workspace_path)
+                    if callable(worktree_metadata_resolver)
+                    else self.git_metadata_path
                 )
                 self.started_monotonic = self._monotonic()
                 self.last_heartbeat_monotonic = self.started_monotonic

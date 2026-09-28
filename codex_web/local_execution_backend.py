@@ -370,7 +370,7 @@ class BubblewrapExecutionBackend:
         return args
 
     @staticmethod
-    def discover_git_metadata(workspace_path: Path) -> Path | None:
+    def discover_git_worktree_metadata(workspace_path: Path) -> Path | None:
         dot_git = workspace_path.resolve() / ".git"
         if dot_git.is_dir():
             return None
@@ -388,6 +388,13 @@ class BubblewrapExecutionBackend:
             gitdir = (workspace_path / gitdir).resolve()
         else:
             gitdir = gitdir.resolve()
+        return gitdir
+
+    @classmethod
+    def discover_git_metadata(cls, workspace_path: Path) -> Path | None:
+        gitdir = cls.discover_git_worktree_metadata(workspace_path)
+        if gitdir is None:
+            return None
         common_marker = gitdir / "commondir"
         if common_marker.is_file():
             try:

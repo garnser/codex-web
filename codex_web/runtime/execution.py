@@ -2081,11 +2081,18 @@ class TurnExecutionService:
                     resume_params["sandboxPolicy"] = assignment_sandbox_policy(
                         resume_params["sandboxPolicy"],
                         mode=effective_sandbox,
-                        writable_roots=(
-                            str(session.git_metadata_path),
-                        )
-                        if getattr(session, "git_metadata_path", None) is not None
-                        else (),
+                        writable_roots=tuple(
+                            str(path)
+                            for path in (
+                                getattr(session, "git_metadata_path", None),
+                                getattr(
+                                    session,
+                                    "git_worktree_metadata_path",
+                                    None,
+                                ),
+                            )
+                            if path is not None
+                        ),
                     )
             runtime_session_request = AgentRuntimeSessionRequest(
                 project_id=project.id,
@@ -2191,11 +2198,18 @@ class TurnExecutionService:
                     params["sandboxPolicy"] = assignment_sandbox_policy(
                         params["sandboxPolicy"],
                         mode=effective_sandbox,
-                        writable_roots=(
-                            str(session.git_metadata_path),
-                        )
-                        if getattr(session, "git_metadata_path", None) is not None
-                        else (),
+                        writable_roots=tuple(
+                            str(path)
+                            for path in (
+                                getattr(session, "git_metadata_path", None),
+                                getattr(
+                                    session,
+                                    "git_worktree_metadata_path",
+                                    None,
+                                ),
+                            )
+                            if path is not None
+                        ),
                     )
             params["input"][0]["text"] = self.with_relay_guard(
                 params["input"][0]["text"],

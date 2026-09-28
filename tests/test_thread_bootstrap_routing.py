@@ -145,6 +145,9 @@ class _Session:
     def __init__(self, response=None, error=None) -> None:
         self.workspace_path = Path("/isolated/bootstrap")
         self.git_metadata_path = Path("/isolated/repository.git")
+        self.git_worktree_metadata_path = Path(
+            "/isolated/repository.git/worktrees/bootstrap"
+        )
         self.requests = []
         self.response = response or {"thread": {"id": "thread-created"}}
         self.error = error
@@ -323,7 +326,10 @@ class ThreadBootstrapCreateTests(unittest.IsolatedAsyncioTestCase):
             {
                 "type": "workspace-write",
                 "cwd": "/isolated/bootstrap",
-                "writableRoots": ["/isolated/repository.git"],
+                "writableRoots": [
+                    "/isolated/repository.git",
+                    "/isolated/repository.git/worktrees/bootstrap",
+                ],
                 "networkAccess": True,
             },
         )
