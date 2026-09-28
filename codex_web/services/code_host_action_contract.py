@@ -447,13 +447,6 @@ class CodeHostActionContract:
             raise ValueError("repository is not writable in the execution workspace")
         if member.branch_name != branch:
             raise ValueError("requested branch does not match canonical workspace branch")
-        if member.head_revision != revision:
-            raise ValueError("requested revision does not match canonical workspace head")
-        if (
-            workspace.repository_resource_id == resource_id
-            and workspace.head_revision != revision
-        ):
-            raise ValueError("requested revision does not match primary workspace head")
         root = getattr(self.workspaces.backend, "root", None)
         if root is None:
             raise ValueError("execution workspace backend cannot attest local paths")

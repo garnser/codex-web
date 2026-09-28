@@ -484,6 +484,43 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
             ).verified
         )
 
+    async def test_branch_publication_attests_commits_after_workspace_acquisition(self) -> None:
+        (self.workspace_path / "progress.txt").write_text(
+            "committed progress\n", encoding="utf-8"
+        )
+        subprocess.run(
+            ["git", "add", "progress.txt"], cwd=self.workspace_path, check=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "Commit assignment progress"],
+            cwd=self.workspace_path,
+            check=True,
+            capture_output=True,
+        )
+        progressed_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.workspace_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        self.assertNotEqual(progressed_head, self.workspace_head)
+
+        request = self._request(
+            CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
+            {
+                "execution_workspace_id": "workspace-a",
+                "branch": self.workspace_branch,
+                "head_revision": progressed_head,
+            },
+        )
+        result = await self.execution.execute(
+            self.binding.id, request, actor=self.actor
+        )
+
+        self.assertEqual(result.output["head_revision"], progressed_head)
+        self.assertEqual(self.published_branches[0][3], progressed_head)
+
     async def test_branch_publication_rejects_dirty_or_mismatched_workspace(self) -> None:
         (self.workspace_path / "dirty.txt").write_text("dirty\n", encoding="utf-8")
         request = self._request(
