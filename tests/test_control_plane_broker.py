@@ -325,6 +325,26 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 parsed_headers[key.casefold()] = value.strip()
         return status, parsed_headers, json.loads(raw_body or b"{}")
 
+    async def test_assignment_can_list_its_broker_operation_catalog(self) -> None:
+        status, headers, payload = await self._request(
+            "GET",
+            "/api/control-plane-broker/operations",
+        )
+
+        self.assertEqual(status, 200, payload)
+        self.assertIn("x-correlation-id", headers)
+        self.assertTrue(payload["enabled"])
+        self.assertEqual(payload["project_id"], "project-a")
+        self.assertEqual(payload["transport"], "assignment-bound-unix-socket")
+        operation_ids = {item["id"] for item in payload["operations"]}
+        self.assertIn("control_plane.operations.list", operation_ids)
+        self.assertIn("repository.branch.publish", operation_ids)
+        self.assertNotIn("lease_token", json.dumps(payload))
+        self.assertEqual(
+            payload["_broker"]["operation"],
+            "control_plane.operations.list",
+        )
+
     async def test_authorized_read_and_handoff_use_exact_role_authority(self) -> None:
         encoded = quote(self.ref, safe="")
         status, headers, payload = await self._request(

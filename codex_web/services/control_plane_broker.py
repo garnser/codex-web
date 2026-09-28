@@ -92,6 +92,13 @@ class _ResolvedOperation:
 
 OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
     ControlPlaneBrokerOperation(
+        id="control_plane.operations.list",
+        method="GET",
+        path_template="/api/control-plane-broker/operations",
+        capability="work_item.read",
+        authority_level=AuthorityLevel.READ,
+    ),
+    ControlPlaneBrokerOperation(
         id="work_item.list",
         method="GET",
         path_template="/api/work-items",
@@ -366,6 +373,17 @@ class ControlPlaneBrokerService:
                 target_ref=None,
                 query=query,
             )
+        if path == "/api/control-plane-broker/operations":
+            operation = _OPERATION_BY_ID["control_plane.operations.list"]
+            if method != operation.method:
+                raise ControlPlaneBrokerDeniedError(
+                    "method is not allowed for control-plane operation catalog"
+                )
+            return _ResolvedOperation(
+                operation=operation,
+                target_ref=None,
+                query=query,
+            )
         if path == "/api/work-items":
             operation = _OPERATION_BY_ID["work_item.list"]
             if method != operation.method:
@@ -626,7 +644,9 @@ class ControlPlaneBrokerService:
                 )
             payload = decoded
 
-        if operation.id.startswith("repository."):
+        if operation.id == "control_plane.operations.list":
+            result = self.public_assignment_capability(assignment)
+        elif operation.id.startswith("repository."):
             result = await self._execute_repository_action(
                 assignment=assignment,
                 worker_actor=actor,
