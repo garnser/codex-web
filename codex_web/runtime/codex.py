@@ -501,10 +501,40 @@ class CodexRuntime:
                 timeout_seconds=timeout,
             )
             await self.host.hub.publish({"type": "codex.error", "error": self.last_error})
-            # A live process is insufficient evidence of a live JSON-RPC
-            # transport. Invalidate this generation so the next request starts
-            # a fresh app-server rather than accumulating timeouts forever.
-            if self.restart_on_timeout:
+            thread_id = (
+                str(params.get("threadId") or "").strip()
+                if isinstance(params, dict)
+                else ""
+            )
+            handoff_check = getattr(
+                self.host,
+                "_thread_handoff_in_progress",
+                None,
+            )
+            preserve_generation = (
+                method == "thread/read"
+                and thread_id
+                and callable(handoff_check)
+                and handoff_check(thread_id)
+            )
+            if preserve_generation:
+                if self.metrics:
+                    self.metrics.increment(
+                        "codex.rpc_timeout_retirement_suppressed"
+                    )
+                append_event = getattr(self.host, "_append_bot_event", None)
+                if callable(append_event):
+                    append_event(
+                        {
+                            "type": "thread_read_timeout_handoff_preserved",
+                            "thread_id": thread_id,
+                            "request_id": message_id,
+                        }
+                    )
+            elif self.restart_on_timeout:
+                # A live process is insufficient evidence of a live JSON-RPC
+                # transport. Invalidate this generation so the next request
+                # starts a fresh app-server rather than accumulating timeouts.
                 timed_out_proc = self.proc
                 self.ready.clear()
                 async with self.lifecycle_lock:

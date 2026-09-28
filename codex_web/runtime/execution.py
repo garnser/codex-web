@@ -170,6 +170,7 @@ class TurnExecutionService:
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
         self.assignment_completion_tasks: dict[str, asyncio.Task[None]] = {}
         self.thread_completion_tasks: dict[str, asyncio.Task[None]] = {}
+        self.thread_handoffs: set[str] = set()
         self.terminal_failures: dict[str, deque[tuple[float, str]]] = {}
         self.last_inputs: dict[str, dict[str, Any]] = {}
 
@@ -1053,6 +1054,8 @@ class TurnExecutionService:
     def clear_thread_active(self, thread_id: str | None, turn_id: str | None = None) -> None:
         if not thread_id:
             return
+        if self.thread_handoff_in_progress(thread_id):
+            return
         h = self.host
         active = self._active_turn(thread_id)
         if active and turn_id and active.turn_id and active.turn_id != turn_id:
@@ -1060,6 +1063,25 @@ class TurnExecutionService:
         if active and self._delete_active_turn(thread_id):
             if not getattr(h, "IS_SHUTTING_DOWN", False) and h._autonomy_enabled():
                 h._schedule_native_recovery_cycles(reason="thread-became-idle")
+
+    def begin_thread_handoff(self, thread_id: str) -> bool:
+        if thread_id in self.thread_handoffs:
+            return False
+        self.thread_handoffs.add(thread_id)
+        return True
+
+    def thread_handoff_in_progress(self, thread_id: str | None) -> bool:
+        return bool(thread_id and thread_id in self.thread_handoffs)
+
+    def finish_thread_handoff(
+        self,
+        thread_id: str,
+        *,
+        clear_active: bool = False,
+    ) -> None:
+        self.thread_handoffs.discard(thread_id)
+        if clear_active:
+            self.clear_thread_active(thread_id)
 
     def _schedule_assignment_completion(
         self,
@@ -1339,6 +1361,7 @@ class TurnExecutionService:
         agent_profile_id: str | None = None,
         agent_profile_revision: int | None = None,
         agent_profile_actor_id: str | None = None,
+        preserve_active_handoff: bool = False,
     ) -> dict[str, Any]:
         h = self.host
         binding_service, default_session_manager = self._require_worker_routing()
@@ -2143,38 +2166,39 @@ class TurnExecutionService:
                         )
                 raise
 
-            self.mark_thread_active(
-                thread_id,
-                project_id=project.id,
-                sandbox=effective_sandbox,
-                approval_policy=effective_approval_policy,
-                model=effective_model,
-                reasoning_effort=effective_reasoning_effort,
-                source=source,
-                reply_target=reply_target,
-                execution_id=canonical_execution_id,
-                assignment_id=assignment_id,
-                execution_workspace_id=workspace_id,
-                worker_id=worker_id,
-                fence=fence,
-                repository_resource_id=canonical_repository_resource_id,
-                writable_repository_resource_ids=(
-                    tuple(
-                        getattr(
-                            getattr(assignment, "repository_scope", None),
-                            "writable_repository_ids",
-                            (),
+            if not preserve_active_handoff:
+                self.mark_thread_active(
+                    thread_id,
+                    project_id=project.id,
+                    sandbox=effective_sandbox,
+                    approval_policy=effective_approval_policy,
+                    model=effective_model,
+                    reasoning_effort=effective_reasoning_effort,
+                    source=source,
+                    reply_target=reply_target,
+                    execution_id=canonical_execution_id,
+                    assignment_id=assignment_id,
+                    execution_workspace_id=workspace_id,
+                    worker_id=worker_id,
+                    fence=fence,
+                    repository_resource_id=canonical_repository_resource_id,
+                    writable_repository_resource_ids=(
+                        tuple(
+                            getattr(
+                                getattr(assignment, "repository_scope", None),
+                                "writable_repository_ids",
+                                (),
+                            )
                         )
-                    )
-                ),
-                execution_profile_id=effective_execution_profile_id,
-                agent_profile=agent_profile_binding,
-                agent_profile_actor_id=(
-                    actor.identity_id
-                    if actor is not None
-                    else agent_profile_actor_id
-                ),
-            )
+                    ),
+                    execution_profile_id=effective_execution_profile_id,
+                    agent_profile=agent_profile_binding,
+                    agent_profile_actor_id=(
+                        actor.identity_id
+                        if actor is not None
+                        else agent_profile_actor_id
+                    ),
+                )
 
             params: dict[str, Any] = {
                 "threadId": thread_id,
@@ -3303,6 +3327,9 @@ def install_turn_execution_service(
     host._pop_queued_turn = service.pop_queued_turn
     host._requeue_turn_front = service.requeue_turn_front
     host._thread_is_active = service.thread_is_active
+    host._begin_thread_handoff = service.begin_thread_handoff
+    host._finish_thread_handoff = service.finish_thread_handoff
+    host._thread_handoff_in_progress = service.thread_handoff_in_progress
     host._codex_request_for_thread = service.request_for_thread
     host._mark_thread_active = service.mark_thread_active
     host._clear_thread_active = service.clear_thread_active
@@ -3325,4 +3352,5 @@ def install_turn_execution_service(
     host.THREAD_LAST_INPUTS = service.last_inputs
     host.ASSIGNMENT_COMPLETION_TASKS = service.assignment_completion_tasks
     host.THREAD_ASSIGNMENT_COMPLETION_TASKS = service.thread_completion_tasks
+    host.THREAD_HANDOFFS = service.thread_handoffs
     return service

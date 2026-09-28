@@ -7,6 +7,7 @@ import{markMilestone,observeRender,startLongTaskObserver}from"./frontend_perf.js
 import{createExecutionPreflightUi as createPfUi}from"./execution_preflight_ui.js";
 import{coerceMessageDate,formatMessageTimestamp,itemTimestamp}from"./thread_message_time.js";
 import{createThreadRoute}from"./thread_route.js";
+import{reconcileSteeringFailure}from"./queue_steering.js";
 import*as rtui from"./repository_target_ui.js";
 import*as tsui from"./thread_settings_ui.js";
 
@@ -1439,12 +1440,7 @@ async function steerQueuedMessage(message) {
     if (button) button.textContent = "Steered";
     message.classList.remove("queued-message");
   } catch (error) {
-    if (button) {
-      button.disabled = false;
-      button.textContent = "Steer now";
-    }
-    addMessage("Queue", error.message, "tool", new Date());
-    await refreshQueueStatus(threadId);
+    await reconcileSteeringFailure({error,button,message,threadId,api,refreshQueueStatus,hydrateThreadActivity,addMessage,logEvent});
   }
 }
 

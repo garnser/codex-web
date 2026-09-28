@@ -66,6 +66,15 @@ class TurnExecutionRuntime(Protocol):
 
     def requeue_turn_front(self, queued: QueuedTurn) -> None: ...
 
+    def begin_thread_handoff(self, thread_id: str) -> bool: ...
+
+    def finish_thread_handoff(
+        self,
+        thread_id: str,
+        *,
+        clear_active: bool = False,
+    ) -> None: ...
+
     def clear_thread_active(self, thread_id: str | None) -> None: ...
 
     async def request_for_thread(
@@ -750,36 +759,128 @@ class TurnService:
         thread_id: str,
         queued: QueuedTurn,
     ) -> dict[str, Any]:
-        if self.execution.thread_is_active(thread_id):
+        was_active = self.execution.thread_is_active(thread_id)
+        handoff_started = False
+        interrupted = False
+        if was_active:
             try:
                 self.queue_policy.record_steer(thread_id)
             except HTTPException:
                 self.execution.requeue_turn_front(queued)
                 raise
-            with contextlib.suppress(Exception):
+            handoff_started = self.execution.begin_thread_handoff(thread_id)
+            if not handoff_started:
+                self.execution.requeue_turn_front(queued)
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "steering_handoff_in_progress",
+                        "message": "Another steering handoff is already in progress",
+                        "retryable": True,
+                        "queuedId": queued.id,
+                        "queuePreserved": True,
+                    },
+                )
+            self.event_sink(
+                {
+                    "type": "steering_handoff_started",
+                    "thread_id": thread_id,
+                    "queued_id": queued.id,
+                }
+            )
+            try:
                 await self.execution.request_for_thread(
                     thread_id,
                     "turn/interrupt",
                     {"threadId": thread_id},
                 )
-            self.execution.clear_thread_active(thread_id)
+                interrupted = True
+                self.event_sink(
+                    {
+                        "type": "steering_turn_interrupted",
+                        "thread_id": thread_id,
+                        "queued_id": queued.id,
+                    }
+                )
+            except Exception as exc:
+                self.execution.finish_thread_handoff(thread_id)
+                self.execution.requeue_turn_front(queued)
+                with contextlib.suppress(Exception):
+                    await self.execution.publish_queue_status(thread_id)
+                self.event_sink(
+                    {
+                        "type": "steering_turn_requeued",
+                        "thread_id": thread_id,
+                        "queued_id": queued.id,
+                        "stage": "interrupt",
+                        "error": self.truncate_text(str(exc), 500),
+                    }
+                )
+                raise self._steering_unavailable(queued, exc) from exc
 
-        project = self.projects.get(queued.project_id)
-        response = await self.execution.start_thread_turn_now(
-            thread_id,
-            project=project,
-            message=queued.message,
-            sandbox=queued.sandbox or project.sandbox,
-            approval_policy=(
-                queued.approval_policy or project.approval_policy
-            ),
-            model=queued.model,
-            reasoning_effort=queued.reasoning_effort,
-            repository_resource_id=queued.repository_resource_id,
-            read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
-            source=f"steer:{queued.source}",
-            reply_target=queued.reply_target,
-            execution_id=queued.execution_id,
+        if not queued.execution_id:
+            queued.execution_id = f"steer-{queued.id}"
+        try:
+            project = self.projects.get(queued.project_id)
+            response = await self.execution.start_thread_turn_now(
+                thread_id,
+                project=project,
+                message=queued.message,
+                sandbox=queued.sandbox or project.sandbox,
+                approval_policy=(
+                    queued.approval_policy or project.approval_policy
+                ),
+                model=queued.model,
+                reasoning_effort=queued.reasoning_effort,
+                work_item_ref=queued.work_item_ref,
+                repository_resource_id=queued.repository_resource_id,
+                writable_repository_resource_ids=(
+                    queued.writable_repository_resource_ids
+                ),
+                read_only_repository_resource_ids=(
+                    queued.read_only_repository_resource_ids
+                ),
+                execution_profile_id=queued.execution_profile_id,
+                agent_profile_id=queued.agent_profile_id,
+                agent_profile_revision=queued.agent_profile_revision,
+                agent_profile_actor_id=queued.agent_profile_actor_id,
+                source=f"steer:{queued.source}",
+                reply_target=queued.reply_target,
+                execution_id=queued.execution_id,
+                preserve_active_handoff=handoff_started,
+            )
+        except Exception as exc:
+            if handoff_started:
+                self.execution.finish_thread_handoff(
+                    thread_id,
+                    clear_active=interrupted,
+                )
+            self.execution.requeue_turn_front(queued)
+            with contextlib.suppress(Exception):
+                await self.execution.publish_queue_status(thread_id)
+            self.event_sink(
+                {
+                    "type": "steering_turn_requeued",
+                    "thread_id": thread_id,
+                    "queued_id": queued.id,
+                    "stage": "start",
+                    "error": self.truncate_text(str(exc), 500),
+                }
+            )
+            if isinstance(exc, HTTPException) and exc.status_code < 500:
+                raise
+            raise self._steering_unavailable(queued, exc) from exc
+        if handoff_started:
+            self.execution.finish_thread_handoff(thread_id)
+        with contextlib.suppress(Exception):
+            await self.execution.publish_queue_status(thread_id)
+        self.event_sink(
+            {
+                "type": "steering_turn_resumed",
+                "thread_id": thread_id,
+                "queued_id": queued.id,
+                "execution_id": queued.execution_id,
+            }
         )
         return {
             "ok": True,
@@ -791,3 +892,29 @@ class TurnService:
                 else None
             ),
         }
+
+    @staticmethod
+    def _steering_unavailable(
+        queued: QueuedTurn,
+        exc: Exception,
+    ) -> HTTPException:
+        if (
+            isinstance(exc, HTTPException)
+            and exc.status_code in {409, 503}
+            and isinstance(exc.detail, dict)
+            and "retryable" in exc.detail
+        ):
+            return exc
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        message = detail if isinstance(detail, str) else str(exc)
+        return HTTPException(
+            status_code=503,
+            detail={
+                "code": "steering_runtime_unavailable",
+                "message": message or "The runtime is temporarily unavailable",
+                "retryable": True,
+                "queuedId": queued.id,
+                "queuePreserved": True,
+                "reconcile": "refresh_queue_and_turn",
+            },
+        )
