@@ -49,6 +49,14 @@ retryable unavailable/conflict result and the UI refreshes canonical queue and
 turn state before offering retry. Started, interrupted, requeued and resumed
 outcomes remain observable as distinct runtime events.
 
+The current handoff fence is process-local. Restoring the queue after a caught
+exception and retaining an execution ID do not establish crash-safe delivery
+or runtime-level at-most-once semantics for an unknown start outcome. Those
+cases require durable claim/outcome reconciliation before the steering contract
+can provide that guarantee. UI retry controls remain disabled until both queue
+and Thread reads succeed and the exact queued item is still present; a failed
+read is shown as reconciliation failure, not successful recovery.
+
 ## Compatibility boundary
 
 `runtime.core` is an intentional, definition-free compatibility namespace for the verified historical `import server` surface. Application composition may publish aliases to canonical services onto that namespace, but production services never read behavior or state from it.

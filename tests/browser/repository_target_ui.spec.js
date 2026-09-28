@@ -451,7 +451,7 @@ test("retryable steering failure preserves the queued message and reconciles can
     }
     if (path === "/api/threads/thread-1/queue" && request.method() === "GET") {
       queueReads += 1;
-      await route.fulfill({ json: { active: true, queueDepth: queueReads > 1 ? 1 : 0, queued: [] } });
+      await route.fulfill({ json: { active: true, queueDepth: queueReads > 1 ? 1 : 0, queued: queueReads > 1 ? [{ id: "queued-1" }] : [] } });
       return;
     }
     if (path === "/api/threads/thread-1/turns" && request.method() === "POST") {
