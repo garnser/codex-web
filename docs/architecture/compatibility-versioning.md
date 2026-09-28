@@ -21,7 +21,7 @@ Current foundational contracts are published by `GET /api/compatibility`:
 - HTTP API: `1.0`;
 - canonical event envelope: `1.0`;
 - TaskSource adapter/event contract: `1.0`;
-- ActionProvider contract: `1.1` (legacy `1.0` accepted and deprecated during the security-boundary migration);
+- ActionProvider contract: `1.2` (legacy `1.0`/`1.1` accepted and deprecated during migration);
 - generic persisted-record envelope: `1.0`.
 - extension manifest schema: `codex-web.extension/v1`, with extension-host compatibility level `3.0.0` negotiated independently from the HTTP API version.
 
@@ -86,7 +86,7 @@ During rolling upgrades, readers must support every persisted version that can l
 | HTTP API | 1.0 | none yet | manifest negotiation rejects unsupported request | introduce explicit successor before breaking semantics |
 | Canonical event | 1.0 | none yet | construction/consumer boundary rejects | register event migration/consumer compatibility deliberately |
 | TaskSource | 1.0 | omitted version treated as legacy 1.0 during migration | registry rejects declared unsupported version | adapter upgrade is explicit; capabilities negotiated separately |
-| ActionProvider | 1.1 | 1.0 (deprecated) | registry rejects declared unsupported version | 1.1 adds explicit network/filesystem/process requirements and binding security policy; legacy 1.0 uses restrictive defaults |
+| ActionProvider | 1.2 | 1.0/1.1 (deprecated) | registry rejects declared unsupported version | 1.1 adds explicit network/filesystem/process requirements and binding security policy; 1.2 adds SecretBroker-scoped provider verification credentials; legacy 1.0 uses restrictive defaults |
 | Persisted record | 1.0 | domain-specific legacy loaders may seed 1.0 | envelope rejects unsupported version | use `MigrationRegistry` step chain |
 | Execution contract | 1.4 | governed by its own exact schema validator | Pydantic/literal validation rejects | introduce and test explicit new execution-contract schema |
 | Extension package | host 3.0.0 / manifest codex-web.extension/v1 | exact/comparator SemVer ranges explicitly declared by package | incompatible/unknown range syntax is visible and cannot enable | upgrade re-verifies package, compatibility, grants and migration Evidence before activation |

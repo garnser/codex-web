@@ -156,13 +156,20 @@ class AuthorizedExtensionActionProvider:
         result: ActionResult,
         *,
         binding: ActionProviderBinding,
+        credential: str | None = None,
     ) -> ActionVerification:
         self._tenant_matches(
             binding.organization_id,
             binding.workspace_id,
         )
         self._authorize(tuple(binding.resource_ids))
-        return await self._provider.verify(result, binding=binding)
+        if credential is None:
+            return await self._provider.verify(result, binding=binding)
+        return await self._provider.verify(
+            result,
+            binding=binding,
+            credential=credential,
+        )
 
     async def rollback(
         self,

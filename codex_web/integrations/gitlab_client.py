@@ -173,3 +173,123 @@ class GitLabClient:
             json_body={"body": body},
         )
         return response if isinstance(response, dict) else {}
+
+    async def project_issue_notes(
+        self,
+        api_base: str,
+        project: str,
+        iid: int,
+        *,
+        token: str,
+    ) -> list[dict[str, Any]]:
+        notes: list[dict[str, Any]] = []
+        for page in range(1, 101):
+            response = await self.get_json(
+                api_base,
+                f"projects/{quote(project, safe='')}/issues/{iid}/notes",
+                token=token,
+                params={"per_page": 100, "page": page, "sort": "asc"},
+            )
+            if not isinstance(response, list):
+                return notes
+            notes.extend(item for item in response if isinstance(item, dict))
+            if len(response) < 100:
+                return notes
+        raise RuntimeError(
+            "GitLab issue-note reconciliation exceeded the bounded 10000-note scan"
+        )
+
+    async def merge_requests(
+        self,
+        api_base: str,
+        project: str,
+        *,
+        token: str,
+        source_branch: str,
+        target_branch: str,
+    ) -> list[dict[str, Any]]:
+        response = await self.get_json(
+            api_base,
+            f"projects/{quote(project, safe='')}/merge_requests",
+            token=token,
+            params={
+                "scope": "all",
+                "state": "all",
+                "source_branch": source_branch,
+                "target_branch": target_branch,
+                "per_page": 100,
+            },
+        )
+        return (
+            [item for item in response if isinstance(item, dict)]
+            if isinstance(response, list)
+            else []
+        )
+
+    async def merge_request(
+        self,
+        api_base: str,
+        project: str,
+        iid: int,
+        *,
+        token: str,
+    ) -> dict[str, Any]:
+        response = await self.get_json(
+            api_base,
+            f"projects/{quote(project, safe='')}/merge_requests/{iid}",
+            token=token,
+        )
+        return response if isinstance(response, dict) else {}
+
+    async def create_merge_request(
+        self,
+        api_base: str,
+        project: str,
+        *,
+        token: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = await self.request_json(
+            "POST",
+            api_base,
+            f"projects/{quote(project, safe='')}/merge_requests",
+            token=token,
+            json_body=payload,
+        )
+        return response if isinstance(response, dict) else {}
+
+    async def update_merge_request(
+        self,
+        api_base: str,
+        project: str,
+        iid: int,
+        *,
+        token: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = await self.request_json(
+            "PUT",
+            api_base,
+            f"projects/{quote(project, safe='')}/merge_requests/{iid}",
+            token=token,
+            json_body=payload,
+        )
+        return response if isinstance(response, dict) else {}
+
+    async def branch(
+        self,
+        api_base: str,
+        project: str,
+        branch: str,
+        *,
+        token: str,
+    ) -> dict[str, Any]:
+        response = await self.get_json(
+            api_base,
+            (
+                f"projects/{quote(project, safe='')}/repository/branches/"
+                f"{quote(branch, safe='')}"
+            ),
+            token=token,
+        )
+        return response if isinstance(response, dict) else {}

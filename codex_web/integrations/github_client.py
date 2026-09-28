@@ -70,3 +70,73 @@ class GitHubClient:
         result = await self.request_json("POST", api_base, f"repos/{quote(repo, safe='/')}/issues/{number}/comments",
                                          token=token, json_body={"body": body})
         return result if isinstance(result, dict) else {}
+
+    async def list_issue_comments(self, api_base: str, repo: str, number: int, *, token: str) -> list[dict[str, Any]]:
+        comments: list[dict[str, Any]] = []
+        for page in range(1, 101):
+            result = await self.request_json(
+                "GET", api_base, f"repos/{quote(repo, safe='/')}/issues/{number}/comments",
+                token=token, params={"per_page": 100, "page": page},
+            )
+            if not isinstance(result, list):
+                return comments
+            comments.extend(item for item in result if isinstance(item, dict))
+            if len(result) < 100:
+                return comments
+        raise RuntimeError(
+            "GitHub issue comment reconciliation exceeded the bounded 10000-comment scan"
+        )
+
+    async def list_pull_requests(
+        self, api_base: str, repo: str, *, token: str, head: str, base: str,
+    ) -> list[dict[str, Any]]:
+        result = await self.request_json(
+            "GET", api_base, f"repos/{quote(repo, safe='/')}/pulls",
+            token=token,
+            params={"state": "all", "head": head, "base": base, "per_page": 100},
+        )
+        return [item for item in result if isinstance(item, dict)] if isinstance(result, list) else []
+
+    async def create_pull_request(
+        self, api_base: str, repo: str, *, token: str, payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        result = await self.request_json(
+            "POST", api_base, f"repos/{quote(repo, safe='/')}/pulls",
+            token=token, json_body=payload,
+        )
+        return result if isinstance(result, dict) else {}
+
+    async def pull_request(
+        self, api_base: str, repo: str, number: int, *, token: str,
+    ) -> dict[str, Any]:
+        result = await self.request_json(
+            "GET", api_base, f"repos/{quote(repo, safe='/')}/pulls/{number}",
+            token=token,
+        )
+        return result if isinstance(result, dict) else {}
+
+    async def update_pull_request(
+        self,
+        api_base: str,
+        repo: str,
+        number: int,
+        *,
+        token: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        result = await self.request_json(
+            "PATCH", api_base, f"repos/{quote(repo, safe='/')}/pulls/{number}",
+            token=token, json_body=payload,
+        )
+        return result if isinstance(result, dict) else {}
+
+    async def branch(
+        self, api_base: str, repo: str, branch: str, *, token: str,
+    ) -> dict[str, Any]:
+        result = await self.request_json(
+            "GET",
+            api_base,
+            f"repos/{quote(repo, safe='/')}/branches/{quote(branch, safe='')}",
+            token=token,
+        )
+        return result if isinstance(result, dict) else {}

@@ -201,6 +201,7 @@ class TaskSourceActionProvider:
         result: ActionResult,
         *,
         binding: ActionProviderBinding,
+        credential: str | None = None,
     ) -> ActionVerification:
         return ActionVerification(
             verified=False,
