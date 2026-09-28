@@ -67,6 +67,7 @@ class ActionDefinition(BaseModel):
     network_access: bool = False
     filesystem_access: Literal["none", "read", "write"] = "none"
     process_access: bool = False
+    executable_artifact: bool = False
 
     @model_validator(mode="after")
     def validate_capabilities(self) -> "ActionDefinition":
