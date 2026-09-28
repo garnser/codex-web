@@ -60,6 +60,38 @@ MODEL_GATEWAY_MIGRATIONS.register(
     },
 )
 
+MODEL_GATEWAY_MIGRATIONS.register(
+    "1.2",
+    "1.3",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.3",
+        "models": [
+            {
+                **dict(item),
+                "workload_classes": list(
+                    dict(item).get("workload_classes", [])
+                ),
+            }
+            for item in payload.get("models", [])
+        ],
+        "invocations": [
+            {
+                **dict(item),
+                "workload_class": dict(item).get("workload_class"),
+                "pinned_model_id": dict(item).get("pinned_model_id"),
+                "preferred_latency_classes": list(
+                    dict(item).get("preferred_latency_classes", [])
+                ),
+                "prefer_lower_cost": bool(
+                    dict(item).get("prefer_lower_cost", False)
+                ),
+            }
+            for item in payload.get("invocations", [])
+        ],
+    },
+)
+
 
 class ModelGatewayStore:
     namespace = "model_gateway"

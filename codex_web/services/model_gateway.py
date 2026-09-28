@@ -666,14 +666,29 @@ class ModelGatewayService:
             provider_id: index
             for index, provider_id in enumerate(request.preferred_provider_ids)
         }
+        preferred_latency = {
+            latency: index
+            for index, latency in enumerate(request.preferred_latency_classes)
+        }
 
-        candidates: list[tuple[int, int, int, str, ModelRouteCandidate]] = []
+        candidates: list[
+            tuple[int, int, int, int, int, float, int, str, ModelRouteCandidate]
+        ] = []
         rejected: list[str] = []
         capacity_blocks = []
         for model in state.models:
             if not self._same_scope(model, actor):
                 continue
+            if request.pinned_model_id and model.id != request.pinned_model_id:
+                continue
             if request.model_class not in model.model_classes:
+                continue
+            if (
+                request.workload_class
+                and model.workload_classes
+                and request.workload_class not in model.workload_classes
+            ):
+                rejected.append(f"{model.id}:workload_mismatch")
                 continue
             if model.lifecycle != ModelLifecycle.ACTIVE:
                 rejected.append(f"{model.id}:lifecycle:{model.lifecycle.value}")
@@ -747,10 +762,38 @@ class ModelGatewayService:
                     continue
             preference = preferred.get(provider.id, len(preferred))
             degraded_penalty = 10000 if provider.status == ModelProviderStatus.DEGRADED else 0
+            workload_preference = (
+                0
+                if (
+                    request.workload_class
+                    and request.workload_class in model.workload_classes
+                )
+                else (1 if request.workload_class else 0)
+            )
+            latency_preference = preferred_latency.get(
+                model.latency_class,
+                len(preferred_latency),
+            )
+            unknown_cost_penalty = int(
+                request.prefer_lower_cost and cost is None
+            )
+            cost_preference = (
+                cost
+                if request.prefer_lower_cost and cost is not None
+                else 0.0
+            )
+            workload_match = (
+                "exact" if workload_preference == 0 and request.workload_class
+                else ("generic" if request.workload_class else "unspecified")
+            )
             candidates.append(
                 (
+                    workload_preference,
                     preference,
                     degraded_penalty,
+                    latency_preference,
+                    unknown_cost_penalty,
+                    cost_preference,
                     model.route_priority,
                     model.id,
                     ModelRouteCandidate(
@@ -762,17 +805,25 @@ class ModelGatewayService:
                         max_output_tokens=output_tokens,
                         estimated_upper_cost_usd=cost,
                         routing_reason=(
-                            f"class={request.model_class};priority={model.route_priority};"
+                            f"class={request.model_class};"
+                            f"workload={request.workload_class or 'unspecified'};"
+                            f"workload_match={workload_match};"
+                            f"pin={request.pinned_model_id or 'none'};"
+                            f"latency={model.latency_class.value};"
+                            f"low_cost={str(request.prefer_lower_cost).lower()};"
+                            f"priority={model.route_priority};"
                             f"provider={provider.status.value}"
                         ),
                     ),
                 )
             )
 
-        candidates.sort(key=lambda item: item[:4])
-        routed = tuple(item[4] for item in candidates)
+        candidates.sort(key=lambda item: item[:-1])
+        routed = tuple(item[-1] for item in candidates)
         if not routed:
             detail = ",".join(rejected[:20]) or "no models registered for class"
+            if request.pinned_model_id:
+                detail = f"pinned_model={request.pinned_model_id};{detail}"
             if capacity_blocks:
                 retries = [
                     item.retry_at
@@ -795,6 +846,10 @@ class ModelGatewayService:
         )
         return ModelRouteResult(
             model_class=request.model_class,
+            workload_class=request.workload_class,
+            pinned_model_id=request.pinned_model_id,
+            preferred_latency_classes=request.preferred_latency_classes,
+            prefer_lower_cost=request.prefer_lower_cost,
             prompt_template_id=template.template_id,
             prompt_template_version=template.version,
             prompt_template_checksum_sha256=template.checksum_sha256,
@@ -1161,6 +1216,12 @@ class ModelGatewayService:
                 workspace_id=actor.workspace_id,
                 actor_id=actor.identity_id,
                 model_class=effective_request.model_class,
+                workload_class=effective_request.workload_class,
+                pinned_model_id=effective_request.pinned_model_id,
+                preferred_latency_classes=(
+                    effective_request.preferred_latency_classes
+                ),
+                prefer_lower_cost=effective_request.prefer_lower_cost,
                 purpose=effective_request.purpose,
                 prompt_template_id=route.prompt_template_id,
                 prompt_template_version=route.prompt_template_version,
@@ -1239,6 +1300,12 @@ class ModelGatewayService:
             workspace_id=actor.workspace_id,
             actor_id=actor.identity_id,
             model_class=effective_request.model_class,
+            workload_class=effective_request.workload_class,
+            pinned_model_id=effective_request.pinned_model_id,
+            preferred_latency_classes=(
+                effective_request.preferred_latency_classes
+            ),
+            prefer_lower_cost=effective_request.prefer_lower_cost,
             purpose=effective_request.purpose,
             prompt_template_id=route.prompt_template_id,
             prompt_template_version=route.prompt_template_version,

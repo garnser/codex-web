@@ -1,6 +1,9 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { populateTaskRouteControls, readTaskRoutePreferences } = await import(
+    `${BASE}/static/model_gateway_route_controls.js`
+  );
   const MAX_INVOCATIONS = 50;
   let snapshot = { providers: [], models: [], prompts: [], policy: null, invocations: [], capacity: [], capacityWaits: [] };
 
@@ -76,7 +79,7 @@
     host.innerHTML = items.map((item) => `<div class="comm-entry">
       <strong>${escapeHtml(item.id)} · ${escapeHtml(item.lifecycle)}</strong>
       <small>Provider: ${escapeHtml(item.provider_id)} · Concrete model: ${escapeHtml(item.concrete_model)}${item.model_version ? ` · version ${escapeHtml(item.model_version)}` : ""}</small>
-      <small>Classes: ${listText(item.model_classes)} · Capabilities: ${listText(item.capabilities)} · Modalities: ${listText(item.modalities)} · Tools: ${item.supports_tools ? "yes" : "no"}</small>
+      <small>Classes: ${listText(item.model_classes)} · Workloads: ${listText(item.workload_classes)} · Capabilities: ${listText(item.capabilities)} · Modalities: ${listText(item.modalities)} · Tools: ${item.supports_tools ? "yes" : "no"}</small>
       <small>Context: ${escapeHtml(item.context_window_tokens)} · Max output: ${escapeHtml(item.max_output_tokens)} · Latency: ${escapeHtml(item.latency_class)} · Route priority: ${escapeHtml(item.route_priority)}</small>
       <small>Pricing / 1M tokens: input ${item.input_price_per_million_usd == null ? "unknown" : `$${escapeHtml(item.input_price_per_million_usd)}`} · output ${item.output_price_per_million_usd == null ? "unknown" : `$${escapeHtml(item.output_price_per_million_usd)}`}</small>
       <small>Residency: ${listText(item.residency_tags)} · Compliance: ${listText(item.compliance_tags)} · Updated by: ${escapeHtml(item.updated_by)}</small>
@@ -110,11 +113,12 @@
         item.execution_id ? `execution=${item.execution_id}` : null,
       ].filter(Boolean).join(" · ");
       return `<details class="comm-entry">
-        <summary><strong>${escapeHtml(item.model_class)} · ${escapeHtml(item.status)} · ${escapeHtml(item.purpose)}</strong></summary>
+        <summary><strong>${escapeHtml(item.model_class)} · ${escapeHtml(item.workload_class || "unspecified workload")} · ${escapeHtml(item.status)} · ${escapeHtml(item.purpose)}</strong></summary>
         <small>ID: ${escapeHtml(item.id)} · ${timeText(item.created_at)} · actor ${escapeHtml(item.actor_id)}</small>
         <small>Selected: ${escapeHtml(item.selected_provider_id || "none")} / ${escapeHtml(item.selected_model_id || "none")} · ${escapeHtml(item.selected_concrete_model || "none")}${item.selected_model_version ? ` @ ${escapeHtml(item.selected_model_version)}` : ""}</small>
         <small>Template: ${escapeHtml(item.prompt_template_id)} @ ${escapeHtml(item.prompt_template_version)} · checksum ${escapeHtml(item.prompt_template_checksum_sha256)}</small>
         <small>Route reason: ${escapeHtml(item.route_reason)} · Policy fingerprint: ${escapeHtml(item.policy_fingerprint_sha256)}</small>
+        <small>Override: ${escapeHtml(item.pinned_model_id || "automatic")} · Preferred latency: ${listText(item.preferred_latency_classes)} · Prefer lower cost: ${item.prefer_lower_cost ? "yes" : "no"}</small>
         <small>Capabilities: ${listText(item.required_capabilities)} · Residency: ${listText(item.required_residency_tags)} · Compliance: ${listText(item.required_compliance_tags)} · Max cost: ${item.max_cost_usd == null ? "none" : `$${escapeHtml(item.max_cost_usd)}`}</small>
         ${refs ? `<small>References: ${escapeHtml(refs)}</small>` : ""}
         ${attempts}
@@ -130,6 +134,8 @@
     if (datalist) datalist.innerHTML = classes.map((value) => `<option value="${escapeHtml(value)}"></option>`).join("");
     const classInput = document.getElementById("model-route-class");
     if (classInput && !classInput.value && classes.length) classInput.value = classes[0];
+
+    populateTaskRouteControls(snapshot.models);
 
     const template = document.getElementById("model-route-template");
     if (template) {
@@ -152,10 +158,11 @@
     const host = document.getElementById("model-route-preview-result");
     if (!host) return;
     host.innerHTML = `<div class="comm-entry">
-      <strong>Deterministic route · ${escapeHtml(result.model_class)}</strong>
+      <strong>Deterministic route · ${escapeHtml(result.model_class)} · ${escapeHtml(result.workload_class || "unspecified workload")}</strong>
       <small>Template: ${escapeHtml(result.prompt_template_id)} @ ${escapeHtml(result.prompt_template_version)} · checksum ${escapeHtml(result.prompt_template_checksum_sha256)}</small>
       <small>Policy attempts: ${escapeHtml(result.policy_max_attempts)} · fingerprint ${escapeHtml(result.policy_fingerprint_sha256)}</small>
       <small>Effective residency: ${listText(result.effective_required_residency_tags)} · compliance: ${listText(result.effective_required_compliance_tags)} · max cost: ${result.effective_max_cost_usd == null ? "none" : `$${escapeHtml(result.effective_max_cost_usd)}`}</small>
+      <small>Override: ${escapeHtml(result.pinned_model_id || "automatic")} · Preferred latency: ${listText(result.preferred_latency_classes)} · Prefer lower cost: ${result.prefer_lower_cost ? "yes" : "no"}</small>
       ${(result.candidates || []).map((candidate, index) => `<div class="comm-entry">
         <strong>#${index + 1} ${escapeHtml(candidate.provider_id)} / ${escapeHtml(candidate.model_id)}</strong>
         <small>${escapeHtml(candidate.concrete_model)}${candidate.model_version ? ` @ ${escapeHtml(candidate.model_version)}` : ""} · ${escapeHtml(candidate.routing_reason)}</small>
@@ -181,6 +188,7 @@
         method: "POST",
         body: JSON.stringify({
           model_class: modelClass,
+          ...readTaskRoutePreferences(),
           messages: [{ role: "user", content: "deterministic route preview" }],
           system_prompt: "",
           prompt_template_id: selectedTemplate.template_id,
