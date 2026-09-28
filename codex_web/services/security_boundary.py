@@ -435,15 +435,16 @@ class SecurityBoundaryService:
                         self.validate_process(first, shell=False, policy=policy)
                     except ProcessPolicyViolation as exc:
                         reasons.append(f"process target denied: {exc}")
-                digest = request.parameters.get("artifact_digest")
-                try:
-                    self.require_supply_chain_digest(
-                        executable=True,
-                        digest=str(digest) if digest else None,
-                        policy=policy,
-                    )
-                except SupplyChainPolicyViolation as exc:
-                    reasons.append(str(exc))
+                if definition.executable_artifact:
+                    digest = request.parameters.get("artifact_digest")
+                    try:
+                        self.require_supply_chain_digest(
+                            executable=True,
+                            digest=str(digest) if digest else None,
+                            policy=policy,
+                        )
+                    except SupplyChainPolicyViolation as exc:
+                        reasons.append(str(exc))
         return reasons
 
     def evaluate_action(

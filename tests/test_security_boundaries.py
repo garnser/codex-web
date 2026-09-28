@@ -462,6 +462,34 @@ class SecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
             policy=policy,
         )
 
+    def test_process_transport_does_not_imply_executable_artifact(self) -> None:
+        policy = ExecutionSecurityPolicy(
+            process=ProcessBoundaryPolicy(
+                allow_process_execution=True,
+                allowed_executables=("git",),
+            ),
+            require_digest_for_executable_artifacts=True,
+        )
+        definition = ActionDefinition(
+            action_id="repository.branch.publish",
+            title="Publish branch",
+            process_access=True,
+        )
+
+        reasons = self.security._validate_declared_boundaries(
+            definition,
+            self._request(),
+            policy,
+        )
+        executable_reasons = self.security._validate_declared_boundaries(
+            definition.model_copy(update={"executable_artifact": True}),
+            self._request(),
+            policy,
+        )
+
+        self.assertEqual(reasons, [])
+        self.assertIn("immutable digest", " ".join(executable_reasons))
+
     def test_secret_like_boundary_material_is_redacted(self) -> None:
         payload = redact_boundary_payload(
             {

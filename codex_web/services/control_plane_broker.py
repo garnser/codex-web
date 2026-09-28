@@ -19,7 +19,12 @@ from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 from pydantic import ValidationError
 
-from codex_web.action_intents import ActionIntentClaimRequest, ActionIntentCreate
+from codex_web.action_intents import (
+    ActionDecisionOutcome,
+    ActionDecisionSnapshot,
+    ActionIntentClaimRequest,
+    ActionIntentCreate,
+)
 from codex_web.action_providers import ActionRequest
 from codex_web.authority import (
     AuthorityDecisionOutcome,
@@ -564,6 +569,22 @@ class ControlPlaneBrokerService:
                 request=request,
                 work_item_ref=assignment.work_item_ref,
                 execution_id=assignment.execution_id,
+                policy_decision=ActionDecisionSnapshot(
+                    decision_id=f"assignment-policy-{uuid.uuid4().hex}",
+                    outcome=ActionDecisionOutcome.ALLOW,
+                    source="policy:assignment-control-plane",
+                    reason=(
+                        "canonical assignment execution profile and repository "
+                        "scope permit this allowlisted broker operation"
+                    ),
+                    capabilities=(operation.capability,),
+                    reasons=(
+                        f"execution profile {assignment.execution_profile_id} "
+                        f"permits {operation.id}",
+                        f"repository {repository_id} is the singular writable target",
+                    ),
+                    evaluated_at=time.time(),
+                ),
             ),
             actor=requester_actor,
         )
