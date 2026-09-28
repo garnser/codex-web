@@ -14,9 +14,9 @@ from codex_web.security import ExecutionSecurityPolicy
 
 ACTION_PROVIDER_CONTRACT = ContractSpec(
     "action-provider",
-    "1.1",
-    ("1.0", "1.1"),
-    deprecated=("1.0",),
+    "1.2",
+    ("1.0", "1.1", "1.2"),
+    deprecated=("1.0", "1.1"),
 )
 
 
@@ -232,6 +232,7 @@ class ActionProvider(Protocol):
         result: ActionResult,
         *,
         binding: ActionProviderBinding,
+        credential: str | None = None,
     ) -> ActionVerification: ...
 
     async def rollback(

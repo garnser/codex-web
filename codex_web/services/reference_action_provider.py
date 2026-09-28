@@ -122,6 +122,7 @@ class ReferenceActionProvider:
         result: ActionResult,
         *,
         binding: ActionProviderBinding,
+        credential: str | None = None,
     ) -> ActionVerification:
         key = str(result.output.get("key") or "")
         if result.status == "dry_run":

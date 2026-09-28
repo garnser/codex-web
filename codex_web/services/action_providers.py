@@ -390,6 +390,33 @@ class ActionExecutionService:
         )
         definition = self._definition(provider, result.action_id)
         definition.capabilities.require("verification")
+
+        async def invoke(credential: str | None) -> ActionVerification:
+            return await provider.verify(
+                result,
+                binding=binding,
+                credential=credential,
+            )
+
+        credential_ref = binding.credential_ref
+        if credential_ref:
+            if self.secret_broker is None:
+                raise ActionRequirementError("credential broker is unavailable")
+            return await self.secret_broker.use_async(
+                credential_ref,
+                actor=actor,
+                operation=(
+                    f"action-provider:{binding.provider_type}:"
+                    f"{result.action_id}:verify"
+                ),
+                consumer=invoke,
+                context={
+                    "binding_id": binding.id,
+                    "action_id": result.action_id,
+                },
+            )
+        # Preserve compatibility for non-credential providers that implemented
+        # the 1.1 callback before verification accepted a brokered credential.
         return await provider.verify(result, binding=binding)
 
     async def rollback(

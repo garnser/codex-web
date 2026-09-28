@@ -19,7 +19,7 @@ from codex_web.action_providers import (
     ActionResult,
     ActionVerification,
 )
-from codex_web.integrations.github_client import GitHubClient
+from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.services.code_host_action_contract import (
     CODE_HOST_BRANCH_EVIDENCE,
     CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
@@ -29,7 +29,6 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_ISSUE_COMMENT_EVIDENCE,
     CODE_HOST_ISSUE_STATE_EVIDENCE,
     CODE_HOST_ISSUE_UPDATE_ACTION_ID,
-    CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
     CodeHostActionContract,
     result_resource_output,
 )
@@ -37,47 +36,53 @@ from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.resources import ResourceCatalogService
 
 
-GITHUB_ACTION_PROVIDER_TYPE = "github"
-GITHUB_ACTION_PROVIDER_INSTANCE = "github.com"
+GITLAB_ACTION_PROVIDER_TYPE = "gitlab"
+GITLAB_ACTION_PROVIDER_INSTANCE = "gitlab.com"
 
 BranchPublisher = Callable[[Path, str, str, str, str], Awaitable[None]]
 
 
-class GitHubActionProvider:
-    """Governed GitHub mutations behind ActionIntent/SecretBroker execution."""
+class GitLabActionProvider:
+    """Governed GitLab mutations using the shared code-host action contract."""
 
     contract_version = ACTION_PROVIDER_CONTRACT.current
-    provider_type = GITHUB_ACTION_PROVIDER_TYPE
+    provider_type = GITLAB_ACTION_PROVIDER_TYPE
 
     def __init__(
         self,
         resources: ResourceCatalogService,
-        client: GitHubClient | None = None,
+        client: GitLabClient | None = None,
         workspaces: ExecutionWorkspaceService | None = None,
         *,
-        provider_instance: str = GITHUB_ACTION_PROVIDER_INSTANCE,
-        api_base: str = "https://api.github.com",
-        web_base: str = "https://github.com",
+        provider_instance: str = GITLAB_ACTION_PROVIDER_INSTANCE,
+        api_base: str = "https://gitlab.com/api/v4",
+        web_base: str | None = None,
         branch_publisher: BranchPublisher | None = None,
     ) -> None:
-        self.client = client or GitHubClient()
+        self.client = client or GitLabClient()
         self.provider_instance = provider_instance
         self.api_base = self._https_base(api_base, field="api_base")
-        self.web_base = self._https_base(web_base, field="web_base")
-        api_authority = urlparse(self.api_base).netloc
-        web_authority = urlparse(self.web_base).netloc
-        if web_authority != provider_instance:
-            raise ValueError("GitHub Web base must match provider_instance")
-        if api_authority not in {web_authority, f"api.{web_authority}"}:
-            raise ValueError("GitHub API base does not match provider authority")
+        derived_web = (
+            self.api_base.removesuffix("/api/v4")
+            if self.api_base.endswith("/api/v4")
+            else None
+        )
+        self.web_base = self._https_base(
+            web_base or derived_web or "",
+            field="web_base",
+        )
+        if urlparse(self.api_base).netloc != urlparse(self.web_base).netloc:
+            raise ValueError("GitLab API and Web bases must use the same authority")
+        if urlparse(self.web_base).netloc != provider_instance:
+            raise ValueError("GitLab Web base must match provider_instance")
         self.branch_publisher = branch_publisher
         self.contract = CodeHostActionContract(
             resources,
             workspaces,
             provider_type=self.provider_type,
-            provider_label="GitHub",
-            credential_purpose="github-api-token",
-            alias_namespaces=("provider", "repository", "github-repository"),
+            provider_label="GitLab",
+            credential_purpose="gitlab-api-token",
+            alias_namespaces=("provider", "repository", "gitlab-project"),
         )
 
     @staticmethod
@@ -91,7 +96,7 @@ class GitHubActionProvider:
             or parsed.query
             or parsed.fragment
         ):
-            raise ValueError(f"GitHub {field} must be an HTTPS URL without credentials")
+            raise ValueError(f"GitLab {field} must be an HTTPS URL without credentials")
         return str(value).rstrip("/")
 
     def actions(self):
@@ -102,34 +107,27 @@ class GitHubActionProvider:
         return f"{body}\n\n{marker}".strip()
 
     @staticmethod
-    def _positive_number(item: dict[str, Any], *, field: str) -> int:
-        value = item.get("number")
+    def _positive_iid(item: dict[str, Any], *, field: str) -> int:
+        value = item.get("iid")
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ValueError(f"GitHub {field} response omitted a valid number")
+            raise ValueError(f"GitLab {field} response omitted a valid iid")
         return value
-
-    @staticmethod
-    def _ref(item: dict[str, Any], name: str) -> str:
-        value = item.get(name)
-        if isinstance(value, dict):
-            return str(value.get("ref") or "")
-        return str(value or "")
 
     def _publish_branch_sync(
         self,
         workspace_path: Path,
-        repository: str,
+        project: str,
         branch: str,
         revision: str,
         credential: str,
     ) -> None:
-        with tempfile.TemporaryDirectory(prefix="codex-github-askpass-") as root:
+        with tempfile.TemporaryDirectory(prefix="codex-gitlab-askpass-") as root:
             askpass = Path(root) / "askpass.sh"
             askpass.write_text(
                 "#!/bin/sh\n"
                 "case \"$1\" in\n"
-                "  *Username*) printf '%s\\n' x-access-token ;;\n"
-                "  *Password*) printf '%s\\n' \"$CODEX_GITHUB_ACTION_TOKEN\" ;;\n"
+                "  *Username*) printf '%s\\n' oauth2 ;;\n"
+                "  *Password*) printf '%s\\n' \"$CODEX_GITLAB_ACTION_TOKEN\" ;;\n"
                 "  *) exit 1 ;;\n"
                 "esac\n",
                 encoding="utf-8",
@@ -138,7 +136,7 @@ class GitHubActionProvider:
             environment = dict(os.environ)
             environment.update(
                 {
-                    "CODEX_GITHUB_ACTION_TOKEN": credential,
+                    "CODEX_GITLAB_ACTION_TOKEN": credential,
                     "GIT_ASKPASS": str(askpass),
                     "GIT_TERMINAL_PROMPT": "0",
                 }
@@ -149,7 +147,7 @@ class GitHubActionProvider:
                         "git",
                         "push",
                         "--porcelain",
-                        f"{self.web_base}/{repository}.git",
+                        f"{self.web_base}/{project}.git",
                         f"{revision}:refs/heads/{branch}",
                     ],
                     cwd=workspace_path,
@@ -160,7 +158,7 @@ class GitHubActionProvider:
                     timeout=120,
                 )
             except (OSError, subprocess.SubprocessError) as exc:
-                raise RuntimeError("GitHub branch publication failed") from exc
+                raise RuntimeError("GitLab branch publication failed") from exc
 
     async def prepare(
         self,
@@ -168,12 +166,12 @@ class GitHubActionProvider:
         *,
         binding: ActionProviderBinding,
     ) -> dict[str, Any]:
-        repository = self.contract.locator(request)
+        project = self.contract.locator(request)
         if request.action_id == CODE_HOST_ISSUE_COMMENT_ACTION_ID:
             body = self.contract.comment(request)
             return {
                 "operation": "issue-comment",
-                "repository": repository,
+                "repository": project,
                 "issue_number": self.contract.issue_number(request),
                 "body_sha256": hashlib.sha256(body.encode()).hexdigest(),
                 "body_characters": len(body),
@@ -181,7 +179,7 @@ class GitHubActionProvider:
         if request.action_id == CODE_HOST_ISSUE_UPDATE_ACTION_ID:
             return {
                 "operation": "issue-update",
-                "repository": repository,
+                "repository": project,
                 "issue_number": self.contract.issue_number(request),
                 "state": self.contract.issue_state(request),
             }
@@ -189,7 +187,7 @@ class GitHubActionProvider:
             payload = self.contract.change_request(request)
             return {
                 "operation": "change-request-upsert",
-                "repository": repository,
+                "repository": project,
                 "head": payload["head"],
                 "base": payload["base"],
                 "draft": payload["draft"],
@@ -200,13 +198,13 @@ class GitHubActionProvider:
             attested = self.contract.attest_branch(request)
             return {
                 "operation": "branch-publish",
-                "repository": repository,
+                "repository": project,
                 "execution_workspace_id": attested.workspace_id,
                 "branch": attested.branch,
                 "head_revision": attested.revision,
                 "workspace_attested": attested.workspace_path.is_dir(),
             }
-        raise ValueError("unsupported GitHub action")
+        raise ValueError("unsupported GitLab action")
 
     async def execute(
         self,
@@ -216,31 +214,31 @@ class GitHubActionProvider:
         credential: str | None = None,
     ) -> ActionResult:
         if not credential:
-            raise ValueError("GitHub credential is required")
-        repository = self.contract.locator(request)
+            raise ValueError("GitLab credential is required")
+        project = self.contract.locator(request)
         started = time.time()
         output: dict[str, Any] = {
-            "repository": repository,
+            "repository": project,
             **result_resource_output(request),
         }
         if request.action_id == CODE_HOST_ISSUE_COMMENT_ACTION_ID:
-            number = self.contract.issue_number(request)
+            iid = self.contract.issue_number(request)
             marker = self.contract.marker(request)
-            comments = await self.client.list_issue_comments(
-                self.api_base, repository, number, token=credential
+            notes = await self.client.project_issue_notes(
+                self.api_base, project, iid, token=credential
             )
             item = next(
-                (row for row in comments if marker in str(row.get("body") or "")),
+                (row for row in notes if marker in str(row.get("body") or "")),
                 None,
             )
             if item is None:
                 desired_body = self._owned_body(
                     self.contract.comment(request), marker
                 )
-                item = await self.client.create_comment(
+                item = await self.client.create_project_issue_note(
                     self.api_base,
-                    repository,
-                    number,
+                    project,
+                    iid,
                     token=credential,
                     body=desired_body,
                 )
@@ -250,97 +248,108 @@ class GitHubActionProvider:
                 )
             evidence_type = CODE_HOST_ISSUE_COMMENT_EVIDENCE
             external_id = str(item.get("id") or "") or None
-            url = str(item.get("html_url") or "") or None
+            url = str(item.get("web_url") or "") or None
             output.update(
                 {
-                    "issue_number": number,
+                    "issue_number": iid,
                     "comment_id": external_id,
                     "body_sha256": hashlib.sha256(
                         desired_body.encode()
                     ).hexdigest(),
                 }
             )
-            summary = "GitHub issue comment is owned by this action idempotency key."
+            summary = "GitLab issue note is owned by this action idempotency key."
         elif request.action_id == CODE_HOST_ISSUE_UPDATE_ACTION_ID:
-            number = self.contract.issue_number(request)
+            iid = self.contract.issue_number(request)
             state = self.contract.issue_state(request)
-            current = await self.client.issue(
-                self.api_base, repository, number, token=credential
+            expected = "opened" if state == "open" else "closed"
+            current = await self.client.project_issue(
+                self.api_base, project, iid, token=credential
             )
             item = current
-            if str(current.get("state") or "").casefold() != state:
-                item = await self.client.update_issue(
+            if str(current.get("state") or "").casefold() != expected:
+                item = await self.client.update_project_issue(
                     self.api_base,
-                    repository,
-                    number,
+                    project,
+                    iid,
                     token=credential,
-                    payload={"state": state},
+                    payload={"state_event": "reopen" if state == "open" else "close"},
                 )
             evidence_type = CODE_HOST_ISSUE_STATE_EVIDENCE
-            external_id = str(item.get("id") or number)
-            url = str(item.get("html_url") or "") or None
-            output.update({"issue_number": number, "state": state})
-            summary = f"GitHub issue state is {state}."
+            external_id = str(item.get("id") or iid)
+            url = str(item.get("web_url") or "") or None
+            output.update({"issue_number": iid, "state": state})
+            summary = f"GitLab issue state is {state}."
         elif request.action_id == CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID:
             payload = self.contract.change_request(request)
             marker = self.contract.marker(request)
             desired_body = self._owned_body(payload["body"], marker)
-            pulls = await self.client.list_pull_requests(
+            merge_requests = await self.client.merge_requests(
                 self.api_base,
-                repository,
+                project,
                 token=credential,
-                head=f"{repository.split('/', 1)[0]}:{payload['head']}",
-                base=payload["base"],
+                source_branch=payload["head"],
+                target_branch=payload["base"],
             )
             owned = next(
-                (row for row in pulls if marker in str(row.get("body") or "")),
+                (
+                    row
+                    for row in merge_requests
+                    if marker in str(row.get("description") or "")
+                ),
                 None,
             )
-            if owned is None and pulls:
+            if owned is None and merge_requests:
                 raise ValueError(
-                    "an existing pull request for head/base is not owned by this ActionIntent"
+                    "an existing merge request for head/base is not owned by this ActionIntent"
                 )
+            api_payload = {
+                "title": payload["title"],
+                "description": desired_body,
+                "source_branch": payload["head"],
+                "target_branch": payload["base"],
+                "draft": payload["draft"],
+            }
             if owned is None:
-                item = await self.client.create_pull_request(
+                item = await self.client.create_merge_request(
                     self.api_base,
-                    repository,
+                    project,
                     token=credential,
-                    payload={**payload, "body": desired_body},
+                    payload=api_payload,
                 )
             else:
-                number = self._positive_number(owned, field="pull request")
-                if bool(owned.get("draft")) != payload["draft"]:
-                    raise ValueError(
-                        "GitHub pull request draft transitions require a separate governed action"
+                iid = self._positive_iid(owned, field="merge request")
+                changed = any(
+                    (
+                        str(owned.get("title") or "") != payload["title"],
+                        str(owned.get("description") or "") != desired_body,
+                        str(owned.get("target_branch") or "") != payload["base"],
+                        bool(owned.get("draft")) != payload["draft"],
                     )
-                update = {
-                    "title": payload["title"],
-                    "body": desired_body,
-                    "base": payload["base"],
-                }
-                changed = (
-                    str(owned.get("title") or "") != update["title"]
-                    or str(owned.get("body") or "") != update["body"]
-                    or self._ref(owned, "base") not in {"", update["base"]}
                 )
                 item = (
-                    await self.client.update_pull_request(
+                    await self.client.update_merge_request(
                         self.api_base,
-                        repository,
-                        number,
+                        project,
+                        iid,
                         token=credential,
-                        payload=update,
+                        payload={
+                            "title": api_payload["title"],
+                            "description": api_payload["description"],
+                            "target_branch": api_payload["target_branch"],
+                            "draft": api_payload["draft"],
+                        },
                     )
                     if changed
                     else owned
                 )
-            number = self._positive_number(item, field="pull request")
+            iid = self._positive_iid(item, field="merge request")
             evidence_type = CODE_HOST_CHANGE_REQUEST_EVIDENCE
-            external_id = str(item.get("id") or number)
-            url = str(item.get("html_url") or "") or None
+            external_id = str(item.get("id") or iid)
+            url = str(item.get("web_url") or "") or None
             output.update(
                 {
-                    "change_request_number": number,
+                    "change_request_number": iid,
                     "head": payload["head"],
                     "base": payload["base"],
                     "draft": payload["draft"],
@@ -352,13 +361,13 @@ class GitHubActionProvider:
                     ).hexdigest(),
                 }
             )
-            summary = "GitHub pull request is owned and reconciled by this action."
+            summary = "GitLab merge request is owned and reconciled by this action."
         elif request.action_id == CODE_HOST_BRANCH_PUBLISH_ACTION_ID:
             attested = self.contract.attest_branch(request)
             if self.branch_publisher is not None:
                 await self.branch_publisher(
                     attested.workspace_path,
-                    repository,
+                    project,
                     attested.branch,
                     attested.revision,
                     credential,
@@ -367,7 +376,7 @@ class GitHubActionProvider:
                 await asyncio.to_thread(
                     self._publish_branch_sync,
                     attested.workspace_path,
-                    repository,
+                    project,
                     attested.branch,
                     attested.revision,
                     credential,
@@ -375,7 +384,7 @@ class GitHubActionProvider:
             evidence_type = CODE_HOST_BRANCH_EVIDENCE
             external_id = attested.revision
             url = (
-                f"{self.web_base}/{repository}/tree/"
+                f"{self.web_base}/{project}/-/tree/"
                 f"{quote(attested.branch, safe='/')}"
             )
             output.update(
@@ -385,9 +394,9 @@ class GitHubActionProvider:
                     "execution_workspace_id": attested.workspace_id,
                 }
             )
-            summary = "GitHub branch matches the committed execution workspace head."
+            summary = "GitLab branch matches the committed execution workspace head."
         else:
-            raise ValueError("unsupported GitHub action")
+            raise ValueError("unsupported GitLab action")
         return ActionResult(
             provider_binding_id=binding.id,
             action_id=request.action_id,
@@ -404,7 +413,7 @@ class GitHubActionProvider:
                     summary=summary,
                     metadata={
                         "resource_id": request.resource_ids[0],
-                        "repository": repository,
+                        "repository": project,
                     },
                 ),
             ),
@@ -418,17 +427,16 @@ class GitHubActionProvider:
         credential: str | None = None,
     ) -> ActionVerification:
         if not credential:
-            raise ValueError("GitHub credential is required for verification")
+            raise ValueError("GitLab credential is required for verification")
         if result.provider_binding_id != binding.id:
-            raise ValueError("GitHub result binding does not match verification binding")
-        repository = self.contract.locator_for_result(result, binding)
-        findings: list[str] = []
+            raise ValueError("GitLab result binding does not match verification binding")
+        project = self.contract.locator_for_result(result, binding)
         verified = False
         if result.action_id == CODE_HOST_ISSUE_COMMENT_ACTION_ID:
-            number = int(result.output["issue_number"])
+            iid = int(result.output["issue_number"])
             marker = self.contract.marker_from_key(result.idempotency_key)
-            comments = await self.client.list_issue_comments(
-                self.api_base, repository, number, token=credential
+            notes = await self.client.project_issue_notes(
+                self.api_base, project, iid, token=credential
             )
             verified = any(
                 marker in str(item.get("body") or "")
@@ -440,67 +448,63 @@ class GitHubActionProvider:
                     result.external_id is None
                     or str(item.get("id") or "") == result.external_id
                 )
-                for item in comments
+                for item in notes
             )
         elif result.action_id == CODE_HOST_ISSUE_UPDATE_ACTION_ID:
-            item = await self.client.issue(
+            item = await self.client.project_issue(
                 self.api_base,
-                repository,
+                project,
                 int(result.output["issue_number"]),
                 token=credential,
             )
-            verified = (
-                str(item.get("state") or "").casefold()
-                == str(result.output["state"]).casefold()
-            )
+            expected = "opened" if result.output["state"] == "open" else "closed"
+            verified = str(item.get("state") or "").casefold() == expected
         elif result.action_id == CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID:
-            number = int(result.output["change_request_number"])
-            item = await self.client.pull_request(
-                self.api_base, repository, number, token=credential
+            iid = int(result.output["change_request_number"])
+            item = await self.client.merge_request(
+                self.api_base, project, iid, token=credential
             )
             marker = self.contract.marker_from_key(result.idempotency_key)
             verified = (
-                self._positive_number(item, field="pull request") == number
-                and marker in str(item.get("body") or "")
-                and self._ref(item, "head") in {"", result.output["head"]}
-                and self._ref(item, "base") in {"", result.output["base"]}
+                self._positive_iid(item, field="merge request") == iid
+                and marker in str(item.get("description") or "")
+                and str(item.get("source_branch") or "") == result.output["head"]
+                and str(item.get("target_branch") or "") == result.output["base"]
                 and bool(item.get("draft")) == bool(result.output["draft"])
                 and hashlib.sha256(
                     str(item.get("title") or "").encode()
                 ).hexdigest()
                 == result.output["title_sha256"]
                 and hashlib.sha256(
-                    str(item.get("body") or "").encode()
+                    str(item.get("description") or "").encode()
                 ).hexdigest()
                 == result.output["body_sha256"]
             )
         elif result.action_id == CODE_HOST_BRANCH_PUBLISH_ACTION_ID:
             item = await self.client.branch(
                 self.api_base,
-                repository,
+                project,
                 str(result.output["branch"]),
                 token=credential,
             )
             commit = item.get("commit") if isinstance(item.get("commit"), dict) else {}
-            verified = str(commit.get("sha") or "") == str(
+            verified = str(commit.get("id") or "") == str(
                 result.output["head_revision"]
             )
         else:
-            raise ValueError("unsupported GitHub action result")
-        if not verified:
-            findings.append("GitHub provider state does not match the action receipt")
+            raise ValueError("unsupported GitLab action result")
         evidence = (
             ActionEvidence(
                 evidence_type=self.contract.evidence_type(result.action_id),
                 reference=str(result.output.get("external_url") or "") or None,
                 summary=(
-                    "GitHub provider state independently matches the action receipt."
+                    "GitLab provider state independently matches the action receipt."
                     if verified
-                    else "GitHub provider state differs from the action receipt."
+                    else "GitLab provider state differs from the action receipt."
                 ),
                 metadata={
                     "resource_id": str(result.output["resource_id"]),
-                    "repository": repository,
+                    "repository": project,
                     "verified": verified,
                 },
             ),
@@ -508,7 +512,11 @@ class GitHubActionProvider:
         return ActionVerification(
             verified=verified,
             evidence=evidence,
-            findings=tuple(findings),
+            findings=(
+                ()
+                if verified
+                else ("GitLab provider state does not match the action receipt",)
+            ),
         )
 
     async def rollback(
@@ -518,4 +526,4 @@ class GitHubActionProvider:
         binding: ActionProviderBinding,
         credential: str | None = None,
     ) -> ActionResult:
-        raise ValueError("GitHub code-host actions are not rollback-capable")
+        raise ValueError("GitLab code-host actions are not rollback-capable")

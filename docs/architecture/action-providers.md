@@ -4,7 +4,7 @@ Codex-web external mutations use a provider-neutral `ActionProvider` contract. C
 
 ## Contract
 
-ActionProvider contract version **1.1** declares a provider type/instance and a catalog of `ActionDefinition` records. Each action describes, before execution:
+ActionProvider contract version **1.2** declares a provider type/instance and a catalog of `ActionDefinition` records. Each action describes, before execution:
 
 - risk class;
 - required canonical resource types;
@@ -60,6 +60,12 @@ Provider/action risk and authority requirements are visible during `prepare`. Ce
 6. verify when the capability exists;
 7. rollback only when declared reversible and rollback-capable.
 
+Execution and verification resolve a binding's credential reference independently
+through `SecretBroker`. The raw credential exists only inside the bounded provider
+callback and cannot be copied into an `ActionRequest`, `ActionResult`, receipt,
+verification, Evidence record, log, or worker workspace. This lets reconciliation
+perform a fresh provider read without weakening the credential boundary.
+
 Autonomy exposes these same prepare/execute/verify/rollback methods through the service and does not call provider-native side-effect APIs directly.
 
 ## Evidence and results
@@ -102,29 +108,50 @@ The in-memory `ReferenceActionProvider` implements a reversible `reference.set` 
 
 New real providers must pass the same suite before they are wired into autonomy.
 
-## GitHub delivery actions
+## Governed code-host delivery actions
 
-The code-owned `github/github.com` ActionProvider begins the governed GitHub
-delivery path with provider-neutral `code-host.issue.comment` and
-`code-host.issue.update` actions, plus `code-host.pull-request.upsert` and
-`code-host.branch.publish`. All require
-exactly one canonical repository
-Resource, derive `owner/repository` from its validated GitHub alias, require a
-resource-scoped binding and SecretBroker credential reference, and emit bounded
-receipts/evidence without copying comment bodies or credentials.
+GitHub and GitLab implement one provider-neutral delivery catalog:
 
-Comment retries use a SHA-256-derived hidden marker from the durable ActionIntent
-idempotency key and reconcile against existing issue comments before creating a
-new one. Pull-request retries reconcile the requested head/base and the same
-ownership marker; an existing unowned pull request fails closed. Issue state
-updates are naturally idempotent. Branch publication accepts a canonical execution
-workspace ID, branch, and full committed revision rather than a filesystem path.
-The provider requires a live write lease, matches the repository member and
-canonical branch, re-reads the Git head, rejects dirty workspaces, validates the
-path beneath the execution-workspace backend root, and performs a non-force push
-inside the credential boundary. The credential is supplied only to a temporary
-owner-only askpass helper in the trusted provider process and never to the worker,
-ActionRequest, command line, receipt, or logs.
+- `code-host.issue.comment`;
+- `code-host.issue.update`;
+- `code-host.pull-request.upsert`, normalized as a provider-neutral change
+  request and materialized as a GitHub pull request or
+  GitLab merge request;
+- `code-host.branch.publish`.
+
+Every request targets exactly one active canonical repository Resource. The
+provider locator is resolved from that Resource's GitHub or GitLab alias, while
+the ActionProvider binding independently constrains tenant, Project, Resource,
+provider instance, network policy, and credential reference. A provider-side
+repository name or permission never grants canonical authority.
+
+Comments and change requests carry a deterministic digest marker derived from
+the ActionIntent idempotency key. Reconciliation finds only objects bearing that
+marker and refuses to adopt an unowned pull/merge request for the same branches.
+Issue state updates converge on the requested state. Branch publication is a
+non-force push of the exact committed revision from an active, write-leased,
+clean canonical execution workspace; branch name, head, ancestry, Resource
+membership, and workspace-root containment are re-attested immediately before
+each attempt.
+
+Provider success returns normalized `code-host-*` Evidence. Verification uses a
+fresh brokered credential to read the comment, issue, change request, or branch
+back from the provider and compare it with the durable ActionResult. ActionIntent
+receipts and verification receipts remain the authoritative reconciliation
+history, including unknown outcomes and bounded idempotent retries.
+
+The shared ActionProvider administration surface exposes both provider catalogs
+and binding state, so this slice requires no provider-specific UI. Operators see
+canonical binding/resource scope and ActionIntent receipts through the existing
+provider and action-intent views; secret values are never rendered.
+
+GitHub derives `owner/repository` from its validated Resource alias. GitLab
+accepts validated nested `group/project` aliases and requires its configured API
+and Web bases to be credential-free HTTPS URLs on the same authority. Each
+transport performs Git publication with a temporary owner-only askpass helper in
+the trusted provider process. The token is environment-scoped to that subprocess
+and is absent from the remote URL, command line, worker, ActionRequest, receipt,
+Evidence, and logs.
 
 ## API and UI
 
@@ -135,4 +162,9 @@ The administration API exposes provider/binding catalogs and prepare previews:
 - `GET /api/action-providers/bindings/{binding_id}`
 - `POST /api/action-providers/bindings/{binding_id}/prepare`
 
-Direct execution remains a service-level boundary until central authority/action-intent enforcement is composed. #141 should project provider capabilities/bindings and requirements from these canonical APIs rather than hard-code provider features in the UI.
+External execution is admitted only through canonical ActionIntent authority,
+policy, security, worker-lease, receipt, and reconciliation handling. The direct
+service method remains an internal provider boundary used by ActionIntent workers,
+not an operator mutation API. #141 should project provider capabilities/bindings
+and requirements from these canonical APIs rather than hard-code provider features
+in the UI.

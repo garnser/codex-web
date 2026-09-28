@@ -105,3 +105,38 @@ class GitHubClient:
             token=token, json_body=payload,
         )
         return result if isinstance(result, dict) else {}
+
+    async def pull_request(
+        self, api_base: str, repo: str, number: int, *, token: str,
+    ) -> dict[str, Any]:
+        result = await self.request_json(
+            "GET", api_base, f"repos/{quote(repo, safe='/')}/pulls/{number}",
+            token=token,
+        )
+        return result if isinstance(result, dict) else {}
+
+    async def update_pull_request(
+        self,
+        api_base: str,
+        repo: str,
+        number: int,
+        *,
+        token: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        result = await self.request_json(
+            "PATCH", api_base, f"repos/{quote(repo, safe='/')}/pulls/{number}",
+            token=token, json_body=payload,
+        )
+        return result if isinstance(result, dict) else {}
+
+    async def branch(
+        self, api_base: str, repo: str, branch: str, *, token: str,
+    ) -> dict[str, Any]:
+        result = await self.request_json(
+            "GET",
+            api_base,
+            f"repos/{quote(repo, safe='/')}/branches/{quote(branch, safe='')}",
+            token=token,
+        )
+        return result if isinstance(result, dict) else {}

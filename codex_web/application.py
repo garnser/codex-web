@@ -4,6 +4,7 @@ import asyncio
 import os
 import shutil
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
@@ -350,6 +351,7 @@ from codex_web.services.provider_capacity import (
 )
 from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.github_action_provider import GitHubActionProvider
+from codex_web.services.gitlab_action_provider import GitLabActionProvider
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.services.recovery import LocalBackupDestination, RecoveryService
 from codex_web.services.releases import ReleaseService
@@ -1085,6 +1087,22 @@ github_action_provider = GitHubActionProvider(
 )
 action_provider_registry.register(github_action_provider)
 app.state.github_action_provider = github_action_provider
+gitlab_action_api_base = os.environ.get(
+    "CODEX_WEB_GITLAB_API_BASE",
+    "https://dev.veridataops.com/gitlab/api/v4",
+)
+gitlab_action_provider = GitLabActionProvider(
+    resource_catalog_service,
+    workspaces=execution_workspace_service,
+    provider_instance=os.environ.get(
+        "CODEX_WEB_GITLAB_PROVIDER_INSTANCE",
+        urlparse(gitlab_action_api_base).netloc,
+    ),
+    api_base=gitlab_action_api_base,
+    web_base=os.environ.get("CODEX_WEB_GITLAB_WEB_BASE") or None,
+)
+action_provider_registry.register(gitlab_action_provider)
+app.state.gitlab_action_provider = gitlab_action_provider
 
 control_plane_broker_factory = DeferredControlPlaneBrokerFactory()
 execution_worker_store = ExecutionWorkerStore(state_store)

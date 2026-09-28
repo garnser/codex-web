@@ -42,8 +42,11 @@ class _GitHubClient:
         self.comments: list[dict] = []
         self.comment_creates = 0
         self.issue_updates: list[dict] = []
+        self.issues: dict[int, dict] = {}
         self.pull_requests: list[dict] = []
         self.pull_request_creates = 0
+        self.pull_request_updates = 0
+        self.branches: dict[str, str] = {}
         self.credentials: list[str] = []
 
     async def list_issue_comments(self, api_base, repo, number, *, token):
@@ -64,11 +67,24 @@ class _GitHubClient:
     async def update_issue(self, api_base, repo, number, *, token, payload):
         self.credentials.append(token)
         self.issue_updates.append(payload)
-        return {
+        item = {
             "id": 17,
             "state": payload["state"],
             "html_url": f"https://github.com/{repo}/issues/{number}",
         }
+        self.issues[number] = item
+        return item
+
+    async def issue(self, api_base, repo, number, *, token):
+        self.credentials.append(token)
+        return self.issues.get(
+            number,
+            {
+                "id": 17,
+                "state": "open",
+                "html_url": f"https://github.com/{repo}/issues/{number}",
+            },
+        )
 
     async def list_pull_requests(self, api_base, repo, *, token, head, base):
         self.credentials.append(token)
@@ -80,11 +96,33 @@ class _GitHubClient:
         item = {
             "id": 52,
             "number": 889,
+            "title": payload["title"],
             "body": payload["body"],
+            "head": {"ref": payload["head"]},
+            "base": {"ref": payload["base"]},
+            "draft": payload.get("draft", False),
             "html_url": f"https://github.com/{repo}/pull/889",
         }
         self.pull_requests.append(item)
         return item
+
+    async def update_pull_request(
+        self, api_base, repo, number, *, token, payload
+    ):
+        self.credentials.append(token)
+        self.pull_request_updates += 1
+        item = next(row for row in self.pull_requests if row["number"] == number)
+        item.update({"title": payload["title"], "body": payload["body"]})
+        item["base"] = {"ref": payload["base"]}
+        return item
+
+    async def pull_request(self, api_base, repo, number, *, token):
+        self.credentials.append(token)
+        return next(row for row in self.pull_requests if row["number"] == number)
+
+    async def branch(self, api_base, repo, branch, *, token):
+        self.credentials.append(token)
+        return {"name": branch, "commit": {"sha": self.branches.get(branch)}}
 
 
 class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
@@ -214,6 +252,7 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
             self.published_branches.append(
                 (path, repository, branch_name, revision, credential)
             )
+            self.client.branches[branch_name] = revision
 
         self.workspace_path = workspace_path
         self.workspace_branch = branch
@@ -312,9 +351,15 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.client.pull_request_creates, 1)
         self.assertEqual(first.external_id, second.external_id)
-        self.assertEqual(first.output["pull_request_number"], 889)
+        self.assertEqual(first.output["change_request_number"], 889)
         self.assertNotIn("Closes #890", first.model_dump_json())
         self.assertIn("codex-web-action:", self.client.pull_requests[0]["body"])
+
+        verification = await self.execution.verify(
+            self.binding.id, second, actor=self.actor
+        )
+        self.assertTrue(verification.verified)
+        self.assertNotIn("secret-github-token", verification.model_dump_json())
 
     async def test_pull_request_does_not_adopt_unowned_existing_request(self) -> None:
         self.client.pull_requests.append(
@@ -363,6 +408,13 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.published_branches[0][4], "secret-github-token")
         self.assertEqual(result.output["head_revision"], self.workspace_head)
         self.assertNotIn("secret-github-token", result.model_dump_json())
+        self.assertTrue(
+            (
+                await self.execution.verify(
+                    self.binding.id, result, actor=self.actor
+                )
+            ).verified
+        )
 
     async def test_branch_publication_rejects_dirty_or_mismatched_workspace(self) -> None:
         (self.workspace_path / "dirty.txt").write_text("dirty\n", encoding="utf-8")
@@ -410,7 +462,7 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
             {"issue_number": 1, "state": "open"},
         ).model_copy(update={"resource_ids": (invalid.id,)})
 
-        with self.assertRaisesRegex(ValueError, "validated owner/repository"):
+        with self.assertRaisesRegex(ValueError, "validated namespace/project"):
             await self.execution.prepare(binding.id, request, actor=self.actor)
 
         self.assertEqual(self.client.issue_updates, [])

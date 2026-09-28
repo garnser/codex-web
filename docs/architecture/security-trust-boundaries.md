@@ -41,9 +41,9 @@ Privileged ActionIntents require:
 
 High/critical actions therefore fail closed when authority/policy is absent, denied, or attributed to model/tool/content sources.
 
-## ActionProvider contract 1.1
+## ActionProvider contract 1.2
 
-ActionProvider 1.1 adds machine-readable execution-boundary requirements to each ActionDefinition:
+ActionProvider 1.1 added machine-readable execution-boundary requirements to each ActionDefinition:
 
 - `network_access`;
 - `filesystem_access = none|read|write`;
@@ -58,7 +58,13 @@ Provider bindings add an `ExecutionSecurityPolicy` containing:
 - process execution/shell/executable allowlist;
 - immutable-digest requirement for executable/generated artifacts.
 
-Provider 1.0 remains explicitly supported and deprecated during migration. Missing 1.1 fields use restrictive defaults.
+ActionProvider 1.2 additionally permits verification callbacks to receive the
+binding credential only through a fresh `SecretBroker.use` boundary. This
+supports independent provider reconciliation without placing credentials in
+results, receipts, Evidence, model/tool context, or worker state. Providers 1.0
+and 1.1 remain explicitly supported and deprecated during migration. Missing
+1.1 fields use restrictive defaults; an older provider cannot opt into brokered
+verification without declaring the 1.2 contract.
 
 ## Durable ActionIntent trust decision
 

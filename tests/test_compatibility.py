@@ -40,14 +40,21 @@ class CompatibilityTests(unittest.TestCase):
         with self.assertRaises(ContractCompatibilityError):
             spec.require("2.0")
 
-    def test_action_provider_1_1_keeps_legacy_1_0_migration_window(self) -> None:
-        self.assertEqual(ACTION_PROVIDER_CONTRACT.current, "1.1")
-        self.assertEqual(ACTION_PROVIDER_CONTRACT.supported, ("1.0", "1.1"))
-        self.assertEqual(ACTION_PROVIDER_CONTRACT.deprecated, ("1.0",))
+    def test_action_provider_1_2_keeps_legacy_migration_window(self) -> None:
+        self.assertEqual(ACTION_PROVIDER_CONTRACT.current, "1.2")
+        self.assertEqual(
+            ACTION_PROVIDER_CONTRACT.supported,
+            ("1.0", "1.1", "1.2"),
+        )
+        self.assertEqual(
+            ACTION_PROVIDER_CONTRACT.deprecated,
+            ("1.0", "1.1"),
+        )
         self.assertEqual(str(ACTION_PROVIDER_CONTRACT.require("1.0")), "1.0")
         self.assertEqual(str(ACTION_PROVIDER_CONTRACT.require("1.1")), "1.1")
+        self.assertEqual(str(ACTION_PROVIDER_CONTRACT.require("1.2")), "1.2")
         with self.assertRaises(ContractCompatibilityError):
-            ACTION_PROVIDER_CONTRACT.require("1.2")
+            ACTION_PROVIDER_CONTRACT.require("1.3")
 
     def test_version_parser_normalizes_and_orders(self) -> None:
         self.assertEqual(str(ContractVersion.parse("1")), "1.0")
@@ -118,7 +125,7 @@ class CompatibilityTests(unittest.TestCase):
             registry.migrate({}, from_version="9.0", to_version="10.0")
 
     def test_action_provider_contract_is_exact_and_registry_rejects_future_version(self) -> None:
-        self.assertEqual(ACTION_PROVIDER_CONTRACT.current, "1.1")
+        self.assertEqual(ACTION_PROVIDER_CONTRACT.current, "1.2")
 
         class IncompatibleProvider:
             contract_version = "2.0"
