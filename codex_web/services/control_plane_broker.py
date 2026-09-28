@@ -608,6 +608,7 @@ class ControlPlaneBrokerService:
         requester_actor = (
             self._requester_actor(assignment)
             if operation.id.startswith("repository.")
+            or operation.id == "control_plane.operations.list"
             else actor
         )
         state = None

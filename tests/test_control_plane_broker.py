@@ -7,6 +7,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 from urllib.parse import quote
 
 from codex_web.authority import (
@@ -187,8 +188,10 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             definition_id=AUTHORITY_ROLE_CATALOG_ID,
             kind=AUTHORITY_ROLE_CATALOG_KIND,
         )
+        active_catalog = AuthorityRoleCatalogDefinition.model_validate(active.payload)
         catalog = AuthorityRoleCatalogDefinition(
             roles=(
+                *active_catalog.roles,
                 AuthorityRoleDefinition(
                     id="orchestration-worker",
                     name="Orchestration worker",
@@ -210,6 +213,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             bindings=(
+                *active_catalog.bindings,
                 AuthorityRoleBinding(
                     id="worker-binding",
                     role_id="orchestration-worker",
@@ -326,12 +330,18 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         return status, parsed_headers, json.loads(raw_body or b"{}")
 
     async def test_assignment_can_list_its_broker_operation_catalog(self) -> None:
-        status, headers, payload = await self._request(
-            "GET",
-            "/api/control-plane-broker/operations",
-        )
+        with patch.object(
+            self.service,
+            "_requester_actor",
+            wraps=self.service._requester_actor,
+        ) as requester_actor:
+            status, headers, payload = await self._request(
+                "GET",
+                "/api/control-plane-broker/operations",
+            )
 
         self.assertEqual(status, 200, payload)
+        requester_actor.assert_called_once_with(self.assignment)
         self.assertIn("x-correlation-id", headers)
         self.assertTrue(payload["enabled"])
         self.assertEqual(payload["project_id"], "project-a")
