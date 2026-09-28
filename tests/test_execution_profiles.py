@@ -31,6 +31,10 @@ class ExecutionProfileTests(unittest.TestCase):
                 "orchestration-only",
                 project_id="home",
             )
+            repository_profile, _ = service.resolve(
+                "repository-write",
+                project_id="home",
+            )
 
         self.assertIsInstance(catalog, ExecutionProfileCatalogDefinition)
         self.assertEqual(catalog.default_profile_id, "repository-write")
@@ -38,6 +42,10 @@ class ExecutionProfileTests(unittest.TestCase):
         self.assertEqual(profile.repository_access, "none")
         self.assertEqual(profile.required_worker_capabilities, ("command_execution",))
         self.assertIn("work_item.handoff", profile.control_plane_operations)
+        self.assertIn(
+            "work_item.progress",
+            repository_profile.control_plane_operations,
+        )
         self.assertEqual(reference.kind, "execution-profile-catalog")
 
     def test_structural_coordination_role_uses_orchestration_profile(self) -> None:

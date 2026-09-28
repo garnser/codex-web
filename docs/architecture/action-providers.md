@@ -112,12 +112,14 @@ New real providers must pass the same suite before they are wired into autonomy.
 
 GitHub and GitLab implement one provider-neutral delivery catalog:
 
+- `code-host.issue.create` (GitHub);
 - `code-host.issue.comment`;
 - `code-host.issue.update`;
 - `code-host.pull-request.upsert`, normalized as a provider-neutral change
   request and materialized as a GitHub pull request or
   GitLab merge request;
 - `code-host.branch.publish`.
+- `code-host.pull-request.merge` (GitHub).
 
 Every request targets exactly one active canonical repository Resource. The
 provider locator is resolved from that Resource's GitHub or GitLab alias, while
@@ -128,7 +130,11 @@ repository name or permission never grants canonical authority.
 Comments and change requests carry a deterministic digest marker derived from
 the ActionIntent idempotency key. Reconciliation finds only objects bearing that
 marker and refuses to adopt an unowned pull/merge request for the same branches.
-Issue state updates converge on the requested state. Branch publication is a
+Issue creation uses the same durable ownership marker and reconciles before
+creating; issue state updates converge on the requested state. Pull-request
+merge is a separate high-risk, single-attempt action that fails closed unless
+GitHub reports the request mergeable with a `clean` state and then verifies the
+merged result and merge commit. Branch publication is a
 non-force push of the exact committed revision from an active, write-leased,
 clean canonical execution workspace; branch name, head, ancestry, Resource
 membership, and workspace-root containment are re-attested immediately before

@@ -22,17 +22,21 @@ from codex_web.services.resources import ResourceCatalogService
 
 
 CODE_HOST_ISSUE_COMMENT_ACTION_ID = "code-host.issue.comment"
+CODE_HOST_ISSUE_CREATE_ACTION_ID = "code-host.issue.create"
 CODE_HOST_ISSUE_UPDATE_ACTION_ID = "code-host.issue.update"
 # The durable ID predates GitLab support. It remains stable while the contract
 # normalizes the operation as a provider-neutral change request.
 CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID = "code-host.pull-request.upsert"
 CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID = CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID
 CODE_HOST_BRANCH_PUBLISH_ACTION_ID = "code-host.branch.publish"
+CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID = "code-host.pull-request.merge"
 
 CODE_HOST_ISSUE_COMMENT_EVIDENCE = "code-host-issue-comment"
+CODE_HOST_ISSUE_CREATE_EVIDENCE = "code-host-issue"
 CODE_HOST_ISSUE_STATE_EVIDENCE = "code-host-issue-state"
 CODE_HOST_CHANGE_REQUEST_EVIDENCE = "code-host-change-request"
 CODE_HOST_BRANCH_EVIDENCE = "code-host-branch"
+CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE = "code-host-pull-request-merge"
 
 _LOCATOR_SEGMENT = re.compile(r"^[A-Za-z0-9_.-]+$")
 _REVISION = re.compile(r"^[0-9a-f]{40,64}$")
@@ -87,6 +91,14 @@ class CodeHostActionContract:
         }
         return (
             ActionDefinition(
+                action_id=CODE_HOST_ISSUE_CREATE_ACTION_ID,
+                title="Create issue",
+                description="Create one idempotently owned code-host issue.",
+                required_authority=("repository.issue.create",),
+                expected_evidence=(CODE_HOST_ISSUE_CREATE_EVIDENCE,),
+                **common,
+            ),
+            ActionDefinition(
                 action_id=CODE_HOST_ISSUE_COMMENT_ACTION_ID,
                 title="Post issue progress comment",
                 description="Post one idempotent comment to a code-host issue.",
@@ -133,17 +145,38 @@ class CodeHostActionContract:
                 filesystem_access="read",
                 process_access=True,
             ),
+            ActionDefinition(
+                action_id=CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+                title="Merge pull request",
+                description=(
+                    "Merge one pull request only after GitHub reports it clean and mergeable."
+                ),
+                capabilities=capabilities,
+                risk_class=ActionRiskClass.HIGH,
+                required_resource_types=(ResourceType.REPOSITORY,),
+                required_authority=("repository.pull-request.merge",),
+                credential_required=True,
+                credential_purpose=self.credential_purpose,
+                expected_evidence=(CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE,),
+                timeout_seconds=30.0,
+                retry_max_attempts=1,
+                network_access=True,
+            ),
         )
 
     @staticmethod
     def evidence_type(action_id: str) -> str:
         evidence_types = {
             CODE_HOST_ISSUE_COMMENT_ACTION_ID: CODE_HOST_ISSUE_COMMENT_EVIDENCE,
+            CODE_HOST_ISSUE_CREATE_ACTION_ID: CODE_HOST_ISSUE_CREATE_EVIDENCE,
             CODE_HOST_ISSUE_UPDATE_ACTION_ID: CODE_HOST_ISSUE_STATE_EVIDENCE,
             CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID: (
                 CODE_HOST_CHANGE_REQUEST_EVIDENCE
             ),
             CODE_HOST_BRANCH_PUBLISH_ACTION_ID: CODE_HOST_BRANCH_EVIDENCE,
+            CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID: (
+                CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE
+            ),
         }
         try:
             return evidence_types[action_id]
@@ -268,6 +301,20 @@ class CodeHostActionContract:
         return body.strip()
 
     @staticmethod
+    def issue_create(request: ActionRequest) -> dict[str, str]:
+        if set(request.parameters) - {"title", "body"}:
+            raise ValueError("unsupported issue create parameters")
+        title = request.parameters.get("title")
+        body = request.parameters.get("body", "")
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError("issue title is required")
+        if len(title) > 256:
+            raise ValueError("issue title exceeds limit")
+        if not isinstance(body, str) or len(body) > 65536:
+            raise ValueError("issue body must be a bounded string")
+        return {"title": title.strip(), "body": body.strip()}
+
+    @staticmethod
     def issue_state(request: ActionRequest) -> str:
         if set(request.parameters) - {"issue_number", "state"}:
             raise ValueError("unsupported issue update parameters")
@@ -326,6 +373,24 @@ class CodeHostActionContract:
             "base": cls.branch(request.parameters.get("base"), field="base"),
             "draft": draft,
         }
+
+    @classmethod
+    def pull_request_merge(cls, request: ActionRequest) -> dict[str, Any]:
+        if set(request.parameters) - {"pull_request_number", "merge_method"}:
+            raise ValueError("unsupported pull request merge parameters")
+        value = request.parameters.get("pull_request_number")
+        if isinstance(value, bool):
+            raise ValueError("pull_request_number must be a positive integer")
+        try:
+            number = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("pull_request_number must be a positive integer") from exc
+        if number < 1 or str(number) != str(value).strip():
+            raise ValueError("pull_request_number must be a positive integer")
+        method = str(request.parameters.get("merge_method") or "squash").strip()
+        if method not in {"merge", "squash", "rebase"}:
+            raise ValueError("merge_method must be merge, squash, or rebase")
+        return {"number": number, "merge_method": method}
 
     def attest_branch(self, request: ActionRequest) -> AttestedBranch:
         if set(request.parameters) - {

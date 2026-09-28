@@ -40,7 +40,15 @@ Assignments contain bounded inputs only:
 - optional canonical execution-workspace reference.
 
 The assignment is not authority to perform arbitrary external side effects.
-Those still flow through ActionProvider/ActionIntent.
+Those still flow through ActionProvider/ActionIntent. A repository-write
+assignment receives an assignment-bound repository-action surface on the same
+Unix-socket broker. It can publish only the assignment's single writable
+repository and active execution-workspace branch; create or reconcile a pull
+request; create, comment on, or close an issue; and merge a pull request only
+when GitHub reports it clean and mergeable. The broker derives tenant, Project,
+repository, execution, requester, provider binding, and credential references
+from canonical assignment state. The worker cannot override them and never
+receives the provider credential.
 
 ### Execution subject and v1.1 compatibility
 
@@ -212,9 +220,10 @@ assignment/fence before use.
 
 ### Brokered control-plane access
 
-An `orchestration-only` assignment may receive a separate brokered control-plane
-channel. This is not generic worker networking and it is not an HTTP proxy to
-localhost.
+An `orchestration-only` or `repository-write` assignment may receive a separate
+brokered control-plane channel when its execution profile declares control-plane
+operations. Repository access does not widen this channel. This is not generic
+worker networking and it is not an HTTP proxy to localhost.
 
 The local implementation uses a private host-side Unix socket mounted read-only
 into the worker namespace plus a fixed loopback relay at

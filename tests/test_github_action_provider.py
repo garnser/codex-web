@@ -22,9 +22,11 @@ from codex_web.secrets import SecretCreate
 from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
 from codex_web.services.github_action_provider import (
     CODE_HOST_ISSUE_COMMENT_ACTION_ID,
+    CODE_HOST_ISSUE_CREATE_ACTION_ID,
     CODE_HOST_ISSUE_UPDATE_ACTION_ID,
     CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
     CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
     GitHubActionProvider,
 )
 from codex_web.services.identity import IdentityService
@@ -43,9 +45,11 @@ class _GitHubClient:
         self.comment_creates = 0
         self.issue_updates: list[dict] = []
         self.issues: dict[int, dict] = {}
+        self.issue_creates = 0
         self.pull_requests: list[dict] = []
         self.pull_request_creates = 0
         self.pull_request_updates = 0
+        self.pull_request_merges = 0
         self.branches: dict[str, str] = {}
         self.credentials: list[str] = []
 
@@ -70,6 +74,25 @@ class _GitHubClient:
         item = {
             "id": 17,
             "state": payload["state"],
+            "html_url": f"https://github.com/{repo}/issues/{number}",
+        }
+        self.issues[number] = item
+        return item
+
+    async def list_issues(self, api_base, repo, *, token, state="open"):
+        self.credentials.append(token)
+        return list(self.issues.values())
+
+    async def create_issue(self, api_base, repo, *, token, payload):
+        self.credentials.append(token)
+        self.issue_creates += 1
+        number = 917
+        item = {
+            "id": 917,
+            "number": number,
+            "title": payload["title"],
+            "body": payload["body"],
+            "state": "open",
             "html_url": f"https://github.com/{repo}/issues/{number}",
         }
         self.issues[number] = item
@@ -119,6 +142,13 @@ class _GitHubClient:
     async def pull_request(self, api_base, repo, number, *, token):
         self.credentials.append(token)
         return next(row for row in self.pull_requests if row["number"] == number)
+
+    async def merge_pull_request(self, api_base, repo, number, *, token, payload):
+        self.credentials.append(token)
+        self.pull_request_merges += 1
+        item = next(row for row in self.pull_requests if row["number"] == number)
+        item.update({"merged": True, "merge_commit_sha": "a" * 40})
+        return {"merged": True, "sha": "a" * 40}
 
     async def branch(self, api_base, repo, branch, *, token):
         self.credentials.append(token)
@@ -329,6 +359,21 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.output["repository"], "garnser/codex-web")
         self.assertEqual(result.output["issue_number"], 886)
 
+    async def test_issue_create_is_idempotently_owned_and_verified(self) -> None:
+        request = self._request(
+            CODE_HOST_ISSUE_CREATE_ACTION_ID,
+            {"title": "Worker delivery regression", "body": "Reproduction details"},
+        )
+        first = await self.execution.execute(self.binding.id, request, actor=self.actor)
+        second = await self.execution.execute(self.binding.id, request, actor=self.actor)
+
+        self.assertEqual(self.client.issue_creates, 1)
+        self.assertEqual(first.output["issue_number"], 917)
+        self.assertEqual(first.external_id, second.external_id)
+        self.assertTrue(
+            (await self.execution.verify(self.binding.id, second, actor=self.actor)).verified
+        )
+
     async def test_pull_request_reconciles_unknown_outcome_without_duplicate(self) -> None:
         request = self._request(
             CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
@@ -383,6 +428,29 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
             await self.execution.execute(self.binding.id, request, actor=self.actor)
 
         self.assertEqual(self.client.pull_request_creates, 0)
+
+    async def test_pull_request_merge_requires_clean_state_and_verifies(self) -> None:
+        self.client.pull_requests.append(
+            {
+                "id": 889,
+                "number": 889,
+                "mergeable": True,
+                "mergeable_state": "clean",
+                "merged": False,
+                "html_url": "https://github.com/garnser/codex-web/pull/889",
+            }
+        )
+        request = self._request(
+            CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+            {"pull_request_number": 889, "merge_method": "squash"},
+        )
+        result = await self.execution.execute(self.binding.id, request, actor=self.actor)
+
+        self.assertEqual(self.client.pull_request_merges, 1)
+        self.assertEqual(result.output["merge_commit_sha"], "a" * 40)
+        self.assertTrue(
+            (await self.execution.verify(self.binding.id, result, actor=self.actor)).verified
+        )
 
     async def test_branch_publication_attests_workspace_and_brokers_credential(self) -> None:
         request = self._request(
