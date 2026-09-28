@@ -391,3 +391,111 @@ test("Project coordinated policy submits all repositories without per-turn selec
   expect(turnPayload.read_only_repository_resource_ids).toEqual([]);
   expect(pageErrors).toEqual([]);
 });
+
+test("retryable steering failure preserves the queued message and reconciles canonical state", async ({ page }) => {
+  await mirrorProductionStaticMount(page);
+  let queueReads = 0;
+  let threadReads = 0;
+  const project = {
+    id: "home",
+    name: "Home",
+    path: "/workspace/home",
+    repository_selection_policy: "explicit",
+  };
+  const thread = {
+    id: "thread-1",
+    name: "Steering race",
+    projectId: "home",
+    cwd: "/workspace/home",
+    status: { type: "active" },
+    turns: [{ id: "turn-active", status: "inProgress" }],
+  };
+
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/projects") {
+      await route.fulfill({ json: [project] });
+      return;
+    }
+    if (path === "/api/projects/home/readiness") {
+      await route.fulfill({ json: { project_id: "home", semantic_ready: true, execution_ready: true, status: "ready", checks: [] } });
+      return;
+    }
+    if (path === "/api/projects/home/ui-state") {
+      await route.fulfill({
+        json: {
+          project,
+          executionProfiles: { items: [], default_profile_id: "repository-write" },
+          resources: { items: [{ id: "repo-app", name: "Application", resource_type: "repository", lifecycle: "active" }] },
+          bindings: { items: [] },
+          threadSettings: { "thread-1": { repository_resource_id: "repo-app", execution_profile_id: "repository-write" } },
+          channels: { items: [] },
+          threads: { data: [thread] },
+        },
+      });
+      return;
+    }
+    if (path === "/api/models") {
+      await route.fulfill({ json: { data: [] } });
+      return;
+    }
+    if (path === "/api/threads/thread-1" && request.method() === "GET") {
+      threadReads += 1;
+      await route.fulfill({ json: { thread } });
+      return;
+    }
+    if (path === "/api/threads/thread-1/preflight-attempts") {
+      await route.fulfill({ json: { items: [] } });
+      return;
+    }
+    if (path === "/api/threads/thread-1/queue" && request.method() === "GET") {
+      queueReads += 1;
+      await route.fulfill({ json: { active: true, queueDepth: queueReads > 1 ? 1 : 0, queued: queueReads > 1 ? [{ id: "queued-1" }] : [] } });
+      return;
+    }
+    if (path === "/api/threads/thread-1/turns" && request.method() === "POST") {
+      await route.fulfill({ json: { queued: true, queuedId: "queued-1", queueDepth: 1 } });
+      return;
+    }
+    if (path === "/api/threads/thread-1/queue/queued-1/steer" && request.method() === "POST") {
+      await route.fulfill({
+        status: 503,
+        json: {
+          detail: {
+            code: "steering_runtime_unavailable",
+            message: "The runtime restarted during steering.",
+            retryable: true,
+            queuedId: "queued-1",
+            queuePreserved: true,
+            reconcile: "refresh_queue_and_turn",
+          },
+        },
+      });
+      return;
+    }
+    await route.fulfill({ json: {} });
+  });
+
+  await page.goto("http://127.0.0.1:18766/static/index.html");
+  const threadItem = page.locator("#threads .item-main").first();
+  await expect(threadItem).toBeVisible();
+  await Promise.all([
+    page.waitForResponse((response) => new URL(response.url()).pathname === "/api/threads/thread-1"),
+    threadItem.evaluate((element) => element.click()),
+  ]);
+  await expect.poll(() => threadReads).toBeGreaterThanOrEqual(1);
+  await page.locator("#prompt").fill("Deliver this exactly once");
+  await page.locator("#prompt").press("Enter");
+
+  const queuedMessage = page.locator(".message.user.queued-message");
+  const steer = queuedMessage.locator("[data-action='steer']");
+  await expect(steer).toBeVisible();
+  await steer.click();
+
+  await expect(steer).toHaveText("Retry steer");
+  await expect(queuedMessage).toHaveClass(/steering-retryable/);
+  await expect(page.locator(".message.tool").last()).toContainText("message remains queued");
+  await expect.poll(() => queueReads).toBeGreaterThanOrEqual(2);
+  await expect.poll(() => threadReads).toBeGreaterThanOrEqual(2);
+});

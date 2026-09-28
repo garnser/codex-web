@@ -37,6 +37,7 @@ class _Host:
         self.queue_drains: list[str | None] = []
         self.approval_policy = "on-request"
         self.approval_requests: list[dict] = []
+        self.handoff_threads: set[str] = set()
 
     def _approval_thread_id(self, message: dict) -> str:
         return "thread-1"
@@ -67,6 +68,9 @@ class _Host:
 
     async def _record_bot_outbound(self, message: dict) -> None:
         self.outbound.append(message)
+
+    def _thread_handoff_in_progress(self, thread_id: str) -> bool:
+        return thread_id in self.handoff_threads
 
 
 class TrustedLocalCodexSecurityPolicyTests(unittest.TestCase):
@@ -305,6 +309,30 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(runtime.proc)
         self.assertEqual(runtime.last_error, "Codex app-server stopped")
+
+    async def test_thread_read_timeout_preserves_generation_during_steering_handoff(self) -> None:
+        process = SimpleNamespace(poll=lambda: None)
+        self.runtime.proc = process
+        self.runtime.ready.set()
+        self.runtime.ensure_started = AsyncMock()
+        self.runtime._send = AsyncMock()
+        self.runtime.stop = AsyncMock()
+        self.host.handoff_threads.add("thread-1")
+
+        with patch("codex_web.runtime.codex.request_timeout", return_value=0.001):
+            with self.assertRaises(HTTPException) as caught:
+                await self.runtime.request(
+                    "thread/read",
+                    {"threadId": "thread-1"},
+                )
+
+        self.assertEqual(caught.exception.status_code, 504)
+        self.assertTrue(self.runtime.ready.is_set())
+        self.runtime.stop.assert_not_awaited()
+        self.assertEqual(
+            self.host.bot_events[-1]["type"],
+            "thread_read_timeout_handoff_preserved",
+        )
 
     async def test_dead_reader_restarts_even_if_stale_ready_flag_is_set(self) -> None:
         async def complete():
