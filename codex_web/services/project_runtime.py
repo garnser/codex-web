@@ -6,6 +6,25 @@ from codex_web.models import Project
 from codex_web.services.projects import ProjectNotFoundError, ProjectService
 
 
+def assignment_sandbox_policy(
+    policy: dict[str, object],
+    *,
+    mode: str,
+) -> dict[str, object]:
+    """Permit private loopback relays inside an outer-isolated worker.
+
+    The local worker owns the actual network boundary: its namespace has no
+    external interface and contains only assignment-bound loopback relays.
+    Codex's inner sandbox must therefore allow sockets for restricted modes or
+    repository commands cannot reach those governed capabilities.
+    """
+
+    effective = dict(policy)
+    if mode in {"read-only", "workspace-write"}:
+        effective["networkAccess"] = True
+    return effective
+
+
 class ProjectRuntimeService:
     """Thread/turn-facing project lookup and runtime parameter composition."""
 
