@@ -1051,8 +1051,6 @@ action_provider_state_store = ActionProviderStateStore(state_store)
 action_provider_registry = ActionProviderRegistry(action_provider_state_store)
 reference_action_provider = ReferenceActionProvider()
 action_provider_registry.register(reference_action_provider)
-github_action_provider = GitHubActionProvider(resource_catalog_service)
-action_provider_registry.register(github_action_provider)
 action_execution_service = ActionExecutionService(
     action_provider_registry,
     resource_catalog_service,
@@ -1067,7 +1065,6 @@ app.include_router(
 app.state.action_provider_state_store = action_provider_state_store
 app.state.action_provider_registry = action_provider_registry
 app.state.action_execution_service = action_execution_service
-app.state.github_action_provider = github_action_provider
 
 execution_workspace_state_store = ExecutionWorkspaceStateStore(state_store)
 execution_workspace_backend = LocalGitWorkspaceBackend(EXECUTION_WORKSPACE_DIR)
@@ -1082,6 +1079,12 @@ app.include_router(build_execution_workspaces_router(execution_workspace_service
 app.state.execution_workspace_state_store = execution_workspace_state_store
 app.state.execution_workspace_backend = execution_workspace_backend
 app.state.execution_workspace_service = execution_workspace_service
+github_action_provider = GitHubActionProvider(
+    resource_catalog_service,
+    workspaces=execution_workspace_service,
+)
+action_provider_registry.register(github_action_provider)
+app.state.github_action_provider = github_action_provider
 
 control_plane_broker_factory = DeferredControlPlaneBrokerFactory()
 execution_worker_store = ExecutionWorkerStore(state_store)

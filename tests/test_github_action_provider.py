@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+import subprocess
 
 from codex_web.action_providers import ActionProviderBindingCreate, ActionRequest
+from codex_web.execution_workspaces import (
+    ExecutionWorkspace,
+    ExecutionWorkspaceKind,
+    ExecutionWorkspaceLease,
+    ExecutionWorkspaceMember,
+    ExecutionWorkspaceStatus,
+    LeaseMode,
+)
 from codex_web.resources import ResourceAlias, ResourceCreate, ResourceType
 from codex_web.secret_backends import LocalFileSecretBackend
 from codex_web.secrets import SecretCreate
@@ -12,6 +23,7 @@ from codex_web.services.action_providers import ActionExecutionService, ActionPr
 from codex_web.services.github_action_provider import (
     CODE_HOST_ISSUE_COMMENT_ACTION_ID,
     CODE_HOST_ISSUE_UPDATE_ACTION_ID,
+    CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
     CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
     GitHubActionProvider,
 )
@@ -79,6 +91,7 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
+        self.root = root
         sqlite = SQLiteStateStore(root / "state.sqlite3")
         identity = IdentityService(IdentityStateStore(sqlite))
         identity.bootstrap_local()
@@ -107,7 +120,110 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
             actor=self.actor,
         )
         self.client = _GitHubClient()
-        self.provider = GitHubActionProvider(self.resources, self.client)
+        branch = "feature/governed-publication"
+        workspace_root = root / "workspaces"
+        workspace_path = workspace_root / "workspace-a"
+        workspace_path.mkdir(parents=True)
+        subprocess.run(
+            ["git", "init", "-b", branch],
+            cwd=workspace_path,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.com"],
+            cwd=workspace_path,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=workspace_path,
+            check=True,
+        )
+        (workspace_path / "delivery.txt").write_text("ready\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "delivery.txt"], cwd=workspace_path, check=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "Ready for publication"],
+            cwd=workspace_path,
+            check=True,
+            capture_output=True,
+        )
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=workspace_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        lease = ExecutionWorkspaceLease(
+            id="lease-a",
+            execution_workspace_id="workspace-a",
+            organization_id=self.actor.organization_id,
+            workspace_id=self.actor.workspace_id,
+            work_item_ref="WI-1",
+            execution_id="execution-a",
+            owner_identity_id=self.actor.identity_id,
+            resource_ids=(self.repository.id,),
+            mode=LeaseMode.WRITE,
+            acquired_at=time.time(),
+            expires_at=time.time() + 300,
+        )
+        workspace = ExecutionWorkspace(
+            id="workspace-a",
+            organization_id=self.actor.organization_id,
+            workspace_id=self.actor.workspace_id,
+            work_item_ref="WI-1",
+            execution_id="execution-a",
+            project_id="project-a",
+            owner_identity_id=self.actor.identity_id,
+            kind=ExecutionWorkspaceKind.GIT_WORKTREE,
+            resource_ids=(self.repository.id,),
+            repository_resource_id=self.repository.id,
+            writable_repository_ids=(self.repository.id,),
+            lease_id=lease.id,
+            path=str(workspace_path),
+            branch_name=branch,
+            base_revision=head,
+            head_revision=head,
+            status=ExecutionWorkspaceStatus.ACTIVE,
+            created_at=time.time(),
+            updated_at=time.time(),
+            repository_members=(
+                ExecutionWorkspaceMember(
+                    resource_id=self.repository.id,
+                    access_mode=LeaseMode.WRITE,
+                    source_path=str(workspace_path),
+                    workspace_path=str(workspace_path),
+                    sandbox_path="/mnt/codex-repositories/repository",
+                    branch_name=branch,
+                    base_revision=head,
+                    head_revision=head,
+                ),
+            ),
+        )
+        state = SimpleNamespace(workspaces=[workspace], leases=[lease])
+        self.workspaces = SimpleNamespace(
+            store=SimpleNamespace(load=lambda: state),
+            backend=SimpleNamespace(root=workspace_root),
+        )
+        self.published_branches: list[tuple] = []
+
+        async def publish(path, repository, branch_name, revision, credential):
+            self.published_branches.append(
+                (path, repository, branch_name, revision, credential)
+            )
+
+        self.workspace_path = workspace_path
+        self.workspace_branch = branch
+        self.workspace_head = head
+        self.provider = GitHubActionProvider(
+            self.resources,
+            self.client,
+            self.workspaces,
+            branch_publisher=publish,
+        )
         self.registry = ActionProviderRegistry(ActionProviderStateStore(sqlite))
         self.registry.register(self.provider)
         self.execution = ActionExecutionService(
@@ -222,6 +338,47 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
             await self.execution.execute(self.binding.id, request, actor=self.actor)
 
         self.assertEqual(self.client.pull_request_creates, 0)
+
+    async def test_branch_publication_attests_workspace_and_brokers_credential(self) -> None:
+        request = self._request(
+            CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
+            {
+                "execution_workspace_id": "workspace-a",
+                "branch": self.workspace_branch,
+                "head_revision": self.workspace_head,
+            },
+        )
+
+        preparation = await self.execution.prepare(
+            self.binding.id, request, actor=self.actor
+        )
+        result = await self.execution.execute(
+            self.binding.id, request, actor=self.actor
+        )
+
+        self.assertTrue(preparation.provider_plan["workspace_attested"])
+        self.assertEqual(len(self.published_branches), 1)
+        self.assertEqual(self.published_branches[0][0], self.workspace_path)
+        self.assertEqual(self.published_branches[0][1], "garnser/codex-web")
+        self.assertEqual(self.published_branches[0][4], "secret-github-token")
+        self.assertEqual(result.output["head_revision"], self.workspace_head)
+        self.assertNotIn("secret-github-token", result.model_dump_json())
+
+    async def test_branch_publication_rejects_dirty_or_mismatched_workspace(self) -> None:
+        (self.workspace_path / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+        request = self._request(
+            CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
+            {
+                "execution_workspace_id": "workspace-a",
+                "branch": self.workspace_branch,
+                "head_revision": self.workspace_head,
+            },
+        )
+
+        with self.assertRaisesRegex(ValueError, "uncommitted"):
+            await self.execution.prepare(self.binding.id, request, actor=self.actor)
+
+        self.assertEqual(self.published_branches, [])
 
     async def test_unvalidated_repository_locator_fails_before_provider_call(self) -> None:
         invalid = self.resources.create(

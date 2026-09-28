@@ -106,7 +106,8 @@ New real providers must pass the same suite before they are wired into autonomy.
 
 The code-owned `github/github.com` ActionProvider begins the governed GitHub
 delivery path with provider-neutral `code-host.issue.comment` and
-`code-host.issue.update` actions, plus `code-host.pull-request.upsert`. All require
+`code-host.issue.update` actions, plus `code-host.pull-request.upsert` and
+`code-host.branch.publish`. All require
 exactly one canonical repository
 Resource, derive `owner/repository` from its validated GitHub alias, require a
 resource-scoped binding and SecretBroker credential reference, and emit bounded
@@ -116,9 +117,14 @@ Comment retries use a SHA-256-derived hidden marker from the durable ActionInten
 idempotency key and reconcile against existing issue comments before creating a
 new one. Pull-request retries reconcile the requested head/base and the same
 ownership marker; an existing unowned pull request fails closed. Issue state
-updates are naturally idempotent. Branch publication remains required before
-GitHub delivery is complete; workers must not bypass that gap with host
-credentials.
+updates are naturally idempotent. Branch publication accepts a canonical execution
+workspace ID, branch, and full committed revision rather than a filesystem path.
+The provider requires a live write lease, matches the repository member and
+canonical branch, re-reads the Git head, rejects dirty workspaces, validates the
+path beneath the execution-workspace backend root, and performs a non-force push
+inside the credential boundary. The credential is supplied only to a temporary
+owner-only askpass helper in the trusted provider process and never to the worker,
+ActionRequest, command line, receipt, or logs.
 
 ## API and UI
 
