@@ -158,88 +158,94 @@ function completion(eligible = false) {
 async function mockGoalApis(page, posts) {
   let completionEligible = false;
 
-  await page.route('**/api/goals?*/runtime-objectives/unbound?*', async (route) => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify({ items: [], count: 0 }),
-  }));
-  await page.route('**/api/goals?*/goal-a?*/execution-bindings?*', async (route) => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify({
-      items: [{
-        id: 'goal-binding-a',
-        goal_id: 'goal-a',
-        goal_revision: 4,
-        project_id: 'project-a',
-        work_item_refs: ['team/project-a#42'],
-        provider_id: 'openai',
-        runtime_id: 'codex',
-        agent_session_id: 'agent-session-7',
-        thread_id: 'thread-7',
-        execution_owner_id: 'release-validator',
-        provider_native_objective_id: 'native-goal-9',
-        native_objective_supported: true,
-        capability_snapshot: ['persistent_sessions', 'native_execution_objectives'],
-        status: 'blocked',
-        cursor_ref: 'cursor-285',
-        checkpoint_ref: 'checkpoint-284',
-        last_turn_id: 'turn-285',
-        last_execution_id: 'execution-285',
-        stop_reason: 'approval required',
-        heartbeat_at: 1890000100,
-        updated_at: 1890000100,
-      }],
-      count: 1,
-    }),
-  }));
-  await page.route('**/api/goals?*/goal-a?*/completion-evaluation?*', async (route) => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify({ item: completion(completionEligible) }),
-  }));
-  await page.route('**/api/goals?*/goal-a?*/completion-evaluation?*s', async (route) => {
-    posts.push({ action: 'evaluate', body: route.request().postDataJSON() });
-    completionEligible = true;
-    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ item: completion(true) }) });
+  await page.route('**/api/goals**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const { pathname } = url;
+    const method = request.method();
+    let body;
+
+    expect(url.searchParams.get('project_id')).toBe('project-a');
+
+    if (method === 'POST' && pathname === '/api/goals/goal-a/completion-evaluations') {
+      posts.push({ action: 'evaluate', body: request.postDataJSON() });
+      completionEligible = true;
+      body = { item: completion(true) };
+    } else if (method === 'POST' && pathname === '/api/goals/goal-a/decompositions/generate') {
+      posts.push({ action: 'generate', body: request.postDataJSON() });
+      body = { proposal: proposals()[0] };
+    } else if (method === 'POST' && pathname === '/api/goals/goal-a/decompositions/proposal-a/review') {
+      posts.push({ action: 'review', body: request.postDataJSON() });
+      body = { proposal: { ...proposals()[0], status: 'accepted' } };
+    } else if (method === 'POST' && pathname === '/api/goals/goal-a/decompositions/proposal-b/commit/reconcile') {
+      posts.push({ action: 'reconcile', body: request.postDataJSON() });
+      body = { proposal: proposals()[1] };
+    } else if (method === 'POST' && pathname === '/api/goals/goal-a/transition') {
+      posts.push({ action: 'transition', body: request.postDataJSON() });
+      body = { snapshot: goalSnapshot('completed') };
+    } else if (pathname === '/api/goals/runtime-objectives/unbound') {
+      body = { items: [], count: 0 };
+    } else if (pathname === '/api/goals/goal-a/execution-bindings') {
+      body = {
+        items: [{
+          id: 'goal-binding-a',
+          goal_id: 'goal-a',
+          goal_revision: 4,
+          project_id: 'project-a',
+          work_item_refs: ['team/project-a#42'],
+          provider_id: 'openai',
+          runtime_id: 'codex',
+          agent_session_id: 'agent-session-7',
+          thread_id: 'thread-7',
+          execution_owner_id: 'release-validator',
+          provider_native_objective_id: 'native-goal-9',
+          native_objective_supported: true,
+          capability_snapshot: ['persistent_sessions', 'native_execution_objectives'],
+          status: 'blocked',
+          cursor_ref: 'cursor-285',
+          checkpoint_ref: 'checkpoint-284',
+          last_turn_id: 'turn-285',
+          last_execution_id: 'execution-285',
+          stop_reason: 'approval required',
+          heartbeat_at: 1890000100,
+          updated_at: 1890000100,
+        }],
+        count: 1,
+      };
+    } else if (pathname === '/api/goals/goal-a/completion-evaluation') {
+      body = { item: completion(completionEligible) };
+    } else if (pathname === '/api/goals/goal-a/decompositions/events') {
+      body = {
+        items: [{ event_type: 'goal_decomposition.proposed', actor_id: 'planner', reason: 'bounded plan', occurred_at: 1889999000 }],
+        count: 1,
+      };
+    } else if (pathname === '/api/goals/goal-a/decompositions') {
+      body = { items: proposals(), count: 2 };
+    } else if (pathname === '/api/goals/goal-a/revisions') {
+      body = {
+        items: [{ revision: 4, revised_by: 'admin', reason: 'commit Goal work', revised_at: 1889998000 }],
+        count: 1,
+      };
+    } else if (pathname === '/api/goals/events') {
+      body = {
+        items: [{ event_type: 'goal_revised', actor_id: 'admin', reason: 'commit Goal work', occurred_at: 1889998000 }],
+        count: 1,
+      };
+    } else if (pathname === '/api/goals/goal-a') {
+      body = { snapshot: goalSnapshot() };
+    } else if (pathname === '/api/goals') {
+      body = { items: [goalSnapshot()], count: 1 };
+    } else {
+      await route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: `unmocked Goal route: ${method} ${pathname}` }),
+      });
+      return;
+    }
+
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
   });
-  await page.route('**/api/goals?*/goal-a?*/decompositions?*/generate?*', async (route) => {
-    posts.push({ action: 'generate', body: route.request().postDataJSON() });
-    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ proposal: proposals()[0] }) });
-  });
-  await page.route('**/api/goals?*/goal-a?*/decompositions?*/proposal-a/review?*', async (route) => {
-    posts.push({ action: 'review', body: route.request().postDataJSON() });
-    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ proposal: { ...proposals()[0], status: 'accepted' } }) });
-  });
-  await page.route('**/api/goals?*/goal-a?*/decompositions?*/proposal-b/commit/reconcile?*', async (route) => {
-    posts.push({ action: 'reconcile', body: route.request().postDataJSON() });
-    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ proposal: proposals()[1] }) });
-  });
-  await page.route('**/api/goals?*/goal-a?*/transition?*', async (route) => {
-    posts.push({ action: 'transition', body: route.request().postDataJSON() });
-    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ snapshot: goalSnapshot('completed') }) });
-  });
-  await page.route('**/api/goals?*/goal-a?*/decompositions?*/events?*', async (route) => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify({ items: [{ event_type: 'goal_decomposition.proposed', actor_id: 'planner', reason: 'bounded plan', occurred_at: 1889999000 }], count: 1 }),
-  }));
-  await page.route('**/api/goals?*/goal-a?*/decompositions?*', async (route) => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify({ items: proposals(), count: 2 }),
-  }));
-  await page.route('**/api/goals?*/goal-a?*/revisions?*', async (route) => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify({ items: [{ revision: 4, revised_by: 'admin', reason: 'commit Goal work', revised_at: 1889998000 }], count: 1 }),
-  }));
-  await page.route('**/api/goals?*/events?*', async (route) => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify({ items: [{ event_type: 'goal_revised', actor_id: 'admin', reason: 'commit Goal work', occurred_at: 1889998000 }], count: 1 }),
-  }));
-  await page.route('**/api/goals?*/goal-a?*', async (route) => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify({ snapshot: goalSnapshot() }),
-  }));
-  await page.route('**/api/goals?*', async (route) => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify({ items: [goalSnapshot()], count: 1 }),
-  }));
 }
 
 test('Goal workspace exposes canonical health, provenance, decomposition and commit blockers', async ({ page }) => {
