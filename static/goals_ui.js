@@ -1,6 +1,8 @@
 import { request } from './api_client.js';
 
 const state = {
+  projectId: '',
+  refreshGeneration: 0,
   goals: [],
   selectedGoalId: '',
   detail: null,
@@ -19,6 +21,46 @@ const esc = (value) => String(value ?? '')
   .replaceAll('>', '&gt;')
   .replaceAll('"', '&quot;')
   .replaceAll("'", '&#039;');
+
+function activeProjectId() {
+  return String(
+    document.body?.dataset?.projectId
+    || new URLSearchParams(window.location.search).get('project')
+    || '',
+  ).trim();
+}
+
+function scopedGoalPath(path, projectId) {
+  const separator = path.includes('?') ? '&' : '?';
+  return `${path}${separator}project_id=${encodeURIComponent(projectId)}`;
+}
+
+function goalRequest(path, options, projectId = state.projectId || activeProjectId()) {
+  const normalized = String(projectId || '').trim();
+  if (!normalized) {
+    return Promise.reject(new Error('Select a Project before loading Goals'));
+  }
+  return request(scopedGoalPath(path, normalized), options);
+}
+
+function clearProjectState(projectId) {
+  state.projectId = projectId;
+  state.goals = [];
+  state.selectedGoalId = '';
+  state.detail = null;
+  state.revisions = [];
+  state.events = [];
+  state.proposals = [];
+  state.decompositionEvents = [];
+  state.completion = null;
+  state.executionBindings = [];
+  state.unboundRuntimeObjectives = [];
+  renderGoalList();
+  const detail = document.querySelector('.goal-detail');
+  if (detail) {
+    detail.innerHTML = '<div class="goal-empty">Loading Goals for the selected Project…</div>';
+  }
+}
 
 function fmtTime(value) {
   if (!value) return '—';
@@ -88,23 +130,45 @@ function setStatus(message, isError = false) {
   target.classList.toggle('error', Boolean(isError));
 }
 
-async function refreshAll() {
+async function refreshAll({ projectId = activeProjectId() } = {}) {
+  const normalizedProjectId = String(projectId || '').trim();
+  const generation = ++state.refreshGeneration;
+  if (state.projectId !== normalizedProjectId) {
+    clearProjectState(normalizedProjectId);
+  }
   setStatus('Loading…');
   try {
-    const payload = await request('/api/goals');
+    const payload = await goalRequest('/api/goals', undefined, normalizedProjectId);
+    if (
+      generation !== state.refreshGeneration
+      || normalizedProjectId !== activeProjectId()
+    ) return;
     state.goals = Array.isArray(payload?.items) ? payload.items : [];
     if (!state.selectedGoalId || !state.goals.some((row) => row.goal?.id === state.selectedGoalId)) {
       state.selectedGoalId = state.goals[0]?.goal?.id || '';
     }
     renderGoalList();
     if (state.selectedGoalId) {
-      await loadGoal(state.selectedGoalId);
+      await loadGoal(state.selectedGoalId, {
+        projectId: normalizedProjectId,
+        generation,
+      });
     } else {
-      document.querySelector('.goal-detail').innerHTML = '<div class="goal-empty">No Goals exist in this workspace.</div>';
+      document.querySelector('.goal-detail').innerHTML = '<div class="goal-empty">No Goals exist in this Project.</div>';
     }
-    setStatus('Up to date');
+    if (
+      generation === state.refreshGeneration
+      && normalizedProjectId === activeProjectId()
+    ) {
+      setStatus('Up to date');
+    }
   } catch (error) {
-    setStatus(error.message || 'Failed to load Goals', true);
+    if (
+      generation === state.refreshGeneration
+      && normalizedProjectId === activeProjectId()
+    ) {
+      setStatus(error.message || 'Failed to load Goals', true);
+    }
   }
 }
 
@@ -130,11 +194,20 @@ function renderGoalList() {
   list.querySelectorAll('.goal-row').forEach((row) => row.addEventListener('click', async () => {
     state.selectedGoalId = row.dataset.goalId;
     renderGoalList();
-    await loadGoal(state.selectedGoalId);
+    await loadGoal(state.selectedGoalId, {
+      projectId: state.projectId,
+      generation: state.refreshGeneration,
+    });
   }));
 }
 
-async function loadGoal(goalId) {
+async function loadGoal(
+  goalId,
+  {
+    projectId = state.projectId || activeProjectId(),
+    generation = state.refreshGeneration,
+  } = {},
+) {
   const detail = document.querySelector('.goal-detail');
   if (!detail) return;
   detail.innerHTML = '<div class="goal-empty">Loading Goal detail…</div>';
@@ -150,15 +223,21 @@ async function loadGoal(goalId) {
       executionBindings,
       unboundRuntimeObjectives,
     ] = await Promise.all([
-      request(`/api/goals/${encoded}`),
-      request(`/api/goals/${encoded}/revisions`),
-      request(`/api/goals/events?goal_id=${encoded}`),
-      request(`/api/goals/${encoded}/decompositions`),
-      request(`/api/goals/${encoded}/decompositions/events`),
-      request(`/api/goals/${encoded}/completion-evaluation`),
-      request(`/api/goals/${encoded}/execution-bindings`),
-      request('/api/goals/runtime-objectives/unbound'),
+      goalRequest(`/api/goals/${encoded}`, undefined, projectId),
+      goalRequest(`/api/goals/${encoded}/revisions`, undefined, projectId),
+      goalRequest(`/api/goals/events?goal_id=${encoded}`, undefined, projectId),
+      goalRequest(`/api/goals/${encoded}/decompositions`, undefined, projectId),
+      goalRequest(`/api/goals/${encoded}/decompositions/events`, undefined, projectId),
+      goalRequest(`/api/goals/${encoded}/completion-evaluation`, undefined, projectId),
+      goalRequest(`/api/goals/${encoded}/execution-bindings`, undefined, projectId),
+      goalRequest('/api/goals/runtime-objectives/unbound', undefined, projectId),
     ]);
+    if (
+      generation !== state.refreshGeneration
+      || projectId !== state.projectId
+      || projectId !== activeProjectId()
+      || goalId !== state.selectedGoalId
+    ) return;
     state.detail = detailPayload?.snapshot || null;
     state.revisions = revisions?.items || [];
     state.events = events?.items || [];
@@ -551,11 +630,12 @@ function currentGoal() {
 async function mutate(path, body, statusText) {
   setStatus(statusText || 'Applying…');
   try {
-    await request(path, {
+    const projectId = state.projectId || activeProjectId();
+    await goalRequest(path, {
       method: 'POST',
       body: JSON.stringify(body),
-    });
-    await refreshAll();
+    }, projectId);
+    if (projectId === activeProjectId()) await refreshAll({ projectId });
   } catch (error) {
     setStatus(error.message || 'Operation failed', true);
     throw error;
@@ -773,6 +853,17 @@ function wireGoalActions() {
   });
 }
 
+window.addEventListener('codex:project-changed', (event) => {
+  const projectId = String(event.detail?.projectId || activeProjectId()).trim();
+  ++state.refreshGeneration;
+  clearProjectState(projectId);
+  setStatus(projectId ? 'Project changed' : 'Select a Project');
+  const dialog = document.querySelector('#goals-dialog');
+  if (dialog?.open && projectId) {
+    refreshAll({ projectId });
+  }
+});
+
 window.addEventListener('codex:open-goal', async (event) => {
   const goalId = String(event.detail?.goalId || '').trim();
   if (!goalId) return;
@@ -785,7 +876,7 @@ window.addEventListener('codex:open-goal', async (event) => {
     renderGoalList();
     await loadGoal(goalId);
   } else {
-    setStatus(`Goal not found in current tenant: ${goalId}`, true);
+    setStatus(`Goal not found in current Project: ${goalId}`, true);
   }
 });
 

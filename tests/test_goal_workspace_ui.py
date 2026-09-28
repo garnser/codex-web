@@ -14,7 +14,7 @@ class GoalWorkspaceUiTests(unittest.TestCase):
         styles = (ROOT / "static" / "goals_ui.css").read_text(encoding="utf-8")
 
         self.assertIn('static/goals_ui.js', html)
-        self.assertIn("request('/api/goals')", javascript)
+        self.assertIn("goalRequest('/api/goals'", javascript)
         self.assertIn("/decompositions/generate", javascript)
         self.assertIn("/review", javascript)
         self.assertIn("/commit/reconcile", javascript)
@@ -24,6 +24,9 @@ class GoalWorkspaceUiTests(unittest.TestCase):
         self.assertIn("ActionIntent", javascript)
         self.assertIn("health.reasons", javascript)
         self.assertIn("goal_revision", javascript)
+        self.assertIn("codex:project-changed", javascript)
+        self.assertIn("project_id=", javascript)
+        self.assertIn("refreshGeneration", javascript)
         self.assertIn("goal-observation-source", javascript)
         self.assertIn("goal-observation-reference", javascript)
         self.assertIn("goal-runtime-pause", javascript)
@@ -38,7 +41,7 @@ class GoalWorkspaceUiTests(unittest.TestCase):
 
         # Refresh is deterministic GET-only; model planning is bound to the
         # explicit .goal-generate click handler.
-        refresh_start = javascript.index("async function refreshAll()")
+        refresh_start = javascript.index("async function refreshAll(")
         refresh_end = javascript.index("function renderGoalList()", refresh_start)
         refresh_body = javascript[refresh_start:refresh_end]
         self.assertNotIn("/decompositions/generate", refresh_body)
