@@ -198,6 +198,8 @@ class CodexAuthDelegationService:
             "--config",
             "features.apps=false",
             "--config",
+            "features.code_mode.enabled=false",
+            "--config",
             'shell_environment_policy.inherit="none"',
             "--config",
             "shell_environment_policy.ignore_default_excludes=false",
