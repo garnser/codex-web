@@ -284,6 +284,7 @@ class _FakeCodexRuntime:
         self.cwd = Path(cwd)
         self._popen = popen
         self.proc = None
+        self.restart_on_timeout = True
         self.ready = asyncio.Event()
         self.requests = []
 
@@ -611,6 +612,7 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
                 launch["minimum_address_space_bytes"],
                 2 * 1024**4,
             )
+            self.assertFalse(session.runtime.restart_on_timeout)
             self.assertEqual(launch["argv"][-1], "app-server")
             self.assertEqual(
                 launch["environment"].get("CODEX_HOME"),

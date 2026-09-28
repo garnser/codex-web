@@ -124,12 +124,14 @@ class CodexRuntime:
         cwd: Path | None = None,
         popen: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
         metrics: RuntimeMetrics | None = None,
+        restart_on_timeout: bool = True,
     ) -> None:
         self.host = host
         self.command = command or trusted_local_codex_command()
         self.cwd = cwd or Path.home()
         self._popen = popen
         self.metrics = metrics
+        self.restart_on_timeout = restart_on_timeout
 
         self.proc: subprocess.Popen[str] | None = None
         self.next_id = 1
@@ -265,9 +267,10 @@ class CodexRuntime:
             self.metrics.increment("codex.pending_requests_failed", failed)
 
     async def _stderr_loop(self) -> None:
-        assert self.proc and self.proc.stderr
+        proc = self.proc
+        assert proc and proc.stderr
         while True:
-            line = await asyncio.to_thread(self.proc.stderr.readline)
+            line = await asyncio.to_thread(proc.stderr.readline)
             if not line:
                 return
             text = redact_codex_diagnostic(line.rstrip("\n"))
@@ -284,9 +287,10 @@ class CodexRuntime:
             await self.host.hub.publish({"type": "codex.stderr", "text": text})
 
     async def _read_loop(self) -> None:
-        assert self.proc and self.proc.stdout
+        proc = self.proc
+        assert proc and proc.stdout
         while True:
-            line = await asyncio.to_thread(self.proc.stdout.readline)
+            line = await asyncio.to_thread(proc.stdout.readline)
             if not line:
                 self.ready.clear()
                 self.last_error = "Codex app-server stopped"
@@ -298,9 +302,9 @@ class CodexRuntime:
                     logging.WARNING,
                     "codex.stdout_closed",
                     "Codex app-server stdout closed",
-                    pid=self.proc.pid if self.proc else None,
+                    pid=proc.pid,
                 )
-                if self.proc and self.proc.poll() is not None:
+                if self.proc is proc and proc.poll() is not None:
                     self.proc = None
                 await self.host.hub.publish({"type": "codex.closed"})
                 return
@@ -497,11 +501,12 @@ class CodexRuntime:
             # A live process is insufficient evidence of a live JSON-RPC
             # transport. Invalidate this generation so the next request starts
             # a fresh app-server rather than accumulating timeouts forever.
-            timed_out_proc = self.proc
-            self.ready.clear()
-            async with self.lifecycle_lock:
-                if self.proc is timed_out_proc:
-                    await self.stop()
+            if self.restart_on_timeout:
+                timed_out_proc = self.proc
+                self.ready.clear()
+                async with self.lifecycle_lock:
+                    if self.proc is timed_out_proc:
+                        await self.stop()
             raise HTTPException(status_code=504, detail=self.last_error) from exc
         finally:
             if self.metrics:

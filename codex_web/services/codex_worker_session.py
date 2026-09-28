@@ -301,6 +301,7 @@ class AssignmentBoundCodexSession(AssignmentBoundAgentProcessSession):
             credential_provider=provider,
             runtime_binding=runtime_binding,
             minimum_address_space_bytes=CODEX_MINIMUM_ADDRESS_SPACE_BYTES,
+            restart_runtime_on_timeout=False,
             watchdog_interval_seconds=watchdog_interval_seconds,
             egress_endpoints_resolver=egress_endpoints_resolver,
             control_plane_broker_factory=control_plane_broker_factory,
