@@ -65,7 +65,8 @@ TRUSTED_LOCAL_CHILD_ENVIRONMENT_CONFIG = (
     # making remote Apps or code-mode workspace discovery pre-sampling network
     # dependencies inside the assignment-bound, network-isolated runtime.
     "features.apps=false",
-    "features.code_mode.enabled=false",
+    "features.code_mode=false",
+    "features.code_mode_host=false",
     'shell_environment_policy.inherit="none"',
     "shell_environment_policy.ignore_default_excludes=false",
     'shell_environment_policy.set={PATH="/usr/local/bin:/usr/bin:/bin",HOME="/tmp/codex-local-shell-home"}',

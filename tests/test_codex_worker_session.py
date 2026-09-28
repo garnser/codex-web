@@ -186,7 +186,9 @@ class _FakeDelegationService:
                     "--config",
                     "features.apps=false",
                     "--config",
-                    "features.code_mode.enabled=false",
+                    "features.code_mode=false",
+                    "--config",
+                    "features.code_mode_host=false",
                     "--config",
                     'shell_environment_policy.inherit="none"',
                     "--config",
@@ -604,7 +606,8 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(launch["argv"][0], str(executable))
             self.assertIn("--config", launch["argv"])
             self.assertIn("features.apps=false", launch["argv"])
-            self.assertIn("features.code_mode.enabled=false", launch["argv"])
+            self.assertIn("features.code_mode=false", launch["argv"])
+            self.assertIn("features.code_mode_host=false", launch["argv"])
             self.assertEqual(launch["argv"][-1], "app-server")
             self.assertEqual(
                 launch["environment"].get("CODEX_HOME"),
@@ -763,7 +766,8 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(launch["argv"][-1], "app-server")
             self.assertIn('cli_auth_credentials_store="ephemeral"', launch["argv"])
             self.assertIn("features.apps=false", launch["argv"])
-            self.assertIn("features.code_mode.enabled=false", launch["argv"])
+            self.assertIn("features.code_mode=false", launch["argv"])
+            self.assertIn("features.code_mode_host=false", launch["argv"])
             self.assertIn(
                 'shell_environment_policy.filters.CODEX_ACCESS_TOKEN="exclude"',
                 launch["argv"],
