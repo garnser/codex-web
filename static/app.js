@@ -765,6 +765,7 @@ async function refreshQueueStatus(threadId = state.threadId) {
     const status = await api(`/api/threads/${threadId}/queue`);
     setThreadQueueDepth(threadId, status.queueDepth || 0);
     if (status.active) markThreadBusy(threadId);
+    return status;
   } catch (error) {
     logEvent("queue.error", { message: error.message });
   }
@@ -1429,6 +1430,7 @@ async function steerQueuedMessage(message) {
   const queuedId = message?.dataset?.queuedId;
   if (!threadId || !queuedId) return;
   const button = message.querySelector("[data-action='steer']");
+  if (button?.disabled) return;
   if (button) {
     button.disabled = true;
     button.textContent = "Steering...";

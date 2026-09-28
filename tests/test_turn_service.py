@@ -660,6 +660,48 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.status_code, 404)
         self.assertEqual(len(execution.start_calls), 1)
 
+    async def test_competing_handoff_returns_409_and_preserves_exact_item(self) -> None:
+        service, queue, execution, _events, _settings = self._service()
+        queued = queue.queued[0]
+        execution.handoffs.add("thread-1")
+
+        with self.assertRaises(HTTPException) as caught:
+            await service.steer("thread-1", queued.id)
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(caught.exception.detail["code"], "steering_handoff_in_progress")
+        self.assertTrue(caught.exception.detail["retryable"])
+        self.assertEqual(caught.exception.detail["queuedId"], queued.id)
+        self.assertIs(queue.queued[0], queued)
+        self.assertEqual(len(queue.queued), 1)
+        self.assertTrue(execution.active)
+        self.assertEqual(execution.handoffs, {"thread-1"})
+        self.assertEqual(execution.start_calls, [])
+
+    async def test_active_record_remains_fenced_during_interrupt_and_start(self) -> None:
+        service, _queue, execution, events, _settings = self._service()
+
+        async def interrupt(*args, **kwargs):
+            self.assertTrue(execution.active)
+            self.assertEqual(execution.handoffs, {"thread-1"})
+            return {}
+
+        async def start(*args, **kwargs):
+            self.assertTrue(execution.active)
+            self.assertEqual(execution.handoffs, {"thread-1"})
+            self.assertTrue(kwargs["preserve_active_handoff"])
+            return {"turn": {"id": "replacement"}}
+
+        execution.request_for_thread = interrupt
+        execution.start_thread_turn_now = start
+        result = await service.steer("thread-1", "queued-1")
+
+        self.assertEqual(result["turn"]["id"], "replacement")
+        self.assertEqual(execution.handoffs, set())
+        self.assertEqual([event["type"] for event in events], [
+            "steering_handoff_started", "steering_turn_interrupted", "steering_turn_resumed",
+        ])
+
     async def test_retry_after_transient_failure_reuses_execution_identity(self) -> None:
         service, queue, execution, _events, _settings = self._service()
         execution.start_error = RuntimeError("runtime restarting")
