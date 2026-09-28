@@ -40,6 +40,7 @@ from codex_web.services.provider_capacity import (
     ProviderCapacityBlockedError,
     ProviderCapacityService,
 )
+from codex_web.services.project_runtime import assignment_sandbox_policy
 from codex_web.services.replicated_ownership import ReplicatedOwnershipService
 from codex_web.services.agent_worker_session import AssignmentBoundAgentSessionManager
 from codex_web.services.thread_bootstrap_bindings import (
@@ -2076,6 +2077,11 @@ class TurnExecutionService:
                     effective_sandbox,
                     workspace_cwd,
                 )
+                if not trusted_local_codex_session:
+                    resume_params["sandboxPolicy"] = assignment_sandbox_policy(
+                        resume_params["sandboxPolicy"],
+                        mode=effective_sandbox,
+                    )
             runtime_session_request = AgentRuntimeSessionRequest(
                 project_id=project.id,
                 sandbox=effective_sandbox,
@@ -2176,6 +2182,11 @@ class TurnExecutionService:
                     effective_sandbox,
                     workspace_cwd,
                 )
+                if not trusted_local_codex_session:
+                    params["sandboxPolicy"] = assignment_sandbox_policy(
+                        params["sandboxPolicy"],
+                        mode=effective_sandbox,
+                    )
             params["input"][0]["text"] = self.with_relay_guard(
                 params["input"][0]["text"],
                 self.turn_source_for_relay_guard(thread_id, source),

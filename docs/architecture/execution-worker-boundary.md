@@ -231,7 +231,11 @@ into the worker namespace plus a fixed loopback relay at
 that Unix socket. The trusted Codex child-shell policy sets this non-secret
 loopback locator explicitly while retaining `inherit="none"`, so repository
 commands can discover governed operations without inheriting the app-server
-environment or credential material. The broker parses each request itself and dispatches only a
+environment or credential material. Assignment-bound Codex commands allow
+socket access inside the worker namespace so they can reach these loopback
+relays. The outer worker namespace remains the network boundary and has no
+external interface, so this does not grant repository commands general network
+access. The broker parses each request itself and dispatches only a
 small code-owned operation catalog to canonical codex-web services.
 
 Initial reachability is limited to scoped Work Item operations:

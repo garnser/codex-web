@@ -665,6 +665,8 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         turn = sessions.session.requests[1][1]
         self.assertEqual(resume["cwd"], "/isolated/workspace")
         self.assertEqual(turn["cwd"], "/isolated/workspace")
+        self.assertTrue(resume["sandboxPolicy"]["networkAccess"])
+        self.assertTrue(turn["sandboxPolicy"]["networkAccess"])
         self.assertEqual(binding.calls[0]["execution_id"], "exec-1")
         active = host.active["t1"]
         self.assertEqual(active.turn_id, "turn-1")

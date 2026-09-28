@@ -319,7 +319,11 @@ class ThreadBootstrapCreateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(params["cwd"], "/isolated/bootstrap")
         self.assertEqual(
             params["sandboxPolicy"],
-            {"type": "workspace-write", "cwd": "/isolated/bootstrap"},
+            {
+                "type": "workspace-write",
+                "cwd": "/isolated/bootstrap",
+                "networkAccess": True,
+            },
         )
         self.assertNotEqual(params["cwd"], host.project.path)
 

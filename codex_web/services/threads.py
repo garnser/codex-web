@@ -30,7 +30,10 @@ from codex_web.services.agent_worker_session import AssignmentBoundAgentSessionM
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingService,
 )
-from codex_web.services.project_runtime import ProjectRuntimeService
+from codex_web.services.project_runtime import (
+    ProjectRuntimeService,
+    assignment_sandbox_policy,
+)
 from codex_web.services.thread_bot_collaboration import ThreadBotCollaborationService
 from codex_web.services.thread_execution_settings import ThreadExecutionSettingsService
 from codex_web.services.thread_naming import ThreadNamingService
@@ -879,9 +882,12 @@ class ThreadService:
             },
         )
         params["cwd"] = workspace_cwd
-        params["sandboxPolicy"] = self._projects().sandbox_policy(
-            effective_sandbox,
-            workspace_cwd,
+        params["sandboxPolicy"] = assignment_sandbox_policy(
+            self._projects().sandbox_policy(
+                effective_sandbox,
+                workspace_cwd,
+            ),
+            mode=effective_sandbox,
         )
 
         runtime_request = AgentRuntimeSessionRequest(
