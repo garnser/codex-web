@@ -465,6 +465,7 @@ class ThreadService:
         item: dict[str, Any],
         *,
         project_id: str | None,
+        project_path: str | None = None,
         archived: bool,
     ) -> IndexedThread | None:
         thread_id = str(item.get("id") or item.get("threadId") or "").strip()
@@ -480,7 +481,11 @@ class ThreadService:
         return IndexedThread(
             id=thread_id,
             name=name,
-            cwd=item.get("cwd"),
+            # Repository-backed sessions run from isolated execution-workspace
+            # paths. The thread index is project-scoped by cwd, so retain the
+            # canonical Project path for list membership instead of allowing a
+            # temporary worker path to make the thread disappear from the UI.
+            cwd=project_path or item.get("cwd"),
             path=item.get("path"),
             updatedAt=normalized_updated,
             preview=(preview[:240] if preview else None),
@@ -583,6 +588,7 @@ class ThreadService:
                 indexed = self._compact_runtime_thread(
                     item,
                     project_id=project_id,
+                    project_path=project_path,
                     archived=archived,
                 )
                 if indexed is None:
@@ -1076,6 +1082,7 @@ class ThreadService:
                     ),
                 },
                 project_id=project.id,
+                project_path=project.path,
                 archived=False,
             )
             if indexed is not None and self.thread_index is not None:

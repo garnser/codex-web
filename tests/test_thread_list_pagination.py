@@ -271,6 +271,34 @@ class ThreadListPaginationTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(row["runtimeLoaded"])
             self.assertFalse(row["needsRefresh"])
 
+    async def test_execution_workspace_thread_keeps_project_list_membership(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repository = self._repository(root)
+            runtime = _Runtime(
+                [
+                    {
+                        "id": "vp-engineering",
+                        "name": "VP Engineering",
+                        "cwd": "/runtime/execution-workspaces/execws-vp",
+                        "updatedAt": 43.0,
+                        "status": {"type": "idle"},
+                    }
+                ]
+            )
+            service = self._service(runtime, repository)
+
+            response = await service.list("home", limit=10)
+
+            self.assertEqual(len(response["data"]), 1)
+            row = response["data"][0]
+            self.assertEqual(row["id"], "vp-engineering")
+            self.assertEqual(row["projectId"], "home")
+            self.assertEqual(row["cwd"], "/repo/home")
+            indexed = repository.get("vp-engineering")
+            self.assertIsNotNone(indexed)
+            self.assertEqual(indexed.cwd, "/repo/home")
+
     async def test_page_size_is_capped_server_side(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
