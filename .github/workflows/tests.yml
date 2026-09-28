@@ -23,6 +23,15 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
+      - name: Prepare runner-local data directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -L data && ! -e data ]]; then
+            unlink data
+          fi
+          mkdir -p data
+
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
@@ -560,4 +569,3 @@ jobs:
           printf '%s\n' "$output"
           printf '%s' "$output" | grep -E \
             "Unexpected capabilities|Operation not permitted|Can't mount proc"
-

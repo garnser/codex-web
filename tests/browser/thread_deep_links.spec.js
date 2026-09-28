@@ -125,7 +125,7 @@ test('project-scoped Thread deep links, reload, and Back/Forward restore convers
   await expect(page.locator('#thread-title')).toHaveText('Home thread');
   await expect(page).toHaveURL(/projects\/home\/chat\?thread=home-thread/);
 
-  await page.locator('#threads .item-main').click({ force: true });
+  await page.locator('#threads .item-main', { hasText: 'Home thread' }).click({ force: true });
   await expect(page.locator('#thread-title')).toHaveText('Home thread');
   await expect(page).toHaveURL(/thread=home-thread/);
   await page.evaluate(() => window.CodexProductUI.openWorkspace('overview'));
@@ -146,7 +146,7 @@ test('project-scoped Thread deep links, reload, and Back/Forward restore convers
 test('Thread selection history is restored and Project switching drops the previous Thread', async ({ page }) => {
   const { reads } = await mockChatApi(page);
   await page.goto('http://127.0.0.1:18766/projects/home/chat');
-  await page.locator('#threads .item-main').click({ force: true });
+  await page.locator('#threads .item-main', { hasText: 'Home thread' }).click({ force: true });
   await expect(page.locator('#thread-title')).toHaveText('Home thread');
   await page.goBack();
   await expect(page).not.toHaveURL(/thread=home-thread/);
