@@ -791,10 +791,56 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         self.assertEqual(second.lease_id, first.lease_id)
         self.assertEqual(len(self.backend.provisioned), 1)
 
-    def test_conflicting_write_lease_fails_closed(self) -> None:
-        self._acquire("exec-1", self.repo.id)
+    def test_same_repository_writes_get_distinct_isolated_worktrees(self) -> None:
+        first = self._acquire("exec-1", self.repo.id)
+        second = self._acquire("exec-2", self.repo.id)
+
+        self.assertEqual(first.kind, ExecutionWorkspaceKind.GIT_WORKTREE)
+        self.assertEqual(second.kind, ExecutionWorkspaceKind.GIT_WORKTREE)
+        self.assertNotEqual(first.id, second.id)
+        self.assertNotEqual(first.lease_id, second.lease_id)
+        self.assertNotEqual(first.path, second.path)
+        self.assertNotEqual(first.branch_name, second.branch_name)
+        self.assertEqual(first.writable_repository_ids, (self.repo.id,))
+        self.assertEqual(second.writable_repository_ids, (self.repo.id,))
+
+    def test_non_git_write_leases_remain_exclusive(self) -> None:
+        self._acquire(
+            "db-write-1",
+            self.database.id,
+            repository_resource_id=None,
+            lease_mode=LeaseMode.WRITE,
+        )
+
         with self.assertRaises(ExecutionWorkspaceConflictError):
-            self._acquire("exec-2", self.repo.id)
+            self._acquire(
+                "db-write-2",
+                self.database.id,
+                repository_resource_id=None,
+                lease_mode=LeaseMode.WRITE,
+            )
+
+    def test_shared_resource_write_still_blocks_isolated_git_overlap(self) -> None:
+        def acquire(execution_id: str):
+            return self.service.acquire(
+                ExecutionWorkspaceAcquire(
+                    work_item_ref=self.work_item.ref,
+                    execution_id=execution_id,
+                    project_id="home",
+                    resource_ids=(self.repo.id, self.database.id),
+                    repository_resource_id=self.repo.id,
+                    lease_mode=LeaseMode.WRITE,
+                    ttl_seconds=30,
+                ),
+                actor=self.actor,
+            )
+
+        acquire("mixed-write-1")
+        with self.assertRaisesRegex(
+            ExecutionWorkspaceConflictError,
+            self.database.id,
+        ):
+            acquire("mixed-write-2")
 
     def test_read_leases_can_coexist_but_write_conflicts(self) -> None:
         self._acquire(
@@ -814,6 +860,20 @@ class ExecutionWorkspaceTests(unittest.TestCase):
                 "write-1",
                 self.database.id,
                 repository_resource_id=None,
+                lease_mode=LeaseMode.WRITE,
+            )
+
+    def test_repository_read_write_overlap_remains_exclusive(self) -> None:
+        self._acquire(
+            "repo-read",
+            self.repo.id,
+            lease_mode=LeaseMode.READ,
+        )
+
+        with self.assertRaises(ExecutionWorkspaceConflictError):
+            self._acquire(
+                "repo-write",
+                self.repo.id,
                 lease_mode=LeaseMode.WRITE,
             )
 

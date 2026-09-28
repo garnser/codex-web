@@ -766,6 +766,39 @@ class TurnExecutionBindingTests(unittest.TestCase):
             THREAD_BOOTSTRAP_SESSION_SECONDS,
         )
 
+    def test_parallel_bootstraps_get_distinct_isolated_repository_workspaces(self) -> None:
+        self._publish_secret()
+
+        first = self.service.prepare_bootstrap(
+            bootstrap_id="bootstrap-first",
+            execution_id="bootstrap-exec-first",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            session_seconds=60,
+        )
+        second = self.service.prepare_bootstrap(
+            bootstrap_id="bootstrap-second",
+            execution_id="bootstrap-exec-second",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            session_seconds=60,
+        )
+        first_workspace = self.workspaces.get(first.workspace_id, self.actor)
+        second_workspace = self.workspaces.get(second.workspace_id, self.actor)
+
+        self.assertEqual(first.resource_ids, (self.repository.id,))
+        self.assertEqual(second.resource_ids, (self.repository.id,))
+        self.assertNotEqual(first.workspace_id, second.workspace_id)
+        self.assertNotEqual(first.assignment_id, second.assignment_id)
+        self.assertNotEqual(first_workspace.lease_id, second_workspace.lease_id)
+        self.assertNotEqual(first_workspace.path, second_workspace.path)
+        self.assertNotEqual(
+            first_workspace.branch_name,
+            second_workspace.branch_name,
+        )
+
     def test_bootstrap_lifetime_cannot_exceed_bounded_worker_workspace_contract(self) -> None:
         self._publish_secret()
 
@@ -1029,7 +1062,7 @@ class TurnExecutionBindingTests(unittest.TestCase):
         self.assertEqual(self.workspaces.list(self.actor), [])
         self.assertEqual(self.workers.list_assignments(self.actor), [])
 
-    def test_conflicting_write_lease_is_typed_and_creates_no_second_assignment(self) -> None:
+    def test_parallel_thread_writes_get_distinct_workspaces_and_assignments(self) -> None:
         self._publish_secret()
         first = self.service.prepare(
             thread_id="thread-first",
@@ -1038,23 +1071,26 @@ class TurnExecutionBindingTests(unittest.TestCase):
             sandbox="workspace-write",
             approval_policy="on-request",
         )
-
-        with self.assertRaises(TurnExecutionBindingError) as caught:
-            self.service.prepare(
-                thread_id="thread-second",
-                execution_id="exec-second",
-                project_id=self.project.id,
-                sandbox="workspace-write",
-                approval_policy="on-request",
-            )
-
-        self.assertEqual(caught.exception.code, "lease_conflict")
-        self.assertEqual(len(self.workspaces.list(self.actor)), 1)
-        self.assertEqual(
-            self.workspaces.list(self.actor)[0].id,
-            first.workspace_id,
+        second = self.service.prepare(
+            thread_id="thread-second",
+            execution_id="exec-second",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
         )
-        self.assertEqual(len(self.workers.list_assignments(self.actor)), 1)
+        first_workspace = self.workspaces.get(first.workspace_id, self.actor)
+        second_workspace = self.workspaces.get(second.workspace_id, self.actor)
+
+        self.assertNotEqual(first.workspace_id, second.workspace_id)
+        self.assertNotEqual(first.assignment_id, second.assignment_id)
+        self.assertNotEqual(first_workspace.lease_id, second_workspace.lease_id)
+        self.assertNotEqual(first_workspace.path, second_workspace.path)
+        self.assertNotEqual(
+            first_workspace.branch_name,
+            second_workspace.branch_name,
+        )
+        self.assertEqual(len(self.workspaces.list(self.actor)), 2)
+        self.assertEqual(len(self.workers.list_assignments(self.actor)), 2)
 
     def test_explicit_repository_target_is_persisted(self) -> None:
         self._publish_secret()
