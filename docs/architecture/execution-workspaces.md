@@ -60,10 +60,13 @@ under `/mnt/codex-context/<resource-id>`; the Project root itself is never
 mounted as a compatibility shortcut.
 
 The workspace keeps one fenced canonical lease but records a per-resource mode.
-Conflict detection is resource-specific: read/read overlap is permitted, while
-any overlapping write lease fails closed. Existing single-repository workspaces
-retain the legacy top-level path/branch/base/head projection and gain one
-equivalent member record.
+Conflict detection is resource-specific. Read/read overlap is permitted.
+Write/write overlap is permitted only when both canonical workspace records
+identify the resource as a writable member of distinct Git worktrees; their
+workspace paths, branches, leases, fences and integration outcomes remain
+independent. Read/write overlap and every shared or non-Git write overlap fail
+closed. Existing single-repository workspaces retain the legacy top-level
+path/branch/base/head projection and gain one equivalent member record.
 
 Repository filesystem sources come from canonical Resource filesystem/path
 aliases. Relative aliases are resolved beneath the canonical Project root and
@@ -76,13 +79,16 @@ read-only sibling repositories require an explicit canonical filesystem source.
 Leases are reserved transactionally in SQLite before provisioning.
 
 - read/read leases may coexist;
-- any overlapping write lease conflicts;
+- write/write leases may coexist only for the same canonical repository when
+  both executions own independently provisioned writable Git worktree members;
+- read/write and shared or non-Git write overlaps conflict;
 - resource-scoped conflicts fail before a worktree is created;
 - tenant and identity quotas are evaluated against active leases;
 - workspace resource count and requested disk usage are bounded;
 - provisioning failure marks the workspace `error` and releases the reserved lease.
 
-This prevents two agents from accidentally receiving write authority over the same canonical Resource.
+This prevents two agents from accidentally sharing mutable state while allowing
+independent branches for concurrent work on the same canonical repository.
 
 ## Git isolation
 

@@ -94,6 +94,35 @@ class ExecutionWorkspaceService:
         return lease.released_at is None and lease.expires_at > now
 
     @staticmethod
+    def _isolated_git_write_overlap_allowed(
+        *,
+        resource_id: str,
+        requested_mode: LeaseMode,
+        requested_workspace: ExecutionWorkspace,
+        active_mode: LeaseMode,
+        active_workspace: ExecutionWorkspace | None,
+    ) -> bool:
+        """Return whether two writes are isolated by distinct Git worktrees."""
+
+        return (
+            requested_mode == LeaseMode.WRITE
+            and active_mode == LeaseMode.WRITE
+            and requested_workspace.kind == ExecutionWorkspaceKind.GIT_WORKTREE
+            and resource_id in requested_workspace.writable_repository_ids
+            and active_workspace is not None
+            and active_workspace.id != requested_workspace.id
+            and active_workspace.kind == ExecutionWorkspaceKind.GIT_WORKTREE
+            and active_workspace.status
+            in {
+                ExecutionWorkspaceStatus.PROVISIONING,
+                ExecutionWorkspaceStatus.ACTIVE,
+                ExecutionWorkspaceStatus.CONFLICTED,
+                ExecutionWorkspaceStatus.INTEGRATED,
+            }
+            and resource_id in active_workspace.writable_repository_ids
+        )
+
+    @staticmethod
     def _append_event(state, event: ExecutionWorkspaceEvent) -> None:
         state.events.append(event)
         state.events = state.events[-5000:]
@@ -706,18 +735,33 @@ class ExecutionWorkspaceService:
                     "identity active execution workspace quota exceeded"
                 )
             requested = set(request.resource_ids)
+            workspaces_by_id = {item.id: item for item in state.workspaces}
             for active in active_leases:
                 overlap = requested.intersection(active.resource_ids)
-                conflicting = [
-                    resource_id
-                    for resource_id in overlap
-                    if (
-                        resource_modes.get(resource_id, aggregate_mode)
-                        == LeaseMode.WRITE
-                        or active.resource_modes.get(resource_id, active.mode)
-                        == LeaseMode.WRITE
+                active_workspace = workspaces_by_id.get(
+                    active.execution_workspace_id
+                )
+                conflicting: list[str] = []
+                for resource_id in overlap:
+                    requested_mode = resource_modes.get(
+                        resource_id,
+                        aggregate_mode,
                     )
-                ]
+                    active_mode = active.resource_modes.get(
+                        resource_id,
+                        active.mode,
+                    )
+                    if requested_mode == active_mode == LeaseMode.READ:
+                        continue
+                    if self._isolated_git_write_overlap_allowed(
+                        resource_id=resource_id,
+                        requested_mode=requested_mode,
+                        requested_workspace=workspace,
+                        active_mode=active_mode,
+                        active_workspace=active_workspace,
+                    ):
+                        continue
+                    conflicting.append(resource_id)
                 if conflicting:
                     raise ExecutionWorkspaceConflictError(
                         "conflicting active resource lease: "
