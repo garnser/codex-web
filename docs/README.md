@@ -54,4 +54,6 @@ Documentation must distinguish three layers:
 - **External provider state** — GitLab, Slack, model/action providers, workers and other systems remain authoritative for the state they own.
 - **Advisory model output** — model text can recommend or interpret; it does not grant authority or become canonical state merely by being generated.
 
+Delivery status is tracked in GitHub issues, milestones, projects and pull requests; documentation records durable product and architecture guidance rather than a parallel completion checklist.
+
 When a guide conflicts with the application contract, tests and versioned architecture documentation are authoritative. Open an issue to correct the guide.
