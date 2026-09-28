@@ -237,6 +237,9 @@ relays. The outer worker namespace remains the network boundary and has no
 external interface, so this does not grant repository commands general network
 access. The broker parses each request itself and dispatches only a
 small code-owned operation catalog to canonical codex-web services.
+Workers discover that assignment-scoped catalog through
+`GET /api/control-plane-broker/operations`; the response contains operation
+metadata and scope, never credentials or lease material.
 
 Initial reachability is limited to scoped Work Item operations:
 
