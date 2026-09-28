@@ -184,6 +184,8 @@ class _FakeDelegationService:
                     "--config",
                     'cli_auth_credentials_store="ephemeral"',
                     "--config",
+                    "features.apps=false",
+                    "--config",
                     'shell_environment_policy.inherit="none"',
                     "--config",
                     'shell_environment_policy.filters.CODEX_ACCESS_TOKEN="exclude"',
@@ -599,6 +601,7 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
             launch = self.backend.spawned[0]
             self.assertEqual(launch["argv"][0], str(executable))
             self.assertIn("--config", launch["argv"])
+            self.assertIn("features.apps=false", launch["argv"])
             self.assertEqual(launch["argv"][-1], "app-server")
             self.assertEqual(
                 launch["environment"].get("CODEX_HOME"),
@@ -756,6 +759,7 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(launch["argv"][0], "codex")
             self.assertEqual(launch["argv"][-1], "app-server")
             self.assertIn('cli_auth_credentials_store="ephemeral"', launch["argv"])
+            self.assertIn("features.apps=false", launch["argv"])
             self.assertIn(
                 'shell_environment_policy.filters.CODEX_ACCESS_TOKEN="exclude"',
                 launch["argv"],
