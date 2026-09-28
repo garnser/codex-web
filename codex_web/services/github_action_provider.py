@@ -340,7 +340,16 @@ class GitHubActionProvider:
                 (row for row in pulls if marker in str(row.get("body") or "")),
                 None,
             )
-            if owned is None and pulls:
+            conflicting_open = next(
+                (
+                    row
+                    for row in pulls
+                    if str(row.get("state") or "open").strip().casefold()
+                    == "open"
+                ),
+                None,
+            )
+            if owned is None and conflicting_open is not None:
                 raise ValueError(
                     "an existing pull request for head/base is not owned by this ActionIntent"
                 )
