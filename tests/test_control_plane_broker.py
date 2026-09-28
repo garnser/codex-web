@@ -35,6 +35,7 @@ from codex_web.services.authority_roles import install_authority_roles
 from codex_web.services.control_plane_broker import (
     AssignmentBoundControlPlaneBroker,
     ControlPlaneBrokerService,
+    DeferredControlPlaneBrokerFactory,
 )
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.identity import IdentityService
@@ -492,6 +493,42 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 ]
             ),
         )
+
+    async def test_repository_write_assignment_receives_same_scoped_broker(self) -> None:
+        assignment = self.assignment.model_copy(
+            update={"execution_profile_id": "repository-write"}
+        )
+        public = self.service.public_assignment_capability(assignment)
+        self.assertTrue(public["enabled"])
+        self.assertFalse(public["credential_exposed"])
+
+        status, payload, operation, target_ref, _decision = await self.service.dispatch(
+            assignment=assignment,
+            service_identity_id=self.worker_actor.identity_id,
+            method="GET",
+            raw_target=f"/api/work-items/{quote(self.ref, safe='')}",
+            body=b"",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["ref"], self.ref)
+        self.assertEqual(operation.id, "work_item.read")
+        self.assertEqual(target_ref, self.ref)
+
+        factory = DeferredControlPlaneBrokerFactory()
+        factory.configure(self.service)
+        broker = await factory.start(
+            assignment=assignment,
+            worker_id="worker-1",
+            service_identity_id=self.worker_actor.identity_id,
+            fence=1,
+            validator=lambda: assignment,
+        )
+        self.assertIsNotNone(broker)
+        assert broker is not None
+        try:
+            self.assertEqual(broker.sandbox_url, "http://127.0.0.1:8788")
+        finally:
+            await broker.stop()
 
 
 if __name__ == "__main__":

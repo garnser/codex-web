@@ -19,6 +19,8 @@ from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 from pydantic import ValidationError
 
+from codex_web.action_intents import ActionIntentClaimRequest, ActionIntentCreate
+from codex_web.action_providers import ActionRequest
 from codex_web.authority import (
     AuthorityDecisionOutcome,
     AuthorityEvaluationRequest,
@@ -38,6 +40,15 @@ from codex_web.models import (
     WorkItemProgressUpdate,
 )
 from codex_web.services.authority_roles import AuthorityRoleService
+from codex_web.services.action_intents import ActionIntentService
+from codex_web.services.code_host_action_contract import (
+    CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
+    CODE_HOST_ISSUE_COMMENT_ACTION_ID,
+    CODE_HOST_ISSUE_CREATE_ACTION_ID,
+    CODE_HOST_ISSUE_UPDATE_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
+)
 from codex_web.services.identity import (
     AuthenticationError,
     AuthorizationError,
@@ -129,6 +140,48 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
         capability="work_item.reconcile",
         authority_level=AuthorityLevel.EXECUTE,
     ),
+    ControlPlaneBrokerOperation(
+        id="repository.branch.publish",
+        method="POST",
+        path_template="/api/repository-actions/branch/publish",
+        capability="repository.branch.publish",
+        authority_level=AuthorityLevel.EXECUTE,
+    ),
+    ControlPlaneBrokerOperation(
+        id="repository.pull-request.upsert",
+        method="POST",
+        path_template="/api/repository-actions/pull-request/upsert",
+        capability="repository.pull-request.create",
+        authority_level=AuthorityLevel.EXECUTE,
+    ),
+    ControlPlaneBrokerOperation(
+        id="repository.issue.create",
+        method="POST",
+        path_template="/api/repository-actions/issue/create",
+        capability="repository.issue.create",
+        authority_level=AuthorityLevel.EXECUTE,
+    ),
+    ControlPlaneBrokerOperation(
+        id="repository.issue.comment",
+        method="POST",
+        path_template="/api/repository-actions/issue/comment",
+        capability="repository.issue.comment",
+        authority_level=AuthorityLevel.EXECUTE,
+    ),
+    ControlPlaneBrokerOperation(
+        id="repository.pull-request.merge",
+        method="POST",
+        path_template="/api/repository-actions/pull-request/merge",
+        capability="repository.pull-request.merge",
+        authority_level=AuthorityLevel.EXECUTE,
+    ),
+    ControlPlaneBrokerOperation(
+        id="repository.issue.update",
+        method="POST",
+        path_template="/api/repository-actions/issue/update",
+        capability="repository.issue.update",
+        authority_level=AuthorityLevel.EXECUTE,
+    ),
 )
 
 _OPERATION_BY_ID = {item.id: item for item in OPERATIONS}
@@ -140,6 +193,40 @@ _MUTATION_SUFFIXES = {
     "reconcile": "work_item.reconcile",
 }
 _SAFE_TRACE_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_REPOSITORY_ACTIONS = {
+    "/api/repository-actions/issue/create": (
+        "repository.issue.create",
+        CODE_HOST_ISSUE_CREATE_ACTION_ID,
+    ),
+    "/api/repository-actions/branch/publish": (
+        "repository.branch.publish",
+        CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
+    ),
+    "/api/repository-actions/pull-request/upsert": (
+        "repository.pull-request.upsert",
+        CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
+    ),
+    "/api/repository-actions/issue/comment": (
+        "repository.issue.comment",
+        CODE_HOST_ISSUE_COMMENT_ACTION_ID,
+    ),
+    "/api/repository-actions/issue/update": (
+        "repository.issue.update",
+        CODE_HOST_ISSUE_UPDATE_ACTION_ID,
+    ),
+    "/api/repository-actions/pull-request/merge": (
+        "repository.pull-request.merge",
+        CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+    ),
+}
+
+# These profiles execute different workloads but share the same narrow broker
+# boundary. The broker never grants generic network or localhost access: every
+# request is still operation-allowlisted, tenant/project scoped, authorized,
+# fenced, rate limited, and audited below.
+CONTROL_PLANE_EXECUTION_PROFILES = frozenset(
+    {"orchestration-only", "repository-write"}
+)
 
 
 class ControlPlaneBrokerService:
@@ -152,6 +239,7 @@ class ControlPlaneBrokerService:
         authority: AuthorityRoleService,
         work_items: WorkItemService,
         audit: ControlPlaneBrokerAuditStore,
+        action_intents: ActionIntentService | None = None,
         operator: WorkItemOperatorService | None = None,
         limits: ControlPlaneBrokerLimits | None = None,
         clock: Callable[[], float] = time.time,
@@ -162,6 +250,7 @@ class ControlPlaneBrokerService:
         self.work_items = work_items
         self.operator = operator or WorkItemOperatorService(work_items)
         self.audit = audit
+        self.action_intents = action_intents
         self.limits = limits or ControlPlaneBrokerLimits()
         self._clock = clock
         self._monotonic = monotonic
@@ -174,7 +263,7 @@ class ControlPlaneBrokerService:
         self,
         assignment: ExecutionAssignment,
     ) -> dict[str, Any]:
-        enabled = assignment.execution_profile_id == "orchestration-only"
+        enabled = assignment.execution_profile_id in CONTROL_PLANE_EXECUTION_PROFILES
         return {
             "enabled": enabled,
             "transport": "assignment-bound-unix-socket" if enabled else None,
@@ -265,6 +354,18 @@ class ControlPlaneBrokerService:
             )
         path = parsed.path
         query = parse_qs(parsed.query, keep_blank_values=False)
+        repository_action = _REPOSITORY_ACTIONS.get(path)
+        if repository_action is not None:
+            operation = _OPERATION_BY_ID[repository_action[0]]
+            if method != operation.method:
+                raise ControlPlaneBrokerDeniedError(
+                    f"method {method} is not allowed for {operation.id}"
+                )
+            return _ResolvedOperation(
+                operation=operation,
+                target_ref=None,
+                query=query,
+            )
         if path == "/api/work-items":
             operation = _OPERATION_BY_ID["work_item.list"]
             if method != operation.method:
@@ -330,6 +431,121 @@ class ControlPlaneBrokerService:
                 "worker service identity is unavailable or unauthorized"
             ) from exc
 
+    def _requester_actor(self, assignment: ExecutionAssignment):
+        try:
+            return self.identity.actor_for_identity(
+                assignment.created_by,
+                scope=TenantScope(
+                    organization_id=assignment.organization_id,
+                    workspace_id=assignment.workspace_id,
+                ),
+            )
+        except (AuthenticationError, AuthorizationError, TenantIsolationError) as exc:
+            raise ControlPlaneBrokerDeniedError(
+                "assignment requester identity is unavailable or unauthorized"
+            ) from exc
+
+    @staticmethod
+    def _writable_repository_id(assignment: ExecutionAssignment) -> str:
+        if assignment.execution_profile_id != "repository-write":
+            raise ControlPlaneBrokerDeniedError(
+                "repository actions require the repository-write execution profile"
+            )
+        scope = assignment.repository_scope
+        writable = tuple(scope.writable_repository_ids) if scope is not None else ()
+        if not writable and assignment.repository_target is not None:
+            repository_id = assignment.repository_target.mutable_repository_id
+            writable = (repository_id,) if repository_id else ()
+        if len(writable) != 1:
+            raise ControlPlaneBrokerDeniedError(
+                "repository actions require exactly one writable repository"
+            )
+        return writable[0]
+
+    async def _execute_repository_action(
+        self,
+        *,
+        assignment: ExecutionAssignment,
+        worker_actor,
+        requester_actor,
+        operation: ControlPlaneBrokerOperation,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self.action_intents is None:
+            raise ControlPlaneBrokerDeniedError(
+                "governed repository actions are unavailable"
+            )
+        repository_id = self._writable_repository_id(assignment)
+        action_id = next(
+            action_id
+            for operation_id, action_id in _REPOSITORY_ACTIONS.values()
+            if operation_id == operation.id
+        )
+        allowed_keys = {"parameters", "idempotency_key"}
+        unexpected = sorted(set(payload) - allowed_keys)
+        if unexpected:
+            raise ControlPlaneBrokerRequestError(
+                "repository action contains unsupported fields: " + ", ".join(unexpected)
+            )
+        parameters = payload.get("parameters", {})
+        if not isinstance(parameters, dict):
+            raise ControlPlaneBrokerRequestError("parameters must be a JSON object")
+        if action_id == CODE_HOST_BRANCH_PUBLISH_ACTION_ID:
+            parameters = {
+                **parameters,
+                "execution_workspace_id": assignment.execution_workspace_id,
+            }
+        bindings = [
+            item
+            for item in self.action_intents.execution.registry.list_bindings(requester_actor)
+            if item.enabled
+            and item.provider_type == "github"
+            and repository_id in item.resource_ids
+            and item.project_id in {None, assignment.project_id}
+        ]
+        if len(bindings) != 1:
+            raise ControlPlaneBrokerDeniedError(
+                "repository action requires exactly one enabled GitHub binding"
+            )
+        request = ActionRequest(
+            action_id=action_id,
+            organization_id=assignment.organization_id,
+            workspace_id=assignment.workspace_id,
+            project_id=assignment.project_id,
+            resource_ids=(repository_id,),
+            parameters=parameters,
+            idempotency_key=(
+                str(payload["idempotency_key"]).strip()
+                if payload.get("idempotency_key")
+                else None
+            ),
+            requested_by=requester_actor.identity_id,
+        )
+        intent = self.action_intents.create(
+            ActionIntentCreate(
+                binding_id=bindings[0].id,
+                request=request,
+                work_item_ref=assignment.work_item_ref,
+                execution_id=assignment.execution_id,
+            ),
+            actor=requester_actor,
+        )
+        worker_id = f"control-plane-broker:{assignment.assigned_worker_id or 'worker'}"
+        claimed = self.action_intents.claim(
+            ActionIntentClaimRequest(worker_id=worker_id),
+            actor=worker_actor,
+            intent_id=intent.id,
+        )
+        if claimed is None:
+            current = self.action_intents.get(intent.id, requester_actor)
+            return {"item": current.model_dump(mode="json")}
+        completed = await self.action_intents.execute_claimed(
+            intent.id,
+            worker_id,
+            actor=worker_actor,
+        )
+        return {"item": completed.model_dump(mode="json")}
+
     def _authorize(
         self,
         assignment: ExecutionAssignment,
@@ -338,7 +554,7 @@ class ControlPlaneBrokerService:
         actor,
         resource_ids: tuple[str, ...],
     ):
-        if assignment.execution_profile_id != "orchestration-only":
+        if assignment.execution_profile_id not in CONTROL_PLANE_EXECUTION_PROFILES:
             raise ControlPlaneBrokerDeniedError(
                 "assignment execution profile does not permit control-plane broker access"
             )
@@ -371,9 +587,16 @@ class ControlPlaneBrokerService:
         resolved = self._resolve_operation(method, raw_target)
         operation = resolved.operation
         actor = self._actor(assignment, service_identity_id)
+        requester_actor = (
+            self._requester_actor(assignment)
+            if operation.id.startswith("repository.")
+            else actor
+        )
         state = None
         resource_ids: tuple[str, ...] = ()
-        if resolved.target_ref is not None:
+        if operation.id.startswith("repository."):
+            resource_ids = (self._writable_repository_id(assignment),)
+        elif resolved.target_ref is not None:
             state = self._state_for_target(assignment, resolved.target_ref)
             resource_ids = tuple(state.resource_ids)
         elif assignment.project_id is None:
@@ -384,7 +607,7 @@ class ControlPlaneBrokerService:
         authority_decision = self._authorize(
             assignment,
             operation,
-            actor=actor,
+            actor=requester_actor,
             resource_ids=resource_ids,
         )
 
@@ -403,7 +626,15 @@ class ControlPlaneBrokerService:
                 )
             payload = decoded
 
-        if operation.id == "work_item.list":
+        if operation.id.startswith("repository."):
+            result = await self._execute_repository_action(
+                assignment=assignment,
+                worker_actor=actor,
+                requester_actor=requester_actor,
+                operation=operation,
+                payload=payload,
+            )
+        elif operation.id == "work_item.list":
             requested_project = (
                 resolved.query.get("project_id", [assignment.project_id])[0]
                 if resolved.query
@@ -870,7 +1101,10 @@ class DeferredControlPlaneBrokerFactory:
         worker_service_identity_validator: Callable[[], str] | None = None,
     ) -> AssignmentBoundControlPlaneBroker | None:
         service = self.service
-        if service is None or assignment.execution_profile_id != "orchestration-only":
+        if (
+            service is None
+            or assignment.execution_profile_id not in CONTROL_PLANE_EXECUTION_PROFILES
+        ):
             return None
         broker = AssignmentBoundControlPlaneBroker(
             service,

@@ -130,6 +130,16 @@ class GitHubClient:
         )
         return result if isinstance(result, dict) else {}
 
+    async def merge_pull_request(
+        self, api_base: str, repo: str, number: int, *, token: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        result = await self.request_json(
+            "PUT", api_base, f"repos/{quote(repo, safe='/')}/pulls/{number}/merge",
+            token=token, json_body=payload,
+        )
+        return result if isinstance(result, dict) else {}
+
     async def branch(
         self, api_base: str, repo: str, branch: str, *, token: str,
     ) -> dict[str, Any]:

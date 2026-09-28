@@ -1184,7 +1184,7 @@ local_worker_actor = identity_service.bootstrap_service_actor(
     identity_id="execution-worker-local",
     name="Local Execution Worker",
     scope=identity_service.local_trusted_actor().tenant,
-    service_scopes=("execution-worker:run", "secret:use"),
+    service_scopes=("execution-worker:run", "action-intent:worker", "secret:use"),
 )
 local_execution_worker = execution_worker_service.ensure_local_worker(
     service_identity_id=local_worker_actor.identity_id,
@@ -2239,6 +2239,7 @@ control_plane_broker_service = ControlPlaneBrokerService(
     authority=authority_role_service,
     work_items=work_item_service,
     audit=control_plane_broker_audit_store,
+    action_intents=action_intent_service,
 )
 control_plane_broker_factory.configure(control_plane_broker_service)
 app.state.control_plane_broker_audit_store = control_plane_broker_audit_store

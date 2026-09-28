@@ -26,10 +26,14 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_CHANGE_REQUEST_EVIDENCE,
     CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID,
     CODE_HOST_ISSUE_COMMENT_ACTION_ID,
+    CODE_HOST_ISSUE_CREATE_ACTION_ID,
+    CODE_HOST_ISSUE_CREATE_EVIDENCE,
     CODE_HOST_ISSUE_COMMENT_EVIDENCE,
     CODE_HOST_ISSUE_STATE_EVIDENCE,
     CODE_HOST_ISSUE_UPDATE_ACTION_ID,
     CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE,
     CodeHostActionContract,
     result_resource_output,
 )
@@ -169,6 +173,14 @@ class GitHubActionProvider:
         binding: ActionProviderBinding,
     ) -> dict[str, Any]:
         repository = self.contract.locator(request)
+        if request.action_id == CODE_HOST_ISSUE_CREATE_ACTION_ID:
+            payload = self.contract.issue_create(request)
+            return {
+                "operation": "issue-create",
+                "repository": repository,
+                "title_sha256": hashlib.sha256(payload["title"].encode()).hexdigest(),
+                "body_sha256": hashlib.sha256(payload["body"].encode()).hexdigest(),
+            }
         if request.action_id == CODE_HOST_ISSUE_COMMENT_ACTION_ID:
             body = self.contract.comment(request)
             return {
@@ -206,6 +218,14 @@ class GitHubActionProvider:
                 "head_revision": attested.revision,
                 "workspace_attested": attested.workspace_path.is_dir(),
             }
+        if request.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
+            payload = self.contract.pull_request_merge(request)
+            return {
+                "operation": "pull-request-merge",
+                "repository": repository,
+                "pull_request_number": payload["number"],
+                "merge_method": payload["merge_method"],
+            }
         raise ValueError("unsupported GitHub action")
 
     async def execute(
@@ -223,7 +243,31 @@ class GitHubActionProvider:
             "repository": repository,
             **result_resource_output(request),
         }
-        if request.action_id == CODE_HOST_ISSUE_COMMENT_ACTION_ID:
+        if request.action_id == CODE_HOST_ISSUE_CREATE_ACTION_ID:
+            payload = self.contract.issue_create(request)
+            marker = self.contract.marker(request)
+            issues = await self.client.list_issues(
+                self.api_base, repository, token=credential, state="all"
+            )
+            item = next(
+                (row for row in issues if marker in str(row.get("body") or "")),
+                None,
+            )
+            desired_body = self._owned_body(payload["body"], marker)
+            if item is None:
+                item = await self.client.create_issue(
+                    self.api_base,
+                    repository,
+                    token=credential,
+                    payload={"title": payload["title"], "body": desired_body},
+                )
+            number = self._positive_number(item, field="issue")
+            evidence_type = CODE_HOST_ISSUE_CREATE_EVIDENCE
+            external_id = str(item.get("id") or number)
+            url = str(item.get("html_url") or "") or None
+            output.update({"issue_number": number, "title": payload["title"]})
+            summary = "GitHub issue is owned by this action idempotency key."
+        elif request.action_id == CODE_HOST_ISSUE_COMMENT_ACTION_ID:
             number = self.contract.issue_number(request)
             marker = self.contract.marker(request)
             comments = await self.client.list_issue_comments(
@@ -386,6 +430,36 @@ class GitHubActionProvider:
                 }
             )
             summary = "GitHub branch matches the committed execution workspace head."
+        elif request.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
+            payload = self.contract.pull_request_merge(request)
+            number = payload["number"]
+            current = await self.client.pull_request(
+                self.api_base, repository, number, token=credential
+            )
+            if not bool(current.get("merged")):
+                if current.get("mergeable") is not True or str(
+                    current.get("mergeable_state") or ""
+                ) != "clean":
+                    raise ValueError(
+                        "GitHub pull request is not clean and mergeable; required checks may not be green"
+                    )
+                merged = await self.client.merge_pull_request(
+                    self.api_base,
+                    repository,
+                    number,
+                    token=credential,
+                    payload={"merge_method": payload["merge_method"]},
+                )
+                if not bool(merged.get("merged")):
+                    raise ValueError("GitHub declined the pull request merge")
+                merge_sha = str(merged.get("sha") or "")
+            else:
+                merge_sha = str(current.get("merge_commit_sha") or "")
+            evidence_type = CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE
+            external_id = str(number)
+            url = str(current.get("html_url") or "") or None
+            output.update({"pull_request_number": number, "merge_commit_sha": merge_sha})
+            summary = "GitHub pull request is merged after clean mergeability validation."
         else:
             raise ValueError("unsupported GitHub action")
         return ActionResult(
@@ -424,7 +498,16 @@ class GitHubActionProvider:
         repository = self.contract.locator_for_result(result, binding)
         findings: list[str] = []
         verified = False
-        if result.action_id == CODE_HOST_ISSUE_COMMENT_ACTION_ID:
+        if result.action_id == CODE_HOST_ISSUE_CREATE_ACTION_ID:
+            item = await self.client.issue(
+                self.api_base,
+                repository,
+                int(result.output["issue_number"]),
+                token=credential,
+            )
+            marker = self.contract.marker_from_key(result.idempotency_key)
+            verified = marker in str(item.get("body") or "")
+        elif result.action_id == CODE_HOST_ISSUE_COMMENT_ACTION_ID:
             number = int(result.output["issue_number"])
             marker = self.contract.marker_from_key(result.idempotency_key)
             comments = await self.client.list_issue_comments(
@@ -484,6 +567,18 @@ class GitHubActionProvider:
             commit = item.get("commit") if isinstance(item.get("commit"), dict) else {}
             verified = str(commit.get("sha") or "") == str(
                 result.output["head_revision"]
+            )
+        elif result.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
+            item = await self.client.pull_request(
+                self.api_base,
+                repository,
+                int(result.output["pull_request_number"]),
+                token=credential,
+            )
+            verified = bool(item.get("merged")) and (
+                not result.output.get("merge_commit_sha")
+                or str(item.get("merge_commit_sha") or "")
+                == str(result.output["merge_commit_sha"])
             )
         else:
             raise ValueError("unsupported GitHub action result")
