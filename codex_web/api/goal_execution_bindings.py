@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.agent_providers import AgentProviderCapability
@@ -23,7 +23,7 @@ from codex_web.services.goal_execution_bindings import (
 )
 from codex_web.services.agent_runtime import AgentSessionService
 from codex_web.services.goal_continuation import GoalContinuationService
-from codex_web.services.goals import GoalError, GoalService
+from codex_web.services.goals import GoalError, GoalNotFoundError, GoalService
 from codex_web.services.identity import AuthorizationError, IdentityService
 
 
@@ -78,8 +78,29 @@ def build_goal_execution_bindings_router(
         IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
         return actor
 
+    def require_project_goal(goal_id: str, project_id: str | None, actor):
+        if project_id is None:
+            return
+        try:
+            return goals.get(
+                goal_id,
+                scope=actor.tenant,
+                project_id=project_id,
+            )
+        except GoalNotFoundError as exc:
+            raise GoalExecutionBindingNotFoundError("goal not found") from exc
+
+    def require_session_project(session, project_id: str | None) -> None:
+        if project_id is not None and session.project_id != project_id:
+            raise GoalExecutionBindingNotFoundError(
+                "runtime objective is outside the requested project scope"
+            )
+
     @router.get("/runtime-objectives/unbound")
-    async def list_unbound_runtime_objectives(request: Request) -> dict[str, Any]:
+    async def list_unbound_runtime_objectives(
+        request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
+    ) -> dict[str, Any]:
         actor = request_actor(request)
         bound_session_ids = {
             item.agent_session_id
@@ -94,6 +115,8 @@ def build_goal_execution_bindings_router(
         }
         items: list[dict[str, Any]] = []
         for session in agent_sessions.list(actor):
+            if project_id is not None and session.project_id != project_id:
+                continue
             if session.id in bound_session_ids:
                 continue
             if (
@@ -132,6 +155,7 @@ def build_goal_execution_bindings_router(
         session_id: str,
         payload: RuntimeObjectivePromoteRequest,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
@@ -143,6 +167,7 @@ def build_goal_execution_bindings_router(
                     "agent session already has a canonical Goal execution binding"
                 )
             session = agent_sessions.get(session_id, actor)
+            require_session_project(session, project_id)
             if (
                 AgentProviderCapability.NATIVE_EXECUTION_OBJECTIVES
                 not in set(session.capability_snapshot)
@@ -217,9 +242,11 @@ def build_goal_execution_bindings_router(
         goal_id: str,
         payload: RuntimeObjectiveAttachRequest,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
+            require_project_goal(goal_id, project_id, actor)
             if any(
                 item.agent_session_id == session_id
                 for item in service.list_all(scope=actor.tenant)
@@ -228,6 +255,7 @@ def build_goal_execution_bindings_router(
                     "agent session already has a canonical Goal execution binding"
                 )
             session = agent_sessions.get(session_id, actor)
+            require_session_project(session, project_id)
             if (
                 AgentProviderCapability.NATIVE_EXECUTION_OBJECTIVES
                 not in set(session.capability_snapshot)
@@ -291,9 +319,14 @@ def build_goal_execution_bindings_router(
             raise _error(exc) from exc
 
     @router.get("/{goal_id}/execution-bindings")
-    async def list_bindings(goal_id: str, request: Request) -> dict[str, Any]:
+    async def list_bindings(
+        goal_id: str,
+        request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
+    ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            require_project_goal(goal_id, project_id, actor)
             rows = service.list(goal_id, scope=actor.tenant)
             return {
                 "items": [item.model_dump(mode="json") for item in rows],
@@ -307,9 +340,11 @@ def build_goal_execution_bindings_router(
         goal_id: str,
         payload: GoalExecutionBindingCreate,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
+            require_project_goal(goal_id, project_id, actor)
             item = service.create(
                 goal_id,
                 payload,
@@ -326,9 +361,11 @@ def build_goal_execution_bindings_router(
         binding_id: str,
         payload: GoalExecutionBindingUpdate,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
+            require_project_goal(goal_id, project_id, actor)
             existing = service.get(binding_id, scope=actor.tenant)
             if existing.goal_id != goal_id:
                 raise GoalExecutionBindingNotFoundError(
@@ -358,9 +395,11 @@ def build_goal_execution_bindings_router(
         binding_id: str,
         payload: RuntimeBindingControlRequest,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
+            require_project_goal(goal_id, project_id, actor)
             existing = service.get(binding_id, scope=actor.tenant)
             if existing.goal_id != goal_id:
                 raise GoalExecutionBindingNotFoundError(
@@ -387,6 +426,7 @@ def build_goal_execution_bindings_router(
         binding_id: str,
         payload: RuntimeBindingControlRequest,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         if continuation is None:
             raise HTTPException(
@@ -395,6 +435,7 @@ def build_goal_execution_bindings_router(
             )
         try:
             actor = mutation_actor(request)
+            require_project_goal(goal_id, project_id, actor)
             existing = service.get(binding_id, scope=actor.tenant)
             if existing.goal_id != goal_id:
                 raise GoalExecutionBindingNotFoundError(
@@ -423,9 +464,11 @@ def build_goal_execution_bindings_router(
         binding_id: str,
         payload: RuntimeBindingControlRequest,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
+            require_project_goal(goal_id, project_id, actor)
             existing = service.get(binding_id, scope=actor.tenant)
             if existing.goal_id != goal_id:
                 raise GoalExecutionBindingNotFoundError(
@@ -452,9 +495,11 @@ def build_goal_execution_bindings_router(
         binding_id: str,
         payload: GoalExecutionBindingReconcile,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
+            require_project_goal(goal_id, project_id, actor)
             existing = service.get(binding_id, scope=actor.tenant)
             if existing.goal_id != goal_id:
                 raise GoalExecutionBindingNotFoundError(
@@ -471,9 +516,14 @@ def build_goal_execution_bindings_router(
             raise _error(exc) from exc
 
     @router.get("/{goal_id}/execution-binding-events")
-    async def binding_events(goal_id: str, request: Request) -> dict[str, Any]:
+    async def binding_events(
+        goal_id: str,
+        request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
+    ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            require_project_goal(goal_id, project_id, actor)
             rows = service.events(goal_id, scope=actor.tenant)
             return {
                 "items": [item.model_dump(mode="json") for item in rows],

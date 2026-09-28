@@ -299,6 +299,63 @@ class GoalServiceTests(unittest.TestCase):
         self.assertEqual([item.id for item in other_matches], [other_goal.id])
         self.assertEqual(missing, ())
 
+    def test_project_scoped_list_and_get_fail_closed(self) -> None:
+        project_a_goal = self.service.create(
+            self._payload(
+                title="Project A goal",
+                work_graph_bindings=(
+                    GoalWorkGraphBinding(project_id="project-a"),
+                ),
+            ),
+            scope=self.scope,
+            actor_id="admin",
+        )
+        project_b_goal = self.service.create(
+            self._payload(
+                title="Project B goal",
+                work_graph_bindings=(
+                    GoalWorkGraphBinding(project_id="project-b"),
+                ),
+            ),
+            scope=self.scope,
+            actor_id="admin",
+        )
+        self.service.create(
+            self._payload(
+                title="Unbound goal",
+                work_graph_bindings=(),
+            ),
+            scope=self.scope,
+            actor_id="admin",
+        )
+
+        self.assertEqual(
+            [item.id for item in self.service.list(
+                scope=self.scope,
+                project_id="project-a",
+            )],
+            [project_a_goal.id],
+        )
+        self.assertEqual(
+            self.service.get(
+                project_b_goal.id,
+                scope=self.scope,
+                project_id="project-b",
+            ).id,
+            project_b_goal.id,
+        )
+        with self.assertRaises(GoalNotFoundError):
+            self.service.get(
+                project_b_goal.id,
+                scope=self.scope,
+                project_id="project-a",
+            )
+        with self.assertRaises(GoalNotFoundError):
+            self.service.list(
+                scope=self.scope,
+                project_id="missing-project",
+            )
+
     def test_revisions_and_lifecycle_are_versioned_with_reasons(self) -> None:
         goal = self.service.create(
             self._payload(),
@@ -523,6 +580,60 @@ class GoalApiAssuranceTests(unittest.TestCase):
         self.assertEqual(transitioned.status_code, 200)
         self.assertEqual(history.status_code, 200)
         self.assertEqual(history.json()["count"], 3)
+
+    def test_project_scoped_api_rejects_cross_project_read_and_mutation(self) -> None:
+        project_b_goal = self.service.create(
+            GoalCreate(
+                title="Project B goal",
+                description="Must never appear under Project A.",
+                owner_identity_id="owner-b",
+                work_graph_bindings=(
+                    GoalWorkGraphBinding(project_id="project-b"),
+                ),
+            ),
+            scope=self.scope,
+            actor_id="bootstrap",
+        )
+
+        project_a = self.client.get(
+            "/api/goals",
+            params={"project_id": "project-a"},
+        )
+        self.assertEqual(project_a.status_code, 200)
+        self.assertEqual(
+            [item["goal"]["id"] for item in project_a.json()["items"]],
+            [self.trace_goal.id],
+        )
+
+        wrong_detail = self.client.get(
+            f"/api/goals/{project_b_goal.id}",
+            params={"project_id": "project-a"},
+        )
+        self.assertEqual(wrong_detail.status_code, 404)
+
+        self.actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.MFA}
+        )
+        wrong_mutation = self.client.patch(
+            f"/api/goals/{project_b_goal.id}",
+            params={"project_id": "project-a"},
+            json={"title": "Leaked mutation", "reason": "must fail"},
+        )
+        self.assertEqual(wrong_mutation.status_code, 404)
+        self.assertEqual(
+            self.service.get(project_b_goal.id, scope=self.scope).title,
+            "Project B goal",
+        )
+
+        correct_detail = self.client.get(
+            f"/api/goals/{project_b_goal.id}",
+            params={"project_id": "project-b"},
+        )
+        self.assertEqual(correct_detail.status_code, 200)
+        self.assertEqual(
+            correct_detail.json()["snapshot"]["goal"]["id"],
+            project_b_goal.id,
+        )
 
     def test_goals_admin_service_scope_supports_automation(self) -> None:
         self.actor = AuthenticationActor(

@@ -64,12 +64,22 @@ def build_goals_router(
         IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
         return actor
 
+    def require_project_goal(goal_id: str, project_id: str | None, actor):
+        if project_id is None:
+            return service.get(goal_id, scope=actor.tenant)
+        return service.get(
+            goal_id,
+            scope=actor.tenant,
+            project_id=project_id,
+        )
+
     @router.get("")
     async def list_goals(
         request: Request,
         status: GoalStatus | None = None,
         owner_identity_id: str | None = None,
         priority: GoalPriority | None = None,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         actor = request_actor(request)
 
@@ -79,6 +89,7 @@ def build_goals_router(
                 status=status,
                 owner_identity_id=owner_identity_id,
                 priority=priority,
+                project_id=project_id,
             )
             return {
                 "items": [
@@ -94,10 +105,13 @@ def build_goals_router(
     async def events(
         request: Request,
         goal_id: str | None = None,
+        project_id: str | None = Query(default=None, min_length=1),
         limit: int = Query(default=100, ge=1, le=500),
     ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            if goal_id is not None:
+                require_project_goal(goal_id, project_id, actor)
             rows = service.events(
                 scope=actor.tenant,
                 goal_id=goal_id,
@@ -136,9 +150,19 @@ def build_goals_router(
     async def create_goal(
         payload: GoalCreate,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
+            if project_id is not None:
+                service._require_project(project_id, actor.tenant)
+                if not any(
+                    binding.project_id == project_id
+                    for binding in payload.work_graph_bindings
+                ):
+                    raise GoalScopeError(
+                        "goal is outside the requested project scope"
+                    )
             goal = await asyncio.to_thread(
                 service.create,
                 payload,
@@ -159,6 +183,7 @@ def build_goals_router(
         goal_id: str,
         payload: ExclusiveContinuationRequest,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         if autonomy is None:
             raise HTTPException(
@@ -167,7 +192,7 @@ def build_goals_router(
             )
         try:
             actor = mutation_actor(request)
-            goal = service.get(goal_id, scope=actor.tenant)
+            goal = require_project_goal(goal_id, project_id, actor)
             binding = next(
                 (
                     item
@@ -200,6 +225,7 @@ def build_goals_router(
     async def clear_exclusive_continuation(
         goal_id: str,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         if autonomy is None:
             raise HTTPException(
@@ -208,7 +234,8 @@ def build_goals_router(
             )
         try:
             actor = mutation_actor(request)
-        except AuthorizationError as exc:
+            require_project_goal(goal_id, project_id, actor)
+        except (AuthorizationError, GoalError, ValueError) as exc:
             raise _error(exc) from exc
         current = autonomy.store.load().control.exclusive_goal_scope
         if current is None or current.goal_id != goal_id:
@@ -222,9 +249,14 @@ def build_goals_router(
         return {"control": control.model_dump(mode="json")}
 
     @router.get("/{goal_id}")
-    async def get_goal(goal_id: str, request: Request) -> dict[str, Any]:
+    async def get_goal(
+        goal_id: str,
+        request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
+    ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            require_project_goal(goal_id, project_id, actor)
             snapshot = await asyncio.to_thread(
                 service.snapshot,
                 goal_id,
@@ -239,9 +271,19 @@ def build_goals_router(
         goal_id: str,
         payload: GoalUpdate,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
+            require_project_goal(goal_id, project_id, actor)
+            if project_id is not None and payload.work_graph_bindings is not None:
+                if not any(
+                    binding.project_id == project_id
+                    for binding in payload.work_graph_bindings
+                ):
+                    raise GoalScopeError(
+                        "goal revision cannot leave the requested project scope"
+                    )
             goal = service.revise(
                 goal_id,
                 payload,
@@ -261,9 +303,11 @@ def build_goals_router(
     async def current_completion_evaluation(
         goal_id: str,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            require_project_goal(goal_id, project_id, actor)
             item = service.completion_evaluation(goal_id, scope=actor.tenant)
         except (GoalError, ValueError) as exc:
             raise _error(exc) from exc
@@ -275,9 +319,11 @@ def build_goals_router(
     async def completion_evaluations(
         goal_id: str,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            require_project_goal(goal_id, project_id, actor)
             rows = service.completion_evaluations(goal_id, scope=actor.tenant)
         except (GoalError, ValueError) as exc:
             raise _error(exc) from exc
@@ -291,9 +337,11 @@ def build_goals_router(
         goal_id: str,
         payload: GoalCompletionEvaluationRequest,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
+            require_project_goal(goal_id, project_id, actor)
             item = service.evaluate_completion(
                 goal_id,
                 payload,
@@ -309,9 +357,11 @@ def build_goals_router(
         goal_id: str,
         payload: GoalTransitionRequest,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
+            require_project_goal(goal_id, project_id, actor)
             goal = await asyncio.to_thread(
                 service.transition,
                 goal_id,
@@ -329,9 +379,14 @@ def build_goals_router(
         return {"snapshot": snapshot.model_dump(mode="json")}
 
     @router.get("/{goal_id}/revisions")
-    async def revisions(goal_id: str, request: Request) -> dict[str, Any]:
+    async def revisions(
+        goal_id: str,
+        request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
+    ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            require_project_goal(goal_id, project_id, actor)
             rows = service.revisions(goal_id, scope=actor.tenant)
         except (GoalError, ValueError) as exc:
             raise _error(exc) from exc
