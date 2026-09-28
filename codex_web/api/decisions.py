@@ -132,6 +132,23 @@ def build_decisions_router(
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         return actor
 
+    def require_project_scope(
+        decision_id: str,
+        project_id: str | None,
+        *,
+        actor,
+    ) -> None:
+        if project_id is None:
+            return
+        try:
+            item = service.get(decision_id, actor=actor)
+        except Exception as exc:
+            raise translate(exc) from exc
+        if item.project_id != project_id:
+            # Project-scoped callers must not be able to use a foreign ID to
+            # discover or mutate a Decision outside their active Project.
+            raise HTTPException(status_code=404, detail="Decision not found")
+
     @router.get("")
     async def list_decisions(
         request: Request,
@@ -165,8 +182,10 @@ def build_decisions_router(
     async def get_decision(
         decision_id: str,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         actor = request_actor(request)
+        require_project_scope(decision_id, project_id, actor=actor)
         try:
             item = service.get(decision_id, actor=actor)
             approval = (
@@ -191,8 +210,10 @@ def build_decisions_router(
         decision_id: str,
         payload: DecisionUpdate,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         actor = writer(request)
+        require_project_scope(decision_id, project_id, actor=actor)
         try:
             item = await service.revise(
                 decision_id,
@@ -207,8 +228,10 @@ def build_decisions_router(
     async def decision_revisions(
         decision_id: str,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         actor = request_actor(request)
+        require_project_scope(decision_id, project_id, actor=actor)
         try:
             rows = service.revisions(decision_id, actor=actor)
         except Exception as exc:
@@ -222,8 +245,10 @@ def build_decisions_router(
     async def decision_events(
         decision_id: str,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         actor = request_actor(request)
+        require_project_scope(decision_id, project_id, actor=actor)
         try:
             rows = service.events(decision_id, actor=actor)
         except Exception as exc:
@@ -237,8 +262,10 @@ def build_decisions_router(
     async def deliberate_decision(
         decision_id: str,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         actor = writer(request)
+        require_project_scope(decision_id, project_id, actor=actor)
         try:
             item = await deliberation.deliberate(
                 decision_id,
@@ -253,8 +280,10 @@ def build_decisions_router(
         decision_id: str,
         payload: DecisionApprovalRequest,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         actor = writer(request)
+        require_project_scope(decision_id, project_id, actor=actor)
         try:
             item = await service.request_approval(
                 decision_id,
@@ -276,8 +305,10 @@ def build_decisions_router(
     async def finalize_decision_approval(
         decision_id: str,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         actor = approval_finalizer(request)
+        require_project_scope(decision_id, project_id, actor=actor)
         try:
             item = await service.finalize_approval(
                 decision_id,
@@ -292,8 +323,10 @@ def build_decisions_router(
         decision_id: str,
         payload: DecisionSupersedeRequest,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         actor = writer(request)
+        require_project_scope(decision_id, project_id, actor=actor)
         try:
             item = await service.supersede(
                 decision_id,
@@ -309,6 +342,7 @@ def build_decisions_router(
         decision_id: str,
         payload: DecisionWorkCommitRequest,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         if decision_work is None:
             raise HTTPException(
@@ -316,6 +350,7 @@ def build_decisions_router(
                 detail="Decision work service is unavailable",
             )
         actor = writer(request)
+        require_project_scope(decision_id, project_id, actor=actor)
         try:
             item = await decision_work.commit(
                 decision_id,
@@ -330,6 +365,7 @@ def build_decisions_router(
     async def reconcile_decision_work(
         decision_id: str,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
         reason: str = Query(
             default="Reconcile approved Decision work with canonical ActionIntent results",
             min_length=1,
@@ -342,6 +378,7 @@ def build_decisions_router(
                 detail="Decision work service is unavailable",
             )
         actor = writer(request)
+        require_project_scope(decision_id, project_id, actor=actor)
         try:
             item = await decision_work.reconcile(
                 decision_id,
@@ -356,6 +393,7 @@ def build_decisions_router(
     async def decision_trace(
         decision_id: str,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         if decision_work is None:
             raise HTTPException(
@@ -363,6 +401,7 @@ def build_decisions_router(
                 detail="Decision work service is unavailable",
             )
         actor = request_actor(request)
+        require_project_scope(decision_id, project_id, actor=actor)
         try:
             return decision_work.trace(decision_id, actor=actor)
         except Exception as exc:
@@ -373,8 +412,10 @@ def build_decisions_router(
         decision_id: str,
         payload: DecisionPostExecutionReviewCreate,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
         actor = writer(request)
+        require_project_scope(decision_id, project_id, actor=actor)
         try:
             item = await service.add_post_execution_review(
                 decision_id,

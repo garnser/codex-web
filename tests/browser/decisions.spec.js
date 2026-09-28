@@ -148,6 +148,7 @@ async function mockDecisionApis(page, posts, initialStatus = 'awaiting_approval'
     const url = new URL(route.request().url());
     const path = url.pathname;
     const method = route.request().method();
+    expect(url.searchParams.get('project_id')).toBe('project-a');
 
     if (path === '/api/decisions' && method === 'GET') {
       return route.fulfill({
@@ -309,6 +310,82 @@ async function mockDecisionApis(page, posts, initialStatus = 'awaiting_approval'
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
   });
 }
+
+test('Decision workspace fences delayed responses across rapid Project switches and empty Projects', async ({ page }) => {
+  const rows = {
+    'project-a': { ...decision(), id: 'decision-a', project_id: 'project-a', title: 'Project A decision' },
+    'project-b': { ...decision(), id: 'decision-b', project_id: 'project-b', title: 'Project B decision' },
+  };
+  let delayProjectA = true;
+  const calls = [];
+  await page.route(/\/api\/decisions(?:[/?].*)?$/, async (route) => {
+    const url = new URL(route.request().url());
+    const projectId = url.searchParams.get('project_id');
+    const path = url.pathname;
+    calls.push({ path, projectId });
+    if (path === '/api/decisions') {
+      if (projectId === 'project-a' && delayProjectA) {
+        delayProjectA = false;
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      const item = rows[projectId];
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: item ? [item] : [], count: item ? 1 : 0 }),
+      });
+    }
+    const item = rows[projectId];
+    if (!item || !path.includes(`/api/decisions/${item.id}`)) {
+      return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
+    }
+    if (path.endsWith('/revisions') || path.endsWith('/events')) {
+      return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ items: [], count: 0 }) });
+    }
+    if (path.endsWith('/trace')) {
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ decision: item, work_items: [], action_intents: [], post_execution_reviews: [] }),
+      });
+    }
+    return route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ item, approval_request: approval(), model_usage: {} }),
+    });
+  });
+
+  await page.goto('http://127.0.0.1:18766/tests/browser/decisions_fixture.html');
+  await page.locator('#decisions-button').click();
+  await page.waitForTimeout(10);
+  await page.evaluate(() => {
+    document.body.dataset.projectId = 'project-b';
+    window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: 'project-b' } }));
+  });
+
+  const dialog = page.locator('#decisions-dialog');
+  await expect(dialog).toContainText('Project B decision');
+  await expect(dialog).not.toContainText('Project A decision');
+  await page.waitForTimeout(180);
+  await expect(dialog).toContainText('Project B decision');
+  await expect(dialog).not.toContainText('Project A decision');
+
+  await page.evaluate(() => {
+    document.body.dataset.projectId = 'project-empty';
+    window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: 'project-empty' } }));
+  });
+  await expect(dialog).toContainText('No Decisions exist in this Project.');
+  await expect(dialog.locator('.decision-row')).toHaveCount(0);
+
+  await page.evaluate(() => {
+    document.body.dataset.projectId = 'project-a';
+    window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: 'project-a' } }));
+  });
+  await expect(dialog).toContainText('Project A decision');
+  await expect(dialog).not.toContainText('Project B decision');
+  expect(calls.some((call) => call.projectId === 'project-a')).toBeTruthy();
+  expect(calls.some((call) => call.projectId === 'project-b')).toBeTruthy();
+  expect(calls.some((call) => call.projectId === 'project-empty')).toBeTruthy();
+  expect(calls.every((call) => Boolean(call.projectId))).toBeTruthy();
+});
 
 test('Decision workspace exposes canonical evidence, bounded reasoning and ApprovalRequest state', async ({ page }) => {
   const posts = [];
