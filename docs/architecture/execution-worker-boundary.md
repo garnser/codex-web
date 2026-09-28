@@ -239,7 +239,9 @@ access. The broker parses each request itself and dispatches only a
 small code-owned operation catalog to canonical codex-web services.
 Workers discover that assignment-scoped catalog through
 `GET /api/control-plane-broker/operations`; the response contains operation
-metadata and scope, never credentials or lease material.
+metadata and scope, never credentials or lease material. Catalog discovery and
+repository actions evaluate the assignment requester through canonical Role
+authority; the fenced worker service identity remains the executing principal.
 
 Initial reachability is limited to scoped Work Item operations:
 
