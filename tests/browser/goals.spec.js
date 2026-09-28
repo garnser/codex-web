@@ -158,11 +158,11 @@ function completion(eligible = false) {
 async function mockGoalApis(page, posts) {
   let completionEligible = false;
 
-  await page.route('**/api/goals/runtime-objectives/unbound', async (route) => route.fulfill({
+  await page.route('**/api/goals?*/runtime-objectives/unbound?*', async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({ items: [], count: 0 }),
   }));
-  await page.route('**/api/goals/goal-a/execution-bindings', async (route) => route.fulfill({
+  await page.route('**/api/goals?*/goal-a?*/execution-bindings?*', async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({
       items: [{
@@ -191,52 +191,52 @@ async function mockGoalApis(page, posts) {
       count: 1,
     }),
   }));
-  await page.route('**/api/goals/goal-a/completion-evaluation', async (route) => route.fulfill({
+  await page.route('**/api/goals?*/goal-a?*/completion-evaluation?*', async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({ item: completion(completionEligible) }),
   }));
-  await page.route('**/api/goals/goal-a/completion-evaluations', async (route) => {
+  await page.route('**/api/goals?*/goal-a?*/completion-evaluation?*s', async (route) => {
     posts.push({ action: 'evaluate', body: route.request().postDataJSON() });
     completionEligible = true;
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ item: completion(true) }) });
   });
-  await page.route('**/api/goals/goal-a/decompositions/generate', async (route) => {
+  await page.route('**/api/goals?*/goal-a?*/decompositions?*/generate?*', async (route) => {
     posts.push({ action: 'generate', body: route.request().postDataJSON() });
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ proposal: proposals()[0] }) });
   });
-  await page.route('**/api/goals/goal-a/decompositions/proposal-a/review', async (route) => {
+  await page.route('**/api/goals?*/goal-a?*/decompositions?*/proposal-a/review?*', async (route) => {
     posts.push({ action: 'review', body: route.request().postDataJSON() });
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ proposal: { ...proposals()[0], status: 'accepted' } }) });
   });
-  await page.route('**/api/goals/goal-a/decompositions/proposal-b/commit/reconcile', async (route) => {
+  await page.route('**/api/goals?*/goal-a?*/decompositions?*/proposal-b/commit/reconcile?*', async (route) => {
     posts.push({ action: 'reconcile', body: route.request().postDataJSON() });
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ proposal: proposals()[1] }) });
   });
-  await page.route('**/api/goals/goal-a/transition', async (route) => {
+  await page.route('**/api/goals?*/goal-a?*/transition?*', async (route) => {
     posts.push({ action: 'transition', body: route.request().postDataJSON() });
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ snapshot: goalSnapshot('completed') }) });
   });
-  await page.route('**/api/goals/goal-a/decompositions/events', async (route) => route.fulfill({
+  await page.route('**/api/goals?*/goal-a?*/decompositions?*/events?*', async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({ items: [{ event_type: 'goal_decomposition.proposed', actor_id: 'planner', reason: 'bounded plan', occurred_at: 1889999000 }], count: 1 }),
   }));
-  await page.route('**/api/goals/goal-a/decompositions', async (route) => route.fulfill({
+  await page.route('**/api/goals?*/goal-a?*/decompositions?*', async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({ items: proposals(), count: 2 }),
   }));
-  await page.route('**/api/goals/goal-a/revisions', async (route) => route.fulfill({
+  await page.route('**/api/goals?*/goal-a?*/revisions?*', async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({ items: [{ revision: 4, revised_by: 'admin', reason: 'commit Goal work', revised_at: 1889998000 }], count: 1 }),
   }));
-  await page.route('**/api/goals/events?goal_id=*', async (route) => route.fulfill({
+  await page.route('**/api/goals?*/events?*', async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({ items: [{ event_type: 'goal_revised', actor_id: 'admin', reason: 'commit Goal work', occurred_at: 1889998000 }], count: 1 }),
   }));
-  await page.route('**/api/goals/goal-a', async (route) => route.fulfill({
+  await page.route('**/api/goals?*/goal-a?*', async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({ snapshot: goalSnapshot() }),
   }));
-  await page.route('**/api/goals', async (route) => route.fulfill({
+  await page.route('**/api/goals?*', async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({ items: [goalSnapshot()], count: 1 }),
   }));
@@ -324,4 +324,144 @@ test('Goal completion posts explicit observations then uses returned evaluation 
     status: 'completed',
     completion_evaluation_id: 'completion-pass',
   });
+});
+
+
+function projectSnapshot(goalId, projectId, title) {
+  const snapshot = goalSnapshot();
+  snapshot.goal.id = goalId;
+  snapshot.goal.title = title;
+  snapshot.goal.work_graph_bindings = [{
+    project_id: projectId,
+    root_work_item_refs: [],
+  }];
+  snapshot.progress = {
+    project_count: 1,
+    work_item_count: 0,
+    completed: 0,
+    failed: 0,
+    cancelled: 0,
+    active: 0,
+    runnable: 0,
+    blocked: 0,
+    completion_fraction: 0,
+  };
+  snapshot.health = { health: 'unknown', reasons: ['goal has no bound subordinate work'] };
+  return snapshot;
+}
+
+async function mockProjectScopedGoalReads(page, { listDelay = {} } = {}) {
+  const snapshots = {
+    'project-a': projectSnapshot('goal-a', 'project-a', 'Project A Goal'),
+    'project-b': projectSnapshot('goal-b', 'project-b', 'Project B Goal'),
+  };
+
+  await page.route('**/api/goals/runtime-objectives/unbound?*', async (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ items: [], count: 0 }),
+  }));
+  await page.route('**/api/goals/events?*', async (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ items: [], count: 0 }),
+  }));
+  await page.route('**/api/goals/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (
+      url.pathname === '/api/goals/events'
+      || url.pathname === '/api/goals/runtime-objectives/unbound'
+    ) {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [], count: 0 }),
+      });
+      return;
+    }
+    const parts = url.pathname.split('/').filter(Boolean);
+    const goalId = parts[2];
+    const snapshot = Object.values(snapshots).find((item) => item.goal.id === goalId);
+    if (!snapshot) {
+      await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ detail: 'goal not found' }) });
+      return;
+    }
+    if (url.pathname.endsWith('/revisions')) {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ items: [], count: 0 }) });
+      return;
+    }
+    if (url.pathname.endsWith('/decompositions/events')) {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ items: [], count: 0 }) });
+      return;
+    }
+    if (url.pathname.endsWith('/decompositions')) {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ items: [], count: 0 }) });
+      return;
+    }
+    if (url.pathname.endsWith('/completion-evaluation')) {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ item: null }) });
+      return;
+    }
+    if (url.pathname.endsWith('/execution-bindings')) {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ items: [], count: 0 }) });
+      return;
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ snapshot }),
+    });
+  });
+  await page.route('**/api/goals?*', async (route) => {
+    const url = new URL(route.request().url());
+    const projectId = url.searchParams.get('project_id');
+    const delay = Number(listDelay[projectId] || 0);
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+    const snapshot = snapshots[projectId];
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: snapshot ? [snapshot] : [],
+        count: snapshot ? 1 : 0,
+      }),
+    });
+  });
+}
+
+async function switchProject(page, projectId) {
+  await page.evaluate((nextProjectId) => {
+    document.body.dataset.projectId = nextProjectId;
+    window.dispatchEvent(new CustomEvent('codex:project-changed', {
+      detail: { projectId: nextProjectId },
+    }));
+  }, projectId);
+}
+
+test('Goal workspace replaces populated Project state and shows an empty Project without stale Goals', async ({ page }) => {
+  await mockProjectScopedGoalReads(page);
+  await page.goto('http://127.0.0.1:18766/tests/browser/goals_fixture.html');
+  await page.locator('#goals-button').click();
+
+  const dialog = page.locator('#goals-dialog');
+  await expect(dialog).toContainText('Project A Goal');
+
+  await switchProject(page, 'project-b');
+  await expect(dialog).toContainText('Project B Goal');
+  await expect(dialog).not.toContainText('Project A Goal');
+
+  await switchProject(page, 'project-empty');
+  await expect(dialog).toContainText('No Goals exist in this Project.');
+  await expect(dialog).not.toContainText('Project B Goal');
+});
+
+test('rapid Project switching ignores late Goal responses from the previous Project', async ({ page }) => {
+  await mockProjectScopedGoalReads(page, {
+    listDelay: { 'project-a': 250 },
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/goals_fixture.html');
+
+  await page.locator('#goals-button').click();
+  await switchProject(page, 'project-b');
+
+  const dialog = page.locator('#goals-dialog');
+  await expect(dialog).toContainText('Project B Goal');
+  await page.waitForTimeout(350);
+  await expect(dialog).toContainText('Project B Goal');
+  await expect(dialog).not.toContainText('Project A Goal');
 });
