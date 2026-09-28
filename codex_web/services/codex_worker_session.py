@@ -12,7 +12,11 @@ from codex_web.execution_workers import (
     ExecutionRuntimeBinding,
 )
 from codex_web.identity import AuthenticationActor, PrincipalKind
-from codex_web.runtime.codex import CodexRuntime, trusted_local_codex_command
+from codex_web.runtime.codex import (
+    CODEX_MINIMUM_ADDRESS_SPACE_BYTES,
+    CodexRuntime,
+    trusted_local_codex_command,
+)
 from codex_web.services.agent_model_egress import AgentRuntimeModelEgressEndpoint
 from codex_web.services.agent_process_session import (
     AssignmentBoundAgentProcessSession,
@@ -296,6 +300,7 @@ class AssignmentBoundCodexSession(AssignmentBoundAgentProcessSession):
             runtime_factory=runtime_factory,
             credential_provider=provider,
             runtime_binding=runtime_binding,
+            minimum_address_space_bytes=CODEX_MINIMUM_ADDRESS_SPACE_BYTES,
             watchdog_interval_seconds=watchdog_interval_seconds,
             egress_endpoints_resolver=egress_endpoints_resolver,
             control_plane_broker_factory=control_plane_broker_factory,
