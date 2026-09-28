@@ -86,3 +86,22 @@ class GitHubClient:
         raise RuntimeError(
             "GitHub issue comment reconciliation exceeded the bounded 10000-comment scan"
         )
+
+    async def list_pull_requests(
+        self, api_base: str, repo: str, *, token: str, head: str, base: str,
+    ) -> list[dict[str, Any]]:
+        result = await self.request_json(
+            "GET", api_base, f"repos/{quote(repo, safe='/')}/pulls",
+            token=token,
+            params={"state": "all", "head": head, "base": base, "per_page": 100},
+        )
+        return [item for item in result if isinstance(item, dict)] if isinstance(result, list) else []
+
+    async def create_pull_request(
+        self, api_base: str, repo: str, *, token: str, payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        result = await self.request_json(
+            "POST", api_base, f"repos/{quote(repo, safe='/')}/pulls",
+            token=token, json_body=payload,
+        )
+        return result if isinstance(result, dict) else {}

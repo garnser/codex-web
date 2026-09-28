@@ -25,6 +25,7 @@ GITHUB_ACTION_PROVIDER_TYPE = "github"
 GITHUB_ACTION_PROVIDER_INSTANCE = "github.com"
 CODE_HOST_ISSUE_COMMENT_ACTION_ID = "code-host.issue.comment"
 CODE_HOST_ISSUE_UPDATE_ACTION_ID = "code-host.issue.update"
+CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID = "code-host.pull-request.upsert"
 
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
@@ -80,6 +81,17 @@ class GitHubActionProvider:
                 description="Open or close one GitHub issue idempotently.",
                 required_authority=("repository.issue.update",),
                 expected_evidence=("github-issue-state",),
+                **common,
+            ),
+            ActionDefinition(
+                action_id=CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
+                title="Create or reconcile pull request",
+                description=(
+                    "Create one GitHub pull request or reconcile the pull request "
+                    "already owned by the same ActionIntent idempotency key."
+                ),
+                required_authority=("repository.pull-request.create",),
+                expected_evidence=("github-pull-request",),
                 **common,
             ),
         )
@@ -164,6 +176,46 @@ class GitHubActionProvider:
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
         return f"<!-- codex-web-action:{digest} -->"
 
+    @staticmethod
+    def _branch(value: Any, *, field: str) -> str:
+        branch = str(value or "").strip()
+        if (
+            not branch
+            or len(branch) > 255
+            or branch.startswith("-")
+            or branch.endswith(".")
+            or ".." in branch
+            or "@{" in branch
+            or any(character.isspace() for character in branch)
+            or any(character in branch for character in "~^:?*[\\")
+        ):
+            raise ValueError(f"{field} is not a safe Git branch name")
+        return branch
+
+    @classmethod
+    def _pull_request(cls, request: ActionRequest) -> dict[str, Any]:
+        allowed = {"title", "body", "head", "base", "draft"}
+        if set(request.parameters) - allowed:
+            raise ValueError("unsupported pull request parameters")
+        title = request.parameters.get("title")
+        body = request.parameters.get("body", "")
+        draft = request.parameters.get("draft", False)
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError("pull request title is required")
+        if len(title) > 256:
+            raise ValueError("pull request title exceeds limit")
+        if not isinstance(body, str) or len(body) > 65536:
+            raise ValueError("pull request body must be a bounded string")
+        if not isinstance(draft, bool):
+            raise ValueError("pull request draft must be a boolean")
+        return {
+            "title": title.strip(),
+            "body": body.strip(),
+            "head": cls._branch(request.parameters.get("head"), field="head"),
+            "base": cls._branch(request.parameters.get("base"), field="base"),
+            "draft": draft,
+        }
+
     async def prepare(
         self,
         request: ActionRequest,
@@ -171,8 +223,8 @@ class GitHubActionProvider:
         binding: ActionProviderBinding,
     ) -> dict[str, Any]:
         repository = self._repository(request)
-        number = self._issue_number(request)
         if request.action_id == CODE_HOST_ISSUE_COMMENT_ACTION_ID:
+            number = self._issue_number(request)
             body = self._comment(request)
             return {
                 "operation": "issue-comment",
@@ -182,11 +234,27 @@ class GitHubActionProvider:
                 "body_characters": len(body),
             }
         if request.action_id == CODE_HOST_ISSUE_UPDATE_ACTION_ID:
+            number = self._issue_number(request)
             return {
                 "operation": "issue-update",
                 "repository": repository,
                 "issue_number": number,
                 "state": self._state(request),
+            }
+        if request.action_id == CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID:
+            payload = self._pull_request(request)
+            return {
+                "operation": "pull-request-upsert",
+                "repository": repository,
+                "head": payload["head"],
+                "base": payload["base"],
+                "draft": payload["draft"],
+                "title_sha256": hashlib.sha256(
+                    payload["title"].encode("utf-8")
+                ).hexdigest(),
+                "body_sha256": hashlib.sha256(
+                    payload["body"].encode("utf-8")
+                ).hexdigest(),
             }
         raise ValueError("unsupported GitHub action")
 
@@ -200,9 +268,9 @@ class GitHubActionProvider:
         if not credential:
             raise ValueError("GitHub credential is required")
         repository = self._repository(request)
-        number = self._issue_number(request)
         started = time.time()
         if request.action_id == CODE_HOST_ISSUE_COMMENT_ACTION_ID:
+            number = self._issue_number(request)
             body = self._comment(request)
             marker = self._marker(request)
             comments = await self.client.list_issue_comments(
@@ -224,6 +292,7 @@ class GitHubActionProvider:
             external_id = str(item.get("id") or "") or None
             summary = "GitHub issue comment exists for the action idempotency key."
         elif request.action_id == CODE_HOST_ISSUE_UPDATE_ACTION_ID:
+            number = self._issue_number(request)
             state = self._state(request)
             item = await self.client.update_issue(
                 self.api_base,
@@ -235,9 +304,47 @@ class GitHubActionProvider:
             evidence_type = "github-issue-state"
             external_id = str(item.get("id") or number)
             summary = f"GitHub issue state is {state}."
+        elif request.action_id == CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID:
+            payload = self._pull_request(request)
+            marker = self._marker(request)
+            pulls = await self.client.list_pull_requests(
+                self.api_base,
+                repository,
+                token=credential,
+                head=f"{repository.split('/', 1)[0]}:{payload['head']}",
+                base=payload["base"],
+            )
+            owned = next(
+                (row for row in pulls if marker in str(row.get("body") or "")),
+                None,
+            )
+            if owned is None and pulls:
+                raise ValueError(
+                    "an existing pull request for head/base is not owned by this ActionIntent"
+                )
+            if owned is None:
+                owned = await self.client.create_pull_request(
+                    self.api_base,
+                    repository,
+                    token=credential,
+                    payload={
+                        **payload,
+                        "body": f"{payload['body']}\n\n{marker}".strip(),
+                    },
+                )
+            item = owned
+            number = self._positive_response_number(item, field="pull request")
+            evidence_type = "github-pull-request"
+            external_id = str(item.get("id") or number)
+            summary = "GitHub pull request exists for the action idempotency key."
         else:
             raise ValueError("unsupported GitHub action")
         url = str(item.get("html_url") or "") or None
+        target_output = (
+            {"pull_request_number": number}
+            if request.action_id == CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID
+            else {"issue_number": number}
+        )
         return ActionResult(
             provider_binding_id=binding.id,
             action_id=request.action_id,
@@ -248,7 +355,7 @@ class GitHubActionProvider:
             external_id=external_id,
             output={
                 "repository": repository,
-                "issue_number": number,
+                **target_output,
                 "external_url": url,
             },
             evidence=(
@@ -256,10 +363,25 @@ class GitHubActionProvider:
                     evidence_type=evidence_type,
                     reference=url or f"{repository}#{number}",
                     summary=summary,
-                    metadata={"repository": repository, "issue_number": number},
+                    metadata={
+                        "repository": repository,
+                        (
+                            "pull_request_number"
+                            if request.action_id
+                            == CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID
+                            else "issue_number"
+                        ): number,
+                    },
                 ),
             ),
         )
+
+    @staticmethod
+    def _positive_response_number(item: dict[str, Any], *, field: str) -> int:
+        value = item.get("number")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"GitHub {field} response omitted a valid number")
+        return value
 
     async def verify(
         self,

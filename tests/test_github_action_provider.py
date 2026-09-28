@@ -12,6 +12,7 @@ from codex_web.services.action_providers import ActionExecutionService, ActionPr
 from codex_web.services.github_action_provider import (
     CODE_HOST_ISSUE_COMMENT_ACTION_ID,
     CODE_HOST_ISSUE_UPDATE_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
     GitHubActionProvider,
 )
 from codex_web.services.identity import IdentityService
@@ -29,6 +30,8 @@ class _GitHubClient:
         self.comments: list[dict] = []
         self.comment_creates = 0
         self.issue_updates: list[dict] = []
+        self.pull_requests: list[dict] = []
+        self.pull_request_creates = 0
         self.credentials: list[str] = []
 
     async def list_issue_comments(self, api_base, repo, number, *, token):
@@ -54,6 +57,22 @@ class _GitHubClient:
             "state": payload["state"],
             "html_url": f"https://github.com/{repo}/issues/{number}",
         }
+
+    async def list_pull_requests(self, api_base, repo, *, token, head, base):
+        self.credentials.append(token)
+        return list(self.pull_requests)
+
+    async def create_pull_request(self, api_base, repo, *, token, payload):
+        self.credentials.append(token)
+        self.pull_request_creates += 1
+        item = {
+            "id": 52,
+            "number": 889,
+            "body": payload["body"],
+            "html_url": f"https://github.com/{repo}/pull/889",
+        }
+        self.pull_requests.append(item)
+        return item
 
 
 class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
@@ -154,6 +173,55 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.issue_updates, [{"state": "closed"}])
         self.assertEqual(result.output["repository"], "garnser/codex-web")
         self.assertEqual(result.output["issue_number"], 886)
+
+    async def test_pull_request_reconciles_unknown_outcome_without_duplicate(self) -> None:
+        request = self._request(
+            CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
+            {
+                "title": "Fix delivery traceability",
+                "body": "Closes #890",
+                "head": "feature/890-governed-github-actions",
+                "base": "main",
+                "draft": False,
+            },
+        )
+        preparation = await self.execution.prepare(
+            self.binding.id, request, actor=self.actor
+        )
+
+        self.assertEqual(preparation.provider_plan["head"], request.parameters["head"])
+        self.assertNotIn("Fix delivery traceability", str(preparation.provider_plan))
+        first = await self.execution.execute(self.binding.id, request, actor=self.actor)
+        second = await self.execution.execute(self.binding.id, request, actor=self.actor)
+
+        self.assertEqual(self.client.pull_request_creates, 1)
+        self.assertEqual(first.external_id, second.external_id)
+        self.assertEqual(first.output["pull_request_number"], 889)
+        self.assertNotIn("Closes #890", first.model_dump_json())
+        self.assertIn("codex-web-action:", self.client.pull_requests[0]["body"])
+
+    async def test_pull_request_does_not_adopt_unowned_existing_request(self) -> None:
+        self.client.pull_requests.append(
+            {
+                "id": 99,
+                "number": 7,
+                "body": "Created outside this ActionIntent",
+                "html_url": "https://github.com/garnser/codex-web/pull/7",
+            }
+        )
+        request = self._request(
+            CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
+            {
+                "title": "Traceable PR",
+                "head": "feature/traceable",
+                "base": "main",
+            },
+        )
+
+        with self.assertRaisesRegex(ValueError, "not owned"):
+            await self.execution.execute(self.binding.id, request, actor=self.actor)
+
+        self.assertEqual(self.client.pull_request_creates, 0)
 
     async def test_unvalidated_repository_locator_fails_before_provider_call(self) -> None:
         invalid = self.resources.create(
