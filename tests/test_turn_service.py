@@ -6,9 +6,11 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 from codex_web import application
+from codex_web.api.turns import build_turns_router
 from codex_web.identity import (
     AuthenticationActor,
     AuthenticationAssurance,
@@ -141,6 +143,9 @@ class _Execution:
         self.published = []
         self.start_calls = []
         self.active = True
+        self.handoffs = set()
+        self.start_error = None
+        self.interrupt_error = None
 
     def enqueue_turn(self, **kwargs):
         queued = QueuedTurn(
@@ -179,6 +184,8 @@ class _Execution:
 
     async def start_thread_turn_now(self, thread_id, **kwargs):
         self.start_calls.append((thread_id, kwargs))
+        if self.start_error is not None:
+            raise self.start_error
         return {"turn": {"id": "turn-1"}}
 
     def wait_for_thread_capacity(self, **kwargs):
@@ -197,12 +204,27 @@ class _Execution:
         return None
 
     def requeue_turn_front(self, queued):
+        if any(item.id == queued.id for item in self.queue_policy.queued):
+            return
         self.queue_policy.queued.insert(0, queued)
+
+    def begin_thread_handoff(self, thread_id):
+        if thread_id in self.handoffs:
+            return False
+        self.handoffs.add(thread_id)
+        return True
+
+    def finish_thread_handoff(self, thread_id, *, clear_active=False):
+        self.handoffs.discard(thread_id)
+        if clear_active:
+            self.clear_thread_active(thread_id)
 
     def clear_thread_active(self, thread_id):
         self.active = False
 
     async def request_for_thread(self, thread_id, method, params=None):
+        if self.interrupt_error is not None:
+            raise self.interrupt_error
         return {}
 
 
@@ -563,6 +585,126 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["active"])
         self.assertEqual(result["queueDepth"], 1)
         self.assertEqual(result["queued"][0]["id"], "queued-1")
+
+    async def test_failed_steer_requeues_exact_turn_and_returns_retryable_error(self) -> None:
+        service, queue, execution, events, _settings = self._service()
+        queued = queue.queued[0]
+        queued.work_item_ref = "github:issue-915"
+        queued.writable_repository_resource_ids = ("repo-app", "repo-api")
+        queued.read_only_repository_resource_ids = ("repo-docs",)
+        queued.execution_profile_id = "repository-write"
+        queued.agent_profile_id = "agent-1"
+        queued.agent_profile_revision = 3
+        queued.agent_profile_actor_id = "operator-1"
+        execution.start_error = RuntimeError("Codex app-server stopped")
+
+        with self.assertRaises(HTTPException) as caught:
+            await service.steer("thread-1", queued.id)
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(
+            caught.exception.detail["code"],
+            "steering_runtime_unavailable",
+        )
+        self.assertTrue(caught.exception.detail["retryable"])
+        self.assertTrue(caught.exception.detail["queuePreserved"])
+        self.assertEqual(queue.queued, [queued])
+        self.assertEqual(queue.queued[0].execution_id, "steer-queued-1")
+        self.assertFalse(execution.active)
+        self.assertEqual(execution.handoffs, set())
+        kwargs = execution.start_calls[0][1]
+        self.assertEqual(
+            kwargs["writable_repository_resource_ids"],
+            ("repo-app", "repo-api"),
+        )
+        self.assertEqual(kwargs["read_only_repository_resource_ids"], ("repo-docs",))
+        self.assertEqual(kwargs["work_item_ref"], "github:issue-915")
+        self.assertTrue(kwargs["preserve_active_handoff"])
+        self.assertEqual(execution.published, ["thread-1"])
+        self.assertEqual(events[-1]["type"], "steering_turn_requeued")
+
+    async def test_interrupt_failure_requeues_and_preserves_active_turn(self) -> None:
+        service, queue, execution, events, _settings = self._service()
+        queued = queue.queued[0]
+        execution.interrupt_error = RuntimeError("interrupt unavailable")
+
+        with self.assertRaises(HTTPException) as caught:
+            await service.steer("thread-1", queued.id)
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(queue.queued, [queued])
+        self.assertTrue(execution.active)
+        self.assertEqual(execution.start_calls, [])
+        self.assertEqual(execution.handoffs, set())
+        self.assertEqual(events[-1]["stage"], "interrupt")
+
+    async def test_successful_steer_removes_once_and_retry_is_not_redelivered(self) -> None:
+        service, queue, execution, events, _settings = self._service()
+
+        result = await service.steer("thread-1", "queued-1")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["steeredId"], "queued-1")
+        self.assertEqual(result["queueDepth"], 0)
+        self.assertEqual(queue.queued, [])
+        self.assertEqual(len(execution.start_calls), 1)
+        self.assertEqual(
+            execution.start_calls[0][1]["execution_id"],
+            "steer-queued-1",
+        )
+        self.assertEqual(execution.handoffs, set())
+        self.assertEqual(events[-1]["type"], "steering_turn_resumed")
+
+        with self.assertRaises(HTTPException) as caught:
+            await service.steer("thread-1", "queued-1")
+        self.assertEqual(caught.exception.status_code, 404)
+        self.assertEqual(len(execution.start_calls), 1)
+
+    async def test_retry_after_transient_failure_reuses_execution_identity(self) -> None:
+        service, queue, execution, _events, _settings = self._service()
+        execution.start_error = RuntimeError("runtime restarting")
+
+        with self.assertRaises(HTTPException):
+            await service.steer("thread-1", "queued-1")
+        first_execution_id = execution.start_calls[0][1]["execution_id"]
+
+        execution.start_error = None
+        execution.active = False
+        result = await service.steer("thread-1", "queued-1")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(execution.start_calls), 2)
+        self.assertEqual(
+            execution.start_calls[1][1]["execution_id"],
+            first_execution_id,
+        )
+        self.assertEqual(queue.queued, [])
+
+    def test_steer_api_serializes_retryable_503_contract(self) -> None:
+        service, queue, execution, _events, _settings = self._service()
+        execution.start_error = RuntimeError("Codex app-server stopped")
+        app = FastAPI()
+        app.include_router(build_turns_router(service))
+
+        response = TestClient(app).post(
+            f"/api/threads/thread-1/queue/{queue.queued[0].id}/steer"
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json(),
+            {
+                "detail": {
+                    "code": "steering_runtime_unavailable",
+                    "message": "Codex app-server stopped",
+                    "retryable": True,
+                    "queuedId": "queued-1",
+                    "queuePreserved": True,
+                    "reconcile": "refresh_queue_and_turn",
+                }
+            },
+        )
+        self.assertEqual(len(queue.queued), 1)
 
 
 if __name__ == "__main__":

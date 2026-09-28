@@ -312,6 +312,23 @@ class TurnExecutionQueueTests(unittest.TestCase):
         self.assertEqual(host.bulk_active_loads, 0)
         self.assertNotIn("t1", host.active)
 
+    def test_handoff_fences_observational_active_turn_clears_until_finish(self) -> None:
+        host = _Host()
+        service = TurnExecutionService(host)
+        service.mark_thread_active("t1", turn_id="turn-1")
+
+        self.assertTrue(service.begin_thread_handoff("t1"))
+        self.assertFalse(service.begin_thread_handoff("t1"))
+        service.clear_thread_active("t1", turn_id="turn-1")
+
+        self.assertTrue(service.thread_is_active("t1"))
+        self.assertTrue(service.thread_handoff_in_progress("t1"))
+
+        service.finish_thread_handoff("t1", clear_active=True)
+
+        self.assertFalse(service.thread_handoff_in_progress("t1"))
+        self.assertFalse(service.thread_is_active("t1"))
+
     def test_duplicate_source_and_message_reuses_existing_queue_item(self) -> None:
         host = _Host()
         service = TurnExecutionService(host)

@@ -36,6 +36,19 @@ On shutdown it:
 
 Recovery scheduling is idempotent inside the configured cooldown window. Continuity checks capture the expected owner/handoff identity when scheduled and abort if the canonical work item changes before the check runs.
 
+## Steering handoffs
+
+Steering a durable queued turn into an active Thread is a fenced handoff. The
+runtime retains the prior active-turn record until interrupt and replacement
+start either commit or roll back. Observational `thread/read` timeouts and
+terminal projections may report an error during that window, but they must not
+retire the process generation or clear the fenced active record. A failed
+interrupt or replacement start requeues the same `QueuedTurn` at the front with
+its original metadata and stable execution identity. The API reports a typed,
+retryable unavailable/conflict result and the UI refreshes canonical queue and
+turn state before offering retry. Started, interrupted, requeued and resumed
+outcomes remain observable as distinct runtime events.
+
 ## Compatibility boundary
 
 `runtime.core` is an intentional, definition-free compatibility namespace for the verified historical `import server` surface. Application composition may publish aliases to canonical services onto that namespace, but production services never read behavior or state from it.
