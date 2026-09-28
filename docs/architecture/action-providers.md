@@ -102,6 +102,21 @@ The in-memory `ReferenceActionProvider` implements a reversible `reference.set` 
 
 New real providers must pass the same suite before they are wired into autonomy.
 
+## GitHub delivery actions
+
+The code-owned `github/github.com` ActionProvider begins the governed GitHub
+delivery path with provider-neutral `code-host.issue.comment` and
+`code-host.issue.update` actions. Both require exactly one canonical repository
+Resource, derive `owner/repository` from its validated GitHub alias, require a
+resource-scoped binding and SecretBroker credential reference, and emit bounded
+receipts/evidence without copying comment bodies or credentials.
+
+Comment retries use a SHA-256-derived hidden marker from the durable ActionIntent
+idempotency key and reconcile against existing issue comments before creating a
+new one. Issue state updates are naturally idempotent. Branch publication and
+pull-request creation/reconciliation require additional actions before GitHub
+delivery is complete; workers must not bypass that gap with host credentials.
+
 ## API and UI
 
 The administration API exposes provider/binding catalogs and prepare previews:

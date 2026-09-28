@@ -349,6 +349,7 @@ from codex_web.services.provider_capacity import (
     install_provider_capacity_event_bridge,
 )
 from codex_web.services.reference_action_provider import ReferenceActionProvider
+from codex_web.services.github_action_provider import GitHubActionProvider
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.services.recovery import LocalBackupDestination, RecoveryService
 from codex_web.services.releases import ReleaseService
@@ -1050,6 +1051,8 @@ action_provider_state_store = ActionProviderStateStore(state_store)
 action_provider_registry = ActionProviderRegistry(action_provider_state_store)
 reference_action_provider = ReferenceActionProvider()
 action_provider_registry.register(reference_action_provider)
+github_action_provider = GitHubActionProvider(resource_catalog_service)
+action_provider_registry.register(github_action_provider)
 action_execution_service = ActionExecutionService(
     action_provider_registry,
     resource_catalog_service,
@@ -1064,6 +1067,7 @@ app.include_router(
 app.state.action_provider_state_store = action_provider_state_store
 app.state.action_provider_registry = action_provider_registry
 app.state.action_execution_service = action_execution_service
+app.state.github_action_provider = github_action_provider
 
 execution_workspace_state_store = ExecutionWorkspaceStateStore(state_store)
 execution_workspace_backend = LocalGitWorkspaceBackend(EXECUTION_WORKSPACE_DIR)
