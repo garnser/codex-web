@@ -1,12 +1,16 @@
 import { request } from './api_client.js';
 
 const state = {
+  projectId: '',
   decisions: [],
   selectedDecisionId: '',
   detail: null,
   revisions: [],
   events: [],
   trace: null,
+  refreshGeneration: 0,
+  refreshController: null,
+  detailController: null,
 };
 
 const esc = (value) => String(value ?? '')
@@ -20,6 +24,50 @@ function fmtTime(value) {
   if (!value) return '—';
   const date = new Date(Number(value) * 1000);
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+}
+
+function activeProjectId() {
+  const route = location.pathname.match(/\/projects\/([^/]+)(?:\/|$)/);
+  let routed = route?.[1] || '';
+  try {
+    routed = decodeURIComponent(routed);
+  } catch {
+    // Retain the raw route segment so an invalid/stale scope fails closed.
+  }
+  return String(
+    routed
+    || document.body?.dataset?.activeProject
+    || document.body?.dataset?.projectId
+    || new URLSearchParams(location.search).get('project')
+    || '',
+  ).trim();
+}
+
+function projectPath(path, projectId = state.projectId) {
+  const separator = path.includes('?') ? '&' : '?';
+  return `${path}${separator}project_id=${encodeURIComponent(projectId)}`;
+}
+
+function clearProjectState(projectId) {
+  state.refreshController?.abort();
+  state.detailController?.abort();
+  state.refreshController = null;
+  state.detailController = null;
+  state.refreshGeneration += 1;
+  state.projectId = projectId;
+  state.decisions = [];
+  state.selectedDecisionId = '';
+  state.detail = null;
+  state.revisions = [];
+  state.events = [];
+  state.trace = null;
+  renderList();
+  const detail = document.querySelector('.decision-detail');
+  if (detail) {
+    detail.innerHTML = projectId
+      ? '<div class="decision-empty">Loading Decisions for this Project…</div>'
+      : '<div class="decision-empty">Select a Project to view Decisions.</div>';
+  }
 }
 
 function ensureShell() {
@@ -87,10 +135,28 @@ function freshnessBadge(value) {
   return `<span class="decision-freshness ${esc(value)}">${esc(value)}</span>`;
 }
 
-async function refreshAll() {
+async function refreshAll({ projectId = activeProjectId() } = {}) {
+  const normalizedProjectId = String(projectId || '').trim();
+  if (state.projectId !== normalizedProjectId) clearProjectState(normalizedProjectId);
+  if (!normalizedProjectId) {
+    setStatus('Select a Project');
+    return;
+  }
+  state.refreshController?.abort();
+  const controller = new AbortController();
+  state.refreshController = controller;
+  const generation = ++state.refreshGeneration;
   setStatus('Loading…');
   try {
-    const payload = await request('/api/decisions');
+    const payload = await request(
+      projectPath('/api/decisions', normalizedProjectId),
+      { signal: controller.signal },
+    );
+    if (
+      controller.signal.aborted
+      || generation !== state.refreshGeneration
+      || normalizedProjectId !== state.projectId
+    ) return;
     state.decisions = Array.isArray(payload?.items) ? payload.items : [];
     if (
       !state.selectedDecisionId
@@ -100,14 +166,24 @@ async function refreshAll() {
     }
     renderList();
     if (state.selectedDecisionId) {
-      await loadDecision(state.selectedDecisionId);
+      await loadDecision(state.selectedDecisionId, {
+        projectId: normalizedProjectId,
+        generation,
+      });
     } else {
       document.querySelector('.decision-detail').innerHTML =
-        '<div class="decision-empty">No Decisions exist in this workspace.</div>';
+        '<div class="decision-empty">No Decisions exist in this Project.</div>';
     }
-    setStatus('Up to date');
+    if (
+      generation === state.refreshGeneration
+      && normalizedProjectId === state.projectId
+    ) setStatus('Up to date');
   } catch (error) {
-    setStatus(error.message || 'Failed to load Decisions', true);
+    if (error?.name !== 'AbortError' && generation === state.refreshGeneration) {
+      setStatus(error.message || 'Failed to load Decisions', true);
+    }
+  } finally {
+    if (state.refreshController === controller) state.refreshController = null;
   }
 }
 
@@ -136,25 +212,46 @@ function renderList() {
   });
 }
 
-async function loadDecision(decisionId) {
+async function loadDecision(
+  decisionId,
+  { projectId = state.projectId, generation = state.refreshGeneration } = {},
+) {
   const host = document.querySelector('.decision-detail');
-  if (!host) return;
+  if (!host || !projectId) return;
+  state.detailController?.abort();
+  const controller = new AbortController();
+  state.detailController = controller;
   host.innerHTML = '<div class="decision-empty">Loading Decision…</div>';
   try {
     const encoded = encodeURIComponent(decisionId);
+    const options = { signal: controller.signal };
     const [detail, revisions, events, trace] = await Promise.all([
-      request(`/api/decisions/${encoded}`),
-      request(`/api/decisions/${encoded}/revisions`),
-      request(`/api/decisions/${encoded}/events`),
-      request(`/api/decisions/${encoded}/trace`),
+      request(projectPath(`/api/decisions/${encoded}`, projectId), options),
+      request(projectPath(`/api/decisions/${encoded}/revisions`, projectId), options),
+      request(projectPath(`/api/decisions/${encoded}/events`, projectId), options),
+      request(projectPath(`/api/decisions/${encoded}/trace`, projectId), options),
     ]);
+    if (
+      controller.signal.aborted
+      || generation !== state.refreshGeneration
+      || projectId !== state.projectId
+      || decisionId !== state.selectedDecisionId
+    ) return;
     state.detail = detail;
     state.revisions = revisions?.items || [];
     state.events = events?.items || [];
     state.trace = trace || null;
     renderDetail();
   } catch (error) {
-    host.innerHTML = `<div class="decision-error">${esc(error.message || 'Failed to load Decision')}</div>`;
+    if (
+      error?.name !== 'AbortError'
+      && generation === state.refreshGeneration
+      && projectId === state.projectId
+    ) {
+      host.innerHTML = `<div class="decision-error">${esc(error.message || 'Failed to load Decision')}</div>`;
+    }
+  } finally {
+    if (state.detailController === controller) state.detailController = null;
   }
 }
 
@@ -501,16 +598,23 @@ function renderDetail() {
 }
 
 async function mutate(path, body, message) {
+  const projectId = state.projectId;
+  if (!projectId) {
+    setStatus('Project changed; reload the Decision before acting.', true);
+    return;
+  }
   setStatus(message);
   try {
-    await request(path, {
+    await request(projectPath(path, projectId), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    await refreshAll();
+    if (projectId === state.projectId) await refreshAll({ projectId });
   } catch (error) {
-    setStatus(error.message || 'Decision action failed', true);
+    if (projectId === state.projectId) {
+      setStatus(error.message || 'Decision action failed', true);
+    }
   }
 }
 
@@ -520,7 +624,7 @@ window.addEventListener('codex:open-decision', async (event) => {
   ensureShell();
   const dialog = document.querySelector('#decisions-dialog');
   if (!dialog.open) dialog.showModal();
-  await refreshAll();
+  await refreshAll({ projectId: activeProjectId() });
   if (state.decisions.some((item) => item.id === decisionId)) {
     state.selectedDecisionId = decisionId;
     renderList();
@@ -528,6 +632,15 @@ window.addEventListener('codex:open-decision', async (event) => {
   } else {
     setStatus(`Decision not found in current tenant: ${decisionId}`, true);
   }
+});
+
+window.addEventListener('codex:project-changed', (event) => {
+  const projectId = String(event.detail?.projectId || activeProjectId()).trim();
+  if (!projectId || projectId === state.projectId) return;
+  clearProjectState(projectId);
+  setStatus('Project changed');
+  const dialog = document.querySelector('#decisions-dialog');
+  if (dialog?.open) void refreshAll({ projectId });
 });
 
 ensureShell();

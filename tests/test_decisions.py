@@ -6,6 +6,10 @@ import time
 import unittest
 from pathlib import Path
 
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
+
+from codex_web.api.decisions import build_decisions_router
 from codex_web.approval_requests import (
     ApprovalDecisionOutcome,
     ApprovalDecisionSubmit,
@@ -339,11 +343,13 @@ class DecisionDomainTests(unittest.IsolatedAsyncioTestCase):
         evidence=(),
         max_calls: int = 3,
         max_rounds: int = 2,
+        project_id: str | None = None,
     ):
         return await self.decisions.create(
             DecisionCreate(
                 title="Choose rollout strategy",
                 question="Which bounded rollout strategy should we use?",
+                project_id=project_id,
                 participants=self._participant_rows(),
                 evidence=evidence,
                 assumptions=("Current provider contracts remain available.",),
@@ -362,6 +368,48 @@ class DecisionDomainTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             actor=self.requester,
+        )
+
+    async def test_project_scoped_list_detail_and_mutation_reject_foreign_ids(self) -> None:
+        decision = await self._create_decision(project_id="project-a")
+        await self._create_decision(project_id="project-b")
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def inject_actor(request: Request, call_next):
+            request.state.identity_actor = self.requester
+            return await call_next(request)
+
+        app.include_router(build_decisions_router(self.decisions, self.deliberation))
+        with TestClient(app) as client:
+            listed = client.get(
+                "/api/decisions",
+                params={"project_id": "project-a"},
+            )
+            allowed = client.get(
+                f"/api/decisions/{decision.id}",
+                params={"project_id": "project-a"},
+            )
+            denied = client.get(
+                f"/api/decisions/{decision.id}",
+                params={"project_id": "project-b"},
+            )
+            denied_mutation = client.post(
+                f"/api/decisions/{decision.id}/deliberate",
+                params={"project_id": "project-b"},
+            )
+
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()["count"], 1)
+        self.assertEqual(listed.json()["items"][0]["project_id"], "project-a")
+        self.assertEqual(allowed.status_code, 200)
+        self.assertEqual(allowed.json()["item"]["project_id"], "project-a")
+        self.assertEqual(denied.status_code, 404)
+        self.assertEqual(denied.json()["detail"], "Decision not found")
+        self.assertEqual(denied_mutation.status_code, 404)
+        self.assertEqual(
+            denied_mutation.json()["detail"],
+            "Decision not found",
         )
 
     async def test_metric_and_evidence_references_are_exact_and_nonfresh_state_is_explicit(self) -> None:
