@@ -10,6 +10,7 @@ def assignment_sandbox_policy(
     policy: dict[str, object],
     *,
     mode: str,
+    writable_roots: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Permit private loopback relays inside an outer-isolated worker.
 
@@ -22,6 +23,10 @@ def assignment_sandbox_policy(
     effective = dict(policy)
     if mode in {"read-only", "workspace-write"}:
         effective["networkAccess"] = True
+    if mode == "workspace-write" and writable_roots:
+        roots = [str(item) for item in effective.get("writableRoots", [])]
+        roots.extend(item for item in writable_roots if item not in roots)
+        effective["writableRoots"] = roots
     return effective
 
 

@@ -888,6 +888,11 @@ class ThreadService:
                 workspace_cwd,
             ),
             mode=effective_sandbox,
+            writable_roots=(
+                str(session.git_metadata_path),
+            )
+            if getattr(session, "git_metadata_path", None) is not None
+            else (),
         )
 
         runtime_request = AgentRuntimeSessionRequest(
