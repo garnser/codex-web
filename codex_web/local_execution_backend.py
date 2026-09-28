@@ -93,6 +93,10 @@ class BubblewrapExecutionBackend:
         "TERM",
         "TZ",
     )
+    SYSTEM_TRUST_DIRECTORIES = (
+        Path("/etc/ssl"),
+        Path("/etc/pki"),
+    )
 
     def __init__(
         self,
@@ -440,6 +444,21 @@ class BubblewrapExecutionBackend:
                 "/tmp/codex-worker-home",
             )
         )
+        # The assignment-bound model runtime reaches its allowlisted HTTPS
+        # endpoints through a fixed-destination broker. Keep the broader host
+        # /etc tree private, but provide the platform CA roots required to
+        # authenticate those TLS endpoints.
+        for trust_directory in self.SYSTEM_TRUST_DIRECTORIES:
+            if not trust_directory.is_dir():
+                continue
+            command.extend(self._directory_creation_args(trust_directory))
+            command.extend(
+                (
+                    "--ro-bind",
+                    str(trust_directory),
+                    str(trust_directory),
+                )
+            )
         command.extend(self._directory_creation_args(workspace))
         command.extend((mount_flag, str(workspace), str(workspace)))
 

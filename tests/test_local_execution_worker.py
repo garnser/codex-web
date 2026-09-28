@@ -200,6 +200,35 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
         self.assertIn("--chdir", command)
         self.assertEqual(command[-3:], ["python", "-m", "pytest"])
 
+    def test_command_mounts_only_system_ca_trust_directories_read_only(self) -> None:
+        backend = BubblewrapExecutionBackend(
+            executable="/usr/bin/bwrap",
+            probe_runner=_probe_success,
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            workspace = root / "workspace"
+            trust = root / "ca-trust"
+            workspace.mkdir()
+            trust.mkdir()
+            backend.SYSTEM_TRUST_DIRECTORIES = (trust,)
+
+            command = backend.build_command(
+                _assignment(),
+                argv=("python", "-m", "pytest"),
+                workspace_path=workspace,
+            )
+
+        mounts = [
+            command[index:index + 3]
+            for index in range(max(0, len(command) - 2))
+        ]
+        self.assertIn(
+            ["--ro-bind", str(trust), str(trust)],
+            mounts,
+        )
+        self.assertNotIn(["--ro-bind", "/etc", "/etc"], mounts)
+
     def test_read_only_assignment_mounts_workspace_and_git_metadata_read_only(self) -> None:
         backend = BubblewrapExecutionBackend(
             executable="/usr/bin/bwrap",
