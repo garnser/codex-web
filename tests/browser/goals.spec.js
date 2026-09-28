@@ -158,7 +158,11 @@ function completion(eligible = false) {
 async function mockGoalApis(page, posts) {
   let completionEligible = false;
 
-  await page.route('**/api/goals**', async (route) => {
+  // Match both the collection and nested routes. A glob ending in goals**
+  // matches the scoped collection query but not slash-separated detail paths.
+  await page.route((url) => (
+    url.pathname === '/api/goals' || url.pathname.startsWith('/api/goals/')
+  ), async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const { pathname } = url;
@@ -247,6 +251,36 @@ async function mockGoalApis(page, posts) {
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
   });
 }
+
+test('Goal API mocks cover scoped collection, detail, events and nested mutations', async ({ page }) => {
+  const posts = [];
+  await mockGoalApis(page, posts);
+  await page.goto('http://127.0.0.1:18766/tests/browser/goals_fixture.html');
+
+  const responses = await page.evaluate(async () => {
+    const paths = [
+      '/api/goals?project_id=project-a',
+      '/api/goals/goal-a?project_id=project-a',
+      '/api/goals/events?goal_id=goal-a&project_id=project-a',
+      '/api/goals/goal-a/decompositions/generate?project_id=project-a',
+    ];
+    return Promise.all(paths.map(async (path, index) => {
+      const response = await fetch(path, index === 3 ? {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_ids: ['project-a'] }),
+      } : undefined);
+      return { status: response.status, body: await response.json() };
+    }));
+  });
+
+  expect(responses.map((response) => response.status)).toEqual([200, 200, 200, 200]);
+  expect(responses[0].body.items[0].goal.id).toBe('goal-a');
+  expect(responses[1].body.snapshot.goal.id).toBe('goal-a');
+  expect(responses[2].body.items[0].event_type).toBe('goal_revised');
+  expect(responses[3].body.proposal.id).toBe('proposal-a');
+  expect(posts).toEqual([{ action: 'generate', body: { project_ids: ['project-a'] } }]);
+});
 
 test('Goal workspace exposes canonical health, provenance, decomposition and commit blockers', async ({ page }) => {
   const posts = [];
