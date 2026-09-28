@@ -513,6 +513,12 @@ the Codex process. The Python session retains the process handle and
 metadata-only delegation (secret reference, rotation, expiry, assignment,
 worker and fence), never the credential value.
 
+The assignment-bound process is intentionally non-restartable because a restart
+requires fresh lease and credential validation. A bounded metadata/read RPC
+timeout therefore fails that request without killing an otherwise healthy
+one-shot process. The global control-plane Codex runtime retains its existing
+restart-on-timeout recovery behavior.
+
 While the process is alive, a deterministic watchdog:
 
 - requires the worker to remain active/draining and the assignment to remain

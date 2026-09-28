@@ -260,6 +260,48 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.runtime.ready.is_set())
         self.runtime.stop.assert_awaited_once()
 
+    async def test_rpc_timeout_preserves_nonrestartable_process_generation(self) -> None:
+        runtime = CodexRuntime(self.host, restart_on_timeout=False)
+        runtime.proc = SimpleNamespace(poll=lambda: None)
+        runtime.ready.set()
+        runtime.ensure_started = AsyncMock()
+        runtime._send = AsyncMock()
+        runtime.stop = AsyncMock()
+
+        with patch("codex_web.runtime.codex.request_timeout", return_value=0.001):
+            with self.assertRaises(HTTPException) as caught:
+                await runtime.request("thread/read", {})
+
+        self.assertEqual(caught.exception.status_code, 504)
+        self.assertTrue(runtime.ready.is_set())
+        runtime.stop.assert_not_awaited()
+
+    async def test_stdout_reader_uses_process_generation_during_shutdown(self) -> None:
+        runtime = CodexRuntime(self.host)
+
+        class ClosingStdout:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def readline(self) -> str:
+                self.calls += 1
+                if self.calls == 1:
+                    runtime.proc = None
+                    return '{"method":"test/event","params":{}}\n'
+                return ""
+
+        process = SimpleNamespace(
+            stdout=ClosingStdout(),
+            pid=4321,
+            poll=lambda: 0,
+        )
+        runtime.proc = process
+
+        await runtime._read_loop()
+
+        self.assertIsNone(runtime.proc)
+        self.assertEqual(runtime.last_error, "Codex app-server stopped")
+
     async def test_dead_reader_restarts_even_if_stale_ready_flag_is_set(self) -> None:
         async def complete():
             return None

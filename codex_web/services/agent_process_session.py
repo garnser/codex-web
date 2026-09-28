@@ -107,6 +107,7 @@ class AssignmentBoundAgentProcessSession:
         credential_provider: AssignmentRuntimeCredentialProvider,
         runtime_binding: ExecutionRuntimeBinding | None = None,
         minimum_address_space_bytes: int = 0,
+        restart_runtime_on_timeout: bool | None = None,
         watchdog_interval_seconds: float = 1.0,
         egress_endpoints_resolver: Callable[[], tuple[AgentRuntimeModelEgressEndpoint, ...]] | None = None,
         control_plane_broker_factory: DeferredControlPlaneBrokerFactory | None = None,
@@ -128,6 +129,7 @@ class AssignmentBoundAgentProcessSession:
         self.credential_provider = credential_provider
         self.runtime_binding = runtime_binding
         self.minimum_address_space_bytes = max(0, minimum_address_space_bytes)
+        self.restart_runtime_on_timeout = restart_runtime_on_timeout
         self._clock = clock
         self._monotonic = monotonic
         self._sleep = sleep
@@ -519,6 +521,11 @@ class AssignmentBoundAgentProcessSession:
                     cwd=workspace_path,
                     popen=_OneShotProcessFactory(process),
                 )
+                if (
+                    self.restart_runtime_on_timeout is not None
+                    and hasattr(self.runtime, "restart_on_timeout")
+                ):
+                    self.runtime.restart_on_timeout = self.restart_runtime_on_timeout
                 self.runtime.approval_namespace = assignment.id
                 await self.runtime.start()
                 self.watchdog_task = asyncio.create_task(
