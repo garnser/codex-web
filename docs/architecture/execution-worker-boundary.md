@@ -228,7 +228,10 @@ worker networking and it is not an HTTP proxy to localhost.
 The local implementation uses a private host-side Unix socket mounted read-only
 into the worker namespace plus a fixed loopback relay at
 `CODEX_WEB_CONTROL_PLANE_URL=http://127.0.0.1:8788`. The relay can reach only
-that Unix socket. The broker parses each request itself and dispatches only a
+that Unix socket. The trusted Codex child-shell policy sets this non-secret
+loopback locator explicitly while retaining `inherit="none"`, so repository
+commands can discover governed operations without inheriting the app-server
+environment or credential material. The broker parses each request itself and dispatches only a
 small code-owned operation catalog to canonical codex-web services.
 
 Initial reachability is limited to scoped Work Item operations:

@@ -202,7 +202,7 @@ class CodexAuthDelegationService:
             "--config",
             "shell_environment_policy.ignore_default_excludes=false",
             "--config",
-            'shell_environment_policy.set={PATH="/usr/local/bin:/usr/bin:/bin",HOME="/tmp/codex-worker-home"}',
+            'shell_environment_policy.set={PATH="/usr/local/bin:/usr/bin:/bin",HOME="/tmp/codex-worker-home",CODEX_WEB_CONTROL_PLANE_URL="http://127.0.0.1:8788"}',
             "--config",
             'shell_environment_policy.filters.CODEX_ACCESS_TOKEN="exclude"',
             "--config",

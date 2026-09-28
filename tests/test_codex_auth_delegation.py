@@ -170,6 +170,10 @@ class CodexAuthDelegationTests(unittest.TestCase):
         self.assertNotIn("features.code_mode=false", joined)
         self.assertNotIn("features.code_mode_host=false", joined)
         self.assertIn('shell_environment_policy.inherit="none"', joined)
+        self.assertIn(
+            'CODEX_WEB_CONTROL_PLANE_URL="http://127.0.0.1:8788"',
+            joined,
+        )
         self.assertIn("shell_environment_policy.ignore_default_excludes=false", joined)
         self.assertIn(
             'shell_environment_policy.filters.CODEX_ACCESS_TOKEN="exclude"',

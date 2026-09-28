@@ -67,7 +67,10 @@ TRUSTED_LOCAL_CHILD_ENVIRONMENT_CONFIG = (
     "features.apps=false",
     'shell_environment_policy.inherit="none"',
     "shell_environment_policy.ignore_default_excludes=false",
-    'shell_environment_policy.set={PATH="/usr/local/bin:/usr/bin:/bin",HOME="/tmp/codex-local-shell-home"}',
+    # This non-secret loopback locator is useful only when an assignment worker
+    # mounts the matching broker relay. Set it explicitly because inherit="none"
+    # must continue to keep process credentials out of repository commands.
+    'shell_environment_policy.set={PATH="/usr/local/bin:/usr/bin:/bin",HOME="/tmp/codex-local-shell-home",CODEX_WEB_CONTROL_PLANE_URL="http://127.0.0.1:8788"}',
     'shell_environment_policy.filters.CODEX_ACCESS_TOKEN="exclude"',
     'shell_environment_policy.filters.CODEX_API_KEY="exclude"',
     'shell_environment_policy.filters.OPENAI_API_KEY="exclude"',
