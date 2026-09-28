@@ -606,6 +606,13 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(launch["argv"][0], str(executable))
             self.assertIn("--config", launch["argv"])
             self.assertIn("features.apps=false", launch["argv"])
+            self.assertTrue(
+                any(
+                    'CODEX_WEB_CONTROL_PLANE_URL="http://127.0.0.1:8788"'
+                    in value
+                    for value in launch["argv"]
+                )
+            )
             self.assertNotIn("features.code_mode=false", launch["argv"])
             self.assertNotIn("features.code_mode_host=false", launch["argv"])
             self.assertEqual(

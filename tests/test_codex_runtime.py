@@ -86,6 +86,10 @@ class TrustedLocalCodexSecurityPolicyTests(unittest.TestCase):
             joined,
         )
         self.assertIn(
+            'CODEX_WEB_CONTROL_PLANE_URL="http://127.0.0.1:8788"',
+            joined,
+        )
+        self.assertIn(
             'shell_environment_policy.filters.CODEX_API_KEY="exclude"',
             joined,
         )
