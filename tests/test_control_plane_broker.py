@@ -127,7 +127,11 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             identity_id="execution-worker-test",
             name="Execution Worker Test",
             scope=self.scope,
-            service_scopes=("execution-worker:run", "secret:use"),
+            service_scopes=(
+                "execution-worker:run",
+                "action-intent:worker",
+                "secret:use",
+            ),
         )
         self.registry = DefinitionRegistryService(
             DefinitionRegistryStore(self.sqlite)
@@ -173,7 +177,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             self.service,
             assignment=self.assignment,
             worker_id="worker-1",
-            service_identity_id=self.worker_actor.identity_id,
+            worker_actor=self.worker_actor,
             fence=1,
             validator=lambda: self.current_assignment,
         )
@@ -355,6 +359,13 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             "control_plane.operations.list",
         )
 
+    async def test_bound_worker_scopes_survive_canonical_revalidation(self) -> None:
+        actor = self.service._actor(self.assignment, self.worker_actor)
+
+        self.assertEqual(actor.identity_id, self.worker_actor.identity_id)
+        self.assertIn("action-intent:worker", actor.service_scopes)
+        self.assertEqual(actor.tenant, self.worker_actor.tenant)
+
     async def test_authorized_read_and_handoff_use_exact_role_authority(self) -> None:
         encoded = quote(self.ref, safe="")
         status, headers, payload = await self._request(
@@ -461,7 +472,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             service,
             assignment=self.assignment,
             worker_id="worker-1",
-            service_identity_id=self.worker_actor.identity_id,
+            worker_actor=self.worker_actor,
             fence=1,
             validator=lambda: self.assignment,
         )
@@ -534,7 +545,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
 
         status, payload, operation, target_ref, _decision = await self.service.dispatch(
             assignment=assignment,
-            service_identity_id=self.worker_actor.identity_id,
+            worker_actor=self.worker_actor,
             method="GET",
             raw_target=f"/api/work-items/{quote(self.ref, safe='')}",
             body=b"",
@@ -549,7 +560,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         broker = await factory.start(
             assignment=assignment,
             worker_id="worker-1",
-            service_identity_id=self.worker_actor.identity_id,
+            worker_actor=self.worker_actor,
             fence=1,
             validator=lambda: assignment,
         )

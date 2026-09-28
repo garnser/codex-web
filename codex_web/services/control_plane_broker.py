@@ -33,7 +33,7 @@ from codex_web.control_plane_broker import (
     ControlPlaneBrokerOperation,
 )
 from codex_web.execution_workers import ExecutionAssignment
-from codex_web.identity import TenantScope
+from codex_web.identity import AuthenticationActor, TenantScope
 from codex_web.models import (
     WorkItemAckCreate,
     WorkItemHandoffCreate,
@@ -435,10 +435,14 @@ class ControlPlaneBrokerService:
             raise ControlPlaneBrokerDeniedError("work item is outside assignment project scope")
         return state
 
-    def _actor(self, assignment: ExecutionAssignment, service_identity_id: str):
+    def _actor(
+        self,
+        assignment: ExecutionAssignment,
+        worker_actor: AuthenticationActor,
+    ) -> AuthenticationActor:
         try:
-            return self.identity.actor_for_identity(
-                service_identity_id,
+            canonical = self.identity.actor_for_identity(
+                worker_actor.identity_id,
                 scope=TenantScope(
                     organization_id=assignment.organization_id,
                     workspace_id=assignment.workspace_id,
@@ -448,6 +452,21 @@ class ControlPlaneBrokerService:
             raise ControlPlaneBrokerDeniedError(
                 "worker service identity is unavailable or unauthorized"
             ) from exc
+        if (
+            canonical.principal_kind != worker_actor.principal_kind
+            or canonical.tenant != worker_actor.tenant
+        ):
+            raise ControlPlaneBrokerDeniedError(
+                "worker service identity binding changed"
+            )
+        return canonical.model_copy(
+            update={
+                "assurance": worker_actor.assurance,
+                "service_token_id": worker_actor.service_token_id,
+                "service_scopes": worker_actor.service_scopes,
+                "authenticated_at": worker_actor.authenticated_at,
+            }
+        )
 
     def _requester_actor(self, assignment: ExecutionAssignment):
         try:
@@ -597,14 +616,14 @@ class ControlPlaneBrokerService:
         self,
         *,
         assignment: ExecutionAssignment,
-        service_identity_id: str,
+        worker_actor: AuthenticationActor,
         method: str,
         raw_target: str,
         body: bytes,
     ) -> tuple[int, dict[str, Any], ControlPlaneBrokerOperation, str | None, Any]:
         resolved = self._resolve_operation(method, raw_target)
         operation = resolved.operation
-        actor = self._actor(assignment, service_identity_id)
+        actor = self._actor(assignment, worker_actor)
         requester_actor = (
             self._requester_actor(assignment)
             if operation.id.startswith("repository.")
@@ -742,7 +761,7 @@ class AssignmentBoundControlPlaneBroker:
         *,
         assignment: ExecutionAssignment,
         worker_id: str,
-        service_identity_id: str,
+        worker_actor: AuthenticationActor,
         fence: int,
         validator: Callable[[], ExecutionAssignment],
         worker_service_identity_validator: Callable[[], str] | None = None,
@@ -750,7 +769,8 @@ class AssignmentBoundControlPlaneBroker:
         self.service = service
         self.snapshot = assignment.model_copy(deep=True)
         self.worker_id = worker_id
-        self.service_identity_id = service_identity_id
+        self.worker_actor = worker_actor
+        self.service_identity_id = worker_actor.identity_id
         self.fence = fence
         self.validator = validator
         self.worker_service_identity_validator = worker_service_identity_validator
@@ -979,13 +999,13 @@ class AssignmentBoundControlPlaneBroker:
             resolved = self.service._resolve_operation(method, target)
             operation = resolved.operation
             target_ref = resolved.target_ref
-            actor = self.service._actor(assignment, self.service_identity_id)
+            actor = self.service._actor(assignment, self.worker_actor)
             actor_identity_id = actor.identity_id
 
             status, payload, operation, target_ref, authority_decision = (
                 await self.service.dispatch(
                     assignment=assignment,
-                    service_identity_id=self.service_identity_id,
+                    worker_actor=self.worker_actor,
                     method=method,
                     raw_target=target,
                     body=body,
@@ -1116,7 +1136,7 @@ class DeferredControlPlaneBrokerFactory:
         *,
         assignment: ExecutionAssignment,
         worker_id: str,
-        service_identity_id: str,
+        worker_actor: AuthenticationActor,
         fence: int,
         validator: Callable[[], ExecutionAssignment],
         worker_service_identity_validator: Callable[[], str] | None = None,
@@ -1131,7 +1151,7 @@ class DeferredControlPlaneBrokerFactory:
             service,
             assignment=assignment,
             worker_id=worker_id,
-            service_identity_id=service_identity_id,
+            worker_actor=worker_actor,
             fence=fence,
             validator=validator,
             worker_service_identity_validator=worker_service_identity_validator,

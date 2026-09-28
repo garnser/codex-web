@@ -467,7 +467,7 @@ class AssignmentBoundAgentProcessSession:
         return await factory.start(
             assignment=assignment,
             worker_id=worker.id,
-            service_identity_id=worker.service_identity_id,
+            worker_actor=self.local_worker.worker_actor,
             fence=lease.fence,
             validator=self._validate_egress_state,
             worker_service_identity_validator=lambda: (
