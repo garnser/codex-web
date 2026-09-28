@@ -478,7 +478,12 @@ test("retryable steering failure preserves the queued message and reconciles can
   });
 
   await page.goto("http://127.0.0.1:18766/static/index.html");
-  await page.locator("#threads .item-main").first().click();
+  const threadItem = page.locator("#threads .item-main").first();
+  await expect(threadItem).toBeVisible();
+  await Promise.all([
+    page.waitForResponse((response) => new URL(response.url()).pathname === "/api/threads/thread-1"),
+    threadItem.evaluate((element) => element.click()),
+  ]);
   await expect.poll(() => threadReads).toBeGreaterThanOrEqual(1);
   await page.locator("#prompt").fill("Deliver this exactly once");
   await page.locator("#prompt").press("Enter");
