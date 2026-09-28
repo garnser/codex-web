@@ -412,6 +412,7 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
                 "id": 99,
                 "number": 7,
                 "body": "Created outside this ActionIntent",
+                "state": "open",
                 "html_url": "https://github.com/garnser/codex-web/pull/7",
             }
         )
@@ -428,6 +429,36 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
             await self.execution.execute(self.binding.id, request, actor=self.actor)
 
         self.assertEqual(self.client.pull_request_creates, 0)
+
+    async def test_pull_request_ignores_unowned_closed_request_for_reused_branch(
+        self,
+    ) -> None:
+        self.client.pull_requests.append(
+            {
+                "id": 99,
+                "number": 7,
+                "body": "Created by an earlier ActionIntent",
+                "state": "closed",
+                "merged_at": "2026-09-28T23:10:55Z",
+                "html_url": "https://github.com/garnser/codex-web/pull/7",
+            }
+        )
+        request = self._request(
+            CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
+            {
+                "title": "Next governed delivery",
+                "head": "feature/reused-canonical-branch",
+                "base": "main",
+            },
+        )
+
+        result = await self.execution.execute(
+            self.binding.id, request, actor=self.actor
+        )
+
+        self.assertEqual(self.client.pull_request_creates, 1)
+        self.assertEqual(result.output["change_request_number"], 889)
+        self.assertEqual(len(self.client.pull_requests), 2)
 
     async def test_pull_request_merge_requires_clean_state_and_verifies(self) -> None:
         self.client.pull_requests.append(
