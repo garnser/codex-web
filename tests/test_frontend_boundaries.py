@@ -125,6 +125,12 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("apiRequest", source)
         self.assertNotIn("fetch(", source)
 
+    def test_model_gateway_route_controls_have_a_bounded_module(self) -> None:
+        source_path = STATIC / "model_gateway_route_controls.js"
+        source = source_path.read_text()
+        self.assertLessEqual(source_path.stat().st_size, 3_000)
+        self.assertNotIn("fetch(", source)
+
     def test_model_gateway_management_has_its_own_budget_and_api_client(self) -> None:
         source_path = STATIC / "model_gateway_management.js"
         source = source_path.read_text()

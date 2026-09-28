@@ -15,6 +15,7 @@ class ModelGatewayManagementUiTests(unittest.TestCase):
         )
 
         self.assertIn('id="model-gateway-management-panel"', html)
+        self.assertIn('id="model-definition-workloads"', html)
         self.assertIn("admin authority and MFA/step-up assurance", html)
         self.assertIn('apiRequest("/api/identity/me")', javascript)
         self.assertIn('apiRequest("/api/secrets")', javascript)
@@ -28,6 +29,7 @@ class ModelGatewayManagementUiTests(unittest.TestCase):
         self.assertIn("compliance_tags", javascript)
         self.assertIn("input_price_per_million_usd", javascript)
         self.assertIn("output_price_per_million_usd", javascript)
+        self.assertIn("workload_classes", javascript)
         self.assertIn("Existing version content is immutable", javascript)
         self.assertIn("Empty allowlists mean unrestricted", javascript)
         self.assertIn("change where model data is routed", javascript)

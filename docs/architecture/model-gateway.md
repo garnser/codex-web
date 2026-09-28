@@ -33,6 +33,7 @@ Model records contain:
 
 - stable model ID and concrete provider model name/version;
 - one or more stable model classes;
+- optional workload suitability classes used for deterministic task-aware routing;
 - capabilities/modalities/tool support;
 - context and output limits;
 - latency class;
@@ -58,16 +59,24 @@ A policy can restrict routing but does not grant agent/action authority.
 Routing filters candidates before invocation in this order:
 
 1. exact tenant/workspace scope;
-2. stable model class;
+2. an optional strict model pin and the stable model class;
 3. active model/provider lifecycle;
 4. tenant provider/model allowlists;
-5. required capabilities;
-6. residency and compliance constraints;
-7. context-window capacity;
-8. cost ceiling;
-9. preferred provider, provider health, and route priority.
+5. optional workload suitability;
+6. required capabilities;
+7. residency and compliance constraints;
+8. context-window capacity;
+9. cost ceiling;
+10. workload specificity, preferred provider, provider health, requested latency order, requested lower estimated cost, and route priority.
 
 If no candidate survives, routing fails before provider invocation.
+
+Workload class, strict model pin, latency ordering, and lower-cost preference are
+structured request metadata. A strict pin narrows the candidate set; it cannot
+bypass tenant policy, lifecycle, capability, residency, compliance, context,
+budget, provider availability, or credential-boundary checks. Workload-specific
+models rank ahead of otherwise eligible generic models. Concrete workload
+catalogs and mappings are mutable registry data rather than orchestration code.
 
 Fallback is bounded and only follows transient provider failures. Every fallback candidate is independently subjected to the same policy/residency/capability/budget constraints. The gateway conservatively charges the estimated upper-bound cost against the remaining fallback budget after an uncertain transient attempt so fallback cannot silently expand the configured budget.
 
@@ -91,6 +100,7 @@ Every gateway invocation records metadata sufficient for audit/cost/replay attri
 
 - tenant/workspace and acting identity;
 - model class and purpose;
+- workload class, any strict model pin, and latency/cost preferences;
 - exact prompt template ID/version/checksum;
 - rendered prompt hash, message count and character count;
 - required capabilities/residency/compliance constraints;
@@ -161,3 +171,7 @@ This compatibility bootstrap is intentionally subordinate to canonical registry 
 6. Feed token/cost results into canonical entitlement and usage metering and future budget policy.
 
 UI administration belongs to the platform administration and cross-cutting operator workspaces and must display provider/model capabilities, exact routing constraints and provenance without exposing credentials.
+
+The operator route preview exposes workload, pin, latency, and cost preferences
+through the same canonical route API used by runtime callers. Preview remains
+deterministic and performs no provider invocation.

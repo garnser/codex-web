@@ -14,9 +14,9 @@ from codex_web.input_plugins import InputGatedProposal, InputPluginProvenance
 
 MODEL_GATEWAY_CONTRACT = ContractSpec(
     "model-gateway-state",
-    "1.2",
-    ("1.0", "1.1", "1.2"),
-    deprecated=("1.0", "1.1"),
+    "1.3",
+    ("1.0", "1.1", "1.2", "1.3"),
+    deprecated=("1.0", "1.1", "1.2"),
 )
 
 MODEL_CLASS_LIGHTWEIGHT = "lightweight"
@@ -88,6 +88,7 @@ class ModelDefinitionUpsert(BaseModel):
     concrete_model: str = Field(min_length=1)
     model_version: str | None = None
     model_classes: tuple[str, ...] = ()
+    workload_classes: tuple[str, ...] = ()
     capabilities: tuple[str, ...] = ("text",)
     modalities: tuple[str, ...] = ("text",)
     supports_tools: bool = False
@@ -115,6 +116,15 @@ class ModelDefinitionRecord(ModelDefinitionUpsert):
     @model_validator(mode="after")
     def normalize(self) -> "ModelDefinitionRecord":
         self.model_classes = tuple(dict.fromkeys(self.model_classes))
+        self.workload_classes = tuple(
+            sorted(
+                {
+                    value.strip()
+                    for value in self.workload_classes
+                    if value.strip()
+                }
+            )
+        )
         self.capabilities = tuple(sorted(set(self.capabilities)))
         self.modalities = tuple(sorted(set(self.modalities)))
         if (
@@ -185,6 +195,10 @@ class ModelInvocationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model_class: str = Field(min_length=1)
+    workload_class: str | None = None
+    pinned_model_id: str | None = None
+    preferred_latency_classes: tuple[ModelLatencyClass, ...] = ()
+    prefer_lower_cost: bool = False
     messages: tuple[ModelMessage, ...]
     system_prompt: str = ""
     prompt_template_id: str = Field(default="generic.system", min_length=1)
@@ -206,6 +220,19 @@ class ModelInvocationRequest(BaseModel):
     execution_id: str | None = None
     purpose: str = Field(default="general", min_length=1)
 
+    @model_validator(mode="after")
+    def normalize_task_preferences(self) -> "ModelInvocationRequest":
+        self.workload_class = (
+            self.workload_class.strip() if self.workload_class else None
+        ) or None
+        self.pinned_model_id = (
+            self.pinned_model_id.strip() if self.pinned_model_id else None
+        ) or None
+        self.preferred_latency_classes = tuple(
+            dict.fromkeys(self.preferred_latency_classes)
+        )
+        return self
+
 
 class ModelRouteCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -224,6 +251,10 @@ class ModelRouteResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     model_class: str
+    workload_class: str | None = None
+    pinned_model_id: str | None = None
+    preferred_latency_classes: tuple[ModelLatencyClass, ...] = ()
+    prefer_lower_cost: bool = False
     prompt_template_id: str
     prompt_template_version: str
     prompt_template_checksum_sha256: str
@@ -281,6 +312,10 @@ class ModelInvocationRecord(BaseModel):
     workspace_id: str
     actor_id: str
     model_class: str
+    workload_class: str | None = None
+    pinned_model_id: str | None = None
+    preferred_latency_classes: tuple[ModelLatencyClass, ...] = ()
+    prefer_lower_cost: bool = False
     purpose: str
     prompt_template_id: str
     prompt_template_version: str
