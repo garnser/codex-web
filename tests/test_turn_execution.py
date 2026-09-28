@@ -5,7 +5,7 @@ import unittest
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import FastAPI, HTTPException
 
@@ -431,6 +431,27 @@ class _AlternateSession(_Session):
         value = super().validate_current()
         value.runtime_binding = self.binding
         return value
+
+
+class _SessionlessCliSession(_AlternateSession):
+    def __init__(self, binding) -> None:
+        super().__init__(binding)
+        self.runtime = SimpleNamespace(native_session_id=None)
+
+
+class _SessionlessCliTimeoutAdapter:
+    provider_id = "openai"
+    runtime_id = "codex-cli"
+    runtime_type = "cli"
+
+    async def resume_session(self, native_session_id, request):
+        return AgentRuntimeResult(
+            provider_native_session_id=native_session_id,
+            payload={"resumed": False},
+        )
+
+    async def start_turn(self, native_session_id, request):
+        raise asyncio.TimeoutError("CLI exited before acquiring a session id")
 
 
 class _SessionManager:
@@ -1167,6 +1188,109 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             service.last_inputs["t1"]["assignment_id"],
             "assignment-1",
         )
+
+    async def test_sessionless_cli_timeout_releases_active_assignment(self) -> None:
+        host = _Host()
+        host._is_codex_timeout_error = lambda exc: isinstance(
+            exc,
+            asyncio.TimeoutError,
+        )
+        binding_service = _BindingService()
+        default_manager = _SessionManager()
+        default_manager.session = None
+        selected = ExecutionRuntimeBinding(
+            provider_id="openai",
+            runtime_id="codex-cli",
+            capability_revision=1,
+        )
+        cli_manager = _SessionManager()
+        cli_manager.session = _SessionlessCliSession(selected)
+        thread_history = MagicMock()
+        service = TurnExecutionService(
+            host,
+            binding_service=binding_service,
+            session_manager=default_manager,
+            bootstrap_bindings=_BootstrapBindings("t1"),
+            control_actor=SimpleNamespace(identity_id="control"),
+            session_managers={
+                ("openai", "codex"): default_manager,
+                ("openai", "codex-cli"): cli_manager,
+            },
+            runtime_adapter_factory=(
+                lambda binding, session: _SessionlessCliTimeoutAdapter()
+            ),
+            thread_history=thread_history,
+        )
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        with self.assertRaises(asyncio.TimeoutError):
+            await service.start_thread_turn_now(
+                "t1",
+                project=project,
+                message="start without a native session",
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                execution_id="ignored-for-bootstrap",
+            )
+
+        self.assertNotIn("t1", host.active)
+        self.assertEqual(len(cli_manager.completed), 1)
+        assignment_id, completion = cli_manager.completed[0]
+        self.assertEqual(assignment_id, "assignment-1")
+        self.assertFalse(completion["succeeded"])
+        self.assertEqual(
+            completion["failure_code"],
+            "agent_turn_start_failed",
+        )
+        thread_history.start_turn.assert_called_once()
+        projected_failure = thread_history.project_message.call_args.args[1]
+        self.assertEqual(projected_failure["method"], "turn/failed")
+        self.assertEqual(projected_failure["params"]["threadId"], "t1")
+
+    async def test_sessionless_cli_read_returns_degraded_thread_not_503(self) -> None:
+        host = _Host()
+        default_manager = _SessionManager()
+        default_manager.session = None
+        selected = ExecutionRuntimeBinding(
+            provider_id="openai",
+            runtime_id="codex-cli",
+            capability_revision=1,
+        )
+        cli_manager = _SessionManager()
+        cli_manager.session = _SessionlessCliSession(selected)
+        service = TurnExecutionService(
+            host,
+            session_manager=default_manager,
+            bootstrap_bindings=_BootstrapBindings("t1"),
+            control_actor=SimpleNamespace(identity_id="control"),
+            session_managers={
+                ("openai", "codex"): default_manager,
+                ("openai", "codex-cli"): cli_manager,
+            },
+            runtime_adapter_factory=(
+                lambda binding, session: _SessionlessCliTimeoutAdapter()
+            ),
+        )
+
+        response = await service.request_for_thread(
+            "t1",
+            "thread/read",
+            {"threadId": "t1", "includeTurns": True},
+        )
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["thread"]["id"], "t1")
+        self.assertEqual(
+            response["thread"]["status"]["type"],
+            "notLoaded",
+        )
+        host.codex.request.assert_not_awaited()
 
     async def test_terminal_bootstrap_turn_retains_session_assignment(self) -> None:
         host, _binding, sessions, service = self._service(

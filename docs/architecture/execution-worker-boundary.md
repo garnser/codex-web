@@ -440,6 +440,36 @@ Missing/stale sessions, changed fences, quarantined/revoked workers, expired
 delegations and other canonical mismatches fail closed. There is no fallback
 from an active assignment to the long-lived control-plane CodexRuntime.
 
+### Provider-neutral CLI thread transcript projection
+
+CLI runtimes do not necessarily expose native historical turns after their
+process exits or before they have acquired a provider-native session ID.
+Codex-web therefore persists the user message before starting a CLI turn and
+projects provider-neutral assistant message events into a bounded canonical
+per-thread transcript. The projection contains user-visible messages only; it
+does not copy credentials, raw command output, reasoning, or provider-specific
+session state.
+
+The projection is a code-owned persisted contract with schema version `1.0`.
+Unknown versions fail visibly instead of being guessed. Each thread retains at
+most 1,000 projected turns, dropping the oldest first; no raw provider errors,
+credentials, reasoning, command output, or tool payloads are stored. Older
+codex-web versions ignore the new state namespace, so rollback does not rewrite
+or reinterpret provider-native history.
+
+`thread/read` prefers a provider-native response when it contains native turns.
+When a CLI runtime returns metadata without turns or is inactive, degraded, or
+session-less, the API returns the canonical transcript instead. This is a
+read-availability projection, not a second execution authority: provider-native
+session identity, assignment/fence state, execution controls, and native Codex
+history pagination retain their existing owners.
+
+A CLI start that exits or times out before acquiring a provider-native session
+ID is terminal for that process: codex-web marks the projected turn failed,
+clears the active marker, and fails the exact fenced assignment so its lease
+cannot continue renewing behind a permanently blocked thread queue. Native
+Codex start timeouts keep their existing recoverable in-flight semantics.
+
 This migration intentionally leaves metadata-oriented compatibility operations
 such as initial `thread/start` creation and inactive-thread listing on the
 control-plane runtime for the worker-transport migration. That compatibility path does not

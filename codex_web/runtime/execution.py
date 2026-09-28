@@ -50,6 +50,7 @@ from codex_web.services.turn_execution_binding import (
     TurnExecutionBindingError,
     TurnExecutionBindingService,
 )
+from codex_web.storage.thread_history import ThreadHistoryRepository
 
 
 def _turn_failure_text(message: dict[str, Any]) -> str | None:
@@ -139,6 +140,7 @@ class TurnExecutionService:
         work_item_context_resolver: Callable[[str], dict[str, Any]] | None = None,
         work_item_context_recorder: Callable[..., Any] | None = None,
         work_item_outcome_recorder: Callable[..., Any] | None = None,
+        thread_history: ThreadHistoryRepository | None = None,
     ) -> None:
         self.host = host
         self.binding_service = binding_service
@@ -161,6 +163,7 @@ class TurnExecutionService:
         self.work_item_context_resolver = work_item_context_resolver
         self.work_item_context_recorder = work_item_context_recorder
         self.work_item_outcome_recorder = work_item_outcome_recorder
+        self.thread_history = thread_history
         self.turn_start_lock = asyncio.Lock()
         self.queue_drain_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
@@ -929,6 +932,21 @@ class TurnExecutionService:
             None,
         )
         if not native_session_id:
+            if method == "thread/read":
+                return {
+                    "ok": False,
+                    "threadId": thread_id,
+                    "error": (
+                        "agent runtime session has no provider-native "
+                        "session id"
+                    ),
+                    "thread": {
+                        "id": thread_id,
+                        "turns": [],
+                        "status": {"type": "notLoaded"},
+                        "readTimedOut": True,
+                    },
+                }
             raise HTTPException(
                 status_code=503,
                 detail="agent runtime session has no provider-native session id",
@@ -1186,6 +1204,25 @@ class TurnExecutionService:
         return normalized
 
     def _publish_agent_runtime_message(self, message: dict[str, Any]) -> None:
+        params = message.get("params") or {}
+        thread_id = params.get("threadId") or (
+            params.get("turn") or {}
+        ).get("threadId")
+        if self.thread_history is not None and thread_id:
+            try:
+                self.thread_history.project_message(str(thread_id), message)
+            except Exception as exc:
+                append_event = getattr(self.host, "_append_bot_event", None)
+                if callable(append_event):
+                    with contextlib.suppress(Exception):
+                        append_event(
+                            {
+                                "type": "thread_history_projection_failed",
+                                "thread_id": str(thread_id),
+                                "method": str(message.get("method") or ""),
+                                "error_type": type(exc).__name__,
+                            }
+                        )
         self.record_thread_activity(message)
         hub = getattr(self.host, "hub", None)
         if hub is None:
@@ -2152,7 +2189,20 @@ class TurnExecutionService:
                 sandbox_policy=params.get("sandboxPolicy"),
                 developer_instructions=effective_developer_instructions,
             )
+            history_started = False
             try:
+                if (
+                    self.thread_history is not None
+                    and getattr(runtime_adapter, "runtime_type", None) == "cli"
+                ):
+                    self.thread_history.start_turn(
+                        thread_id,
+                        turn_id=canonical_execution_id,
+                        message=message,
+                        provider_id=str(runtime_adapter.provider_id),
+                        runtime_id=str(runtime_adapter.runtime_id),
+                    )
+                    history_started = True
                 runtime_turn_result = await runtime_adapter.start_turn(
                     native_session_id,
                     runtime_turn_request,
@@ -2244,11 +2294,31 @@ class TurnExecutionService:
                             },
                         )
             except Exception as exc:
+                if history_started and self.thread_history is not None:
+                    with contextlib.suppress(Exception):
+                        self.thread_history.project_message(
+                            thread_id,
+                            {
+                                "method": "turn/failed",
+                                "params": {
+                                    "threadId": thread_id,
+                                    "turnId": canonical_execution_id,
+                                },
+                            },
+                        )
                 capacity_error = await self._capacity_error(runtime_binding, exc)
                 if capacity_error is not None:
                     self.clear_thread_active(thread_id)
                     raise capacity_error from exc
-                if not h._is_codex_timeout_error(exc):
+                sessionless_cli_start = (
+                    getattr(runtime_adapter, "runtime_type", None) == "cli"
+                    and not getattr(
+                        getattr(session, "runtime", None),
+                        "native_session_id",
+                        None,
+                    )
+                )
+                if sessionless_cli_start or not h._is_codex_timeout_error(exc):
                     self.clear_thread_active(thread_id)
                     if not trusted_local_codex_session:
                         with contextlib.suppress(Exception):
@@ -3135,6 +3205,7 @@ def install_turn_execution_service(
     work_item_context_resolver: Callable[[str], dict[str, Any]] | None = None,
     work_item_context_recorder: Callable[..., Any] | None = None,
     work_item_outcome_recorder: Callable[..., Any] | None = None,
+    thread_history: ThreadHistoryRepository | None = None,
 ) -> TurnExecutionService:
     existing = getattr(app.state, "turn_execution_service", None)
     if isinstance(existing, TurnExecutionService) and existing.host is host:
@@ -3165,6 +3236,8 @@ def install_turn_execution_service(
             service.work_item_context_recorder = work_item_context_recorder
         if work_item_outcome_recorder is not None:
             service.work_item_outcome_recorder = work_item_outcome_recorder
+        if thread_history is not None:
+            service.thread_history = thread_history
     else:
         service = TurnExecutionService(
             host,
@@ -3183,6 +3256,7 @@ def install_turn_execution_service(
             work_item_context_resolver=work_item_context_resolver,
             work_item_context_recorder=work_item_context_recorder,
             work_item_outcome_recorder=work_item_outcome_recorder,
+            thread_history=thread_history,
         )
         app.state.turn_execution_service = service
 

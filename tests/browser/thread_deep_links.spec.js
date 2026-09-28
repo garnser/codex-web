@@ -14,9 +14,13 @@ async function mockChatApi(page) {
     { id: 'alpha', name: 'Alpha', path: '/workspace/alpha' },
   ];
   const threads = {
-    home: [{ id: 'home-thread', name: 'Home thread', projectId: 'home', cwd: '/workspace/home' }],
+    home: [
+      { id: 'home-thread', name: 'Home thread', projectId: 'home', cwd: '/workspace/home' },
+      { id: 'background-thread', name: 'Background thread', projectId: 'home', cwd: '/workspace/home' },
+    ],
     alpha: [{ id: 'alpha-thread', name: 'Alpha thread', projectId: 'alpha', cwd: '/workspace/alpha' }],
   };
+  const threadTurns = {};
   const reads = [];
   await page.route('**/api/**', async (route) => {
     const request = route.request();
@@ -50,6 +54,22 @@ async function mockChatApi(page) {
       await route.fulfill({ json: { data: (threads[projectId] || []).filter((thread) => thread.id.includes(term)) } });
       return;
     }
+    const turnMatch = path.match(/^\/api\/threads\/([^/]+)\/turns$/);
+    if (turnMatch && request.method() === 'POST') {
+      const threadId = decodeURIComponent(turnMatch[1]);
+      const payload = JSON.parse(request.postData() || '{}');
+      threadTurns[threadId] = [{
+        id: `turn-${threadId}`,
+        status: 'inProgress',
+        items: [{
+          id: `user-${threadId}`,
+          type: 'userMessage',
+          content: [{ type: 'inputText', text: payload.message }],
+        }],
+      }];
+      await route.fulfill({ json: { queued: false } });
+      return;
+    }
     const threadMatch = path.match(/^\/api\/threads\/([^/]+)$/);
     if (threadMatch) {
       const threadId = decodeURIComponent(threadMatch[1]);
@@ -59,13 +79,45 @@ async function mockChatApi(page) {
         await route.fulfill({ status: 404, json: { detail: 'Thread not found' } });
         return;
       }
-      await route.fulfill({ json: { ...thread, turns: [] } });
+      await route.fulfill({ json: {
+        thread: {
+          ...thread,
+          historySource: 'canonical',
+          turns: threadTurns[threadId] || [],
+        },
+      } });
       return;
     }
     await route.fulfill({ json: {} });
   });
-  return { reads };
+  return { reads, threadTurns };
 }
+
+test('CLI reply completed while inactive is restored from canonical Thread history', async ({ page }) => {
+  const { threadTurns } = await mockChatApi(page);
+  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await page.locator('#prompt').fill('Keep this prompt visible.');
+  await page.locator('#prompt').press('Enter');
+  await expect.poll(() => threadTurns['home-thread']?.length || 0).toBe(1);
+  await expect(page.locator('#messages')).toContainText('Keep this prompt visible.');
+
+  await page.getByText('Background thread', { exact: true }).click({ force: true });
+  await expect(page.locator('#thread-title')).toHaveText('Background thread');
+
+  threadTurns['home-thread'][0].status = 'completed';
+  threadTurns['home-thread'][0].items.push({
+    id: 'agent-1',
+    type: 'agentMessage',
+    text: 'The reply finished while this Thread was inactive.',
+  });
+
+  await page.getByText('Home thread', { exact: true }).click({ force: true });
+  await expect(page.locator('#thread-title')).toHaveText('Home thread');
+  await expect(page.locator('#messages')).toContainText('Keep this prompt visible.');
+  await expect(page.locator('#messages')).toContainText(
+    'The reply finished while this Thread was inactive.',
+  );
+});
 
 test('project-scoped Thread deep links, reload, and Back/Forward restore conversation selection', async ({ page }) => {
   const { reads } = await mockChatApi(page);
@@ -73,7 +125,7 @@ test('project-scoped Thread deep links, reload, and Back/Forward restore convers
   await expect(page.locator('#thread-title')).toHaveText('Home thread');
   await expect(page).toHaveURL(/projects\/home\/chat\?thread=home-thread/);
 
-  await page.locator('#threads .item-main').click({ force: true });
+  await page.locator('#threads .item-main', { hasText: 'Home thread' }).click({ force: true });
   await expect(page.locator('#thread-title')).toHaveText('Home thread');
   await expect(page).toHaveURL(/thread=home-thread/);
   await page.evaluate(() => window.CodexProductUI.openWorkspace('overview'));
@@ -94,7 +146,7 @@ test('project-scoped Thread deep links, reload, and Back/Forward restore convers
 test('Thread selection history is restored and Project switching drops the previous Thread', async ({ page }) => {
   const { reads } = await mockChatApi(page);
   await page.goto('http://127.0.0.1:18766/projects/home/chat');
-  await page.locator('#threads .item-main').click({ force: true });
+  await page.locator('#threads .item-main', { hasText: 'Home thread' }).click({ force: true });
   await expect(page.locator('#thread-title')).toHaveText('Home thread');
   await page.goBack();
   await expect(page).not.toHaveURL(/thread=home-thread/);

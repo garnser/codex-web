@@ -36,6 +36,7 @@ from codex_web.services.thread_execution_settings import ThreadExecutionSettings
 from codex_web.services.thread_naming import ThreadNamingService
 from codex_web.services.thread_recovery import ThreadRecoveryService
 from codex_web.services.thread_resume import ThreadResumeService
+from codex_web.storage.thread_history import ThreadHistoryRepository
 from codex_web.storage.thread_index import ThreadIndexRepository
 from codex_web.services.turn_execution_binding import (
     TurnExecutionBindingError,
@@ -95,6 +96,7 @@ class ThreadService:
         naming: ThreadNamingService | None = None,
         collaboration: ThreadBotCollaborationService | None = None,
         thread_index: ThreadIndexRepository | None = None,
+        thread_history: ThreadHistoryRepository | None = None,
         active_turn_loader: Callable[[], dict[str, Any]] | None = None,
         active_turn_getter: Callable[[str], Any | None] | None = None,
     ) -> None:
@@ -119,6 +121,7 @@ class ThreadService:
         self.naming = naming
         self.collaboration = collaboration
         self.thread_index = thread_index
+        self.thread_history = thread_history
         self.active_turn_loader = active_turn_loader
         self.active_turn_getter = active_turn_getter
 
@@ -1079,6 +1082,34 @@ class ThreadService:
                 self.thread_index.upsert(indexed)
         return response
 
+    def _canonical_history_response(
+        self,
+        thread_id: str,
+    ) -> dict[str, Any] | None:
+        canonical_thread = (
+            self.thread_history.thread(thread_id)
+            if self.thread_history is not None
+            else None
+        )
+        if canonical_thread is None:
+            return None
+        indexed = None
+        if self.thread_index is not None:
+            with contextlib.suppress(Exception):
+                indexed = self.thread_index.get(thread_id)
+        if indexed is not None:
+            canonical_thread.update(
+                {
+                    "name": indexed.name,
+                    "cwd": indexed.cwd,
+                    "path": indexed.path,
+                    "model": indexed.model,
+                }
+            )
+        if self._active_turn_for_list(thread_id) is not None:
+            canonical_thread["status"] = {"type": "active"}
+        return {"thread": canonical_thread}
+
     async def read(
         self,
         thread_id: str,
@@ -1101,9 +1132,47 @@ class ThreadService:
             runtime_result = await self._codex_adapter(thread_id).read_session(thread_id)
             response = runtime_result.payload
         except Exception as exc:
+            if (
+                getattr(exc, "status_code", None) == 503
+                or self._resume().is_timeout_error(exc)
+            ):
+                canonical_response = self._canonical_history_response(thread_id)
+                if canonical_response is not None:
+                    return self.trim_messages(canonical_response, limit)
             if self._resume().is_timeout_error(exc):
                 return self._resume().read_timeout_response(thread_id, limit, exc)
             raise
+        runtime_thread = (
+            response.get("thread")
+            if isinstance(response, dict)
+            and isinstance(response.get("thread"), dict)
+            else response
+        )
+        runtime_status = (
+            runtime_thread.get("status")
+            if isinstance(runtime_thread, dict)
+            else None
+        )
+        runtime_read_degraded = bool(
+            isinstance(response, dict)
+            and response.get("ok") is False
+        ) or bool(
+            isinstance(runtime_thread, dict)
+            and runtime_thread.get("readTimedOut")
+        ) or bool(
+            isinstance(runtime_status, dict)
+            and runtime_status.get("type") == "notLoaded"
+        )
+        canonical_response = self._canonical_history_response(thread_id)
+        if (
+            canonical_response is not None
+            and (
+                not isinstance(runtime_thread, dict)
+                or not isinstance(runtime_thread.get("turns"), list)
+                or runtime_read_degraded
+            )
+        ):
+            return self.trim_messages(canonical_response, limit)
         return self.trim_messages(response, limit)
 
     async def rename(self, thread_id: str, name: str) -> dict[str, Any]:

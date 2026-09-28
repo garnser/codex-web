@@ -508,6 +508,7 @@ from codex_web.storage.work_item_list_index import WorkItemListIndex
 from codex_web.storage.work_item_source_identity_index import (
     WorkItemSourceIdentityIndex,
 )
+from codex_web.storage.thread_history import ThreadHistoryRepository
 from codex_web.storage.thread_index import install_thread_index_repository
 from codex_web.storage.turn_queue import TurnQueueRepository
 from codex_web.secret_backends import LocalFileSecretBackend
@@ -962,6 +963,8 @@ thread_index_repository = install_thread_index_repository(
     store=state_store,
     legacy_path=THREAD_INDEX_FILE,
 )
+thread_history_repository = ThreadHistoryRepository(state_store)
+app.state.thread_history_repository = thread_history_repository
 project_service = ProjectService(project_repository)
 app.include_router(
     build_automations_router(
@@ -2964,6 +2967,7 @@ turn_execution_service = install_turn_execution_service(
     work_item_outcome_recorder=(
         work_item_execution_lifecycle_service.record_continuation_outcome
     ),
+    thread_history=thread_history_repository,
 )
  
 def _codex_cli_thread_event(event):
@@ -3165,6 +3169,7 @@ thread_service = ThreadService(
     naming=thread_naming_service,
     collaboration=thread_bot_collaboration_service,
     thread_index=thread_index_repository,
+    thread_history=thread_history_repository,
     active_turn_loader=runtime_state.active_turns.load,
     active_turn_getter=runtime_state.active_turns.get,
 )
