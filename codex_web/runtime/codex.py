@@ -62,11 +62,9 @@ def redact_codex_diagnostic(value: object) -> str:
 # credential carriers or a login shell that can reconstruct them.
 TRUSTED_LOCAL_CHILD_ENVIRONMENT_CONFIG = (
     # Repository workers use codex-web's governed control-plane tools. Avoid
-    # making remote Apps or code-mode workspace discovery pre-sampling network
-    # dependencies inside the assignment-bound, network-isolated runtime.
+    # making remote Apps a pre-sampling network dependency inside the
+    # assignment-bound, network-isolated runtime.
     "features.apps=false",
-    "features.code_mode=false",
-    "features.code_mode_host=false",
     'shell_environment_policy.inherit="none"',
     "shell_environment_policy.ignore_default_excludes=false",
     'shell_environment_policy.set={PATH="/usr/local/bin:/usr/bin:/bin",HOME="/tmp/codex-local-shell-home"}',
@@ -84,6 +82,11 @@ TRUSTED_LOCAL_CHILD_ENVIRONMENT_CONFIG = (
     'shell_environment_policy.filters.GNOME_KEYRING_CONTROL="exclude"',
     "allow_login_shell=false",
 )
+
+# V8's sandbox reserves a large, sparse virtual address range even when its
+# committed heap is small. The trusted Codex app-server requires this virtual
+# headroom; repository commands still use the assignment's strict RLIMIT_AS.
+CODEX_MINIMUM_ADDRESS_SPACE_BYTES = 2 * 1024**4
 
 
 def trusted_local_codex_command(

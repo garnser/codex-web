@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import resource
 import tempfile
 import time
 import unittest
@@ -482,6 +483,7 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
                         "CODEX_HOME": "/tmp/codex-worker-home",
                         "CODEX_ACCESS_TOKEN": "delegated-only-at-launch",
                     },
+                    minimum_address_space_bytes=2 * 1024**4,
                 )
 
         self.assertEqual(process.pid, 4321)
@@ -494,7 +496,35 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
         self.assertEqual(env["CODEX_ACCESS_TOKEN"], "delegated-only-at-launch")
         self.assertNotIn("OPENAI_API_KEY", env)
         self.assertTrue(captured["kwargs"]["start_new_session"])
-        self.assertTrue(callable(captured["kwargs"]["preexec_fn"]))
+        preexec_fn = captured["kwargs"]["preexec_fn"]
+        self.assertTrue(callable(preexec_fn))
+        with patch("resource.setrlimit") as setrlimit:
+            preexec_fn()
+        self.assertIn(
+            (
+                resource.RLIMIT_AS,
+                (
+                    2 * 1024**4,
+                    2 * 1024**4,
+                ),
+            ),
+            [call.args for call in setrlimit.call_args_list],
+        )
+
+    def test_one_shot_commands_keep_assignment_address_space_limit(self) -> None:
+        limits = _assignment().limits
+        preexec_fn = BubblewrapExecutionBackend._limits_preexec(limits)
+
+        with patch("resource.setrlimit") as setrlimit:
+            preexec_fn()
+
+        self.assertIn(
+            (
+                resource.RLIMIT_AS,
+                (limits.memory_bytes, limits.memory_bytes),
+            ),
+            [call.args for call in setrlimit.call_args_list],
+        )
 
     def test_minimal_environment_does_not_inherit_ambient_secrets(self) -> None:
         backend = BubblewrapExecutionBackend(

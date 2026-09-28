@@ -106,6 +106,7 @@ class AssignmentBoundAgentProcessSession:
         runtime_factory: Callable[..., Any],
         credential_provider: AssignmentRuntimeCredentialProvider,
         runtime_binding: ExecutionRuntimeBinding | None = None,
+        minimum_address_space_bytes: int = 0,
         watchdog_interval_seconds: float = 1.0,
         egress_endpoints_resolver: Callable[[], tuple[AgentRuntimeModelEgressEndpoint, ...]] | None = None,
         control_plane_broker_factory: DeferredControlPlaneBrokerFactory | None = None,
@@ -126,6 +127,7 @@ class AssignmentBoundAgentProcessSession:
             )
         self.credential_provider = credential_provider
         self.runtime_binding = runtime_binding
+        self.minimum_address_space_bytes = max(0, minimum_address_space_bytes)
         self._clock = clock
         self._monotonic = monotonic
         self._sleep = sleep
@@ -387,6 +389,7 @@ class AssignmentBoundAgentProcessSession:
                 environment=environment,
                 trusted_readonly_mounts=trusted_mounts,
                 trusted_writable_mounts=trusted_writable_mounts,
+                minimum_address_space_bytes=self.minimum_address_space_bytes,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

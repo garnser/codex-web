@@ -499,8 +499,12 @@ Launch proceeds in this order:
 3. resolve one short-lived Codex credential through the worker-scoped delegation
    contract above;
 4. inside that SecretBroker callback, start `codex app-server` through the same
-   Bubblewrap namespace, minimal environment and POSIX resource limits as other
-   local worker commands;
+   Bubblewrap namespace and minimal environment as other local worker commands.
+   CPU, process, file-size, wall-clock and workspace-disk limits remain
+   assignment-bound. The trusted app-server alone receives a 2 TiB sparse
+   virtual-address ceiling so V8 can reserve its sandbox; one-shot repository
+   commands and non-Codex interactive runtimes retain the assignment's strict
+   address-space limit;
 5. hand only the already-running subprocess to the existing `CodexRuntime`,
    which remains the single JSON-RPC protocol implementation.
 

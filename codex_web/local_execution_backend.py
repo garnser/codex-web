@@ -286,10 +286,18 @@ class BubblewrapExecutionBackend:
         return total
 
     @staticmethod
-    def _limits_preexec(limits: WorkerResourceLimits):
+    def _limits_preexec(
+        limits: WorkerResourceLimits,
+        *,
+        minimum_address_space_bytes: int = 0,
+    ):
         def apply() -> None:
+            address_space_bytes = max(
+                limits.memory_bytes,
+                minimum_address_space_bytes,
+            )
             resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_seconds, limits.cpu_seconds))
-            resource.setrlimit(resource.RLIMIT_AS, (limits.memory_bytes, limits.memory_bytes))
+            resource.setrlimit(resource.RLIMIT_AS, (address_space_bytes, address_space_bytes))
             resource.setrlimit(resource.RLIMIT_NPROC, (limits.process_count, limits.process_count))
             resource.setrlimit(resource.RLIMIT_FSIZE, (limits.disk_bytes, limits.disk_bytes))
 
@@ -588,6 +596,7 @@ class BubblewrapExecutionBackend:
         git_metadata_path: Path | None = None,
         trusted_readonly_mounts: Sequence[tuple[Path, Path]] = (),
         trusted_writable_mounts: Sequence[tuple[Path, Path]] = (),
+        minimum_address_space_bytes: int = 0,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -633,7 +642,10 @@ class BubblewrapExecutionBackend:
             text=text,
             bufsize=bufsize,
             start_new_session=True,
-            preexec_fn=self._limits_preexec(assignment.limits),
+            preexec_fn=self._limits_preexec(
+                assignment.limits,
+                minimum_address_space_bytes=minimum_address_space_bytes,
+            ),
         )
 
     def run(

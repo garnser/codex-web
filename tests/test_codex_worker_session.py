@@ -140,6 +140,9 @@ class _FakeBackend:
                 "trusted_writable_mounts": tuple(
                     kwargs.get("trusted_writable_mounts") or ()
                 ),
+                "minimum_address_space_bytes": kwargs.get(
+                    "minimum_address_space_bytes", 0
+                ),
             }
         )
         return process
@@ -185,10 +188,6 @@ class _FakeDelegationService:
                     'cli_auth_credentials_store="ephemeral"',
                     "--config",
                     "features.apps=false",
-                    "--config",
-                    "features.code_mode=false",
-                    "--config",
-                    "features.code_mode_host=false",
                     "--config",
                     'shell_environment_policy.inherit="none"',
                     "--config",
@@ -606,8 +605,12 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(launch["argv"][0], str(executable))
             self.assertIn("--config", launch["argv"])
             self.assertIn("features.apps=false", launch["argv"])
-            self.assertIn("features.code_mode=false", launch["argv"])
-            self.assertIn("features.code_mode_host=false", launch["argv"])
+            self.assertNotIn("features.code_mode=false", launch["argv"])
+            self.assertNotIn("features.code_mode_host=false", launch["argv"])
+            self.assertEqual(
+                launch["minimum_address_space_bytes"],
+                2 * 1024**4,
+            )
             self.assertEqual(launch["argv"][-1], "app-server")
             self.assertEqual(
                 launch["environment"].get("CODEX_HOME"),
@@ -766,8 +769,8 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(launch["argv"][-1], "app-server")
             self.assertIn('cli_auth_credentials_store="ephemeral"', launch["argv"])
             self.assertIn("features.apps=false", launch["argv"])
-            self.assertIn("features.code_mode=false", launch["argv"])
-            self.assertIn("features.code_mode_host=false", launch["argv"])
+            self.assertNotIn("features.code_mode=false", launch["argv"])
+            self.assertNotIn("features.code_mode_host=false", launch["argv"])
             self.assertIn(
                 'shell_environment_policy.filters.CODEX_ACCESS_TOKEN="exclude"',
                 launch["argv"],
