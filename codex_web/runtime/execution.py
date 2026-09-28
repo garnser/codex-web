@@ -2081,6 +2081,11 @@ class TurnExecutionService:
                     resume_params["sandboxPolicy"] = assignment_sandbox_policy(
                         resume_params["sandboxPolicy"],
                         mode=effective_sandbox,
+                        writable_roots=(
+                            str(session.git_metadata_path),
+                        )
+                        if getattr(session, "git_metadata_path", None) is not None
+                        else (),
                     )
             runtime_session_request = AgentRuntimeSessionRequest(
                 project_id=project.id,
@@ -2186,6 +2191,11 @@ class TurnExecutionService:
                     params["sandboxPolicy"] = assignment_sandbox_policy(
                         params["sandboxPolicy"],
                         mode=effective_sandbox,
+                        writable_roots=(
+                            str(session.git_metadata_path),
+                        )
+                        if getattr(session, "git_metadata_path", None) is not None
+                        else (),
                     )
             params["input"][0]["text"] = self.with_relay_guard(
                 params["input"][0]["text"],
