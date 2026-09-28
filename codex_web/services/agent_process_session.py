@@ -333,10 +333,22 @@ class AssignmentBoundAgentProcessSession:
                     str(destination)
                     for _source, destination in trusted_mounts
                 )
-            if trusted_writable_mounts:
+            writable_destinations = [
+                Path(destination)
+                for _source, destination in trusted_writable_mounts
+            ]
+            git_metadata = self.local_worker.backend.discover_git_metadata(
+                workspace_path
+            )
+            if (
+                assignment.sandbox != "read-only"
+                and git_metadata is not None
+                and git_metadata not in writable_destinations
+            ):
+                writable_destinations.append(git_metadata)
+            if writable_destinations:
                 environment["CODEX_WRITABLE_REPOSITORIES"] = ":".join(
-                    str(destination)
-                    for _source, destination in trusted_writable_mounts
+                    str(destination) for destination in writable_destinations
                 )
             if broker is not None:
                 environment.update(

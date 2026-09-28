@@ -102,12 +102,13 @@ class _FakeBackend:
         self.spawned = []
         self.disk_bytes = 0
         self.processes: list[_FakeProcess] = []
+        self.git_metadata: Path | None = None
 
     def validate_assignment(self, assignment) -> None:
         self.validated.append(assignment.id)
 
     def discover_git_metadata(self, workspace_path):
-        return None
+        return self.git_metadata
 
     def execution_disk_usage(self, workspace_path, git_metadata_path=None):
         return self.disk_bytes
@@ -468,6 +469,23 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
                 launch["environment"]["CODEX_WRITABLE_REPOSITORIES"],
                 "/mnt/codex-repositories/repo-2",
             )
+        finally:
+            await session.stop()
+
+    async def test_codex_session_marks_primary_worktree_metadata_writable(self) -> None:
+        git_metadata = Path(self.temp.name) / "repository.git"
+        git_metadata.mkdir()
+        self.backend.git_metadata = git_metadata.resolve()
+        assignment = self._create_assignment()
+
+        session = await self._session(assignment)
+        try:
+            launch = self.backend.spawned[0]
+            self.assertEqual(
+                launch["environment"]["CODEX_WRITABLE_REPOSITORIES"],
+                str(git_metadata.resolve()),
+            )
+            self.assertEqual(launch["trusted_writable_mounts"], ())
         finally:
             await session.stop()
 
