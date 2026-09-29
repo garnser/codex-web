@@ -65,6 +65,15 @@ class TurnQueueRepository:
             self._snapshots[id(result)] = copy.deepcopy(raw)
         return result
 
+    def list_queues(self) -> dict[str, list[QueuedTurn]]:
+        """Read canonical queues without registering mutable save snapshots."""
+        self._ensure_records()
+        return {
+            thread_id: self._validate(values)
+            for thread_id, values in self.store.record_items(self.namespace).items()
+            if isinstance(thread_id, str)
+        }
+
     def get(self, thread_id: str) -> list[QueuedTurn]:
         self._ensure_records()
         return self._validate(

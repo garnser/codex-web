@@ -269,6 +269,13 @@ def build_agent_profiles_router(
             request,
         )
 
+    @router.get("/{profile_id}/usage")
+    async def usage(profile_id: str, request: Request) -> dict[str, Any]:
+        try:
+            return service.usage(profile_id, actor=request_actor(request))
+        except Exception as exc:
+            raise _error(exc) from exc
+
     @router.get("/{profile_id}/access")
     async def access(
         profile_id: str,

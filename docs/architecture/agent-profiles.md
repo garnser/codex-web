@@ -57,6 +57,37 @@ An authority Role configured on the profile is a ceiling/requirement: the actor 
 
 Disabled or archived profiles cannot receive new work. Historical executions and revisions remain attributable.
 
+## Lifecycle consumer impact
+
+`usage` is a deterministic, read-only version `1.0` projection over latest Team
+revisions, effective Automation Definitions in tenant-visible Projects, execution
+assignments, and queued turns. It does not persist a second consumer registry.
+Enabled Automations, active Teams, pending/claimed/running assignments and queued
+invocations block disable/archive. Inactive consumers and historical assignments
+remain visible but do not block. Project usage is derived from these canonical
+consumers; a Project is not given an invented profile ownership field.
+
+Profile visibility controls the projection. Team metadata the actor cannot view
+is represented only by restricted counts; foreign-tenant consumers are excluded.
+Queued messages, reply targets, and credentials are never returned. The view
+shows at most 100 consumers, while counts and the lifecycle check include all
+verified consumers, with a 5,000-consumer fail-closed bound.
+
+Disable/archive re-read consumer impact on the server after normal mutation
+authorization. Missing or failed impact projection returns a conflict rather
+than permitting the transition. The UI offers a Usage view and impact preview,
+requires a reason and explicit confirmation, and submits `expected_revision`.
+A stale revision returns conflict. Restore remains available when impact is
+unavailable so a retired identity can be recovered. No hard-delete or separate
+retire operation is introduced; archive is the supported retirement operation.
+Historical revisions and pinned execution provenance remain immutable.
+
+The projection is a preflight observation, not a reservation over every consumer
+store. Invocation still checks the current profile lifecycle before starting new
+work. A concurrent new reference cannot authorize invoking an inactive profile.
+Paused Automations and blocked preflight attempts still face that invocation gate
+if retried; impact coverage is explicitly limited to the canonical sources above.
+
 ## Routing
 
 For a new profile execution:
@@ -105,6 +136,7 @@ GET    /api/agent-profiles/{profile_id}/access
 GET    /api/agent-profiles/{profile_id}/revisions
 GET    /api/agent-profiles/{profile_id}/audit
 GET    /api/agent-profiles/{profile_id}/executions
+GET    /api/agent-profiles/{profile_id}/usage
 ```
 
 The picker exposes collaborator identity and policy hints; it does not present a provider/runtime as the agent identity.

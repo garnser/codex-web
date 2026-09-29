@@ -1,6 +1,8 @@
+import { dialogShell, status } from "./collaboration_dialog.js";
+import { loadProfileUsage } from './profile_lifecycle_usage.js';
 import { request } from "./api_client.js";
 import { trackUx } from "./ux_telemetry.js";
-import { trackDirtyEditor, confirmDiscard } from "./dirty_editor.js";
+import { trackDirtyEditor } from "./dirty_editor.js";
 
 const EDITABLE_PROFILE_FIELDS = [
   "name", "avatar_ref", "description", "owner_identity_id", "role_id",
@@ -45,35 +47,6 @@ function endpoint(kind, item) {
 function title(kind, item) {
   const noun = kind === "profile" ? "Agent Profile" : "Team";
   return item ? `Edit ${noun} · create revision` : `Create ${noun}`;
-}
-
-function dialogShell(titleText, detail) {
-  const dialog = document.createElement("dialog");
-  dialog.className = "product-section-dialog";
-  dialog.innerHTML = `
-    <div class="product-section-dialog-shell">
-      <header><div><h2></h2><p></p></div><button type="button" class="icon-button" data-close aria-label="Close">×</button></header>
-      <div class="route-test" data-body></div>
-      <div class="form-result" data-status hidden aria-live="polite"></div>
-    </div>`;
-  dialog.querySelector("h2").textContent = titleText;
-  dialog.querySelector("header p").textContent = detail || "";
-  dialog.querySelector("[data-close]").addEventListener("click", () => {
-    if (!dialog.dirtyEditor || confirmDiscard(dialog.dirtyEditor)) dialog.close();
-  });
-  dialog.addEventListener('cancel', event => {
-    if (dialog.dirtyEditor && !confirmDiscard(dialog.dirtyEditor)) event.preventDefault();
-  });
-  document.body.appendChild(dialog);
-  dialog.addEventListener("close", () => dialog.remove(), { once: true });
-  return dialog;
-}
-
-function status(dialog, message, failed = false) {
-  const host = dialog.querySelector("[data-status]");
-  host.hidden = false;
-  host.textContent = message;
-  host.classList.toggle("workspace-state-error", failed);
 }
 
 function parsePayload(text, kind, creating) {
@@ -174,10 +147,22 @@ export function openLifecycle(kind, item, action, { usage = "", onChanged } = {}
   );
   const body = dialog.querySelector("[data-body]");
   body.innerHTML = `
+    <div data-consumer-impact role="status" aria-live="polite"></div>
     <label>Change reason <textarea data-reason rows="3" maxlength="1000"></textarea></label>
     <label class="checkbox-line"><input type="checkbox" data-confirm> I reviewed the lifecycle impact above.</label>
     <button type="button" class="primary-button" data-apply>Confirm ${action}</button>`;
+  let verifiedImpact = kind !== "profile";
+  const destructive = action !== "restore";
+  const apply = body.querySelector('[data-apply]');
+  if (kind === "profile") {
+    apply.disabled = destructive;
+    void loadProfileUsage(body.querySelector('[data-consumer-impact]'), id).then(result => {
+      verifiedImpact = Boolean(result?.available && result.blocking_count === 0);
+      if (dialog.isConnected) apply.disabled = destructive && !verifiedImpact;
+    });
+  }
   body.querySelector("[data-apply]").addEventListener("click", async (event) => {
+    if (destructive && !verifiedImpact) return status(dialog, "Resolve or verify consumer impact before applying.", true);
     const reason = body.querySelector("[data-reason]").value.trim();
     if (!reason) return status(dialog, "A change reason is required.", true);
     if (!body.querySelector("[data-confirm]").checked) return status(dialog, "Confirm the impact before applying.", true);
@@ -187,7 +172,7 @@ export function openLifecycle(kind, item, action, { usage = "", onChanged } = {}
       const plural = kind === "profile" ? "agent-profiles" : "agent-teams";
       const result = await request(`/api/${plural}/${encodeURIComponent(id)}/${action}`, {
         method: "POST",
-        body: JSON.stringify({ reason }),
+        body: JSON.stringify({ reason, ...(kind === "profile" ? { expected_revision: item.revision } : {}) }),
       });
       await onChanged?.(result?.item);
       dialog.close();
@@ -197,6 +182,12 @@ export function openLifecycle(kind, item, action, { usage = "", onChanged } = {}
     }
   });
   dialog.showModal();
+}
+
+export async function openProfileUsage(item) {
+  const dialog = dialogShell('Agent Profile consumers', 'Canonical Teams, effective Automations, execution assignments and queued invocations.');
+  dialog.showModal();
+  await loadProfileUsage(dialog.querySelector('[data-body]'), item.profile_id);
 }
 
 export async function openHistory(kind, item) {
@@ -261,6 +252,7 @@ export function managementActions(kind, item, { usage = "", onChanged } = {}) {
     handler();
   };
   button("History", closeThen(() => void openHistory(kind, item)), { target: menu });
+  if (kind === "profile") button("Usage", closeThen(() => void openProfileUsage(item)), { target: menu });
 
   const current = String(item?.lifecycle || "active");
   if (current === "archived" || current === "disabled") {

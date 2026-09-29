@@ -209,6 +209,99 @@ test('Team lifecycle archive requires impact confirmation and a reason', async (
   expect(archived).toEqual({ reason: 'Retire superseded team' });
 });
 
+test('Agent Profile usage and archive preflight show canonical blockers and preserve rejection state', async ({ page }) => {
+  await mockApis(page);
+  let blocked = true;
+  const writes = [];
+  await page.route('**/api/agent-profiles/maya/usage', route => route.fulfill({ json: {
+    schema_version: '1.0', available: true, count: 1, blocking_count: blocked ? 1 : 0,
+    restricted_count: 0, items: [{ object_type: 'automation', object_id: 'routine',
+      label: 'Daily routine', project_id: 'project-a', revision: 2, blocking: blocked }],
+  } }));
+  await page.route('**/api/agent-profiles/maya/archive', route => {
+    writes.push(route.request().postDataJSON());
+    return route.fulfill({ status: 409, json: { detail: 'Profile revision changed; refresh before changing lifecycle.' } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  const profile = page.locator('.collab-agent-card').filter({ hasText: 'Maya' });
+  await profile.locator('.collab-context-more > summary').click();
+  await profile.getByRole('button', { name: 'Usage', exact: true }).click();
+  let dialog = page.locator('dialog.product-section-dialog');
+  await expect(dialog).toContainText('Daily routine');
+  await expect(dialog).toContainText('Project project-a');
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  await profile.locator('.collab-context-more > summary').click();
+  await profile.getByRole('button', { name: 'Archive', exact: true }).click();
+  dialog = page.locator('dialog.product-section-dialog');
+  await expect(dialog).toContainText('blocks disable/archive');
+  await expect(dialog.getByRole('button', { name: 'Confirm archive' })).toBeDisabled();
+  expect(writes).toEqual([]);
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  blocked = false;
+  await profile.locator('.collab-context-more > summary').click();
+  await profile.getByRole('button', { name: 'Archive', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: 'Confirm archive' })).toBeEnabled();
+  await dialog.locator('[data-reason]').fill('Retire unused profile');
+  await dialog.locator('[data-confirm]').check();
+  await dialog.getByRole('button', { name: 'Confirm archive' }).click();
+  await expect(dialog).toContainText('Profile revision changed');
+  expect(writes).toEqual([{ reason: 'Retire unused profile', expected_revision: profiles[0].revision }]);
+  await expect(dialog.locator('[data-reason]')).toHaveValue('Retire unused profile');
+  await expect(dialog).toBeVisible();
+});
+
+test('Agent Profile missing impact blocks archive and successful verified lifecycle uses exact revision', async ({ page }) => {
+  await mockApis(page);
+  let available = false;
+  const writes = [];
+  await page.route('**/api/agent-profiles/maya/usage', route => route.fulfill({ json: {
+    schema_version: '1.0', available, count: 0, blocking_count: 0, items: [], reason: 'Canonical consumer projection is unavailable.',
+  } }));
+  await page.route('**/api/agent-profiles/maya/archive', route => {
+    writes.push(route.request().postDataJSON());
+    return route.fulfill({ json: { item: { ...profiles[0], lifecycle: 'archived', revision: 5 } } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  const profile = page.locator('.collab-agent-card').filter({ hasText: 'Maya' });
+  await profile.locator('.collab-context-more > summary').click();
+  await profile.getByRole('button', { name: 'Archive', exact: true }).click();
+  const dialog = page.locator('dialog.product-section-dialog');
+  await expect(dialog).toContainText('Consumer impact unavailable');
+  await expect(dialog.getByRole('button', { name: 'Confirm archive' })).toBeDisabled();
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  available = true;
+  await profile.locator('.collab-context-more > summary').click();
+  await profile.getByRole('button', { name: 'Archive', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: 'Confirm archive' })).toBeEnabled();
+  await dialog.locator('[data-reason]').fill('Retire unused profile');
+  await dialog.locator('[data-confirm]').check();
+  await dialog.getByRole('button', { name: 'Confirm archive' }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(writes).toEqual([{ reason: 'Retire unused profile', expected_revision: profiles[0].revision }]);
+});
+
+test('Agent Profile restore remains available when consumer impact cannot load', async ({ page }) => {
+  await mockApis(page);
+  let restored;
+  await page.route('**/api/agent-profiles/nora/usage', route => route.fulfill({ status: 503, json: { detail: 'Projection unavailable' } }));
+  await page.route('**/api/agent-profiles/nora/restore', route => {
+    restored = route.request().postDataJSON();
+    return route.fulfill({ json: { item: { ...profiles[1], lifecycle: 'active', revision: 3 } } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  const profile = page.locator('.collab-agent-card').filter({ hasText: 'Nora' });
+  await profile.locator('.collab-context-more > summary').click();
+  await profile.getByRole('button', { name: 'Restore', exact: true }).click();
+  const dialog = page.locator('dialog.product-section-dialog');
+  await expect(dialog).toContainText('Consumer impact unavailable');
+  await expect(dialog.getByRole('button', { name: 'Confirm restore' })).toBeEnabled();
+  await dialog.locator('[data-reason]').fill('Recover collaborator');
+  await dialog.locator('[data-confirm]').check();
+  await dialog.getByRole('button', { name: 'Confirm restore' }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(restored).toEqual({ reason: 'Recover collaborator', expected_revision: 2 });
+});
+
 test('Team create and archived-team restore use canonical lifecycle endpoints', async ({ page }) => {
   await mockApis(page);
   let created = null;
