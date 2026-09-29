@@ -1,5 +1,6 @@
 import { request } from "./api_client.js";
 import { trackUx } from "./ux_telemetry.js";
+import { trackDirtyEditor, confirmDiscard } from "./dirty_editor.js";
 
 const EDITABLE_PROFILE_FIELDS = [
   "name", "avatar_ref", "description", "owner_identity_id", "role_id",
@@ -57,7 +58,12 @@ function dialogShell(titleText, detail) {
     </div>`;
   dialog.querySelector("h2").textContent = titleText;
   dialog.querySelector("header p").textContent = detail || "";
-  dialog.querySelector("[data-close]").addEventListener("click", () => dialog.close());
+  dialog.querySelector("[data-close]").addEventListener("click", () => {
+    if (!dialog.dirtyEditor || confirmDiscard(dialog.dirtyEditor)) dialog.close();
+  });
+  dialog.addEventListener('cancel', event => {
+    if (dialog.dirtyEditor && !confirmDiscard(dialog.dirtyEditor)) event.preventDefault();
+  });
   document.body.appendChild(dialog);
   dialog.addEventListener("close", () => dialog.remove(), { once: true });
   return dialog;
@@ -111,6 +117,9 @@ export function openEditor(kind, item, { onChanged } = {}) {
     <button type="button" class="primary-button" data-save>${creating ? "Create" : "Validate & create revision"}</button>`;
   const area = body.querySelector("[data-payload]");
   area.value = JSON.stringify(editorPayload(kind, item), null, 2);
+  const dirty = trackDirtyEditor(body, { label: title(kind, item), onDiscard: () => dialog.close() });
+  dialog.dirtyEditor = dirty;
+  dialog.addEventListener('close', () => dirty.dispose(), { once: true });
   body.querySelector("[data-save]").addEventListener("click", async (event) => {
     const button = event.currentTarget;
     const step = `${creating ? "create" : "edit"}_${kind === "profile" ? "profile" : "team"}`;
@@ -119,12 +128,14 @@ export function openEditor(kind, item, { onChanged } = {}) {
     try {
       const payload = parsePayload(area.value, kind, creating);
       button.disabled = true;
+      area.readOnly = true;
       status(dialog, "Validating canonical payload…");
       const result = await request(endpoint(kind, item), {
         method: creating ? "POST" : "PATCH",
         body: JSON.stringify(payload),
       });
       status(dialog, `Saved revision ${result?.item?.revision || "successfully"}.`);
+      dirty.markSaved();
       void trackUx("workflow_completed", {
         workflow: "agent_management",
         step,
@@ -141,6 +152,7 @@ export function openEditor(kind, item, { onChanged } = {}) {
       });
       status(dialog, error.message || "Change rejected.", true);
       button.disabled = false;
+      area.readOnly = false;
     }
   });
   dialog.showModal();

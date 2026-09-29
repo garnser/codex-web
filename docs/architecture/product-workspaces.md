@@ -57,6 +57,29 @@ shortcuts, Ctrl/Cmd+K keyboard access and hash deep links such as
 Projects and Threads remain directly accessible in the sidebar rather than being
 forced through management screens.
 
+## Unsaved editor state
+
+Substantive editors can register with `dirty_editor.js`. The shared guard compares
+current field values with the editor's saved baseline, exposes a live unsaved
+status, and protects workspace/Project navigation, history navigation, and browser
+unload. Cancel keeps the form and its values; explicit discard resets the baseline
+and lets the editor close. Successful persistence clears the guard, while failed
+validation or saving leaves entered values available for correction. Browser
+unload warnings remain subject to browser support and user activation.
+
+Automation and Agent Profile/Team editors use this contract. Automation retains
+the active form across background renders, suppresses same-Project refresh while
+editing, and prevents a discarded/detached draft response from continuing into
+publication. An authoritative Project change still clears the old Project's
+editor; the guard is a user navigation safeguard, never an authorization boundary.
+
+Draft values and baselines remain in page memory only. They are not written to
+local/session storage, telemetry, or logs; this also applies to arbitrary structured
+payloads that could contain sensitive values. Durable draft recovery requires an
+explicit classification/retention contract before an editor opts into it. Other
+editors must integrate the shared contract explicitly; ordinary filters and
+transient search controls do not register a blocking guard.
+
 ## Canonical UI vocabulary
 
 Shared UI primitives distinguish the reason a capability is unavailable or

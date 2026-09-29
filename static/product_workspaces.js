@@ -1,6 +1,7 @@
 import { registerCommandSource, installCommandPalette } from "./command_palette.js";
 import { statusBadge as sharedStatusBadge, statusFamily as sharedStatusFamily } from "./workspace_components.js";
 import { coarseRoute, trackUx } from "./ux_telemetry.js";
+import { confirmDiscard } from "./dirty_editor.js";
 import { renderHomeOverview } from "./home_overview.js";
 import { renderAdministrationUsers } from "./administration_users.js";
 import { renderAdministrationAccess } from "./administration_access.js";
@@ -398,6 +399,7 @@ function administrationRoot() {
 }
 
 function setAdministrationLocation(page = "overview", { replace = false } = {}) {
+  if (!confirmDiscard()) return;
   const current = currentAdministrationRoute();
   const prefix = current?.prefix
     ?? currentProjectRoute()?.prefix
@@ -824,6 +826,7 @@ function closeInternalWorkspace() {
 function openWorkspace(id, { page = null, updateLocation = true } = {}) {
   const item = workspaceById(id);
   const resolvedPage = page || WORKSPACE_DEFAULT_PAGE[item.id] || item.id;
+  if ((item.id !== activeWorkspace || resolvedPage !== activePage) && !confirmDiscard()) return false;
   activePage = resolvedPage;
   if (document.body) document.body.dataset.projectPage = resolvedPage;
   if (currentProjectRoute() || !legacyStaticRoutingContext()) {
@@ -1248,6 +1251,10 @@ function installProjectContext() {
   if (!select) return;
   select.addEventListener("change", () => {
     if (!select.value) return;
+    if (select.value !== document.body.dataset.activeProject && !confirmDiscard()) {
+      select.value = document.body.dataset.activeProject || "";
+      return;
+    }
     window.dispatchEvent(new CustomEvent("codex:project-select", {
       detail: { projectId: select.value },
     }));
