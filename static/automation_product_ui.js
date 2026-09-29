@@ -2,6 +2,9 @@ import { actionFeedback } from "./workspace_components.js";
 import { trackUx } from "./ux_telemetry.js";
 
 const state = {
+  scopeGeneration: 0,
+  listGeneration: 0,
+  runsGeneration: 0,
   projectId: "",
   automations: [],
   selectedId: "",
@@ -13,6 +16,13 @@ const state = {
   runPendingId: "",
   actionFeedback: null,
 };
+
+function projectContext() {
+  const projectId = state.projectId;
+  const generation = state.scopeGeneration;
+  return { projectId, current: () => Boolean(projectId)
+    && generation === state.scopeGeneration && projectId === state.projectId };
+}
 
 function esc(value) {
   return String(value ?? "")
@@ -316,7 +326,7 @@ function render() {
     <div class="automation-product-heading">
       <div><h2>Automations</h2><p>Versioned triggers and runs over the canonical scheduler, event bus, Agent/Team execution and Work Items.</p></div>
       <div class="automation-actions">
-        <button type="button" class="primary-button" data-automation-new>New Automation</button>
+        <button type="button" class="primary-button" data-automation-new ${!state.projectId ? 'disabled' : ''}>New Automation</button>
         <button type="button" class="ghost-button" data-automation-refresh-list>Refresh</button>
       </div>
     </div>
@@ -360,7 +370,9 @@ function render() {
     render();
   });
   card.querySelector("[data-automation-editor]")?.addEventListener("submit", (event) => {
+    const context = projectContext();
     saveEditor(event).catch((error) => {
+      if (!context.current()) return;
       state.error = error.message;
       render();
     });
@@ -368,53 +380,89 @@ function render() {
 }
 
 async function loadRuns(id) {
+  const context = projectContext();
+  const generation = ++state.runsGeneration;
   if (!id) {
     state.runs = [];
     return;
   }
-  const payload = await api(`/api/automations/${encodeURIComponent(id)}/runs`);
+  if (!context.current()) return;
+  const payload = await api(`/api/automations/${encodeURIComponent(id)}/runs?project_id=${encodeURIComponent(context.projectId)}`);
+  if (!context.current() || generation !== state.runsGeneration || id !== state.selectedId) return;
   state.runs = payload.items || [];
 }
 
 async function selectAutomation(id) {
+  const context = projectContext();
+  if (!context.current() || !state.automations.some(item => item.id === id)) return;
   state.selectedId = id;
+  state.runs = [];
   state.error = "";
   try {
     await loadRuns(id);
   } catch (error) {
+    if (!context.current() || id !== state.selectedId) return;
     state.error = error.message;
   }
+  if (!context.current() || id !== state.selectedId) return;
   render();
 }
 
 async function load(projectId = document.body.dataset.activeProject || "") {
   const root = host();
   if (!root) return;
-  state.projectId = projectId || "";
+  const nextProject = projectId || "";
+  if (nextProject !== state.projectId) {
+    ++state.scopeGeneration;
+    ++state.runsGeneration;
+    state.automations = [];
+    state.selectedId = '';
+    state.runs = [];
+    state.editing = false;
+    state.creating = false;
+    state.runPendingId = '';
+    state.actionFeedback = null;
+  }
+  state.projectId = nextProject;
+  const context = projectContext();
+  const generation = ++state.listGeneration;
+  const current = () => context.current() && generation === state.listGeneration;
+  if (!nextProject) {
+    state.loading = false;
+    state.error = 'Select a Project to view Automations.';
+    render();
+    return;
+  }
   state.loading = true;
   state.error = "";
   render();
   try {
-    const query = state.projectId ? `?project_id=${encodeURIComponent(state.projectId)}` : "";
+    const query = `?project_id=${encodeURIComponent(context.projectId)}`;
     const payload = await api(`/api/automations${query}`);
+    if (!current()) return;
     state.automations = payload.items || [];
     if (!state.automations.some((item) => item.id === state.selectedId)) {
       state.selectedId = state.automations[0]?.id || "";
     }
     await loadRuns(state.selectedId);
   } catch (error) {
+    if (!current()) return;
     state.error = error.message;
     state.automations = [];
     state.runs = [];
   } finally {
-    state.loading = false;
-    render();
+    if (current()) {
+      state.loading = false;
+      render();
+    }
   }
 }
 
 
 async function saveEditor(event) {
   event.preventDefault();
+  const context = projectContext();
+  if (!context.current()) return;
   const form = event.currentTarget;
   const existingItem = state.creating ? null : selected();
   const definition = definitionFromEditor(form, existingItem?.definition || {});
@@ -424,11 +472,12 @@ async function saveEditor(event) {
     body: JSON.stringify({
       automation_id: automationId,
       definition,
-      project_id: state.projectId || null,
+      project_id: context.projectId,
       reason: state.creating ? "Created from Automation workspace" : "Edited from Automation workspace",
       derived_from_record_id: existingItem?.definitionRef?.record_id || null,
     }),
   });
+  if (!context.current()) return;
   const recordId = draft?.record?.record_id;
   if (!recordId) throw new Error("Automation draft returned no record id");
   const published = await api(`/api/automations/drafts/${encodeURIComponent(recordId)}/publish`, {
@@ -439,6 +488,7 @@ async function saveEditor(event) {
       approval_metadata: {},
     }),
   });
+  if (!context.current()) return;
   if (published.scheduleError) {
     state.error = `Automation published, but schedule needs repair: ${published.scheduleError}`;
   } else {
@@ -451,6 +501,8 @@ async function saveEditor(event) {
 }
 
 async function runNow() {
+  const context = projectContext();
+  if (!context.current()) return;
   const item = selected();
   if (!item || state.runPendingId) return;
   const telemetryStartedAt = performance.now();
@@ -463,8 +515,9 @@ async function runNow() {
     const key = `ui-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const admitted = await api(`/api/automations/${encodeURIComponent(item.id)}/runs/manual`, {
       method: "POST",
-      body: JSON.stringify({ idempotency_key: key, project_id: state.projectId || null }),
+      body: JSON.stringify({ idempotency_key: key, project_id: context.projectId }),
     });
+    if (!context.current()) return;
     if (admitted.launchAllowed) {
       state.actionFeedback = { state: "in_progress", title: "Run admitted", detail: "Launching the canonical Automation run." };
       render();
@@ -476,10 +529,12 @@ async function runNow() {
           read_only_repository_resource_ids: [],
         }),
       });
+      if (!context.current()) return;
     } else {
       state.actionFeedback = { state: "needs_attention", title: "Run requires attention", detail: admitted.reason || admitted.message || "Canonical policy did not allow launch." };
     }
     await loadRuns(item.id);
+    if (!context.current()) return;
     if (admitted.launchAllowed) {
       const run = state.runs.find((entry) => entry.id === admitted.run.id);
       const failed = run && ["failed", "cancelled"].includes(run.status);
@@ -499,6 +554,7 @@ async function runNow() {
       });
     }
   } catch (error) {
+    if (!context.current()) return;
     state.error = error.message;
     state.actionFeedback = { state: "failed", title: "Automation run failed", detail: error.message };
     void trackUx("action_failed", {
@@ -507,8 +563,10 @@ async function runNow() {
       durationMs: performance.now() - telemetryStartedAt,
     });
   } finally {
-    state.runPendingId = "";
-    render();
+    if (context.current()) {
+      state.runPendingId = "";
+      render();
+    }
   }
 }
 

@@ -5,6 +5,12 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
+
+from codex_web.api.automations import build_automations_router
+from codex_web.identity import AuthenticationActor, AuthenticationAssurance, PrincipalKind
+
 from codex_web.automation_definitions import (
     AUTOMATION_KIND,
     AUTOMATION_SCHEMA_VERSION,
@@ -43,6 +49,35 @@ class AutomationRunTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_run_history_api_filters_project_without_mixing_inherited_runs(self) -> None:
+        self._publish('shared-history', max_concurrency=4)
+        for project in ('project-a', 'project-b', None):
+            self.service.admit(
+                'shared-history', self._manual(f'manual-{project}'),
+                organization_id='local', workspace_id='default', project_id=project,
+            )
+        app = FastAPI()
+        actor = AuthenticationActor(
+            identity_id='operator', principal_kind=PrincipalKind.HUMAN,
+            organization_id='local', workspace_id='default',
+            assurance=AuthenticationAssurance.MFA,
+        )
+
+        @app.middleware('http')
+        async def inject_actor(request: Request, call_next):
+            request.state.identity_actor = actor
+            return await call_next(request)
+
+        app.include_router(build_automations_router(self.definitions, self.service, None, None))
+        with TestClient(app) as client:
+            path = '/api/automations/shared-history/runs'
+            for project in ('project-a', 'project-b'):
+                response = client.get(path, params={'project_id': project})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual([row['project_id'] for row in response.json()['items']], [project])
+            self.assertEqual(client.get(path, params={'project_id': 'empty'}).json()['items'], [])
+            self.assertEqual(len(client.get(path).json()['items']), 3)
 
     def _publish(
         self,
