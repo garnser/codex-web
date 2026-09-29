@@ -131,6 +131,7 @@ Domain event/data-driven refresh remains owned by each domain module.
 - all workspace navigation is native button/dialog UI;
 - Ctrl/Cmd+K or **All workspaces** opens command search and focuses its input;
 - Up/Down selects results, Enter opens a destination, Escape dismisses and restores focus;
+- explicit workspace navigation moves focus to the destination heading; the next Tab reaches its controls;
 - dialogs retain normal Escape behavior;
 - workspace selection has `aria-current`;
 - mobile layouts collapse to one-column navigation/content;
@@ -168,3 +169,11 @@ that decision is loaded. Navigation is not authorization: destination API checks
 remain authoritative. Only navigation, Project switching and Thread search are
 common commands; mutations retain their existing review/approval paths. Another
 modal blocks palette opening so confirmations cannot be obscured.
+
+Production form controls must retain a programmatic accessible name when
+placeholder and tooltip text are absent. Icon-only actions use an explicit
+accessible label describing the action. The static markup qualification opens
+all forms/dialogs and checks every control's computed name, while browser
+interaction qualification covers 320 CSS pixel reflow, enlarged text, reduced
+motion and keyboard navigation. These targeted checks cover their stated
+behaviors; they do not establish full WCAG conformance.

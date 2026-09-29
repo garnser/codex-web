@@ -740,12 +740,20 @@ function renderWorkspaceActions(id) {
   }
 }
 
+function focusWorkspaceHeading() {
+  const heading = document.querySelector('#product-workspace-page-title');
+  if (!heading) return;
+  heading.tabIndex = -1;
+  heading.focus({ preventScroll: true });
+}
+
 function openInternalWorkspace(id, { page = null, updateLocation = true } = {}) {
   const pageSurface = document.getElementById("product-workspace-page");
   if (!pageSurface) return false;
   closeSwitcher();
   setActiveInternal(id, { page, updateLocation });
   pageSurface.hidden = false;
+  if (updateLocation) focusWorkspaceHeading();
   return true;
 }
 
@@ -780,6 +788,7 @@ function mountLauncherWorkspace(item, { page = null, updateLocation = true, invo
   dialog.dataset.productSection = item.id;
   dialog.show();
   updateEmptyStates();
+  if (updateLocation) focusWorkspaceHeading();
   return true;
 }
 

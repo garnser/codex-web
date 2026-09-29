@@ -63,9 +63,9 @@ async function installWorkItemApis(page) {
   }));
 }
 
-for (const width of [390, 768, 1280]) {
+for (const width of [320, 390, 768, 1280]) {
   test(`workspace shell remains bounded and keyboard-usable at ${width}px`, async ({ page }) => {
-    await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+    await page.setViewportSize({ width, height: width <= 390 ? 844 : 900 });
     await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
     await page.keyboard.press('Control+K');
 
@@ -78,7 +78,7 @@ for (const width of [390, 768, 1280]) {
     await expect(switcher.locator('[data-product-workspace-nav]').first()).toBeFocused();
     await expectNoPageOverflow(page, `workspace shell at ${width}px`);
 
-    if (width === 390) {
+    if (width <= 390) {
       const smallTargets = await switcher.locator('button:visible').evaluateAll((buttons) => (
         buttons
           .map((button) => {
