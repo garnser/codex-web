@@ -39,7 +39,7 @@ async function installCommonRoutes(page) {
       json: { active: [], items: [], nextCursor: null, hasMore: false, activeTruncated: false },
     });
   });
-  await page.route("**/api/work-items/**/operator", async (route) => {
+  await page.route("**/api/work-items/**/operator?*", async (route) => {
     const ref = decodeURIComponent(route.request().url().split("/api/work-items/")[1].split("/operator")[0]);
     await route.fulfill({
       json: {

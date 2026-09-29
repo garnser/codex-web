@@ -157,15 +157,15 @@ async function mockOperatorApis(page, posts, detailPayload = operatorPayload()) 
       }],
     }),
   }));
-  await page.route('**/api/work-items/**/operator', async (route) => route.fulfill({
+  await page.route('**/api/work-items/**/operator?*', async (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify(detailPayload),
   }));
-  await page.route('**/api/work-items/**/retry', async (route) => {
+  await page.route('**/api/work-items/**/retry?*', async (route) => {
     posts.push({ action: 'retry', body: route.request().postDataJSON() });
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(operatorPayload()) });
   });
-  await page.route('**/api/work-items/**/reconcile', async (route) => {
+  await page.route('**/api/work-items/**/reconcile?*', async (route) => {
     posts.push({ action: 'reconcile', body: route.request().postDataJSON() });
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(operatorPayload()) });
   });
@@ -357,5 +357,77 @@ for (const scenario of [
     for (const text of scenario.expected) {
       await expect(dialog).toContainText(text);
     }
+  });
+}
+
+for (const delayed of ['operator', 'retry', 'runs', 'return-to-project']) {
+  test(`Project switches discard delayed ${delayed} responses and clear stale controls`, async ({ page }) => {
+    const projects = ['project-a', 'project-b', 'empty'].map(id => ({ id, name: id, path: `/workspace/${id}` }));
+    let hold = false;
+    let detailRevision = 0;
+    const endpoint = delayed === 'return-to-project' ? 'operator' : delayed;
+    let release;
+    let held = false;
+    const gate = new Promise(resolve => { release = resolve; });
+    await page.route('**/api/**', async route => {
+      const url = new URL(route.request().url());
+      const path = decodeURIComponent(url.pathname);
+      if (path === '/api/projects') return route.fulfill({ json: projects });
+      if (path === '/api/task-sources' || path === '/api/secrets') return route.fulfill({ json: { items: [] } });
+      if (path === '/api/work-items') {
+        const project = url.searchParams.get('project_id');
+        return route.fulfill({ json: { items: project === 'empty' ? [] : [{ ref: `${project}#42`, title: `${project} item` }] } });
+      }
+      const project = path.includes('project-a') ? 'project-a' : 'project-b';
+      const revision = path.endsWith('/operator') && project === 'project-a' ? ++detailRevision : 0;
+      if (hold && project === 'project-a' && path.endsWith(`/${endpoint}`)) {
+        held = true;
+        await gate;
+      }
+      if (path.endsWith('/runs')) return route.fulfill({ json: { active: [], items: [{ executionId: `${project}-run`, status: 'completed' }] } });
+      return route.fulfill({ json: { item: { ref: `${project}#42`, project_id: project, title: `${project} detail ${revision}` }, actions: { retry: { allowed: true }, reconcile: { allowed: true } } } });
+    });
+    await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html?project=project-a');
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
+    const detail = page.locator('.work-item-detail');
+    await expect(detail).toContainText('project-a detail');
+    hold = true;
+    if (delayed === 'retry') await page.locator('.work-item-retry').click();
+    else if (delayed === 'runs') await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:work-item-run-updated', { detail: { workItemRef: 'project-a#42' } })));
+    else await page.locator('.work-items-refresh').click();
+    await expect.poll(() => held).toBe(true);
+    await page.evaluate(() => {
+      document.body.dataset.projectId = 'project-b';
+      window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: 'project-b' } }));
+    });
+    await expect(detail).toContainText('project-b detail');
+    if (delayed === 'return-to-project') {
+      hold = false;
+      await page.evaluate(() => {
+        document.body.dataset.projectId = 'project-a';
+        window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: 'project-a' } }));
+      });
+      await expect(detail).toContainText('project-a detail 3');
+    }
+    const settled = page.waitForResponse(response => decodeURIComponent(new URL(response.url()).pathname).endsWith(`project-a#42/${endpoint}`));
+    release();
+    await settled;
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    if (delayed === 'return-to-project') {
+      await expect(detail).toContainText('project-a detail 3');
+      await expect(detail).not.toContainText('project-a detail 2');
+    } else {
+      await expect(detail).toContainText('project-b detail');
+      await expect(detail).not.toContainText('project-a');
+    }
+    await page.evaluate(() => {
+      document.body.dataset.projectId = 'empty';
+      window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: 'empty' } }));
+      window.__emptyProjectDetail = document.querySelector('.work-item-detail').textContent;
+    });
+    expect(await page.evaluate(() => window.__emptyProjectDetail)).not.toMatch(/project-[ab]/);
+    await expect(page.locator('.work-items-list')).toContainText('No canonical work items');
+    await expect(detail.locator('button')).toHaveCount(0);
+    await expect(page.locator('.work-items-status')).toContainText('0 Work Items');
   });
 }
