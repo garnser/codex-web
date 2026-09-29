@@ -18,6 +18,7 @@ class TaskSourceCapability(StrEnum):
     OWNER_WRITE = "owner_write"
     STATE_WRITE = "state_write"
     COMMENTS = "comments"
+    DISCUSSIONS = "discussions"
     ARTIFACT_LINKS = "artifact_links"
     PAGED_DISCOVERY = "paged_discovery"
     INCREMENTAL_RECONCILIATION = "incremental_reconciliation"

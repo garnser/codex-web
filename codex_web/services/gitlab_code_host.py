@@ -218,6 +218,41 @@ class GitLabCodeHostProvider:
             merge_revision=data.get("merge_commit_sha"),
         )
 
+    async def pull_requests(
+        self,
+        binding: CodeHostProviderBinding,
+        resource: Resource,
+        *,
+        credential: str | None,
+        state: str = "open",
+    ) -> tuple[CodeHostPullRequestFact, ...]:
+        project = quote(_project_name(resource), safe="")
+        gitlab_state = "opened" if state == "open" else state
+        data = await self._get(
+            binding,
+            f"projects/{project}/merge_requests",
+            credential=credential,
+            params={"state": gitlab_state, "per_page": 100},
+        )
+        if not isinstance(data, list):
+            raise CodeHostError("GitLab merge request collection response is invalid")
+        return tuple(
+            CodeHostPullRequestFact(
+                external_id=str(item.get("id") or item.get("iid") or ""),
+                number=item.get("iid"),
+                title=str(item.get("title") or ""),
+                state=str(item.get("state") or "unknown"),
+                source_ref=item.get("source_branch"),
+                target_ref=item.get("target_branch"),
+                author_external_id=(str((item.get("author") or {}).get("id")) if (item.get("author") or {}).get("id") is not None else None),
+                web_url=item.get("web_url"),
+                draft=bool(item.get("draft") or item.get("work_in_progress")),
+                merge_revision=item.get("merge_commit_sha"),
+            )
+            for item in data
+            if isinstance(item, dict)
+        )
+
     async def reviews(
         self,
         binding: CodeHostProviderBinding,

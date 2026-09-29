@@ -109,6 +109,12 @@ class _WorkItems:
 
 
 class _Operator:
+    async def source_detail(self, ref):
+        return {
+            "snapshot": {"identity": {"external_id": ref}, "body_text": "Acceptance criteria"},
+            "discussion": [{"external_id": "comment-1", "body_text": "Context"}],
+        }
+
     async def retry(self, ref, *, actor, reason):
         return {"ok": True, "item": {"ref": ref, "actor": actor, "reason": reason}}
 
@@ -138,6 +144,19 @@ class _CodeHosts:
             source_ref="fix/example",
             target_ref="main",
             web_url=f"https://github.example/pulls/{external_id}",
+        )
+
+    async def pull_requests(self, binding_id, resource_id, *, actor, state="open"):
+        del binding_id, resource_id, actor, state
+        return (
+            CodeHostPullRequestFact(
+                external_id="provider-pr-id",
+                number=954,
+                title="Brokered PR fact",
+                state="open",
+                source_ref="fix/example",
+                target_ref="main",
+            ),
         )
 
 
@@ -214,7 +233,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             audit=ControlPlaneBrokerAuditStore(self.sqlite),
             limits=ControlPlaneBrokerLimits(
                 max_request_bytes=1024,
-                max_response_bytes=4096,
+                max_response_bytes=8192,
                 max_concurrent_requests=2,
                 max_requests_per_minute=8,
             ),
@@ -680,6 +699,45 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             code_hosts.registry.binding.credential_ref,
             "secret-github",
         )
+
+    async def test_repository_write_assignment_can_discover_open_pull_requests(self) -> None:
+        code_hosts = _CodeHosts()
+        self.authority.resources = SimpleNamespace(
+            get=lambda resource_id, actor: SimpleNamespace(
+                id=resource_id,
+                lifecycle="active",
+                resource_type="repository",
+                risk="medium",
+                sensitivity="internal",
+            )
+        )
+        service = ControlPlaneBrokerService(
+            identity=self.identity,
+            authority=self.authority,
+            work_items=self.work_items,
+            operator=_Operator(),
+            audit=ControlPlaneBrokerAuditStore(self.sqlite),
+            action_intents=SimpleNamespace(execution=SimpleNamespace(registry=_ActionRegistry())),
+            code_hosts=code_hosts,
+        )
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "repository-write",
+            "resource_ids": ("repository-a",),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default", project_id="project-a",
+                writable_repository_ids=("repository-a",),
+                source=RepositoryTargetSource.SINGLE_REPOSITORY, source_ref="repository-a",
+            ),
+        })
+        status, payload, operation, target_ref, decision = await service.dispatch(
+            assignment=assignment, worker_actor=self.worker_actor, method="GET",
+            raw_target="/api/repository-facts/pull-requests?state=open", body=b"",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(operation.id, "repository.read.pull-requests")
+        self.assertIsNone(target_ref)
+        self.assertEqual(payload["items"][0]["number"], 954)
+        self.assertEqual(decision.outcome, AuthorityDecisionOutcome.ALLOW)
 
 
 if __name__ == "__main__":

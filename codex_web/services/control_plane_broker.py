@@ -176,6 +176,13 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
         authority_level=AuthorityLevel.READ,
     ),
     ControlPlaneBrokerOperation(
+        id="repository.read.pull-requests",
+        method="GET",
+        path_template="/api/repository-facts/pull-requests?state={state}",
+        capability="repository.pull-request.read",
+        authority_level=AuthorityLevel.READ,
+    ),
+    ControlPlaneBrokerOperation(
         id="repository.read.pull-request",
         method="GET",
         path_template="/api/repository-facts/pull-requests/{external_id}",
@@ -445,6 +452,7 @@ class ControlPlaneBrokerService:
             "/api/repository-facts/refs": "repository.read.refs",
             "/api/repository-facts/releases": "repository.read.releases",
             "/api/repository-facts/compare": "repository.read.compare",
+            "/api/repository-facts/pull-requests": "repository.read.pull-requests",
         }
         operation_id = repository_read_exact.get(path)
         target_ref = None
@@ -800,6 +808,15 @@ class ControlPlaneBrokerService:
                 binding_id, repository_id, target_ref, actor=actor
             )
             return {"item": item.model_dump(mode="json")}
+        if operation.id == "repository.read.pull-requests":
+            state = (query.get("state") or ["open"])[0].strip().casefold()
+            items = await self.code_hosts.pull_requests(
+                binding_id,
+                repository_id,
+                actor=actor,
+                state=state,
+            )
+            return {"items": [item.model_dump(mode="json") for item in items]}
         if operation.id == "repository.read.reviews":
             assert target_ref is not None
             items = await self.code_hosts.reviews(
@@ -955,6 +972,9 @@ class ControlPlaneBrokerService:
         elif operation.id == "work_item.read":
             assert resolved.target_ref is not None
             result = await self.work_items.get(resolved.target_ref)
+            result["authoritative_source"] = await self.operator.source_detail(
+                resolved.target_ref
+            )
         elif operation.id == "work_item.handoff":
             assert resolved.target_ref is not None
             result = await self.work_items.handoff(

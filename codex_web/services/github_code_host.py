@@ -223,6 +223,47 @@ class GitHubCodeHostProvider:
             merge_revision=data.get("merge_commit_sha"),
         )
 
+    async def pull_requests(
+        self,
+        binding: CodeHostProviderBinding,
+        resource: Resource,
+        *,
+        credential: str | None,
+        state: str = "open",
+    ) -> tuple[CodeHostPullRequestFact, ...]:
+        repository = _repository_name(resource)
+        try:
+            data = await self.client.get_json(
+                binding.base_url,
+                f"repos/{repository}/pulls",
+                token=credential,
+                params={"state": state, "per_page": 100},
+            )
+        except Exception as exc:
+            raise self._classify(exc) from exc
+        if not isinstance(data, list):
+            raise CodeHostError("GitHub pull request collection response is invalid")
+        facts = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            head = item.get("head") if isinstance(item.get("head"), dict) else {}
+            base = item.get("base") if isinstance(item.get("base"), dict) else {}
+            user = item.get("user") if isinstance(item.get("user"), dict) else {}
+            facts.append(CodeHostPullRequestFact(
+                external_id=str(item.get("id") or item.get("number") or ""),
+                number=item.get("number"),
+                title=str(item.get("title") or ""),
+                state=str(item.get("state") or "unknown"),
+                source_ref=head.get("ref"),
+                target_ref=base.get("ref"),
+                author_external_id=str(user.get("id")) if user.get("id") is not None else None,
+                web_url=item.get("html_url"),
+                draft=bool(item.get("draft")),
+                merge_revision=item.get("merge_commit_sha"),
+            ))
+        return tuple(facts)
+
     async def reviews(
         self,
         binding: CodeHostProviderBinding,
