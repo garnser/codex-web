@@ -70,7 +70,7 @@ TRUSTED_LOCAL_CHILD_ENVIRONMENT_CONFIG = (
     # This non-secret loopback locator is useful only when an assignment worker
     # mounts the matching broker relay. Set it explicitly because inherit="none"
     # must continue to keep process credentials out of repository commands.
-    'shell_environment_policy.set={PATH="/opt/codex-playwright/node_modules/.bin:/usr/local/bin:/usr/bin:/bin",HOME="/tmp/codex-local-shell-home",NODE_PATH="/opt/codex-playwright/node_modules",PLAYWRIGHT_BROWSERS_PATH="/opt/codex-playwright-browsers",CODEX_WEB_CONTROL_PLANE_URL="http://127.0.0.1:8788"}',
+    'shell_environment_policy.set={PATH="/opt/codex-playwright/node_modules/.bin:/usr/bin:/usr/local/bin:/bin",HOME="/tmp/codex-local-shell-home",NODE_PATH="/opt/codex-playwright/node_modules",PLAYWRIGHT_BROWSERS_PATH="/opt/codex-playwright-browsers",CODEX_WEB_CONTROL_PLANE_URL="http://127.0.0.1:8788"}',
     'shell_environment_policy.filters.CODEX_ACCESS_TOKEN="exclude"',
     'shell_environment_policy.filters.CODEX_API_KEY="exclude"',
     'shell_environment_policy.filters.OPENAI_API_KEY="exclude"',
@@ -90,6 +90,10 @@ TRUSTED_LOCAL_CHILD_ENVIRONMENT_CONFIG = (
 # committed heap is small. The trusted Codex app-server requires this virtual
 # headroom; repository commands still use the assignment's strict RLIMIT_AS.
 CODEX_MINIMUM_ADDRESS_SPACE_BYTES = 2 * 1024**4
+# RLIMIT_NPROC is charged against the host UID instead of the Bubblewrap PID
+# namespace. Keep enough shared-host headroom for Chromium's helper threads
+# while retaining a finite ceiling for the trusted interactive runtime.
+CODEX_MINIMUM_PROCESS_COUNT = 4096
 
 
 def trusted_local_codex_command(

@@ -261,9 +261,23 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.client = _GitLabClient()
 
-        async def publish(path, project, branch_name, revision, credential):
+        async def publish(
+            path,
+            project,
+            branch_name,
+            revision,
+            credential,
+            expected_remote_revision,
+        ):
             self.client.branches[branch_name] = revision
-            self.published = (path, project, branch_name, revision, credential)
+            self.published = (
+                path,
+                project,
+                branch_name,
+                revision,
+                credential,
+                expected_remote_revision,
+            )
 
         self.published = None
         self.branch = branch

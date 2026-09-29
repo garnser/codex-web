@@ -290,6 +290,7 @@ class BubblewrapExecutionBackend:
         limits: WorkerResourceLimits,
         *,
         minimum_address_space_bytes: int = 0,
+        minimum_process_count: int = 0,
     ):
         def apply() -> None:
             address_space_bytes = max(
@@ -298,7 +299,8 @@ class BubblewrapExecutionBackend:
             )
             resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_seconds, limits.cpu_seconds))
             resource.setrlimit(resource.RLIMIT_AS, (address_space_bytes, address_space_bytes))
-            resource.setrlimit(resource.RLIMIT_NPROC, (limits.process_count, limits.process_count))
+            process_count = max(limits.process_count, minimum_process_count)
+            resource.setrlimit(resource.RLIMIT_NPROC, (process_count, process_count))
             resource.setrlimit(resource.RLIMIT_FSIZE, (limits.disk_bytes, limits.disk_bytes))
 
         return apply
@@ -604,6 +606,7 @@ class BubblewrapExecutionBackend:
         trusted_readonly_mounts: Sequence[tuple[Path, Path]] = (),
         trusted_writable_mounts: Sequence[tuple[Path, Path]] = (),
         minimum_address_space_bytes: int = 0,
+        minimum_process_count: int = 0,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -652,6 +655,7 @@ class BubblewrapExecutionBackend:
             preexec_fn=self._limits_preexec(
                 assignment.limits,
                 minimum_address_space_bytes=minimum_address_space_bytes,
+                minimum_process_count=minimum_process_count,
             ),
         )
 

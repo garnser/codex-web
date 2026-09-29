@@ -134,11 +134,16 @@ Issue creation uses the same durable ownership marker and reconciles before
 creating; issue state updates converge on the requested state. Pull-request
 merge is a separate high-risk, single-attempt action that fails closed unless
 GitHub reports the request mergeable with a `clean` state and then verifies the
-merged result and merge commit. Branch publication is a
-non-force push of the exact committed revision from an active, write-leased,
-clean canonical execution workspace; branch name, head, ancestry, Resource
-membership, and workspace-root containment are re-attested immediately before
-each attempt.
+merged result and merge commit. Branch publication pushes the exact committed
+revision from an active, write-leased, clean canonical execution workspace;
+branch name, head, ancestry, Resource membership, and workspace-root containment
+are re-attested immediately before each attempt. The normal target is the
+workspace's canonical branch. A recovery may instead fast-forward an existing
+`codex/` change-request branch when the request supplies its exact expected
+remote revision, that revision is an ancestor of the attested workspace head,
+and Git enforces the same expected revision with `--force-with-lease`. This lets
+an isolated replacement execution repair an existing pull request without
+granting arbitrary branch replacement.
 
 Provider success returns normalized `code-host-*` Evidence. Verification uses a
 fresh brokered credential to read the comment, issue, change request, or branch

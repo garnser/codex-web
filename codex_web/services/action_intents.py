@@ -1454,6 +1454,26 @@ class ActionIntentService:
                     self.capacity.release(capacity_lease.id)
                     capacity_lease = None
                 raise
+            except ActionRequirementError as exc:
+                if self.capacity is not None and capacity_lease is not None:
+                    self.capacity.release(capacity_lease.id)
+                    capacity_lease = None
+                self._append_receipt(
+                    intent,
+                    result=None,
+                    outcome="failed",
+                    details={"reason": type(exc).__name__},
+                )
+                return self._set_status(
+                    intent.id,
+                    ActionIntentStatus.FAILED,
+                    error=f"provider precondition failed: {exc}",
+                    failure=self._failure(
+                        intent,
+                        FailureReason.CONFIGURATION_MISSING_OR_INVALID,
+                        source_native_code=type(exc).__name__,
+                    ),
+                )
             except Exception as exc:
                 if self.capacity is not None:
                     self.capacity.record_failure(
