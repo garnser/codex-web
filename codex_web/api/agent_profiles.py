@@ -133,12 +133,14 @@ def build_agent_profiles_router(
         profile_id: str,
         request: Request,
         limit: int = 20,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         try:
             return service.execution_history(
                 profile_id,
                 actor=request_actor(request),
                 limit=limit,
+                project_id=project_id,
             )
         except Exception as exc:
             raise _error(exc) from exc

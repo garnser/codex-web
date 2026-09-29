@@ -113,8 +113,19 @@ The bounded `executions` projection is backed by canonical ExecutionAssignments 
 
 The `audit` projection is derived from immutable profile revisions and exposes updater, lifecycle, reason and revision provenance.
 
+The execution projection accepts optional `project_id`. It filters assignments
+before computing totals, active counts and the bounded result window; another
+Project's newer assignments cannot hide the selected Project's history. Omitting
+the parameter retains the existing authorized workspace projection.
+
 ## UI contract
 
 Product UI should display the Agent Profile as the collaborator. Provider/runtime/worker information is execution provenance and availability detail, not the profile's identity.
 
 Profile detail surfaces may combine profile identity, access, workload and runtime availability, but each must retain its canonical source and vocabulary rather than reconstructing shadow profile state in the browser.
+
+Agent Profiles and Teams are labeled as reusable workspace identities,
+not Project-owned records. Their lazy workload and invocation-access panels use
+the selected Project. Switching Projects removes the previous panels, aborts
+reads and rejects late results; no selected Project means no context request.
+Editing a shared identity retains its canonical workspace authority boundary.
