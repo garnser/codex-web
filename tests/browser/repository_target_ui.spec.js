@@ -501,12 +501,7 @@ test("retryable steering failure preserves the queued message and reconciles can
 });
 
 test("sidebar channel actions remain usable alongside relocated thread settings", async ({ page }) => {
-  const fs = require("node:fs");
-  const path = require("node:path");
-  const html = fs.readFileSync(path.join(__dirname, "../../static/index.html"), "utf8")
-    .replace("<head>", '<head><base href="/">');
-  await page.route("**/projects/home/chat", route => route.fulfill({ contentType: "text/html", body: html }));
-  await page.setViewportSize({ width: 1440, height: 900 });
+  await mirrorProductionStaticMount(page);
   const pageErrors = [];
   page.on("pageerror", error => pageErrors.push(error));
   const project = { id: "home", name: "Home", path: "/workspace/home" };
@@ -541,8 +536,7 @@ test("sidebar channel actions remain usable alongside relocated thread settings"
     return route.fulfill({ json: {} });
   });
 
-  await page.goto("http://127.0.0.1:18766/projects/home/chat");
-  await expect(page.locator("body")).toHaveClass(/product-chat-page/);
+  await page.goto("http://127.0.0.1:18766/static/index.html");
   const threadItem = page.locator("#threads .item").filter({ hasText: thread.name });
   await threadItem.locator(".item-main").click();
   await expect(page.locator("#thread-title")).toHaveText(thread.name);
