@@ -501,6 +501,7 @@ test("retryable steering failure preserves the queued message and reconciles can
 });
 
 test("sidebar channel actions remain usable alongside relocated thread settings", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await mirrorProductionStaticMount(page);
   const pageErrors = [];
   page.on("pageerror", error => pageErrors.push(error));

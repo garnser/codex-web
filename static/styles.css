@@ -201,7 +201,8 @@ button:active {
   grid-column: 1;
   grid-row: 1;
   min-width: 0;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   border-right: 1px solid var(--line);
   background: var(--sidebar-bg);
   display: flex;
@@ -297,7 +298,8 @@ section {
 }
 
 .threads-section {
-  min-height: 0;
+  /* Keep search and thread actions usable when Project navigation is tall. */
+  min-height: 16rem;
   flex: 1;
   display: flex;
   flex-direction: column;
