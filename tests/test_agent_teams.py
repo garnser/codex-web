@@ -275,6 +275,8 @@ class AgentTeamServiceTests(unittest.TestCase):
 
     def test_membership_capability_labels_do_not_bypass_profile_access(self) -> None:
         self._team()
+        # This test isolates invocation access after an already-disabled profile.
+        self.profiles.usage_loader = lambda _id, _actor: {"available": True, "blocking_count": 0}
         self.profiles.lifecycle(
             "python",
             lifecycle=__import__(

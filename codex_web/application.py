@@ -155,6 +155,7 @@ from codex_web.runtime.codex import install_codex_runtime
 from codex_web.runtime.execution import install_turn_execution_service
 from codex_web.runtime.process import run_server, sd_notify
 from codex_web.services.action_intents import ActionIntentService
+from codex_web.services.agent_profile_usage import AgentProfileUsageService
 from codex_web.services.agent_profiles import AgentProfileService
 from codex_web.services.agent_teams import AgentTeamService
 from codex_web.services.agent_team_execution import AgentTeamExecutionService
@@ -2617,6 +2618,13 @@ turn_queue_repository = TurnQueueRepository(
     TURN_QUEUE_FILE,
 )
 app.state.turn_queue_repository = turn_queue_repository
+agent_profile_usage_service = AgentProfileUsageService(
+    teams=agent_team_service, projects=project_service,
+    automations=automation_definition_service,
+    assignments=_agent_profile_assignment_history, queues=turn_queue_repository,
+)
+agent_profile_service.usage_loader = agent_profile_usage_service.snapshot
+app.state.agent_profile_usage_service = agent_profile_usage_service
 core._load_turn_queues = turn_queue_repository.load
 core._save_turn_queues = turn_queue_repository.save
 core._thread_queue_record = turn_queue_repository.get

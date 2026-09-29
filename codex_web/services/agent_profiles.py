@@ -78,6 +78,7 @@ class AgentProfileService:
             [AuthenticationActor], list[Any]
         ] | None = None,
         skill_reference_validator: SkillReferenceValidator | None = None,
+        usage_loader: Callable[[str, AuthenticationActor], dict[str, Any]] | None = None,
         clock=time.time,
     ) -> None:
         self.store = store
@@ -87,6 +88,7 @@ class AgentProfileService:
         self.role_resolver = role_resolver
         self.assignment_history = assignment_history
         self.skill_reference_validator = skill_reference_validator
+        self.usage_loader = usage_loader
         self.clock = clock
 
     @staticmethod
@@ -689,6 +691,20 @@ class AgentProfileService:
             reason=payload.reason,
         )
 
+    def usage(self, profile_id: str, *, actor: AuthenticationActor) -> dict[str, Any]:
+        current = self._latest(profile_id, actor=actor)
+        if not self.can_view(current, actor=actor):
+            raise AgentProfileNotFound("agent profile not found")
+        if self.usage_loader is None:
+            return {"schema_version": "1.0", "available": False, "items": [],
+                    "profile_id": profile_id, "reason": "Canonical consumer projection is unavailable."}
+        try:
+            return self.usage_loader(profile_id, actor)
+        except Exception:
+            # An incomplete projection can never authorize a destructive transition.
+            return {"schema_version": "1.0", "available": False, "items": [],
+                    "profile_id": profile_id, "reason": "Canonical consumer projection could not be verified."}
+
     def lifecycle(
         self,
         profile_id: str,
@@ -699,8 +715,19 @@ class AgentProfileService:
     ) -> AgentProfileRevision:
         current = self._latest(profile_id, actor=actor)
         self._require_admin_or_owner(actor, current)
+        if payload.expected_revision is not None and current.revision != payload.expected_revision:
+            raise AgentProfileConflict("Profile revision changed; refresh before changing lifecycle.")
         if current.lifecycle == lifecycle:
             return current
+        if lifecycle != AgentProfileLifecycle.ACTIVE:
+            impact = self.usage(profile_id, actor=actor)
+            if not impact.get("available"):
+                raise AgentProfileConflict("Profile usage is unavailable; retry after canonical consumers can be verified.")
+            if impact.get("blocking_count", 0):
+                raise AgentProfileConflict(
+                    "Profile has active consumers. Pause dependent Automations, disable or edit Teams, "
+                    "and finish or cancel active/queued executions before changing lifecycle."
+                )
         return self._append_revision(
             current,
             actor=actor,

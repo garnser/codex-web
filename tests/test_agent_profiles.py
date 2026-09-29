@@ -152,6 +152,7 @@ class AgentProfileTests(unittest.IsolatedAsyncioTestCase):
             definitions=self.definitions,
             authority=self.authority,
             execution_profiles=_ExecutionProfiles(),
+            usage_loader=lambda _id, _actor: {"available": True, "blocking_count": 0, "items": []},
         )
         self.admin = _actor("admin-a", admin=True)
         self.member = _actor("member-a")
