@@ -1030,9 +1030,11 @@ class ControlPlaneBrokerService:
                 requester_actor,
             )
             repository_id = self._writable_repository_id(assignment)
+            reconcile_request = ActionIntentReconcileRequest.model_validate(
+                payload
+            )
             if (
                 intent.action_id != CODE_HOST_BRANCH_PUBLISH_ACTION_ID
-                or intent.execution_id != assignment.execution_id
                 or intent.project_id != assignment.project_id
                 or tuple(intent.resource_ids) != (repository_id,)
                 or intent.requested_by != requester_actor.identity_id
@@ -1040,9 +1042,23 @@ class ControlPlaneBrokerService:
                 raise ControlPlaneBrokerDeniedError(
                     "action intent is outside the assignment delivery scope"
                 )
+            # A recovered thread receives a fresh execution assignment. It must
+            # still be able to verify and settle an uncertain branch publish
+            # from its superseded assignment, otherwise a service restart
+            # permanently strands the governed delivery. Historical intents
+            # remain non-retryable here: only the exact originating execution
+            # may ask the provider to repeat a mutation.
+            if (
+                intent.execution_id != assignment.execution_id
+                and reconcile_request.retry_if_idempotent
+            ):
+                raise ControlPlaneBrokerDeniedError(
+                    "a recovered assignment may reconcile but not retry a "
+                    "historical action intent"
+                )
             item = await self.action_intents.reconcile(
                 intent.id,
-                ActionIntentReconcileRequest.model_validate(payload),
+                reconcile_request,
                 actor=actor,
             )
             result = {"item": item.model_dump(mode="json")}
