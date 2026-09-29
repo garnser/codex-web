@@ -279,3 +279,15 @@ test('Configuration is a first-class routed Project page backed by canonical set
   await expect(settings).toContainText('Configuration & Features');
   await expect(settings.locator('#refresh-config')).toHaveCount(1);
 });
+
+test('profile management Definitions destination survives direct navigation and reload', async ({ page }) => {
+  await serveProjectShell(page);
+  await page.goto('http://127.0.0.1:18766/projects/alpha/definitions');
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await expect(page).toHaveURL(/\/projects\/alpha\/definitions$/);
+    await expect(page.locator('#product-project-switcher')).toHaveValue('alpha');
+    await expect(page.locator('[data-product-workspace-title]')).toHaveText('Definitions / Contracts');
+    await expect(page.locator('[data-product-workspace-host="definitions"]')).toBeVisible();
+    if (!attempt) await page.reload();
+  }
+});
