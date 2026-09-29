@@ -344,6 +344,18 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertNotIn('thread-actions-menu', (STATIC / 'app.js').read_text())
         self.assertNotIn('thread-actions-menu', (STATIC / 'thread_settings_ui.js').read_text())
 
+    def test_thread_history_has_a_dedicated_row_outside_the_scrollable_stream(self) -> None:
+        css = (STATIC / "styles.css").read_text(encoding="utf-8")
+        html = (STATIC / "index.html").read_text(encoding="utf-8")
+        self.assertIn("grid-template-rows: auto auto auto minmax(0, 1fr) auto", css)
+        for selector, row in (
+            (".topbar", 1), (".approvals", 2), ("#thread-history-control", 3),
+            (".messages", 4), (".composer", 5),
+        ):
+            self.assertIn(f".main > {selector} {{ grid-row: {row}; }}", css)
+        self.assertIn("flex-shrink: 0", css[css.index(".message {"):css.index(".message .body")])
+        self.assertLess(html.index('id="thread-history-control"'), html.index('id="messages"'))
+
     def test_execution_profile_controls_are_focused_and_explain_authority(self) -> None:
         html = (STATIC / "index.html").read_text(encoding="utf-8")
         module_path = STATIC / "execution_profile_controls.js"

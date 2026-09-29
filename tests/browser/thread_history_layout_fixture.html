@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Thread history layout regression</title>
+  <link rel="stylesheet" href="/static/design_tokens.css">
+  <link rel="stylesheet" href="/static/workspace_components.css">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/mobile_responsive.css">
+</head>
+<body>
+  <aside class="sidebar" aria-label="Projects"></aside>
+  <main class="main">
+    <header class="topbar"><div class="thread-heading"><h1>Long thread</h1><p id="thread-meta">thread-1 · Layout regression</p></div></header>
+    <div id="approvals" class="approvals"></div>
+    <div id="thread-history-control" hidden></div>
+    <section id="messages" class="messages"></section>
+    <footer class="composer"><textarea aria-label="Message"></textarea><button id="send">Send</button></footer>
+  </main>
+  <script src="/static/thread_history.js"></script>
+  <script>
+    const messages = document.getElementById('messages');
+    const history = window.codexThreadHistory;
+    window.reloadCount = 0;
+    window.makeMessage = (index) => {
+      const article = document.createElement('article');
+      article.className = 'message agent';
+      const body = document.createElement('div');
+      body.className = 'body';
+      body.textContent = `Message ${index}\n` + 'Long content-heavy output with multiple lines.\n'.repeat(12);
+      article.append(body);
+      return article;
+    };
+    for (let index = 0; index < 40; index++) messages.append(window.makeMessage(index));
+    window.showHistory = (visible) => {
+      history.recordThread('thread-1', { messagesTruncated: visible, messagesOmitted: visible ? 120 : 0 });
+      history.afterThreadRendered('thread-1', messages);
+    };
+    history.configure({ reloadThread: async () => {
+      // Hold loading long enough to exercise the disabled-but-uncovered state.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      for (let index = 0; index < 40; index++) messages.prepend(window.makeMessage(index));
+      window.reloadCount++;
+      window.showHistory(true);
+    } });
+    window.showHistory(true);
+  </script>
+</body>
+</html>
