@@ -14,6 +14,11 @@ class ConfigurationManagementUiTests(unittest.TestCase):
             encoding="utf-8"
         )
 
+        value_editor = (ROOT / "static" / "configuration_value_editor.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("configuration_value_editor.js", javascript)
+
         self.assertIn('id="configuration-management-panel"', html)
         self.assertIn('id="configuration-draft-value-host"', html)
         self.assertIn('id="configuration-targeting-panel"', html)
@@ -31,14 +36,14 @@ class ConfigurationManagementUiTests(unittest.TestCase):
         self.assertIn("expected_active_revision", javascript)
         self.assertIn("allowed_scopes", javascript)
         self.assertIn("spec.editable", javascript)
-        self.assertIn("spec.allowed_values", javascript)
-        self.assertIn("spec.minimum", javascript)
-        self.assertIn("spec.maximum", javascript)
-        self.assertIn("secret_ref", javascript)
-        self.assertIn("SecretBroker reference", javascript)
-        self.assertIn("Raw secret values are never configuration", javascript)
-        self.assertIn("definition_ref", javascript)
-        self.assertIn("Published Definition Registry", javascript)
+        self.assertIn("spec.allowed_values", value_editor)
+        self.assertIn("spec.minimum", value_editor)
+        self.assertIn("spec.maximum", value_editor)
+        self.assertIn("secret_ref", value_editor)
+        self.assertIn("SecretBroker reference", value_editor)
+        self.assertIn("Raw secret values are never configuration", value_editor)
+        self.assertIn("definition_ref", value_editor)
+        self.assertIn("Published Definition Registry", value_editor)
         self.assertIn("feature_flag", javascript)
         self.assertIn("kill_switch_capable", javascript)
         self.assertIn("force_disabled", javascript)

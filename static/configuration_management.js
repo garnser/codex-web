@@ -1,6 +1,12 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { formValidation } = await import(`${BASE}/static/form_validation.js`);
+  const { valueEditor, draftValue } = await import(`${BASE}/static/configuration_value_editor.js`);
+  let validation = null;
+  function draftValidation() {
+    return validation ||= formValidation(document.getElementById('configuration-draft-key').closest('.route-test'));
+  }
   let actor = null;
   let specs = [];
   let records = [];
@@ -96,97 +102,23 @@
     const button = document.getElementById("create-configuration-draft");
     if (button) button.disabled = !scope || !canManage(scope) || selectedSpec()?.editable === false;
   }
-  function valueEditor(spec) {
-    if (!spec) return "<small>Select a configuration spec.</small>";
-    if (!spec.editable) {
-      return '<small>Read-only here; change it through its owning canonical workflow.</small>';
-    }
-    const kind = spec.value_kind;
-    const min = spec.minimum ?? "";
-    const max = spec.maximum ?? "";
-    const bounds = `${min !== "" ? ` min="${escapeHtml(min)}"` : ""}${max !== "" ? ` max="${escapeHtml(max)}"` : ""}`;
-    if (kind === "boolean") {
-      return '<label>Value <input id="configuration-draft-value" type="checkbox" /></label>';
-    }
-    if (kind === "integer") {
-      return `<label>Value <input id="configuration-draft-value" type="number" step="1"${bounds} /></label>`;
-    }
-    if (kind === "number") {
-      return `<label>Value <input id="configuration-draft-value" type="number" step="any"${bounds} /></label>`;
-    }
-    if (kind === "string") {
-      if (spec.allowed_values?.length) {
-        return `<label>Value <select id="configuration-draft-value">${spec.allowed_values.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("")}</select></label>`;
-      }
-      return '<label>Value <input id="configuration-draft-value" /></label>';
-    }
-    if (kind === "string_list") {
-      return '<label>Values <textarea id="configuration-draft-value" rows="3" placeholder="one per line or comma-separated"></textarea></label>';
-    }
-    if (kind === "secret_ref") {
-      const options = secrets
-        .filter((item) => item.status !== "revoked")
-        .map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name || item.id)} · ${escapeHtml(item.id)} · ${escapeHtml(item.status || "unknown")}</option>`)
-        .join("");
-      return `<label>SecretBroker reference <select id="configuration-draft-value"><option value="">Select secret reference</option>${options}</select></label><small>Raw secret values are never configuration.</small>`;
-    }
-    if (kind === "definition_ref") {
-      const options = definitions
-        .filter((item) => item.lifecycle === "published")
-        .map((item) => `<option value="${escapeHtml(item.record_id)}">${escapeHtml(item.kind)} · ${escapeHtml(item.definition_id)} · r${escapeHtml(item.revision)} · ${escapeHtml(item.scope_type)}</option>`)
-        .join("");
-      return `<label>Published Definition Registry revision <select id="configuration-draft-value"><option value="">Select definition revision</option>${options}</select></label>`;
-    }
-    return `<small>Unsupported value kind: ${escapeHtml(kind)}</small>`;
-  }
   function updateSpecControls() {
+    validation?.clear();
     const spec = selectedSpec();
     renderScopes(spec);
     const host = document.getElementById("configuration-draft-value-host");
-    if (host) host.innerHTML = valueEditor(spec);
+    if (host) host.innerHTML = valueEditor(spec, { secrets, definitions });
     const targeting = document.getElementById("configuration-targeting-panel");
     if (targeting) {
       targeting.hidden = !spec?.feature_flag;
       targeting.open = Boolean(spec?.feature_flag);
+      targeting.querySelectorAll('input').forEach(input => { input.disabled = !spec?.feature_flag; });
     }
     const kill = document.getElementById("configuration-force-disabled");
     if (kill) {
       kill.disabled = !spec?.kill_switch_capable;
       if (!spec?.kill_switch_capable) kill.checked = false;
     }
-  }
-  function draftValue(spec) {
-    const input = document.getElementById("configuration-draft-value");
-    if (!input) throw new Error("No value editor for this configuration kind.");
-    if (spec.value_kind === "boolean") return Boolean(input.checked);
-    if (spec.value_kind === "integer") {
-      const value = Number(input.value);
-      if (!Number.isInteger(value)) throw new Error("Configuration value must be an integer.");
-      return value;
-    }
-    if (spec.value_kind === "number") {
-      const value = Number(input.value);
-      if (!Number.isFinite(value)) throw new Error("Configuration value must be a number.");
-      return value;
-    }
-    if (spec.value_kind === "string") return input.value;
-    if (spec.value_kind === "string_list") {
-      return input.value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
-    }
-    if (spec.value_kind === "secret_ref") {
-      if (!input.value) throw new Error("Choose a SecretBroker reference.");
-      return { kind: "secret", secret_id: input.value };
-    }
-    if (spec.value_kind === "definition_ref") {
-      const record = definitions.find((item) => item.record_id === input.value);
-      if (!record || record.lifecycle !== "published") throw new Error("Choose a published Definition Registry revision.");
-      return {
-        kind: "definition",
-        definition_id: record.definition_id,
-        revision: String(record.revision),
-      };
-    }
-    throw new Error(`Unsupported configuration kind: ${spec.value_kind}`);
   }
   function scopeId(scope) {
     if (["deployment", "global"].includes(scope)) return null;
@@ -207,24 +139,27 @@
     return { percentage, cohorts, owner, expires_at: expiresAt };
   }
   async function createDraft() {
+    const errors = [];
+    const feedback = draftValidation();
     const spec = selectedSpec();
-    if (!spec) return setStatus("Choose a configuration key.");
-    if (!spec.editable) return setStatus("This setting is read-only.");
+    if (!spec) return feedback.show([{ field: 'configuration-draft-key', message: 'Choose a configuration key.' }]);
+    if (!spec.editable) return feedback.show([{ message: 'This setting is read-only. Use its owning workflow to change it.' }]);
     const scope = document.getElementById("configuration-draft-scope")?.value || "";
     const target = scopeId(scope);
     if (!["deployment", "global"].includes(scope) && !target) {
-      return setStatus(`Choose a ${scope} target.`);
+      errors.push({ field: `configuration-draft-${scope}`, message: `Choose a ${scope} target before saving.` });
     }
     const forceDisabled = Boolean(document.getElementById("configuration-force-disabled")?.checked);
     let value;
     try {
-      value = forceDisabled ? false : draftValue(spec);
+      value = forceDisabled ? false : draftValue(spec, { definitions });
     } catch (error) {
-      return setStatus(error.message);
+      errors.push({ field: 'configuration-draft-value', message: error.message });
     }
     if (forceDisabled && !spec.kill_switch_capable) {
-      return setStatus("This spec is not kill-switch capable.");
+      errors.push({ field: 'configuration-force-disabled', message: 'This setting does not support a kill switch. Clear Force-disabled.' });
     }
+    if (!feedback.validate(errors)) return;
     const targeting = featureTargeting(spec, forceDisabled);
     const reason = document.getElementById("configuration-draft-reason")?.value.trim() || null;
     if (!window.confirm(
@@ -244,9 +179,17 @@
         }),
       });
       setStatus(`Created ${spec.key} draft r${response.record.revision}; publish to activate.`);
+      feedback.clear();
       document.getElementById("refresh-configuration")?.click();
     } catch (error) {
-      setStatus(`Configuration draft failed: ${error.message}`);
+      feedback.server(error, {
+        key: 'configuration-draft-key', scope_type: 'configuration-draft-scope',
+        scope_id: `configuration-draft-${scope}`, value: 'configuration-draft-value',
+        reason: 'configuration-draft-reason', force_disabled: 'configuration-force-disabled',
+        'feature_targeting.percentage': 'configuration-target-percentage',
+        'feature_targeting.owner': 'configuration-target-owner',
+        'feature_targeting.expires_at': 'configuration-target-expires',
+      });
     }
   }
   function actionButtons(record) {
@@ -407,5 +350,6 @@
     });
   }
   window.addEventListener("codex:configuration-state-rendered", (event) => hydrate(event.detail || {}));
-  window.addEventListener("DOMContentLoaded", bind);
+  if (document.readyState === 'loading') window.addEventListener("DOMContentLoaded", bind, { once: true });
+  else bind();
 })();

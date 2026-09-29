@@ -80,6 +80,29 @@ explicit classification/retention contract before an editor opts into it. Other
 editors must integrate the shared contract explicitly; ordinary filters and
 transient search controls do not register a blocking guard.
 
+## Form validation
+
+`form_validation.js` supplies inline errors, `aria-invalid` and description
+associations, an alert summary with keyboard-operable field links, and focus on
+the first invalid control (or the summary for a general failure). Clearing a
+validation result restores any pre-existing descriptions and validity attributes.
+Error text uses text nodes; structured server input values are not rendered.
+
+Automation and typed Configuration editors use the primitive. Predictable native
+constraints and Automation trigger dependencies are checked before submission.
+Configuration types, ranges, choices and supported scopes come from canonical
+configuration specifications. API schema paths are mapped explicitly to controls;
+unmapped errors remain visible in the summary. Structured backend errors remain
+authoritative, including policy and cross-field incompatibilities. Client checks
+neither authorize a mutation nor replace canonical validation.
+
+Rejected submissions retain all entered values. A successful save clears errors;
+an error code without useful text receives actionable general guidance instead of
+being the sole explanation. Permission/read-only controls keep their existing
+canonical availability and explanation paths. This shared contract is qualified
+on these representative editors; new substantive forms should use it instead of
+adding another validation mechanism.
+
 ## Canonical UI vocabulary
 
 Shared UI primitives distinguish the reason a capability is unavailable or
