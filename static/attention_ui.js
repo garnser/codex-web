@@ -6,6 +6,60 @@ const attentionEsc = (value) => String(value ?? "")
   .replaceAll("'", "&#039;");
 
 const ATTENTION_PAGE_SIZE = 25;
+let attentionScopeGeneration = 0;
+let attentionBadgeGeneration = 0;
+
+function activeAttentionProject() {
+  const route = location.pathname.match(/\/projects\/([^/]+)(?:\/|$)/);
+  if (route) {
+    try { return decodeURIComponent(route[1]); } catch { return ''; }
+  }
+  const data = document.body.dataset;
+  // Legacy workspace Inbox remains available outside a Project context.
+  if ('activeProject' in data) return data.activeProject;
+  if ('projectId' in data) return data.projectId;
+  return null;
+}
+
+function attentionPath(path, projectId) {
+  return projectId == null ? path
+    : `${path}${path.includes('?') ? '&' : '?'}project_id=${encodeURIComponent(projectId)}`;
+}
+
+function attentionActionContext(dialog, ids) {
+  const projectId = activeAttentionProject();
+  const generation = attentionScopeGeneration;
+  if (projectId === '' || dialog._attentionProject !== projectId) return null;
+  if (!ids.every(id => dialog._attentionItems?.some(item => item.id === id
+    && (projectId === null || item.project_id === projectId)))) return null;
+  return {
+    current: () => generation === attentionScopeGeneration && projectId === activeAttentionProject(),
+    path: path => attentionPath(path, projectId),
+  };
+}
+
+function clearAttentionProject(dialog) {
+  attentionScopeGeneration += 1;
+  attentionBadgeGeneration += 1;
+  dialog._attentionController?.abort();
+  dialog._attentionGeneration = (dialog._attentionGeneration || 0) + 1;
+  dialog._attentionProject = activeAttentionProject();
+  dialog._attentionItems = [];
+  dialog._attentionNextCursor = null;
+  dialog._attentionTotal = 0;
+  const project = dialog.querySelector('[data-attention-project]');
+  project.value = dialog._attentionProject || '';
+  project.readOnly = dialog._attentionProject !== null;
+  project.placeholder = dialog._attentionProject === null ? 'Workspace-wide' : 'Select a Project';
+  dialog.querySelector('[data-attention-list]').innerHTML = '';
+  dialog.querySelector('[data-attention-more]').hidden = true;
+  dialog.querySelector('[data-attention-status]').textContent = dialog._attentionProject === ''
+    ? 'Select a Project to view Attention.' : 'Loading canonical attention…';
+  updateBulkAcknowledgeState(dialog);
+  const badge = document.querySelector('[data-attention-count]');
+  badge.textContent = '0';
+  badge.hidden = true;
+}
 
 async function attentionApi(path, options = {}) {
   const response = await fetch(path, {
@@ -41,6 +95,7 @@ function installAttentionStyles() {
       border-radius: 999px; align-items: center; justify-content: center; font-size: .72rem;
       margin-left: .25rem; background: color-mix(in srgb, currentColor 12%, transparent);
     }
+    .attention-count[hidden] { display: none; }
     .attention-dialog { width: min(980px, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); padding: 0; }
     .attention-dialog::backdrop { background: rgba(0, 0, 0, .42); }
     .attention-shell { display: grid; grid-template-rows: auto auto 1fr; max-height: calc(100vh - 2rem); }
@@ -152,21 +207,26 @@ async function bulkAcknowledge(dialog) {
     .map((input) => input.value)
     .filter(Boolean);
   if (!itemIds.length) return;
+  const context = attentionActionContext(dialog, itemIds);
+  if (!context) return;
   status.dataset.error = "false";
   try {
     status.textContent = `Acknowledging ${itemIds.length} selected item${itemIds.length === 1 ? "" : "s"}…`;
-    await attentionApi("/api/attention/bulk/acknowledge", {
+    await attentionApi(context.path("/api/attention/bulk/acknowledge"), {
       method: "POST",
       body: JSON.stringify({ item_ids: itemIds }),
     });
-    await loadAttention(dialog);
+    if (context.current()) await loadAttention(dialog);
   } catch (error) {
+    if (!context.current()) return;
     status.dataset.error = "true";
     status.textContent = `Bulk acknowledge failed: ${error.message}`;
   }
 }
 
 async function mutateAttention(dialog, itemId, action) {
+  const context = attentionActionContext(dialog, [itemId]);
+  if (!context) return;
   const status = dialog.querySelector("[data-attention-status]");
   status.dataset.error = "false";
   try {
@@ -187,19 +247,23 @@ async function mutateAttention(dialog, itemId, action) {
       if (!Number.isFinite(minutes) || minutes <= 0) throw new Error("Enter a positive number of minutes");
       body = JSON.stringify({ until: (Date.now() / 1000) + (minutes * 60) });
     }
+    if (!context.current()) return;
     status.textContent = `Applying ${action}…`;
-    await attentionApi(`/api/attention/${encodeURIComponent(itemId)}/${action}`, {
+    await attentionApi(context.path(`/api/attention/${encodeURIComponent(itemId)}/${action}`), {
       method: "POST",
       ...(body ? { body } : {}),
     });
-    await loadAttention(dialog);
+    if (context.current()) await loadAttention(dialog);
   } catch (error) {
+    if (!context.current()) return;
     status.dataset.error = "true";
     status.textContent = `Action failed: ${error.message}`;
   }
 }
 
 async function decideApprovalAttention(dialog, item, outcome) {
+  const context = attentionActionContext(dialog, [item.id]);
+  if (!context) return;
   const status = dialog.querySelector("[data-attention-status]");
   status.dataset.error = "false";
   try {
@@ -211,6 +275,7 @@ async function decideApprovalAttention(dialog, item, outcome) {
       reason = supplied.trim() || reason;
     }
     const nonce = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+    if (!context.current()) return;
     status.textContent = `Applying approval ${outcome}…`;
     await attentionApi(
       `/api/approval-requests/${encodeURIComponent(requestId)}/decisions`,
@@ -223,14 +288,17 @@ async function decideApprovalAttention(dialog, item, outcome) {
         }),
       },
     );
-    await loadAttention(dialog);
+    if (context.current()) await loadAttention(dialog);
   } catch (error) {
+    if (!context.current()) return;
     status.dataset.error = "true";
     status.textContent = `Approval failed: ${error.message}`;
   }
 }
 
 async function respondToWorkItemAttention(dialog, item) {
+  const context = attentionActionContext(dialog, [item.id]);
+  if (!context) return;
   const status = dialog.querySelector("[data-attention-status]");
   status.dataset.error = "false";
   try {
@@ -241,6 +309,7 @@ async function respondToWorkItemAttention(dialog, item) {
     const body = response.trim();
     if (!body) throw new Error("Enter the requested information");
 
+    if (!context.current()) return;
     status.textContent = "Recording information and retrying Work Item…";
     const encodedRef = encodeURIComponent(workItemRef);
     await attentionApi(
@@ -250,6 +319,7 @@ async function respondToWorkItemAttention(dialog, item) {
         body: JSON.stringify({ body }),
       },
     );
+    if (!context.current()) return;
     await attentionApi(
       `/api/work-items/${encodedRef}/retry`,
       {
@@ -260,8 +330,9 @@ async function respondToWorkItemAttention(dialog, item) {
         }),
       },
     );
+    if (!context.current()) return;
     await attentionApi(
-      `/api/attention/${encodeURIComponent(item.id)}/resolve`,
+      context.path(`/api/attention/${encodeURIComponent(item.id)}/resolve`),
       {
         method: "POST",
         body: JSON.stringify({
@@ -269,8 +340,9 @@ async function respondToWorkItemAttention(dialog, item) {
         }),
       },
     );
-    await loadAttention(dialog);
+    if (context.current()) await loadAttention(dialog);
   } catch (error) {
+    if (!context.current()) return;
     status.dataset.error = "true";
     status.textContent = `Work Item response failed: ${error.message}`;
   }
@@ -279,8 +351,14 @@ async function respondToWorkItemAttention(dialog, item) {
 async function refreshAttentionBadge() {
   const badge = document.querySelector("[data-attention-count]");
   if (!badge) return;
+  const projectId = activeAttentionProject();
+  const generation = ++attentionBadgeGeneration;
+  badge.textContent = '0';
+  badge.hidden = true;
+  if (projectId === '') return;
   try {
-    const payload = await attentionApi("/api/attention?limit=1&status=active");
+    const payload = await attentionApi(attentionPath("/api/attention?limit=1&status=active", projectId));
+    if (generation !== attentionBadgeGeneration || projectId !== activeAttentionProject()) return;
     const active = Number(payload.total ?? (payload.attention_items || []).length);
     badge.textContent = String(active);
     badge.hidden = active === 0;
@@ -312,6 +390,15 @@ function installAttentionKeyboardNavigation(dialog) {
 }
 
 async function loadAttention(dialog, { append = false } = {}) {
+  const projectId = activeAttentionProject();
+  if (dialog._attentionProject !== projectId) clearAttentionProject(dialog);
+  if (projectId === '') return;
+  dialog._attentionController?.abort();
+  const controller = new AbortController();
+  dialog._attentionController = controller;
+  const generation = dialog._attentionGeneration = (dialog._attentionGeneration || 0) + 1;
+  const current = () => !controller.signal.aborted && generation === dialog._attentionGeneration
+    && projectId === activeAttentionProject();
   const status = dialog.querySelector("[data-attention-status]");
   const list = dialog.querySelector("[data-attention-list]");
   const more = dialog.querySelector("[data-attention-more]");
@@ -320,7 +407,7 @@ async function loadAttention(dialog, { append = false } = {}) {
   try {
     const statusFilter = dialog.querySelector("[data-attention-filter]").value;
     const severityFilter = dialog.querySelector("[data-attention-severity]").value;
-    const projectFilter = dialog.querySelector("[data-attention-project]").value.trim();
+    const projectFilter = projectId ?? dialog.querySelector("[data-attention-project]").value.trim();
     const typeFilter = dialog.querySelector("[data-attention-type]").value.trim();
     const assigneeFilter = dialog.querySelector("[data-attention-assignee]").value.trim();
     const params = new URLSearchParams({ limit: String(ATTENTION_PAGE_SIZE) });
@@ -332,7 +419,8 @@ async function loadAttention(dialog, { append = false } = {}) {
     if (append && dialog._attentionNextCursor != null) {
       params.set("cursor", String(dialog._attentionNextCursor));
     }
-    const payload = await attentionApi(`/api/attention?${params}`);
+    const payload = await attentionApi(`/api/attention?${params}`, { signal: controller.signal });
+    if (!current()) return;
     const page = payload.attention_items || [];
     const existing = append ? (dialog._attentionItems || []) : [];
     const byId = new Map(existing.map((item) => [item.id, item]));
@@ -379,6 +467,7 @@ async function loadAttention(dialog, { append = false } = {}) {
     }
     await refreshAttentionBadge();
   } catch (error) {
+    if (!current() || error?.name === 'AbortError') return;
     status.dataset.error = "true";
     status.textContent = `Inbox unavailable: ${error.message}`;
     if (!append) list.innerHTML = '<div class="attention-empty">Canonical attention state could not be loaded.</div>';
@@ -450,6 +539,12 @@ function installAttention() {
   controls.insertBefore(button, controls.firstChild);
   document.body.appendChild(dialog);
   installAttentionKeyboardNavigation(dialog);
+  clearAttentionProject(dialog);
+  window.addEventListener('codex:project-changed', () => {
+    clearAttentionProject(dialog);
+    void refreshAttentionBadge();
+    if (dialog.open) void loadAttention(dialog);
+  });
 
   button.addEventListener("click", () => {
     dialog._attentionFocusRequested = true;
