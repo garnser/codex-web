@@ -148,6 +148,7 @@ class _FakeBackend:
                 "minimum_address_space_bytes": kwargs.get(
                     "minimum_address_space_bytes", 0
                 ),
+                "minimum_process_count": kwargs.get("minimum_process_count", 0),
             }
         )
         return process
@@ -649,6 +650,7 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
                 launch["minimum_address_space_bytes"],
                 2 * 1024**4,
             )
+            self.assertEqual(launch["minimum_process_count"], 4096)
             self.assertFalse(session.runtime.restart_on_timeout)
             self.assertEqual(launch["argv"][-1], "app-server")
             self.assertEqual(

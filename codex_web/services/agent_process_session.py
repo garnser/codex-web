@@ -24,6 +24,8 @@ from codex_web.services.control_plane_broker import (
     DeferredControlPlaneBrokerFactory,
 )
 from codex_web.services.agent_worker_session import (
+    AssignmentBoundAgentSessionError,
+    AssignmentBoundAgentSessionStaleError,
     AssignmentBoundAgentSessionStatus,
     AssignmentRuntimeCredentialGrant,
     AssignmentRuntimeCredentialProvider,
@@ -41,11 +43,14 @@ from codex_web.services.local_execution_worker import (
 )
 
 
-class AssignmentBoundAgentProcessSessionError(RuntimeError):
+class AssignmentBoundAgentProcessSessionError(AssignmentBoundAgentSessionError):
     pass
 
 
-class AssignmentBoundAgentProcessSessionStaleError(AssignmentBoundAgentProcessSessionError):
+class AssignmentBoundAgentProcessSessionStaleError(
+    AssignmentBoundAgentProcessSessionError,
+    AssignmentBoundAgentSessionStaleError,
+):
     pass
 
 
@@ -107,6 +112,7 @@ class AssignmentBoundAgentProcessSession:
         credential_provider: AssignmentRuntimeCredentialProvider,
         runtime_binding: ExecutionRuntimeBinding | None = None,
         minimum_address_space_bytes: int = 0,
+        minimum_process_count: int = 0,
         restart_runtime_on_timeout: bool | None = None,
         watchdog_interval_seconds: float = 1.0,
         egress_endpoints_resolver: Callable[[], tuple[AgentRuntimeModelEgressEndpoint, ...]] | None = None,
@@ -129,6 +135,7 @@ class AssignmentBoundAgentProcessSession:
         self.credential_provider = credential_provider
         self.runtime_binding = runtime_binding
         self.minimum_address_space_bytes = max(0, minimum_address_space_bytes)
+        self.minimum_process_count = max(0, minimum_process_count)
         self.restart_runtime_on_timeout = restart_runtime_on_timeout
         self._clock = clock
         self._monotonic = monotonic
@@ -431,6 +438,7 @@ class AssignmentBoundAgentProcessSession:
                 trusted_readonly_mounts=trusted_mounts,
                 trusted_writable_mounts=trusted_writable_mounts,
                 minimum_address_space_bytes=self.minimum_address_space_bytes,
+                minimum_process_count=self.minimum_process_count,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

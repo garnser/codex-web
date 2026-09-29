@@ -11,6 +11,14 @@ from codex_web.identity import AuthenticationActor
 T = TypeVar("T")
 
 
+class AssignmentBoundAgentSessionError(RuntimeError):
+    """Base error for provider-neutral assignment session failures."""
+
+
+class AssignmentBoundAgentSessionStaleError(AssignmentBoundAgentSessionError):
+    """The cached session no longer owns a valid assignment lease/fence."""
+
+
 def runtime_binding_identity_matches(
     assignment_binding: ExecutionRuntimeBinding | None,
     session_binding: ExecutionRuntimeBinding | None,

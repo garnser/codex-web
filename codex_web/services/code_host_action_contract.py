@@ -48,6 +48,7 @@ class AttestedBranch:
     workspace_id: str
     branch: str
     revision: str
+    expected_remote_revision: str | None = None
 
 
 class CodeHostActionContract:
@@ -397,6 +398,7 @@ class CodeHostActionContract:
             "execution_workspace_id",
             "branch",
             "head_revision",
+            "expected_remote_revision",
         }:
             raise ValueError("unsupported branch publication parameters")
         if self.workspaces is None:
@@ -410,6 +412,15 @@ class CodeHostActionContract:
         revision = str(request.parameters.get("head_revision") or "").strip()
         if not _REVISION.fullmatch(revision):
             raise ValueError("head_revision must be a full Git commit revision")
+        expected_remote_revision = str(
+            request.parameters.get("expected_remote_revision") or ""
+        ).strip() or None
+        if expected_remote_revision is not None and not _REVISION.fullmatch(
+            expected_remote_revision
+        ):
+            raise ValueError(
+                "expected_remote_revision must be a full Git commit revision"
+            )
         state = self.workspaces.store.load()
         workspace = next(
             (
@@ -445,8 +456,13 @@ class CodeHostActionContract:
         )
         if member is None:
             raise ValueError("repository is not writable in the execution workspace")
-        if member.branch_name != branch:
-            raise ValueError("requested branch does not match canonical workspace branch")
+        publishing_recovery_branch = member.branch_name != branch
+        if publishing_recovery_branch and (
+            not branch.startswith("codex/") or expected_remote_revision is None
+        ):
+            raise ValueError(
+                "a recovery publication requires a codex/ branch and its expected remote revision"
+            )
         root = getattr(self.workspaces.backend, "root", None)
         if root is None:
             raise ValueError("execution workspace backend cannot attest local paths")
@@ -461,7 +477,7 @@ class CodeHostActionContract:
             "--short",
             "HEAD",
         )
-        if actual_head != revision or actual_branch != branch:
+        if actual_head != revision or actual_branch != member.branch_name:
             raise ValueError("workspace Git head does not match requested publication")
         self.git(
             workspace_path,
@@ -470,6 +486,14 @@ class CodeHostActionContract:
             member.base_revision,
             revision,
         )
+        if publishing_recovery_branch:
+            self.git(
+                workspace_path,
+                "merge-base",
+                "--is-ancestor",
+                expected_remote_revision,
+                revision,
+            )
         if self.git(workspace_path, "status", "--porcelain"):
             raise ValueError("execution workspace has uncommitted changes")
         return AttestedBranch(
@@ -477,6 +501,7 @@ class CodeHostActionContract:
             workspace_id=workspace_id,
             branch=branch,
             revision=revision,
+            expected_remote_revision=expected_remote_revision,
         )
 
     @staticmethod

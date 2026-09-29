@@ -182,6 +182,12 @@ namespaces and starts the command in a new process session. POSIX rlimits constr
 processes and individual file size. The parent worker monitors total workspace
 disk usage and wall time and kills the complete process group on breach.
 
+Linux charges `RLIMIT_NPROC` to the host UID rather than the Bubblewrap PID
+namespace. Trusted interactive Codex sessions therefore use a finite local
+minimum above the shared service-account baseline so their isolated child tools
+can start Chromium threads; one-shot workers retain the assignment's exact
+process limit.
+
 `danger-full-access` is deliberately scoped to the assigned worker environment.
 The sandbox value is passed through to Codex so its inner command sandbox is
 disabled, while the outer Bubblewrap worker boundary remains authoritative. The
@@ -251,6 +257,11 @@ Initial reachability is limited to scoped Work Item operations:
 - acknowledgement;
 - retry;
 - reconciliation.
+
+Repository-write assignments may also reconcile only their own branch-publish
+ActionIntents. The broker requires the same execution, Project, requester and
+single writable repository and reuses `repository.branch.publish` authority;
+it does not expose a tenant-wide ActionIntent administration surface.
 
 Reachability is distinct from authority. Every request re-resolves the current
 worker service identity and evaluates the requested capability through the

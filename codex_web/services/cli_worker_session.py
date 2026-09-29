@@ -18,17 +18,22 @@ from codex_web.execution_workers import (
     WorkerLifecycle,
 )
 from codex_web.services.agent_worker_session import (
+    AssignmentBoundAgentSessionError,
+    AssignmentBoundAgentSessionStaleError,
     AssignmentBoundAgentSessionStatus,
     runtime_binding_identity_matches,
 )
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
 
 
-class AssignmentBoundCliSessionError(RuntimeError):
+class AssignmentBoundCliSessionError(AssignmentBoundAgentSessionError):
     pass
 
 
-class AssignmentBoundCliSessionStaleError(AssignmentBoundCliSessionError):
+class AssignmentBoundCliSessionStaleError(
+    AssignmentBoundCliSessionError,
+    AssignmentBoundAgentSessionStaleError,
+):
     pass
 
 
