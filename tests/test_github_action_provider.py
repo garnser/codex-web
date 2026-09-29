@@ -19,7 +19,11 @@ from codex_web.execution_workspaces import (
 from codex_web.resources import ResourceAlias, ResourceCreate, ResourceType
 from codex_web.secret_backends import LocalFileSecretBackend
 from codex_web.secrets import SecretCreate
-from codex_web.services.action_providers import ActionExecutionService, ActionProviderRegistry
+from codex_web.services.action_providers import (
+    ActionExecutionService,
+    ActionProviderRegistry,
+    ActionRequirementError,
+)
 from codex_web.services.github_action_provider import (
     CODE_HOST_ISSUE_COMMENT_ACTION_ID,
     CODE_HOST_ISSUE_CREATE_ACTION_ID,
@@ -278,9 +282,23 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.published_branches: list[tuple] = []
 
-        async def publish(path, repository, branch_name, revision, credential):
+        async def publish(
+            path,
+            repository,
+            branch_name,
+            revision,
+            credential,
+            expected_remote_revision,
+        ):
             self.published_branches.append(
-                (path, repository, branch_name, revision, credential)
+                (
+                    path,
+                    repository,
+                    branch_name,
+                    revision,
+                    credential,
+                    expected_remote_revision,
+                )
             )
             self.client.branches[branch_name] = revision
 
@@ -551,6 +569,59 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.output["head_revision"], progressed_head)
         self.assertEqual(self.published_branches[0][3], progressed_head)
+
+    async def test_branch_recovery_can_fast_forward_an_attested_codex_branch(self) -> None:
+        (self.workspace_path / "recovery.txt").write_text(
+            "recovered progress\n", encoding="utf-8"
+        )
+        subprocess.run(["git", "add", "recovery.txt"], cwd=self.workspace_path, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Recover existing change request"],
+            cwd=self.workspace_path,
+            check=True,
+            capture_output=True,
+        )
+        recovered_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.workspace_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        target_branch = "codex/existing-change-request"
+        request = self._request(
+            CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
+            {
+                "execution_workspace_id": "workspace-a",
+                "branch": target_branch,
+                "head_revision": recovered_head,
+                "expected_remote_revision": self.workspace_head,
+            },
+        )
+
+        result = await self.execution.execute(
+            self.binding.id, request, actor=self.actor
+        )
+
+        self.assertEqual(self.published_branches[0][2], target_branch)
+        self.assertEqual(self.published_branches[0][5], self.workspace_head)
+        self.assertEqual(result.output["head_revision"], recovered_head)
+
+    async def test_branch_recovery_requires_expected_remote_revision(self) -> None:
+        request = self._request(
+            CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
+            {
+                "execution_workspace_id": "workspace-a",
+                "branch": "codex/existing-change-request",
+                "head_revision": self.workspace_head,
+            },
+        )
+
+        with self.assertRaisesRegex(
+            ActionRequirementError,
+            "expected remote revision",
+        ):
+            await self.execution.execute(self.binding.id, request, actor=self.actor)
 
     async def test_branch_publication_rejects_dirty_or_mismatched_workspace(self) -> None:
         (self.workspace_path / "dirty.txt").write_text("dirty\n", encoding="utf-8")
