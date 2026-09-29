@@ -1,4 +1,4 @@
-import { request as apiRequest } from './api_client.js';
+import { definitionViewOperation } from './definition_view_scope.js';
 import {
   captureAuthority,
   newBinding,
@@ -177,7 +177,7 @@ function removeIndexed(type, index) {
   render();
 }
 
-async function saveDraft() {
+async function saveDraft(operation) {
   if (!state.source) {
     setStatus('Select a supported source revision first.');
     return;
@@ -188,7 +188,8 @@ async function saveDraft() {
     setStatus('A draft reason is required.');
     return;
   }
-  const response = await apiRequest('/api/definitions/drafts', {
+  const sourceId = state.source.record_id;
+  const response = await operation.request('/api/definitions/drafts', {
     method: 'POST',
     body: JSON.stringify({
       definition_id: state.source.definition_id,
@@ -208,7 +209,7 @@ async function saveDraft() {
   setStatus(
     'Created canonical draft r' + response.record.revision + ' · '
       + response.record.record_id + ' · checksum ' + response.record.checksum
-      + '. Source remains ' + state.source.record_id + '; nothing was activated.',
+      + '. Source remains ' + sourceId + '; nothing was activated.',
   );
   document.getElementById('refresh-definitions')?.click();
 }
@@ -270,7 +271,8 @@ function bind() {
   document.getElementById('definition-typed-add-binding')?.addEventListener('click', addBinding);
   document.getElementById('definition-typed-add-delegation')?.addEventListener('click', addDelegation);
   document.getElementById('definition-typed-save')?.addEventListener('click', () => {
-    saveDraft().catch((error) => setStatus('Typed draft failed: ' + error.message));
+    const operation = definitionViewOperation(setStatus);
+    saveDraft(operation).catch((error) => operation.status('Typed draft failed: ' + error.message));
   });
   document.getElementById('definition-typed-editor-host')?.addEventListener('click', handleEditorAction);
   render();
@@ -279,4 +281,9 @@ function bind() {
 window.addEventListener('codex:definition-registry-rendered', (event) => {
   populate(event.detail?.records || []);
 });
-window.addEventListener('DOMContentLoaded', bind);
+function install() {
+  bind();
+  window.dispatchEvent(new CustomEvent('codex:definition-registry-request'));
+}
+if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', install, { once: true });
+else install();

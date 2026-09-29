@@ -226,6 +226,24 @@ the controls disabled; it must not appear as a usable fallback profile. Manageme
 links retain the selected Project and deployment prefix. Catalog display and
 selection do not grant execution or provider authority.
 
+The Project Definitions browser requests `GET /api/definitions/records` with
+`project_id`. This context must resolve to a visible Project before listing;
+missing, blank and foreign contexts fail with the same not-found response.
+The result includes visible global, organization and workspace revisions plus
+that Project's revisions, excluding sibling Projects. Omitting the parameter
+retains the authenticated tenant-wide listing for explicitly shared administration.
+Scope/provenance remains visible on each revision; inherited definitions do not
+become Project-owned copies merely because they appear in a Project view.
+
+Project changes clear the browser's records, resolution/diff results and draft
+context immediately. Catalog reads and multi-step publication/approval flows
+fence late responses before rendering or issuing another mutation. A mutation
+already submitted to the canonical API remains server-owned and auditable; a UI
+context change neither cancels nor rolls it back. Late-loading editors request
+the current read projection through a local event instead of making another
+network request or inventing definition state. Generic draft fields use the
+shared unsaved-edit guard and default to the selected Project's scope.
+
 The profile's `control_plane_operations` field describes the operations an
 execution environment may need. It is **not operational authority** and it does
 not create a localhost/network bypass. Actual agent-to-control-plane access is

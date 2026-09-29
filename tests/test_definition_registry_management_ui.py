@@ -19,16 +19,17 @@ class DefinitionRegistryManagementUiTests(unittest.TestCase):
         transfer = (ROOT / "static" / "definition_registry_transfer.js").read_text(
             encoding="utf-8"
         )
-        javascript = "\n".join((management, approvals, transfer))
+        publication = (ROOT / "static" / "definition_publication_ui.js").read_text(encoding="utf-8")
+        javascript = "\n".join((management, approvals, transfer, publication))
 
         self.assertIn('id="definition-lifecycle-panel"', html)
         self.assertIn('id="definition-draft-payload"', html)
         self.assertIn('apiRequest("/api/identity/me")', javascript)
-        self.assertIn('apiRequest("/api/definitions/drafts"', javascript)
+        self.assertIn('request("/api/definitions/drafts"', javascript)
         self.assertIn("/validate", javascript)
         self.assertIn("/publish", javascript)
         self.assertIn("/quarantine", javascript)
-        self.assertIn('apiRequest("/api/definitions/rollback"', javascript)
+        self.assertIn('request("/api/definitions/rollback"', javascript)
         self.assertIn("expected_active_revision", javascript)
         self.assertIn("approval_metadata", javascript)
         self.assertIn("activeFor(record)", javascript)

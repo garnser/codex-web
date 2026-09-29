@@ -1,9 +1,44 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { timeText, scopeText, renderRecord } = await import(`${BASE}/static/definition_record_view.js`);
   let records = [];
   let projects = [];
   let schemas = [];
+  let generation = 0;
+  let controller = null;
+  function initialProjectId() {
+    const match = location.pathname.match(/\/projects\/([^/]+)(?:\/|$)/);
+    if (match) { try { return decodeURIComponent(match[1]); } catch { return ''; } }
+    return document.body?.dataset.projectId || document.body?.dataset.activeProject
+      || new URLSearchParams(location.search).get('project') || '';
+  }
+  let projectId = initialProjectId();
+  function current(requestGeneration, requestedProject) {
+    return requestGeneration === generation && requestedProject === projectId;
+  }
+  function publishCatalog(bootstrap = {}) {
+    window.dispatchEvent(new CustomEvent('codex:definition-registry-rendered', {
+      detail: { records, schemas, projects, bootstrap, projectId },
+    }));
+  }
+  function clearProject(nextProject) {
+    generation += 1;
+    controller?.abort();
+    projectId = nextProject;
+    records = [];
+    projects = [];
+    for (const id of ['definition-search', 'definition-kind-filter', 'definition-scope-filter', 'definition-lifecycle-filter']) {
+      const control = document.getElementById(id);
+      if (control) control.value = '';
+    }
+    for (const id of ['definition-registry-list', 'definition-bootstrap', 'definition-resolve-result', 'definition-diff-result']) {
+      document.getElementById(id)?.replaceChildren();
+    }
+    populateControls();
+    publishCatalog();
+    setStatus(projectId ? 'Loading definitions for this Project…' : 'Select a Project to inspect definitions.');
+  }
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -13,11 +48,6 @@
       .replaceAll('"', "&quot;");
   }
 
-  function timeText(value) {
-    if (!value) return "none";
-    const date = new Date(Number(value) * 1000);
-    return Number.isNaN(date.valueOf()) ? "unknown" : date.toLocaleString();
-  }
 
   function listText(values) {
     return values?.length ? values.map(escapeHtml).join(", ") : "none";
@@ -35,38 +65,9 @@
     return `${record.kind}::${record.definition_id}`;
   }
 
-  function scopeText(record) {
-    return record.scope_type === "global"
-      ? "global"
-      : `${record.scope_type}:${record.scope_id || "missing"}`;
-  }
 
-  function effectiveText(record) {
-    const from = record.effective_from ? timeText(record.effective_from) : "immediate";
-    const until = record.effective_until ? timeText(record.effective_until) : "no expiry";
-    return `${from} → ${until}`;
-  }
 
-  function compatibilityText(record) {
-    if (!record.min_engine_version && !record.max_engine_version) return "engine unrestricted";
-    return `${record.min_engine_version || "any"} ≤ engine ≤ ${record.max_engine_version || "any"}`;
-  }
 
-  function provenanceHtml(record) {
-    const links = [
-      record.supersedes_record_id ? `supersedes ${record.supersedes_record_id}` : null,
-      record.superseded_by_record_id ? `superseded by ${record.superseded_by_record_id}` : null,
-      record.rollback_of_record_id ? `rollback of ${record.rollback_of_record_id}` : null,
-    ].filter(Boolean);
-    const approvals = Object.entries(record.approval_metadata || {})
-      .map(([key, value]) => `${key}=${value}`)
-      .join(" · ");
-    return `<small>Created: ${escapeHtml(record.created_by)} · ${timeText(record.created_at)}${record.create_reason ? ` · reason: ${escapeHtml(record.create_reason)}` : ""}</small>
-      <small>Validated: ${escapeHtml(record.validated_by || "none")} · ${timeText(record.validated_at)} · Published: ${escapeHtml(record.published_by || "none")} · ${timeText(record.published_at)}</small>
-      ${record.publish_reason ? `<small>Publish/lifecycle reason: ${escapeHtml(record.publish_reason)}</small>` : ""}
-      ${approvals ? `<small>Approvals: ${escapeHtml(approvals)}</small>` : ""}
-      ${links.length ? `<small>Revision links: ${escapeHtml(links.join(" · "))}</small>` : ""}`;
-  }
 
   function matches(record) {
     const search = (document.getElementById("definition-search")?.value || "").trim().toLowerCase();
@@ -95,19 +96,6 @@
     return haystack.includes(search);
   }
 
-  function renderRecord(record) {
-    const payload = JSON.stringify(record.payload || {}, null, 2);
-    return `<details class="comm-entry" data-definition-record="${escapeHtml(record.record_id)}">
-      <summary><strong>${escapeHtml(record.kind)} · ${escapeHtml(record.definition_id)} · r${escapeHtml(record.revision)} · ${escapeHtml(record.lifecycle)}</strong></summary>
-      <small>Record: ${escapeHtml(record.record_id)} · Scope: ${escapeHtml(scopeText(record))} · Definition schema: ${escapeHtml(record.definition_schema_version)}</small>
-      <small>Checksum: ${escapeHtml(record.checksum)} · Effective: ${escapeHtml(effectiveText(record))} · Compatibility: ${escapeHtml(compatibilityText(record))}</small>
-      ${provenanceHtml(record)}
-      <pre>${escapeHtml(payload)}</pre>
-      <button type="button" class="ghost-button" data-definition-usage="${escapeHtml(record.record_id)}">Load usage/references</button>
-      <div id="definition-usage-${escapeHtml(record.record_id)}"></div>
-      <div data-definition-management-host="${escapeHtml(record.record_id)}"></div>
-    </details>`;
-  }
 
   function renderRecords() {
     const host = document.getElementById("definition-registry-list");
@@ -116,6 +104,7 @@
     host.innerHTML = visible.map(renderRecord).join("")
       || '<div class="comm-entry"><strong>No definition revisions match the current filters.</strong></div>';
     setStatus(`${visible.length} of ${records.length} visible definition revision(s). Definitions are versioned data; schema/interpreter/security engines remain code-owned.`);
+    publishCatalog();
   }
 
   function renderBootstrap(status) {
@@ -152,10 +141,12 @@
 
     const resolveProject = document.getElementById("definition-resolve-project");
     if (resolveProject) {
-      resolveProject.innerHTML = '<option value="">No project context</option>'
+      resolveProject.innerHTML = ''
         + projects.map((project) => (
           `<option value="${escapeHtml(project.id)}">${escapeHtml(project.name)} · ${escapeHtml(project.id)}</option>`
         )).join("");
+      resolveProject.value = projectId;
+      resolveProject.disabled = true;
     }
 
     const left = document.getElementById("definition-diff-left");
@@ -204,7 +195,9 @@
     if (separator < 1) return;
     const kind = raw.slice(0, separator);
     const definitionId = raw.slice(separator + 2);
-    const projectId = document.getElementById("definition-resolve-project")?.value || null;
+    if (!projectId) return;
+    const requestedProject = projectId;
+    const requestGeneration = generation;
     try {
       const response = await apiRequest("/api/definitions/resolve", {
         method: "POST",
@@ -214,8 +207,10 @@
           context: projectId ? { project_id: projectId } : {},
         }),
       });
+      if (!current(requestGeneration, requestedProject)) return;
       renderResolved(response.record);
     } catch (error) {
+      if (!current(requestGeneration, requestedProject)) return;
       const host = document.getElementById("definition-resolve-result");
       if (host) host.innerHTML = `<div class="comm-entry"><strong>Resolution failed</strong><small>${escapeHtml(error.message)}</small></div>`;
     }
@@ -250,51 +245,58 @@
     const right = document.getElementById("definition-diff-right")?.value || "";
     const host = document.getElementById("definition-diff-result");
     if (!left || !right || !host) return;
+    const requestedProject = projectId;
+    const requestGeneration = generation;
     try {
       const response = await apiRequest(
         `/api/definitions/diff?left=${encodeURIComponent(left)}&right=${encodeURIComponent(right)}`,
       );
+      if (!current(requestGeneration, requestedProject)) return;
       host.innerHTML = `<div class="comm-entry">
         <strong>${escapeHtml(response.kind)} · ${escapeHtml(response.definition_id)} · changed: ${response.changed ? "yes" : "no"}</strong>
         <small>Left r${escapeHtml(response.left?.revision)} · ${escapeHtml(response.left?.checksum)} · Right r${escapeHtml(response.right?.revision)} · ${escapeHtml(response.right?.checksum)}</small>
         <small>Changed paths: ${listText(response.changed_paths)}</small>
       </div>`;
     } catch (error) {
+      if (!current(requestGeneration, requestedProject)) return;
       host.innerHTML = `<div class="comm-entry"><strong>Diff unavailable</strong><small>${escapeHtml(error.message)}</small></div>`;
     }
   }
 
   async function refresh() {
+    if (!projectId) { clearProject(''); return; }
+    const requestedProject = projectId;
+    const requestGeneration = ++generation;
+    controller?.abort();
+    controller = new AbortController();
+    const options = { signal: controller.signal };
     setStatus("Loading canonical Definition Registry state...");
-    let projectError = null;
     try {
-      const [schemaResponse, bootstrap, recordResponse] = await Promise.all([
-        apiRequest("/api/definitions/schemas"),
-        apiRequest("/api/definitions/bootstrap"),
-        apiRequest("/api/definitions/records"),
-        apiRequest("/api/projects")
-          .then((value) => { projects = Array.isArray(value) ? value : (value.items || []); })
-          .catch((error) => { projects = []; projectError = error.message; }),
+      const [schemaResponse, bootstrap, recordResponse, project] = await Promise.all([
+        apiRequest("/api/definitions/schemas", options),
+        apiRequest("/api/definitions/bootstrap", options),
+        apiRequest(`/api/definitions/records?project_id=${encodeURIComponent(requestedProject)}`, options),
+        apiRequest(`/api/projects/${encodeURIComponent(requestedProject)}`, options),
       ]);
+      if (!current(requestGeneration, requestedProject)) return;
       schemas = schemaResponse.items || [];
       records = recordResponse.items || [];
-      renderBootstrap(bootstrap);
+      projects = [project];
+      const scopedBootstrap = { ...bootstrap, records: records.length,
+        active: records.filter(record => record.lifecycle === 'published').length };
+      renderBootstrap(scopedBootstrap);
       populateControls();
       renderRecords();
-      if (projectError) {
-        setStatus(`${records.length} visible definition revision(s). Project resolution labels unavailable: ${projectError}`);
-      }
-      window.dispatchEvent(new CustomEvent("codex:definition-registry-rendered", {
-        detail: { records, schemas, projects, bootstrap },
-      }));
+      publishCatalog(scopedBootstrap);
     } catch (error) {
+      if (!current(requestGeneration, requestedProject)) return;
+      clearProject(requestedProject);
       setStatus(`Definition Registry unavailable: ${error.message}`);
-      const host = document.getElementById("definition-registry-list");
-      if (host) host.innerHTML = "";
     }
   }
 
   function bind() {
+    projectId = initialProjectId();
     const panel = document.getElementById("developer-panel");
     document.getElementById("refresh-definitions")?.addEventListener("click", refresh);
     document.getElementById("refresh-developer")?.addEventListener("click", refresh);
@@ -312,8 +314,18 @@
     panel?.addEventListener("toggle", () => {
       if (panel.open) refresh().catch(console.error);
     });
-    if (panel?.open) refresh().catch(console.error);
+    const workspace = document.querySelector('[data-product-workspace-panel="definitions"]');
+    if (panel?.open || (workspace && !workspace.hidden)) refresh().catch(console.error);
+    window.addEventListener('codex:project-changed', event => {
+      const next = String(event.detail?.projectId || '').trim();
+      if (next === projectId) return;
+      clearProject(next);
+      const workspace = document.querySelector('[data-product-workspace-panel="definitions"]');
+      if (workspace && !workspace.hidden) refresh().catch(console.error);
+    });
   }
 
-  window.addEventListener("DOMContentLoaded", bind);
+  window.addEventListener('codex:definition-registry-request', () => publishCatalog());
+  if (document.readyState === 'loading') window.addEventListener("DOMContentLoaded", bind, { once: true });
+  else bind();
 })();

@@ -304,8 +304,11 @@ class FrontendBoundaryTests(unittest.TestCase):
                 self.assertLessEqual(source_path.stat().st_size, limit)
                 self.assertNotIn("fetch(", source_path.read_text())
         coordinator = (STATIC / "definition_typed_editor.js").read_text()
-        self.assertIn("api_client.js", coordinator)
-        self.assertIn("apiRequest", coordinator)
+        self.assertIn("definition_view_scope.js", coordinator)
+        scoped_client = (STATIC / "definition_view_scope.js").read_text()
+        self.assertIn("api_client.js", scoped_client)
+        self.assertLessEqual(len(scoped_client.encode()), 2_000)
+        self.assertNotIn("fetch(", scoped_client)
 
     def test_danger_full_access_is_explicitly_warned_in_execution_controls(self) -> None:
         html = (STATIC / "index.html").read_text(encoding="utf-8")

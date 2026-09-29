@@ -488,7 +488,7 @@ class DefinitionRegistryApiTests(unittest.TestCase):
         @staticmethod
         def get(project_id, scope):
             if (
-                project_id == "project-a"
+                project_id in {"project-a", "project-c"}
                 and scope.organization_id == "org-a"
                 and scope.workspace_id == "ws-a"
             ):
@@ -538,6 +538,32 @@ class DefinitionRegistryApiTests(unittest.TestCase):
         }
         payload.update(overrides)
         return payload
+
+    def test_project_record_list_includes_inherited_scopes_but_not_sibling_projects(self):
+        expected = {}
+        for scope, scope_id in [
+            ("global", None), ("organization", "org-a"), ("workspace", "ws-a"),
+            ("project", "project-a"), ("project", "project-c"),
+            ("organization", "org-b"), ("workspace", "ws-b"), ("project", "foreign"),
+        ]:
+            record = self.service.create_draft(DefinitionDraftCreate(**self._draft_payload(
+                scope_type=scope, scope_id=scope_id,
+            )))
+            expected[(scope, scope_id)] = record.record_id
+        inherited = {expected[("global", None)], expected[("organization", "org-a")], expected[("workspace", "ws-a")]}
+        for project in ("project-a", "project-c"):
+            response = self.client.get("/api/definitions/records", params={"project_id": project})
+            self.assertEqual(response.status_code, 200)
+            ids = {item["record_id"] for item in response.json()["items"]}
+            self.assertEqual(ids, inherited | {expected[("project", project)]})
+        tenant_list = self.client.get("/api/definitions/records").json()["items"]
+        self.assertEqual(len(tenant_list), 5)
+
+    def test_project_record_list_rejects_missing_or_foreign_context(self):
+        for project in ("", "missing", "foreign"):
+            response = self.client.get("/api/definitions/records", params={"project_id": project})
+            self.assertEqual(response.status_code, 404)
+            self.assertEqual(response.json(), {"detail": "Project not found"})
 
     def test_authenticated_actor_replaces_payload_actor_and_runtime_resolves_same_record(self) -> None:
         draft = self.client.post(

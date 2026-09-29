@@ -316,8 +316,11 @@ def build_definitions_router(
         definition_id: str | None = None,
         scope_type: DefinitionScope | None = None,
         scope_id: str | None = None,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         actor = authenticated(request)
+        if project_id is not None and not project_visible(project_id, actor):
+            raise HTTPException(status_code=404, detail="Project not found")
         try:
             items = visible_records(
                 actor,
@@ -326,6 +329,12 @@ def build_definitions_router(
                 scope_type=scope_type,
                 scope_id=scope_id,
             )
+            if project_id is not None:
+                items = [
+                    item for item in items
+                    if item.scope_type != DefinitionScope.PROJECT
+                    or item.scope_id == project_id
+                ]
         except (DefinitionError, ValueError) as exc:
             raise _error(exc) from exc
         return {

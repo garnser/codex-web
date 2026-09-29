@@ -3,6 +3,11 @@
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const approvalUi = await import(`${BASE}/static/definition_registry_approvals.js`);
   const transferUi = await import(`${BASE}/static/definition_registry_transfer.js`);
+  const { definitionViewOperation } = await import(`${BASE}/static/definition_view_scope.js`);
+  const { trackDirtyEditor } = await import(`${BASE}/static/dirty_editor.js`);
+  let draftEditor = null;
+  const publicationUi = await import(`${BASE}/static/definition_publication_ui.js`);
+  let activeProjectId = null;
   let actor = null;
   let records = [];
   let schemas = [];
@@ -32,6 +37,7 @@
 
   function canManage(scopeType) {
     if (!actor) return false;
+    if (activeProjectId !== null && !projects.some(project => project.id === activeProjectId)) return false;
     if (actor.principal_kind === "service") {
       return scopeType === "global"
         ? (actor.service_scopes || []).includes("definitions:global-admin")
@@ -153,23 +159,27 @@
   }
 
   async function createDraft() {
+    const operation = definitionViewOperation(setStatus);
+    const report = operation.status;
+    const request = operation.request;
+    const submitted = draftEditor?.snapshot();
     const definitionId = document.getElementById("definition-draft-id")?.value.trim() || "";
     const selected = schemaSelection();
     const scope = scopeSelection();
     const rawPayload = document.getElementById("definition-draft-payload")?.value || "";
     if (!definitionId || !selected || !rawPayload.trim()) {
-      setStatus("Definition ID, registered schema and JSON payload are required.");
+      report("Definition ID, registered schema and JSON payload are required.");
       return;
     }
     if (scope.scopeType === "project" && !scope.scopeId) {
-      setStatus("Choose a canonical project for project-scoped definitions.");
+      report("Choose a canonical project for project-scoped definitions.");
       return;
     }
     let payload;
     try {
       payload = JSON.parse(rawPayload);
     } catch (error) {
-      setStatus(`Definition payload must be valid JSON: ${error.message}`);
+      report(`Definition payload must be valid JSON: ${error.message}`);
       return;
     }
     const reason = document.getElementById("definition-draft-reason")?.value.trim() || null;
@@ -190,106 +200,45 @@
       `Create a new ${selected.kind} draft for ${definitionId} at ${scope.scopeType}${scope.scopeId ? `:${scope.scopeId}` : ""}? The server will validate the payload against the code-owned schema; this does not publish or activate it.`,
     )) return;
     try {
-      const response = await apiRequest("/api/definitions/drafts", {
+      const response = await request("/api/definitions/drafts", {
         method: "POST",
         body: JSON.stringify(body),
       });
-      setStatus(`Created draft r${response.record.revision} · ${response.record.record_id}. It is not active until published.`);
-      document.getElementById("refresh-definitions")?.click();
+      draftEditor?.markSaved(submitted);
+      report(`Created draft r${response.record.revision} · ${response.record.record_id}. It is not active until published.`);
+      operation.refresh();
     } catch (error) {
-      setStatus(`Draft creation failed: ${error.message}`);
+      report(`Draft creation failed: ${error.message}`);
     }
   }
 
   async function validateRecord(record) {
+    const operation = definitionViewOperation(setStatus);
+    const report = operation.status;
+    const request = operation.request;
     if (!window.confirm(
       `Validate ${record.kind}:${record.definition_id} r${record.revision} against code-owned schema ${record.definition_schema_version}? Validation does not activate the revision.`,
     )) return;
     try {
-      await apiRequest(
+      await request(
         `/api/definitions/${encodeURIComponent(record.record_id)}/validate`,
         { method: "POST", body: JSON.stringify({}) },
       );
-      setStatus(`Validated ${record.definition_id} r${record.revision}.`);
-      document.getElementById("refresh-definitions")?.click();
+      report(`Validated ${record.definition_id} r${record.revision}.`);
+      operation.refresh();
     } catch (error) {
-      setStatus(`Definition validation failed: ${error.message}`);
+      report(`Definition validation failed: ${error.message}`);
     }
   }
 
-  async function publishRecord(record) {
-    const active = activeFor(record);
-    let approvalContext;
-    try {
-      approvalContext = await approvalUi.publicationGate(record, actor);
-    } catch (error) {
-      setStatus(`Publication assessment failed: ${error.message}`);
-      return;
-    }
-    if (approvalContext.blockedMessage) {
-      setStatus(approvalContext.blockedMessage);
-      return;
-    }
-    const { assessment, independentApprovals } = approvalContext;
-    let impactCount = 0;
-    if (active) {
-      try {
-        const usage = await apiRequest(
-          `/api/definitions/${encodeURIComponent(active.record_id)}/usage`,
-        );
-        impactCount = Number(usage.count || 0);
-      } catch (_) {
-        impactCount = -1;
-      }
-    }
-    const reason = window.prompt(
-      `Publication reason for ${record.definition_id} r${record.revision}:`,
-      "",
-    );
-    if (reason === null) return;
-    const approvalRaw = window.prompt(
-      "Approval metadata as JSON object (optional):",
-      "{}",
-    );
-    if (approvalRaw === null) return;
-    let approvalMetadata;
-    try {
-      approvalMetadata = JSON.parse(approvalRaw || "{}");
-      if (!approvalMetadata || Array.isArray(approvalMetadata) || typeof approvalMetadata !== "object") throw new Error("object required");
-    } catch (error) {
-      setStatus(`Approval metadata must be a JSON object: ${error.message}`);
-      return;
-    }
-    const impact = active
-      ? ` Active r${active.revision} will be superseded; ${impactCount < 0 ? "usage impact could not be loaded" : `${impactCount} tenant-visible usage reference(s) currently point to it`}.`
-      : " No active revision currently occupies this canonical slot.";
-    const gate = approvalUi.publicationGateSummary(
-      assessment,
-      independentApprovals,
-    );
-    if (!window.confirm(
-      `Publish ${record.kind}:${record.definition_id} r${record.revision}?${impact}${gate} Publication changes canonical runtime definition resolution; code-owned security invariants are unchanged.`,
-    )) return;
-    try {
-      await apiRequest(
-        `/api/definitions/${encodeURIComponent(record.record_id)}/publish`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            reason: reason.trim() || null,
-            expected_active_revision: active?.revision ?? null,
-            approval_metadata: approvalMetadata,
-          }),
-        },
-      );
-      setStatus(`Published ${record.definition_id} r${record.revision}.`);
-      document.getElementById("refresh-definitions")?.click();
-    } catch (error) {
-      setStatus(`Definition publication failed: ${error.message}`);
-    }
+  function publishRecord(record) {
+    return publicationUi.publishRecord(record, { actor, active: activeFor(record), setStatus });
   }
 
   async function quarantineRecord(record) {
+    const operation = definitionViewOperation(setStatus);
+    const report = operation.status;
+    const request = operation.request;
     const reason = window.prompt(
       `Quarantine reason for ${record.definition_id} r${record.revision}:`,
       "",
@@ -299,18 +248,21 @@
       `Quarantine ${record.definition_id} r${record.revision}? If it is currently effective, canonical resolution will fail closed or fall back only according to remaining valid scoped definitions.`,
     )) return;
     try {
-      await apiRequest(
+      await request(
         `/api/definitions/${encodeURIComponent(record.record_id)}/quarantine`,
         { method: "POST", body: JSON.stringify({ reason: reason.trim() }) },
       );
-      setStatus(`Quarantined ${record.definition_id} r${record.revision}.`);
-      document.getElementById("refresh-definitions")?.click();
+      report(`Quarantined ${record.definition_id} r${record.revision}.`);
+      operation.refresh();
     } catch (error) {
-      setStatus(`Definition quarantine failed: ${error.message}`);
+      report(`Definition quarantine failed: ${error.message}`);
     }
   }
 
   async function rollbackRecord(record) {
+    const operation = definitionViewOperation(setStatus);
+    const report = operation.status;
+    const request = operation.request;
     const active = activeFor(record);
     if (!active || active.record_id === record.record_id) return;
     const reason = window.prompt(
@@ -322,7 +274,7 @@
       `Rollback ${record.kind}:${record.definition_id} from active r${active.revision} to the payload of r${record.revision}? The server creates a new immutable revision and publishes it with optimistic active-revision protection; historical records are preserved.`,
     )) return;
     try {
-      const response = await apiRequest("/api/definitions/rollback", {
+      const response = await request("/api/definitions/rollback", {
         method: "POST",
         body: JSON.stringify({
           definition_id: record.definition_id,
@@ -334,22 +286,25 @@
           expected_active_revision: active.revision,
         }),
       });
-      setStatus(`Rollback published as new r${response.record.revision}; target history r${record.revision} remains immutable.`);
-      document.getElementById("refresh-definitions")?.click();
+      report(`Rollback published as new r${response.record.revision}; target history r${record.revision} remains immutable.`);
+      operation.refresh();
     } catch (error) {
       const recovery = approvalUi.rollbackApprovalRecovery(error);
       if (recovery) {
-        setStatus(recovery.message);
+        report(recovery.message);
         if (recovery.refresh) {
-          document.getElementById("refresh-definitions")?.click();
+          operation.refresh();
         }
       } else {
-        setStatus(`Definition rollback failed: ${error.message}`);
+        report(`Definition rollback failed: ${error.message}`);
       }
     }
   }
 
   async function mutate(button) {
+    const operation = definitionViewOperation(setStatus);
+    const report = operation.status;
+    const request = operation.request;
     const record = records.find((item) => item.record_id === button.dataset.recordId);
     if (!record) return;
     const action = button.dataset.definitionAction;
@@ -358,13 +313,13 @@
       if (action === "validate") await validateRecord(record);
       else if (action === "approve") {
         try {
-          const message = await approvalUi.recordPublicationApproval(record, actor);
+          const message = await approvalUi.recordPublicationApproval(record, actor, operation.current);
           if (message) {
-            setStatus(message);
-            document.getElementById("refresh-definitions")?.click();
+            report(message);
+            operation.refresh();
           }
         } catch (error) {
-          setStatus(`Publication approval failed: ${error.message}`);
+          report(`Publication approval failed: ${error.message}`);
         }
       }
       else if (action === "publish") await publishRecord(record);
@@ -376,10 +331,26 @@
   }
 
   function hydrate(detail) {
+    const wasDirty = draftEditor?.dirty();
+    const changed = detail.projectId !== undefined && detail.projectId !== activeProjectId;
+    if (changed) {
+      activeProjectId = detail.projectId;
+      const scope = document.getElementById('definition-draft-scope');
+      if (scope && activeProjectId) scope.value = 'project';
+      document.querySelectorAll('[id^="definition-draft-"]').forEach(field => {
+        if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) field.value = '';
+      });
+      const transfer = document.getElementById('definition-transfer-document');
+      if (transfer) transfer.value = '';
+      setStatus('Project context changed. Draft fields cleared; existing canonical drafts remain available.');
+    }
     records = detail.records || [];
     schemas = detail.schemas || [];
     projects = detail.projects || [];
     populateDraftControls();
+    const project = document.getElementById('definition-draft-project');
+    if (project && activeProjectId) project.value = activeProjectId;
+    if (changed || !wasDirty) draftEditor?.markSaved();
     renderAssurance();
     hydrateHosts();
   }
@@ -399,6 +370,8 @@
   }
 
   function bind() {
+    const draft = document.querySelector('#definition-lifecycle-panel > .route-test');
+    if (draft) draftEditor = trackDirtyEditor(draft, { label: 'Definition draft' });
     document.getElementById("definition-draft-scope")?.addEventListener("change", updateDraftScopeState);
     document.getElementById("create-definition-draft")?.addEventListener("click", () => createDraft().catch(console.error));
     document.getElementById("export-definitions")?.addEventListener("click", () => (
@@ -416,8 +389,10 @@
       if (button) mutate(button).catch(console.error);
     });
     loadActor().catch(console.error);
+    window.dispatchEvent(new CustomEvent('codex:definition-registry-request'));
   }
 
   window.addEventListener("codex:definition-registry-rendered", (event) => hydrate(event.detail || {}));
-  window.addEventListener("DOMContentLoaded", bind);
+  if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", bind, { once: true });
+  else bind();
 })();
