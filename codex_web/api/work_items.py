@@ -54,8 +54,12 @@ def build_work_items_router(
         if (
             state.organization_id != scope.organization_id
             or state.workspace_id != scope.workspace_id
+            or (
+                "project_id" in request.query_params
+                and request.query_params["project_id"] != state.project_id
+            )
         ):
-            # Do not reveal cross-tenant object existence.
+            # Do not reveal an object outside the caller's tenant or requested Project.
             raise HTTPException(status_code=404, detail="Work item not found")
 
     def require_project_scope(project_id: str, request: Request) -> None:

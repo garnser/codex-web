@@ -44,7 +44,7 @@ async function installWorkItemApis(page) {
     contentType: 'application/json',
     body: JSON.stringify({ active: [], items: [], nextCursor: null, hasMore: false }),
   }));
-  await page.route('**/api/work-items/**/operator', (route) => route.fulfill({
+  await page.route('**/api/work-items/**/operator?*', (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({
       item: {
