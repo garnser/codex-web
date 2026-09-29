@@ -1,6 +1,7 @@
 import { request } from './api_client.js';
 
 const state = {
+  workspaceWide: false,
   projectId: '',
   generation: 0,
   listController: null,
@@ -40,7 +41,14 @@ function activeProjectId() {
 }
 
 function projectPath(path, projectId) {
+  if (projectId === null) return path;
   return `${path}${path.includes('?') ? '&' : '?'}project_id=${encodeURIComponent(projectId)}`;
+}
+
+function activeMetricScope() {
+  // Only the explicit company KPI drill-down selects the workspace-wide view.
+  // This is presentation scope; canonical API authentication still applies.
+  return state.workspaceWide ? null : activeProjectId();
 }
 
 function clearProjectState(projectId) {
@@ -55,7 +63,13 @@ function clearProjectState(projectId) {
   state.snapshots = [];
   renderList();
   const host = document.querySelector('.metric-detail');
-  if (host) host.innerHTML = projectId
+  const scope = document.querySelector('.metrics-scope');
+  if (scope) scope.textContent = projectId === null
+    ? 'Workspace-wide · company KPI drill-down'
+    : projectId ? `Project: ${projectId}` : 'No Project selected';
+  if (host) host.innerHTML = projectId === null
+    ? '<div class="metric-empty">Loading workspace metrics…</div>'
+    : projectId
     ? '<div class="metric-empty">Loading metrics for this Project…</div>'
     : '<div class="metric-empty">Select a Project to view metrics.</div>';
 }
@@ -85,6 +99,7 @@ function ensureShell() {
         <div>
           <h2>Metric / KPI explorer</h2>
           <p>Canonical definitions and observations, with deterministic freshness, aggregation and provenance.</p>
+          <p class="metrics-scope" aria-live="polite"></p>
         </div>
         <button type="button" class="icon-button metrics-close" aria-label="Close">×</button>
       </header>
@@ -102,6 +117,7 @@ function ensureShell() {
   document.body.appendChild(dialog);
 
   button.addEventListener('click', async () => {
+    state.workspaceWide = false;
     dialog.showModal();
     await refreshAll();
   });
@@ -117,9 +133,9 @@ function setStatus(message, isError = false) {
 }
 
 async function refreshAll() {
-  const projectId = activeProjectId();
+  const projectId = activeMetricScope();
   if (projectId !== state.projectId) clearProjectState(projectId);
-  if (!projectId) {
+  if (projectId === '') {
     clearProjectState('');
     setStatus('Select a Project');
     return false;
@@ -130,7 +146,7 @@ async function refreshAll() {
   state.listController = controller;
   const generation = ++state.generation;
   const current = () => !controller.signal.aborted
-    && generation === state.generation && projectId === activeProjectId();
+    && generation === state.generation && projectId === activeMetricScope();
   setStatus('Loading…');
   try {
     const payload = await request(projectPath('/api/metrics', projectId), { signal: controller.signal });
@@ -143,7 +159,9 @@ async function refreshAll() {
     if (state.selectedMetricId) {
       await loadMetric(state.selectedMetricId);
     } else {
-      document.querySelector('.metric-detail').innerHTML = '<div class="metric-empty">No metric definitions exist in this Project.</div>';
+      document.querySelector('.metric-detail').innerHTML = projectId === null
+        ? '<div class="metric-empty">No metric definitions exist in this workspace.</div>'
+        : '<div class="metric-empty">No metric definitions exist in this Project.</div>';
     }
     if (!current()) return false;
     setStatus('Up to date');
@@ -185,14 +203,14 @@ function renderList() {
 async function loadMetric(metricId) {
   const host = document.querySelector('.metric-detail');
   const projectId = state.projectId;
-  if (!host || !projectId || projectId !== activeProjectId()) return;
+  if (!host || projectId === '' || projectId !== activeMetricScope()) return;
   state.detailController?.abort();
   const controller = new AbortController();
   state.detailController = controller;
   const generation = state.generation;
   const current = () => !controller.signal.aborted
     && generation === state.generation && metricId === state.selectedMetricId
-    && projectId === activeProjectId();
+    && projectId === activeMetricScope();
   host.innerHTML = '<div class="metric-empty">Loading metric detail…</div>';
   try {
     const encoded = encodeURIComponent(metricId);
@@ -301,6 +319,7 @@ window.addEventListener('codex-open-metric', async (event) => {
   const metricId = event?.detail?.metricId || '';
   const dialog = document.querySelector('#metrics-dialog');
   if (!dialog || !metricId) return;
+  state.workspaceWide = event?.detail?.scope === 'workspace';
   if (!dialog.open) dialog.showModal();
   if (!(await refreshAll())) return;
   if (state.metrics.some((row) => row.definition?.id === metricId)) {
@@ -311,6 +330,7 @@ window.addEventListener('codex-open-metric', async (event) => {
 });
 
 window.addEventListener('codex:project-changed', () => {
+  state.workspaceWide = false;
   clearProjectState(activeProjectId());
   setStatus(state.projectId ? 'Project changed' : 'Select a Project');
   if (document.querySelector('#metrics-dialog')?.open && state.projectId) void refreshAll();

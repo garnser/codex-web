@@ -61,3 +61,9 @@ clear selection, observations, and snapshots immediately and abort pending reads
 generation and selection checks also reject late responses. With no selected
 Project, it clears the view and makes no metric request. Workspace-wide metrics
 are not implicitly mixed into an empty Project's results.
+
+The company-wide Business KPI view explicitly opens a workspace-wide Metric
+drill-down, labeled as such in the explorer. This preserves company KPI
+inspection without treating an absent Project as a request for global data.
+Opening the normal Metrics launcher or switching Project exits this mode and
+restores Project-scoped reads. API tenant and mutation authority remain unchanged.
