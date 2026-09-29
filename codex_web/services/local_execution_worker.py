@@ -64,6 +64,7 @@ class LocalExecutionWorkerRuntime:
         artifact_evidence: ArtifactEvidenceService | None = None,
         codex_auth_delegation: CodexAuthDelegationService | None = None,
         trusted_local_codex_delegation: Any | None = None,
+        python_tool_root: Path | None = None,
         playwright_tool_root: Path | None = None,
         playwright_browser_root: Path | None = None,
         heartbeat_interval_seconds: float = 30.0,
@@ -78,6 +79,7 @@ class LocalExecutionWorkerRuntime:
         self.artifact_evidence = artifact_evidence
         self.codex_auth_delegation = codex_auth_delegation
         self.trusted_local_codex_delegation = trusted_local_codex_delegation
+        self.python_tool_root = python_tool_root
         self.playwright_tool_root = playwright_tool_root
         self.playwright_browser_root = playwright_browser_root
         self.heartbeat_interval_seconds = max(5.0, heartbeat_interval_seconds)
@@ -86,6 +88,9 @@ class LocalExecutionWorkerRuntime:
     def runtime_tool_mounts(self) -> tuple[tuple[Path, Path], ...]:
         """Return optional, read-only validation tools exposed to workers."""
         mounts: list[tuple[Path, Path]] = []
+        if self.python_tool_root is not None:
+            source = self.python_tool_root.resolve(strict=True)
+            mounts.append((source, Path("/opt/codex-python")))
         if self.playwright_tool_root is not None:
             source = self.playwright_tool_root.resolve(strict=True)
             mounts.append((source, Path("/opt/codex-playwright")))
