@@ -30,6 +30,16 @@ def revision(path: Path, value: str = "HEAD") -> str:
     return git(path, "rev-parse", "--verify", value).stdout.strip()
 
 
+def version_matches(observed: str, expected: str) -> bool:
+    """Accept an unambiguous abbreviated SHA emitted by static assets."""
+    normalized = observed.strip().lower()
+    return (
+        len(normalized) >= 7
+        and all(character in "0123456789abcdef" for character in normalized)
+        and expected.lower().startswith(normalized)
+    )
+
+
 def health(expected: str) -> bool:
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
@@ -43,7 +53,7 @@ def health(expected: str) -> bool:
             observed = str(version.get("gitRevision") or version.get("git_revision") or "")
             if observed in {"", "unknown"}:
                 observed = str(version.get("staticVersion") or "").split("-", 1)[0]
-            if live and ready and (not observed or observed.startswith(expected[:12])):
+            if live and ready and version_matches(observed, expected):
                 return True
         except Exception:
             pass
