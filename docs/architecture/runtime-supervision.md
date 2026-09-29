@@ -36,6 +36,24 @@ On shutdown it:
 
 Recovery scheduling is idempotent inside the configured cooldown window. Continuity checks capture the expected owner/handoff identity when scheduled and abort if the canonical work item changes before the check runs.
 
+### Active-turn restart recovery
+
+An `ActiveThreadTurn` is durable evidence that a turn was in progress, not
+proof that its process-local task survived an application restart. On startup,
+local and single-node deployments therefore submit both fresh ownerless turns
+and turns whose persisted local assignment still appears live to the bounded
+resume path. Replicated deployments continue to respect shared assignment and
+worker leases; one application instance must not infer that another instance's
+live owner disappeared.
+
+Before starting the replacement turn, recovery releases the interrupted
+active-turn marker so the normal turn-start admission check does not reject its
+own recovery attempt. A successful start installs a new canonical marker. If
+start fails before that happens, recovery restores the interrupted marker with
+its incremented attempt count and last-attempt timestamp. Startup retries are
+bounded to three attempts and remain observable through the active-turn
+recovery records and runtime events.
+
 ## Steering handoffs
 
 Steering a durable queued turn into an active Thread is a fenced handoff. The

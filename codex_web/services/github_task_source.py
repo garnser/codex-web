@@ -23,7 +23,7 @@ class GitHubTaskSource:
         TaskSourceCapability.CREATE, TaskSourceCapability.DISCOVERY,
         TaskSourceCapability.READ, TaskSourceCapability.EVENTS,
         TaskSourceCapability.OWNER_WRITE, TaskSourceCapability.STATE_WRITE,
-        TaskSourceCapability.COMMENTS,
+        TaskSourceCapability.COMMENTS, TaskSourceCapability.DISCUSSIONS,
     }))
 
     def __init__(self, api_base: str, token: str, *, client: GitHubClient | None = None) -> None:
@@ -98,6 +98,27 @@ class GitHubTaskSource:
         if identity.source_type.casefold() != self.source_type or identity.source_instance.rstrip("/") != self.source_instance:
             raise ValueError("Task-source identity does not belong to GitHub adapter")
         return self._snapshot(await self.client.issue(self.api_base, repo, number, token=self.token), repo=repo)
+
+    async def discussion(self, identity: TaskSourceIdentity) -> list[dict[str, Any]]:
+        """Return a bounded, provider-neutral issue discussion projection."""
+        repo, number = self._split(identity.external_id)
+        if identity.source_type.casefold() != self.source_type or identity.source_instance.rstrip("/") != self.source_instance:
+            raise ValueError("Task-source identity does not belong to GitHub adapter")
+        comments = await self.client.list_issue_comments(
+            self.api_base, repo, number, token=self.token
+        )
+        return [
+            {
+                "external_id": str(item.get("id") or ""),
+                "body_text": str(item.get("body") or ""),
+                "author": str((item.get("user") or {}).get("login") or ""),
+                "created_at": item.get("created_at"),
+                "updated_at": item.get("updated_at"),
+                "url": item.get("html_url"),
+            }
+            for item in comments
+            if item.get("id") is not None
+        ]
 
     async def normalize_event(self, payload: object) -> TaskSourceEvent | None:
         if not isinstance(payload, dict): return None

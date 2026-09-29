@@ -1297,6 +1297,14 @@ class ThreadService:
         return response
 
     async def interrupt(self, thread_id: str) -> dict[str, Any]:
+        active = (
+            self.active_turn_getter(thread_id)
+            if self.active_turn_getter is not None
+            else None
+        )
         return (
-            await self._codex_adapter(thread_id).interrupt(thread_id)
+            await self._codex_adapter(thread_id).interrupt(
+                thread_id,
+                getattr(active, "turn_id", None),
+            )
         ).payload

@@ -11,7 +11,13 @@ from fastapi import FastAPI, HTTPException
 
 from codex_web.agent_runtime import AgentRuntimeResult
 from codex_web.execution_workers import ExecutionRuntimeBinding
-from codex_web.models import Project, ThreadRunSettings, TurnCreate, WorkItemState
+from codex_web.models import (
+    ActiveThreadTurn,
+    Project,
+    ThreadRunSettings,
+    TurnCreate,
+    WorkItemState,
+)
 from codex_web.resources import RepositoryTargetSource
 from codex_web.runtime.execution import (
     TurnExecutionService,
@@ -19,6 +25,9 @@ from codex_web.runtime.execution import (
     install_turn_execution_service,
 )
 from codex_web.services.agent_routing import AgentRoutingError
+from codex_web.services.agent_worker_session import (
+    AssignmentBoundAgentSessionStaleError,
+)
 from codex_web.services.turns import TurnService
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingNotFoundError,
@@ -350,6 +359,62 @@ class TurnExecutionQueueTests(unittest.TestCase):
         self.assertEqual(host._thread_queue_depth("t1"), 1)
 
 
+class TurnExecutionRestartRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _active() -> ActiveThreadTurn:
+        return ActiveThreadTurn(
+            thread_id="t1",
+            project_id="p1",
+            source="web",
+            started_at=100.0,
+            updated_at=100.0,
+        )
+
+    async def test_resume_releases_interrupted_marker_before_start(self) -> None:
+        host = _Host()
+        host.active["t1"] = self._active()
+        project = Project(id="p1", name="Project", path="/workspace/project")
+        host._project = lambda project_id: project
+        service = TurnExecutionService(host)
+
+        async def start(thread_id, **kwargs):
+            self.assertFalse(service.thread_is_active(thread_id))
+            service.mark_thread_active(
+                thread_id,
+                turn_id="replacement-turn",
+                project_id="p1",
+                source=kwargs["source"],
+            )
+            return {"turn": {"id": "replacement-turn"}}
+
+        service.start_thread_turn_now = start
+
+        await service.resume_active_threads_after_startup({"t1"})
+
+        self.assertEqual(host.active["t1"].turn_id, "replacement-turn")
+        self.assertEqual(host.active["t1"].resume_attempts, 0)
+        self.assertEqual(host.events[-1]["type"], "active_thread_resumed")
+
+    async def test_failed_resume_restores_marker_with_retry_count(self) -> None:
+        host = _Host()
+        host.active["t1"] = self._active()
+        project = Project(id="p1", name="Project", path="/workspace/project")
+        host._project = lambda project_id: project
+        service = TurnExecutionService(host)
+
+        async def fail(thread_id, **kwargs):
+            self.assertFalse(service.thread_is_active(thread_id))
+            raise RuntimeError("provider unavailable")
+
+        service.start_thread_turn_now = fail
+
+        await service.resume_active_threads_after_startup({"t1"})
+
+        restored = host.active["t1"]
+        self.assertEqual(restored.resume_attempts, 1)
+        self.assertIsNotNone(restored.last_resume_at)
+        self.assertEqual(host.events[-1]["type"], "active_thread_resume_failed")
+
 class _BindingService:
     def __init__(self) -> None:
         self.calls = []
@@ -406,6 +471,11 @@ class _Session:
         if method == "turn/start":
             return {"turn": {"id": "turn-1"}}
         return {"ok": True}
+
+
+class _StaleSession(_Session):
+    def validate_current(self):
+        raise AssignmentBoundAgentSessionStaleError("expired lease")
 
 
 class _AlternateTurnAdapter:
@@ -476,9 +546,12 @@ class _SessionManager:
         self.session = _Session()
         self.started = []
         self.completed = []
+        self.stopped = []
 
     async def start(self, assignment_id):
         self.started.append(assignment_id)
+        if self.session is None:
+            self.session = _Session()
         return self.session
 
     def get(self, assignment_id):
@@ -487,6 +560,10 @@ class _SessionManager:
     async def complete(self, assignment_id, **kwargs):
         self.completed.append((assignment_id, kwargs))
         return SimpleNamespace(id=assignment_id)
+
+    async def stop(self, assignment_id):
+        self.stopped.append(assignment_id)
+        self.session = None
 
 
 class _BootstrapBindings:
@@ -1068,6 +1145,50 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             "notLoaded",
         )
         self.assertTrue(response["thread"]["readTimedOut"])
+        host.codex.request.assert_not_awaited()
+
+    async def test_stale_bootstrap_session_read_degrades_instead_of_500(self) -> None:
+        host, _binding, sessions, service = self._service(
+            bootstrap_thread_id="t1"
+        )
+        sessions.session = _StaleSession()
+
+        response = await service.request_for_thread(
+            "t1",
+            "thread/read",
+            {"threadId": "t1"},
+        )
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["thread"]["status"]["type"], "notLoaded")
+        host.codex.request.assert_not_awaited()
+
+    async def test_turn_evicts_stale_bootstrap_session_before_reacquiring(self) -> None:
+        host, binding, sessions, service = self._service(
+            bootstrap_thread_id="t1"
+        )
+        sessions.session = _StaleSession()
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        response = await service.start_thread_turn_now(
+            "t1",
+            project=project,
+            message="continue after expiry",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            source="web",
+        )
+
+        self.assertEqual(response["turn"]["id"], "turn-1")
+        self.assertEqual(sessions.stopped, ["assignment-1"])
+        self.assertEqual(sessions.started, ["assignment-1"])
+        self.assertEqual(binding.calls, [])
         host.codex.request.assert_not_awaited()
 
     async def test_turn_on_bootstrap_thread_reuses_original_assignment_and_session(self) -> None:

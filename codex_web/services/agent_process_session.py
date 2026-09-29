@@ -24,6 +24,8 @@ from codex_web.services.control_plane_broker import (
     DeferredControlPlaneBrokerFactory,
 )
 from codex_web.services.agent_worker_session import (
+    AssignmentBoundAgentSessionError,
+    AssignmentBoundAgentSessionStaleError,
     AssignmentBoundAgentSessionStatus,
     AssignmentRuntimeCredentialGrant,
     AssignmentRuntimeCredentialProvider,
@@ -41,11 +43,14 @@ from codex_web.services.local_execution_worker import (
 )
 
 
-class AssignmentBoundAgentProcessSessionError(RuntimeError):
+class AssignmentBoundAgentProcessSessionError(AssignmentBoundAgentSessionError):
     pass
 
 
-class AssignmentBoundAgentProcessSessionStaleError(AssignmentBoundAgentProcessSessionError):
+class AssignmentBoundAgentProcessSessionStaleError(
+    AssignmentBoundAgentProcessSessionError,
+    AssignmentBoundAgentSessionStaleError,
+):
     pass
 
 
@@ -333,6 +338,16 @@ class AssignmentBoundAgentProcessSession:
                 environment["CODEX_READONLY_REPOSITORIES"] = ":".join(
                     str(destination)
                     for _source, destination in trusted_mounts
+                )
+            runtime_tool_mount_resolver = getattr(
+                self.local_worker,
+                "runtime_tool_mounts",
+                None,
+            )
+            if callable(runtime_tool_mount_resolver):
+                trusted_mounts = _merge_trusted_mounts(
+                    trusted_mounts,
+                    tuple(runtime_tool_mount_resolver()),
                 )
             writable_destinations = [
                 Path(destination)

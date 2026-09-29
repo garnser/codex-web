@@ -271,6 +271,7 @@ class StaleActiveTurnRecoveryService:
         schedule_queue_drain,
         append_event,
         resume_active_threads=None,
+        resume_live_on_startup: bool = False,
         backup_directory: Path | None = None,
         clock=time.time,
     ) -> None:
@@ -281,6 +282,7 @@ class StaleActiveTurnRecoveryService:
         self.schedule_queue_drain = schedule_queue_drain
         self.append_event = append_event
         self.resume_active_threads = resume_active_threads
+        self.resume_live_on_startup = resume_live_on_startup
         self.backup_directory = backup_directory
         self.clock = clock
         self._mutation_lock = threading.RLock()
@@ -975,7 +977,13 @@ class StaleActiveTurnRecoveryService:
                 counts[inspection.outcome] += 1
                 if (
                     reason == "startup"
-                    and inspection.outcome == "fresh"
+                    and (
+                        inspection.outcome == "fresh"
+                        or (
+                            self.resume_live_on_startup
+                            and inspection.outcome == "live"
+                        )
+                    )
                     and active.resume_attempts < 3
                 ):
                     resume.append(active.thread_id)
