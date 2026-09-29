@@ -42,7 +42,10 @@ from codex_web.services.provider_capacity import (
 )
 from codex_web.services.project_runtime import assignment_sandbox_policy
 from codex_web.services.replicated_ownership import ReplicatedOwnershipService
-from codex_web.services.agent_worker_session import AssignmentBoundAgentSessionManager
+from codex_web.services.agent_worker_session import (
+    AssignmentBoundAgentSessionManager,
+    AssignmentBoundAgentSessionStaleError,
+)
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingNotFoundError,
     ThreadBootstrapBindingService,
@@ -882,9 +885,13 @@ class TurnExecutionService:
             # the next turn re-acquires or supersedes the binding. The
             # ambient runtime must never be used for a bound thread.
             return ("degraded", None, None)
-        assignment = session.validate_current()
-        return manager, session, assignment
-        assignment = session.validate_current()
+        try:
+            assignment = session.validate_current()
+        except AssignmentBoundAgentSessionStaleError:
+            # A live provider process can outlast its canonical worker lease.
+            # Treat that cache entry exactly like a missing session: reads
+            # degrade safely and the next turn supersedes the stale binding.
+            return ("degraded", None, None)
         return manager, session, assignment
 
     async def request_for_thread(
@@ -1475,6 +1482,22 @@ class TurnExecutionService:
                         assignment,
                         "runtime_binding",
                         None,
+                    )
+                except AssignmentBoundAgentSessionStaleError:
+                    # Evict a process whose canonical lease/fence expired so
+                    # the normal bootstrap-healing path can bind a fresh
+                    # assignment instead of surfacing an internal error.
+                    if session_manager is not None:
+                        with contextlib.suppress(Exception):
+                            await session_manager.stop(bootstrap.assignment_id)
+                    session = None
+                    assignment = self._assignment_record(
+                        bootstrap.assignment_id
+                    )
+                    runtime_binding = (
+                        getattr(assignment, "runtime_binding", None)
+                        if assignment is not None
+                        else None
                     )
                 except HTTPException:
                     assignment = self._assignment_record(
