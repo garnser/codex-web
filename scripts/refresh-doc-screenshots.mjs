@@ -74,13 +74,20 @@ try {
       await page.evaluate((eventName) => {
         window.dispatchEvent(new CustomEvent(eventName));
       }, capture.open_event);
-      await page.waitForTimeout(50);
     } else if (capture.open_selector) {
       const trigger = page.locator(capture.open_selector);
       await trigger.waitFor({ state: "visible" });
       await trigger.click();
-      await page.waitForTimeout(50);
     }
+    // Opening a fixture can start lazy imports after navigation has settled.
+    // Wait for its declared content before inspecting or capturing the page.
+    await page.waitForFunction(
+      (landmarks) => landmarks.every((landmark) => document.body.innerText.includes(landmark)),
+      capture.landmarks || [],
+      { timeout: 10_000 },
+    ).catch((error) => {
+      throw new Error(`${capture.name}: required landmarks did not become ready`, { cause: error });
+    });
     if (pageErrors.length) {
       throw new Error(
         `${capture.name}: uncaught page exception(s):\n`
