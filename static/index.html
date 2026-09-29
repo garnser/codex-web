@@ -31,22 +31,22 @@
             <span>Local app-server client</span>
           </div>
         </div>
-        <button id="refresh" class="icon-button" title="Refresh">↻</button>
+        <button aria-label="Refresh Project" id="refresh" class="icon-button" title="Refresh">↻</button>
       </div>
 
       <section class="threads-section">
         <div class="section-title">
           <span>Threads</span>
-          <button id="new-thread" class="icon-button" title="New thread">+</button>
+          <button aria-label="New Thread" id="new-thread" class="icon-button" title="New thread">+</button>
         </div>
-        <input id="thread-search" class="search" placeholder="Search threads" />
+        <input aria-label="Search Threads" id="thread-search" class="search" placeholder="Search threads" />
         <div id="threads" class="list threads"></div>
       </section>
 
       <details class="token-footer">
         <summary class="section-title">
           <span>Token Utilization</span>
-          <button id="refresh-token-usage" class="icon-button" type="button" title="Refresh token usage">↻</button>
+          <button aria-label="Refresh token usage" id="refresh-token-usage" class="icon-button" type="button" title="Refresh token usage">↻</button>
         </summary>
         <div class="token-panel">
           <div class="token-row">
@@ -132,12 +132,12 @@
                 <div class="developer-card">
                   <h2>Route test</h2>
                   <div class="route-test">
-                    <select id="route-test-provider">
+                    <select aria-label="Route test provider" id="route-test-provider">
                       <option value="slack">Slack</option>
                       <option value="telegram">Telegram</option>
                     </select>
-                    <input id="route-test-conversation" placeholder="Conversation or channel ID" />
-                    <textarea id="route-test-text" rows="3" placeholder="Message text"></textarea>
+                    <input aria-label="Conversation or channel ID" id="route-test-conversation" placeholder="Conversation or channel ID" />
+                    <textarea aria-label="Message text" id="route-test-text" rows="3" placeholder="Message text"></textarea>
                     <button id="run-route-test" type="button" class="ghost-button">Test route</button>
                     <pre id="route-test-result">No route test run yet.</pre>
                   </div>
@@ -193,8 +193,8 @@
                     <button id="refresh-resources" type="button" class="ghost-button">Refresh</button>
                   </div>
                   <div class="route-test">
-                    <input id="resource-search" type="search" placeholder="Search name, ID, owner or alias" />
-                    <select id="resource-type-filter">
+                    <input aria-label="Search resources" id="resource-search" type="search" placeholder="Search name, ID, owner or alias" />
+                    <select aria-label="Filter resource type" id="resource-type-filter">
                       <option value="">All resource types</option>
                       <option value="repository">Repository</option>
                       <option value="service">Service</option>
@@ -204,7 +204,7 @@
                       <option value="database">Database</option>
                       <option value="other">Other</option>
                     </select>
-                    <select id="resource-lifecycle-filter">
+                    <select aria-label="Filter resource lifecycle" id="resource-lifecycle-filter">
                       <option value="">All lifecycle states</option>
                       <option value="active">Active</option>
                       <option value="deprecated">Deprecated</option>
@@ -215,8 +215,8 @@
                   <details id="resource-create-panel">
                     <summary>Create resource</summary>
                     <div class="route-test">
-                      <input id="resource-create-name" placeholder="Resource name" />
-                      <select id="resource-create-type">
+                      <input aria-label="Resource name" id="resource-create-name" placeholder="Resource name" />
+                      <select aria-label="Resource type" id="resource-create-type">
                         <option value="repository">Repository</option>
                         <option value="service">Service</option>
                         <option value="environment">Environment</option>
@@ -225,15 +225,15 @@
                         <option value="database">Database</option>
                         <option value="other">Other</option>
                       </select>
-                      <textarea id="resource-create-description" rows="2" placeholder="Description"></textarea>
-                      <select id="resource-create-owner"><option value="">Unassigned owner</option></select>
-                      <select id="resource-create-sensitivity">
+                      <textarea aria-label="Resource description" id="resource-create-description" rows="2" placeholder="Description"></textarea>
+                      <select aria-label="Resource owner" id="resource-create-owner"><option value="">Unassigned owner</option></select>
+                      <select aria-label="Resource sensitivity" id="resource-create-sensitivity">
                         <option value="public">Public</option>
                         <option value="internal" selected>Internal</option>
                         <option value="confidential">Confidential</option>
                         <option value="restricted">Restricted</option>
                       </select>
-                      <select id="resource-create-risk">
+                      <select aria-label="Resource risk" id="resource-create-risk">
                         <option value="low">Low</option>
                         <option value="medium" selected>Medium</option>
                         <option value="high">High</option>
@@ -245,8 +245,8 @@
                   <details id="resource-relationship-panel">
                     <summary>Create relationship</summary>
                     <div class="route-test">
-                      <select id="resource-relationship-from"><option value="">Source resource</option></select>
-                      <select id="resource-relationship-type">
+                      <select aria-label="Relationship source resource" id="resource-relationship-from"><option value="">Source resource</option></select>
+                      <select aria-label="Relationship type" id="resource-relationship-type">
                         <option value="contains">Contains</option>
                         <option value="depends_on">Depends on</option>
                         <option value="implements">Implements</option>
@@ -254,7 +254,7 @@
                         <option value="hosted_in">Hosted in</option>
                         <option value="connects_to">Connects to</option>
                       </select>
-                      <select id="resource-relationship-to"><option value="">Target resource</option></select>
+                      <select aria-label="Relationship target resource" id="resource-relationship-to"><option value="">Target resource</option></select>
                       <button id="create-resource-relationship" type="button" class="ghost-button">Create relationship</button>
                     </div>
                   </details>
@@ -300,61 +300,61 @@
                     <details>
                       <summary>Create organization</summary>
                       <div class="route-test">
-                        <input id="identity-create-org-name" placeholder="Organization name" />
-                        <input id="identity-create-org-id" placeholder="Optional stable organization ID" />
+                        <input aria-label="Organization name" id="identity-create-org-name" placeholder="Organization name" />
+                        <input aria-label="Optional stable organization ID" id="identity-create-org-id" placeholder="Optional stable organization ID" />
                         <button id="identity-create-org" type="button" class="ghost-button">Create organization</button>
                       </div>
                     </details>
                     <details>
                       <summary>Create workspace</summary>
                       <div class="route-test">
-                        <select id="identity-create-workspace-org"></select>
-                        <input id="identity-create-workspace-name" placeholder="Workspace name" />
-                        <input id="identity-create-workspace-id" placeholder="Optional stable workspace ID" />
+                        <select aria-label="Organization for new workspace" id="identity-create-workspace-org"></select>
+                        <input aria-label="Workspace name" id="identity-create-workspace-name" placeholder="Workspace name" />
+                        <input aria-label="Optional stable workspace ID" id="identity-create-workspace-id" placeholder="Optional stable workspace ID" />
                         <button id="identity-create-workspace" type="button" class="ghost-button">Create workspace</button>
                       </div>
                     </details>
                     <details>
                       <summary>Create human identity</summary>
                       <div class="route-test">
-                        <input id="identity-create-human-name" placeholder="Display name" />
-                        <input id="identity-create-human-email" type="email" placeholder="Email (optional)" />
-                        <input id="identity-create-human-id" placeholder="Optional stable human ID" />
+                        <input aria-label="Display name" id="identity-create-human-name" placeholder="Display name" />
+                        <input aria-label="Email (optional)" id="identity-create-human-email" type="email" placeholder="Email (optional)" />
+                        <input aria-label="Optional stable human ID" id="identity-create-human-id" placeholder="Optional stable human ID" />
                         <button id="identity-create-human" type="button" class="ghost-button">Create human</button>
                       </div>
                     </details>
                     <details>
                       <summary>Create service identity</summary>
                       <div class="route-test">
-                        <input id="identity-create-service-name" placeholder="Service name" />
-                        <textarea id="identity-create-service-description" rows="2" placeholder="Description"></textarea>
+                        <input aria-label="Service name" id="identity-create-service-name" placeholder="Service name" />
+                        <textarea aria-label="Service identity description" id="identity-create-service-description" rows="2" placeholder="Description"></textarea>
                         <button id="identity-create-service" type="button" class="ghost-button">Create service identity</button>
                       </div>
                     </details>
                     <details>
                       <summary>Add membership</summary>
                       <div class="route-test">
-                        <select id="identity-membership-identity"></select>
-                        <select id="identity-membership-org"></select>
-                        <select id="identity-membership-workspace"><option value="">Organization-wide membership</option></select>
-                        <select id="identity-membership-roles" multiple size="4">
+                        <select aria-label="Membership identity" id="identity-membership-identity"></select>
+                        <select aria-label="Membership organization" id="identity-membership-org"></select>
+                        <select aria-label="Membership workspace" id="identity-membership-workspace"><option value="">Organization-wide membership</option></select>
+                        <select aria-label="Membership roles" id="identity-membership-roles" multiple size="4">
                           <option value="owner">Owner</option>
                           <option value="admin">Admin</option>
                           <option value="approver">Approver</option>
                           <option value="member" selected>Member</option>
                         </select>
-                        <select id="identity-membership-teams" multiple size="3"></select>
+                        <select aria-label="Membership teams" id="identity-membership-teams" multiple size="3"></select>
                         <button id="identity-create-membership" type="button" class="ghost-button">Add membership</button>
                       </div>
                     </details>
                     <details>
                       <summary>Create service token</summary>
                       <div class="route-test">
-                        <select id="identity-token-service"></select>
-                        <select id="identity-token-org"></select>
-                        <select id="identity-token-workspace"></select>
-                        <input id="identity-token-scopes" placeholder="Scopes, comma separated" />
-                        <input id="identity-token-expires" type="datetime-local" />
+                        <select aria-label="Token service identity" id="identity-token-service"></select>
+                        <select aria-label="Token organization" id="identity-token-org"></select>
+                        <select aria-label="Token workspace" id="identity-token-workspace"></select>
+                        <input aria-label="Scopes, comma separated" id="identity-token-scopes" placeholder="Scopes, comma separated" />
+                        <input aria-label="Token expiry" id="identity-token-expires" type="datetime-local" />
                         <button id="identity-create-token" type="button" class="ghost-button">Create service token</button>
                         <div id="identity-created-token-result" class="form-result" hidden>
                           <strong>One-time service token</strong>
@@ -389,13 +389,13 @@
                   <details id="secret-create-panel">
                     <summary>Create secret reference</summary>
                     <div class="route-test">
-                      <input id="secret-create-name" placeholder="Reference name" />
-                      <input id="secret-create-provider" placeholder="Provider (optional)" />
-                      <input id="secret-create-purpose" placeholder="Purpose (optional)" />
-                      <input id="secret-create-value" type="password" autocomplete="new-password" placeholder="Secret value (never rendered back)" />
+                      <input aria-label="Secret reference name" id="secret-create-name" placeholder="Reference name" />
+                      <input aria-label="Provider (optional)" id="secret-create-provider" placeholder="Provider (optional)" />
+                      <input aria-label="Purpose (optional)" id="secret-create-purpose" placeholder="Purpose (optional)" />
+                      <input aria-label="Secret value (never rendered back)" id="secret-create-value" type="password" autocomplete="new-password" placeholder="Secret value (never rendered back)" />
                       <label>Use permission identities <select id="secret-create-use-identities" multiple size="4"></select></label>
                       <label>Reveal permission identities <select id="secret-create-reveal-identities" multiple size="4"></select></label>
-                      <input id="secret-create-expires" type="datetime-local" />
+                      <input aria-label="Secret expiry" id="secret-create-expires" type="datetime-local" />
                       <button id="create-secret" type="button" class="ghost-button">Create secret</button>
                     </div>
                   </details>
@@ -416,7 +416,7 @@
                   <details id="crypto-key-create-panel">
                     <summary>Create managed key</summary>
                     <div class="route-test">
-                      <select id="crypto-key-purpose">
+                      <select aria-label="Key purpose" id="crypto-key-purpose">
                         <option value="application_data">Application data</option>
                         <option value="backup">Backup</option>
                         <option value="integration_payload">Integration payload</option>
@@ -424,9 +424,9 @@
                         <option value="decision">Decision</option>
                         <option value="artifact">Artifact</option>
                       </select>
-                      <select id="crypto-key-backend"></select>
-                      <input id="crypto-key-project-id" placeholder="Optional project ID scope" />
-                      <select id="crypto-key-resource-id"><option value="">No resource scope</option></select>
+                      <select aria-label="Key backend" id="crypto-key-backend"></select>
+                      <input aria-label="Optional project ID scope" id="crypto-key-project-id" placeholder="Optional project ID scope" />
+                      <select aria-label="Key resource scope" id="crypto-key-resource-id"><option value="">No resource scope</option></select>
                       <button id="create-crypto-key" type="button" class="ghost-button">Create key reference</button>
                     </div>
                   </details>
@@ -449,16 +449,16 @@
                     <details>
                       <summary>Upsert provider</summary>
                       <div class="route-test">
-                        <select id="model-provider-existing"><option value="">New provider</option></select>
-                        <input id="model-provider-id" placeholder="Provider ID" />
-                        <input id="model-provider-name" placeholder="Display name" />
-                        <input id="model-provider-adapter" placeholder="Adapter type" />
-                        <input id="model-provider-base-url" placeholder="Base URL (optional)" />
-                        <select id="model-provider-credential"><option value="">No credential reference</option></select>
+                        <select aria-label="Existing model provider" id="model-provider-existing"><option value="">New provider</option></select>
+                        <input aria-label="Provider ID" id="model-provider-id" placeholder="Provider ID" />
+                        <input aria-label="Display name" id="model-provider-name" placeholder="Display name" />
+                        <input aria-label="Adapter type" id="model-provider-adapter" placeholder="Adapter type" />
+                        <input aria-label="Base URL (optional)" id="model-provider-base-url" placeholder="Base URL (optional)" />
+                        <select aria-label="Provider credential reference" id="model-provider-credential"><option value="">No credential reference</option></select>
                         <label><input id="model-provider-credential-required" type="checkbox" checked /> Credential required</label>
-                        <input id="model-provider-residency" placeholder="Residency tags, comma separated" />
-                        <input id="model-provider-compliance" placeholder="Compliance tags, comma separated" />
-                        <select id="model-provider-status">
+                        <input aria-label="Residency tags, comma separated" id="model-provider-residency" placeholder="Residency tags, comma separated" />
+                        <input aria-label="Compliance tags, comma separated" id="model-provider-compliance" placeholder="Compliance tags, comma separated" />
+                        <select aria-label="Provider status" id="model-provider-status">
                           <option value="active">Active</option>
                           <option value="degraded">Degraded</option>
                           <option value="disabled">Disabled</option>
@@ -469,29 +469,29 @@
                     <details>
                       <summary>Upsert model definition</summary>
                       <div class="route-test">
-                        <select id="model-definition-existing"><option value="">New model</option></select>
-                        <input id="model-definition-id" placeholder="Model definition ID" />
-                        <select id="model-definition-provider"></select>
-                        <input id="model-definition-concrete" placeholder="Concrete provider model" />
-                        <input id="model-definition-version" placeholder="Model version (optional)" />
-                        <input id="model-definition-classes" placeholder="Model classes, comma separated" />
-                        <input id="model-definition-workloads" placeholder="Suitable workloads, comma separated" />
-                        <input id="model-definition-capabilities" value="text" placeholder="Capabilities" />
-                        <input id="model-definition-modalities" value="text" placeholder="Modalities" />
+                        <select aria-label="Existing model definition" id="model-definition-existing"><option value="">New model</option></select>
+                        <input aria-label="Model definition ID" id="model-definition-id" placeholder="Model definition ID" />
+                        <select aria-label="Model provider" id="model-definition-provider"></select>
+                        <input aria-label="Concrete provider model" id="model-definition-concrete" placeholder="Concrete provider model" />
+                        <input aria-label="Model version (optional)" id="model-definition-version" placeholder="Model version (optional)" />
+                        <input aria-label="Model classes, comma separated" id="model-definition-classes" placeholder="Model classes, comma separated" />
+                        <input aria-label="Suitable workloads, comma separated" id="model-definition-workloads" placeholder="Suitable workloads, comma separated" />
+                        <input aria-label="Capabilities" id="model-definition-capabilities" value="text" placeholder="Capabilities" />
+                        <input aria-label="Modalities" id="model-definition-modalities" value="text" placeholder="Modalities" />
                         <label><input id="model-definition-tools" type="checkbox" /> Supports tools</label>
-                        <input id="model-definition-context" type="number" min="1" value="128000" placeholder="Context window" />
-                        <input id="model-definition-output" type="number" min="1" value="8192" placeholder="Max output" />
-                        <select id="model-definition-latency">
+                        <input aria-label="Context window" id="model-definition-context" type="number" min="1" value="128000" placeholder="Context window" />
+                        <input aria-label="Max output" id="model-definition-output" type="number" min="1" value="8192" placeholder="Max output" />
+                        <select aria-label="Model latency class" id="model-definition-latency">
                           <option value="low">Low latency</option>
                           <option value="standard" selected>Standard latency</option>
                           <option value="high">High latency</option>
                         </select>
-                        <input id="model-definition-input-price" type="number" min="0" step="0.0001" placeholder="Input $ / 1M" />
-                        <input id="model-definition-output-price" type="number" min="0" step="0.0001" placeholder="Output $ / 1M" />
-                        <input id="model-definition-residency" placeholder="Residency tags" />
-                        <input id="model-definition-compliance" placeholder="Compliance tags" />
-                        <input id="model-definition-priority" type="number" min="0" value="100" placeholder="Route priority" />
-                        <select id="model-definition-lifecycle">
+                        <input aria-label="Input price in USD per million tokens" id="model-definition-input-price" type="number" min="0" step="0.0001" placeholder="Input $ / 1M" />
+                        <input aria-label="Output price in USD per million tokens" id="model-definition-output-price" type="number" min="0" step="0.0001" placeholder="Output $ / 1M" />
+                        <input aria-label="Residency tags" id="model-definition-residency" placeholder="Residency tags" />
+                        <input aria-label="Compliance tags" id="model-definition-compliance" placeholder="Compliance tags" />
+                        <input aria-label="Route priority" id="model-definition-priority" type="number" min="0" value="100" placeholder="Route priority" />
+                        <select aria-label="Model lifecycle" id="model-definition-lifecycle">
                           <option value="active">Active</option>
                           <option value="deprecated">Deprecated</option>
                           <option value="disabled">Disabled</option>
@@ -502,10 +502,10 @@
                     <details>
                       <summary>Publish prompt/template version</summary>
                       <div class="route-test">
-                        <select id="model-prompt-source"><option value="">Start blank</option></select>
-                        <input id="model-prompt-id" placeholder="Template ID" />
-                        <input id="model-prompt-version" placeholder="New version" />
-                        <textarea id="model-prompt-content" rows="5" placeholder="Template content"></textarea>
+                        <select aria-label="Source prompt template" id="model-prompt-source"><option value="">Start blank</option></select>
+                        <input aria-label="Template ID" id="model-prompt-id" placeholder="Template ID" />
+                        <input aria-label="New version" id="model-prompt-version" placeholder="New version" />
+                        <textarea aria-label="Template content" id="model-prompt-content" rows="5" placeholder="Template content"></textarea>
                         <label><input id="model-prompt-active" type="checkbox" checked /> Active</label>
                         <button id="save-model-prompt" type="button" class="ghost-button">Publish template version</button>
                       </div>
@@ -515,10 +515,10 @@
                       <div class="route-test">
                         <label>Allowed providers <select id="model-policy-providers" multiple size="4"></select></label>
                         <label>Allowed models <select id="model-policy-models" multiple size="5"></select></label>
-                        <input id="model-policy-residency" placeholder="Required residency tags" />
-                        <input id="model-policy-compliance" placeholder="Required compliance tags" />
-                        <input id="model-policy-max-cost" type="number" min="0" step="0.0001" placeholder="Max invocation cost USD" />
-                        <input id="model-policy-max-attempts" type="number" min="1" max="10" value="2" />
+                        <input aria-label="Required residency tags" id="model-policy-residency" placeholder="Required residency tags" />
+                        <input aria-label="Required compliance tags" id="model-policy-compliance" placeholder="Required compliance tags" />
+                        <input aria-label="Max invocation cost USD" id="model-policy-max-cost" type="number" min="0" step="0.0001" placeholder="Max invocation cost USD" />
+                        <input aria-label="Maximum model invocation attempts" id="model-policy-max-attempts" type="number" min="1" max="10" value="2" />
                         <button id="save-model-policy" type="button" class="ghost-button">Save routing policy</button>
                       </div>
                     </details>
@@ -564,8 +564,8 @@
                   </div>
                   <div id="input-plugin-status" class="form-result" aria-live="polite">Open to load effective input-composition state.</div>
                   <div class="route-test">
-                    <input id="input-plugin-search" type="search" placeholder="Search plugin, invocation, field or failure" />
-                    <select id="input-plugin-outcome-filter">
+                    <input aria-label="Search plugin, invocation, field or failure" id="input-plugin-search" type="search" placeholder="Search plugin, invocation, field or failure" />
+                    <select aria-label="Filter input plugin outcome" id="input-plugin-outcome-filter">
                       <option value="">All plugin outcomes</option>
                       <option value="applied">Applied</option>
                       <option value="skipped">Skipped</option>
@@ -639,7 +639,7 @@
                       <summary>Export / import versioned definitions</summary>
                       <div class="route-test">
                         <button id="export-definitions" type="button" class="ghost-button">Load tenant-visible export</button>
-                        <textarea id="definition-transfer-document" rows="10" spellcheck="false" placeholder="Export document or import document"></textarea>
+                        <textarea aria-label="Export document or import document" id="definition-transfer-document" rows="10" spellcheck="false" placeholder="Export document or import document"></textarea>
                         <button id="import-definitions" type="button" class="ghost-button">Import as inactive drafts</button>
                       </div>
                       <small>Import revalidates every record against the running code-owned schema and authorization boundary. Imported records are never activated automatically.</small>
@@ -647,16 +647,16 @@
                     <div id="definition-lifecycle-status" class="form-result" aria-live="polite"></div>
                   </details>
                   <div class="route-test">
-                    <input id="definition-search" type="search" placeholder="Search definition ID, kind, actor, checksum or payload" />
-                    <select id="definition-kind-filter"><option value="">All kinds</option></select>
-                    <select id="definition-scope-filter">
+                    <input aria-label="Search definition ID, kind, actor, checksum or payload" id="definition-search" type="search" placeholder="Search definition ID, kind, actor, checksum or payload" />
+                    <select aria-label="Filter definition kind" id="definition-kind-filter"><option value="">All kinds</option></select>
+                    <select aria-label="Filter definition scope" id="definition-scope-filter">
                       <option value="">All scopes</option>
                       <option value="global">Global</option>
                       <option value="organization">Organization</option>
                       <option value="workspace">Workspace</option>
                       <option value="project">Project</option>
                     </select>
-                    <select id="definition-lifecycle-filter">
+                    <select aria-label="Filter definition lifecycle" id="definition-lifecycle-filter">
                       <option value="">All lifecycle states</option>
                       <option value="draft">Draft</option>
                       <option value="validated">Validated</option>
@@ -672,8 +672,8 @@
                   <details id="definition-resolve-panel">
                     <summary>Effective resolution preview</summary>
                     <div class="route-test">
-                      <select id="definition-resolve-key"></select>
-                      <select id="definition-resolve-project"><option value="">No project context</option></select>
+                      <select aria-label="Definition to resolve" id="definition-resolve-key"></select>
+                      <select aria-label="Project for definition resolution" id="definition-resolve-project"><option value="">No project context</option></select>
                       <button id="resolve-definition" type="button" class="ghost-button">Resolve effective revision</button>
                     </div>
                     <div id="definition-resolve-result" class="comm-log"></div>
@@ -736,8 +736,8 @@
                   <details id="definition-diff-panel">
                     <summary>Compare revisions</summary>
                     <div class="route-test">
-                      <select id="definition-diff-left"></select>
-                      <select id="definition-diff-right"></select>
+                      <select aria-label="Definition comparison left revision" id="definition-diff-left"></select>
+                      <select aria-label="Definition comparison right revision" id="definition-diff-right"></select>
                       <button id="diff-definitions" type="button" class="ghost-button">Compare revisions</button>
                     </div>
                     <div id="definition-diff-result" class="comm-log"></div>
@@ -760,9 +760,9 @@
                   <details id="entitlement-decision-panel">
                     <summary>Deterministic entitlement/quota preview</summary>
                     <div class="route-test">
-                      <select id="entitlement-preview-capability"></select>
-                      <select id="entitlement-preview-metric"><option value="">Capability only</option></select>
-                      <input id="entitlement-preview-amount" type="number" min="0" step="0.01" value="0" placeholder="Projected amount" />
+                      <select aria-label="Entitlement preview capability" id="entitlement-preview-capability"></select>
+                      <select aria-label="Entitlement preview metric" id="entitlement-preview-metric"><option value="">Capability only</option></select>
+                      <input aria-label="Projected amount" id="entitlement-preview-amount" type="number" min="0" step="0.01" value="0" placeholder="Projected amount" />
                       <button id="preview-entitlement" type="button" class="ghost-button">Evaluate entitlement</button>
                     </div>
                     <div id="entitlement-preview-result" class="comm-log"></div>
@@ -799,11 +799,11 @@
                     <div id="configuration-management-status" class="form-result" aria-live="polite"></div>
                   </details>
                   <div class="route-test">
-                    <input id="configuration-search" type="search" placeholder="Search key, description, category, scope, actor or value reference" />
-                    <select id="configuration-category-filter">
+                    <input aria-label="Search key, description, category, scope, actor or value reference" id="configuration-search" type="search" placeholder="Search key, description, category, scope, actor or value reference" />
+                    <select aria-label="Filter configuration category" id="configuration-category-filter">
                       <option value="">All categories</option>
                     </select>
-                    <select id="configuration-scope-filter">
+                    <select aria-label="Filter configuration scope" id="configuration-scope-filter">
                       <option value="">All scopes</option>
                       <option value="deployment">Deployment</option>
                       <option value="global">Global</option>
@@ -812,7 +812,7 @@
                       <option value="project">Project</option>
                       <option value="resource">Resource</option>
                     </select>
-                    <select id="configuration-state-filter">
+                    <select aria-label="Filter configuration state" id="configuration-state-filter">
                       <option value="">All lifecycle states</option>
                       <option value="draft">Draft</option>
                       <option value="published">Published</option>
@@ -825,11 +825,11 @@
                   <details id="configuration-resolve-panel">
                     <summary>Effective value & provenance preview</summary>
                     <div class="route-test">
-                      <select id="configuration-resolve-key"></select>
-                      <select id="configuration-resolve-project"><option value="">No project context</option></select>
-                      <select id="configuration-resolve-resource"><option value="">No resource context</option></select>
-                      <input id="configuration-resolve-subject" placeholder="Optional targeting subject ID" />
-                      <input id="configuration-resolve-cohort" placeholder="Optional feature cohort" />
+                      <select aria-label="Configuration key to resolve" id="configuration-resolve-key"></select>
+                      <select aria-label="Project for configuration resolution" id="configuration-resolve-project"><option value="">No project context</option></select>
+                      <select aria-label="Resource for configuration resolution" id="configuration-resolve-resource"><option value="">No resource context</option></select>
+                      <input aria-label="Optional targeting subject ID" id="configuration-resolve-subject" placeholder="Optional targeting subject ID" />
+                      <input aria-label="Optional feature cohort" id="configuration-resolve-cohort" placeholder="Optional feature cohort" />
                       <button id="resolve-configuration" type="button" class="ghost-button">Resolve effective value</button>
                     </div>
                     <div id="configuration-resolve-result" class="comm-log"></div>
@@ -873,8 +873,8 @@
                     <div id="execution-worker-management-status" class="form-result" aria-live="polite"></div>
                   </details>
                   <div class="route-test">
-                    <input id="execution-worker-search" type="search" placeholder="Search worker, pool, identity, execution or Work Item" />
-                    <select id="execution-worker-lifecycle-filter">
+                    <input aria-label="Search worker, pool, identity, execution or Work Item" id="execution-worker-search" type="search" placeholder="Search worker, pool, identity, execution or Work Item" />
+                    <select aria-label="Filter worker lifecycle" id="execution-worker-lifecycle-filter">
                       <option value="">All worker states</option>
                       <option value="active">Active</option>
                       <option value="draining">Draining</option>
@@ -882,7 +882,7 @@
                       <option value="revoked">Revoked</option>
                       <option value="offline">Offline</option>
                     </select>
-                    <select id="execution-assignment-status-filter">
+                    <select aria-label="Filter assignment status" id="execution-assignment-status-filter">
                       <option value="">All assignment states</option>
                       <option value="pending">Pending</option>
                       <option value="claimed">Claimed</option>
@@ -909,8 +909,8 @@
                   </div>
                   <div id="execution-workspace-status" class="form-result" aria-live="polite">Open to load isolated execution workspace state.</div>
                   <div class="route-test">
-                    <input id="execution-workspace-search" type="search" placeholder="Search Work Item, execution, project, branch, owner or resource" />
-                    <select id="execution-workspace-state-filter">
+                    <input aria-label="Search Work Item, execution, project, branch, owner or resource" id="execution-workspace-search" type="search" placeholder="Search Work Item, execution, project, branch, owner or resource" />
+                    <select aria-label="Filter execution workspace state" id="execution-workspace-state-filter">
                       <option value="">All workspace states</option>
                       <option value="provisioning">Provisioning</option>
                       <option value="active">Active</option>
@@ -932,8 +932,8 @@
                   </div>
                   <div id="artifact-evidence-status" class="form-result" aria-live="polite">Open to load canonical artifact/evidence state.</div>
                   <div class="route-test">
-                    <input id="artifact-evidence-search" type="search" placeholder="Search Work Item, execution, artifact, evidence or verifier" />
-                    <select id="artifact-evidence-lifecycle-filter">
+                    <input aria-label="Search Work Item, execution, artifact, evidence or verifier" id="artifact-evidence-search" type="search" placeholder="Search Work Item, execution, artifact, evidence or verifier" />
+                    <select aria-label="Filter evidence lifecycle" id="artifact-evidence-lifecycle-filter">
                       <option value="">All lifecycle states</option>
                       <option value="active">Active artifacts</option>
                       <option value="valid">Valid evidence</option>
@@ -941,7 +941,7 @@
                       <option value="invalidated">Invalidated</option>
                       <option value="expired">Expired</option>
                     </select>
-                    <input id="artifact-evidence-work-item" placeholder="Work Item ref for gate evaluation" />
+                    <input aria-label="Work Item ref for gate evaluation" id="artifact-evidence-work-item" placeholder="Work Item ref for gate evaluation" />
                     <button id="evaluate-evidence-gate" type="button" class="ghost-button">Evaluate evidence gate</button>
                   </div>
                   <div id="evidence-gate-result" class="comm-log"></div>
@@ -969,8 +969,8 @@
                   <div id="work-graph-status" class="form-result" aria-live="polite">Open to load deterministic dependency state.</div>
                   <div class="route-test">
                     <label>Project <select id="work-graph-project"></select></label>
-                    <input id="work-graph-search" type="search" placeholder="Search Work Item ref or title" />
-                    <select id="work-graph-readiness-filter">
+                    <input aria-label="Search Work Item ref or title" id="work-graph-search" type="search" placeholder="Search Work Item ref or title" />
+                    <select aria-label="Filter Work Item readiness" id="work-graph-readiness-filter">
                       <option value="">All readiness states</option>
                       <option value="runnable">Runnable</option>
                       <option value="blocked">Blocked</option>
@@ -1003,7 +1003,7 @@
                         <option value="replan">Replan</option>
                         <option value="escalate">Escalate</option>
                       </select></label>
-                      <input id="work-graph-edge-reason" placeholder="Optional relationship reason" />
+                      <input aria-label="Optional relationship reason" id="work-graph-edge-reason" placeholder="Optional relationship reason" />
                       <button id="add-work-graph-edge" type="button" class="ghost-button">Add relationship</button>
                     </div>
                     <div id="work-graph-management-status" class="form-result" aria-live="polite"></div>
@@ -1021,8 +1021,8 @@
                   </div>
                   <div id="action-intent-status" class="form-result" aria-live="polite">Open to load durable side-effect state.</div>
                   <div class="route-test">
-                    <input id="action-intent-search" type="search" placeholder="Search Work Item, provider, action, decision, execution or correlation ID" />
-                    <select id="action-intent-status-filter">
+                    <input aria-label="Search Work Item, provider, action, decision, execution or correlation ID" id="action-intent-search" type="search" placeholder="Search Work Item, provider, action, decision, execution or correlation ID" />
+                    <select aria-label="Filter ActionIntent status" id="action-intent-status-filter">
                       <option value="">All statuses</option>
                       <option value="pending">Pending</option>
                       <option value="claimed">Claimed</option>
@@ -1053,9 +1053,9 @@
                   <div id="security-trust-zones" class="comm-log"></div>
                   <div class="section-title"><span>Security events & violations</span></div>
                   <div class="route-test">
-                    <input id="security-event-search" type="search" placeholder="Search event, actor, work, execution, resource or detail field name" />
-                    <select id="security-event-kind-filter"><option value="">All violation kinds</option></select>
-                    <select id="security-event-outcome-filter">
+                    <input aria-label="Search event, actor, work, execution, resource or detail field name" id="security-event-search" type="search" placeholder="Search event, actor, work, execution, resource or detail field name" />
+                    <select aria-label="Filter security event kind" id="security-event-kind-filter"><option value="">All violation kinds</option></select>
+                    <select aria-label="Filter security event outcome" id="security-event-outcome-filter">
                       <option value="">All outcomes</option>
                       <option value="allow">Allow</option>
                       <option value="deny">Deny</option>
@@ -1096,12 +1096,12 @@
                   </details>
                   <details>
                     <summary>Recent traces / correlation IDs</summary>
-                    <input id="operations-trace-search" type="search" placeholder="Filter correlation, causation, span or attribute" />
+                    <input aria-label="Filter correlation, causation, span or attribute" id="operations-trace-search" type="search" placeholder="Filter correlation, causation, span or attribute" />
                     <div id="operations-traces" class="comm-log"></div>
                   </details>
                   <details>
                     <summary>Diagnostics snapshot</summary>
-                    <select id="operations-diagnostic-project"><option value="">All/current runtime</option></select>
+                    <select aria-label="Project for operations diagnostics" id="operations-diagnostic-project"><option value="">All/current runtime</option></select>
                     <button id="load-diagnostics" type="button" class="ghost-button">Load diagnostics</button>
                     <div id="operations-diagnostics" class="comm-log"></div>
                   </details>
@@ -1117,14 +1117,14 @@
                       <option value="300">5 minutes</option><option value="900" selected>15 minutes</option><option value="3600">1 hour</option><option value="86400">24 hours</option>
                     </select></label>
                     <label>Limit <select id="structured-log-limit"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option></select></label>
-                    <select id="structured-log-level"><option value="">All levels</option><option value="DEBUG">Debug</option><option value="INFO">Info</option><option value="WARNING">Warning</option><option value="ERROR">Error</option><option value="CRITICAL">Critical</option></select>
-                    <input id="structured-log-logger" placeholder="Exact logger" />
-                    <input id="structured-log-event" placeholder="Exact event" />
-                    <input id="structured-log-correlation" placeholder="Correlation ID" />
-                    <input id="structured-log-causation" placeholder="Causation ID" />
-                    <input id="structured-log-work-item" placeholder="Work Item ref" />
-                    <input id="structured-log-execution" placeholder="Execution ID" />
-                    <input id="structured-log-action-intent" placeholder="ActionIntent ID" />
+                    <select aria-label="Filter log level" id="structured-log-level"><option value="">All levels</option><option value="DEBUG">Debug</option><option value="INFO">Info</option><option value="WARNING">Warning</option><option value="ERROR">Error</option><option value="CRITICAL">Critical</option></select>
+                    <input aria-label="Exact logger" id="structured-log-logger" placeholder="Exact logger" />
+                    <input aria-label="Exact event" id="structured-log-event" placeholder="Exact event" />
+                    <input aria-label="Correlation ID" id="structured-log-correlation" placeholder="Correlation ID" />
+                    <input aria-label="Causation ID" id="structured-log-causation" placeholder="Causation ID" />
+                    <input aria-label="Work Item ref" id="structured-log-work-item" placeholder="Work Item ref" />
+                    <input aria-label="Execution ID" id="structured-log-execution" placeholder="Execution ID" />
+                    <input aria-label="ActionIntent ID" id="structured-log-action-intent" placeholder="ActionIntent ID" />
                     <button type="submit" class="ghost-button">Query logs</button>
                   </form>
                   <div id="structured-log-list" class="comm-log"></div>
@@ -1214,7 +1214,7 @@
       <section id="messages" class="messages"></section>
 
       <footer class="composer">
-        <textarea id="prompt" rows="3" placeholder="Ask Codex to work in the selected project..."></textarea>
+        <textarea aria-label="Message to Codex" id="prompt" rows="3" placeholder="Ask Codex to work in the selected project..."></textarea>
         <button id="send" class="primary-button">Send</button>
       </footer>
     </main>
