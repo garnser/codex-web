@@ -1,5 +1,12 @@
 const { test, expect } = require('@playwright/test');
 
+async function selectProject(page, projectId) {
+  await page.evaluate(id => {
+    document.body.dataset.activeProject = id;
+    window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: id } }));
+  }, projectId);
+}
+
 test('metric explorer shows freshness, provenance and immutable snapshots', async ({ page }) => {
   const metric = {
     id: 'metric-a',
@@ -147,4 +154,102 @@ test('metric explorer renders missing data explicitly and is responsive', async 
   await expect(dialog).toContainText('no observation is available in the requested window');
   await expect(dialog).toContainText('No observations.');
   await expect(dialog).toContainText('No persisted snapshots yet.');
+});
+
+test('metrics follows Project switches, empty Projects and cleared scope', async ({ page }) => {
+  const reads = [];
+  await page.route(/\/api\/metrics(?:[/?].*)?$/, async route => {
+    const url = new URL(route.request().url());
+    const projectId = url.searchParams.get('project_id');
+    reads.push({ path: url.pathname, projectId });
+    const definition = { id: `metric-${projectId}`, name: `Metric for ${projectId}`, project_id: projectId };
+    if (url.pathname === '/api/metrics') {
+      return route.fulfill({ json: { items: projectId === 'empty' ? [] : [{ definition }] } });
+    }
+    if (url.pathname.endsWith('/observations') || url.pathname.endsWith('/snapshots')) {
+      return route.fulfill({ json: { items: [] } });
+    }
+    return route.fulfill({ json: { definition, current: { value: 42 } } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/metrics_fixture.html');
+  await page.locator('#metrics-button').click();
+  await expect(page.locator('.metric-detail')).toContainText('Metric for project-a');
+  await selectProject(page, 'project-b');
+  await expect(page.locator('#metrics-dialog')).not.toContainText('Metric for project-a');
+  await expect(page.locator('.metric-detail')).toContainText('Metric for project-b');
+  await selectProject(page, 'empty');
+  await expect(page.locator('.metric-detail')).toContainText('No metric definitions exist in this Project');
+  await expect(page.locator('.metric-row')).toHaveCount(0);
+  await selectProject(page, 'project-a');
+  await expect(page.locator('.metric-detail')).toContainText('Metric for project-a');
+  await expect(page.locator('.metrics-status')).toHaveText('Up to date');
+  const count = reads.length;
+  await selectProject(page, '');
+  await page.locator('.metrics-refresh').click();
+  await expect(page.locator('.metric-detail')).toContainText('Select a Project');
+  await expect(page.locator('.metric-row')).toHaveCount(0);
+  expect(reads).toHaveLength(count);
+  expect(reads.every(row => row.projectId)).toBe(true);
+  for (const row of reads.filter(row => row.path !== '/api/metrics')) {
+    expect(row.path).toContain(`/metric-${row.projectId}`);
+  }
+});
+
+test('late metric detail from a previous Project cannot overwrite the current Project', async ({ page }) => {
+  let releaseOld;
+  const oldResponse = new Promise(resolve => { releaseOld = resolve; });
+  let oldDetailReads = 0;
+  let oldDetailCompletions = 0;
+  await page.route(/\/api\/metrics(?:[/?].*)?$/, async route => {
+    const url = new URL(route.request().url());
+    const projectId = url.searchParams.get('project_id');
+    const definition = { id: `metric-${projectId}`, name: `Metric for ${projectId}`, project_id: projectId };
+    if (url.pathname === '/api/metrics') {
+      return route.fulfill({ json: { items: [{ definition }] } });
+    }
+    if (projectId === 'project-a') {
+      oldDetailReads += 1;
+      await oldResponse;
+    }
+    const json = url.pathname.endsWith('/observations') || url.pathname.endsWith('/snapshots')
+      ? { items: [] } : { definition };
+    await route.fulfill({ json });
+    if (projectId === 'project-a') oldDetailCompletions += 1;
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/metrics_fixture.html');
+  await page.locator('#metrics-button').click();
+  await expect.poll(() => oldDetailReads).toBe(3);
+  await selectProject(page, 'project-b');
+  await expect(page.locator('.metric-detail')).toContainText('Metric for project-b');
+  releaseOld();
+  await expect.poll(() => oldDetailCompletions).toBe(3);
+  await expect(page.locator('.metrics-status')).toHaveText('Up to date');
+  await expect(page.locator('#metrics-dialog')).not.toContainText('Metric for project-a');
+});
+
+test('late Project list cannot repopulate an empty Project', async ({ page }) => {
+  let releaseOld;
+  const oldResponse = new Promise(resolve => { releaseOld = resolve; });
+  let started = false;
+  let completed = false;
+  await page.route(/\/api\/metrics(?:[/?].*)?$/, async route => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('project_id') === 'project-a') {
+      started = true;
+      await oldResponse;
+      await route.fulfill({ json: { items: [{ definition: { id: 'old', name: 'Old Project metric' } }] } });
+      completed = true;
+    } else {
+      await route.fulfill({ json: { items: [] } });
+    }
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/metrics_fixture.html');
+  await page.locator('#metrics-button').click();
+  await expect.poll(() => started).toBe(true);
+  await selectProject(page, 'empty');
+  await expect(page.locator('.metric-detail')).toContainText('No metric definitions exist in this Project');
+  releaseOld();
+  await expect.poll(() => completed).toBe(true);
+  await expect(page.locator('.metric-row')).toHaveCount(0);
+  await expect(page.locator('.metrics-status')).toHaveText('Up to date');
 });
