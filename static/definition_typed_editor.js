@@ -1,4 +1,4 @@
-import { definitionViewOperation } from './definition_view_scope.js';
+import { projectViewOperation } from './project_view_scope.js';
 import {
   captureAuthority,
   newBinding,
@@ -271,7 +271,7 @@ function bind() {
   document.getElementById('definition-typed-add-binding')?.addEventListener('click', addBinding);
   document.getElementById('definition-typed-add-delegation')?.addEventListener('click', addDelegation);
   document.getElementById('definition-typed-save')?.addEventListener('click', () => {
-    const operation = definitionViewOperation(setStatus);
+    const operation = projectViewOperation(setStatus);
     saveDraft(operation).catch((error) => operation.status('Typed draft failed: ' + error.message));
   });
   document.getElementById('definition-typed-editor-host')?.addEventListener('click', handleEditorAction);

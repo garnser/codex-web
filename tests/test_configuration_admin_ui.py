@@ -13,6 +13,7 @@ class ConfigurationAdminUiTests(unittest.TestCase):
         javascript = (ROOT / "static" / "configuration_admin.js").read_text(
             encoding="utf-8"
         )
+        javascript += (ROOT / "static" / "configuration_record_view.js").read_text(encoding="utf-8")
         resolution = (ROOT / "static" / "configuration_resolution.js").read_text(
             encoding="utf-8"
         )
@@ -21,12 +22,12 @@ class ConfigurationAdminUiTests(unittest.TestCase):
         self.assertIn('id="configuration-category-filter"', html)
         self.assertIn('id="configuration-record-list"', html)
         self.assertIn('id="configuration-resolve-result"', html)
-        self.assertIn('apiRequest("/api/configuration/specs")', javascript)
-        self.assertIn('apiRequest("/api/configuration/records")', javascript)
-        self.assertIn('apiRequest("/api/configuration/resolve"', javascript)
+        self.assertIn('operation.request("/api/configuration/specs", options)', javascript)
+        self.assertIn('/api/configuration/records?project_id=', javascript)
+        self.assertIn('operation.request("/api/configuration/resolve"', javascript)
         self.assertIn("/impact", javascript)
-        self.assertIn('apiRequest("/api/projects")', javascript)
-        self.assertIn('apiRequest("/api/resources")', javascript)
+        self.assertIn('/api/projects/${encodeURIComponent(projectId)}', javascript)
+        self.assertIn('/api/projects/${encodeURIComponent(projectId)}/resources', javascript)
         self.assertIn("SCOPE_PRECEDENCE", javascript)
         self.assertIn("deployment", javascript)
         self.assertIn("resource", javascript)

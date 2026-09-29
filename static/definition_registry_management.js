@@ -3,7 +3,7 @@
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const approvalUi = await import(`${BASE}/static/definition_registry_approvals.js`);
   const transferUi = await import(`${BASE}/static/definition_registry_transfer.js`);
-  const { definitionViewOperation } = await import(`${BASE}/static/definition_view_scope.js`);
+  const { projectViewOperation } = await import(`${BASE}/static/project_view_scope.js`);
   const { trackDirtyEditor } = await import(`${BASE}/static/dirty_editor.js`);
   let draftEditor = null;
   const publicationUi = await import(`${BASE}/static/definition_publication_ui.js`);
@@ -159,7 +159,7 @@
   }
 
   async function createDraft() {
-    const operation = definitionViewOperation(setStatus);
+    const operation = projectViewOperation(setStatus);
     const report = operation.status;
     const request = operation.request;
     const submitted = draftEditor?.snapshot();
@@ -213,7 +213,7 @@
   }
 
   async function validateRecord(record) {
-    const operation = definitionViewOperation(setStatus);
+    const operation = projectViewOperation(setStatus);
     const report = operation.status;
     const request = operation.request;
     if (!window.confirm(
@@ -236,7 +236,7 @@
   }
 
   async function quarantineRecord(record) {
-    const operation = definitionViewOperation(setStatus);
+    const operation = projectViewOperation(setStatus);
     const report = operation.status;
     const request = operation.request;
     const reason = window.prompt(
@@ -260,7 +260,7 @@
   }
 
   async function rollbackRecord(record) {
-    const operation = definitionViewOperation(setStatus);
+    const operation = projectViewOperation(setStatus);
     const report = operation.status;
     const request = operation.request;
     const active = activeFor(record);
@@ -302,7 +302,7 @@
   }
 
   async function mutate(button) {
-    const operation = definitionViewOperation(setStatus);
+    const operation = projectViewOperation(setStatus);
     const report = operation.status;
     const request = operation.request;
     const record = records.find((item) => item.record_id === button.dataset.recordId);

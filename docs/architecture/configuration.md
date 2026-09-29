@@ -100,6 +100,23 @@ The canonical service is exposed through `/api/configuration`:
 
 The platform administration UI should consume these APIs and must visually distinguish configuration/feature rollout from definitions, policy, secrets, entitlements, and current runtime state.
 
+The Project Configuration page requests `GET /records?project_id=<id>`. The API
+requires a visible Project and returns inherited deployment/global/organization/
+workspace records, that Project's records, and records for resources canonically
+bound to it. Blank, missing, and foreign Project IDs fail closed. The unscoped
+administration listing remains available under its existing tenant authorization.
+Resource objects and secret references retain their canonical workspace ownership;
+a Project view does not create new ownership or grant mutation authority.
+
+The browser clears records, resolution results, filters, and draft context when
+Project context changes. Resolution uses the selected Project, resource selectors
+use its bindings, and Definition reference choices use the same Project projection.
+Late reads and lifecycle preflight responses cannot populate or publish from the
+previous Project. Already-issued server mutations retain their canonical outcome.
+The shared unsaved-editor guard protects Configuration drafts during navigation;
+same-Project refreshes preserve edited inputs. These UI guards do not replace
+server authorization, validation, or optimistic revision checks.
+
 ## Migration rule
 
 New runtime settings should register a typed spec and resolve through `ConfigurationService` rather than adding ad-hoc environment/UI precedence. Existing domain-specific persisted documents should be migrated only when they are truly runtime configuration; provider/domain state should remain in its owning domain model.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -481,23 +482,28 @@ class ConfigurationApiTests(unittest.TestCase):
         @staticmethod
         def get(project_id, scope):
             if (
-                project_id == "project-a"
+                project_id in {"project-a", "project-c", "empty"}
                 and scope.organization_id == "org-a"
                 and scope.workspace_id == "ws-a"
             ):
-                return object()
+                return SimpleNamespace(id=project_id, organization_id="org-a", workspace_id="ws-a")
             raise ProjectNotFoundError("Project not found")
 
     class _Resources:
         @staticmethod
         def get(resource_id, actor):
             if (
-                resource_id == "resource-a"
+                resource_id in {"resource-a", "resource-c"}
                 and actor.organization_id == "org-a"
                 and actor.workspace_id == "ws-a"
             ):
                 return object()
             raise ResourceNotFoundError("resource not found")
+
+        @staticmethod
+        def project_resources(project, *, actor):
+            resource_id = {"project-a": "resource-a", "project-c": "resource-c"}.get(project.id)
+            return [SimpleNamespace(id=resource_id)] if resource_id else []
 
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
@@ -549,6 +555,33 @@ class ConfigurationApiTests(unittest.TestCase):
         }
         payload.update(overrides)
         return payload
+
+    def test_project_catalog_inherits_shared_config_and_only_bound_resources(self):
+        ids = {}
+        for scope, scope_id in [
+            ("global", None), ("organization", "org-a"), ("workspace", "ws-a"),
+            ("project", "project-a"), ("project", "project-c"),
+            ("resource", "resource-a"), ("resource", "resource-c"),
+            ("organization", "org-b"), ("project", "foreign"), ("resource", "foreign"),
+        ]:
+            record = self.service.create_draft(ConfigurationDraftCreate(**self._draft_payload(
+                scope_type=scope, scope_id=scope_id,
+            )))
+            ids[(scope, scope_id)] = record.id
+        inherited = {ids[("global", None)], ids[("organization", "org-a")], ids[("workspace", "ws-a")]}
+        for project, resource in [("project-a", "resource-a"), ("project-c", "resource-c"), ("empty", None)]:
+            response = self.client.get("/api/configuration/records", params={"project_id": project})
+            self.assertEqual(response.status_code, 200)
+            expected = inherited | ({ids[("project", project)], ids[("resource", resource)]} if resource else set())
+            self.assertEqual({row["id"] for row in response.json()["items"]}, expected)
+            self.assertEqual(response.json()["count"], len(expected))
+        self.assertEqual(self.client.get("/api/configuration/records").json()["count"], 7)
+
+    def test_project_catalog_rejects_blank_missing_and_foreign_projects(self):
+        for project in ("", "missing", "foreign"):
+            response = self.client.get("/api/configuration/records", params={"project_id": project})
+            self.assertEqual(response.status_code, 404)
+            self.assertEqual(response.json(), {"detail": "Project not found"})
 
     def test_api_uses_authenticated_actor_and_tenant_default_resolution(self) -> None:
         global_record = self.service.create_draft(

@@ -1,8 +1,16 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
-  const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const { formValidation } = await import(`${BASE}/static/form_validation.js`);
   const { valueEditor, draftValue } = await import(`${BASE}/static/configuration_value_editor.js`);
+  const { projectViewOperation } = await import(`${BASE}/static/project_view_scope.js`);
+  const lifecycleUi = await import(`${BASE}/static/configuration_lifecycle_ui.js`);
+  const { trackDirtyEditor } = await import(`${BASE}/static/dirty_editor.js`);
+  let draftEditor = null;
+  let activeProjectId = null;
+  let contextAvailable = true;
+  let hydration = 0;
+  let dependencyKey = null;
+  let dependencyLoad = null;
   let validation = null;
   function draftValidation() {
     return validation ||= formValidation(document.getElementById('configuration-draft-key').closest('.route-test'));
@@ -33,7 +41,7 @@
       && (actor?.roles || []).some((role) => ["owner", "admin"].includes(role));
   }
   function canManage(scope) {
-    if (!actor) return false;
+    if (!actor || !contextAvailable) return false;
     const platform = ["deployment", "global"].includes(scope);
     if (actor.principal_kind === "service") {
       return (actor.service_scopes || []).includes(
@@ -81,6 +89,7 @@
       `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`
     )).join("");
     if ((spec?.allowed_scopes || []).includes(previous)) scope.value = previous;
+    else if (activeProjectId && spec?.allowed_scopes?.includes('project')) scope.value = 'project';
     updateScopeTargets();
   }
   function updateScopeTargets() {
@@ -92,6 +101,7 @@
       project.innerHTML = '<option value="">Select project</option>' + projects.map((item) => (
         `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)} · ${escapeHtml(item.id)}</option>`
       )).join("");
+      if (activeProjectId) project.value = activeProjectId;
     }
     if (resource) {
       resource.disabled = scope !== "resource";
@@ -139,6 +149,8 @@
     return { percentage, cohorts, owner, expires_at: expiresAt };
   }
   async function createDraft() {
+    const operation = projectViewOperation(setStatus, 'refresh-configuration');
+    const submitted = draftEditor?.snapshot();
     const errors = [];
     const feedback = draftValidation();
     const spec = selectedSpec();
@@ -166,7 +178,7 @@
       `Create a typed draft for ${spec.key} at ${scope}${target ? `:${target}` : ""}? This does not publish or activate the value. ${forceDisabled ? "This draft is an explicit force-disabled kill switch." : ""}`,
     )) return;
     try {
-      const response = await apiRequest("/api/configuration/drafts", {
+      const response = await operation.request("/api/configuration/drafts", {
         method: "POST",
         body: JSON.stringify({
           key: spec.key,
@@ -178,10 +190,12 @@
           force_disabled: forceDisabled,
         }),
       });
+      draftEditor?.markSaved(submitted);
       setStatus(`Created ${spec.key} draft r${response.record.revision}; publish to activate.`);
       feedback.clear();
       document.getElementById("refresh-configuration")?.click();
     } catch (error) {
+      if (!operation.current()) return;
       feedback.server(error, {
         key: 'configuration-draft-key', scope_type: 'configuration-draft-scope',
         scope_id: `configuration-draft-${scope}`, value: 'configuration-draft-value',
@@ -215,131 +229,86 @@
       if (host) host.innerHTML = actionButtons(record);
     }
   }
-  async function validateRecord(record) {
-    try {
-      const result = await apiRequest(`/api/configuration/${encodeURIComponent(record.id)}/validate`, { method: "POST" });
-      setStatus(`Validated ${record.key} r${record.revision} as ${result.spec?.value_kind || "unknown"}.`);
-    } catch (error) {
-      setStatus(`Configuration validation failed: ${error.message}`);
-    }
-  }
-  async function publishRecord(record) {
-    const active = activeFor(record);
-    let impact = null;
-    try {
-      impact = await apiRequest(`/api/configuration/${encodeURIComponent(record.id)}/impact`);
-    } catch (_) {}
-    const reason = window.prompt(`Publication reason for ${record.key} r${record.revision}:`, record.create_reason || "");
-    if (reason === null) return;
-    const overrides = impact?.more_specific_overrides?.length || 0;
-    const startup = impact?.startup_only ? " This is startup-only and will not hot-reload." : "";
-    if (!window.confirm(
-      `Publish ${record.key} r${record.revision}? Active revision in this exact slot: ${active?.revision ?? "none"}. ${overrides} more-specific published override(s) currently exist.${startup} Publishing changes runtime configuration but cannot grant authority.`,
-    )) return;
-    try {
-      await apiRequest(`/api/configuration/${encodeURIComponent(record.id)}/publish`, {
-        method: "POST",
-        body: JSON.stringify({
-          reason: reason.trim() || null,
-          expected_active_revision: active?.revision ?? null,
-        }),
-      });
-      setStatus(`Published ${record.key} r${record.revision}.`);
-      document.getElementById("refresh-configuration")?.click();
-    } catch (error) {
-      setStatus(`Configuration publication failed: ${error.message}`);
-    }
-  }
-  async function rollbackRecord(record) {
-    const active = activeFor(record);
-    if (!active || active.id === record.id) return;
-    const reason = window.prompt(`Reason for rollback to ${record.key} r${record.revision}:`, "");
-    if (reason === null) return;
-    if (!window.confirm(
-      `Rollback ${record.key} from active r${active.revision} to the value of r${record.revision}? The server creates and publishes a new immutable revision; history is preserved.`,
-    )) return;
-    try {
-      const response = await apiRequest("/api/configuration/rollback", {
-        method: "POST",
-        body: JSON.stringify({
-          key: record.key,
-          scope_type: record.scope_type,
-          scope_id: record.scope_id,
-          target_revision: record.revision,
-          reason: reason.trim() || null,
-          expected_active_revision: active.revision,
-        }),
-      });
-      setStatus(`Rollback published as new ${record.key} r${response.record.revision}.`);
-      document.getElementById("refresh-configuration")?.click();
-    } catch (error) {
-      setStatus(`Configuration rollback failed: ${error.message}`);
-    }
-  }
-  async function resetRecord(record) {
-    const active = activeFor(record);
-    if (!active || active.id !== record.id) return;
-    const reason = window.prompt(`Reason for reverting ${record.key} r${record.revision} to inherited/default resolution:`, "");
-    if (reason === null) return;
-    if (!window.confirm(
-      `Revert the explicit ${record.key} override at ${record.scope_type}${record.scope_id ? `:${record.scope_id}` : ""}? The active revision is preserved in history and superseded by a disabled tombstone. Resolution will fall through to the next applicable published scope or code-owned default.`,
-    )) return;
-    try {
-      const response = await apiRequest("/api/configuration/reset", {
-        method: "POST",
-        body: JSON.stringify({
-          key: record.key,
-          scope_type: record.scope_type,
-          scope_id: record.scope_id,
-          reason: reason.trim() || null,
-          expected_active_revision: active.revision,
-        }),
-      });
-      setStatus(`Reverted ${record.key} with tombstone r${response.record.revision}; resolution now inherits.`);
-      document.getElementById("refresh-configuration")?.click();
-    } catch (error) {
-      setStatus(`Configuration reset failed: ${error.message}`);
-    }
-  }
   async function mutate(button) {
     const record = records.find((item) => item.id === button.dataset.recordId);
     if (!record) return;
     button.disabled = true;
     try {
-      if (button.dataset.configurationAction === "validate") await validateRecord(record);
-      else if (button.dataset.configurationAction === "publish") await publishRecord(record);
-      else if (button.dataset.configurationAction === "rollback") await rollbackRecord(record);
-      else if (button.dataset.configurationAction === "reset") await resetRecord(record);
+      if (button.dataset.configurationAction === "validate") await lifecycleUi.validateRecord(record, { active: activeFor(record), setStatus });
+      else if (button.dataset.configurationAction === "publish") await lifecycleUi.publishRecord(record, { active: activeFor(record), setStatus });
+      else if (button.dataset.configurationAction === "rollback") await lifecycleUi.rollbackRecord(record, { active: activeFor(record), setStatus });
+      else if (button.dataset.configurationAction === "reset") await lifecycleUi.resetRecord(record, { active: activeFor(record), setStatus });
     } finally {
       if (document.contains(button)) button.disabled = false;
     }
   }
-  async function loadDependencies() {
-    const [me, secretResponse, definitionResponse] = await Promise.all([
-      apiRequest("/api/identity/me"),
-      apiRequest("/api/secrets").catch(() => ({ items: [] })),
-      apiRequest("/api/definitions/records").catch(() => ({ items: [] })),
-    ]);
+  async function loadDependencies(operation, loadRevision) {
+    const projectId = activeProjectId;
+    const key = JSON.stringify([projectId, loadRevision]);
+    if (!dependencyLoad || dependencyKey !== key) {
+      dependencyKey = key;
+      dependencyLoad = Promise.all([
+        operation.request("/api/identity/me"),
+        operation.request("/api/secrets").catch(() => ({ items: [] })),
+        operation.request(projectId
+          ? `/api/definitions/records?project_id=${encodeURIComponent(projectId)}`
+          : "/api/definitions/records").catch(() => ({ items: [] })),
+      ]).catch(error => {
+        if (dependencyKey === key) dependencyLoad = null;
+        throw error;
+      });
+    }
+    const [me, secretResponse, definitionResponse] = await dependencyLoad;
+    if (!operation.current() || dependencyKey !== key) return;
     actor = me;
     secrets = secretResponse.items || [];
     definitions = definitionResponse.items || [];
     renderAssurance();
   }
   async function hydrate(detail) {
+    const requestHydration = ++hydration;
+    const operation = projectViewOperation(setStatus, 'refresh-configuration');
+    const changed = detail.projectId !== undefined && detail.projectId !== activeProjectId;
+    const wasDirty = draftEditor?.dirty();
+    if (changed) {
+      activeProjectId = detail.projectId;
+      actor = null;
+      secrets = []; definitions = [];
+      document.getElementById('configuration-management-status')?.replaceChildren();
+      document.getElementById('configuration-management-assurance')?.replaceChildren();
+      dependencyLoad = null;
+      validation?.clear();
+      document.querySelectorAll('#configuration-management-panel input').forEach(input => {
+        if (input.type === 'checkbox') input.checked = false;
+        else input.value = '';
+      });
+    }
+    contextAvailable = detail.contextAvailable !== false;
     specs = detail.specs || [];
     records = detail.records || [];
     projects = detail.projects || [];
     resources = detail.resources || [];
-    try {
-      if (!actor) await loadDependencies();
-    } catch (error) {
-      actor = null;
-      setStatus(`Configuration management identity unavailable: ${error.message}`);
+    if (contextAvailable) {
+      try { await loadDependencies(operation, detail.loadRevision); }
+      catch (error) {
+        if (!operation.current() || requestHydration !== hydration) return;
+        actor = null;
+        setStatus(`Configuration management identity unavailable: ${error.message}`);
+      }
     }
-    renderKeyOptions();
+    if (!operation.current() || requestHydration !== hydration) return;
+    if (changed || !wasDirty) {
+      renderKeyOptions();
+      draftEditor?.markSaved();
+    }
+    const button = document.getElementById('create-configuration-draft');
+    if (button && !contextAvailable) button.disabled = true;
     hydrateHosts();
   }
   function bind() {
+    const draft = document.querySelector('#configuration-management-panel > .route-test');
+    if (draft) draftEditor = trackDirtyEditor(draft, { label: 'Configuration draft' });
+    window.dispatchEvent(new CustomEvent('codex:configuration-state-request'));
     document.getElementById("configuration-draft-key")?.addEventListener("change", updateSpecControls);
     document.getElementById("configuration-draft-scope")?.addEventListener("change", updateScopeTargets);
     document.getElementById("configuration-force-disabled")?.addEventListener("change", updateSpecControls);

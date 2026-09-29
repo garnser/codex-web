@@ -14,6 +14,7 @@ class ConfigurationManagementUiTests(unittest.TestCase):
             encoding="utf-8"
         )
 
+        javascript += (ROOT / "static" / "configuration_lifecycle_ui.js").read_text(encoding="utf-8")
         value_editor = (ROOT / "static" / "configuration_value_editor.js").read_text(
             encoding="utf-8"
         )
@@ -23,14 +24,14 @@ class ConfigurationManagementUiTests(unittest.TestCase):
         self.assertIn('id="configuration-draft-value-host"', html)
         self.assertIn('id="configuration-targeting-panel"', html)
         self.assertIn('id="configuration-force-disabled"', html)
-        self.assertIn('apiRequest("/api/identity/me")', javascript)
-        self.assertIn('apiRequest("/api/secrets")', javascript)
-        self.assertIn('apiRequest("/api/definitions/records")', javascript)
-        self.assertIn('apiRequest("/api/configuration/drafts"', javascript)
+        self.assertIn('operation.request("/api/identity/me")', javascript)
+        self.assertIn('operation.request("/api/secrets")', javascript)
+        self.assertIn('/api/definitions/records?project_id=', javascript)
+        self.assertIn('operation.request("/api/configuration/drafts"', javascript)
         self.assertIn("/validate", javascript)
         self.assertIn("/publish", javascript)
-        self.assertIn('apiRequest("/api/configuration/rollback"', javascript)
-        self.assertIn('apiRequest("/api/configuration/reset"', javascript)
+        self.assertIn('request("/api/configuration/rollback"', javascript)
+        self.assertIn('request("/api/configuration/reset"', javascript)
         self.assertIn("Revert to inherited/default", javascript)
         self.assertIn("disabled tombstone", javascript)
         self.assertIn("expected_active_revision", javascript)

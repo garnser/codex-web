@@ -167,16 +167,18 @@ class FrontendBoundaryTests(unittest.TestCase):
         source_path = STATIC / "configuration_admin.js"
         source = source_path.read_text()
         self.assertLessEqual(source_path.stat().st_size, 16_000)
-        self.assertIn("api_client.js", source)
-        self.assertIn("apiRequest", source)
+        self.assertIn("project_view_scope.js", source)
+        self.assertIn("api_client.js", (STATIC / "project_view_scope.js").read_text())
+        self.assertIn("operation.request", source)
         self.assertNotIn("fetch(", source)
 
     def test_configuration_management_has_its_own_budget_and_api_client(self) -> None:
         source_path = STATIC / "configuration_management.js"
         source = source_path.read_text()
         self.assertLessEqual(source_path.stat().st_size, 20_000)
-        self.assertIn("api_client.js", source)
-        self.assertIn("apiRequest", source)
+        self.assertIn("project_view_scope.js", source)
+        self.assertIn("api_client.js", (STATIC / "project_view_scope.js").read_text())
+        self.assertIn("operation.request", source)
         self.assertNotIn("fetch(", source)
 
     def test_execution_worker_admin_has_its_own_budget_and_api_client(self) -> None:
@@ -304,8 +306,8 @@ class FrontendBoundaryTests(unittest.TestCase):
                 self.assertLessEqual(source_path.stat().st_size, limit)
                 self.assertNotIn("fetch(", source_path.read_text())
         coordinator = (STATIC / "definition_typed_editor.js").read_text()
-        self.assertIn("definition_view_scope.js", coordinator)
-        scoped_client = (STATIC / "definition_view_scope.js").read_text()
+        self.assertIn("project_view_scope.js", coordinator)
+        scoped_client = (STATIC / "project_view_scope.js").read_text()
         self.assertIn("api_client.js", scoped_client)
         self.assertLessEqual(len(scoped_client.encode()), 2_000)
         self.assertNotIn("fetch(", scoped_client)
