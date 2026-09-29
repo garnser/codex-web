@@ -471,3 +471,8 @@ body.product-administration-page [data-project-nav-node="administration"] {
 .product-concept-badge{white-space:nowrap}
 .product-project-nav-leaf strong{overflow:hidden;text-overflow:ellipsis}
 .product-workspace-host>.developer-card{padding:clamp(12px,1.4vw,20px)}
+
+/* Palette results retain native button activation with combobox arrow navigation. */
+#product-command-results{gap:6px;min-height:0}
+#product-command-results .product-workspace-nav-item{min-height:54px;overflow-wrap:anywhere}
+#product-command-status{margin:0 0 5px}

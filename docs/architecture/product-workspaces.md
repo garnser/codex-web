@@ -129,7 +129,8 @@ Domain event/data-driven refresh remains owned by each domain module.
 ## Accessibility and responsive behavior
 
 - all workspace navigation is native button/dialog UI;
-- Ctrl/Cmd+K opens the workspace switcher and focuses the first item;
+- Ctrl/Cmd+K or **All workspaces** opens command search and focuses its input;
+- Up/Down selects results, Enter opens a destination, Escape dismisses and restores focus;
 - dialogs retain normal Escape behavior;
 - workspace selection has `aria-current`;
 - mobile layouts collapse to one-column navigation/content;
@@ -143,3 +144,27 @@ removed from Developer as their canonical UI matures.
 
 This keeps Developer useful without making it the permanent information
 architecture for production features.
+
+## Command palette
+
+The existing workspace switcher uses a shared, code-owned UI command model
+(`command_palette.js`). Sources register a stable ID and a synchronous projection
+of existing controls or already loaded canonical data. Commands describe a label,
+scope, availability predicate and navigation callback. This is UI plumbing, not an
+operational Definition catalog or a new authority system; stored definitions and
+plugins cannot inject executable callbacks.
+
+Project-scoped results must match the current Project. Navigation and Project
+switching reuse the shell's existing handlers; cross-Project switches are labeled
+explicitly. Loaded Thread and Work Item sources retain their originating scope;
+Thread indexing is invalidated when the Project changes, and Work Item opening
+refreshes canonical state and revalidates the requested Project and item. The
+palette does not fetch a global object index. Recent command IDs are bounded to
+eight and kept only in memory; labels and authorization are resolved afresh.
+
+Availability is checked when listing and again before execution. Administration
+uses the existing canonical identity-context decision and starts hidden until
+that decision is loaded. Navigation is not authorization: destination API checks
+remain authoritative. Only navigation, Project switching and Thread search are
+common commands; mutations retain their existing review/approval paths. Another
+modal blocks palette opening so confirmations cannot be obscured.

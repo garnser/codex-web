@@ -431,3 +431,35 @@ for (const delayed of ['operator', 'retry', 'runs', 'return-to-project']) {
     await expect(page.locator('.work-items-status')).toContainText('0 Work Items');
   });
 }
+
+test('command palette opens the requested loaded Work Item through canonical operator refresh', async ({ page }) => {
+  await mockOperatorApis(page, []);
+  await page.route('**/api/work-items?project_id=*', route => route.fulfill({ json: { items: [
+    { ref: 'team/project-a#42', title: 'First Work Item', project_id: 'project-a' },
+    { ref: 'team/project-a#43', title: 'Second Work Item', project_id: 'project-a' },
+  ] } }));
+  await page.route('**/api/work-items/**/operator?*', route => {
+    const ref = decodeURIComponent(new URL(route.request().url()).pathname).includes('#43') ? 'team/project-a#43' : 'team/project-a#42';
+    return route.fulfill({ json: operatorPayload({ ref, title: ref.endsWith('43') ? 'Second Work Item' : 'First Work Item', project_id: 'project-a' }) });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html?project=project-a');
+  await page.evaluate(async () => {
+    const sidebar = document.createElement('aside');
+    sidebar.className = 'sidebar';
+    sidebar.innerHTML = '<div class="brand">Codex</div>';
+    document.body.prepend(sidebar);
+    await import('/static/product_workspaces.js');
+    window.dispatchEvent(new CustomEvent('codex:projects-rendered', { detail: {
+      projectId: 'project-a', projects: [{ id: 'project-a', name: 'Project A' }],
+    } }));
+    window.dispatchEvent(new CustomEvent('codex:open-work-items'));
+  });
+  await expect(page.locator('.work-item-row')).toHaveCount(2);
+  await page.locator('.work-items-close').click();
+  await page.keyboard.press('Control+K');
+  await page.locator('#product-workspace-search').fill('Second Work Item');
+  await expect(page.locator('#product-command-results')).toContainText('Project A');
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.work-item-detail')).toContainText('Second Work Item');
+  await expect(page.locator('#product-workspace-switcher')).not.toBeVisible();
+});

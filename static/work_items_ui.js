@@ -1,3 +1,4 @@
+import { installWorkItemCommands } from "./object_commands.js";
 import { createWorkItemViewScope, workItemLoadError } from "./work_item_view_scope.js";
 import { createRunTimelineUi } from "./work_item_runs_ui.js";
 import { workItemSummaryHtml } from "./work_item_summary_ui.js";
@@ -38,6 +39,7 @@ function routedProjectContext(){const m=location.pathname.match(/\/projects\/([^
 function currentProjectContext(){const query=new URLSearchParams(location.search);return document.body?.dataset.activeProject||document.body?.dataset.projectId||routedProjectContext()||query.get('project')||query.get('work_item_project')||sessionStorage.getItem(WORK_ITEM_PROJECT_KEY)||''}
 function persistWorkItemProject(projectId){if(!projectId)return;sessionStorage.setItem(WORK_ITEM_PROJECT_KEY,projectId);if(document.body?.dataset.activeProject||routedProjectContext())return;const url=new URL(location.href);url.searchParams.set('work_item_project',projectId);history.replaceState({...history.state,workItemProjectId:projectId},'',url)}
 const { resetPaging, captureScope, scopedPath } = createWorkItemViewScope(state, renderItemList);
+const openCommand = installWorkItemCommands(state, loadDetail);
 function ensureShell() {
   if (document.querySelector('#work-items-dialog')) return;
   const link = document.createElement('link');
@@ -103,10 +105,11 @@ function ensureShell() {
       </div>
     </div>`;
   document.body.appendChild(dialog);
-  installWorkItemsMount(dialog, async () => {
+  installWorkItemsMount(dialog, async (detail) => {
     const contextProject = currentProjectContext();
     if (contextProject) state.projectId = contextProject;
     await refreshAll();
+    await openCommand(detail);
   });
   dialog.querySelector('.work-items-refresh').addEventListener('click', refreshAll);
   installWorkItemSearch(dialog, () => {

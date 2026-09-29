@@ -1,3 +1,4 @@
+import { registerCommandSource, installCommandPalette } from "./command_palette.js";
 import { statusBadge as sharedStatusBadge, statusFamily as sharedStatusFamily } from "./workspace_components.js";
 import { coarseRoute, trackUx } from "./ux_telemetry.js";
 import { renderHomeOverview } from "./home_overview.js";
@@ -950,6 +951,8 @@ function navigationLeaf(item) {
   }
   button.title = item.description || item.label;
   if (item.administrationPage) {
+    button.hidden = !legacyStaticRoutingContext();
+    button.disabled = button.hidden;
     button.addEventListener("click", () => setAdministrationLocation(item.administrationPage));
   } else {
     button.addEventListener("click", () => openWorkspace(item.workspace, { page: item.page || null }));
@@ -1015,29 +1018,38 @@ function buildProjectNavigation(container) {
   container.appendChild(global);
 }
 
-function buildSwitcherNav(container) {
-  const groups = [...new Set(WORKSPACES.map((item) => item.group))];
-  for (const group of groups) {
-    const section = document.createElement("section");
-    section.className = "product-workspace-nav-group";
-    const heading = document.createElement("h3");
-    heading.textContent = group;
-    section.appendChild(heading);
-    const grid = document.createElement("div");
-    grid.className = "product-workspace-nav-grid";
-    for (const workspace of WORKSPACES.filter((item) => item.group === group)) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "product-workspace-nav-item";
-      button.dataset.productWorkspaceNav = workspace.id;
-      button.innerHTML = `<strong>${esc(workspace.label)}</strong><small>${esc(workspace.description)}</small>`;
-      button.dataset.workspaceSearch = `${workspace.label} ${workspace.group} ${workspace.description}`.toLowerCase();
-      button.addEventListener("click", () => openWorkspace(workspace.id));
-      grid.appendChild(button);
+function installNavigationCommands() {
+  registerCommandSource("navigation", ({ projectId, projectLabel }) => {
+    const scoped = Boolean(projectId) && !document.body.classList.contains("project-context-unavailable");
+    const commands = WORKSPACES.map((item) => ({
+      id: item.id, workspaceId: item.id, label: item.label, description: item.description,
+      projectId, scopeLabel: ["memory", "operations", "organization"].includes(item.id)
+        ? "Organization / workspace" : `Project: ${projectLabel}`,
+      available: () => scoped && (!item.selector || Boolean(document.querySelector(item.selector + ':not(:disabled)'))),
+      run: () => openWorkspace(item.id),
+    }));
+    for (const item of PROJECT_NAVIGATION_TREE.flatMap((entry) => entry.children || [entry])) {
+      if (!['runs', 'teams', 'agent-profiles'].includes(item.id)) continue;
+      commands.push({ id: item.id, label: item.label, projectId,
+        scopeLabel: `Project: ${projectLabel}`, description: item.description,
+        available: () => scoped, run: () => openWorkspace(item.workspace, { page: item.page }) });
     }
-    section.appendChild(grid);
-    container.appendChild(section);
-  }
+    const admin = document.querySelector('[data-project-nav-node="administration"]');
+    commands.push({ id: 'administration', label: 'Administration', scopeLabel: 'Organization / workspace',
+      available: () => Boolean(admin && !admin.hidden && !admin.disabled), run: () => admin.click() });
+    commands.push({ id: 'find-threads', label: 'Search current Project Threads', projectId,
+      scopeLabel: `Project: ${projectLabel}`, available: () => scoped && Boolean(document.querySelector('#thread-search')),
+      run: () => openWorkspace('threads') });
+    return commands;
+  });
+  registerCommandSource('projects', () => {
+    const select = document.querySelector('#product-project-switcher');
+    return [...(select?.options || [])].filter((option) => option.value && !option.disabled).map((option) => ({
+      id: option.value, label: `Switch to Project: ${option.textContent}`,
+      scopeLabel: option.value === select.value ? 'Current Project' : 'Changes active Project',
+      run: () => { select.value = option.value; select.dispatchEvent(new Event('change')); },
+    }));
+  });
 }
 
 function buildShell() {
@@ -1064,7 +1076,7 @@ function buildShell() {
         <button id="new-project" type="button" class="ghost-button">Add Project</button>
         <button type="button" class="ghost-button" data-project-bot-integration>Project bot integration</button>
       </div>
-      <button type="button" class="ghost-button product-all-workspaces" data-workspace-switcher-launch="true">All workspaces</button>
+      <button type="button" class="ghost-button product-all-workspaces" data-workspace-switcher-launch="true" aria-keyshortcuts="Control+k Meta+k" title="Navigate · Ctrl/⌘ K">All workspaces</button>
       <label class="product-workspace-mode-label" for="product-workspace-mode">Primary workflow</label>
       <select id="product-workspace-mode" aria-label="Primary workflow">
         <option value="work">Work</option>
@@ -1097,29 +1109,23 @@ function buildShell() {
   switcher.innerHTML = `
     <div class="product-switcher-shell">
       <header>
-        <div><h2 id="product-workspace-switcher-title">Navigate</h2><p>Search workflows and canonical workspaces without leaving the active Project.</p></div>
+        <div><h2 id="product-workspace-switcher-title">Navigate</h2><p>Find destinations, Projects and already loaded objects. Project switches are explicit.</p></div>
         <button type="button" class="icon-button" data-workspace-switcher-close aria-label="Close navigation">×</button>
       </header>
       <div class="product-command-search">
-        <label for="product-workspace-search">Search workspaces</label>
-        <input id="product-workspace-search" type="search" autocomplete="off" placeholder="Work, Team, Automation, Operations…" />
+        <label for="product-workspace-search">Search commands</label>
+        <input id="product-workspace-search" type="search" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="product-command-results" aria-describedby="product-command-status" placeholder="Work, Team, Automation, Projects…" />
       </div>
-      <div class="product-workspace-nav-groups" data-product-workspace-nav-groups></div>
-      <footer><small>Shortcut: Ctrl/⌘ K · navigation and Project switching do not invoke a model.</small></footer>
+      <div id="product-command-results" class="product-workspace-nav-groups" data-product-workspace-nav-groups role="listbox" aria-label="Commands"></div>
+      <footer><p id="product-command-status" data-command-status role="status"></p><small>Shortcut: Ctrl/⌘ K · navigation and Project switching do not invoke a model.</small></footer>
     </div>`;
   document.body.appendChild(switcher);
-  buildSwitcherNav(switcher.querySelector("[data-product-workspace-nav-groups]"));
-  switcher.querySelector("[data-workspace-switcher-close]").addEventListener("click", () => switcher.close());
-  const workspaceSearch = switcher.querySelector("#product-workspace-search");
-  workspaceSearch?.addEventListener("input", () => {
-    const needle = workspaceSearch.value.trim().toLowerCase();
-    switcher.querySelectorAll(".product-workspace-nav-item").forEach((button) => {
-      button.hidden = Boolean(needle) && !button.dataset.workspaceSearch.includes(needle);
-    });
-    switcher.querySelectorAll(".product-workspace-nav-group").forEach((group) => {
-      group.hidden = !group.querySelector(".product-workspace-nav-item:not([hidden])");
-    });
+  installNavigationCommands();
+  const palette = installCommandPalette(switcher, () => {
+    const select = document.querySelector('#product-project-switcher');
+    return { projectId: document.body.dataset.activeProject || '', projectLabel: select?.selectedOptions[0]?.textContent || 'None' };
   });
+  switcher.querySelector("[data-workspace-switcher-close]").addEventListener("click", () => switcher.close());
 
   const pageSurface = document.createElement("main");
   pageSurface.id = "product-workspace-page";
@@ -1145,12 +1151,12 @@ function buildShell() {
   buildPanels();
   installLegacyLauncherRouting();
   pageSurface.querySelector("[data-open-workspace-switcher]").addEventListener("click", () => {
-    if (!switcher.open) switcher.showModal();
+    palette.open();
   });
 
   document.querySelectorAll("[data-workspace-switcher-launch]").forEach((button) => {
     button.addEventListener("click", () => {
-      if (!switcher.open) switcher.showModal();
+      palette.open();
     });
   });
 
@@ -1297,25 +1303,6 @@ function installObservers() {
   observer.observe(document.body, { childList: true, subtree: true });
 }
 
-function installKeyboard() {
-  document.addEventListener("keydown", (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
-      event.preventDefault();
-      const switcher = document.getElementById("product-workspace-switcher");
-      if (switcher && !switcher.open) {
-        switcher.showModal();
-        const search = switcher.querySelector("#product-workspace-search");
-        if (search) {
-          search.value = "";
-          search.dispatchEvent(new Event("input", { bubbles: true }));
-          search.focus();
-        } else {
-          switcher.querySelector(".product-workspace-nav-item")?.focus();
-        }
-      }
-    }
-  });
-}
 
 async function syncAdministrationEntryVisibility() {
   if (legacyStaticRoutingContext()) return;
@@ -1394,7 +1381,6 @@ function install() {
   adoptAll(document);
   updateEmptyStates();
   installObservers();
-  installKeyboard();
   installRouting();
   void syncAdministrationEntryVisibility();
 

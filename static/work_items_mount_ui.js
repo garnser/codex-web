@@ -18,7 +18,7 @@ export function installWorkItemsMount(dialog, onOpen) {
       if (!dialog.open) dialog.showModal();
     }
     shell.hidden = false;
-    await onOpen();
+    await onOpen(event.detail);
   });
 
   closeButton.addEventListener('click', () => dialog.close());
