@@ -3,6 +3,18 @@ import { trackUx } from "./ux_telemetry.js";
 
 const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
 const state = { projectId: "", project: null, resources: [], readiness: null, bootstrap: null, plan: null, error: null, actionState: null, applying: false };
+let scopeGeneration = 0;
+let refreshGeneration = 0;
+let planGeneration = 0;
+let refreshController = null;
+let loading = false;
+
+function projectContext() {
+  const projectId = state.projectId;
+  const generation = scopeGeneration;
+  return { projectId, current: () => Boolean(projectId)
+    && projectId === activeProjectId() && generation === scopeGeneration };
+}
 
 function esc(value) {
   return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
@@ -21,9 +33,10 @@ async function api(path, options = {}) {
   return payload;
 }
 function activeProjectId() {
-  return document.body?.dataset.projectId || new URLSearchParams(location.search).get("project") || sessionStorage.getItem("codex-web-active-project") || "home";
+  if ('projectId' in document.body.dataset) return document.body.dataset.projectId;
+  return new URLSearchParams(location.search).get("project") || sessionStorage.getItem("codex-web-active-project") || "home";
 }
-function blocked() { return Boolean(state.readiness && state.readiness.execution_ready === false); }
+function blocked() { return loading || !state.projectId || !state.readiness || state.readiness.execution_ready === false; }
 function badge(status) {
   const value = String(status || "unknown").toLowerCase();
   const family = ["ready","active","applied","not_applicable"].includes(value) ? "positive" : ["warning","partial","planned","applying"].includes(value) ? "warning" : ["blocked","failed","unavailable"].includes(value) ? "negative" : "neutral";
@@ -104,7 +117,7 @@ function render() {
     item.code === "repository_target_required_per_turn"
   ));
   const repositoryPolicy = state.project?.repository_selection_policy || "deterministic";
-  const readinessSummary = state.readiness?.execution_ready
+  const readinessSummary = loading ? 'Loading readiness for this Project…' : state.readiness?.execution_ready
     ? (
         targetRequiredPerTurn
           ? "Project is ready. Repository target required per turn."
@@ -133,7 +146,14 @@ function render() {
     body.querySelector("[data-setup-action-feedback]").replaceChildren(actionFeedback(state.actionState));
   }
   const textarea = body.querySelector("[data-project-setup-manifest]");
-  if (textarea && inferredManifest()) textarea.value = JSON.stringify(inferredManifest(), null, 2);
+  if (textarea && (state.plan?.reviewedManifest || inferredManifest())) {
+    textarea.value = JSON.stringify(state.plan?.reviewedManifest || inferredManifest(), null, 2);
+  }
+  for (const selector of ['[data-setup-preflight]', '[data-setup-plan]', '[data-setup-fresh]']) {
+    const button = body.querySelector(selector);
+    if (button) button.disabled = loading || !state.project;
+  }
+  if (loading || !state.project) body.querySelector('[data-setup-apply]').disabled = true;
   wire(body);
   gateExecution();
   const launch = document.getElementById("project-setup-launch");
@@ -144,16 +164,35 @@ function render() {
   }
 }
 async function planning(kind) {
+  const context = projectContext();
+  if (!context.current() || loading || !state.project) return;
+  const generation = ++planGeneration;
   try {
     state.error = null;
-    const result = await api("/api/projects/" + encodeURIComponent(state.projectId) + "/bootstrap/" + kind, { method: "POST", body: JSON.stringify({ manifest: manifestInput(), migrate_legacy: true }) });
-    state.plan = kind === "plan" ? result : { preflight: result.preflight, blocked: result.blocked, plan: null };
-  } catch (error) { state.error = error.message; }
+    const manifest = manifestInput();
+    const result = await api("/api/projects/" + encodeURIComponent(context.projectId) + "/bootstrap/" + kind, { method: "POST", body: JSON.stringify({ manifest, migrate_legacy: true }) });
+    if (!context.current() || generation !== planGeneration) return;
+    state.plan = kind === "plan" ? { ...result, reviewedManifest: manifest }
+      : { preflight: result.preflight, blocked: result.blocked, plan: null };
+  } catch (error) {
+    if (!context.current() || generation !== planGeneration) return;
+    state.error = error.message;
+  }
   render(); setPanel("plan");
 }
 async function applyPlan() {
+  const context = projectContext();
   const plan = state.plan?.plan;
-  if (!plan?.id || state.applying) return;
+  if (!plan?.id || state.applying || !context.current() || loading) return;
+  let payload;
+  try {
+    payload = { manifest: manifestInput(), migrate_legacy: true, expected_plan_id: plan.id,
+      approve_authority_changes: Boolean(document.querySelector('[data-setup-approve]')?.checked) };
+  } catch (error) {
+    state.error = error.message;
+    render(); setPanel('plan');
+    return;
+  }
   const telemetryStartedAt = performance.now();
   void trackUx("workflow_started", { workflow: "project_setup", step: "apply_plan" });
   state.applying = true;
@@ -162,9 +201,11 @@ async function applyPlan() {
   try {
     state.actionState = { state: "in_progress", title: "Applying reviewed plan", detail: "Waiting for the canonical bootstrap result." };
     render();
-    await api("/api/projects/" + encodeURIComponent(state.projectId) + "/bootstrap/apply", { method: "POST", body: JSON.stringify({ manifest: manifestInput(), migrate_legacy: true, expected_plan_id: plan.id, approve_authority_changes: Boolean(document.querySelector("[data-setup-approve]")?.checked) }) });
+    await api("/api/projects/" + encodeURIComponent(context.projectId) + "/bootstrap/apply", { method: "POST", body: JSON.stringify(payload) });
+    if (!context.current()) return;
     state.plan = null;
     await refresh();
+    if (!context.current()) return;
     if (!state.error && state.readiness?.execution_ready) {
       state.actionState = { state: "succeeded", title: "Project setup completed", detail: "Canonical readiness now reports execution ready." };
       void trackUx("workflow_completed", {
@@ -183,6 +224,7 @@ async function applyPlan() {
       setPanel("readiness");
     }
   } catch (error) {
+    if (!context.current()) return;
     state.error = error.message;
     state.actionState = { state: "failed", title: "Project setup failed", detail: error.message };
     void trackUx("action_failed", {
@@ -192,8 +234,10 @@ async function applyPlan() {
     });
     render(); setPanel("plan");
   } finally {
-    state.applying = false;
-    render();
+    if (context.current()) {
+      state.applying = false;
+      render();
+    }
   }
 }
 function wire(body) {
@@ -204,31 +248,60 @@ function wire(body) {
   body.querySelector("[data-setup-apply]")?.addEventListener("click", applyPlan);
   body.querySelector("[data-setup-reset]")?.addEventListener("click", () => { const textarea = body.querySelector("[data-project-setup-manifest]"); if (textarea) textarea.value = JSON.stringify(inferredManifest(), null, 2); });
   body.querySelector("[data-setup-fresh]")?.addEventListener("click", async () => {
+    const context = projectContext();
+    if (!context.current() || loading || !state.project) return;
     void trackUx("recovery_action_used", { workflow: "project_setup", step: "retry_setup" });
     try {
-      await api("/api/projects/" + encodeURIComponent(state.projectId) + "/fresh-bootstrap", { method: "POST" });
-      await refresh();
+      await api("/api/projects/" + encodeURIComponent(context.projectId) + "/fresh-bootstrap", { method: "POST" });
+      if (context.current()) await refresh();
     } catch (error) {
+      if (!context.current()) return;
       state.error = error.message;
       render();
     }
   });
 }
 async function refresh() {
-  state.projectId = activeProjectId();
+  const projectId = activeProjectId();
+  if (projectId !== state.projectId) {
+    ++scopeGeneration;
+    ++planGeneration;
+    Object.assign(state, { projectId, project: null, resources: [], readiness: null,
+      bootstrap: null, plan: null, actionState: null, applying: false });
+  }
+  refreshController?.abort();
+  const controller = new AbortController();
+  refreshController = controller;
+  const context = projectContext();
+  const generation = ++refreshGeneration;
+  const current = () => context.current() && generation === refreshGeneration;
   state.error = null;
+  loading = Boolean(projectId);
+  if (!projectId) {
+    state.error = 'Select a Project to inspect setup and readiness.';
+    render();
+    return state;
+  }
+  render();
+  const read = path => api(path, { signal: controller.signal });
   try {
     const results = await Promise.all([
-      api("/api/projects"),
-      api("/api/projects/" + encodeURIComponent(state.projectId) + "/readiness"),
-      api("/api/projects/" + encodeURIComponent(state.projectId) + "/bootstrap/status").catch((error) => error.status === 404 ? { items: [] } : Promise.reject(error)),
-      api("/api/projects/" + encodeURIComponent(state.projectId) + "/ui-state?thread_limit=1&include_static=true")
+      read("/api/projects"),
+      read("/api/projects/" + encodeURIComponent(projectId) + "/readiness"),
+      read("/api/projects/" + encodeURIComponent(projectId) + "/bootstrap/status").catch((error) => error.status === 404 ? { items: [] } : Promise.reject(error)),
+      read("/api/projects/" + encodeURIComponent(projectId) + "/ui-state?thread_limit=1&include_static=true")
     ]);
-    state.project = (results[0] || []).find((project) => project.id === state.projectId) || results[3]?.project || null;
+    if (!current()) return state;
+    state.project = (results[0] || []).find((project) => project.id === projectId) || results[3]?.project || null;
     state.readiness = results[1];
     state.bootstrap = results[2] || { items: [] };
     state.resources = results[3]?.resources?.items || [];
-  } catch (error) { state.error = error.message; }
+  } catch (error) {
+    if (!current() || error?.name === 'AbortError') return state;
+    state.error = error.message;
+  }
+  if (!current()) return state;
+  loading = false;
   render();
   return state;
 }

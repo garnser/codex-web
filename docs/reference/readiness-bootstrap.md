@@ -41,6 +41,19 @@ GET  /api/projects/{project_id}/bootstrap/status
 
 Apply recomputes the plan and compares it with the caller's reviewed `expected_plan_id`; stale plans fail rather than silently applying a different operation set.
 
+The Project Setup UI clears prior readiness, topology, plan and action feedback
+when Project scope changes. Read requests are aborted and generation-fenced;
+late readiness or bootstrap responses cannot overwrite the new Project or
+change its execution gate. Cleared scope issues no request and keeps execution
+controls gated. Pending mutations retain their initiating Project; navigation
+does not claim to cancel or roll back an already-submitted canonical apply.
+
+The normalized manifest submitted for planning remains attached to the reviewed
+plan in the UI. Apply captures that manifest, plan ID and the operator's explicit
+authority-change approval before rendering progress, so rendering cannot reset
+the submitted inputs. Canonical plan comparison and authorization remain the
+enforcement boundary.
+
 ## Bootstrap CLI
 
 The repository launcher and `python -m codex_web.cli` expose the same command contract:
