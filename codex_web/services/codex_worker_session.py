@@ -14,6 +14,7 @@ from codex_web.execution_workers import (
 from codex_web.identity import AuthenticationActor, PrincipalKind
 from codex_web.runtime.codex import (
     CODEX_MINIMUM_ADDRESS_SPACE_BYTES,
+    CODEX_MINIMUM_PROCESS_COUNT,
     CodexRuntime,
     trusted_local_codex_command,
 )
@@ -301,6 +302,7 @@ class AssignmentBoundCodexSession(AssignmentBoundAgentProcessSession):
             credential_provider=provider,
             runtime_binding=runtime_binding,
             minimum_address_space_bytes=CODEX_MINIMUM_ADDRESS_SPACE_BYTES,
+            minimum_process_count=CODEX_MINIMUM_PROCESS_COUNT,
             restart_runtime_on_timeout=False,
             watchdog_interval_seconds=watchdog_interval_seconds,
             egress_endpoints_resolver=egress_endpoints_resolver,

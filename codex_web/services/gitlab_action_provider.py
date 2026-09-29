@@ -34,12 +34,13 @@ from codex_web.services.code_host_action_contract import (
 )
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.resources import ResourceCatalogService
+from codex_web.services.action_providers import ActionRequirementError
 
 
 GITLAB_ACTION_PROVIDER_TYPE = "gitlab"
 GITLAB_ACTION_PROVIDER_INSTANCE = "gitlab.com"
 
-BranchPublisher = Callable[[Path, str, str, str, str], Awaitable[None]]
+BranchPublisher = Callable[[Path, str, str, str, str, str | None], Awaitable[None]]
 
 
 class GitLabActionProvider:
@@ -120,6 +121,7 @@ class GitLabActionProvider:
         branch: str,
         revision: str,
         credential: str,
+        expected_remote_revision: str | None = None,
     ) -> None:
         with tempfile.TemporaryDirectory(prefix="codex-gitlab-askpass-") as root:
             askpass = Path(root) / "askpass.sh"
@@ -142,14 +144,24 @@ class GitLabActionProvider:
                 }
             )
             try:
-                subprocess.run(
-                    [
+                command = [
                         "git",
                         "push",
                         "--porcelain",
+                    ]
+                if expected_remote_revision is not None:
+                    command.append(
+                        "--force-with-lease="
+                        f"refs/heads/{branch}:{expected_remote_revision}"
+                    )
+                command.extend(
+                    [
                         f"{self.web_base}/{project}.git",
                         f"{revision}:refs/heads/{branch}",
-                    ],
+                    ]
+                )
+                subprocess.run(
+                    command,
                     cwd=workspace_path,
                     env=environment,
                     check=True,
@@ -363,7 +375,10 @@ class GitLabActionProvider:
             )
             summary = "GitLab merge request is owned and reconciled by this action."
         elif request.action_id == CODE_HOST_BRANCH_PUBLISH_ACTION_ID:
-            attested = self.contract.attest_branch(request)
+            try:
+                attested = self.contract.attest_branch(request)
+            except ValueError as exc:
+                raise ActionRequirementError(str(exc)) from exc
             if self.branch_publisher is not None:
                 await self.branch_publisher(
                     attested.workspace_path,
@@ -371,6 +386,7 @@ class GitLabActionProvider:
                     attested.branch,
                     attested.revision,
                     credential,
+                    attested.expected_remote_revision,
                 )
             else:
                 await asyncio.to_thread(
@@ -380,6 +396,7 @@ class GitLabActionProvider:
                     attested.branch,
                     attested.revision,
                     credential,
+                    attested.expected_remote_revision,
                 )
             evidence_type = CODE_HOST_BRANCH_EVIDENCE
             external_id = attested.revision

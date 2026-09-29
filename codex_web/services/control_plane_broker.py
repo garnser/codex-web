@@ -26,6 +26,7 @@ from codex_web.action_intents import (
     ActionDecisionSnapshot,
     ActionIntentClaimRequest,
     ActionIntentCreate,
+    ActionIntentReconcileRequest,
 )
 from codex_web.action_providers import ActionRequest
 from codex_web.authority import (
@@ -154,6 +155,13 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
         method="POST",
         path_template="/api/work-items/{ref}/reconcile",
         capability="work_item.reconcile",
+        authority_level=AuthorityLevel.EXECUTE,
+    ),
+    ControlPlaneBrokerOperation(
+        id="action_intent.reconcile",
+        method="POST",
+        path_template="/api/action-intents/{intent_id}/reconcile",
+        capability="repository.branch.publish",
         authority_level=AuthorityLevel.EXECUTE,
     ),
     ControlPlaneBrokerOperation(
@@ -523,6 +531,28 @@ class ControlPlaneBrokerService:
             return _ResolvedOperation(
                 operation=operation,
                 target_ref=None,
+                query=query,
+            )
+        action_intent_prefix = "/api/action-intents/"
+        action_intent_suffix = "/reconcile"
+        if path.startswith(action_intent_prefix) and path.endswith(
+            action_intent_suffix
+        ):
+            intent_id = unquote(
+                path[
+                    len(action_intent_prefix) : -len(action_intent_suffix)
+                ]
+            ).strip("/")
+            if not re.fullmatch(r"action-intent-[A-Za-z0-9]+", intent_id):
+                raise ControlPlaneBrokerDeniedError("invalid action intent id")
+            operation = _OPERATION_BY_ID["action_intent.reconcile"]
+            if method != operation.method:
+                raise ControlPlaneBrokerDeniedError(
+                    "method is not allowed for action-intent reconciliation"
+                )
+            return _ResolvedOperation(
+                operation=operation,
+                target_ref=intent_id,
                 query=query,
             )
         local_deployment = {
@@ -923,6 +953,7 @@ class ControlPlaneBrokerService:
         requester_actor = (
             self._requester_actor(assignment)
             if operation.id.startswith("repository.")
+            or operation.id.startswith("action_intent.")
             or operation.id.startswith("deployment.local.")
             or operation.id == "control_plane.operations.list"
             else actor
@@ -930,8 +961,10 @@ class ControlPlaneBrokerService:
         authority_actor = actor if repository_read else requester_actor
         state = None
         resource_ids: tuple[str, ...] = ()
-        if operation.id.startswith("repository.") or operation.id.startswith(
-            "deployment.local."
+        if (
+            operation.id.startswith("repository.")
+            or operation.id.startswith("action_intent.")
+            or operation.id.startswith("deployment.local.")
         ):
             resource_ids = (self._writable_repository_id(assignment),)
         elif resolved.target_ref is not None:
@@ -986,6 +1019,33 @@ class ControlPlaneBrokerService:
                 operation=operation,
                 payload=payload,
             )
+        elif operation.id == "action_intent.reconcile":
+            if self.action_intents is None:
+                raise ControlPlaneBrokerDeniedError(
+                    "action-intent reconciliation is unavailable"
+                )
+            assert resolved.target_ref is not None
+            intent = self.action_intents.get(
+                resolved.target_ref,
+                requester_actor,
+            )
+            repository_id = self._writable_repository_id(assignment)
+            if (
+                intent.action_id != CODE_HOST_BRANCH_PUBLISH_ACTION_ID
+                or intent.execution_id != assignment.execution_id
+                or intent.project_id != assignment.project_id
+                or tuple(intent.resource_ids) != (repository_id,)
+                or intent.requested_by != requester_actor.identity_id
+            ):
+                raise ControlPlaneBrokerDeniedError(
+                    "action intent is outside the assignment delivery scope"
+                )
+            item = await self.action_intents.reconcile(
+                intent.id,
+                ActionIntentReconcileRequest.model_validate(payload),
+                actor=actor,
+            )
+            result = {"item": item.model_dump(mode="json")}
         elif operation.id == "work_item.list":
             requested_project = (
                 resolved.query.get("project_id", [assignment.project_id])[0]
