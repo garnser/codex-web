@@ -378,6 +378,17 @@ class CodexAgentRuntimeAdapterTests(unittest.IsolatedAsyncioTestCase):
             ("turn/interrupt", {"threadId": "codex-thread-1"}),
         )
 
+    async def test_codex_interrupt_includes_active_turn_id(self) -> None:
+        transport = SimpleNamespace(request=AsyncMock(return_value={"ok": True}))
+        adapter = CodexAgentRuntimeAdapter(transport)
+
+        await adapter.interrupt("codex-thread-1", "codex-turn-1")
+
+        transport.request.assert_awaited_once_with(
+            "turn/interrupt",
+            {"threadId": "codex-thread-1", "turnId": "codex-turn-1"},
+        )
+
     async def test_codex_native_objectives_use_supported_thread_goal_protocol(self) -> None:
         transport = SimpleNamespace(
             request=AsyncMock(

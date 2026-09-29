@@ -6,6 +6,8 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -176,6 +178,13 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
         authority_level=AuthorityLevel.READ,
     ),
     ControlPlaneBrokerOperation(
+        id="repository.read.pull-requests",
+        method="GET",
+        path_template="/api/repository-facts/pull-requests?state={state}",
+        capability="repository.pull-request.read",
+        authority_level=AuthorityLevel.READ,
+    ),
+    ControlPlaneBrokerOperation(
         id="repository.read.pull-request",
         method="GET",
         path_template="/api/repository-facts/pull-requests/{external_id}",
@@ -252,6 +261,20 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
         method="POST",
         path_template="/api/repository-actions/issue/update",
         capability="repository.issue.update",
+        authority_level=AuthorityLevel.EXECUTE,
+    ),
+    ControlPlaneBrokerOperation(
+        id="deployment.local.status",
+        method="GET",
+        path_template="/api/local-deployment",
+        capability="deployment.local.read",
+        authority_level=AuthorityLevel.READ,
+    ),
+    ControlPlaneBrokerOperation(
+        id="deployment.local.install",
+        method="POST",
+        path_template="/api/local-deployment/install",
+        capability="deployment.local.install",
         authority_level=AuthorityLevel.EXECUTE,
     ),
 )
@@ -445,6 +468,7 @@ class ControlPlaneBrokerService:
             "/api/repository-facts/refs": "repository.read.refs",
             "/api/repository-facts/releases": "repository.read.releases",
             "/api/repository-facts/compare": "repository.read.compare",
+            "/api/repository-facts/pull-requests": "repository.read.pull-requests",
         }
         operation_id = repository_read_exact.get(path)
         target_ref = None
@@ -501,6 +525,17 @@ class ControlPlaneBrokerService:
                 target_ref=None,
                 query=query,
             )
+        local_deployment = {
+            "/api/local-deployment": "deployment.local.status",
+            "/api/local-deployment/install": "deployment.local.install",
+        }.get(path)
+        if local_deployment is not None:
+            operation = _OPERATION_BY_ID[local_deployment]
+            if method != operation.method:
+                raise ControlPlaneBrokerDeniedError(
+                    f"method {method} is not allowed for {operation.id}"
+                )
+            return _ResolvedOperation(operation=operation, target_ref=None, query=query)
         if path == "/api/work-items":
             operation = _OPERATION_BY_ID["work_item.list"]
             if method != operation.method:
@@ -800,6 +835,15 @@ class ControlPlaneBrokerService:
                 binding_id, repository_id, target_ref, actor=actor
             )
             return {"item": item.model_dump(mode="json")}
+        if operation.id == "repository.read.pull-requests":
+            state = (query.get("state") or ["open"])[0].strip().casefold()
+            items = await self.code_hosts.pull_requests(
+                binding_id,
+                repository_id,
+                actor=actor,
+                state=state,
+            )
+            return {"items": [item.model_dump(mode="json") for item in items]}
         if operation.id == "repository.read.reviews":
             assert target_ref is not None
             items = await self.code_hosts.reviews(
@@ -879,13 +923,16 @@ class ControlPlaneBrokerService:
         requester_actor = (
             self._requester_actor(assignment)
             if operation.id.startswith("repository.")
+            or operation.id.startswith("deployment.local.")
             or operation.id == "control_plane.operations.list"
             else actor
         )
         authority_actor = actor if repository_read else requester_actor
         state = None
         resource_ids: tuple[str, ...] = ()
-        if operation.id.startswith("repository."):
+        if operation.id.startswith("repository.") or operation.id.startswith(
+            "deployment.local."
+        ):
             resource_ids = (self._writable_repository_id(assignment),)
         elif resolved.target_ref is not None:
             state = self._state_for_target(assignment, resolved.target_ref)
@@ -919,6 +966,10 @@ class ControlPlaneBrokerService:
 
         if operation.id == "control_plane.operations.list":
             result = self.public_assignment_capability(assignment)
+        elif operation.id == "deployment.local.status":
+            result = self._local_deployment_status()
+        elif operation.id == "deployment.local.install":
+            result = self._schedule_local_deployment(payload)
         elif repository_read:
             result = await self._read_repository_fact(
                 assignment=assignment,
@@ -955,6 +1006,9 @@ class ControlPlaneBrokerService:
         elif operation.id == "work_item.read":
             assert resolved.target_ref is not None
             result = await self.work_items.get(resolved.target_ref)
+            result["authoritative_source"] = await self.operator.source_detail(
+                resolved.target_ref
+            )
         elif operation.id == "work_item.handoff":
             assert resolved.target_ref is not None
             result = await self.work_items.handoff(
@@ -994,6 +1048,92 @@ class ControlPlaneBrokerService:
         if not isinstance(encoded, dict):
             encoded = {"result": encoded}
         return 200, encoded, operation, resolved.target_ref, authority_decision
+
+    @staticmethod
+    def _local_deployment_paths() -> tuple[Path, Path, Path]:
+        source = Path(
+            os.environ.get(
+                "CODEX_WEB_LOCAL_DEPLOY_SOURCE",
+                "/home/nbingester/worktrees/codex-web-canonical-main",
+            )
+        )
+        live = Path(
+            os.environ.get(
+                "CODEX_WEB_LOCAL_DEPLOY_LIVE",
+                "/home/nbingester/codex-web-live-9990e20",
+            )
+        )
+        helper = Path(__file__).resolve().parents[2] / "scripts" / "local_deploy.py"
+        return source, live, helper
+
+    @staticmethod
+    def _git_revision(path: Path, revision: str = "HEAD") -> str | None:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--verify", revision],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    def _local_deployment_status(self) -> dict[str, Any]:
+        source, live, helper = self._local_deployment_paths()
+        return {
+            "project_id": "c58dccd0df3a",
+            "source_path": str(source),
+            "live_path": str(live),
+            "source_commit": self._git_revision(source),
+            "available_commit": self._git_revision(source, "origin/main"),
+            "live_commit": self._git_revision(live),
+            "helper_available": helper.is_file(),
+            "log_path": "/home/nbingester/codex-web-native-runtime/local-deploy.log",
+        }
+
+    def _schedule_local_deployment(self, payload: dict[str, Any]) -> dict[str, Any]:
+        allowed = {"candidate_revision"}
+        unexpected = sorted(set(payload) - allowed)
+        if unexpected:
+            raise ControlPlaneBrokerRequestError(
+                "local deployment contains unsupported fields: " + ", ".join(unexpected)
+            )
+        candidate = str(payload.get("candidate_revision") or "").strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", candidate):
+            raise ControlPlaneBrokerRequestError(
+                "candidate_revision must be an exact 40-character lowercase Git SHA"
+            )
+        source, live, helper = self._local_deployment_paths()
+        if not helper.is_file():
+            raise ControlPlaneBrokerDeniedError("local deployment helper is unavailable")
+        log_path = Path("/home/nbingester/codex-web-native-runtime/local-deploy.log")
+        log_handle = log_path.open("a", encoding="utf-8")
+        try:
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(helper),
+                    "--candidate",
+                    candidate,
+                    "--source",
+                    str(source),
+                    "--live",
+                    str(live),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                close_fds=True,
+            )
+        finally:
+            log_handle.close()
+        return {
+            "accepted": True,
+            "candidate_revision": candidate,
+            "process_id": process.pid,
+            "status_href": "/api/local-deployment",
+            "log_path": str(log_path),
+        }
 
     def audit_events(
         self,

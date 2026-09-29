@@ -241,6 +241,41 @@ class StaleActiveTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(record.action_state, "observed")
         self.assertEqual(report.legacy_backup_refs, ())
+        self.assertEqual(report.resume_thread_ids, ())
+        self.assertEqual(self.resumed, [])
+
+    async def test_local_startup_resumes_persisted_live_assignment(self) -> None:
+        active = _active(
+            "thread-live",
+            execution_id="exec-live",
+            assignment_id="assignment-live",
+            worker_id="worker-1",
+            fence=3,
+        )
+        self._put_active(active)
+        self.worker_state = SimpleNamespace(
+            assignments=[
+                _assignment(
+                    assignment_id="assignment-live",
+                    execution_id="exec-live",
+                    status=AssignmentStatus.RUNNING,
+                    worker_id="worker-1",
+                    fence=3,
+                    lease_expires_at=NOW + 120,
+                )
+            ],
+            workers=[_worker("worker-1", WorkerLifecycle.ACTIVE)],
+        )
+        self.service.resume_live_on_startup = True
+
+        report = await self.service.reconcile(
+            reason="startup",
+            actor_id="system:test",
+        )
+
+        self.assertEqual(report.live, 1)
+        self.assertEqual(report.resume_thread_ids, ("thread-live",))
+        self.assertEqual(self.resumed, [{"thread-live"}])
 
     async def test_lost_worker_with_unexpired_lease_is_interrupted(self) -> None:
         active = _active(

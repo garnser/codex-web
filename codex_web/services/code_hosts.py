@@ -254,6 +254,33 @@ class CodeHostService:
             ),
         )
 
+    async def pull_requests(
+        self,
+        binding_id: str,
+        resource_id: str,
+        *,
+        actor: AuthenticationActor,
+        state: str = "open",
+    ) -> tuple[CodeHostPullRequestFact, ...]:
+        binding, provider = self.registry.resolve(binding_id, actor=actor)
+        self._require_capability(binding, provider, CodeHostCapability.PULL_REQUEST_READ)
+        resource = self._resource(resource_id, actor=actor, binding=binding)
+        normalized_state = str(state or "open").strip().casefold()
+        if normalized_state not in {"open", "closed", "all"}:
+            raise CodeHostError("pull-request state must be open, closed, or all")
+        return await self._with_credential(
+            binding,
+            actor=actor,
+            resource=resource,
+            operation="code-host.pull-requests.read",
+            callback=lambda credential: provider.pull_requests(
+                binding,
+                resource,
+                credential=credential,
+                state=normalized_state,
+            ),
+        )
+
     async def reviews(
         self,
         binding_id: str,

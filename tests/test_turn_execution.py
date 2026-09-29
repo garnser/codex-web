@@ -11,7 +11,13 @@ from fastapi import FastAPI, HTTPException
 
 from codex_web.agent_runtime import AgentRuntimeResult
 from codex_web.execution_workers import ExecutionRuntimeBinding
-from codex_web.models import Project, ThreadRunSettings, TurnCreate, WorkItemState
+from codex_web.models import (
+    ActiveThreadTurn,
+    Project,
+    ThreadRunSettings,
+    TurnCreate,
+    WorkItemState,
+)
 from codex_web.resources import RepositoryTargetSource
 from codex_web.runtime.execution import (
     TurnExecutionService,
@@ -349,6 +355,62 @@ class TurnExecutionQueueTests(unittest.TestCase):
         self.assertIs(first, duplicate)
         self.assertEqual(host._thread_queue_depth("t1"), 1)
 
+
+class TurnExecutionRestartRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _active() -> ActiveThreadTurn:
+        return ActiveThreadTurn(
+            thread_id="t1",
+            project_id="p1",
+            source="web",
+            started_at=100.0,
+            updated_at=100.0,
+        )
+
+    async def test_resume_releases_interrupted_marker_before_start(self) -> None:
+        host = _Host()
+        host.active["t1"] = self._active()
+        project = Project(id="p1", name="Project", path="/workspace/project")
+        host._project = lambda project_id: project
+        service = TurnExecutionService(host)
+
+        async def start(thread_id, **kwargs):
+            self.assertFalse(service.thread_is_active(thread_id))
+            service.mark_thread_active(
+                thread_id,
+                turn_id="replacement-turn",
+                project_id="p1",
+                source=kwargs["source"],
+            )
+            return {"turn": {"id": "replacement-turn"}}
+
+        service.start_thread_turn_now = start
+
+        await service.resume_active_threads_after_startup({"t1"})
+
+        self.assertEqual(host.active["t1"].turn_id, "replacement-turn")
+        self.assertEqual(host.active["t1"].resume_attempts, 0)
+        self.assertEqual(host.events[-1]["type"], "active_thread_resumed")
+
+    async def test_failed_resume_restores_marker_with_retry_count(self) -> None:
+        host = _Host()
+        host.active["t1"] = self._active()
+        project = Project(id="p1", name="Project", path="/workspace/project")
+        host._project = lambda project_id: project
+        service = TurnExecutionService(host)
+
+        async def fail(thread_id, **kwargs):
+            self.assertFalse(service.thread_is_active(thread_id))
+            raise RuntimeError("provider unavailable")
+
+        service.start_thread_turn_now = fail
+
+        await service.resume_active_threads_after_startup({"t1"})
+
+        restored = host.active["t1"]
+        self.assertEqual(restored.resume_attempts, 1)
+        self.assertIsNotNone(restored.last_resume_at)
+        self.assertEqual(host.events[-1]["type"], "active_thread_resume_failed")
 
 class _BindingService:
     def __init__(self) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import asdict
 from typing import Any
 
 from fastapi import HTTPException
@@ -361,6 +362,24 @@ class WorkItemOperatorService:
             "history": history,
             "diagnostics": self._diagnostics(state, history),
             "actions": self._actions(state, source),
+        }
+
+    async def source_detail(self, ref: str) -> dict[str, Any]:
+        """Read authoritative issue content without exposing provider credentials."""
+        state = self.state_machine._work_item_state(ref)
+        source = self._source_for_state(state, required=True)
+        assert source is not None and state.source_identity is not None
+        source.capabilities.require(TaskSourceCapability.READ)
+        snapshot = await source.read(state.source_identity)
+        discussion: list[dict[str, Any]] = []
+        discussion_reader = getattr(source, "discussion", None)
+        if callable(discussion_reader) and source.capabilities.supports(
+            TaskSourceCapability.DISCUSSIONS
+        ):
+            discussion = await discussion_reader(state.source_identity)
+        return {
+            "snapshot": asdict(snapshot),
+            "discussion": discussion,
         }
 
     async def retry(

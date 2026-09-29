@@ -40,7 +40,16 @@ The bootstrap assignment is a bounded **thread-session execution**, not a per-tu
 
 Normal terminal turn events clear only the active-turn record for a bootstrap-bound thread; they do not complete the bootstrap assignment or stop its isolated app-server. Later turns and inactive thread RPCs resolve the returned thread ID back to that same live bootstrap assignment/session. Ordinary pre-existing threads without a bootstrap binding retain the bounded compatibility metadata path until their next independent `thread:<thread-id>` execution.
 
-If the process/session disappears, the durable binding remains evidence that the thread belongs to an isolated bootstrap execution. Requests fail explicitly rather than starting a fresh private CODEX_HOME or falling back to the control-plane Codex runtime. Safe process restart/resume of that private CODEX_HOME is intentionally outside this contract.
+If the process/session disappears, the durable binding remains evidence that
+the thread belongs to an isolated bootstrap execution. Codex-web never falls
+back to the control-plane Codex runtime. An ordinary request fails explicitly;
+the bounded startup-recovery path may instead supersede the dead bootstrap
+with a newly authorized assignment, isolated workspace, worker lease and
+private `CODEX_HOME`, then ask the same thread to continue from canonical
+context and repository evidence. It does not restart the old process, reuse its
+lease, or claim that uncommitted filesystem state survived. Replicated
+deployments retain shared lease ownership rules and do not perform this local
+live-assignment inference.
 
 ## Repository target provenance and multi-repository members
 

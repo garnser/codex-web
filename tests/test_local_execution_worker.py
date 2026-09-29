@@ -633,6 +633,38 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
         )
         return runtime, backend
 
+    def test_runtime_tool_mounts_expose_playwright_read_only_roots(self) -> None:
+        tool_root = Path(self.temp.name) / "playwright-tool"
+        browser_root = Path(self.temp.name) / "playwright-browsers"
+        tool_root.mkdir()
+        browser_root.mkdir()
+        runtime = LocalExecutionWorkerRuntime(
+            self.worker_service,
+            self.workspaces,
+            _FakeExecutionBackend(LocalExecutionResult(
+                executable="true",
+                command_digest="sha256:" + "0" * 64,
+                exit_code=0,
+                stdout="",
+                stderr="",
+                duration_seconds=0.0,
+                disk_bytes=0,
+            )),
+            worker=self.worker,
+            worker_actor=self.worker_actor,
+            control_actor=self.admin,
+            playwright_tool_root=tool_root,
+            playwright_browser_root=browser_root,
+        )
+
+        self.assertEqual(
+            runtime.runtime_tool_mounts(),
+            (
+                (tool_root.resolve(), Path("/opt/codex-playwright")),
+                (browser_root.resolve(), Path("/opt/codex-playwright-browsers")),
+            ),
+        )
+
     def test_local_bootstrap_reactivates_offline_worker_and_drops_stale_command_capability(self) -> None:
         self.worker_service.set_lifecycle(
             self.worker.id,
