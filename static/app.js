@@ -1,3 +1,4 @@
+import{installThreadCommands}from"./object_commands.js";
 import*as ep from"./execution_profile_controls.js";
 import{loadProjectUiStateForRefresh}from"./project_ui_state.js";
 import{connectProjectUiEventStream,createProjectUiEventReconciler}from"./project_ui_events.js";
@@ -1041,6 +1042,7 @@ async function refresh({ reloadProjects = false } = {}) {
     state.threadSettings=snapshot.threadSettings;
     state.botChannels=snapshot.channels;
     state.threads=snapshot.threads;
+    state.threadIndexProject=projectId;
     if(snapshot.staticState){
       state.projectUiStatic[projectId]=snapshot.staticState;
       if(snapshot.staticState.executionProfiles){
@@ -2345,6 +2347,7 @@ $("save-project").addEventListener("click", async (event) => {
   await refresh();
 });
 
+installThreadCommands(state,loadThread);
 activateProject(state,state.projectId);
 startLongTaskObserver();
 applyTheme(currentTheme());

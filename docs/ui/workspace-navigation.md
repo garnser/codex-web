@@ -15,7 +15,9 @@ Use the Project switcher to change canonical Project context. Project switching 
 
 ## Fast navigation
 
-Press **Ctrl+K** (or **⌘K** on macOS) to open workspace search. You can also use the workspace launcher in the top bar.
+Press **Ctrl+K** (or **⌘K** on macOS), or select **All workspaces** in the sidebar, to open command search. Type a destination, Project name, or the name of an already loaded Thread or Work Item. Use **↑/↓** to select a result, **Enter** to open it and **Escape** to dismiss the palette. Focus returns to the previous control on dismissal.
+
+Results show their Project or organization/workspace scope. **Switch to Project** explicitly changes the active Project; object results stay within the current Project. Recently used destinations appear first. Unavailable commands are omitted, and an empty result list gives a search hint. The normal navigation hierarchy remains available. The palette does not search unloaded records or start agent work.
 
 Deep links use the current shell and preserve Project context. Browser Back/Forward should return you through workspace navigation rather than forcing a full application reload.
 
