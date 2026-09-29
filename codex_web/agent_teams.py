@@ -212,6 +212,7 @@ class AgentTeamUpdate(BaseModel):
 class AgentTeamLifecycleChange(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     reason: str = Field(min_length=1, max_length=1000)
+    expected_revision: int | None = Field(default=None, ge=1)
 
 
 class TeamDelegationRequest(BaseModel):

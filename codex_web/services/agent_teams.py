@@ -102,6 +102,7 @@ class AgentTeamService:
         attention: Any | None = None,
         runtime_usage_store: Any | None = None,
         assignment_loader: Callable[[], Any] | None = None,
+        usage_loader: Callable[[str, AuthenticationActor], dict[str, Any]] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.store = store
@@ -110,6 +111,7 @@ class AgentTeamService:
         self.attention = attention
         self.runtime_usage_store = runtime_usage_store
         self.assignment_loader = assignment_loader
+        self.usage_loader = usage_loader
         self.clock = clock
         install_team_instructions_schema(definitions)
         self._seen_triggers: set[str] = set()
@@ -385,6 +387,16 @@ class AgentTeamService:
         )
         return self.store.append(next_item)
 
+    def usage(self, team_id: str, *, actor: AuthenticationActor) -> dict[str, Any]:
+        self.get(team_id, actor=actor)
+        if self.usage_loader is not None:
+            try:
+                return self.usage_loader(team_id, actor)
+            except Exception:
+                pass
+        return {"schema_version": "1.0", "available": False, "items": [],
+                "team_id": team_id, "reason": "Canonical Team consumer projection is unavailable."}
+
     def lifecycle(
         self,
         team_id: str,
@@ -395,8 +407,19 @@ class AgentTeamService:
     ) -> AgentTeamRevision:
         current = self._latest(team_id, actor=actor)
         self._require_mutation(actor, owner_identity_id=current.owner_identity_id)
+        if payload.expected_revision is not None and current.revision != payload.expected_revision:
+            raise AgentTeamConflict("Team revision changed; refresh before changing lifecycle.")
         if current.lifecycle == lifecycle:
             return current
+        if lifecycle != AgentTeamLifecycle.ACTIVE:
+            impact = self.usage(team_id, actor=actor)
+            if not impact.get("available"):
+                raise AgentTeamConflict("Team usage is unavailable; retry after canonical consumers can be verified.")
+            if impact.get("blocking_count", 0):
+                raise AgentTeamConflict(
+                    "Team has active consumers. Pause dependent Automations and finish or cancel "
+                    "active/queued delegated executions before changing lifecycle."
+                )
         return self.store.append(
             current.model_copy(
                 update={
