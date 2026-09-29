@@ -198,7 +198,12 @@ test("thread-bound repository stays visible and can be changed from thread setti
         contentType: "application/json",
         body: JSON.stringify({
           project,
-          executionProfiles: { items: [], default_profile_id: "repository-write" },
+          executionProfiles: {
+            items: [{ id: "repository-write", name: "Repository write",
+              repositoryAccess: "mutable", workspaceMode: "repository",
+              requiredWorkerCapabilities: ["git", "command_execution"] }],
+            default_profile_id: "repository-write",
+          },
           resources: { items: [
             { id: "repo-app", name: "Application", resource_type: "repository", lifecycle: "active" },
             { id: "repo-platform", name: "Platform", resource_type: "repository", lifecycle: "active" },
@@ -426,7 +431,12 @@ test("retryable steering failure preserves the queued message and reconciles can
       await route.fulfill({
         json: {
           project,
-          executionProfiles: { items: [], default_profile_id: "repository-write" },
+          executionProfiles: {
+            items: [{ id: "repository-write", name: "Repository write",
+              repositoryAccess: "mutable", workspaceMode: "repository",
+              requiredWorkerCapabilities: ["git", "command_execution"] }],
+            default_profile_id: "repository-write",
+          },
           resources: { items: [{ id: "repo-app", name: "Application", resource_type: "repository", lifecycle: "active" }] },
           bindings: { items: [] },
           threadSettings: { "thread-1": { repository_resource_id: "repo-app", execution_profile_id: "repository-write" } },
@@ -519,7 +529,12 @@ test("sidebar channel actions remain usable alongside relocated thread settings"
     if (path === "/api/projects/home/ui-state") {
       return route.fulfill({ json: {
         project,
-        executionProfiles: { items: [], default_profile_id: "repository-write" },
+        executionProfiles: {
+            items: [{ id: "repository-write", name: "Repository write",
+              repositoryAccess: "mutable", workspaceMode: "repository",
+              requiredWorkerCapabilities: ["git", "command_execution"] }],
+            default_profile_id: "repository-write",
+          },
         resources: { items: [] },
         bindings: { items: bindings },
         threadSettings: { [thread.id]: { execution_profile_id: "repository-write" } },

@@ -1046,7 +1046,7 @@ async function refresh({ reloadProjects = false } = {}) {
     if(snapshot.staticState){
       state.projectUiStatic[projectId]=snapshot.staticState;
       if(snapshot.staticState.executionProfiles){
-        ep.setCatalog(snapshot.staticState.executionProfiles);
+        ep.setCatalog(snapshot.staticState.executionProfiles, projectId);
       }
     }
 

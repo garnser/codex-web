@@ -91,8 +91,13 @@ class WorkItemContractService:
         except Exception:
             findings = []
 
-        catalog = self.execution_roles.catalog(project_id=state.project_id)
-        definition_ref = self.execution_roles.reference(project_id=state.project_id)
+        context = {
+            "organization_id": state.organization_id,
+            "workspace_id": state.workspace_id,
+            "project_id": state.project_id,
+        }
+        catalog = self.execution_roles.catalog(**context)
+        definition_ref = self.execution_roles.reference(**context)
         role = execution_role_for_work_item(
             state,
             split_brain=bool(findings),
@@ -104,7 +109,7 @@ class WorkItemContractService:
         else:
             profile, profile_ref = self.execution_profiles.resolve(
                 role.execution_profile_id,
-                project_id=state.project_id,
+                **context,
             )
         return role, findings, catalog, definition_ref, profile, profile_ref
 

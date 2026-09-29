@@ -797,9 +797,6 @@ app.state.definition_registry_service = definition_registry_service
 app.state.execution_role_definition_service = execution_role_definition_service
 app.state.execution_profile_definition_service = execution_profile_definition_service
 app.state.executive_role_definition_service = executive_role_definition_service
-app.include_router(
-    build_execution_profiles_router(execution_profile_definition_service)
-)
 app.state.agent_routing_definition_service = agent_routing_definition_service
 app.state.input_pipeline_definition_service = input_pipeline_definition_service
 app.include_router(build_input_plugins_router(input_pipeline_definition_service))
@@ -969,6 +966,9 @@ thread_index_repository = install_thread_index_repository(
 thread_history_repository = ThreadHistoryRepository(state_store)
 app.state.thread_history_repository = thread_history_repository
 project_service = ProjectService(project_repository)
+app.include_router(
+    build_execution_profiles_router(execution_profile_definition_service, project_service)
+)
 app.include_router(
     build_automations_router(
         automation_definition_service,

@@ -1,13 +1,33 @@
 import { request as apiRequest } from "./api_client.js";
 
 let activeProjectId = "";
+let generation = 0;
+let pending = null;
 let catalog = {
   items: [],
   default_profile_id: "repository-write",
   definition: null,
 };
 
-export function setCatalog(value) {
+function clearControls(message) {
+  const selector = document.getElementById('execution-profile');
+  if (selector) {
+    selector.replaceChildren(new Option(message, ''));
+    selector.disabled = true;
+  }
+  const summary = document.getElementById('execution-profile-summary');
+  if (summary) summary.textContent = message;
+  for (const id of ['repository-target', 'repository-write-targets', 'repository-read-context']) {
+    const control = document.getElementById(id);
+    if (control) control.disabled = true;
+  }
+}
+
+export function setCatalog(value, projectId = activeProjectId) {
+  generation += 1;
+  pending?.abort();
+  pending = null;
+  activeProjectId = String(projectId || '').trim();
   catalog = value && typeof value === "object"
     ? value
     : {
@@ -15,21 +35,27 @@ export function setCatalog(value) {
         default_profile_id: "repository-write",
         definition: null,
       };
+  if (!value) clearControls(activeProjectId ? 'Loading execution profiles…' : 'Select a Project to view execution profiles.');
   return catalog;
 }
 
 export async function load(projectId) {
-  activeProjectId = String(projectId || "").trim();
+  const id = String(projectId || '').trim();
+  setCatalog(null, id);
+  if (!id) return catalog;
+  const requestGeneration = generation;
+  const controller = new AbortController();
+  pending = controller;
   try {
-    setCatalog(await apiRequest(
-      `/api/execution-profiles?project_id=${encodeURIComponent(projectId)}`,
-    ));
+    const response = await apiRequest(
+      `/api/execution-profiles?project_id=${encodeURIComponent(id)}`,
+      { signal: controller.signal },
+    );
+    if (requestGeneration === generation && id === activeProjectId) setCatalog(response, id);
   } catch (_error) {
-    catalog = {
-      items: [],
-      default_profile_id: "repository-write",
-      definition: null,
-    };
+    if (requestGeneration === generation) clearControls('Execution profiles unavailable. Refresh this Project to retry.');
+  } finally {
+    if (pending === controller) pending = null;
   }
   return catalog;
 }
@@ -58,9 +84,10 @@ export function render(profileId, escapeHtml) {
   const summary = document.getElementById("execution-profile-summary");
   if (!selector || !summary) return;
   const profiles = catalog.items || [];
+  selector.disabled = !profiles.length;
   selector.innerHTML = profiles.map((item) => (
     `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`
-  )).join("") || '<option value="repository-write">Repository write</option>';
+  )).join("") || '<option value="">Execution profiles unavailable</option>';
   selector.value = profileId || defaultId();
   const profile = selected(selector.value);
   const scratch = profile?.workspaceMode === "scratch";
@@ -77,7 +104,14 @@ export function render(profileId, escapeHtml) {
     summary.textContent = "Execution profile metadata unavailable.";
   }
   const mutable = document.getElementById("repository-target");
+  const writable = document.getElementById("repository-write-targets");
   const readOnly = document.getElementById("repository-read-context");
-  if (mutable) mutable.disabled = scratch;
-  if (readOnly) readOnly.disabled = scratch;
+  if (mutable) mutable.disabled = !profile || scratch;
+  if (writable) writable.disabled = !profile || scratch;
+  if (readOnly) readOnly.disabled = !profile || scratch;
 }
+
+window.addEventListener('codex:project-changed', event => {
+  const id = String(event.detail?.projectId || '').trim();
+  if (id !== activeProjectId) setCatalog(null, id);
+});

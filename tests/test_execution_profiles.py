@@ -4,13 +4,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishRequest
+from codex_web.execution_profile_seed import execution_profile_catalog_seed_payload
+from codex_web.models import WorkItemState
+from codex_web.services.work_item_contracts import WorkItemContractService
+from codex_web.services.execution_role_definitions import ExecutionRoleDefinitionService
+from codex_web.execution_role_models import validate_execution_role_catalog
 from codex_web.execution_contract_seed import execution_role_catalog_seed_payload
 from codex_web.execution_profiles import (
     ExecutionProfileCatalogDefinition,
     ExecutionProfileContract,
 )
 from codex_web.execution_role_models import ExecutionRoleCatalogDefinition
-from codex_web.services.definitions import DefinitionRegistryService
+from codex_web.services.definitions import DefinitionKindSchema, DefinitionRegistryService
 from codex_web.services.execution_profile_definitions import (
     install_execution_profile_definitions,
 )
@@ -47,6 +53,43 @@ class ExecutionProfileTests(unittest.TestCase):
             repository_profile.control_plane_operations,
         )
         self.assertEqual(reference.kind, "execution-profile-catalog")
+
+    def test_work_item_pins_its_workspace_role_and_profile_catalogs(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            registry = DefinitionRegistryService(DefinitionRegistryStore(
+                SQLiteStateStore(Path(raw) / "state.sqlite3")))
+            profiles = install_execution_profile_definitions(registry)
+            registry.register_schema(DefinitionKindSchema(
+                kind="execution-role-catalog", schema_version="1.0",
+                validate=validate_execution_role_catalog,
+            ))
+            roles = ExecutionRoleDefinitionService(registry)
+            roles.bootstrap()
+            expected = {}
+            for tenant in ("a", "b"):
+                records = []
+                for kind, definition_id, payload in [
+                    ("execution-role-catalog", "execution-roles.default", execution_role_catalog_seed_payload()),
+                    ("execution-profile-catalog", "execution.profiles.default", execution_profile_catalog_seed_payload()),
+                ]:
+                    record = registry.create_draft(DefinitionDraftCreate(
+                        kind=kind, definition_id=definition_id, definition_schema_version="1.0",
+                        scope_type="workspace", scope_id=f"workspace-{tenant}",
+                        payload=payload, actor="fixture",
+                    ))
+                    registry.publish(record.record_id, DefinitionPublishRequest(actor="fixture"))
+                    records.append(record.record_id)
+                expected[tenant] = records
+            service = WorkItemContractService(None, lambda state: state.ref, roles, profiles)
+            for tenant in ("a", "b"):
+                state = WorkItemState(
+                    ref=f"group/app#{tenant}", organization_id=f"org-{tenant}",
+                    workspace_id=f"workspace-{tenant}", project_id=f"project-{tenant}",
+                    current_owner="james", current_stage="implementation_active",
+                    last_meaningful_update_at=1, updated_at=1, created_at=1,
+                )
+                contract = service.contract_for_state(state)
+                self.assertEqual([ref.record_id for ref in contract.definition_refs], expected[tenant])
 
     def test_structural_coordination_role_uses_orchestration_profile(self) -> None:
         catalog = ExecutionRoleCatalogDefinition.model_validate(
