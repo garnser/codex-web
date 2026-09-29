@@ -13,7 +13,7 @@ async function mirrorProductionStaticMount(page) {
 
 async function openThreadSettings(page) {
   const settings = page.locator("#thread-settings-menu");
-  if (!(await settings.getAttribute("open"))) {
+  if ((await settings.getAttribute("open")) === null) {
     await settings.locator(":scope > summary").click();
   }
 }
@@ -498,4 +498,63 @@ test("retryable steering failure preserves the queued message and reconciles can
   await expect(page.locator(".message.tool").last()).toContainText("message remains queued");
   await expect.poll(() => queueReads).toBeGreaterThanOrEqual(2);
   await expect.poll(() => threadReads).toBeGreaterThanOrEqual(2);
+});
+
+test("sidebar channel actions remain usable alongside relocated thread settings", async ({ page }) => {
+  await mirrorProductionStaticMount(page);
+  const pageErrors = [];
+  page.on("pageerror", error => pageErrors.push(error));
+  const project = { id: "home", name: "Home", path: "/workspace/home" };
+  const thread = { id: "thread-1", name: "Channel routing", cwd: project.path, turns: [] };
+  let channelUpdate = null;
+  let bindings = [];
+  await page.route("**/api/**", async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/projects") return route.fulfill({ json: [project] });
+    if (path === "/api/projects/home/readiness") {
+      return route.fulfill({ json: { project_id: project.id, semantic_ready: true, execution_ready: true, status: "ready", checks: [] } });
+    }
+    if (path === "/api/projects/home/ui-state") {
+      return route.fulfill({ json: {
+        project,
+        executionProfiles: { items: [], default_profile_id: "repository-write" },
+        resources: { items: [] },
+        bindings: { items: bindings },
+        threadSettings: { [thread.id]: { execution_profile_id: "repository-write" } },
+        channels: { items: [{ provider: "slack", id: "channel-1", label: "Engineering" }] },
+        threads: { data: [thread] },
+      } });
+    }
+    if (path === "/api/models") return route.fulfill({ json: { data: [] } });
+    if (path === "/api/threads/thread-1") return route.fulfill({ json: { thread } });
+    if (path === "/api/threads/thread-1/primary-channel" && request.method() === "POST") {
+      channelUpdate = request.postDataJSON();
+      bindings = [{ ...channelUpdate, thread_id: thread.id, is_primary_channel: true }];
+      return route.fulfill({ json: { bindings } });
+    }
+    return route.fulfill({ json: {} });
+  });
+
+  await page.goto("http://127.0.0.1:18766/static/index.html");
+  const threadItem = page.locator("#threads .item").filter({ hasText: thread.name });
+  await threadItem.locator(".item-main").click();
+  await expect(page.locator("#thread-title")).toHaveText(thread.name);
+  await openThreadSettings(page);
+  await expect(page.locator("#rename-thread")).toBeVisible();
+  await page.locator("#thread-settings-menu > summary").click();
+
+  // Channel routing lives in the sidebar Actions panel. Use the select's
+  // accessible name: a wrapping label's text also includes its option text.
+  await threadItem.getByRole("button", { name: "Actions", exact: true }).click();
+  const channel = threadItem.getByRole("combobox", { name: "Primary channel", exact: true });
+  await expect(channel).toBeVisible();
+  await channel.selectOption("slack:channel-1");
+  await expect.poll(() => channelUpdate).toEqual({
+    project_id: project.id,
+    provider: "slack",
+    external_conversation_id: "channel-1",
+  });
+  await expect(channel).toHaveValue("slack:channel-1");
+  expect(pageErrors).toEqual([]);
 });
