@@ -57,6 +57,12 @@ shortcuts, Ctrl/Cmd+K keyboard access and hash deep links such as
 Projects and Threads remain directly accessible in the sidebar rather than being
 forced through management screens.
 
+Company Operations and Memory expose organization/workspace projections, including
+facts or links from multiple Projects in that tenant. Their scope labels and
+navigation commands must state that shared scope even when reached from a Project
+route. Changing the selected Project does not turn these canonical shared APIs
+into Project-filtered APIs or change the actor's tenant authority.
+
 ## Unsaved editor state
 
 Substantive editors can register with `dirty_editor.js`. The shared guard compares

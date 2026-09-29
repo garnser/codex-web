@@ -69,11 +69,15 @@ def build_work_graph_router(
     async def readiness(
         request: Request,
         ref: str = Query(min_length=1),
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
+        if project_id is not None:
+            require_project(project_id, request)
         try:
             result = service.readiness(
                 ref,
                 scope=request_actor(request).tenant,
+                project_id=project_id,
             )
         except (WorkGraphError, ValueError) as exc:
             raise _error(exc) from exc
@@ -83,13 +87,17 @@ def build_work_graph_router(
     async def traverse(
         request: Request,
         ref: str = Query(min_length=1),
+        project_id: str | None = Query(default=None, min_length=1),
         relation: WorkGraphRelation | None = None,
         direction: str = Query(default="downstream", pattern="^(downstream|upstream)$"),
     ) -> dict[str, Any]:
+        if project_id is not None:
+            require_project(project_id, request)
         try:
             refs = service.traverse(
                 ref,
                 scope=request_actor(request).tenant,
+                project_id=project_id,
                 relation=relation,
                 direction=direction,
             )
@@ -105,7 +113,7 @@ def build_work_graph_router(
     @router.get("/events")
     async def events(
         request: Request,
-        project_id: str | None = None,
+        project_id: str | None = Query(default=None, min_length=1),
         limit: int = Query(default=100, ge=1, le=500),
     ) -> dict[str, Any]:
         if project_id is not None:
@@ -124,13 +132,17 @@ def build_work_graph_router(
     async def add_edge(
         payload: WorkGraphEdgeCreate,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
+        if project_id is not None:
+            require_project(project_id, request)
         try:
             actor = mutation_actor(request)
             edge = service.add_edge(
                 payload,
                 scope=actor.tenant,
                 actor_id=actor.identity_id,
+                project_id=project_id,
             )
         except (
             AuthorizationError,
@@ -144,13 +156,17 @@ def build_work_graph_router(
     async def remove_edge(
         edge_id: str,
         request: Request,
+        project_id: str | None = Query(default=None, min_length=1),
     ) -> dict[str, Any]:
+        if project_id is not None:
+            require_project(project_id, request)
         try:
             actor = mutation_actor(request)
             edge = service.remove_edge(
                 edge_id,
                 scope=actor.tenant,
                 actor_id=actor.identity_id,
+                project_id=project_id,
             )
         except (
             AuthorizationError,

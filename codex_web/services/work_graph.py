@@ -68,9 +68,14 @@ class WorkGraphService:
             and item.workspace_id == scope.workspace_id
         )
 
-    def _item(self, ref: str, scope: TenantScope) -> WorkItemState:
+    def _item(
+        self, ref: str, scope: TenantScope, project_id: str | None = None,
+    ) -> WorkItemState:
         item = self._all_items().get(ref)
-        if item is None or not self._scope_matches(item, scope):
+        if (
+            item is None or not self._scope_matches(item, scope)
+            or (project_id is not None and item.project_id != project_id)
+        ):
             raise WorkGraphNotFoundError("work item not found")
         return item
 
@@ -139,9 +144,10 @@ class WorkGraphService:
         *,
         scope: TenantScope,
         actor_id: str,
+        project_id: str | None = None,
     ) -> WorkGraphEdge:
-        source = self._item(payload.source_ref, scope)
-        target = self._item(payload.target_ref, scope)
+        source = self._item(payload.source_ref, scope, project_id)
+        target = self._item(payload.target_ref, scope, project_id)
         if not source.project_id or source.project_id != target.project_id:
             raise WorkGraphScopeError(
                 "work graph edges require Work Items in the same project"
@@ -236,6 +242,7 @@ class WorkGraphService:
         *,
         scope: TenantScope,
         actor_id: str,
+        project_id: str | None = None,
     ) -> WorkGraphEdge:
         removed: WorkGraphEdge | None = None
 
@@ -247,6 +254,7 @@ class WorkGraphService:
                 if (
                     edge.organization_id != scope.organization_id
                     or edge.workspace_id != scope.workspace_id
+                    or (project_id is not None and edge.project_id != project_id)
                 ):
                     raise WorkGraphNotFoundError("work graph edge not found")
                 removed = edge
@@ -354,10 +362,14 @@ class WorkGraphService:
         ref: str,
         *,
         scope: TenantScope,
+        project_id: str | None = None,
     ) -> WorkReadiness:
         all_items = self._all_items()
         item = all_items.get(ref)
-        if item is None or not self._scope_matches(item, scope):
+        if (
+            item is None or not self._scope_matches(item, scope)
+            or (project_id is not None and item.project_id != project_id)
+        ):
             raise WorkGraphNotFoundError("work item not found")
         if not item.project_id:
             return self._readiness_from_loaded(ref, item, {ref: item}, ())
@@ -387,8 +399,9 @@ class WorkGraphService:
         scope: TenantScope,
         relation: WorkGraphRelation | None = None,
         direction: str = "downstream",
+        project_id: str | None = None,
     ) -> tuple[str, ...]:
-        item = self._item(ref, scope)
+        item = self._item(ref, scope, project_id)
         if not item.project_id:
             return ()
         if direction not in {"downstream", "upstream"}:

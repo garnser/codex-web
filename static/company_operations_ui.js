@@ -50,7 +50,7 @@ function installCompanyOps() {
       <header class="company-ops-header">
         <div>
           <h2>Company Operations</h2>
-          <p>Canonical business state, provider synchronization, KPI health and explainable consequences.</p>
+          <p>Organization / workspace scope across Projects: canonical business state, provider synchronization, KPI health and explainable consequences.</p>
         </div>
         <button type="button" class="icon-button company-ops-close" aria-label="Close">×</button>
       </header>

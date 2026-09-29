@@ -255,8 +255,9 @@ class FrontendBoundaryTests(unittest.TestCase):
         source_path = STATIC / "work_graph_admin.js"
         source = source_path.read_text()
         self.assertLessEqual(source_path.stat().st_size, 23_000)
-        self.assertIn("api_client.js", source)
-        self.assertIn("apiRequest", source)
+        self.assertIn("project_view_scope.js", source)
+        self.assertIn("api_client.js", (STATIC / "project_view_scope.js").read_text())
+        self.assertIn("operation.request", source)
         self.assertNotIn("fetch(", source)
 
     def test_security_trust_diagnostics_has_its_own_budget_and_api_client(self) -> None:
