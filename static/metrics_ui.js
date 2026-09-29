@@ -1,6 +1,10 @@
 import { request } from './api_client.js';
 
 const state = {
+  projectId: '',
+  generation: 0,
+  listController: null,
+  detailController: null,
   metrics: [],
   selectedMetricId: '',
   detail: null,
@@ -24,6 +28,36 @@ function fmtTime(value) {
 function fmtValue(value, unit = '') {
   if (value === null || value === undefined) return '—';
   return `${value}${unit ? ` ${unit}` : ''}`;
+}
+
+function activeProjectId() {
+  const route = location.pathname.match(/\/projects\/([^/]+)(?:\/|$)/);
+  let routed = route?.[1] || '';
+  try { routed = decodeURIComponent(routed); } catch { /* Invalid scope stays explicit. */ }
+  return String(routed || document.body?.dataset?.activeProject
+    || document.body?.dataset?.projectId
+    || new URLSearchParams(location.search).get('project') || '').trim();
+}
+
+function projectPath(path, projectId) {
+  return `${path}${path.includes('?') ? '&' : '?'}project_id=${encodeURIComponent(projectId)}`;
+}
+
+function clearProjectState(projectId) {
+  state.listController?.abort();
+  state.detailController?.abort();
+  state.generation += 1;
+  state.projectId = projectId;
+  state.metrics = [];
+  state.selectedMetricId = '';
+  state.detail = null;
+  state.observations = [];
+  state.snapshots = [];
+  renderList();
+  const host = document.querySelector('.metric-detail');
+  if (host) host.innerHTML = projectId
+    ? '<div class="metric-empty">Loading metrics for this Project…</div>'
+    : '<div class="metric-empty">Select a Project to view metrics.</div>';
 }
 
 function ensureShell() {
@@ -83,9 +117,24 @@ function setStatus(message, isError = false) {
 }
 
 async function refreshAll() {
+  const projectId = activeProjectId();
+  if (projectId !== state.projectId) clearProjectState(projectId);
+  if (!projectId) {
+    clearProjectState('');
+    setStatus('Select a Project');
+    return false;
+  }
+  state.listController?.abort();
+  state.detailController?.abort();
+  const controller = new AbortController();
+  state.listController = controller;
+  const generation = ++state.generation;
+  const current = () => !controller.signal.aborted
+    && generation === state.generation && projectId === activeProjectId();
   setStatus('Loading…');
   try {
-    const payload = await request('/api/metrics');
+    const payload = await request(projectPath('/api/metrics', projectId), { signal: controller.signal });
+    if (!current()) return false;
     state.metrics = Array.isArray(payload?.items) ? payload.items : [];
     if (!state.selectedMetricId || !state.metrics.some((row) => row.definition?.id === state.selectedMetricId)) {
       state.selectedMetricId = state.metrics[0]?.definition?.id || '';
@@ -94,11 +143,14 @@ async function refreshAll() {
     if (state.selectedMetricId) {
       await loadMetric(state.selectedMetricId);
     } else {
-      document.querySelector('.metric-detail').innerHTML = '<div class="metric-empty">No metric definitions exist in this workspace.</div>';
+      document.querySelector('.metric-detail').innerHTML = '<div class="metric-empty">No metric definitions exist in this Project.</div>';
     }
+    if (!current()) return false;
     setStatus('Up to date');
+    return true;
   } catch (error) {
-    setStatus(error.message || 'Failed to load metrics', true);
+    if (current() && error?.name !== 'AbortError') setStatus(error.message || 'Failed to load metrics', true);
+    return false;
   }
 }
 
@@ -132,21 +184,32 @@ function renderList() {
 
 async function loadMetric(metricId) {
   const host = document.querySelector('.metric-detail');
-  if (!host) return;
+  const projectId = state.projectId;
+  if (!host || !projectId || projectId !== activeProjectId()) return;
+  state.detailController?.abort();
+  const controller = new AbortController();
+  state.detailController = controller;
+  const generation = state.generation;
+  const current = () => !controller.signal.aborted
+    && generation === state.generation && metricId === state.selectedMetricId
+    && projectId === activeProjectId();
   host.innerHTML = '<div class="metric-empty">Loading metric detail…</div>';
   try {
     const encoded = encodeURIComponent(metricId);
     const [detail, observations, snapshots] = await Promise.all([
-      request(`/api/metrics/${encoded}`),
-      request(`/api/metrics/${encoded}/observations?limit=100`),
-      request(`/api/metrics/${encoded}/snapshots?limit=50`),
+      request(projectPath(`/api/metrics/${encoded}`, projectId), { signal: controller.signal }),
+      request(projectPath(`/api/metrics/${encoded}/observations?limit=100`, projectId), { signal: controller.signal }),
+      request(projectPath(`/api/metrics/${encoded}/snapshots?limit=50`, projectId), { signal: controller.signal }),
     ]);
+    if (!current()) return;
     state.detail = detail;
     state.observations = observations?.items || [];
     state.snapshots = snapshots?.items || [];
     renderDetail();
   } catch (error) {
-    host.innerHTML = `<div class="metric-error">${esc(error.message || 'Failed to load metric')}</div>`;
+    if (current() && error?.name !== 'AbortError') {
+      host.innerHTML = `<div class="metric-error">${esc(error.message || 'Failed to load metric')}</div>`;
+    }
   }
 }
 
@@ -239,10 +302,16 @@ window.addEventListener('codex-open-metric', async (event) => {
   const dialog = document.querySelector('#metrics-dialog');
   if (!dialog || !metricId) return;
   if (!dialog.open) dialog.showModal();
-  await refreshAll();
+  if (!(await refreshAll())) return;
   if (state.metrics.some((row) => row.definition?.id === metricId)) {
     state.selectedMetricId = metricId;
     renderList();
     await loadMetric(metricId);
   }
+});
+
+window.addEventListener('codex:project-changed', () => {
+  clearProjectState(activeProjectId());
+  setStatus(state.projectId ? 'Project changed' : 'Select a Project');
+  if (document.querySelector('#metrics-dialog')?.open && state.projectId) void refreshAll();
 });
