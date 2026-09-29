@@ -1,6 +1,8 @@
 import { actionFeedback } from "./workspace_components.js";
 import { trackUx } from "./ux_telemetry.js";
 import { trackDirtyEditor, confirmDiscard } from "./dirty_editor.js";
+import { formValidation } from "./form_validation.js";
+import { automationEditorErrors, automationErrorFields } from "./automation_validation.js";
 
 let dirtyEditor = null;
 
@@ -51,7 +53,10 @@ async function api(path, options = {}) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     const detail = payload?.detail;
-    throw new Error(typeof detail === "string" ? detail : `Request failed (${response.status})`);
+    const error = new Error(typeof detail === "string" ? detail : `Request failed (${response.status})`);
+    error.detail = detail;
+    error.status = response.status;
+    throw error;
   }
   return payload;
 }
@@ -116,7 +121,7 @@ function editorMarkup(item) {
   const retry = definition.retry || {};
   const automationId = state.creating ? "" : (item?.id || "");
   return `
-    <form class="automation-editor" data-automation-editor>
+    <form class="automation-editor" data-automation-editor novalidate>
       <div class="automation-product-heading">
         <div>
           <h3>${state.creating ? "New Automation" : "Edit Automation"}</h3>
@@ -126,7 +131,7 @@ function editorMarkup(item) {
       </div>
       <div class="form-grid">
         <label>Automation ID
-          <input name="automation_id" value="${esc(automationId)}" ${state.creating ? "" : "readonly"} required pattern="[a-z0-9][a-z0-9._-]*" />
+          <input name="automation_id" value="${esc(automationId)}" ${state.creating ? "" : "readonly"} required pattern="[a-z0-9][a-z0-9._\\-]*" />
         </label>
         <label>Name
           <input name="name" value="${esc(definition.name || "")}" required />
@@ -390,6 +395,7 @@ function render() {
   });
   if (retainedForm) return;
   const form = card.querySelector('[data-automation-editor]');
+  if (form) form.validation = formValidation(form);
   if (form) dirtyEditor = trackDirtyEditor(form, { label: 'Automation', onDiscard: () => {
     closeEditor();
     render();
@@ -403,14 +409,7 @@ function render() {
     const context = projectContext();
     saveEditor(event).catch((error) => {
       if (!context.current() || !form.isConnected) return;
-      let errorHost = form.querySelector('[data-automation-editor-error]');
-      if (!errorHost) {
-        errorHost = document.createElement('p');
-        errorHost.dataset.automationEditorError = '';
-        errorHost.setAttribute('role', 'alert');
-        form.prepend(errorHost);
-      }
-      errorHost.textContent = error.message;
+      form.validation.server(error, automationErrorFields);
     });
   });
 }
@@ -508,6 +507,7 @@ async function saveEditor(event) {
   if (!context.current()) return;
   const form = event.currentTarget;
   if (form.dataset.saving === 'true') return;
+  if (!form.validation.validate(automationEditorErrors(form))) return;
   const existingItem = state.creating ? null : selected();
   const definition = definitionFromEditor(form, existingItem?.definition || {});
   const automationId = form.elements.automation_id.value.trim();

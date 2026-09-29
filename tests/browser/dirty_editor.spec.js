@@ -25,7 +25,7 @@ test('failed Automation save preserves edits, announces error and stays dirty', 
   const { form, writes } = await automationEditor(page, { rejectSave: true });
   await form.locator('[name=name]').fill('Unsaved revised name');
   await form.locator('button[type=submit]').click();
-  await expect(page.locator('[data-automation-editor-error]')).toHaveText('Target is unavailable');
+  await expect(form.getByRole('alert')).toContainText('Target is unavailable');
   await expect(form.locator('[name=name]')).toHaveValue('Unsaved revised name');
   await expect(form.locator('[data-dirty-editor-status]')).toHaveText('Unsaved changes');
   expect(writes).toHaveLength(1);
