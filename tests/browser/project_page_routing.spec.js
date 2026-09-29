@@ -300,3 +300,53 @@ test('profile management Definitions destination survives direct navigation and 
     if (!attempt) await page.reload();
   }
 });
+
+for (const prefix of ['', '/codex']) {
+  test(`shared workspace routes preserve scope, reload and Project switching at ${prefix || 'root'}`, async ({ page }) => {
+    await serveProjectShell(page);
+    const destinations = [
+      ['skills', 'Skills', 'Organization / workspace library'],
+      ['integrations', 'Integrations / Extensions', 'Organization / workspace'],
+      ['workers', 'Workers / Execution', 'Organization / workspace runtime'],
+      ['resources', 'Resources', 'Organization / workspace catalog'],
+      ['organization', 'Organization / Roles', 'Organization / workspace'],
+      ['definitions', 'Definitions / Contracts', 'Project / inherited shared definitions'],
+    ];
+    for (const [destination, title, scope] of destinations) {
+      await page.goto(`http://127.0.0.1:18766${prefix}/projects/home/${destination}`);
+      await expect(page.locator('[data-product-workspace-title]')).toHaveText(title);
+      await expect(page.locator('[data-project-page-scope]')).toHaveText(`Scope: ${scope}`);
+      await expect(page.locator(`[data-product-workspace-host="${destination}"]`)).toBeVisible();
+      await page.reload();
+      await expect(page.locator('[data-product-workspace-title]')).toHaveText(title);
+      await page.locator('#product-project-switcher').selectOption('alpha');
+      await expect(page).toHaveURL(`http://127.0.0.1:18766${prefix}/projects/alpha/${destination}`);
+      await expect(page.locator('[data-project-page-scope]')).toHaveText(`Scope: ${scope}`);
+      await page.goBack();
+      await expect(page).toHaveURL(`http://127.0.0.1:18766${prefix}/projects/home/${destination}`);
+      await expect(page.locator('[data-product-workspace-title]')).toHaveText(title);
+    }
+  });
+}
+
+test('Skills, Integrations and Workers navigation persists the selected surface', async ({ page }) => {
+  await serveProjectShell(page);
+  await page.goto('http://127.0.0.1:18766/projects/home/overview');
+  for (const [group, node, destination] of [
+    ['agents-group', 'skills', 'skills'],
+    ['automation-group', 'integrations', 'integrations'],
+    ['operations-group', 'runtime', 'workers'],
+  ]) {
+    const navigationGroup = page.locator(`[data-project-nav-group="${group}"]`);
+    if (!(await navigationGroup.evaluate((element) => element.open))) {
+      await navigationGroup.locator('summary').focus();
+      await page.keyboard.press('Enter');
+    }
+    await page.locator(`[data-project-nav-node="${node}"]`).focus();
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(`http://127.0.0.1:18766/projects/home/${destination}`);
+    await page.reload();
+    await expect(page.locator(`[data-product-workspace-host="${destination}"]`)).toBeVisible();
+    await expect(page.locator(`[data-project-nav-node="${node}"]`)).toHaveAttribute('aria-current', 'page');
+  }
+});

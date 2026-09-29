@@ -81,3 +81,33 @@ class DefinitionProjectRouteTests(unittest.TestCase):
                     response = client.get("/projects/project-a/definitions")
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(service.base_hrefs[-1], prefix)
+
+
+class ProjectWorkspaceRouteTests(unittest.TestCase):
+    PAGES = (
+        'overview', 'work-items', 'runs', 'chat', 'agents', 'agent-profiles',
+        'teams', 'automations', 'attention', 'operations', 'project-settings',
+        'configuration', 'definitions', 'goals', 'decisions', 'metrics',
+        'company', 'memory', 'skills', 'integrations', 'workers', 'resources',
+        'organization',
+    )
+
+    def test_every_workspace_destination_serves_shell_at_both_mounts(self) -> None:
+        for prefix in ('', '/codex'):
+            service = _UiService()
+            app = FastAPI()
+            app.include_router(build_ui_router(service))
+            parent = FastAPI()
+            parent.mount(prefix or '/', app)
+            with TestClient(parent) as client:
+                for page in self.PAGES:
+                    with self.subTest(prefix=prefix, page=page):
+                        response = client.get(f'{prefix}/projects/project-a/{page}')
+                        self.assertEqual(response.status_code, 200)
+                        self.assertIn('shell', response.text)
+                        self.assertEqual(service.base_hrefs[-1], prefix)
+                with self.subTest(prefix=prefix, page='invalid'):
+                    self.assertEqual(client.get(f'{prefix}/projects/project-a/not-a-page').status_code, 404)
+                response = client.get(f'{prefix}/projects/project-a', follow_redirects=False)
+                self.assertEqual(response.status_code, 307)
+                self.assertEqual(response.headers['location'], f'http://testserver{prefix}/projects/project-a/overview')

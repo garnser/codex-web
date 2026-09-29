@@ -59,7 +59,7 @@ const PROJECT_NAVIGATION_TREE = [
     children: [
       { id: "agent-profiles", label: "Agent Profiles", workspace: "agents", page: "agent-profiles", description: "Stable agent identity and execution preferences." },
       { id: "teams", label: "Teams / Squads", workspace: "agents", page: "teams", description: "Bounded delegation between agent profiles." },
-      { id: "skills", label: "Skills", workspace: "skills", description: "Versioned reusable procedures pinned to runs." },
+      { id: "skills", label: "Skills", workspace: "skills", page: "skills", description: "Versioned reusable procedures pinned to runs." },
     ],
   },
   {
@@ -67,7 +67,7 @@ const PROJECT_NAVIGATION_TREE = [
     label: "Automation",
     children: [
       { id: "automations", label: "Automations", workspace: "autonomy", page: "automations", description: "Scheduled and event-driven governed work." },
-      { id: "integrations", label: "Integrations / Extensions", workspace: "integrations", description: "External inputs, actions and extension capabilities." },
+      { id: "integrations", label: "Integrations / Extensions", workspace: "integrations", page: "integrations", description: "External inputs, actions and extension capabilities." },
     ],
   },
   { id: "attention", label: "Attention", workspace: "inbox", page: "attention", description: "Human decisions and remediation only." },
@@ -75,7 +75,7 @@ const PROJECT_NAVIGATION_TREE = [
     id: "operations-group",
     label: "Operations",
     children: [
-      { id: "runtime", label: "Runtimes / Workers", workspace: "workers", description: "Where executions run and their capabilities." },
+      { id: "runtime", label: "Runtimes / Workers", workspace: "workers", page: "workers", description: "Where executions run and their capabilities." },
       { id: "providers", label: "Providers", workspace: "operations", page: "operations", description: "Model/action provider availability and health." },
       { id: "incidents", label: "Incidents / Failures", workspace: "operations", page: "operations", description: "Operational failures and canonical remediation." },
     ],
@@ -155,6 +155,36 @@ const PROJECT_PAGE_PRESENTATION = Object.freeze({
     purpose: "Inspect and manage canonical typed configuration, effective scopes, rollout policy, entitlements and credential references without falling back to Developer tools.",
     scope: "Project / workspace configuration",
   },
+  definitions: {
+    title: "Definitions / Contracts",
+    purpose: "Inspect Project definitions and inherited shared definitions with their exact scope and revision.",
+    scope: "Project / inherited shared definitions",
+  },
+  skills: {
+    title: "Skills",
+    purpose: "Manage reusable organization and workspace procedures; Project selection does not change library ownership.",
+    scope: "Organization / workspace library",
+  },
+  integrations: {
+    title: "Integrations / Extensions",
+    purpose: "Inspect shared integration capabilities and their canonical authorization and lifecycle state.",
+    scope: "Organization / workspace",
+  },
+  workers: {
+    title: "Workers / Execution",
+    purpose: "Inspect shared workers, execution workspaces and leases; each execution retains its own Project attribution.",
+    scope: "Organization / workspace runtime",
+  },
+  resources: {
+    title: "Resources",
+    purpose: "Inspect the shared resource catalog; Project bindings are managed in Project Setup / Readiness.",
+    scope: "Organization / workspace catalog",
+  },
+  organization: {
+    title: "Organization / Roles",
+    purpose: "Inspect canonical organization, workspace and identity state under the current actor's authority.",
+    scope: "Organization / workspace",
+  },
   goals: {
     title: "Goals",
     purpose: "Inspect canonical outcomes, decomposition, progress and completion evidence in the selected Project.",
@@ -193,9 +223,14 @@ const PROJECT_PAGE_WORKSPACES = Object.freeze({
   automations: "autonomy",
   attention: "inbox",
   operations: "operations",
+  workers: "workers",
   "project-settings": "setup",
   configuration: "settings",
   definitions: "definitions",
+  skills: "skills",
+  integrations: "integrations",
+  resources: "resources",
+  organization: "organization",
   goals: "goals",
   decisions: "decisions",
   metrics: "metrics",
@@ -220,10 +255,14 @@ const WORKSPACE_DEFAULT_PAGE = Object.freeze({
   autonomy: "automations",
   inbox: "attention",
   operations: "operations",
-  workers: "operations",
+  workers: "workers",
   setup: "project-settings",
   settings: "configuration",
   definitions: "definitions",
+  skills: "skills",
+  integrations: "integrations",
+  resources: "resources",
+  organization: "organization",
   goals: "goals",
   decisions: "decisions",
   metrics: "metrics",
@@ -1037,7 +1076,7 @@ function installNavigationCommands() {
     const scoped = Boolean(projectId) && !document.body.classList.contains("project-context-unavailable");
     const commands = WORKSPACES.map((item) => ({
       id: item.id, workspaceId: item.id, label: item.label, description: item.description,
-      projectId, scopeLabel: ["memory", "company", "operations", "organization"].includes(item.id)
+      projectId, scopeLabel: ["memory", "company", "operations", "organization", "skills", "integrations", "workers", "resources"].includes(item.id)
         ? "Organization / workspace" : `Project: ${projectLabel}`,
       available: () => scoped && (!item.selector || Boolean(document.querySelector(item.selector + ':not(:disabled)'))),
       run: () => openWorkspace(item.id),
