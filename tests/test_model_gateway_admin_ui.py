@@ -11,6 +11,9 @@ class ModelGatewayAdminUiTests(unittest.TestCase):
     def test_model_gateway_browser_exposes_routing_provenance_without_invocation(self) -> None:
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (ROOT / "static" / "model_gateway_admin.js").read_text(encoding="utf-8")
+        route_controls = (ROOT / "static" / "model_gateway_route_controls.js").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn('id="model-gateway-policy"', html)
         self.assertIn('id="model-provider-list"', html)
@@ -18,6 +21,10 @@ class ModelGatewayAdminUiTests(unittest.TestCase):
         self.assertIn('id="model-prompt-list"', html)
         self.assertIn('id="model-invocation-list"', html)
         self.assertIn('id="model-route-preview-result"', html)
+        self.assertIn('id="model-route-workload"', html)
+        self.assertIn('id="model-route-pinned-model"', html)
+        self.assertIn('id="model-route-preferred-latency"', html)
+        self.assertIn('id="model-route-low-cost"', html)
         self.assertIn('apiRequest("/api/model-gateway/providers")', javascript)
         self.assertIn('apiRequest("/api/model-gateway/models")', javascript)
         self.assertIn('apiRequest("/api/model-gateway/prompts")', javascript)
@@ -36,6 +43,11 @@ class ModelGatewayAdminUiTests(unittest.TestCase):
         self.assertIn("compliance_tags", javascript)
         self.assertIn("input_price_per_million_usd", javascript)
         self.assertIn("output_price_per_million_usd", javascript)
+        self.assertIn("model_gateway_route_controls.js", javascript)
+        self.assertIn("workload_class", route_controls)
+        self.assertIn("pinned_model_id", route_controls)
+        self.assertIn("preferred_latency_classes", route_controls)
+        self.assertIn("prefer_lower_cost", route_controls)
         self.assertIn("capacity.retry_at", javascript)
         self.assertIn("capacityWaits", javascript)
         self.assertIn("no model/provider invocation occurred", javascript)

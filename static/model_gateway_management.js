@@ -157,7 +157,7 @@
   function loadModel(id) {
     const item = snapshot.models.find((value) => value.id === id);
     if (!item) {
-      for (const field of ["model-definition-id", "model-definition-concrete", "model-definition-version", "model-definition-classes", "model-definition-residency", "model-definition-compliance"]) {
+      for (const field of ["model-definition-id", "model-definition-concrete", "model-definition-version", "model-definition-classes", "model-definition-workloads", "model-definition-residency", "model-definition-compliance"]) {
         document.getElementById(field).value = "";
       }
       document.getElementById("model-definition-capabilities").value = "text";
@@ -177,6 +177,7 @@
     document.getElementById("model-definition-concrete").value = item.concrete_model;
     document.getElementById("model-definition-version").value = item.model_version || "";
     document.getElementById("model-definition-classes").value = csvValue(item.model_classes);
+    document.getElementById("model-definition-workloads").value = csvValue(item.workload_classes);
     document.getElementById("model-definition-capabilities").value = csvValue(item.capabilities);
     document.getElementById("model-definition-modalities").value = csvValue(item.modalities);
     document.getElementById("model-definition-tools").checked = Boolean(item.supports_tools);
@@ -270,6 +271,7 @@
       concrete_model: concreteModel,
       model_version: document.getElementById("model-definition-version")?.value.trim() || null,
       model_classes: classes,
+      workload_classes: csv("model-definition-workloads"),
       capabilities: csv("model-definition-capabilities"),
       modalities: csv("model-definition-modalities"),
       supports_tools: Boolean(document.getElementById("model-definition-tools")?.checked),

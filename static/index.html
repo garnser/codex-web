@@ -475,6 +475,7 @@
                         <input id="model-definition-concrete" placeholder="Concrete provider model" />
                         <input id="model-definition-version" placeholder="Model version (optional)" />
                         <input id="model-definition-classes" placeholder="Model classes, comma separated" />
+                        <input id="model-definition-workloads" placeholder="Suitable workloads, comma separated" />
                         <input id="model-definition-capabilities" value="text" placeholder="Capabilities" />
                         <input id="model-definition-modalities" value="text" placeholder="Modalities" />
                         <label><input id="model-definition-tools" type="checkbox" /> Supports tools</label>
@@ -530,11 +531,16 @@
                     <div class="route-test">
                       <label>Model class <input id="model-route-class" list="model-class-options" placeholder="primary-coding" /></label>
                       <datalist id="model-class-options"></datalist>
+                      <label>Workload class <input id="model-route-workload" list="model-workload-options" placeholder="code_review" /></label>
+                      <datalist id="model-workload-options"></datalist>
+                      <label>Pinned model <select id="model-route-pinned-model"><option value="">Automatic selection</option></select></label>
                       <label>Prompt template <select id="model-route-template"></select></label>
                       <label>Required capabilities <input id="model-route-capabilities" value="text" placeholder="text, tools" /></label>
                       <label>Required residency <input id="model-route-residency" placeholder="eu, se" /></label>
                       <label>Required compliance <input id="model-route-compliance" placeholder="gdpr, iso27001" /></label>
                       <label>Preferred providers <select id="model-route-preferred-providers" multiple size="3"></select></label>
+                      <label>Preferred latency <select id="model-route-preferred-latency" multiple size="3"><option value="low">Low</option><option value="standard">Standard</option><option value="high">High</option></select></label>
+                      <label><input id="model-route-low-cost" type="checkbox" /> Prefer lower estimated cost</label>
                       <label>Max output tokens <input id="model-route-max-output" type="number" min="1" value="2048" /></label>
                       <label>Max cost USD <input id="model-route-max-cost" type="number" min="0" step="0.0001" placeholder="Policy/default" /></label>
                       <label><input id="model-route-fallback" type="checkbox" checked /> Allow bounded fallback</label>

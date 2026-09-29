@@ -19,6 +19,7 @@ from codex_web.model_gateway import (
     MODEL_GATEWAY_CONTRACT,
     ModelDefinitionUpsert,
     ModelInvocationRequest,
+    ModelLatencyClass,
     ModelMessage,
     ModelProviderResult,
     ModelProviderUpsert,
@@ -215,9 +216,43 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(migrated.schema_version, MODEL_GATEWAY_CONTRACT.current)
-        self.assertEqual(MODEL_GATEWAY_CONTRACT.current, "1.2")
+        self.assertEqual(MODEL_GATEWAY_CONTRACT.current, "1.3")
         self.assertIn("1.0", MODEL_GATEWAY_CONTRACT.supported)
         self.assertIn("1.1", MODEL_GATEWAY_CONTRACT.supported)
+        self.assertIn("1.2", MODEL_GATEWAY_CONTRACT.supported)
+
+    async def test_v1_2_state_migrates_task_routing_provenance(self) -> None:
+        migrated = self.service.store._decode(
+            {
+                "schema_version": "1.2",
+                "providers": [],
+                "models": [
+                    {
+                        **self._model_payload("legacy-model"),
+                        "organization_id": self.actor.organization_id,
+                        "workspace_id": self.actor.workspace_id,
+                        "updated_by": self.actor.identity_id,
+                    }
+                ],
+                "prompt_templates": [],
+                "policies": [],
+                "invocations": [],
+            }
+        )
+
+        self.assertEqual(migrated.schema_version, "1.3")
+        self.assertEqual(migrated.models[0].workload_classes, ())
+
+    @staticmethod
+    def _model_payload(model_id: str, **overrides):
+        payload = {
+            "id": model_id,
+            "provider_id": "p1",
+            "concrete_model": f"concrete-{model_id}",
+            "model_classes": (MODEL_CLASS_STRATEGIC,),
+        }
+        payload.update(overrides)
+        return payload
 
     async def test_routing_is_deterministic_by_class_policy_health_and_priority(self) -> None:
         self._provider("p1")
@@ -230,6 +265,168 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.model_id for item in route.candidates], ["fast", "slow"])
         self.assertEqual(route.policy_max_attempts, 2)
         self.assertEqual(route.prompt_template_version, "1.0")
+
+    async def test_workload_specific_model_precedes_generic_provider_catalog_entry(self) -> None:
+        self._provider("p1")
+        self._provider("p2")
+        self._model("generic", "p1", route_priority=1)
+        self._model(
+            "code-review",
+            "p2",
+            workload_classes=("code_review",),
+            route_priority=100,
+        )
+        self._model(
+            "summarizer",
+            "p2",
+            workload_classes=("summarization",),
+            route_priority=0,
+        )
+
+        route = self.service.route(
+            self._request(workload_class="code_review"),
+            actor=self.actor,
+        )
+
+        self.assertEqual(
+            [item.model_id for item in route.candidates],
+            ["code-review", "generic"],
+        )
+        self.assertEqual(route.workload_class, "code_review")
+        self.assertIn("workload_match=exact", route.candidates[0].routing_reason)
+
+    async def test_latency_and_cost_preferences_rank_only_eligible_models(self) -> None:
+        self._provider("p1")
+        self._model(
+            "fast-expensive",
+            workload_classes=("summarization",),
+            latency_class=ModelLatencyClass.LOW,
+            input_price_per_million_usd=10.0,
+            output_price_per_million_usd=10.0,
+            route_priority=1,
+        )
+        self._model(
+            "slow-cheap",
+            workload_classes=("summarization",),
+            latency_class=ModelLatencyClass.HIGH,
+            input_price_per_million_usd=0.1,
+            output_price_per_million_usd=0.1,
+            route_priority=100,
+        )
+
+        low_cost = self.service.route(
+            self._request(
+                workload_class="summarization",
+                prefer_lower_cost=True,
+            ),
+            actor=self.actor,
+        )
+        low_latency = self.service.route(
+            self._request(
+                workload_class="summarization",
+                preferred_latency_classes=(ModelLatencyClass.LOW,),
+            ),
+            actor=self.actor,
+        )
+
+        self.assertEqual(low_cost.candidates[0].model_id, "slow-cheap")
+        self.assertEqual(low_latency.candidates[0].model_id, "fast-expensive")
+
+    async def test_strict_model_pin_cannot_bypass_tenant_policy(self) -> None:
+        self._provider("p1")
+        self._model("allowed")
+        self._model("denied")
+        self.service.set_policy(
+            TenantModelPolicyUpdate(allowed_model_ids=("allowed",)),
+            actor=self.actor,
+        )
+
+        with self.assertRaisesRegex(ModelRoutingError, "pinned_model=denied"):
+            self.service.route(
+                self._request(pinned_model_id="denied"),
+                actor=self.actor,
+            )
+
+        self.assertEqual(self.adapter.calls, [])
+
+    async def test_invocation_persists_task_routing_and_pin_provenance(self) -> None:
+        self._provider("p1")
+        self._model("reviewer", workload_classes=("code_review",))
+
+        result = await self.service.invoke(
+            self._request(
+                workload_class="code_review",
+                pinned_model_id="reviewer",
+                preferred_latency_classes=(ModelLatencyClass.LOW,),
+                prefer_lower_cost=True,
+            ),
+            actor=self.actor,
+        )
+
+        self.assertEqual(result.invocation.workload_class, "code_review")
+        self.assertEqual(result.invocation.pinned_model_id, "reviewer")
+        self.assertEqual(
+            result.invocation.preferred_latency_classes,
+            (ModelLatencyClass.LOW,),
+        )
+        self.assertTrue(result.invocation.prefer_lower_cost)
+        self.assertIn("pin=reviewer", result.invocation.route_reason)
+
+    async def test_task_routing_selects_distinct_model_classes(self) -> None:
+        self._provider("p1")
+        self._provider("p2")
+        for model_class, workload, provider in (
+            ("lightweight", "summarization", "p1"),
+            ("primary-coding", "implementation", "p2"),
+            ("high-reasoning", "architecture", "p2"),
+        ):
+            self._model(
+                model_class, provider, model_classes=(model_class,),
+                workload_classes=(workload,),
+            )
+            result = self.service.route(
+                self._request(model_class=model_class, workload_class=workload),
+                actor=self.actor,
+            )
+            self.assertEqual([c.model_id for c in result.candidates], [model_class])
+            self.assertEqual(result.candidates[0].provider_id, provider)
+        self.assertEqual(self.adapter.calls, [])
+
+    async def test_missing_or_unavailable_pin_never_routes_to_other_provider(self) -> None:
+        self._provider("p1", status="disabled")
+        self._provider("p2")
+        self._model("unavailable", "p1")
+        self._model("available", "p2")
+        for pin in ("missing", "unavailable"):
+            with self.subTest(pin=pin), self.assertRaises(ModelRoutingError):
+                await self.service.invoke(
+                    self._request(pinned_model_id=pin), actor=self.actor,
+                )
+        self.assertEqual(self.adapter.calls, [])
+
+    async def test_workload_outage_fallback_is_bounded_and_policy_safe(self) -> None:
+        self._provider("p1")
+        self._provider("p2")
+        self._model("specific", "p1", workload_classes=("code_review",))
+        self._model("generic", "p2")
+        self._model(
+            "restricted", "p2", workload_classes=("code_review",),
+            residency_tags=("us",), route_priority=0,
+        )
+        self.adapter.transient_models.add("specific")
+        self.service.set_policy(TenantModelPolicyUpdate(max_attempts=2), actor=self.actor)
+        result = await self.service.invoke(
+            self._request(workload_class="code_review"), actor=self.actor,
+        )
+        self.assertEqual([call[0] for call in self.adapter.calls], ["specific", "generic"])
+        self.assertEqual(result.invocation.selected_model_id, "generic")
+        self.adapter.calls.clear()
+        with self.assertRaises(ModelProviderUnavailableError):
+            await self.service.invoke(
+                self._request(workload_class="code_review", pinned_model_id="specific"),
+                actor=self.actor,
+            )
+        self.assertEqual([call[0] for call in self.adapter.calls], ["specific"])
 
     async def test_residency_and_allowlist_fail_before_adapter_invocation(self) -> None:
         self._provider("p1")
@@ -695,6 +892,7 @@ class ModelGatewayApiAssuranceTests(unittest.TestCase):
                 "provider_id": "p1",
                 "concrete_model": "concrete-m1",
                 "model_classes": ["primary-coding"],
+                "workload_classes": ["code_review"],
                 "capabilities": ["text"],
                 "modalities": ["text"],
             },
@@ -720,6 +918,30 @@ class ModelGatewayApiAssuranceTests(unittest.TestCase):
         self.assertEqual(model.status_code, 200)
         self.assertEqual(prompt.status_code, 200)
         self.assertEqual(policy.status_code, 200)
+
+        route = self.client.post(
+            "/api/model-gateway/route",
+            json={
+                "model_class": "primary-coding",
+                "workload_class": "code_review",
+                "pinned_model_id": "m1",
+                "preferred_latency_classes": ["low", "standard"],
+                "prefer_lower_cost": True,
+                "messages": [{"role": "user", "content": "preview"}],
+                "prompt_template_id": "generic.system",
+                "prompt_template_version": "1.0",
+            },
+        )
+
+        self.assertEqual(route.status_code, 200)
+        self.assertEqual(route.json()["workload_class"], "code_review")
+        self.assertEqual(route.json()["pinned_model_id"], "m1")
+        self.assertEqual(
+            route.json()["preferred_latency_classes"],
+            ["low", "standard"],
+        )
+        self.assertTrue(route.json()["prefer_lower_cost"])
+        self.assertEqual(route.json()["candidates"][0]["model_id"], "m1")
 
     def test_model_gateway_admin_service_scope_remains_supported(self) -> None:
         self.actor = AuthenticationActor(
