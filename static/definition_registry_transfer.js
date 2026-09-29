@@ -1,6 +1,9 @@
-import { request as apiRequest } from './api_client.js';
+import { definitionViewOperation } from './definition_view_scope.js';
 
-export async function exportDefinitions(setStatus) {
+export async function exportDefinitions(report) {
+  const operation = definitionViewOperation(report);
+  const setStatus = operation.status;
+  const apiRequest = operation.request;
   try {
     const documentValue = await apiRequest('/api/definitions/export');
     const host = document.getElementById('definition-transfer-document');
@@ -12,7 +15,10 @@ export async function exportDefinitions(setStatus) {
   }
 }
 
-export async function importDefinitions({ canManage, setStatus, refresh }) {
+export async function importDefinitions({ canManage, setStatus: report, refresh }) {
+  const operation = definitionViewOperation(report);
+  const setStatus = operation.status;
+  const apiRequest = operation.request;
   const raw = document.getElementById('definition-transfer-document')?.value || '';
   let documentValue;
   try {

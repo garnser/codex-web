@@ -19,8 +19,9 @@ export async function publicationAssessment(record) {
   );
 }
 
-export async function recordPublicationApproval(record, actor) {
+export async function recordPublicationApproval(record, actor, current = () => true) {
   const assessment = await publicationAssessment(record);
+  if (!current()) return null;
   const reasons = assessment.reasons?.length
     ? assessment.reasons.join(' · ')
     : 'No sensitive expansion detected; approval is optional.';
