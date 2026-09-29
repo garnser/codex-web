@@ -30,6 +30,7 @@ export function installCommandPalette(dialog, getContext) {
     selected = Math.max(0, Math.min(index, commands.length - 1));
     results.querySelectorAll('[data-command-key]').forEach((button, i) => {
       button.classList.toggle('active', i === selected);
+      button.tabIndex = i === selected ? 0 : -1;
       button.setAttribute('aria-selected', String(i === selected));
     });
     const current = results.querySelectorAll('[data-command-key]')[selected];
@@ -100,6 +101,12 @@ export function installCommandPalette(dialog, getContext) {
     if (event.key === 'ArrowDown') select((selected + 1) % Math.max(1, commands.length));
     if (event.key === 'ArrowUp') select((selected - 1 + commands.length) % Math.max(1, commands.length));
     if (event.key === 'Enter' && commands[selected]) void execute(commands[selected].key);
+  });
+  results.addEventListener('keydown', (event) => {
+    if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+    event.preventDefault();
+    select((selected + (event.key === 'ArrowDown' ? 1 : -1) + commands.length) % Math.max(1, commands.length));
+    results.querySelectorAll('[data-command-key]')[selected]?.focus();
   });
   dialog.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') { event.preventDefault(); dialog.close(); }
