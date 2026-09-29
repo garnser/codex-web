@@ -41,6 +41,8 @@ def health(expected: str) -> bool:
             with urllib.request.urlopen("http://127.0.0.1:8765/api/version", timeout=3) as response:
                 version = json.load(response)
             observed = str(version.get("gitRevision") or version.get("git_revision") or "")
+            if observed in {"", "unknown"}:
+                observed = str(version.get("staticVersion") or "").split("-", 1)[0]
             if live and ready and (not observed or observed.startswith(expected[:12])):
                 return True
         except Exception:
