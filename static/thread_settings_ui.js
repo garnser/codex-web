@@ -50,20 +50,18 @@ export function install({
   renderProfile,
   renderRepositories,
 }) {
-  const menuIds = ["thread-settings-menu", "thread-actions-menu"];
-  menuIds.forEach((id) => {
-    byId(id).addEventListener("toggle", () => {
-      if (!byId(id).open) return;
-      menuIds.forEach((otherId) => {
-        if (otherId !== id) byId(otherId).open = false;
-      });
-    });
-  });
+  const menu = byId("thread-settings-menu");
   document.addEventListener("click", (event) => {
-    menuIds.forEach((id) => {
-      const menu = byId(id);
-      if (menu.open && !menu.contains(event.target)) menu.open = false;
-    });
+    if (menu.open && !menu.contains(event.target)) menu.open = false;
+  });
+  menu.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !menu.open) return;
+    event.preventDefault();
+    menu.open = false;
+    menu.querySelector("summary").focus();
+  });
+  ["rename-thread", "archive-thread"].forEach((id) => {
+    byId(id).addEventListener("click", () => { menu.open = false; });
   });
 
   const save = (updates) => {

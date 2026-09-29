@@ -2297,7 +2297,6 @@ $("save-bot-integration").addEventListener("click", (event) => saveBotIntegratio
   $("bot-result").textContent = error.message;
 }));
 $("rename-thread").addEventListener("click", renameThread);
-$("rename-thread").addEventListener("click",()=>{$("thread-actions-menu").open=false;});
 $("prompt").addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
   if (event.altKey) return;
@@ -2313,7 +2312,6 @@ $("thread-search").addEventListener("input", () => {
   }, 180);
 });
 $("archive-thread").addEventListener("click", async () => {
-  $("thread-actions-menu").open=false;
   if (!state.threadId) return;
   await api(`/api/threads/${state.threadId}/archive`, { method: "POST" });
   clearSelectedThread({ historyMode: "replace" });
