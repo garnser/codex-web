@@ -70,6 +70,7 @@ If architecture changes materially while implementing an issue, update the relev
 
 ## Architecture documents
 
+- [External capability providers and ECC consideration](external-capability-evaluation.md) — canonical ownership boundaries, evaluation criteria and revisit triggers; no integration is implied.
 - [Canonical execution contract schema](execution-contract-schema.md) — versioned machine-readable contract derived from canonical work-item state.
 - [Canonical work-item lifecycle](work-item-lifecycle.md) — existing stages, legal manual/API transitions, external reconciliation boundary, terminal outcomes, and transition failure contract.
 - [Dependency-aware Work Graphs](work-graphs.md) — canonical parent/blocking relationships, deterministic readiness, cycle prevention, failure impacts, critical path, traversal, and graph progress.
