@@ -634,8 +634,10 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
         return runtime, backend
 
     def test_runtime_tool_mounts_expose_playwright_read_only_roots(self) -> None:
+        python_root = Path(self.temp.name) / "python-tool"
         tool_root = Path(self.temp.name) / "playwright-tool"
         browser_root = Path(self.temp.name) / "playwright-browsers"
+        python_root.mkdir()
         tool_root.mkdir()
         browser_root.mkdir()
         runtime = LocalExecutionWorkerRuntime(
@@ -653,6 +655,7 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
             worker=self.worker,
             worker_actor=self.worker_actor,
             control_actor=self.admin,
+            python_tool_root=python_root,
             playwright_tool_root=tool_root,
             playwright_browser_root=browser_root,
         )
@@ -660,6 +663,7 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
         self.assertEqual(
             runtime.runtime_tool_mounts(),
             (
+                (python_root.resolve(), Path("/opt/codex-python")),
                 (tool_root.resolve(), Path("/opt/codex-playwright")),
                 (browser_root.resolve(), Path("/opt/codex-playwright-browsers")),
             ),

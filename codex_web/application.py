@@ -1721,6 +1721,12 @@ _playwright_browser_candidate = Path(
         str(Path.home() / ".cache" / "ms-playwright"),
     )
 )
+_python_tool_candidate = Path(
+    os.environ.get(
+        "CODEX_WEB_PYTHON_TOOL_ROOT",
+        str(Path.home() / "codex-web" / ".venv"),
+    )
+)
 
 local_execution_worker_runtime = LocalExecutionWorkerRuntime(
     execution_worker_service,
@@ -1732,6 +1738,9 @@ local_execution_worker_runtime = LocalExecutionWorkerRuntime(
     artifact_evidence=artifact_evidence_service,
     codex_auth_delegation=codex_auth_delegation_service,
     trusted_local_codex_delegation=trusted_local_codex_delegation,
+    python_tool_root=(
+        _python_tool_candidate if _python_tool_candidate.is_dir() else None
+    ),
     playwright_tool_root=(
         _playwright_tool_candidate
         if _playwright_tool_candidate.is_dir()

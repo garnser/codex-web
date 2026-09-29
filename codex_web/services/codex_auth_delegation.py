@@ -202,7 +202,7 @@ class CodexAuthDelegationService:
             "--config",
             "shell_environment_policy.ignore_default_excludes=false",
             "--config",
-            'shell_environment_policy.set={PATH="/opt/codex-playwright/node_modules/.bin:/usr/bin:/usr/local/bin:/bin",HOME="/tmp/codex-worker-home",NODE_PATH="/opt/codex-playwright/node_modules",PLAYWRIGHT_BROWSERS_PATH="/opt/codex-playwright-browsers",CODEX_WEB_CONTROL_PLANE_URL="http://127.0.0.1:8788"}',
+            'shell_environment_policy.set={PATH="/opt/codex-playwright/node_modules/.bin:/usr/bin:/usr/local/bin:/bin",HOME="/tmp/codex-worker-home",PYTHONPATH="/opt/codex-python/lib64/python3.14/site-packages:/opt/codex-python/lib/python3.14/site-packages",NODE_PATH="/opt/codex-playwright/node_modules",PLAYWRIGHT_BROWSERS_PATH="/opt/codex-playwright-browsers",CODEX_WEB_CONTROL_PLANE_URL="http://127.0.0.1:8788"}',
             "--config",
             'shell_environment_policy.filters.CODEX_ACCESS_TOKEN="exclude"',
             "--config",
