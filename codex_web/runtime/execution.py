@@ -2791,6 +2791,11 @@ class TurnExecutionService:
             active.last_resume_at = time.time()
             active.updated_at = time.time()
             self._save_active_turn(active)
+            # This record describes the interrupted pre-restart turn.  The
+            # normal start path rejects any thread that already has an active
+            # record, so release it immediately before handing off to that
+            # path.  A successful start installs a new canonical record.
+            self._delete_active_turn(thread_id)
             try:
                 response = await self.start_thread_turn_now(
                     thread_id,
@@ -2869,6 +2874,11 @@ class TurnExecutionService:
                     }
                 )
             except Exception as exc:
+                # Preserve the updated retry count when startup failed before
+                # a replacement turn became active.  Do not overwrite a new
+                # record created by a partially successful start.
+                if not self.thread_is_active(thread_id):
+                    self._save_active_turn(active)
                 h._append_bot_event(
                     {
                         "type": "active_thread_resume_failed",

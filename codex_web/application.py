@@ -3836,6 +3836,7 @@ stale_active_turn_recovery_service = StaleActiveTurnRecoveryService(
     resume_active_threads=(
         turn_execution_service.resume_active_threads_after_startup
     ),
+    resume_live_on_startup=deployment_mode in {"local", "single"},
     backup_directory=DATA_DIR / "active-turn-recovery-backups",
 )
 thread_recovery_service.stale_active_turn_reconciler = (
