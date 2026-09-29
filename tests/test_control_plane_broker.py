@@ -10,11 +10,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import quote
 
+from codex_web.code_hosts import CodeHostPullRequestFact
 from codex_web.authority import (
     AUTHORITY_ROLE_CATALOG_ID,
     AUTHORITY_ROLE_CATALOG_KIND,
     AUTHORITY_ROLE_CATALOG_SCHEMA_VERSION,
     AuthorityGrant,
+    AuthorityDecisionOutcome,
     AuthorityLevel,
     AuthorityRoleBinding,
     AuthorityRoleCatalogDefinition,
@@ -32,6 +34,7 @@ from codex_web.execution_workers import (
     WorkerResourceLimits,
 )
 from codex_web.identity import TenantScope
+from codex_web.resources import RepositoryExecutionScope, RepositoryTargetSource
 from codex_web.services.authority_roles import install_authority_roles
 from codex_web.services.control_plane_broker import (
     AssignmentBoundControlPlaneBroker,
@@ -111,6 +114,51 @@ class _Operator:
 
     async def reconcile(self, ref, *, actor, reason):
         return {"ok": True, "item": {"ref": ref, "actor": actor, "reason": reason}}
+
+
+class _CodeHostRegistry:
+    def __init__(self) -> None:
+        self.binding = None
+
+    def register_binding(self, binding) -> None:
+        self.binding = binding
+
+
+class _CodeHosts:
+    def __init__(self) -> None:
+        self.registry = _CodeHostRegistry()
+
+    async def pull_request(self, binding_id, resource_id, external_id, *, actor):
+        del binding_id, actor
+        return CodeHostPullRequestFact(
+            external_id="provider-pr-id",
+            number=int(external_id),
+            title="Brokered PR fact",
+            state="open",
+            source_ref="fix/example",
+            target_ref="main",
+            web_url=f"https://github.example/pulls/{external_id}",
+        )
+
+
+class _ActionRegistry:
+    def list_bindings(self, actor):
+        del actor
+        return [
+            SimpleNamespace(
+                id="github-action-binding",
+                enabled=True,
+                provider_type="github",
+                provider_instance="github.com",
+                project_id="project-a",
+                resource_ids=("repository-a",),
+                credential_ref="secret-github",
+            )
+        ]
+
+    def provider(self, provider_type, provider_instance, *, actor):
+        del provider_type, provider_instance, actor
+        return SimpleNamespace(api_base="https://api.github.com")
 
 
 class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
@@ -211,6 +259,12 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                             id="orchestration.handoff",
                             capability="work_item.handoff",
                             level=AuthorityLevel.EXECUTE,
+                            project_ids=("project-a",),
+                        ),
+                        AuthorityGrant(
+                            id="repository.pull-request.read",
+                            capability="repository.pull-request.read",
+                            level=AuthorityLevel.READ,
                             project_ids=("project-a",),
                         ),
                     ),
@@ -570,6 +624,62 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(broker.sandbox_url, "http://127.0.0.1:8788")
         finally:
             await broker.stop()
+
+    async def test_repository_write_assignment_can_read_pull_request_fact(self) -> None:
+        code_hosts = _CodeHosts()
+        self.authority.resources = SimpleNamespace(
+            get=lambda resource_id, actor: SimpleNamespace(
+                id=resource_id,
+                lifecycle="active",
+                resource_type="repository",
+                risk="medium",
+                sensitivity="internal",
+            )
+        )
+        service = ControlPlaneBrokerService(
+            identity=self.identity,
+            authority=self.authority,
+            work_items=self.work_items,
+            operator=_Operator(),
+            audit=ControlPlaneBrokerAuditStore(self.sqlite),
+            action_intents=SimpleNamespace(
+                execution=SimpleNamespace(registry=_ActionRegistry())
+            ),
+            code_hosts=code_hosts,
+        )
+        assignment = self.assignment.model_copy(
+            update={
+                "execution_profile_id": "repository-write",
+                "resource_ids": ("repository-a",),
+                "repository_scope": RepositoryExecutionScope(
+                    organization_id="local",
+                    workspace_id="default",
+                    project_id="project-a",
+                    writable_repository_ids=("repository-a",),
+                    source=RepositoryTargetSource.SINGLE_REPOSITORY,
+                    source_ref="repository-a",
+                ),
+            }
+        )
+
+        status, payload, operation, target_ref, decision = await service.dispatch(
+            assignment=assignment,
+            worker_actor=self.worker_actor,
+            method="GET",
+            raw_target="/api/repository-facts/pull-requests/954",
+            body=b"",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(operation.id, "repository.read.pull-request")
+        self.assertEqual(target_ref, "954")
+        self.assertEqual(payload["item"]["number"], 954)
+        self.assertEqual(payload["item"]["state"], "open")
+        self.assertEqual(decision.outcome, AuthorityDecisionOutcome.ALLOW)
+        self.assertEqual(
+            code_hosts.registry.binding.credential_ref,
+            "secret-github",
+        )
 
 
 if __name__ == "__main__":

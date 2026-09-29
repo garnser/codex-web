@@ -37,6 +37,7 @@ from codex_web.control_plane_broker import (
     ControlPlaneBrokerLimits,
     ControlPlaneBrokerOperation,
 )
+from codex_web.code_hosts import CodeHostCapability, CodeHostProviderBinding
 from codex_web.execution_workers import ExecutionAssignment
 from codex_web.identity import AuthenticationActor, TenantScope
 from codex_web.models import (
@@ -54,6 +55,7 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
     CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
 )
+from codex_web.services.code_hosts import CodeHostService
 from codex_web.services.identity import (
     AuthenticationError,
     AuthorizationError,
@@ -151,6 +153,64 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
         path_template="/api/work-items/{ref}/reconcile",
         capability="work_item.reconcile",
         authority_level=AuthorityLevel.EXECUTE,
+    ),
+    ControlPlaneBrokerOperation(
+        id="repository.read.metadata",
+        method="GET",
+        path_template="/api/repository-facts",
+        capability="repository.read",
+        authority_level=AuthorityLevel.READ,
+    ),
+    ControlPlaneBrokerOperation(
+        id="repository.read.refs",
+        method="GET",
+        path_template="/api/repository-facts/refs",
+        capability="repository.refs.read",
+        authority_level=AuthorityLevel.READ,
+    ),
+    ControlPlaneBrokerOperation(
+        id="repository.read.commit",
+        method="GET",
+        path_template="/api/repository-facts/commits/{revision}",
+        capability="repository.commit.read",
+        authority_level=AuthorityLevel.READ,
+    ),
+    ControlPlaneBrokerOperation(
+        id="repository.read.pull-request",
+        method="GET",
+        path_template="/api/repository-facts/pull-requests/{external_id}",
+        capability="repository.pull-request.read",
+        authority_level=AuthorityLevel.READ,
+    ),
+    ControlPlaneBrokerOperation(
+        id="repository.read.reviews",
+        method="GET",
+        path_template=(
+            "/api/repository-facts/pull-requests/{external_id}/reviews"
+        ),
+        capability="repository.review.read",
+        authority_level=AuthorityLevel.READ,
+    ),
+    ControlPlaneBrokerOperation(
+        id="repository.read.checks",
+        method="GET",
+        path_template="/api/repository-facts/checks/{revision}",
+        capability="repository.checks.read",
+        authority_level=AuthorityLevel.READ,
+    ),
+    ControlPlaneBrokerOperation(
+        id="repository.read.releases",
+        method="GET",
+        path_template="/api/repository-facts/releases",
+        capability="repository.releases.read",
+        authority_level=AuthorityLevel.READ,
+    ),
+    ControlPlaneBrokerOperation(
+        id="repository.read.compare",
+        method="GET",
+        path_template="/api/repository-facts/compare?base={base}&head={head}",
+        capability="repository.compare.read",
+        authority_level=AuthorityLevel.READ,
     ),
     ControlPlaneBrokerOperation(
         id="repository.branch.publish",
@@ -252,6 +312,7 @@ class ControlPlaneBrokerService:
         work_items: WorkItemService,
         audit: ControlPlaneBrokerAuditStore,
         action_intents: ActionIntentService | None = None,
+        code_hosts: CodeHostService | None = None,
         operator: WorkItemOperatorService | None = None,
         limits: ControlPlaneBrokerLimits | None = None,
         clock: Callable[[], float] = time.time,
@@ -263,6 +324,7 @@ class ControlPlaneBrokerService:
         self.operator = operator or WorkItemOperatorService(work_items)
         self.audit = audit
         self.action_intents = action_intents
+        self.code_hosts = code_hosts
         self.limits = limits or ControlPlaneBrokerLimits()
         self._clock = clock
         self._monotonic = monotonic
@@ -376,6 +438,56 @@ class ControlPlaneBrokerService:
             return _ResolvedOperation(
                 operation=operation,
                 target_ref=None,
+                query=query,
+            )
+        repository_read_exact = {
+            "/api/repository-facts": "repository.read.metadata",
+            "/api/repository-facts/refs": "repository.read.refs",
+            "/api/repository-facts/releases": "repository.read.releases",
+            "/api/repository-facts/compare": "repository.read.compare",
+        }
+        operation_id = repository_read_exact.get(path)
+        target_ref = None
+        if operation_id is None:
+            repository_read_prefixes = (
+                (
+                    "/api/repository-facts/pull-requests/",
+                    "repository.read.pull-request",
+                ),
+                (
+                    "/api/repository-facts/commits/",
+                    "repository.read.commit",
+                ),
+                (
+                    "/api/repository-facts/checks/",
+                    "repository.read.checks",
+                ),
+            )
+            for prefix, candidate in repository_read_prefixes:
+                if not path.startswith(prefix):
+                    continue
+                encoded_target = path[len(prefix):]
+                if candidate == "repository.read.pull-request" and encoded_target.endswith(
+                    "/reviews"
+                ):
+                    candidate = "repository.read.reviews"
+                    encoded_target = encoded_target.removesuffix("/reviews")
+                target_ref = unquote(encoded_target).strip()
+                if not target_ref or len(target_ref) > 500:
+                    raise ControlPlaneBrokerDeniedError(
+                        "invalid repository fact target"
+                    )
+                operation_id = candidate
+                break
+        if operation_id is not None:
+            operation = _OPERATION_BY_ID[operation_id]
+            if method != operation.method:
+                raise ControlPlaneBrokerDeniedError(
+                    f"method {method} is not allowed for {operation.id}"
+                )
+            return _ResolvedOperation(
+                operation=operation,
+                target_ref=target_ref,
                 query=query,
             )
         if path == "/api/control-plane-broker/operations":
@@ -604,6 +716,124 @@ class ControlPlaneBrokerService:
         )
         return {"item": completed.model_dump(mode="json")}
 
+    def _code_host_binding(
+        self,
+        *,
+        assignment: ExecutionAssignment,
+        actor: AuthenticationActor,
+    ) -> tuple[str, str]:
+        if self.code_hosts is None or self.action_intents is None:
+            raise ControlPlaneBrokerDeniedError(
+                "governed repository reads are unavailable"
+            )
+        repository_id = self._writable_repository_id(assignment)
+        action_registry = self.action_intents.execution.registry
+        bindings = [
+            item
+            for item in action_registry.list_bindings(actor)
+            if item.enabled
+            and item.provider_type == "github"
+            and repository_id in item.resource_ids
+            and item.project_id in {None, assignment.project_id}
+        ]
+        if len(bindings) != 1:
+            raise ControlPlaneBrokerDeniedError(
+                "repository read requires exactly one enabled GitHub binding"
+            )
+        action_binding = bindings[0]
+        action_provider = action_registry.provider(
+            action_binding.provider_type,
+            action_binding.provider_instance,
+            actor=actor,
+        )
+        api_base = str(getattr(action_provider, "api_base", "")).strip()
+        if not api_base:
+            raise ControlPlaneBrokerDeniedError(
+                "GitHub provider does not expose its configured API base"
+            )
+        binding_id = f"control-plane-read:{action_binding.id}"
+        self.code_hosts.registry.register_binding(
+            CodeHostProviderBinding(
+                id=binding_id,
+                organization_id=assignment.organization_id,
+                workspace_id=assignment.workspace_id,
+                provider_type="github",
+                provider_instance=action_binding.provider_instance,
+                base_url=api_base,
+                credential_ref=action_binding.credential_ref,
+                capabilities=tuple(CodeHostCapability),
+            )
+        )
+        return binding_id, repository_id
+
+    async def _read_repository_fact(
+        self,
+        *,
+        assignment: ExecutionAssignment,
+        actor: AuthenticationActor,
+        operation: ControlPlaneBrokerOperation,
+        target_ref: str | None,
+        query: dict[str, list[str]],
+    ) -> dict[str, Any]:
+        assert self.code_hosts is not None
+        binding_id, repository_id = self._code_host_binding(
+            assignment=assignment,
+            actor=actor,
+        )
+        if operation.id == "repository.read.metadata":
+            item = await self.code_hosts.repository(
+                binding_id, repository_id, actor=actor
+            )
+            return {"item": item.model_dump(mode="json")}
+        if operation.id == "repository.read.refs":
+            items = await self.code_hosts.refs(binding_id, repository_id, actor=actor)
+            return {"items": [item.model_dump(mode="json") for item in items]}
+        if operation.id == "repository.read.commit":
+            assert target_ref is not None
+            item = await self.code_hosts.commit(
+                binding_id, repository_id, target_ref, actor=actor
+            )
+            return {"item": item.model_dump(mode="json")}
+        if operation.id == "repository.read.pull-request":
+            assert target_ref is not None
+            item = await self.code_hosts.pull_request(
+                binding_id, repository_id, target_ref, actor=actor
+            )
+            return {"item": item.model_dump(mode="json")}
+        if operation.id == "repository.read.reviews":
+            assert target_ref is not None
+            items = await self.code_hosts.reviews(
+                binding_id, repository_id, target_ref, actor=actor
+            )
+            return {"items": [item.model_dump(mode="json") for item in items]}
+        if operation.id == "repository.read.checks":
+            assert target_ref is not None
+            items = await self.code_hosts.checks(
+                binding_id, repository_id, target_ref, actor=actor
+            )
+            return {"items": [item.model_dump(mode="json") for item in items]}
+        if operation.id == "repository.read.releases":
+            items = await self.code_hosts.releases(
+                binding_id, repository_id, actor=actor
+            )
+            return {"items": [item.model_dump(mode="json") for item in items]}
+        if operation.id == "repository.read.compare":
+            base = (query.get("base") or [""])[0].strip()
+            head = (query.get("head") or [""])[0].strip()
+            if not base or not head or len(base) > 500 or len(head) > 500:
+                raise ControlPlaneBrokerRequestError(
+                    "repository compare requires bounded base and head query values"
+                )
+            item = await self.code_hosts.compare(
+                binding_id,
+                repository_id,
+                base,
+                head,
+                actor=actor,
+            )
+            return {"item": item.model_dump(mode="json")}
+        raise ControlPlaneBrokerDeniedError("unsupported repository read operation")
+
     def _authorize(
         self,
         assignment: ExecutionAssignment,
@@ -645,12 +875,14 @@ class ControlPlaneBrokerService:
         resolved = self._resolve_operation(method, raw_target)
         operation = resolved.operation
         actor = self._actor(assignment, worker_actor)
+        repository_read = operation.id.startswith("repository.read.")
         requester_actor = (
             self._requester_actor(assignment)
             if operation.id.startswith("repository.")
             or operation.id == "control_plane.operations.list"
             else actor
         )
+        authority_actor = actor if repository_read else requester_actor
         state = None
         resource_ids: tuple[str, ...] = ()
         if operation.id.startswith("repository."):
@@ -666,7 +898,7 @@ class ControlPlaneBrokerService:
         authority_decision = self._authorize(
             assignment,
             operation,
-            actor=requester_actor,
+            actor=authority_actor,
             resource_ids=resource_ids,
         )
 
@@ -687,6 +919,14 @@ class ControlPlaneBrokerService:
 
         if operation.id == "control_plane.operations.list":
             result = self.public_assignment_capability(assignment)
+        elif repository_read:
+            result = await self._read_repository_fact(
+                assignment=assignment,
+                actor=actor,
+                operation=operation,
+                target_ref=resolved.target_ref,
+                query=resolved.query,
+            )
         elif operation.id.startswith("repository."):
             result = await self._execute_repository_action(
                 assignment=assignment,
