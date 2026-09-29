@@ -172,11 +172,15 @@ async function mockOperatorApis(page, posts, detailPayload = operatorPayload()) 
 }
 
 test('work-item operator distinguishes canonical and external state with execution evidence', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
   const posts = [];
   await mockOperatorApis(page, posts);
   await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
   await expect(page.locator('#work-items-button')).toHaveCount(0);
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
+  await expect(page.locator('.work-items-status')).toHaveText('Up to date');
+  expect(errors).toEqual([]);
 
   const dialog = page.locator('#work-items-dialog');
   await expect(dialog).toBeVisible();

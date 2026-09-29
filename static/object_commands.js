@@ -27,7 +27,8 @@ export function installWorkItemCommands(state, loadDetail) {
       })),
     }));
   });
-  return async ({ commandRef, commandProject } = {}) => {
+  return async (detail) => {
+    const { commandRef, commandProject } = detail || {};
     if (!commandRef || commandProject !== state.projectId) return;
     if (!state.items.some((item) => item.ref === commandRef && item.project_id === commandProject)) return;
     state.selectedRef = commandRef;
