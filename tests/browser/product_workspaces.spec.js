@@ -171,6 +171,13 @@ test('shell keeps canonical Project context visible and switches without reloadi
   await expect.poll(() => page.evaluate(() => window.__selectedProject)).toBe('alpha');
   await expect(switcher).toHaveValue('alpha');
   await expect(page.locator('body')).toHaveAttribute('data-active-project', 'alpha');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:project-changed', {
+    detail: { projectId: '' },
+  })));
+  await expect(switcher).toHaveValue('');
+  await expect(page.locator('body')).toHaveAttribute('data-active-project', '');
+  await page.evaluate(() => window.CodexProductUI.openWorkspace('overview'));
+  await expect(page.locator('[data-home-overview]')).toContainText('Select a Project');
 });
 
 test('command search filters the workflow navigation and keeps Attention discoverable', async ({ page }) => {
