@@ -1,3 +1,4 @@
+import { createWorkItemViewScope, workItemLoadError } from "./work_item_view_scope.js";
 import { createRunTimelineUi } from "./work_item_runs_ui.js";
 import { workItemSummaryHtml } from "./work_item_summary_ui.js";
 import { request } from './api_client.js';
@@ -36,7 +37,7 @@ function fmtTime(value){if(!value)return'—';const d=new Date(Number(value)*100
 function routedProjectContext(){const m=location.pathname.match(/\/projects\/([^/]+)(?:\/|$)/);if(!m)return'';try{return decodeURIComponent(m[1])}catch{return m[1]}}
 function currentProjectContext(){const query=new URLSearchParams(location.search);return document.body?.dataset.activeProject||document.body?.dataset.projectId||routedProjectContext()||query.get('project')||query.get('work_item_project')||sessionStorage.getItem(WORK_ITEM_PROJECT_KEY)||''}
 function persistWorkItemProject(projectId){if(!projectId)return;sessionStorage.setItem(WORK_ITEM_PROJECT_KEY,projectId);if(document.body?.dataset.activeProject||routedProjectContext())return;const url=new URL(location.href);url.searchParams.set('work_item_project',projectId);history.replaceState({...history.state,workItemProjectId:projectId},'',url)}
-function resetPaging(){state.listController?.abort();state.listController=null;state.listGeneration+=1;state.items=[];state.nextCursor=null;state.hasMore=false;state.windowStart=0;state.pageError=''}
+const { resetPaging, captureScope, scopedPath } = createWorkItemViewScope(state, renderItemList);
 function ensureShell() {
   if (document.querySelector('#work-items-dialog')) return;
   const link = document.createElement('link');
@@ -133,19 +134,6 @@ function setStatus(message, isError = false) {
   if (!target) return;
   target.textContent = message || '';
   target.classList.toggle('error', Boolean(isError));
-}
-function workItemLoadError(error) {
-  const code = String(error?.detail?.code || '').toLowerCase();
-  const message = error?.message || 'Failed to load Work Items';
-  if (error?.status === 504) return `Backend timeout: ${message}`;
-  if (
-    code.includes('readiness')
-    || code.includes('migration')
-    || code.includes('bootstrap')
-  ) {
-    return `Project readiness blocker: ${message}`;
-  }
-  return message;
 }
 async function refreshAll() {
   setStatus('Loading…');
@@ -458,6 +446,7 @@ async function loadItems({ reset = false } = {}) {
     } else if (!state.selectedRef && detail) {
       detail.innerHTML = '<div class="work-item-empty">No work item selected.</div>';
     }
+    if (generation !== state.listGeneration || controller.signal.aborted) return;
     setStatus(
       state.hasMore
         ? `${state.items.length} Work Items loaded · more available`
@@ -474,18 +463,19 @@ async function loadItems({ reset = false } = {}) {
   }
 }
 function keyValueRows(values){return Object.entries(values).map(([key,value])=>`<div><span>${esc(key.replaceAll('_',' '))}</span><strong>${esc(value??'—')}</strong></div>`).join('');}
-const runUi = createRunTimelineUi({ state, request, esc, fmtTime, pathRef, setStatus, pageSize: RUN_PAGE_SIZE });
+const runUi = createRunTimelineUi({ state, request, esc, fmtTime, pathRef, scopedPath, captureScope, setStatus, pageSize: RUN_PAGE_SIZE });
 async function loadDetail(ref) {
   const detail = document.querySelector('.work-item-detail');
   if (!detail) return;
+  const isCurrent = captureScope();
   detail.innerHTML = '<div class="work-item-empty">Loading work-item detail…</div>';
   try {
     const query = new URLSearchParams({ limit: String(RUN_PAGE_SIZE) });
     const [payload, runs] = await Promise.all([
-      request(`/api/work-items/${pathRef(ref)}/operator`),
-      request(`/api/work-items/${pathRef(ref)}/runs?${query}`).catch(() => ({ active: [], items: [], nextCursor: null, hasMore: false, activeTruncated: false })),
+      request(scopedPath(`/api/work-items/${pathRef(ref)}/operator`)),
+      request(scopedPath(`/api/work-items/${pathRef(ref)}/runs?${query}`)).catch(() => ({ active: [], items: [], nextCursor: null, hasMore: false, activeTruncated: false })),
     ]);
-    if (ref !== state.selectedRef) return;
+    if (!isCurrent()) return;
     state.detailPayload = payload;
     state.runs = {
       active: Array.isArray(runs.active) ? runs.active : [],
@@ -496,6 +486,7 @@ async function loadDetail(ref) {
     };
     renderDetail(payload);
   } catch (error) {
+    if (!isCurrent()) return;
     detail.innerHTML = `<div class="work-item-error">${esc(error.message || 'Failed to load work item')}</div>`;
   }
 }
@@ -622,16 +613,19 @@ function renderDetail(payload) {
 }
 async function runItemAction(action) {
   if (!state.selectedRef) return;
+  const isCurrent = captureScope();
   setStatus(`${action === 'retry' ? 'Retrying' : 'Reconciling'} work item…`);
   try {
-    const payload = await request(`/api/work-items/${pathRef(state.selectedRef)}/${action}`, {
+    const payload = await request(scopedPath(`/api/work-items/${pathRef(state.selectedRef)}/${action}`), {
       method: 'POST',
       body: JSON.stringify({ actor: 'operator', reason: `operator requested ${action}` }),
     });
+    if (!isCurrent()) return;
     renderDetail(payload);
     setStatus(action === 'retry' ? 'Retry dispatched' : 'Reconciled with authoritative source');
     await loadItems({ reset: true });
   } catch (error) {
+    if (!isCurrent()) return;
     setStatus(error.message || `${action} failed`, true);
   }
 }

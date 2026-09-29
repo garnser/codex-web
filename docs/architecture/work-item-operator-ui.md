@@ -17,6 +17,18 @@ The operator reads and mutates the following existing authorities:
 
 The UI stores only ephemeral selection state such as the currently selected project/work item.
 
+Project-scoped operator requests include `project_id` on Work Item detail, Run,
+retry and reconciliation URLs. The shared item boundary checks this optional
+parameter against the canonical Work Item Project as well as the existing tenant
+scope, returning 404 before reads or mutations for a mismatch. Requests without
+the parameter retain the existing tenant-scoped API contract.
+
+Changing Project or resetting the list immediately clears rendered detail,
+actions and Run state. Pending responses may update the view only while their
+captured Project, selected Work Item and list generation still match. This also
+fences delayed errors and action results, including an A → B → A transition;
+it does not cancel a canonical mutation that was already submitted.
+
 ## Operator projection
 
 `GET /api/work-items/{ref}/operator` returns one bounded explainability view containing:

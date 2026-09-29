@@ -1,4 +1,4 @@
-export function createRunTimelineUi({ state, request, esc, fmtTime, pathRef, setStatus, pageSize }) {
+export function createRunTimelineUi({ state, request, esc, fmtTime, pathRef, scopedPath, captureScope, setStatus, pageSize }) {
 function keyValueRows(values) {
   return Object.entries(values).map(([key, value]) => `
     <div><span>${esc(key.replaceAll('_', ' '))}</span><strong>${esc(value ?? '—')}</strong></div>`).join('');
@@ -199,16 +199,19 @@ async function loadRunDetail(details) {
   if (details.dataset.loaded === 'true' || details.dataset.loading === 'true') return;
   const executionId = details.dataset.executionId;
   if (!state.selectedRef || !executionId) return;
+  const isCurrent = captureScope();
   details.dataset.loading = 'true';
   const target = details.querySelector('.work-run-expanded');
   if (target) target.innerHTML = '<small>Loading Run detail…</small>';
   try {
     const payload = await request(
-      `/api/work-items/${pathRef(state.selectedRef)}/runs/${encodeURIComponent(executionId)}`,
+      scopedPath(`/api/work-items/${pathRef(state.selectedRef)}/runs/${encodeURIComponent(executionId)}`),
     );
+    if (!isCurrent() || !details.isConnected) return;
     if (target) target.innerHTML = runDetailHtml(payload.run || {});
     details.dataset.loaded = 'true';
   } catch (error) {
+    if (!isCurrent() || !details.isConnected) return;
     if (target) target.innerHTML = `<div class="work-item-error">${esc(error.message || 'Failed to load Run detail')}</div>`;
   } finally {
     details.dataset.loading = 'false';
@@ -237,11 +240,17 @@ function renderRunTimelineOnly() {
 
 async function refreshRuns({ append = false } = {}) {
   if (!state.selectedRef) return;
+  const isCurrent = captureScope();
   const query = new URLSearchParams({ limit: String(pageSize) });
   if (append && state.runs?.nextCursor) query.set('cursor', state.runs.nextCursor);
-  const payload = await request(
-    `/api/work-items/${pathRef(state.selectedRef)}/runs?${query}`,
-  );
+  let payload;
+  try {
+    payload = await request(scopedPath(`/api/work-items/${pathRef(state.selectedRef)}/runs?${query}`));
+  } catch (error) {
+    if (!isCurrent()) return;
+    throw error;
+  }
+  if (!isCurrent()) return;
   const page = Array.isArray(payload.items) ? payload.items : [];
   if (append) {
     const byId = new Map((state.runs.items || []).map((run) => [run.executionId, run]));
