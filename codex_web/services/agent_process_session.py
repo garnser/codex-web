@@ -24,6 +24,8 @@ from codex_web.services.control_plane_broker import (
     DeferredControlPlaneBrokerFactory,
 )
 from codex_web.services.agent_worker_session import (
+    AssignmentBoundAgentSessionError,
+    AssignmentBoundAgentSessionStaleError,
     AssignmentBoundAgentSessionStatus,
     AssignmentRuntimeCredentialGrant,
     AssignmentRuntimeCredentialProvider,
@@ -41,11 +43,14 @@ from codex_web.services.local_execution_worker import (
 )
 
 
-class AssignmentBoundAgentProcessSessionError(RuntimeError):
+class AssignmentBoundAgentProcessSessionError(AssignmentBoundAgentSessionError):
     pass
 
 
-class AssignmentBoundAgentProcessSessionStaleError(AssignmentBoundAgentProcessSessionError):
+class AssignmentBoundAgentProcessSessionStaleError(
+    AssignmentBoundAgentProcessSessionError,
+    AssignmentBoundAgentSessionStaleError,
+):
     pass
 
 
