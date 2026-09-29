@@ -1272,10 +1272,15 @@ function installProjectContext() {
           url,
         );
       }
-      if (activeWorkspace === "overview") {
-        const host = document.querySelector("[data-home-overview]");
-        if (host) void renderHomeOverview(host, projectId);
-      }
+    } else {
+      select.value = "";
+      document.body.dataset.activeProject = "";
+      const indicator = document.querySelector("[data-project-indicator]");
+      if (indicator) indicator.textContent = "Select a Project";
+    }
+    if (activeWorkspace === "overview") {
+      const host = document.querySelector("[data-home-overview]");
+      if (host) void renderHomeOverview(host, projectId);
     }
   });
 }

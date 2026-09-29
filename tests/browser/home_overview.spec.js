@@ -33,6 +33,79 @@ async function routeHome(page, payload) {
   await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
 }
 
+test('Overview fences delayed responses across populated, empty and cleared Projects', async ({ page }) => {
+  await page.addInitScript(payload => {
+    const originalFetch = window.fetch;
+    window.homeRace = { calls: [], hold: false, pending: false, settled: false };
+    const held = new Promise(resolve => { window.homeRace.release = resolve; });
+    window.fetch = async (input, options) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname !== '/api/home') return originalFetch(input, options);
+      const project = url.searchParams.get('project_id');
+      window.homeRace.calls.push(project);
+      const result = structuredClone(payload);
+      result.project = { id: project, name: project, path: `/workspace/${project}` };
+      for (const section of Object.values(result.sections)) {
+        section.items = project === 'project-empty' ? [] : [{
+          id: `${project}-item`, title: `${project} current item`, status: 'open',
+        }];
+        section.count = section.items.length;
+      }
+      if (project === 'project-a' && window.homeRace.hold) {
+        window.homeRace.pending = true;
+        await held; // Deliberately ignore cancellation to exercise the generation fence.
+        window.homeRace.settled = true;
+      }
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    };
+  }, populated);
+  await page.goto('http://127.0.0.1:18766/tests/browser/home_overview_fixture.html');
+  await expect.poll(() => page.evaluate(() => window.__ready)).toBe(true);
+  const home = page.locator('[data-home-overview]');
+  await expect(home).toContainText('project-a current item');
+  await page.evaluate(() => {
+    const select = document.getElementById('product-project-switcher');
+    for (const id of ['project-b', 'project-empty', '']) select.add(new Option(id, id));
+    window.switchHome = async project => {
+      select.value = project;
+      document.body.dataset.projectId = project;
+      window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: project } }));
+      await window.__renderHomeOverview(document.querySelector('[data-home-overview]'), project);
+    };
+    window.homeRace.hold = true;
+    void window.switchHome('project-a');
+  });
+  await expect.poll(() => page.evaluate(() => window.homeRace.pending)).toBe(true);
+  await page.evaluate(() => window.switchHome('project-b'));
+  await expect(home).toContainText('project-b current item');
+  await page.evaluate(() => window.homeRace.release());
+  await expect.poll(() => page.evaluate(() => window.homeRace.settled)).toBe(true);
+  await expect(home).not.toContainText('project-a current item');
+  await page.evaluate(() => window.switchHome('project-empty'));
+  await expect(home).not.toContainText('project-b current item');
+  await expect(home.locator('[data-home-section="attention"]')).toContainText('Nothing here right now');
+  const calls = await page.evaluate(() => window.homeRace.calls.length);
+  await page.evaluate(() => window.switchHome(''));
+  await expect(home).toContainText('Select a Project');
+  expect(await page.evaluate(() => window.homeRace.calls.length)).toBe(calls);
+  await page.evaluate(() => { window.homeRace.hold = false; return window.switchHome('project-a'); });
+  await expect(home).toContainText('project-a current item');
+  // A hidden panel is invalidated too, without a new request.
+  await page.evaluate(() => {
+    document.querySelector('[data-home-overview]').hidden = true;
+    window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: 'project-b' } }));
+  });
+  await expect(home).toBeEmpty();
+});
+
+test('Overview refuses a response for a different Project', async ({ page }) => {
+  const payload = structuredClone(populated);
+  payload.project.id = 'project-b';
+  await routeHome(page, payload);
+  await expect(page.locator('[data-home-overview]')).toContainText('does not match the selected Project');
+  await expect(page.getByText('Ship release')).toHaveCount(0);
+});
+
 test('populated Home identifies Project, current work, owners, next actions and authoritative links', async ({ page }) => {
   await routeHome(page, populated);
   const home = page.locator('[data-home-overview]');
