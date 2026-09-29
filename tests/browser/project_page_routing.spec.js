@@ -21,6 +21,15 @@ async function serveProjectShell(page) {
   });
 }
 
+test('Company Operations explicitly retains organization/workspace scope across Projects', async ({ page }) => {
+  await serveProjectShell(page);
+  await page.goto('http://127.0.0.1:18766/projects/home/company');
+  await expect(page.locator('[data-project-page-scope]')).toHaveText('Scope: Organization / workspace');
+  await page.locator('#product-project-switcher').selectOption('alpha');
+  await expect(page).toHaveURL(/\/projects\/alpha\/company$/);
+  await expect(page.locator('[data-project-page-scope]')).toHaveText('Scope: Organization / workspace');
+});
+
 test('direct Project page URL restores Project and workspace context on reload', async ({ page }) => {
   await serveProjectShell(page);
 

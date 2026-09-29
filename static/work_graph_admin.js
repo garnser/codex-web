@@ -1,6 +1,11 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
-  const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { projectViewOperation, currentProjectId } = await import(`${BASE}/static/project_view_scope.js`);
+  const { layout } = await import(`${BASE}/static/work_graph_layout.js`);
+  let sequence = 0;
+  let focusSequence = 0;
+  let controller = null;
+  let renderedProjectId = currentProjectId();
 
   let actor = null;
   let projects = [];
@@ -41,7 +46,7 @@
   }
 
   function canMutate() {
-    if (!actor) return false;
+    if (!actor || !graph || graph.project_id !== currentProjectId()) return false;
     if (actor.principal_kind === "service") {
       return (actor.service_scopes || []).includes("work-graph:admin");
     }
@@ -59,7 +64,7 @@
   }
 
   function selectedProjectId() {
-    return document.getElementById("work-graph-project")?.value || "";
+    return currentProjectId();
   }
 
   function workItemUrl(ref) {
@@ -84,58 +89,6 @@
     if (!graph) return [];
     const refs = new Set(nodes.map((node) => node.ref));
     return graph.edges.filter((edge) => refs.has(edge.source_ref) && refs.has(edge.target_ref));
-  }
-
-  function layout(nodes, edges) {
-    const refs = new Set(nodes.map((node) => node.ref));
-    const incoming = new Map(nodes.map((node) => [node.ref, 0]));
-    const outgoing = new Map(nodes.map((node) => [node.ref, []]));
-    for (const edge of edges) {
-      if (!refs.has(edge.source_ref) || !refs.has(edge.target_ref)) continue;
-      incoming.set(edge.target_ref, (incoming.get(edge.target_ref) || 0) + 1);
-      outgoing.get(edge.source_ref)?.push(edge.target_ref);
-    }
-
-    const queue = [...nodes.map((node) => node.ref).filter((ref) => incoming.get(ref) === 0)].sort();
-    const depth = new Map(nodes.map((node) => [node.ref, 0]));
-    while (queue.length) {
-      const current = queue.shift();
-      const children = [...(outgoing.get(current) || [])].sort();
-      for (const child of children) {
-        depth.set(child, Math.max(depth.get(child) || 0, (depth.get(current) || 0) + 1));
-        incoming.set(child, (incoming.get(child) || 0) - 1);
-        if (incoming.get(child) === 0) queue.push(child);
-      }
-      queue.sort();
-    }
-
-    const groups = new Map();
-    for (const node of nodes) {
-      const layer = depth.get(node.ref) || 0;
-      if (!groups.has(layer)) groups.set(layer, []);
-      groups.get(layer).push(node);
-    }
-    for (const group of groups.values()) {
-      group.sort((left, right) => left.ref.localeCompare(right.ref));
-    }
-
-    const positions = new Map();
-    let maxRows = 1;
-    for (const [layer, group] of groups.entries()) {
-      maxRows = Math.max(maxRows, group.length);
-      group.forEach((node, row) => {
-        positions.set(node.ref, {
-          x: 30 + layer * 240,
-          y: 30 + row * 112,
-        });
-      });
-    }
-    const maxLayer = Math.max(0, ...groups.keys());
-    return {
-      positions,
-      width: Math.max(520, 240 * (maxLayer + 1) + 70),
-      height: Math.max(220, maxRows * 112 + 60),
-    };
   }
 
   function criticalEdgeSet() {
@@ -296,69 +249,89 @@
       : "No graph loaded.");
   }
 
+  function clearGraph() {
+    graph = null; events = []; focusRef = null; focusRefs = null;
+    focusSequence += 1;
+    renderAll();
+  }
   async function focusNode(ref) {
-    if (!graph) return;
+    if (!graph?.nodes?.some(node => node.ref === ref)) return;
+    const operation = projectViewOperation(setStatus, 'refresh-work-graph');
+    const requestSequence = sequence;
+    const focused = ++focusSequence;
     focusRef = ref;
     try {
-      const params = new URLSearchParams({ ref });
+      const params = new URLSearchParams({ ref, project_id: currentProjectId() });
       const [upstream, downstream] = await Promise.all([
-        apiRequest(`/api/work-graph/traverse?${params.toString()}&direction=upstream`),
-        apiRequest(`/api/work-graph/traverse?${params.toString()}&direction=downstream`),
+        operation.request(`/api/work-graph/traverse?${params.toString()}&direction=upstream`),
+        operation.request(`/api/work-graph/traverse?${params.toString()}&direction=downstream`),
       ]);
+      if (!operation.current() || requestSequence !== sequence || focused !== focusSequence) return;
       focusRefs = new Set([ref, ...(upstream.refs || []), ...(downstream.refs || [])]);
+      renderAll();
     } catch (error) {
+      if (!operation.current() || requestSequence !== sequence || focused !== focusSequence) return;
       focusRefs = new Set([ref]);
+      renderAll();
       setStatus(`Focused node, but traversal expansion failed: ${error.message}`);
     }
-    renderAll();
   }
 
   async function loadGraph() {
     const projectId = selectedProjectId();
-    if (!projectId) {
-      graph = null;
-      events = [];
-      renderAll();
-      return;
-    }
+    const requestSequence = ++sequence;
+    controller?.abort();
+    controller = new AbortController();
+    const options = { signal: controller.signal };
+    const operation = projectViewOperation(setStatus, 'refresh-work-graph');
+    clearGraph();
+    if (!projectId) return setStatus('Select a Project to inspect its work graph.');
     setStatus("Loading canonical work graph...");
-    const [snapshot, eventResponse] = await Promise.all([
-      apiRequest(`/api/work-graph/projects/${encodeURIComponent(projectId)}`),
-      apiRequest(`/api/work-graph/events?project_id=${encodeURIComponent(projectId)}&limit=100`),
-    ]);
-    graph = snapshot.graph;
-    events = eventResponse.items || [];
-    focusRef = null;
-    focusRefs = null;
-    renderAll();
+    try {
+      const [snapshot, eventResponse] = await Promise.all([
+        operation.request(`/api/work-graph/projects/${encodeURIComponent(projectId)}`, options),
+        operation.request(`/api/work-graph/events?project_id=${encodeURIComponent(projectId)}&limit=100`, options),
+      ]);
+      if (!operation.current() || requestSequence !== sequence) return;
+      if (snapshot.graph?.project_id !== projectId) throw new Error('Graph Project context mismatch');
+      graph = snapshot.graph;
+      events = eventResponse.items || [];
+      renderAll();
+    } catch (error) {
+      if (!operation.current() || requestSequence !== sequence) return;
+      clearGraph();
+      setStatus(`Work Graph unavailable: ${error.message}`);
+    }
   }
 
   async function refresh() {
+    const projectId = selectedProjectId();
+    const requestSequence = ++sequence;
+    const operation = projectViewOperation(setStatus, 'refresh-work-graph');
+    clearGraph();
+    const select = document.getElementById("work-graph-project");
+    if (select) { select.replaceChildren(); select.disabled = true; }
+    if (!projectId) return setStatus('Select a Project to inspect its work graph.');
     try {
-      const [projectResponse, me] = await Promise.all([
-        apiRequest("/api/projects"),
-        apiRequest("/api/identity/me"),
+      const [project, me] = await Promise.all([
+        operation.request(`/api/projects/${encodeURIComponent(projectId)}`),
+        operation.request("/api/identity/me"),
       ]);
-      projects = Array.isArray(projectResponse) ? projectResponse : (projectResponse.items || []);
+      if (!operation.current() || requestSequence !== sequence) return;
+      projects = [project];
       actor = me;
-      const select = document.getElementById("work-graph-project");
-      if (select) {
-        const current = select.value;
-        select.innerHTML = projects.map((project) => (
-          `<option value="${escapeHtml(project.id)}">${escapeHtml(project.name)} · ${escapeHtml(project.id)}</option>`
-        )).join("");
-        if (projects.some((project) => project.id === current)) select.value = current;
-      }
+      if (select) select.innerHTML = projects.map(item =>
+        `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)} · ${escapeHtml(item.id)}</option>`).join('');
       await loadGraph();
     } catch (error) {
-      graph = null;
-      events = [];
+      if (!operation.current() || requestSequence !== sequence) return;
+      clearGraph();
       setStatus(`Work Graph unavailable: ${error.message}`);
-      renderAll();
     }
   }
 
   async function addEdge() {
+    const operation = projectViewOperation(setManagementStatus, 'refresh-work-graph');
     if (!canMutate()) return setManagementStatus("Graph mutation requires admin + MFA/step-up or work-graph:admin service authority.");
     const relation = document.getElementById("work-graph-relation")?.value || "blocks";
     const sourceRef = document.getElementById("work-graph-source")?.value || "";
@@ -372,7 +345,7 @@
       `Add ${relation} relationship ${sourceRef} → ${targetRef}? The server will reject cycles, scope conflicts and duplicate-policy conflicts before saving.`,
     )) return;
     try {
-      await apiRequest("/api/work-graph/edges", {
+      await operation.request(`/api/work-graph/edges?project_id=${encodeURIComponent(currentProjectId())}`, {
         method: "POST",
         body: JSON.stringify({
           relation,
@@ -385,11 +358,13 @@
       setManagementStatus("Relationship saved through the canonical graph service.");
       await loadGraph();
     } catch (error) {
+      if (!operation.current()) return;
       setManagementStatus(`Relationship rejected: ${error.message}`);
     }
   }
 
   async function removeEdge(edgeId) {
+    const operation = projectViewOperation(setManagementStatus, 'refresh-work-graph');
     const edge = graph?.edges?.find((item) => item.id === edgeId);
     if (!edge) return;
     if (!canMutate()) return setManagementStatus("Graph mutation requires elevated authority.");
@@ -397,12 +372,13 @@
       `Remove ${edge.source_ref} ${edge.relation} ${edge.target_ref}? Readiness will be recomputed from the remaining canonical graph and Work Item state.`,
     )) return;
     try {
-      await apiRequest(`/api/work-graph/edges/${encodeURIComponent(edgeId)}`, {
+      await operation.request(`/api/work-graph/edges/${encodeURIComponent(edgeId)}?project_id=${encodeURIComponent(currentProjectId())}`, {
         method: "DELETE",
       });
       setManagementStatus("Relationship removed; graph readiness recomputed.");
       await loadGraph();
     } catch (error) {
+      if (!operation.current()) return;
       setManagementStatus(`Relationship removal failed: ${error.message}`);
     }
   }
@@ -425,7 +401,6 @@
     const panel = document.getElementById("developer-panel");
     document.getElementById("refresh-work-graph")?.addEventListener("click", refresh);
     document.getElementById("refresh-developer")?.addEventListener("click", refresh);
-    document.getElementById("work-graph-project")?.addEventListener("change", () => loadGraph().catch(console.error));
     document.getElementById("work-graph-search")?.addEventListener("input", renderAll);
     document.getElementById("work-graph-readiness-filter")?.addEventListener("change", renderAll);
     document.getElementById("work-graph-relation")?.addEventListener("change", syncRelationControls);
@@ -435,6 +410,7 @@
     document.getElementById("work-graph-clear-focus")?.addEventListener("click", () => {
       focusRef = null;
       focusRefs = null;
+      focusSequence += 1;
       renderAll();
     });
     document.getElementById("work-graph-svg")?.addEventListener("click", (event) => {
@@ -456,8 +432,26 @@
       if (panel.open && !graph) refresh().catch(console.error);
     });
     syncRelationControls();
-    if (panel?.open) refresh().catch(console.error);
+    const workspace = document.querySelector('[data-product-workspace-panel="work"]');
+    if (panel?.open || (workspace && !workspace.hidden)) refresh().catch(console.error);
+    window.addEventListener('codex:project-changed', () => {
+      if (currentProjectId() === renderedProjectId) return;
+      renderedProjectId = currentProjectId();
+      sequence += 1;
+      controller?.abort();
+      actor = null; projects = []; zoom = 1;
+      for (const id of ['work-graph-search', 'work-graph-readiness-filter', 'work-graph-edge-reason']) {
+        const field = document.getElementById(id);
+        if (field) field.value = '';
+      }
+      document.getElementById('work-graph-project')?.replaceChildren();
+      document.getElementById('work-graph-management-status')?.replaceChildren();
+      document.getElementById('work-graph-management-assurance')?.replaceChildren();
+      clearGraph();
+      if ((workspace && !workspace.hidden) || panel?.open) refresh().catch(console.error);
+    });
   }
 
-  window.addEventListener("DOMContentLoaded", bind);
+  if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", bind, { once: true });
+  else bind();
 })();

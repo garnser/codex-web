@@ -173,7 +173,7 @@ const PROJECT_PAGE_PRESENTATION = Object.freeze({
   company: {
     title: "Company Operations",
     purpose: "Inspect governed business entities, synchronized facts, operating KPIs and explainable actions.",
-    scope: "Project and organization",
+    scope: "Organization / workspace",
   },
   memory: {
     title: "Memory",
@@ -1037,7 +1037,7 @@ function installNavigationCommands() {
     const scoped = Boolean(projectId) && !document.body.classList.contains("project-context-unavailable");
     const commands = WORKSPACES.map((item) => ({
       id: item.id, workspaceId: item.id, label: item.label, description: item.description,
-      projectId, scopeLabel: ["memory", "operations", "organization"].includes(item.id)
+      projectId, scopeLabel: ["memory", "company", "operations", "organization"].includes(item.id)
         ? "Organization / workspace" : `Project: ${projectLabel}`,
       available: () => scoped && (!item.selector || Boolean(document.querySelector(item.selector + ':not(:disabled)'))),
       run: () => openWorkspace(item.id),

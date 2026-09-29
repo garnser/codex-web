@@ -108,6 +108,16 @@ project snapshot containing:
 Traversal order and tie-breaking are stable so tests, APIs, replay, and UI can
 produce the same explanation.
 
+The Project Work Graph follows the selected Project route; its displayed Project
+selector is read-only. Switching Projects clears graph nodes, relationships, audit
+events, focus/traversal results, filters, and pending relationship input. Delayed
+reads, traversal expansion, and mutation responses cannot update another Project's
+view. The browser sends `project_id` with traversal and edge mutations. The API
+validates Project visibility and the graph service checks the target Work Item or
+edge belongs to that Project before reading or mutating it. An explicit invalid
+context fails closed; legacy unscoped service/API callers retain tenant-scoped
+behavior. Removing an edge checks its Project within the atomic state update.
+
 ## Critical path
 
 Until duration estimates become canonical data, the critical path is the longest

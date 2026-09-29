@@ -46,7 +46,7 @@ def item(
 class _Projects:
     def get(self, project_id: str, scope: TenantScope):
         if (
-            project_id == "project-a"
+            project_id in {"project-a", "project-c", "empty"}
             and scope.organization_id == "org-a"
             and scope.workspace_id == "ws-a"
         ):
@@ -134,6 +134,38 @@ class WorkGraphApiTests(unittest.TestCase):
             "/api/work-graph/projects/project-b"
         )
         self.assertEqual(missing_project.status_code, 404)
+
+    def test_project_context_rejects_other_project_reads_and_mutations(self) -> None:
+        self.actor = self.actor.model_copy(update={"assurance": AuthenticationAssurance.MFA})
+        self.items["C1"] = item("C1", project_id="project-c")
+        self.items["C2"] = item("C2", project_id="project-c")
+        created = self.client.post("/api/work-graph/edges", params={"project_id": "project-c"}, json=self._edge("C1", "C2"))
+        self.assertEqual(created.status_code, 200)
+        edge_id = created.json()["edge"]["id"]
+        for endpoint in ("readiness", "traverse"):
+            denied = self.client.get(f"/api/work-graph/{endpoint}", params={"project_id": "project-a", "ref": "C1"})
+            self.assertEqual(denied.status_code, 404)
+            allowed = self.client.get(f"/api/work-graph/{endpoint}", params={"project_id": "project-c", "ref": "C1"})
+            self.assertEqual(allowed.status_code, 200)
+        denied = self.client.post("/api/work-graph/edges", params={"project_id": "project-a"}, json=self._edge("C2", "C1"))
+        self.assertEqual(denied.status_code, 404)
+        denied = self.client.delete(f"/api/work-graph/edges/{edge_id}", params={"project_id": "project-a"})
+        self.assertEqual(denied.status_code, 404)
+        graph = self.client.get("/api/work-graph/projects/project-c").json()["graph"]
+        self.assertEqual({node["ref"] for node in graph["nodes"]}, {"C1", "C2"})
+        self.assertEqual([edge["id"] for edge in graph["edges"]], [edge_id])
+        self.assertEqual(self.client.get("/api/work-graph/projects/empty").json()["graph"]["nodes"], [])
+        self.assertEqual(self.client.get("/api/work-graph/events", params={"project_id": "project-a"}).json()["items"], [])
+        self.assertEqual(self.client.delete(f"/api/work-graph/edges/{edge_id}", params={"project_id": "project-c"}).status_code, 200)
+
+    def test_invalid_explicit_project_context_fails_before_mutation(self) -> None:
+        self.actor = self.actor.model_copy(update={"assurance": AuthenticationAssurance.MFA})
+        for project, status in [("", 422), ("missing", 404), ("project-b", 404)]:
+            params = {"project_id": project}
+            self.assertEqual(self.client.post("/api/work-graph/edges", params=params, json=self._edge()).status_code, status)
+            self.assertEqual(self.client.delete("/api/work-graph/edges/missing", params=params).status_code, status)
+            self.assertEqual(self.client.get("/api/work-graph/traverse", params={**params, "ref": "A"}).status_code, status)
+        self.assertEqual(self.service.snapshot("project-a", scope=self.actor.tenant).edges, ())
 
     def test_low_assurance_admin_cannot_mutate_graph(self) -> None:
         response = self.client.post(
