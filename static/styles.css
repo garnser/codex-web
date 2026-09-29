@@ -734,8 +734,15 @@ select:focus,
   min-width: 0;
   height: 100vh;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
 }
+
+/* Keep optional approvals/history out of the message stream's flexible row. */
+.main > .topbar { grid-row: 1; }
+.main > .approvals { grid-row: 2; }
+.main > #thread-history-control { grid-row: 3; }
+.main > .messages { grid-row: 4; }
+.main > .composer { grid-row: 5; }
 
 .topbar {
   min-height: 76px;
@@ -1421,6 +1428,7 @@ select {
 
 .message {
   box-sizing: border-box;
+  flex-shrink: 0;
   min-width: 0;
   max-width: min(980px, 88%);
   border: 1px solid var(--line);
