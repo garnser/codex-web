@@ -11,6 +11,14 @@ for (const capture of manifest.captures) {
   test(`documentation fixture ${capture.name} has no uncaught page exceptions`, async ({ page }) => {
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.stack || error.message));
+    if (capture.name === "executive-management") {
+      // This fixture imports its API client only after opening. Keep the smoke
+      // assertion independent of module-cache and runner-speed differences.
+      await page.route("**/static/api_client.js", async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        await route.continue();
+      });
+    }
 
     await page.goto(
       `http://127.0.0.1:18766/${capture.fixture}`,
@@ -28,13 +36,14 @@ for (const capture of manifest.captures) {
       await page.waitForTimeout(50);
     }
 
-    expect(errors, `${capture.name}: uncaught page exceptions`).toEqual([]);
-    const body = await page.locator("body").innerText();
+    const body = page.locator("body");
     for (const landmark of capture.landmarks || []) {
-      expect(body, `${capture.name}: missing landmark ${landmark}`).toContain(landmark);
+      await expect(body, `${capture.name}: missing landmark ${landmark}`).toContainText(landmark);
     }
+    expect(errors, `${capture.name}: uncaught page exceptions`).toEqual([]);
+    const bodyText = await body.innerText();
     for (const marker of manifest.forbidden_markers || []) {
-      expect(body, `${capture.name}: sensitive marker ${marker}`).not.toContain(marker);
+      expect(bodyText, `${capture.name}: sensitive marker ${marker}`).not.toContain(marker);
     }
   });
 }
