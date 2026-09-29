@@ -18,10 +18,35 @@ test('chat execution controls are compact and persist through thread settings', 
     { threadId: 'thread-1', updates: { writable_repository_resource_ids: ['repo-app', 'repo-api'] } },
   ]));
 
-  await page.locator('#thread-actions-menu > summary').click();
-  await expect(page.locator('#thread-settings-menu')).not.toHaveAttribute('open', '');
+  await expect(page.locator('#thread-actions-menu')).toHaveCount(0);
   await expect(page.locator('#rename-thread')).toBeVisible();
   await expect(page.locator('#archive-thread')).toBeVisible();
+  await page.locator('#rename-thread').click();
+  await expect(page.locator('#thread-settings-menu')).not.toHaveAttribute('open', '');
+  await page.locator('#thread-settings-menu > summary').click();
+  await page.locator('#archive-thread').click();
+  await expect(page.locator('#thread-settings-menu')).not.toHaveAttribute('open', '');
+  expect(await page.evaluate(() => window.actions)).toEqual(['rename-thread', 'archive-thread']);
+});
+
+test('single thread settings entry supports keyboard activation and dismissal', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/chat_controls_fixture.html');
+  const summary = page.locator('#thread-settings-menu > summary');
+  await summary.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#sandbox')).toBeVisible();
+  await page.locator('#rename-thread').focus();
+  await page.keyboard.press('Enter');
+  expect(await page.evaluate(() => window.actions)).toEqual(['rename-thread']);
+  await summary.focus();
+  await page.keyboard.press('Enter');
+  await page.locator('#sandbox').focus();
+  await page.keyboard.press('Escape');
+  await expect(summary).toBeFocused();
+  await expect(page.locator('#sandbox')).toBeHidden();
+  await summary.click();
+  await page.locator('.thread-heading').click();
+  await expect(page.locator('#sandbox')).toBeHidden();
 });
 
 test('chat thread menus fit a 320px phone viewport', async ({ page }) => {
@@ -36,7 +61,7 @@ test('chat thread menus fit a 320px phone viewport', async ({ page }) => {
   expect(dimensions.root).toBeLessThanOrEqual(dimensions.viewport);
   expect(dimensions.body).toBeLessThanOrEqual(dimensions.viewport);
 
-  for (const selector of ['#thread-settings-menu > summary', '#thread-actions-menu > summary']) {
+  for (const selector of ['#thread-settings-menu > summary']) {
     const box = await page.locator(selector).boundingBox();
     expect(box.height).toBeGreaterThanOrEqual(44);
   }

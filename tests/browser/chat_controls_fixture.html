@@ -31,13 +31,10 @@
             <span id="repository-target-status" class="repository-target-status">App</span>
             <span id="sandbox-danger-warning" class="sandbox-danger-warning">Full access disables the Codex inner sandbox.</span>
             <details class="thread-profile-details"><summary>Profile details</summary><span id="execution-profile-summary"></span></details>
-          </div>
-        </details>
-        <details id="thread-actions-menu" class="thread-control-menu thread-actions-menu">
-          <summary class="icon-button">•••</summary>
-          <div class="thread-control-popover thread-actions-popover">
-            <button id="rename-thread">Rename thread</button>
-            <button id="archive-thread">Archive thread</button>
+            <div class="thread-settings-actions" role="group" aria-label="Thread actions">
+              <button id="rename-thread" type="button">Rename thread</button>
+              <button id="archive-thread" type="button">Archive thread</button>
+            </div>
           </div>
         </details>
       </div>
@@ -48,6 +45,10 @@
   <script type="module">
     import { install } from '/static/thread_settings_ui.js';
     window.updates = [];
+    window.actions = [];
+    ['rename-thread', 'archive-thread'].forEach((id) => {
+      document.getElementById(id).addEventListener('click', () => window.actions.push(id));
+    });
     install({
       byId: (id) => document.getElementById(id),
       activeThreadId: () => 'thread-1',

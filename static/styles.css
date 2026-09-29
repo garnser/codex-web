@@ -862,15 +862,13 @@ h1 {
   margin-top: 8px;
 }
 
-.thread-actions-popover {
-  width: 190px;
-  display: grid;
+.thread-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
-}
-
-.thread-actions-popover button {
-  width: 100%;
-  justify-content: flex-start;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
 }
 
 .execution-profile-summary {

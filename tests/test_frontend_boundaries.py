@@ -323,7 +323,7 @@ class FrontendBoundaryTests(unittest.TestCase):
         html = (STATIC / "index.html").read_text(encoding="utf-8")
 
         settings_start = html.index('id="thread-settings-menu"')
-        settings_end = html.index('id="thread-actions-menu"')
+        settings_end = html.index('</header>', settings_start)
         settings = html[settings_start:settings_end]
         for control_id in (
             "thread-model-setting",
@@ -334,12 +334,15 @@ class FrontendBoundaryTests(unittest.TestCase):
             "repository-read-context",
             "sandbox",
             "approval-policy",
+            "rename-thread",
+            "archive-thread",
         ):
             self.assertIn(f'id="{control_id}"', settings)
 
-        actions = html[settings_end:html.index('</div>', settings_end)]
-        self.assertIn('id="rename-thread"', actions)
-        self.assertIn('id="archive-thread"', actions)
+        self.assertNotIn('id="thread-actions-menu"', html)
+        self.assertNotIn('thread-actions-popover', (STATIC / 'styles.css').read_text())
+        self.assertNotIn('thread-actions-menu', (STATIC / 'app.js').read_text())
+        self.assertNotIn('thread-actions-menu', (STATIC / 'thread_settings_ui.js').read_text())
 
     def test_execution_profile_controls_are_focused_and_explain_authority(self) -> None:
         html = (STATIC / "index.html").read_text(encoding="utf-8")
