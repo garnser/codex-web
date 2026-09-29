@@ -32,13 +32,15 @@ test("documentation screenshot manifest uses sanitized reachable fixtures", asyn
       await trigger.click();
       await page.waitForTimeout(50);
     }
-    const text = await page.locator("body").innerText();
+    const body = page.locator("body");
+
+    for (const landmark of capture.landmarks || []) {
+      await expect(body, `${capture.name} missing landmark ${landmark}`).toContainText(landmark);
+    }
+    const text = await body.innerText();
 
     for (const marker of manifest.forbidden_markers || []) {
       expect(text, `${capture.name} contains forbidden marker ${marker}`).not.toContain(marker);
-    }
-    for (const landmark of capture.landmarks || []) {
-      expect(text, `${capture.name} missing landmark ${landmark}`).toContain(landmark);
     }
   }
 
