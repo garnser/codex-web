@@ -251,8 +251,21 @@ def build_configuration_router(
         key: str | None = None,
         scope_type: ConfigurationScope | None = None,
         scope_id: str | None = None,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         actor = authenticated(request)
+        project_resource_ids: set[str] = set()
+        if project_id is not None:
+            if not project_id or projects is None:
+                raise HTTPException(status_code=404, detail="Project not found")
+            try:
+                project = projects.get(project_id, actor.tenant)
+            except ProjectNotFoundError as exc:
+                raise HTTPException(status_code=404, detail="Project not found") from exc
+            if resources is not None:
+                project_resource_ids = {
+                    item.id for item in resources.project_resources(project, actor=actor)
+                }
         normalized_scope_id = scope_id
         try:
             if scope_type is not None:
@@ -273,6 +286,15 @@ def build_configuration_router(
             record.model_dump(mode="json")
             for record in records
             if record_visible(record, actor)
+            and (
+                project_id is None
+                or (
+                    record.scope_type != ConfigurationScope.PROJECT
+                    and record.scope_type != ConfigurationScope.RESOURCE
+                )
+                or (record.scope_type == ConfigurationScope.PROJECT and record.scope_id == project_id)
+                or (record.scope_type == ConfigurationScope.RESOURCE and record.scope_id in project_resource_ids)
+            )
         ]
         return {"items": items, "count": len(items)}
 

@@ -1,7 +1,7 @@
-import { definitionViewOperation } from './definition_view_scope.js';
+import { projectViewOperation } from './project_view_scope.js';
 
 export async function exportDefinitions(report) {
-  const operation = definitionViewOperation(report);
+  const operation = projectViewOperation(report);
   const setStatus = operation.status;
   const apiRequest = operation.request;
   try {
@@ -16,7 +16,7 @@ export async function exportDefinitions(report) {
 }
 
 export async function importDefinitions({ canManage, setStatus: report, refresh }) {
-  const operation = definitionViewOperation(report);
+  const operation = projectViewOperation(report);
   const setStatus = operation.status;
   const apiRequest = operation.request;
   const raw = document.getElementById('definition-transfer-document')?.value || '';

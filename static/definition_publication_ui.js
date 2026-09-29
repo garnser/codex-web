@@ -1,8 +1,8 @@
 import * as approvalUi from './definition_registry_approvals.js';
-import { definitionViewOperation } from './definition_view_scope.js';
+import { projectViewOperation } from './project_view_scope.js';
 
 export async function publishRecord(record, { actor, active, setStatus }) {
-  const operation = definitionViewOperation(setStatus);
+  const operation = projectViewOperation(setStatus);
   const report = operation.status;
   const request = operation.request;
   let approvalContext;
