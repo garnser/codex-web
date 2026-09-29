@@ -221,8 +221,6 @@ th {
 
   .topbar {
     min-height: 0;
-    /* Wrap controls onto rows, never into off-screen columns. */
-    flex-direction: row;
     padding-top: max(10px, env(safe-area-inset-top, 0px));
     padding-bottom: 10px;
     gap: 9px;

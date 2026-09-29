@@ -361,10 +361,6 @@ class FrontendBoundaryTests(unittest.TestCase):
         topbar = css[css.index(".topbar {"):css.index(".thread-heading {")]
         self.assertIn("min-width: 0", topbar)
         self.assertIn("flex-wrap: wrap", topbar)
-        mobile = (STATIC / "mobile_responsive.css").read_text(encoding="utf-8")
-        phone = mobile[mobile.index("@media (max-width: 640px) {"):]
-        phone_topbar = phone[phone.index(".topbar {"):phone.index(".thread-heading {")]
-        self.assertIn("flex-direction: row", phone_topbar)
         wide_content = css[css.index(".message .body pre,"):css.index(".message.user {")]
         for invariant in ("max-width: 100%", "overflow-x: auto", "white-space: pre", "height: auto"):
             self.assertIn(invariant, wide_content)
