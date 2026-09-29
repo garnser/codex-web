@@ -4,6 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from fastapi import FastAPI, Request
+from httpx import ASGITransport, AsyncClient
+
+from codex_web.api.attention import build_attention_router
+
 from codex_web.attention import (
     AttentionItemCreate,
     AttentionSeverity,
@@ -97,6 +102,95 @@ class AttentionServiceTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self.unsubscribe()
         self.temp.cleanup()
+
+    async def test_api_project_scope_rejects_foreign_details_and_mutations(
+        self,
+    ) -> None:
+        rows = []
+        for project in ("project-a", "project-b"):
+            rows.append(
+                await self.service.upsert(
+                    AttentionItemCreate(
+                        organization_id="local",
+                        workspace_id="default",
+                        project_id=project,
+                        type="runtime.remediation",
+                        source=AttentionSource(
+                            object_type="work_item", object_id=project
+                        ),
+                        reason="Needs attention",
+                        dedupe_key=project,
+                    ),
+                    actor_id="test",
+                )
+            )
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def inject_actor(request: Request, call_next):
+            request.state.identity_actor = self.actor
+            return await call_next(request)
+
+        app.include_router(build_attention_router(self.service))
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for project, count in [("project-a", 1), ("project-b", 1), ("empty", 0)]:
+                response = await client.get(
+                    "/api/attention", params={"project_id": project}
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["total"], count)
+            path = f"/api/attention/{rows[0].id}"
+            self.assertEqual(
+                (
+                    await client.get(path, params={"project_id": "project-a"})
+                ).status_code,
+                200,
+            )
+            self.assertEqual(
+                (
+                    await client.get(path, params={"project_id": "project-b"})
+                ).status_code,
+                404,
+            )
+            for action, body in [
+                ("acknowledge", {}),
+                ("resolve", {"reason": "done"}),
+                ("snooze", {"until": 300}),
+                ("reassign", {"owner_identity_id": "operator-a"}),
+                ("escalate", {}),
+            ]:
+                with self.subTest(action=action):
+                    response = await client.post(
+                        f"{path}/{action}",
+                        params={"project_id": "project-b"},
+                        json=body,
+                    )
+                    self.assertEqual(response.status_code, 404, response.text)
+                    self.assertEqual(
+                        self.store.get(rows[0].id).revision, rows[0].revision
+                    )
+            response = await client.post(
+                "/api/attention/bulk/acknowledge",
+                params={"project_id": "project-a"},
+                json={"item_ids": [row.id for row in rows]},
+            )
+            self.assertEqual(response.status_code, 404)
+            self.assertTrue(
+                all(
+                    self.store.get(row.id).status == AttentionStatus.OPEN
+                    for row in rows
+                )
+            )
+            response = await client.post(
+                f"{path}/acknowledge", params={"project_id": "project-a"}
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                self.store.get(rows[0].id).status, AttentionStatus.ACKNOWLEDGED
+            )
+            self.assertEqual((await client.get("/api/attention")).json()["total"], 2)
 
     async def _approval_event(
         self,

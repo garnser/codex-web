@@ -41,6 +41,12 @@ def build_attention_router(service: AttentionService) -> APIRouter:
     def serialize(item) -> dict[str, Any]:
         return item.model_dump(mode="json")
 
+    def require_project_scope(item_id: str, project_id: str | None, *, actor):
+        item = service.get(item_id, actor=actor)
+        if project_id is not None and item.project_id != project_id:
+            raise AttentionItemNotFoundError(item_id)
+        return item
+
     def translate(exc: Exception) -> HTTPException:
         if isinstance(exc, AttentionItemNotFoundError):
             return HTTPException(status_code=404, detail="attention item not found")
@@ -83,9 +89,13 @@ def build_attention_router(service: AttentionService) -> APIRouter:
     async def bulk_acknowledge(
         payload: AttentionBulkAcknowledgeRequest,
         request: Request,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            # Validate the whole scoped selection before the first side effect.
+            for item_id in payload.item_ids:
+                require_project_scope(item_id, project_id, actor=actor)
             items, skipped = await service.acknowledge_many(
                 payload.item_ids,
                 actor=actor,
@@ -98,18 +108,23 @@ def build_attention_router(service: AttentionService) -> APIRouter:
         }
 
     @router.get("/{item_id}")
-    async def get_item(item_id: str, request: Request) -> dict[str, Any]:
+    async def get_item(
+        item_id: str, request: Request, project_id: str | None = None
+    ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
-            item = service.get(item_id, actor=actor)
+            item = require_project_scope(item_id, project_id, actor=actor)
         except Exception as exc:
             raise translate(exc) from exc
         return {"attention_item": serialize(item)}
 
     @router.post("/{item_id}/acknowledge")
-    async def acknowledge(item_id: str, request: Request) -> dict[str, Any]:
+    async def acknowledge(
+        item_id: str, request: Request, project_id: str | None = None
+    ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            require_project_scope(item_id, project_id, actor=actor)
             item = await service.acknowledge(item_id, actor=actor)
         except Exception as exc:
             raise translate(exc) from exc
@@ -120,9 +135,11 @@ def build_attention_router(service: AttentionService) -> APIRouter:
         item_id: str,
         payload: AttentionResolveRequest,
         request: Request,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            require_project_scope(item_id, project_id, actor=actor)
             item = await service.resolve(item_id, actor=actor, reason=payload.reason)
         except Exception as exc:
             raise translate(exc) from exc
@@ -133,9 +150,11 @@ def build_attention_router(service: AttentionService) -> APIRouter:
         item_id: str,
         payload: AttentionReassignRequest,
         request: Request,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            require_project_scope(item_id, project_id, actor=actor)
             item = await service.reassign(
                 item_id,
                 actor=actor,
@@ -146,9 +165,12 @@ def build_attention_router(service: AttentionService) -> APIRouter:
         return {"attention_item": serialize(item)}
 
     @router.post("/{item_id}/escalate")
-    async def escalate(item_id: str, request: Request) -> dict[str, Any]:
+    async def escalate(
+        item_id: str, request: Request, project_id: str | None = None
+    ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            require_project_scope(item_id, project_id, actor=actor)
             item = await service.escalate_for_actor(item_id, actor=actor)
         except Exception as exc:
             raise translate(exc) from exc
@@ -159,9 +181,11 @@ def build_attention_router(service: AttentionService) -> APIRouter:
         item_id: str,
         payload: AttentionSnoozeRequest,
         request: Request,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            require_project_scope(item_id, project_id, actor=actor)
             item = await service.snooze(item_id, actor=actor, until=payload.until)
         except Exception as exc:
             raise translate(exc) from exc

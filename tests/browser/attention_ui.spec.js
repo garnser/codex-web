@@ -2,6 +2,113 @@ import { expect, test } from "@playwright/test";
 
 const fixture = "http://127.0.0.1:18766/tests/browser/attention_ui_fixture.html";
 
+async function switchAttentionProject(page, projectId) {
+  await page.evaluate(id => {
+    document.body.dataset.activeProject = id;
+    window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: id } }));
+  }, projectId);
+}
+
+test('Project Inbox fences late lists and badges and clears bulk selection', async ({ page }) => {
+  let releaseA;
+  let delayA = false;
+  let pending = 0;
+  let completed = 0;
+  const held = new Promise(resolve => { releaseA = resolve; });
+  const calls = [];
+  const actions = [];
+  await page.route(/\/api\/attention(?:[/?].*)?$/, async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const project = url.searchParams.get('project_id');
+    calls.push(project);
+    if (request.method() === 'POST') {
+      actions.push({ project, body: JSON.parse(request.postData() || '{}') });
+      return route.fulfill({ json: { attention_items: [], skipped_item_ids: [] } });
+    }
+    if (delayA && project === 'project-a') {
+      pending += 1;
+      await held;
+      completed += 1;
+    }
+    const rows = project === 'project-a' ? [item(0)] : project === 'project-b' ? [item(1)] : [];
+    await route.fulfill({ json: { attention_items: rows, total: rows.length, next_cursor: null } });
+  });
+  await page.goto(fixture);
+  await switchAttentionProject(page, 'project-a');
+  await page.getByRole('button', { name: /Inbox/ }).click();
+  const dialog = page.locator('.attention-dialog');
+  await expect(dialog.locator('[data-attention-id="attention-0"]')).toBeVisible();
+  await dialog.locator('[data-attention-select]').check();
+  await expect(dialog.locator('[data-attention-bulk-ack]')).toBeEnabled();
+  await expect(dialog.getByLabel('Project', { exact: true })).toHaveAttribute('readonly', '');
+  delayA = true;
+  await switchAttentionProject(page, 'project-a');
+  await expect.poll(() => pending).toBe(2);
+  await switchAttentionProject(page, 'project-b');
+  await expect(dialog.locator('[data-attention-id="attention-1"]')).toBeVisible();
+  await expect(dialog.locator('[data-attention-id="attention-0"]')).toHaveCount(0);
+  await expect(dialog.locator('[data-attention-bulk-ack]')).toBeDisabled();
+  await dialog.locator('[data-attention-select]').check();
+  await dialog.locator('[data-attention-bulk-ack]').click();
+  await expect.poll(() => actions.length).toBe(1);
+  expect(actions[0]).toEqual({ project: 'project-b', body: { item_ids: ['attention-1'] } });
+  await switchAttentionProject(page, 'empty');
+  await expect(dialog.locator('[data-attention-status]')).toContainText('0 of 0');
+  releaseA();
+  await expect.poll(() => completed).toBe(2);
+  await expect(dialog.locator('.attention-card')).toHaveCount(0);
+  await expect(page.locator('[data-attention-count]')).toBeHidden();
+  delayA = false;
+  await switchAttentionProject(page, 'project-a');
+  await expect(dialog.locator('[data-attention-id="attention-0"]')).toBeVisible();
+  await expect(page.locator('[data-attention-count]')).toHaveText('1');
+  const beforeClear = calls.length;
+  await switchAttentionProject(page, '');
+  await expect(dialog.locator('.attention-card')).toHaveCount(0);
+  await expect(dialog.locator('[data-attention-status]')).toContainText('Select a Project');
+  await dialog.locator('[data-attention-refresh]').click();
+  expect(calls.length).toBe(beforeClear);
+});
+
+test('Project switch stops a Work Item response chain after the pending comment', async ({ page }) => {
+  let releaseComment;
+  let commented = false;
+  let settled = false;
+  const held = new Promise(resolve => { releaseComment = resolve; });
+  const actions = [];
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (route.request().method() === 'POST') {
+      actions.push(path);
+      if (path.endsWith('/comment')) {
+        commented = true;
+        await held;
+        await route.fulfill({ json: { ok: true } });
+        settled = true;
+        return;
+      }
+      return route.fulfill({ json: { ok: true } });
+    }
+    const scope = new URL(route.request().url()).searchParams.get('project_id');
+    const rows = scope === 'project-a' ? [item(0)] : [];
+    return route.fulfill({ json: { attention_items: rows, total: rows.length } });
+  });
+  await page.goto(fixture);
+  await switchAttentionProject(page, 'project-a');
+  await page.getByRole('button', { name: /Inbox/ }).click();
+  page.once('dialog', prompt => prompt.accept('Approved information'));
+  await page.getByRole('button', { name: 'Provide info & retry' }).click();
+  await expect.poll(() => commented).toBe(true);
+  await switchAttentionProject(page, 'project-b');
+  await expect(page.locator('[data-attention-status]')).toContainText('0 of 0');
+  releaseComment();
+  await expect.poll(() => settled).toBe(true);
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 50)));
+  expect(actions).toEqual(['/api/work-items/work-0/comment']);
+  await expect(page.locator('[data-attention-status]')).toContainText('0 of 0');
+});
+
 function item(index) {
   return {
     id: `attention-${index}`,

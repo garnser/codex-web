@@ -35,6 +35,12 @@ Items carry organization/workspace scope plus optional owner, recipient identiti
 
 Routing controls delivery and Inbox visibility only. It never grants authority to mutate the source object.
 
+Project-aware clients pass `project_id` to the existing list, detail and mutation
+API. Detail and mutation requests for foreign items return 404 using the same
+tenant/recipient visibility boundary. Bulk acknowledgement checks the complete
+selection before any side effect, so a mixed-Project selection fails atomically.
+Omitting the parameter retains the authorized workspace Inbox contract.
+
 ## ApprovalRequest integration
 
 Approval transition events are projected deterministically:
@@ -58,3 +64,12 @@ The browser/in-app Inbox is the baseline delivery surface and reads `/api/attent
 ## Operator UI
 
 The Inbox shows type, severity, source, due/expiry state, owner, escalation count and source deep link, with deterministic filters and acknowledge/snooze/resolve controls. Source-specific decisions continue through source-domain APIs—for example, approval decisions remain in the canonical ApprovalRequest UI.
+
+Within a Project, the Inbox list, pagination, badge and Attention mutations use
+the active Project rather than an editable scope filter. Switching Projects
+immediately clears rows, selection and count, cancels list requests, and fences
+late list/badge/action responses. A cleared Project makes no Inbox request.
+Multi-step Work Item responses stop before the next action if Project context
+changes while a prior action is pending; already completed actions are not
+implicitly rolled back. Outside Project navigation, the legacy workspace Inbox
+retains its explicit Project filter and canonical recipient visibility.
