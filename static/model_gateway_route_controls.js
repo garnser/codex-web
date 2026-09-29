@@ -19,9 +19,16 @@ export function populateTaskRouteControls(models) {
 
   const pinnedModel = document.getElementById("model-route-pinned-model");
   if (pinnedModel) {
+    const selected = pinnedModel.value;
     pinnedModel.innerHTML = '<option value="">Automatic selection</option>' + models.map(
       (item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.provider_id)} / ${escapeHtml(item.id)}</option>`,
     ).join("");
+    // Never silently broaden a strict pin to automatic routing on refresh.
+    // A missing pin remains explicit and is rejected by the canonical API.
+    if (selected && !models.some((item) => item.id === selected)) {
+      pinnedModel.innerHTML += `<option value="${escapeHtml(selected)}">Unavailable / ${escapeHtml(selected)}</option>`;
+    }
+    pinnedModel.value = selected;
   }
 }
 

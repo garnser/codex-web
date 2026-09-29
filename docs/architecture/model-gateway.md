@@ -175,3 +175,15 @@ UI administration belongs to the platform administration and cross-cutting opera
 The operator route preview exposes workload, pin, latency, and cost preferences
 through the same canonical route API used by runtime callers. Preview remains
 deterministic and performs no provider invocation.
+
+Refreshing the preview catalog retains an explicit model pin. If the model has
+disappeared, the picker marks it unavailable and keeps the pin so the route API
+fails closed; only an explicit operator choice restores automatic selection.
+
+Gateway state version `1.3` adds workload suitability and request preference
+provenance. Migration from `1.2` supplies empty workload classes and unpinned,
+no-preference defaults, retaining legacy routing order. Older readers must not
+interpret `1.3` state as an older schema. Workload values remain canonical model
+registry data (not a new hard-coded workload catalog); request preferences do
+not grant authority or relax tenant policy. This request-level foundation does
+not introduce provider discovery, runtime catalogs, or layered override rules.

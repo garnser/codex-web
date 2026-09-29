@@ -372,6 +372,62 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.invocation.prefer_lower_cost)
         self.assertIn("pin=reviewer", result.invocation.route_reason)
 
+    async def test_task_routing_selects_distinct_model_classes(self) -> None:
+        self._provider("p1")
+        self._provider("p2")
+        for model_class, workload, provider in (
+            ("lightweight", "summarization", "p1"),
+            ("primary-coding", "implementation", "p2"),
+            ("high-reasoning", "architecture", "p2"),
+        ):
+            self._model(
+                model_class, provider, model_classes=(model_class,),
+                workload_classes=(workload,),
+            )
+            result = self.service.route(
+                self._request(model_class=model_class, workload_class=workload),
+                actor=self.actor,
+            )
+            self.assertEqual([c.model_id for c in result.candidates], [model_class])
+            self.assertEqual(result.candidates[0].provider_id, provider)
+        self.assertEqual(self.adapter.calls, [])
+
+    async def test_missing_or_unavailable_pin_never_routes_to_other_provider(self) -> None:
+        self._provider("p1", status="disabled")
+        self._provider("p2")
+        self._model("unavailable", "p1")
+        self._model("available", "p2")
+        for pin in ("missing", "unavailable"):
+            with self.subTest(pin=pin), self.assertRaises(ModelRoutingError):
+                await self.service.invoke(
+                    self._request(pinned_model_id=pin), actor=self.actor,
+                )
+        self.assertEqual(self.adapter.calls, [])
+
+    async def test_workload_outage_fallback_is_bounded_and_policy_safe(self) -> None:
+        self._provider("p1")
+        self._provider("p2")
+        self._model("specific", "p1", workload_classes=("code_review",))
+        self._model("generic", "p2")
+        self._model(
+            "restricted", "p2", workload_classes=("code_review",),
+            residency_tags=("us",), route_priority=0,
+        )
+        self.adapter.transient_models.add("specific")
+        self.service.set_policy(TenantModelPolicyUpdate(max_attempts=2), actor=self.actor)
+        result = await self.service.invoke(
+            self._request(workload_class="code_review"), actor=self.actor,
+        )
+        self.assertEqual([call[0] for call in self.adapter.calls], ["specific", "generic"])
+        self.assertEqual(result.invocation.selected_model_id, "generic")
+        self.adapter.calls.clear()
+        with self.assertRaises(ModelProviderUnavailableError):
+            await self.service.invoke(
+                self._request(workload_class="code_review", pinned_model_id="specific"),
+                actor=self.actor,
+            )
+        self.assertEqual([call[0] for call in self.adapter.calls], ["specific"])
+
     async def test_residency_and_allowlist_fail_before_adapter_invocation(self) -> None:
         self._provider("p1")
         self._model("m1")
