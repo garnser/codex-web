@@ -212,6 +212,20 @@ revision and exact execution-profile catalog revision are both pinned into the
 contract and canonical execution state. Thread/worker assignments also persist
 the profile ID and immutable Definition reference used for that execution.
 
+Profile catalog reads require an authenticated actor and resolve the full
+organization/workspace/Project context. A requested Project must be visible in
+that actor's tenant; missing and foreign Projects return the same not-found
+response. A Project with no override inherits its workspace catalog. Project UI
+snapshots use this same context. Work-item role and profile resolution uses the
+canonical work item's organization, workspace and Project, including inherited
+definitions, and pins the resulting exact references.
+
+When the user switches Projects, execution-profile controls clear synchronously
+and reject responses from the previous Project. Missing or failed metadata leaves
+the controls disabled; it must not appear as a usable fallback profile. Management
+links retain the selected Project and deployment prefix. Catalog display and
+selection do not grant execution or provider authority.
+
 The profile's `control_plane_operations` field describes the operations an
 execution environment may need. It is **not operational authority** and it does
 not create a localhost/network bypass. Actual agent-to-control-plane access is

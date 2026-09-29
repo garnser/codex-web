@@ -291,7 +291,11 @@ class ProjectUiStateService:
             else None
         )
         execution_profiles = (
-            self.execution_profiles.public(project_id=project.id)
+            self.execution_profiles.public(
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                project_id=project.id,
+            )
             if include_static
             else None
         )

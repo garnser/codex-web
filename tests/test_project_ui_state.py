@@ -178,9 +178,11 @@ class _Channels:
 class _Profiles:
     def __init__(self) -> None:
         self.calls = 0
+        self.context = None
 
-    def public(self, *, project_id: str | None = None):
+    def public(self, *, organization_id=None, workspace_id=None, project_id: str | None = None):
         self.calls += 1
+        self.context = (organization_id, workspace_id, project_id)
         return {
             "items": [
                 {
@@ -274,6 +276,7 @@ class ProjectUiStateTests(unittest.IsolatedAsyncioTestCase):
             100_000,
         )
         self.assertEqual(profiles.calls, 1)
+        self.assertEqual(profiles.context, ("org-a", "workspace-a", "project-a"))
         self.assertEqual(resources.last_actor.organization_id, "org-a")
         self.assertEqual(payload["meta"]["contractVersion"], 1)
         self.assertIn("bindings", payload["meta"]["sectionVersions"])
