@@ -354,10 +354,14 @@ class CodexAgentRuntimeAdapter:
     async def interrupt(
         self,
         provider_native_session_id: str,
+        provider_native_turn_id: str | None = None,
     ) -> AgentRuntimeResult:
+        params = {"threadId": provider_native_session_id}
+        if provider_native_turn_id:
+            params["turnId"] = provider_native_turn_id
         response = await self.transport.request(
             "turn/interrupt",
-            {"threadId": provider_native_session_id},
+            params,
         )
         return AgentRuntimeResult(
             provider_native_session_id=provider_native_session_id,
