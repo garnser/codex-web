@@ -73,6 +73,9 @@ const skills = [
 ];
 
 async function mockApis(page, { empty = false } = {}) {
+  await page.route('**/api/agent-teams/*/usage', route => route.fulfill({ json: {
+    schema_version: '1.0', available: true, count: 0, blocking_count: 0, items: [],
+  } }));
   await page.route('**/api/agent-profiles?**', (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({ items: empty ? [] : profiles }),
@@ -206,7 +209,69 @@ test('Team lifecycle archive requires impact confirmation and a reason', async (
   await dialog.locator('[data-confirm]').check();
   await dialog.getByRole('button', { name: 'Confirm archive' }).click();
   await expect.poll(() => archived).not.toBeNull();
-  expect(archived).toEqual({ reason: 'Retire superseded team' });
+  expect(archived).toEqual({ reason: 'Retire superseded team', expected_revision: teams[0].revision });
+});
+
+test('Team usage blocks destructive lifecycle and server conflicts preserve the reviewed form', async ({ page }) => {
+  await mockApis(page);
+  let blocking = 1;
+  const writes = [];
+  await page.route('**/api/agent-teams/delivery/usage', route => route.fulfill({ json: {
+    schema_version: '1.0', available: true, count: 1, blocking_count: blocking, items: [{
+      object_type: 'execution', object_id: 'team-run', label: 'running', project_id: 'project-a', blocking: Boolean(blocking),
+    }],
+  } }));
+  await page.route('**/api/agent-teams/delivery/archive', route => {
+    writes.push(route.request().postDataJSON());
+    return route.fulfill({ status: 409, json: { detail: 'Team has active consumers; refresh usage.' } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  const team = page.locator('.collab-team-card').filter({ hasText: 'Delivery Team' });
+  await team.locator('.collab-context-more > summary').click();
+  await team.getByRole('button', { name: 'Usage', exact: true }).click();
+  const dialog = page.locator('dialog.product-section-dialog');
+  await expect(dialog).toContainText('team-run');
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  await team.locator('.collab-context-more > summary').click();
+  await team.getByRole('button', { name: 'Archive', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: 'Confirm archive' })).toBeDisabled();
+  await expect(dialog).toContainText('blocks disable/archive');
+  expect(writes).toEqual([]);
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  blocking = 0;
+  await team.locator('.collab-context-more > summary').click();
+  await team.getByRole('button', { name: 'Archive', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: 'Confirm archive' })).toBeEnabled();
+  await dialog.locator('[data-reason]').fill('Retire Team');
+  await dialog.locator('[data-confirm]').check();
+  await dialog.getByRole('button', { name: 'Confirm archive' }).click();
+  await expect(dialog).toContainText('Team has active consumers');
+  await expect(dialog.locator('[data-reason]')).toHaveValue('Retire Team');
+  expect(writes).toEqual([{ reason: 'Retire Team', expected_revision: 3 }]);
+});
+
+test('Team restore remains available with incompatible consumer impact', async ({ page }) => {
+  await mockApis(page);
+  let restored;
+  await page.route('**/api/agent-teams/legacy-team/usage', route => route.fulfill({ json: {
+    schema_version: '2.0', available: true, count: 0, blocking_count: 0, items: [],
+  } }));
+  await page.route('**/api/agent-teams/legacy-team/restore', route => {
+    restored = route.request().postDataJSON();
+    return route.fulfill({ json: { item: { ...teams[1], lifecycle: 'active', revision: 2 } } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  const team = page.locator('.collab-team-card').filter({ hasText: 'Legacy Team' });
+  await team.locator('.collab-context-more > summary').click();
+  await team.getByRole('button', { name: 'Restore', exact: true }).click();
+  const dialog = page.locator('dialog.product-section-dialog');
+  await expect(dialog).toContainText('Unsupported consumer impact version');
+  await expect(dialog.getByRole('button', { name: 'Confirm restore' })).toBeEnabled();
+  await dialog.locator('[data-reason]').fill('Recover Team');
+  await dialog.locator('[data-confirm]').check();
+  await dialog.getByRole('button', { name: 'Confirm restore' }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(restored).toEqual({ reason: 'Recover Team', expected_revision: 1 });
 });
 
 test('Agent Profile usage and archive preflight show canonical blockers and preserve rejection state', async ({ page }) => {
@@ -348,7 +413,7 @@ test('Team create and archived-team restore use canonical lifecycle endpoints', 
   await restoreDialog.locator('[data-confirm]').check();
   await restoreDialog.getByRole('button', { name: 'Confirm restore' }).click();
   await expect.poll(() => restored).not.toBeNull();
-  expect(restored).toEqual({ reason: 'Restore for new work' });
+  expect(restored).toEqual({ reason: 'Restore for new work', expected_revision: 1 });
 });
 
 test('Agent Profile history exposes immutable revision provenance', async ({ page }) => {

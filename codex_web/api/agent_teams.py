@@ -71,6 +71,13 @@ def build_agent_teams_router(service: AgentTeamService) -> APIRouter:
         except Exception as exc:
             raise _error(exc) from exc
 
+    @router.get("/{team_id}/usage")
+    async def usage(team_id: str, request: Request) -> dict[str, Any]:
+        try:
+            return service.usage(team_id, actor=request_actor(request))
+        except Exception as exc:
+            raise _error(exc) from exc
+
     @router.get("/{team_id}/revisions")
     async def revisions(team_id: str, request: Request) -> dict[str, Any]:
         try:

@@ -1,9 +1,11 @@
 import { request } from './api_client.js';
 
-export async function loadProfileUsage(host, profileId) {
+export async function loadConsumerUsage(host, kind, objectId) {
+  const plural = kind === "profile" ? "agent-profiles" : "agent-teams";
+  const noun = kind === "profile" ? "profile" : "Team";
   host.textContent = 'Checking canonical consumers…';
   try {
-    const result = await request(`/api/agent-profiles/${encodeURIComponent(profileId)}/usage`);
+    const result = await request(`/api/${plural}/${encodeURIComponent(objectId)}/usage`);
     if (!host.isConnected) return null;
     host.replaceChildren();
     if (result.schema_version !== '1.0') throw new Error('Unsupported consumer impact version.');
@@ -33,8 +35,8 @@ export async function loadProfileUsage(host, profileId) {
     }
     const help = document.createElement('p');
     help.textContent = result.blocking_count
-      ? 'Pause dependent Automations, disable or edit Teams, and finish or cancel active/queued executions before disabling or archiving this profile.'
-      : 'No active consumers in the canonical Team, Automation, assignment and queue projection. Historical revisions remain unchanged.';
+      ? `Pause dependent Automations${kind === 'profile' ? ', disable or edit Teams,' : ''} and finish or cancel active/queued executions before disabling or archiving this ${noun}.`
+      : `No active consumers in the canonical ${kind === 'profile' ? 'Team, Automation, assignment and queue' : 'Automation, delegation and execution'} projection. Historical revisions remain unchanged.`;
     host.appendChild(help);
     return result;
   } catch (error) {

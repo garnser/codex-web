@@ -18,6 +18,7 @@ from codex_web.models import QueuedTurn
 from codex_web.services.agent_profile_usage import AgentProfileUsageService
 from codex_web.services.agent_profiles import AgentProfileService
 from codex_web.services.agent_teams import AgentTeamService
+from codex_web.services.agent_team_usage import AgentTeamUsageService
 from codex_web.services.automation_definitions import install_automation_definitions
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.storage.agent_profiles import AgentProfileStore
@@ -46,6 +47,11 @@ class AgentProfileUsageTests(unittest.TestCase):
             automations=self.automations, assignments=lambda actor: self.assignments, queues=self.queues,
         )
         self.profiles.usage_loader = self.usage.snapshot
+        self.team_usage = AgentTeamUsageService(
+            teams=self.teams, projects=self.usage.projects, automations=self.automations,
+            assignments=lambda actor: self.assignments, queues=self.queues,
+        )
+        self.teams.usage_loader = self.team_usage.snapshot
         app = FastAPI()
 
         @app.middleware('http')

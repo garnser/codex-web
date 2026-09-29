@@ -1,5 +1,5 @@
 import { dialogShell, status } from "./collaboration_dialog.js";
-import { loadProfileUsage } from './profile_lifecycle_usage.js';
+import { loadConsumerUsage } from './collaboration_lifecycle_usage.js';
 import { request } from "./api_client.js";
 import { trackUx } from "./ux_telemetry.js";
 import { trackDirtyEditor } from "./dirty_editor.js";
@@ -151,12 +151,12 @@ export function openLifecycle(kind, item, action, { usage = "", onChanged } = {}
     <label>Change reason <textarea data-reason rows="3" maxlength="1000"></textarea></label>
     <label class="checkbox-line"><input type="checkbox" data-confirm> I reviewed the lifecycle impact above.</label>
     <button type="button" class="primary-button" data-apply>Confirm ${action}</button>`;
-  let verifiedImpact = kind !== "profile";
+  let verifiedImpact = false;
   const destructive = action !== "restore";
   const apply = body.querySelector('[data-apply]');
-  if (kind === "profile") {
+  {
     apply.disabled = destructive;
-    void loadProfileUsage(body.querySelector('[data-consumer-impact]'), id).then(result => {
+    void loadConsumerUsage(body.querySelector('[data-consumer-impact]'), kind, id).then(result => {
       verifiedImpact = Boolean(result?.available && result.blocking_count === 0);
       if (dialog.isConnected) apply.disabled = destructive && !verifiedImpact;
     });
@@ -172,7 +172,7 @@ export function openLifecycle(kind, item, action, { usage = "", onChanged } = {}
       const plural = kind === "profile" ? "agent-profiles" : "agent-teams";
       const result = await request(`/api/${plural}/${encodeURIComponent(id)}/${action}`, {
         method: "POST",
-        body: JSON.stringify({ reason, ...(kind === "profile" ? { expected_revision: item.revision } : {}) }),
+        body: JSON.stringify({ reason, expected_revision: item.revision }),
       });
       await onChanged?.(result?.item);
       dialog.close();
@@ -184,10 +184,11 @@ export function openLifecycle(kind, item, action, { usage = "", onChanged } = {}
   dialog.showModal();
 }
 
-export async function openProfileUsage(item) {
-  const dialog = dialogShell('Agent Profile consumers', 'Canonical Teams, effective Automations, execution assignments and queued invocations.');
+export async function openUsage(kind, item) {
+  const noun = kind === 'profile' ? 'Agent Profile' : 'Team';
+  const dialog = dialogShell(`${noun} consumers`, 'Canonical dependencies, delegation history, execution assignments and queued invocations.');
   dialog.showModal();
-  await loadProfileUsage(dialog.querySelector('[data-body]'), item.profile_id);
+  await loadConsumerUsage(dialog.querySelector('[data-body]'), kind, item.profile_id || item.team_id);
 }
 
 export async function openHistory(kind, item) {
@@ -252,7 +253,7 @@ export function managementActions(kind, item, { usage = "", onChanged } = {}) {
     handler();
   };
   button("History", closeThen(() => void openHistory(kind, item)), { target: menu });
-  if (kind === "profile") button("Usage", closeThen(() => void openProfileUsage(item)), { target: menu });
+  button("Usage", closeThen(() => void openUsage(kind, item)), { target: menu });
 
   const current = String(item?.lifecycle || "active");
   if (current === "archived" || current === "disabled") {
