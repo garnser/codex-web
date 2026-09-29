@@ -632,6 +632,22 @@ class AgentProfileTests(unittest.IsolatedAsyncioTestCase):
             "worker-a",
         )
 
+        first = self.profiles.assignment_history(self.member)[0]
+        assignments = [first, SimpleNamespace(**{
+            **vars(first), "id": "assignment-b", "project_id": "project-b", "updated_at": 30.0,
+        }), SimpleNamespace(**{
+            **vars(first), "id": "assignment-workspace", "project_id": None, "updated_at": 40.0,
+        })]
+        self.profiles.assignment_history = lambda _actor: assignments
+        for project in ("project-a", "project-b"):
+            scoped = self.profiles.execution_history("coder", actor=self.member, project_id=project, limit=1)
+            self.assertEqual(scoped["count"], 1)
+            self.assertEqual(scoped["activeCount"], 1)
+            self.assertEqual([row["projectId"] for row in scoped["items"]], [project])
+        empty = self.profiles.execution_history("coder", actor=self.member, project_id="empty")
+        self.assertEqual((empty["count"], empty["activeCount"], empty["items"]), (0, 0, []))
+        self.assertEqual(self.profiles.execution_history("coder", actor=self.member)["count"], 3)
+
     async def test_unavailable_profile_runtime_returns_structured_blocker(self) -> None:
         capabilities = (
             AgentProviderCapability.AGENT_EXECUTION,

@@ -751,6 +751,7 @@ class AgentProfileService:
         *,
         actor: AuthenticationActor,
         limit: int = 20,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         current = self._latest(profile_id, actor=actor)
         if not self.can_view(current, actor=actor):
@@ -769,6 +770,7 @@ class AgentProfileService:
             for item in self.assignment_history(actor)
             if getattr(item, "agent_profile", None) is not None
             and item.agent_profile.profile_id == profile_id
+            and (project_id is None or item.project_id == project_id)
         ]
         assignments.sort(
             key=lambda item: (

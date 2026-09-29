@@ -306,6 +306,61 @@ test('Agent execution/provider details load lazily and remain secondary to stabl
   await expect(secondary).toContainText('repo-write');
 });
 
+test('shared Agent identities retain only the selected Project workload and access context', async ({ page }) => {
+  await mockApis(page);
+  let release;
+  let pending = 0;
+  let settled = 0;
+  const held = new Promise(resolve => { release = resolve; });
+  const calls = [];
+  await page.route(/\/api\/agent-profiles\/maya\/(executions|access)\?/, async route => {
+    const url = new URL(route.request().url());
+    const project = url.searchParams.get('project_id');
+    calls.push(project);
+    if (project === 'project-a') {
+      pending += 1;
+      await held;
+      settled += 1;
+    }
+    const payload = url.pathname.endsWith('/access')
+      ? { decision: { allowed: true, reasons: [`Access ${project}`] } }
+      : { available: true, count: project === 'empty' ? 0 : 1, activeCount: project === 'empty' ? 0 : 1,
+        items: project === 'empty' ? [] : [{ executionId: `execution-${project}`, projectId: project, status: 'running' }] };
+    await route.fulfill({ json: payload });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  const maya = page.locator('.collab-agent-card').filter({ hasText: 'Maya' });
+  const openContext = () => maya.locator('.collab-agent-context > summary').click();
+  const switchProject = id => page.evaluate(projectId => {
+    document.body.dataset.projectId = projectId;
+    window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId } }));
+  }, id);
+  await openContext();
+  await expect.poll(() => pending).toBe(2);
+  await switchProject('project-b');
+  await openContext();
+  await expect(maya).toContainText('execution-project-b');
+  await expect(maya).toContainText('Access project-b');
+  release();
+  await expect.poll(() => settled).toBe(2);
+  await expect(maya).not.toContainText('execution-project-a');
+  await expect(maya).not.toContainText('Access project-a');
+  await switchProject('empty');
+  await openContext();
+  await expect(maya).toContainText('No recent executions');
+  await expect(maya).not.toContainText('execution-project-b');
+  const beforeClear = calls.length;
+  await switchProject('');
+  await openContext();
+  await expect(maya).toContainText('Select a Project');
+  expect(calls.length).toBe(beforeClear);
+  await switchProject('project-a');
+  await openContext();
+  await expect(maya).toContainText('execution-project-a');
+  expect(calls.every(Boolean)).toBe(true);
+  await expect(page.locator('[data-collab-status]')).toHaveText('2 Agents · 2 Teams · 1 Skills');
+});
+
 test('empty collaboration workspace has explicit Agent, Team and Skill states', async ({ page }) => {
   await mockApis(page, { empty: true });
   await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
