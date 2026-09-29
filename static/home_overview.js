@@ -210,10 +210,11 @@ function wireOnboarding(host, payload) {
 }
 
 function projectId() {
-  return document.getElementById("product-project-switcher")?.value
-    || document.body?.dataset.projectId
+  const selector = document.getElementById("product-project-switcher");
+  if (selector) return selector.value;
+  return document.body?.dataset.projectId
     || new URLSearchParams(location.search).get("project")
-    || "home";
+    || "";
 }
 
 function itemBody(item) {
@@ -407,10 +408,18 @@ export async function renderHomeOverview(host, selectedProjectId = projectId()) 
   controller?.abort();
   controller = new AbortController();
   const requestGeneration = ++generation;
-  const requestedProject = selectedProjectId || projectId();
+  const requestedProject = selectedProjectId || "";
+  if (!requestedProject) {
+    host.replaceChildren(statePanel({
+      kind: "empty",
+      title: "Select a Project",
+      detail: "Choose a Project to inspect its current work and attention.",
+    }));
+    return;
+  }
   host.replaceChildren(statePanel({
     kind: "loading",
-    title: "Loading current workspace",
+    title: "Loading current Project",
     detail: "Reading bounded canonical summaries.",
     busy: true,
   }));
@@ -420,9 +429,12 @@ export async function renderHomeOverview(host, selectedProjectId = projectId()) 
       { signal: controller.signal },
     );
     if (requestGeneration !== generation || requestedProject !== projectId()) return;
+    if (payload.project?.id !== requestedProject) {
+      throw new Error("The overview response does not match the selected Project.");
+    }
     renderPayload(host, payload);
   } catch (error) {
-    if (error?.name === "AbortError" || requestGeneration !== generation) return;
+    if (error?.name === "AbortError" || requestGeneration !== generation || requestedProject !== projectId()) return;
     host.replaceChildren(statePanel({
       kind: "error",
       title: "Home could not load",
@@ -430,6 +442,14 @@ export async function renderHomeOverview(host, selectedProjectId = projectId()) 
     }));
   }
 }
+
+// Clear even a hidden Overview: returning to it must not reveal the previous
+// Project while the shell starts its next canonical refresh.
+window.addEventListener("codex:project-changed", () => {
+  controller?.abort();
+  generation += 1;
+  document.querySelector("[data-home-overview]")?.replaceChildren();
+});
 
 export function refreshHomeIfVisible() {
   const host = document.querySelector("[data-home-overview]");

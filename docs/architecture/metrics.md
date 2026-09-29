@@ -43,8 +43,27 @@ Metric snapshots are evidence references; they do not grant authority. Decision 
 
 Every definition, observation, and snapshot is tenant/workspace scoped. API mutations require an MFA-backed administrator or a service identity with `metrics:admin`. Read access uses the authenticated tenant boundary.
 
+Project-scoped callers pass `project_id` on list, detail, history, current-value,
+revision, snapshot, and mutation requests. A foreign metric ID returns 404 before
+data is read or mutated. Scoped creation and updates cannot assign the definition
+to a different Project. Requests without this optional parameter retain the
+existing workspace-wide contract for authorized workspace consumers; Project
+matching supplements tenant authentication and mutation assurance.
+
 Future ingestion adapters must apply data-governance/classification requirements before exporting or persisting sensitive measurements. Domain-specific business KPI catalogs belong to M13; this M8 layer stays generic.
 
 ## UI
 
 The Metric/KPI explorer reads the same canonical API as other consumers. It distinguishes derived current state from immutable snapshots and displays freshness, source/provider, external references, Evidence IDs, definition revision, and scope. It does not maintain client-side metric truth or perform metric calculations in the browser.
+
+The Project explorer always supplies the active Project scope. Project switches
+clear selection, observations, and snapshots immediately and abort pending reads;
+generation and selection checks also reject late responses. With no selected
+Project, it clears the view and makes no metric request. Workspace-wide metrics
+are not implicitly mixed into an empty Project's results.
+
+The company-wide Business KPI view explicitly opens a workspace-wide Metric
+drill-down, labeled as such in the explorer. This preserves company KPI
+inspection without treating an absent Project as a request for global data.
+Opening the normal Metrics launcher or switching Project exits this mode and
+restores Project-scoped reads. API tenant and mutation authority remain unchanged.

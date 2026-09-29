@@ -179,6 +179,7 @@ class HomeOverviewService:
                 item
                 for item in self.attention.list(actor)
                 if item.status not in TERMINAL_ATTENTION_STATUSES
+                and item.project_id == project.id
             ]
             items.sort(key=lambda item: (item.updated_at, item.id), reverse=True)
             sections["attention"] = self._section(
@@ -204,7 +205,7 @@ class HomeOverviewService:
                 item
                 for item in self.approvals.list(actor)
                 if item.status not in TERMINAL_APPROVAL_REQUEST_STATUSES
-                and (item.project_id is None or item.project_id == project.id)
+                and item.project_id == project.id
             ]
             items.sort(key=lambda item: (item.updated_at, item.id), reverse=True)
             sections["approvals"] = self._section(
@@ -229,7 +230,7 @@ class HomeOverviewService:
                 item
                 for item in self.incidents.list(actor)
                 if item.status != IncidentStatus.CLOSED
-                and (item.project_id is None or item.project_id == project.id)
+                and item.project_id == project.id
             ]
             items.sort(key=lambda item: (item.updated_at, item.id), reverse=True)
             sections["incidents"] = self._section(
@@ -336,10 +337,7 @@ class HomeOverviewService:
                     for item in self.schedules.list()
                     if item.tenant_id == actor.organization_id
                     and item.workspace_id in (None, actor.workspace_id)
-                    and (
-                        item.payload.get("project_id") is None
-                        or item.payload.get("project_id") == project.id
-                    )
+                    and item.payload.get("project_id") == project.id
                 ]
                 schedules.sort(
                     key=lambda item: (item.updated_at, item.id),

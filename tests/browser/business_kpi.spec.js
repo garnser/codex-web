@@ -128,6 +128,12 @@ test('operating view renders current KPI provenance thresholds and bindings', as
   await expect(page.locator('#metrics-dialog')).toContainText('Annual recurring revenue');
   await expect(page.locator('#metrics-dialog')).toContainText('Revision');
   await expect(page.locator('#metrics-dialog')).toContainText('3');
+  await expect(page.locator('#metrics-dialog .metrics-scope')).toHaveText('Workspace-wide · company KPI drill-down');
+  await page.evaluate(() => {
+    window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: '' } }));
+  });
+  await expect(page.locator('#metrics-dialog')).not.toContainText('Annual recurring revenue');
+  await expect(page.locator('#metrics-dialog .metrics-scope')).toHaveText('No Project selected');
 });
 
 test('partial KPI blocks apparent current state and remains usable on phone width', async ({ page }) => {

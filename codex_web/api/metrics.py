@@ -47,6 +47,13 @@ def build_metrics_router(service: MetricService) -> APIRouter:
         IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
         return actor
 
+    def require_project_scope(metric_id: str, project_id: str | None, *, actor) -> None:
+        if project_id is None:
+            return  # Preserve the explicitly workspace-wide API for existing consumers.
+        item = service.get_definition(metric_id, scope=actor.tenant)
+        if item.project_id != project_id:
+            raise MetricNotFoundError("Metric not found")
+
     @router.get("")
     async def list_metrics(
         request: Request,
@@ -77,9 +84,14 @@ def build_metrics_router(service: MetricService) -> APIRouter:
     async def create_metric(
         payload: MetricDefinitionCreate,
         request: Request,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
+            if project_id is not None and payload.project_id != project_id:
+                raise MetricValidationError(
+                    "Metric Project must match the requested Project"
+                )
             item = service.create_definition(
                 payload,
                 scope=actor.tenant,
@@ -90,9 +102,12 @@ def build_metrics_router(service: MetricService) -> APIRouter:
         return {"item": item.model_dump(mode="json")}
 
     @router.get("/{metric_id}")
-    async def get_metric(metric_id: str, request: Request) -> dict[str, Any]:
+    async def get_metric(
+        metric_id: str, request: Request, project_id: str | None = None
+    ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            require_project_scope(metric_id, project_id, actor=actor)
             item = service.get_definition(metric_id, scope=actor.tenant)
             current = service.evaluate(metric_id, scope=actor.tenant)
         except (MetricError, ValueError) as exc:
@@ -107,9 +122,19 @@ def build_metrics_router(service: MetricService) -> APIRouter:
         metric_id: str,
         payload: MetricDefinitionUpdate,
         request: Request,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
+            require_project_scope(metric_id, project_id, actor=actor)
+            if (
+                project_id is not None
+                and "project_id" in payload.model_fields_set
+                and payload.project_id != project_id
+            ):
+                raise MetricValidationError(
+                    "Metric Project must match the requested Project"
+                )
             item = service.update_definition(
                 metric_id,
                 payload,
@@ -121,9 +146,12 @@ def build_metrics_router(service: MetricService) -> APIRouter:
         return {"item": item.model_dump(mode="json")}
 
     @router.get("/{metric_id}/revisions")
-    async def metric_revisions(metric_id: str, request: Request) -> dict[str, Any]:
+    async def metric_revisions(
+        metric_id: str, request: Request, project_id: str | None = None
+    ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            require_project_scope(metric_id, project_id, actor=actor)
             rows = service.revisions(metric_id, scope=actor.tenant)
         except (MetricError, ValueError) as exc:
             raise _error(exc) from exc
@@ -137,9 +165,11 @@ def build_metrics_router(service: MetricService) -> APIRouter:
         metric_id: str,
         payload: MetricObservationCreate,
         request: Request,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
+            require_project_scope(metric_id, project_id, actor=actor)
             item = service.ingest(
                 metric_id,
                 payload,
@@ -157,9 +187,11 @@ def build_metrics_router(service: MetricService) -> APIRouter:
         limit: int = Query(default=100, ge=1, le=500),
         start_at: float | None = None,
         end_at: float | None = None,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            require_project_scope(metric_id, project_id, actor=actor)
             rows = service.history(
                 metric_id,
                 scope=actor.tenant,
@@ -181,9 +213,11 @@ def build_metrics_router(service: MetricService) -> APIRouter:
         at: float | None = None,
         window_start: float | None = None,
         window_end: float | None = None,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            require_project_scope(metric_id, project_id, actor=actor)
             item = service.evaluate(
                 metric_id,
                 scope=actor.tenant,
@@ -200,9 +234,11 @@ def build_metrics_router(service: MetricService) -> APIRouter:
         metric_id: str,
         payload: MetricSnapshotRequest,
         request: Request,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         try:
             actor = mutation_actor(request)
+            require_project_scope(metric_id, project_id, actor=actor)
             item = service.capture_snapshot(
                 metric_id,
                 payload,
@@ -218,9 +254,11 @@ def build_metrics_router(service: MetricService) -> APIRouter:
         metric_id: str,
         request: Request,
         limit: int = Query(default=100, ge=1, le=500),
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            require_project_scope(metric_id, project_id, actor=actor)
             rows = service.snapshots(
                 metric_id,
                 scope=actor.tenant,
@@ -238,9 +276,11 @@ def build_metrics_router(service: MetricService) -> APIRouter:
         metric_id: str,
         snapshot_id: str,
         request: Request,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         actor = request_actor(request)
         try:
+            require_project_scope(metric_id, project_id, actor=actor)
             item = service.get_snapshot(
                 metric_id,
                 snapshot_id,

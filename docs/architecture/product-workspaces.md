@@ -126,6 +126,22 @@ model/provider reasoning merely to make UI state fresh.
 
 Domain event/data-driven refresh remains owned by each domain module.
 
+### Project Overview projection
+
+Overview resolves the requested Project through canonical tenant authorization
+before reading summaries. Its work, attention, approvals, incidents, agent
+sessions, Goals and schedules are Project projections: records belonging to a
+different Project or having no Project association are not counted as this
+Project's work. Workspace-wide records remain available through their canonical
+domain surfaces, such as Operations and the workspace Inbox. This projection
+does not change their ownership, visibility rules or lifecycle.
+
+Project changes invalidate pending Overview responses and clear the previous
+rendered state, including when the panel is hidden. No selected Project means
+an explicit selection state and no Overview request; it must not fall back to
+a synthetic `home` Project. Returned Project identity must match the request
+before any summaries or onboarding state are rendered.
+
 ## Accessibility and responsive behavior
 
 - all workspace navigation is native button/dialog UI;

@@ -10,6 +10,14 @@ import { managementActions, openEditor } from "./collaboration_management.js";
 
 const state = { profiles: [], teams: [], skills: [], loaded: false };
 let activeCollaborationPage = "agents";
+let projectGeneration = 0;
+
+function activeProjectId() {
+  const data = document.body.dataset;
+  if ('projectId' in data) return data.projectId;
+  if ('activeProject' in data) return data.activeProject;
+  return new URLSearchParams(location.search).get('project') || '';
+}
 
 function applyCollaborationPage(card, page = activeCollaborationPage) {
   activeCollaborationPage = ["agent-profiles", "teams"].includes(page) ? page : "agents";
@@ -289,13 +297,24 @@ async function loadAgentDetails(profile, details) {
   if (details.dataset.loaded === "true" || details.dataset.loading === "true") return;
   details.dataset.loading = "true";
   const target = details.querySelector(".collab-agent-details");
+  const projectId = activeProjectId();
+  const generation = projectGeneration;
+  const current = () => generation === projectGeneration && projectId === activeProjectId() && target.isConnected;
+  if (!projectId) {
+    target.replaceChildren(statePanel({ kind: 'empty', title: 'Select a Project',
+      detail: 'Agent identities are workspace-wide; execution and access context require a Project.' }));
+    details.dataset.loading = 'false';
+    return;
+  }
+  const controller = new AbortController();
+  details._projectController = controller;
   target.replaceChildren(statePanel({ kind: "loading", title: "Loading Agent context…", busy: true }));
-  const projectId = document.body?.dataset.projectId || new URLSearchParams(location.search).get("project") || "";
   try {
     const [executions, access] = await Promise.all([
-      request(`/api/agent-profiles/${encodeURIComponent(profile.profile_id)}/executions?limit=10`),
-      request(`/api/agent-profiles/${encodeURIComponent(profile.profile_id)}/access${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`).catch(() => null),
+      request(`/api/agent-profiles/${encodeURIComponent(profile.profile_id)}/executions?limit=10&project_id=${encodeURIComponent(projectId)}`, { signal: controller.signal }),
+      request(`/api/agent-profiles/${encodeURIComponent(profile.profile_id)}/access?project_id=${encodeURIComponent(projectId)}`, { signal: controller.signal }).catch(() => null),
     ]);
+    if (!current()) return;
     target.replaceChildren();
     if (access?.decision) {
       const accessBox = el("section", "collab-access");
@@ -324,6 +343,7 @@ async function loadAgentDetails(profile, details) {
     target.appendChild(executionPolicy);
     details.dataset.loaded = "true";
   } catch (error) {
+    if (!current() || error?.name === 'AbortError') return;
     target.replaceChildren(statePanel({
       kind: "degraded",
       title: "Agent execution context unavailable",
@@ -549,6 +569,13 @@ function install() {
   card.querySelector("[data-create-team]").addEventListener("click", () => openEditor("team", null, { onChanged: () => refresh(card) }));
   window.addEventListener("codex:project-workspace-page", (event) => {
     if (event.detail?.workspace === "agents") applyCollaborationPage(card, event.detail?.page);
+  });
+  window.addEventListener('codex:project-changed', () => {
+    ++projectGeneration;
+    card.querySelectorAll('.collab-agent-context').forEach(details => details._projectController?.abort());
+    // Profiles/Teams are shared workspace identities. Only their lazy Project
+    // workload/access context is invalidated, without refetching the catalog.
+    if (state.loaded) render(card);
   });
   const routePage = window.location.pathname.match(/\/projects\/[^/]+\/(agent-profiles|teams)\/?$/)?.[1] || "agents";
   applyCollaborationPage(card, routePage);

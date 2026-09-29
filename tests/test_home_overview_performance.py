@@ -3,6 +3,9 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
+from codex_web.approval_requests import ApprovalRequestStatus
+from codex_web.attention import AttentionSeverity, AttentionStatus
+from codex_web.incidents import IncidentStatus
 from codex_web.identity import (
     AuthenticationActor,
     AuthenticationAssurance,
@@ -90,6 +93,59 @@ class _EmptyGoals:
 
 
 class HomeOverviewPerformanceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_project_summaries_filter_before_counts_and_limits(self) -> None:
+        actor = AuthenticationActor(
+            identity_id="human-a",
+            principal_kind=PrincipalKind.HUMAN,
+            organization_id="local",
+            workspace_id="default",
+            roles=(MembershipRole.ADMIN,),
+            assurance=AuthenticationAssurance.PRIMARY,
+        )
+        attention, approvals, incidents, schedules = [], [], [], []
+        for index, project_id in enumerate(("project-a", "project-b", None)):
+            common = dict(
+                id=f"item-{index}", project_id=project_id,
+                title=f"Item {index}", reason=f"Reason {index}",
+                updated_at=index, owner_identity_id=None,
+            )
+            attention.append(SimpleNamespace(
+                **common, status=AttentionStatus.OPEN,
+                severity=AttentionSeverity.HIGH, deep_link=None,
+            ))
+            approvals.append(SimpleNamespace(
+                **common, status=ApprovalRequestStatus.PENDING,
+                requester_identity_id="human-a",
+            ))
+            incidents.append(SimpleNamespace(
+                **common, status=IncidentStatus.ACTIVE,
+                severity=AttentionSeverity.HIGH, commander_identity_id=None,
+                owner_identity_ids=(),
+            ))
+            schedules.append(SimpleNamespace(
+                **common, name=f"Schedule {index}", status=SimpleNamespace(value="active"),
+                tenant_id="local", workspace_id="default",
+                payload={"project_id": project_id}, next_run_at=100,
+            ))
+        # Newer foreign records must not consume the selected Project's limit.
+        service = HomeOverviewService(
+            projects=_Projects(), work_items=_WorkItems(),
+            attention=SimpleNamespace(list=lambda actor: attention),
+            approvals=SimpleNamespace(list=lambda actor: approvals),
+            incidents=SimpleNamespace(list=lambda actor: incidents),
+            schedules=SimpleNamespace(list=lambda: schedules),
+            agent_sessions=_EmptyList(), goals=_EmptyGoals(), section_limit=1,
+        )
+        for project_id, expected in (("project-a", ["item-0"]), ("project-b", ["item-1"]),
+                                     ("project-empty", []), ("project-a", ["item-0"])):
+            payload = await service.overview(actor=actor, project_id=project_id)
+            for name in ("attention", "approvals", "incidents", "automations"):
+                with self.subTest(project=project_id, section=name):
+                    section = payload["sections"][name]
+                    self.assertEqual(section["status"], "current")
+                    self.assertEqual(section["count"], len(expected))
+                    self.assertEqual([item["id"] for item in section["items"]], expected)
+
     async def test_large_source_state_stays_bounded_and_requests_small_pages(self) -> None:
         work_items = _WorkItems()
         readiness = _Readiness()

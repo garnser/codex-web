@@ -169,7 +169,7 @@ function renderOperatingView() {
   host.querySelectorAll('.business-kpi-open-metric').forEach((button) => {
     button.addEventListener('click', () => {
       window.dispatchEvent(new CustomEvent('codex-open-metric', {
-        detail: { metricId: button.dataset.metricId || '' },
+        detail: { metricId: button.dataset.metricId || '', scope: 'workspace' },
       }));
     });
   });

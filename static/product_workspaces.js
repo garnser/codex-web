@@ -117,17 +117,17 @@ const PROJECT_PAGE_PRESENTATION = Object.freeze({
   agents: {
     title: "Agents",
     purpose: "Manage reusable agent identities, teams and skills independently from the provider or runtime that executes them.",
-    scope: "Project",
+    scope: "Workspace identities / Project execution",
   },
   "agent-profiles": {
     title: "Agent Profiles",
     purpose: "Manage stable reusable agent identities and their execution preferences independently from provider/runtime selection.",
-    scope: "Project",
+    scope: "Workspace identities / Project execution",
   },
   teams: {
     title: "Teams / Squads",
-    purpose: "Manage bounded delegation and collaboration between Agent Profiles inside the selected Project.",
-    scope: "Project",
+    purpose: "Manage reusable workspace teams for bounded delegation between Agent Profiles.",
+    scope: "Workspace teams",
   },
   automations: {
     title: "Automations",
@@ -1287,10 +1287,15 @@ function installProjectContext() {
           url,
         );
       }
-      if (activeWorkspace === "overview") {
-        const host = document.querySelector("[data-home-overview]");
-        if (host) void renderHomeOverview(host, projectId);
-      }
+    } else {
+      select.value = "";
+      document.body.dataset.activeProject = "";
+      const indicator = document.querySelector("[data-project-indicator]");
+      if (indicator) indicator.textContent = "Select a Project";
+    }
+    if (activeWorkspace === "overview") {
+      const host = document.querySelector("[data-home-overview]");
+      if (host) void renderHomeOverview(host, projectId);
     }
   });
 }

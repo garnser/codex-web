@@ -212,7 +212,9 @@ class MetricServiceTests(unittest.TestCase):
         self.assertEqual(missing.freshness, MetricFreshness.MISSING)
         self.assertIsNone(missing.value)
 
-    def test_definition_revision_requires_new_observation_before_current_value_returns(self) -> None:
+    def test_definition_revision_requires_new_observation_before_current_value_returns(
+        self,
+    ) -> None:
         metric = self._definition(aggregation=MetricAggregation.LAST)
         now = time.time()
         old = self.service.ingest(
@@ -494,6 +496,97 @@ class MetricApiTests(unittest.TestCase):
         created = self.client.post("/api/metrics", json=self._metric_body())
         self.assertEqual(created.status_code, 200)
         self.assertEqual(created.json()["item"]["created_by"], "metrics-collector")
+
+    def test_project_scope_fences_lists_details_history_and_mutations(self) -> None:
+        self.actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.MFA}
+        )
+        ids = {}
+        for project in ("project-a", "project-b", None):
+            body = {
+                **self._metric_body(),
+                "key": f"availability-{project}",
+                "project_id": project,
+            }
+            ids[project] = self.client.post("/api/metrics", json=body).json()["item"][
+                "id"
+            ]
+        for project, expected_count in (
+            ("project-a", 1),
+            ("project-b", 1),
+            ("empty", 0),
+        ):
+            result = self.client.get("/api/metrics", params={"project_id": project})
+            self.assertEqual(result.json()["count"], expected_count)
+            self.assertTrue(
+                all(
+                    row["definition"]["project_id"] == project
+                    for row in result.json()["items"]
+                )
+            )
+        self.assertEqual(self.client.get("/api/metrics").json()["count"], 3)
+
+        metric_id = ids["project-a"]
+        base = f"/api/metrics/{metric_id}"
+        snapshot = self.client.post(f"{base}/snapshots?project_id=project-a", json={})
+        self.assertEqual(snapshot.status_code, 200)
+        snapshot_id = snapshot.json()["item"]["id"]
+        for suffix in (
+            "",
+            "/revisions",
+            "/observations",
+            "/current",
+            "/snapshots",
+            f"/snapshots/{snapshot_id}",
+        ):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(
+                    self.client.get(
+                        base + suffix, params={"project_id": "project-a"}
+                    ).status_code,
+                    200,
+                )
+                self.assertEqual(
+                    self.client.get(
+                        base + suffix, params={"project_id": "project-b"}
+                    ).status_code,
+                    404,
+                )
+        for suffix, method, body in (
+            ("", "PATCH", {"name": "Forbidden", "reason": "wrong Project"}),
+            (
+                "/observations",
+                "POST",
+                {"value": 1, "source": "monitor", "idempotency_key": "wrong-project"},
+            ),
+            ("/snapshots", "POST", {}),
+        ):
+            with self.subTest(mutation=suffix):
+                result = self.client.request(
+                    method, base + suffix, params={"project_id": "project-b"}, json=body
+                )
+                self.assertEqual(result.status_code, 404)
+        self.assertEqual(self.client.get(base + "/revisions").json()["count"], 1)
+        self.assertEqual(self.client.get(base + "/observations").json()["count"], 0)
+        self.assertEqual(self.client.get(base + "/snapshots").json()["count"], 1)
+
+        for other_project in ("project-b", None):
+            result = self.client.patch(
+                base,
+                params={"project_id": "project-a"},
+                json={"project_id": other_project, "reason": "move"},
+            )
+            self.assertEqual(result.status_code, 400)
+        result = self.client.post(
+            "/api/metrics?project_id=project-a",
+            json={
+                **self._metric_body(),
+                "key": "mismatched",
+                "project_id": "project-b",
+            },
+        )
+        self.assertEqual(result.status_code, 400)
+        self.assertEqual(self.client.get("/api/metrics").json()["count"], 3)
 
 
 if __name__ == "__main__":
