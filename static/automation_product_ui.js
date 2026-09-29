@@ -409,8 +409,6 @@ async function selectAutomation(id) {
 }
 
 async function load(projectId = document.body.dataset.activeProject || "") {
-  const root = host();
-  if (!root) return;
   const nextProject = projectId || "";
   if (nextProject !== state.projectId) {
     ++state.scopeGeneration;
@@ -427,6 +425,9 @@ async function load(projectId = document.body.dataset.activeProject || "") {
   const context = projectContext();
   const generation = ++state.listGeneration;
   const current = () => context.current() && generation === state.listGeneration;
+  // Navigation may unmount the panel while an action is pending. Invalidate
+  // its context even when there is no current host to render into.
+  if (!host()) return;
   if (!nextProject) {
     state.loading = false;
     state.error = 'Select a Project to view Automations.';

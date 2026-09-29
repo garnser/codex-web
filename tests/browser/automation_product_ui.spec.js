@@ -63,7 +63,7 @@ for (const delayed of ['list', 'history']) {
   });
 }
 
-for (const action of ['manual', 'draft']) {
+for (const action of ['manual', 'draft', 'unmounted-draft']) {
   test(`Project switch stops pending Automation ${action} before launch or publish`, async ({ page }) => {
     let release;
     let pending = false;
@@ -77,7 +77,7 @@ for (const action of ['manual', 'draft']) {
         mutations.push({ path: url.pathname, body: JSON.parse(request.postData() || '{}') });
         pending = true;
         await held;
-        await route.fulfill({ json: action === 'draft' ? { record: { record_id: 'draft-a' } }
+        await route.fulfill({ json: action.endsWith('draft') ? { record: { record_id: 'draft-a' } }
           : { run: { id: 'run-a' }, launchAllowed: true } });
         settled = true;
         return;
@@ -91,21 +91,38 @@ for (const action of ['manual', 'draft']) {
     await switchAutomationProject(page, 'project-a');
     const card = page.locator('[data-automation-product]');
     await expect(card).toContainText('Automation project-a');
-    if (action === 'draft') {
+    if (action.endsWith('draft')) {
       await card.locator('[data-automation-edit]').click();
       await card.locator('[data-automation-editor] button[type="submit"]').click();
     } else {
       await card.locator('[data-automation-run-now]').click();
     }
     await expect.poll(() => pending).toBe(true);
+    if (action === 'unmounted-draft') {
+      await page.evaluate(() => {
+        const host = document.querySelector('[data-product-workspace-host="autonomy"]');
+        window.__detachedAutomation = { host, parent: host.parentElement };
+        host.remove();
+      });
+    }
     await switchAutomationProject(page, 'project-b');
-    await expect(card).toContainText('Automation project-b');
-    await expect(card.locator('[data-automation-editor]')).toHaveCount(0);
+    if (action !== 'unmounted-draft') {
+      await expect(card).toContainText('Automation project-b');
+      await expect(card.locator('[data-automation-editor]')).toHaveCount(0);
+    }
     release();
     await expect.poll(() => settled).toBe(true);
     await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 50)));
     expect(mutations).toHaveLength(1);
     expect(mutations[0].body.project_id).toBe('project-a');
+    if (action === 'unmounted-draft') {
+      await page.evaluate(() => {
+        const { host, parent } = window.__detachedAutomation;
+        parent.appendChild(host);
+      });
+      await switchAutomationProject(page, 'project-b');
+      await expect(card).toContainText('Automation project-b');
+    }
     await expect(card).not.toContainText('Automation project-a');
     await expect(card.locator('[data-automation-run-now]')).toBeEnabled();
   });
