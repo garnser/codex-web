@@ -426,6 +426,8 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         operation_ids = {item["id"] for item in payload["operations"]}
         self.assertIn("control_plane.operations.list", operation_ids)
         self.assertIn("repository.branch.publish", operation_ids)
+        self.assertIn("deployment.local.status", operation_ids)
+        self.assertIn("deployment.local.install", operation_ids)
         self.assertNotIn("lease_token", json.dumps(payload))
         self.assertEqual(
             payload["_broker"]["operation"],
