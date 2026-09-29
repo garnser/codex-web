@@ -51,3 +51,21 @@ For an occurrence that did not run, inspect the Automation run first:
 - scheduled/event occurrences retain source schedule/event provenance and exact Definition revision.
 
 The first-class Automation workspace renders these canonical records; it does not infer a second lifecycle.
+
+## Project presentation boundary
+
+The Project workspace resolves effective Automation Definitions through the
+canonical Definition Registry. Inherited workspace/organization Definitions
+remain available; they are not copies owned by the selected Project. Run history
+is different: Project views pass `project_id` and only display occurrences with
+that exact Project. Omitting the optional history filter retains the existing
+authorized workspace history API.
+
+Project switches clear Automation selection, history, editor and action feedback
+immediately. Generation checks reject late list/history responses and errors,
+and a cleared Project makes no Automation request. Draft creation and manual
+admission capture the Project that initiated them. If the Project changes while
+either request is pending, the browser does not continue to publish or launch
+and does not overwrite the new Project view. Existing canonical drafts/admissions
+remain inspectable; navigation does not claim to roll them back. Definition
+publication, run admission, approvals and execution authority remain canonical.

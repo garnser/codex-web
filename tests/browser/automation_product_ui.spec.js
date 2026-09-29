@@ -1,5 +1,133 @@
 const { test, expect } = require("@playwright/test");
 
+function scopedAutomation(project) {
+  return { id: `automation-${project}`, definition: {
+    name: `Automation ${project}`, lifecycle: 'enabled', trigger: { type: 'manual' },
+    target: { kind: 'agent_profile', id: 'agent-a' }, instructions: 'Bounded review',
+    budget: { max_concurrency: 1 },
+  }, definitionRef: { record_id: `definition-${project}`, revision: 1 } };
+}
+
+async function switchAutomationProject(page, projectId) {
+  await page.evaluate(id => {
+    document.body.dataset.activeProject = id;
+    window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: id } }));
+  }, projectId);
+}
+
+for (const delayed of ['list', 'history']) {
+  test(`Automation ${delayed} responses cannot cross Project switches`, async ({ page }) => {
+    let release;
+    let pending = false;
+    let settled = false;
+    const held = new Promise(resolve => { release = resolve; });
+    const calls = [];
+    await page.route('**/api/**', async route => {
+      const url = new URL(route.request().url());
+      const project = url.searchParams.get('project_id');
+      calls.push(project);
+      if (project === 'project-a' && ((delayed === 'list' && url.pathname === '/api/automations')
+        || (delayed === 'history' && url.pathname.endsWith('/runs')))) {
+        pending = true;
+        await held;
+        settled = true;
+      }
+      const items = project && project !== 'empty'
+        ? url.pathname.endsWith('/runs')
+          ? [{ id: `run-${project}`, status: 'succeeded', project_id: project }]
+          : [scopedAutomation(project)] : [];
+      await route.fulfill({ json: { items } });
+    });
+    await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+    await page.evaluate(() => window.CodexProductUI.openWorkspace('autonomy'));
+    const card = page.locator('[data-automation-product]');
+    await switchAutomationProject(page, 'project-a');
+    await expect.poll(() => pending).toBe(true);
+    await switchAutomationProject(page, 'project-b');
+    await expect(card).toContainText('run-project-b');
+    release();
+    await expect.poll(() => settled).toBe(true);
+    await expect(card).not.toContainText('Automation project-a');
+    await expect(card).not.toContainText('run-project-a');
+    await switchAutomationProject(page, 'empty');
+    await expect(card).toContainText('No effective Automations');
+    await expect(card.locator('[data-automation-run]')).toHaveCount(0);
+    await switchAutomationProject(page, 'project-a');
+    await expect(card).toContainText('run-project-a');
+    const beforeClear = calls.length;
+    await switchAutomationProject(page, '');
+    await expect(card).toContainText('Select a Project');
+    await expect(card.locator('[data-automation-new]')).toBeDisabled();
+    await card.locator('[data-automation-refresh-list]').click();
+    expect(calls.length).toBe(beforeClear);
+  });
+}
+
+for (const action of ['manual', 'draft', 'unmounted-draft']) {
+  test(`Project switch stops pending Automation ${action} before launch or publish`, async ({ page }) => {
+    let release;
+    let pending = false;
+    let settled = false;
+    const held = new Promise(resolve => { release = resolve; });
+    const mutations = [];
+    await page.route('**/api/**', async route => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (request.method() === 'POST') {
+        mutations.push({ path: url.pathname, body: JSON.parse(request.postData() || '{}') });
+        pending = true;
+        await held;
+        await route.fulfill({ json: action.endsWith('draft') ? { record: { record_id: 'draft-a' } }
+          : { run: { id: 'run-a' }, launchAllowed: true } });
+        settled = true;
+        return;
+      }
+      const project = url.searchParams.get('project_id');
+      await route.fulfill({ json: { items: url.pathname === '/api/automations' && project
+        ? [scopedAutomation(project)] : [] } });
+    });
+    await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+    await page.evaluate(() => window.CodexProductUI.openWorkspace('autonomy'));
+    await switchAutomationProject(page, 'project-a');
+    const card = page.locator('[data-automation-product]');
+    await expect(card).toContainText('Automation project-a');
+    if (action.endsWith('draft')) {
+      await card.locator('[data-automation-edit]').click();
+      await card.locator('[data-automation-editor] button[type="submit"]').click();
+    } else {
+      await card.locator('[data-automation-run-now]').click();
+    }
+    await expect.poll(() => pending).toBe(true);
+    if (action === 'unmounted-draft') {
+      await page.evaluate(() => {
+        const host = document.querySelector('[data-product-workspace-host="autonomy"]');
+        window.__detachedAutomation = { host, parent: host.parentElement };
+        host.remove();
+      });
+    }
+    await switchAutomationProject(page, 'project-b');
+    if (action !== 'unmounted-draft') {
+      await expect(card).toContainText('Automation project-b');
+      await expect(card.locator('[data-automation-editor]')).toHaveCount(0);
+    }
+    release();
+    await expect.poll(() => settled).toBe(true);
+    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 50)));
+    expect(mutations).toHaveLength(1);
+    expect(mutations[0].body.project_id).toBe('project-a');
+    if (action === 'unmounted-draft') {
+      await page.evaluate(() => {
+        const { host, parent } = window.__detachedAutomation;
+        parent.appendChild(host);
+      });
+      await switchAutomationProject(page, 'project-b');
+      await expect(card).toContainText('Automation project-b');
+    }
+    await expect(card).not.toContainText('Automation project-a');
+    await expect(card.locator('[data-automation-run-now]')).toBeEnabled();
+  });
+}
+
 test("Automation workspace renders canonical definitions, provenance and run history", async ({ page }) => {
   const launches = [];
   const manualRuns = [];

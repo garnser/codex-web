@@ -258,6 +258,7 @@ def build_automations_router(
     async def list_runs(
         automation_id: str,
         request: Request,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         actor = request_actor(request)
         return {
@@ -268,6 +269,7 @@ def build_automations_router(
                     workspace_id=actor.workspace_id,
                     automation_id=automation_id,
                 )
+                if project_id is None or item.project_id == project_id
             ]
         }
 
