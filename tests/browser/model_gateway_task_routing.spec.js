@@ -29,8 +29,10 @@ test('provider-labelled pins and task preferences use canonical request fields',
     'Automatic selection', 'provider-a / review-a', 'provider-b / review-b',
   ]);
   await page.getByLabel('Workload class', { exact: true }).fill(' code_review ');
-  await page.getByLabel('Pinned model', { exact: true }).selectOption('review-b');
-  await page.getByLabel('Preferred latency', { exact: true }).selectOption(['low', 'standard']);
+  // Wrapped select labels contain their option text; target stable production
+  // IDs rather than exact label text that changes with the provider catalog.
+  await page.locator('#model-route-pinned-model').selectOption('review-b');
+  await page.locator('#model-route-preferred-latency').selectOption(['low', 'standard']);
   await page.getByLabel('Prefer lower estimated cost').check();
   expect(await page.evaluate(() => window.controls.readTaskRoutePreferences())).toEqual({
     workload_class: 'code_review', pinned_model_id: 'review-b',
@@ -39,7 +41,7 @@ test('provider-labelled pins and task preferences use canonical request fields',
 });
 
 test('catalog refresh preserves strict pins including unavailable models', async ({ page }) => {
-  const pin = page.getByLabel('Pinned model', { exact: true });
+  const pin = page.locator('#model-route-pinned-model');
   await pin.selectOption('review-b');
   await page.evaluate(items => window.controls.populateTaskRouteControls(items), models);
   await expect(pin).toHaveValue('review-b');
