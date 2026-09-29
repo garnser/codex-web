@@ -1,3 +1,4 @@
+import { confirmDiscard } from "./dirty_editor.js";
 const ACTIVE_PROJECT_KEY = "codex-web-active-project";
 
 function projectIdFromPath(pathname = window.location.pathname) {
@@ -54,18 +55,18 @@ export function publishProjectsRendered(projects, projectId) {
 export function createProjectNavigator(state, { refresh, applyRunSettings, onThreadCleared,
   onLocationChanged, onError = console.error } = {}) {
   const selectProject = async (projectId, { historyMode = "push" } = {}) => {
-    const normalized = String(projectId || "").trim();
-    if (!normalized || normalized === state.projectId) return;
-    activateProject(state, normalized, { historyMode });
+    const id = String(projectId || "").trim();
+    if (!id || id === state.projectId) return;
+    if (!confirmDiscard()) return;
+    activateProject(state, id, { historyMode });
     state.threadId = null;
     state.activeAgentMessage = null;
     onThreadCleared?.();
     applyRunSettings?.();
     await refresh?.();
   };
-  const run = (projectId, options) => selectProject(projectId, options).catch(onError);
   window.addEventListener("codex:project-select", (event) => {
-    run(event.detail?.projectId);
+    selectProject(event.detail?.projectId).catch(onError);
   });
   window.addEventListener("popstate", () => {
     const projectId = projectIdFromPath() || new URLSearchParams(location.search).get("project");

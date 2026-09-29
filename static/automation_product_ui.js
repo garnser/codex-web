@@ -1,5 +1,15 @@
 import { actionFeedback } from "./workspace_components.js";
 import { trackUx } from "./ux_telemetry.js";
+import { trackDirtyEditor, confirmDiscard } from "./dirty_editor.js";
+
+let dirtyEditor = null;
+
+function closeEditor() {
+  dirtyEditor?.dispose();
+  dirtyEditor = null;
+  state.editing = false;
+  state.creating = false;
+}
 
 const state = {
   scopeGeneration: 0,
@@ -315,6 +325,11 @@ function detailMarkup(item) {
 function render() {
   const root = host();
   if (!root) return;
+  const retainedForm = state.editing ? root.querySelector('[data-automation-editor]') : null;
+  if (!state.editing) {
+    dirtyEditor?.dispose();
+    dirtyEditor = null;
+  }
   let card = root.querySelector("[data-automation-product]");
   if (!card) {
     card = document.createElement("section");
@@ -330,7 +345,7 @@ function render() {
         <button type="button" class="ghost-button" data-automation-refresh-list>Refresh</button>
       </div>
     </div>
-    ${state.error ? `<div class="workspace-state workspace-state-error">${esc(state.error)}</div>` : ""}
+    ${state.error ? `<div class="workspace-state workspace-state-error" role="alert">${esc(state.error)}</div>` : ""}
     <div class="automation-product-layout">
       <nav class="automation-list" aria-label="Automations">
         ${state.loading ? '<div class="workspace-state workspace-state-loading">Loading Automations…</div>' :
@@ -345,13 +360,19 @@ function render() {
       <div class="automation-detail-host">${editorMarkup(selected()) || detailMarkup(selected())}</div>
     </div>`;
 
+  if (retainedForm) card.querySelector('[data-automation-editor]')?.replaceWith(retainedForm);
+
   const feedback = card.querySelector("[data-automation-action-feedback]");
   if (feedback && state.actionFeedback) feedback.replaceChildren(actionFeedback(state.actionFeedback));
   card.querySelectorAll("[data-automation-id]").forEach((button) => {
     button.addEventListener("click", () => selectAutomation(button.dataset.automationId));
   });
   card.querySelectorAll("[data-automation-refresh-list],[data-automation-refresh]").forEach((button) => {
-    button.addEventListener("click", () => load());
+    button.addEventListener("click", () => {
+      if (!confirmDiscard(dirtyEditor)) return;
+      closeEditor();
+      load();
+    });
   });
   card.querySelector("[data-automation-run-now]")?.addEventListener("click", runNow);
   card.querySelector("[data-automation-edit]")?.addEventListener("click", () => {
@@ -360,21 +381,36 @@ function render() {
     render();
   });
   card.querySelector("[data-automation-new]")?.addEventListener("click", () => {
+    if (!confirmDiscard(dirtyEditor)) return;
+    closeEditor();
     state.editing = true;
     state.creating = true;
+    card.querySelector('[data-automation-editor]')?.remove();
     render();
   });
+  if (retainedForm) return;
+  const form = card.querySelector('[data-automation-editor]');
+  if (form) dirtyEditor = trackDirtyEditor(form, { label: 'Automation', onDiscard: () => {
+    closeEditor();
+    render();
+  } });
   card.querySelector("[data-automation-edit-cancel]")?.addEventListener("click", () => {
-    state.editing = false;
-    state.creating = false;
+    if (!confirmDiscard(dirtyEditor)) return;
+    closeEditor();
     render();
   });
   card.querySelector("[data-automation-editor]")?.addEventListener("submit", (event) => {
     const context = projectContext();
     saveEditor(event).catch((error) => {
-      if (!context.current()) return;
-      state.error = error.message;
-      render();
+      if (!context.current() || !form.isConnected) return;
+      let errorHost = form.querySelector('[data-automation-editor-error]');
+      if (!errorHost) {
+        errorHost = document.createElement('p');
+        errorHost.dataset.automationEditorError = '';
+        errorHost.setAttribute('role', 'alert');
+        form.prepend(errorHost);
+      }
+      errorHost.textContent = error.message;
     });
   });
 }
@@ -395,9 +431,12 @@ async function loadRuns(id) {
 async function selectAutomation(id) {
   const context = projectContext();
   if (!context.current() || !state.automations.some(item => item.id === id)) return;
+  if (!confirmDiscard(dirtyEditor)) return;
+  closeEditor();
   state.selectedId = id;
   state.runs = [];
   state.error = "";
+  render();
   try {
     await loadRuns(id);
   } catch (error) {
@@ -411,6 +450,7 @@ async function selectAutomation(id) {
 async function load(projectId = document.body.dataset.activeProject || "") {
   const nextProject = projectId || "";
   if (nextProject !== state.projectId) {
+    closeEditor();
     ++state.scopeGeneration;
     ++state.runsGeneration;
     state.automations = [];
@@ -421,6 +461,8 @@ async function load(projectId = document.body.dataset.activeProject || "") {
     state.runPendingId = '';
     state.actionFeedback = null;
   }
+  // Background refresh must not replace an open editor's persisted baseline.
+  else if (state.editing) return;
   state.projectId = nextProject;
   const context = projectContext();
   const generation = ++state.listGeneration;
@@ -465,40 +507,49 @@ async function saveEditor(event) {
   const context = projectContext();
   if (!context.current()) return;
   const form = event.currentTarget;
+  if (form.dataset.saving === 'true') return;
   const existingItem = state.creating ? null : selected();
   const definition = definitionFromEditor(form, existingItem?.definition || {});
   const automationId = form.elements.automation_id.value.trim();
-  const draft = await api("/api/automations/drafts", {
-    method: "POST",
-    body: JSON.stringify({
-      automation_id: automationId,
-      definition,
-      project_id: context.projectId,
-      reason: state.creating ? "Created from Automation workspace" : "Edited from Automation workspace",
-      derived_from_record_id: existingItem?.definitionRef?.record_id || null,
-    }),
-  });
-  if (!context.current()) return;
-  const recordId = draft?.record?.record_id;
-  if (!recordId) throw new Error("Automation draft returned no record id");
-  const published = await api(`/api/automations/drafts/${encodeURIComponent(recordId)}/publish`, {
-    method: "POST",
-    body: JSON.stringify({
-      reason: "Publish from Automation workspace",
-      expected_active_revision: existingItem?.definitionRef?.revision || null,
-      approval_metadata: {},
-    }),
-  });
-  if (!context.current()) return;
-  if (published.scheduleError) {
-    state.error = `Automation published, but schedule needs repair: ${published.scheduleError}`;
-  } else {
-    state.error = "";
+  form.dataset.saving = 'true';
+  const controls = [...form.querySelectorAll('input,select,textarea,button[type="submit"]')];
+  const disabled = controls.map(control => control.disabled);
+  controls.forEach(control => { control.disabled = true; });
+  try {
+    const draft = await api("/api/automations/drafts", {
+      method: "POST",
+      body: JSON.stringify({
+        automation_id: automationId,
+        definition,
+        project_id: context.projectId,
+        reason: state.creating ? "Created from Automation workspace" : "Edited from Automation workspace",
+        derived_from_record_id: existingItem?.definitionRef?.record_id || null,
+      }),
+    });
+    if (!context.current() || !form.isConnected) return;
+    const recordId = draft?.record?.record_id;
+    if (!recordId) throw new Error("Automation draft returned no record id");
+    const published = await api(`/api/automations/drafts/${encodeURIComponent(recordId)}/publish`, {
+      method: "POST",
+      body: JSON.stringify({
+        reason: "Publish from Automation workspace",
+        expected_active_revision: existingItem?.definitionRef?.revision || null,
+        approval_metadata: {},
+      }),
+    });
+    if (!context.current() || !form.isConnected) return;
+    if (published.scheduleError) {
+      state.error = `Automation published, but schedule needs repair: ${published.scheduleError}`;
+    } else {
+      state.error = "";
+    }
+    closeEditor();
+    state.selectedId = automationId;
+    await load(state.projectId);
+  } finally {
+    delete form.dataset.saving;
+    controls.forEach((control, index) => { control.disabled = disabled[index]; });
   }
-  state.editing = false;
-  state.creating = false;
-  state.selectedId = automationId;
-  await load(state.projectId);
 }
 
 async function runNow() {
