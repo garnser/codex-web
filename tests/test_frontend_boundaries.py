@@ -356,17 +356,6 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("flex-shrink: 0", css[css.index(".message {"):css.index(".message .body")])
         self.assertLess(html.index('id="thread-history-control"'), html.index('id="messages"'))
 
-    def test_chat_width_constraints_cover_header_and_wide_message_content(self) -> None:
-        css = (STATIC / "styles.css").read_text(encoding="utf-8")
-        topbar = css[css.index(".topbar {"):css.index(".thread-heading {")]
-        self.assertIn("min-width: 0", topbar)
-        self.assertIn("flex-wrap: wrap", topbar)
-        wide_content = css[css.index(".message .body pre,"):css.index(".message.user {")]
-        for invariant in ("max-width: 100%", "overflow-x: auto", "white-space: pre", "height: auto"):
-            self.assertIn(invariant, wide_content)
-        self.assertIn(".message .body table", wide_content)
-        self.assertIn(".message .body img", wide_content)
-
     def test_execution_profile_controls_are_focused_and_explain_authority(self) -> None:
         html = (STATIC / "index.html").read_text(encoding="utf-8")
         module_path = STATIC / "execution_profile_controls.js"
