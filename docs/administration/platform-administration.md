@@ -251,3 +251,25 @@ For a new production-capable workspace:
 - regular restore, capacity and upgrade drills;
 - audit-integrity verification and operator Attention routing;
 - autonomy initially paused or bounded until qualification is complete.
+
+### Entitlement and quota administration
+
+Open **Configuration → Entitlements & Usage** to inspect the workspace mode,
+capability grants, quota limits, source labels and the separate usage ledger.
+Every Project inherits these workspace values. A provenance label does not
+establish control ownership.
+
+For locally controlled settings, choose **Edit tenant mode**, **Add capability**,
+**Add quota**, or an existing record. Typed inputs cover activation/expiry times,
+quota windows, limits, warning fractions and exceeded behavior. **Preview impact**
+shows the affected workspace and subsequent-operation effect. **Apply change**
+confirms the target and rejects stale configuration. Disable a capability to
+retire its grant; **Retire quota** removes its limit without deleting usage.
+Changing to enforced mode denies missing or inactive capabilities. Unlimited mode
+bypasses entitlement/quota checks while all authorization controls remain active.
+
+Externally controlled settings show their registered service identity and guidance
+and are read-only for tenant administrators. Contact that controller to change or
+release the plan; changing a source label cannot bypass it. Missing permissions,
+insufficient session assurance, invalid input and stale edits preserve entered
+values. Reload and review current state before retrying a conflicting change.

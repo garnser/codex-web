@@ -3,13 +3,14 @@ from __future__ import annotations
 import time
 import uuid
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.compatibility import ContractSpec
 
 
-ENTITLEMENT_CONTRACT = ContractSpec("entitlement-state", "1.0", ("1.0",))
+ENTITLEMENT_CONTRACT = ContractSpec("entitlement-state", "1.1", ("1.1",))
 
 CAPABILITY_EXTERNAL_ACTIONS = "external_actions"
 METRIC_EXTERNAL_ACTION_ATTEMPTS = "external_action_attempts"
@@ -220,6 +221,48 @@ class TenantModeUpdate(BaseModel):
     mode: EntitlementMode
 
 
+class EntitlementControlUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    kind: Literal["local", "external"]
+    guidance: str = Field(default="", max_length=1000)
+
+
+class EntitlementControl(EntitlementControlUpdate):
+    organization_id: str
+    workspace_id: str
+    controller_identity_id: str | None = None
+    updated_by: str
+    updated_at: float = Field(default_factory=time.time)
+
+    @model_validator(mode="after")
+    def validate_owner(self):
+        if self.kind == "external" and not self.controller_identity_id:
+            raise ValueError("external entitlement control requires a service identity")
+        if self.kind == "local" and self.controller_identity_id is not None:
+            raise ValueError("local entitlement control has no external controller")
+        return self
+
+
+class EntitlementChangePreview(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    kind: Literal["mode", "capability", "quota", "retire_quota"]
+    key: str = Field(default="", max_length=500)
+    mode: TenantModeUpdate | None = None
+    capability: CapabilityEntitlementUpdate | None = None
+    quota: QuotaPolicyUpdate | None = None
+
+    @model_validator(mode="after")
+    def validate_payload(self):
+        for field in ("mode", "capability", "quota"):
+            if (getattr(self, field) is not None) != (self.kind == field):
+                raise ValueError("supply only the payload matching the change kind")
+        if self.kind != "mode" and not self.key:
+            raise ValueError("target key is required")
+        return self
+
+
 class EntitlementState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -228,3 +271,4 @@ class EntitlementState(BaseModel):
     capabilities: list[CapabilityEntitlement] = Field(default_factory=list)
     quotas: list[QuotaPolicy] = Field(default_factory=list)
     usage: list[UsageEvent] = Field(default_factory=list)
+    controls: list[EntitlementControl] = Field(default_factory=list)

@@ -12,12 +12,16 @@ ENTITLEMENT_MIGRATIONS.register(
     "0.0",
     "1.0",
     lambda payload: {
-        "schema_version": ENTITLEMENT_CONTRACT.current,
+        "schema_version": "1.0",
         "settings": list(payload.get("settings", [])),
         "capabilities": list(payload.get("capabilities", [])),
         "quotas": list(payload.get("quotas", [])),
         "usage": list(payload.get("usage", [])),
     },
+)
+
+ENTITLEMENT_MIGRATIONS.register(
+    "1.0", "1.1", lambda payload: {**payload, "schema_version": "1.1", "controls": []},
 )
 
 

@@ -1,3 +1,6 @@
+import { captureProjectView, currentProjectId } from './project_view_scope.js';
+import { renderManagement, discardManagement, disposeManagement } from './entitlement_editor.js';
+import { bindWhenReady } from './reference_links.js';
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
@@ -6,6 +9,17 @@
   let quotas = [];
   let usage = [];
   let mode = "unknown";
+  let generation = 0;
+  function operation() {
+    const view = captureProjectView(); const project = currentProjectId(); const started = generation;
+    const current = () => view.current() && started === generation;
+    return { current, async request(path, options) {
+      if (!current()) throw new DOMException('View changed', 'AbortError');
+      const url = new URL(path, location.origin); if (project) url.searchParams.set('project_id', project);
+      const result = await apiRequest(url.pathname + url.search, options);
+      if (!current()) throw new DOMException('View changed', 'AbortError'); return result;
+    } };
+  }
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -41,24 +55,11 @@
     </div>`;
   }
 
-  async function capabilityDecision(capability) {
-    try {
-      return await apiRequest(
-        `/api/entitlements/status?capability=${encodeURIComponent(capability)}`,
-      );
-    } catch (error) {
-      return { allowed: false, reason: `status_unavailable:${error.message}`, mode };
-    }
-  }
-
-  async function renderCapabilities() {
+  function renderCapabilities() {
     const host = document.getElementById("entitlement-capabilities");
     if (!host) return;
-    const decisions = await Promise.all(
-      capabilities.map((item) => capabilityDecision(item.capability)),
-    );
     host.innerHTML = capabilities.map((item, index) => {
-      const decision = decisions[index] || {};
+      const decision = item.decision || {};
       return `<div class="comm-entry">
         <strong>${escapeHtml(item.capability)} · ${item.enabled ? "enabled" : "disabled"}</strong>
         <small>Canonical decision: ${decision.allowed ? "allowed" : "denied"} · reason: ${escapeHtml(decision.reason || "unknown")} · mode: ${escapeHtml(decision.mode || mode)}</small>
@@ -80,7 +81,7 @@
       <strong>${escapeHtml(item.metric)} · limit ${escapeHtml(item.limit)} / ${escapeHtml(item.window)}</strong>
       <small>Behavior: ${escapeHtml(item.behavior)} · warning threshold: ${escapeHtml(Math.round(Number(item.warning_fraction || 0) * 100))}% · source: ${escapeHtml(item.source)}</small>
       <small>Updated by: ${escapeHtml(item.updated_by)} · ${timeText(item.updated_at)} · ID: ${escapeHtml(item.id)}</small>
-      <small>Quota status is evaluated canonically for a selected capability in the preview below; entitlement and authorization remain separate concerns.</small>
+      <small>Current usage in this policy window: ${escapeHtml(item.current_usage ?? "unknown")}. Quota status is evaluated canonically for a selected capability below; usage never grants authority.</small>
     </div>`).join("") || '<div class="comm-entry"><strong>No quota policies configured.</strong></div>';
   }
 
@@ -140,6 +141,7 @@
   }
 
   async function preview() {
+    const op = operation();
     const capability = document.getElementById("entitlement-preview-capability")?.value || "";
     const metric = document.getElementById("entitlement-preview-metric")?.value || "";
     const projectedAmount = Number(document.getElementById("entitlement-preview-amount")?.value || 0);
@@ -153,45 +155,38 @@
     });
     if (metric) params.set("metric", metric);
     try {
-      const decision = await apiRequest(`/api/entitlements/status?${params.toString()}`);
+      const decision = await op.request(`/api/entitlements/status?${params.toString()}`);
       renderDecision(decision);
     } catch (error) {
+      if (!op.current()) return;
       const host = document.getElementById("entitlement-preview-result");
       if (host) host.innerHTML = `<div class="comm-entry"><strong>Entitlement evaluation unavailable</strong><small>${escapeHtml(error.message)}</small></div>`;
     }
   }
 
-  async function refresh() {
+  async function refresh(force = false) {
+    if (!force && !discardManagement()) return;
+    generation++; disposeManagement();
+    for (const id of ['entitlement-management', 'entitlement-mode', 'entitlement-capabilities', 'entitlement-quotas', 'entitlement-usage', 'entitlement-preview-result']) document.getElementById(id)?.replaceChildren();
+    const op = operation();
     setStatus("Loading canonical entitlement, quota and usage state...");
     try {
-      const [modeResponse, capabilityResponse, quotaResponse, usageResponse] = await Promise.all([
-        apiRequest("/api/entitlements/mode"),
-        apiRequest("/api/entitlements/capabilities"),
-        apiRequest("/api/entitlements/quotas"),
-        apiRequest("/api/entitlements/usage"),
+      const [snapshot, usageResponse] = await Promise.all([
+        op.request("/api/entitlements/administration"), op.request("/api/entitlements/usage"),
       ]);
-      mode = modeResponse.mode || "unknown";
-      capabilities = capabilityResponse.items || [];
-      quotas = quotaResponse.items || [];
-      usage = usageResponse.items || [];
-      renderMode();
-      await renderCapabilities();
-      renderQuotas();
-      renderUsage();
-      populatePreview();
+      if (!op.current()) return;
+      mode = snapshot.mode; capabilities = snapshot.capabilities || []; quotas = snapshot.quotas || []; usage = usageResponse.items || [];
+      renderMode(); renderCapabilities(); renderQuotas(); renderUsage(); populatePreview();
+      renderManagement(document.getElementById('entitlement-management'), snapshot, op, () => refresh(true));
       setStatus(`${capabilities.length} capability record(s) · ${quotas.length} quota policy(s) · ${usage.length} usage event(s) · mode ${mode}.`);
-      window.dispatchEvent(new CustomEvent("codex:entitlement-state-rendered", {
-        detail: { mode, capabilities, quotas, usage },
-      }));
-    } catch (error) {
-      setStatus(`Entitlement administration unavailable: ${error.message}`);
-    }
+      window.dispatchEvent(new CustomEvent("codex:entitlement-state-rendered", { detail: { mode, capabilities, quotas, usage } }));
+    } catch (error) { if (op.current()) setStatus(`Entitlement administration unavailable: ${error.message}`); }
   }
 
   function bind() {
     const panel = document.getElementById("developer-panel");
-    document.getElementById("refresh-entitlements")?.addEventListener("click", refresh);
-    document.getElementById("refresh-developer")?.addEventListener("click", refresh);
+    document.getElementById("refresh-entitlements")?.addEventListener("click", () => void refresh());
+    document.getElementById("refresh-developer")?.addEventListener("click", () => void refresh());
     document.getElementById("preview-entitlement")?.addEventListener("click", () => preview().catch(console.error));
     panel?.addEventListener("toggle", () => {
       if (panel.open) refresh().catch(console.error);
@@ -199,5 +194,9 @@
     if (panel?.open) refresh().catch(console.error);
   }
 
-  window.addEventListener("DOMContentLoaded", bind);
+  bindWhenReady(bind);
+  window.addEventListener('codex:project-changed', () => void refresh(true));
+  window.addEventListener('codex:project-workspace-page', event => {
+    if (event.detail?.workspace === 'settings' && event.detail?.page === 'configuration') void refresh();
+  });
 })();
