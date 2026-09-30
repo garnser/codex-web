@@ -81,8 +81,8 @@ fields. Shared workspace consumers and selected-Project consumers are visible;
 other Project/resource references contribute an outside-view count without names
 or IDs. Configuration and execution history remain labeled with state/revision;
 a reference count is not a claim of active use. Noncanonical environment/file
-credentials are outside this projection. Key dependency visibility remains a
-separate concern tracked by #905.
+credentials are outside this projection. Key dependency visibility uses the separate canonical crypto/recovery
+projection described in [key management](encryption-key-management.md).
 
 The projection is computed from canonical stores, not a second dependency ledger.
 It bounds scanning at 5,000 records/references and displays at most 100 visible
@@ -101,3 +101,10 @@ browser storage, URLs, telemetry or error messages. Metadata-only audit is label
 as workspace-wide. Project generation fences reject late reads and prevent a
 pending impact lookup from mutating after a Project switch. No LLM calls or new
 external provider paths are introduced by this workflow.
+
+Provider and extension credential references link to Project Secrets metadata.
+Consumer links retain the exact canonical object type/ID; provider and extension
+surfaces focus the matching object without putting credentials in the URL.
+Outside-view references contribute counts without object identifiers. A
+workspace-only surface without a selected Project renders the reference as
+metadata until a Project context is available.

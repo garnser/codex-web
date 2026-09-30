@@ -53,7 +53,7 @@ export function renderReferences(items, { manageable, identityText, timeText }) 
 export function renderImpact(usage) {
   const pages = new Set(['configuration', 'work-items', 'integrations', 'agents', 'operations', 'runs', 'automations']);
   return `<p>${esc(usage.count)} reference(s), including ${esc(usage.outside_view_count)} outside this Project view. Rotation/revocation affects the shared reference across Projects.${usage.truncated ? ' Display is limited; totals include omitted references.' : ''}</p>
-    ${(usage.items || []).map(item => `<div class="comm-entry"><strong>${esc(item.label)}</strong><small>${esc(item.object_id)} · ${esc(item.scope)} · ${esc(item.state || '')}${item.revision ? ` · r${esc(item.revision)}` : ''}</small>${pages.has(item.page) ? `<a href="${esc(projectPath(item.page))}">Manage consumer</a>` : ''}</div>`).join('')}
+    ${(usage.items || []).map(item => `<div class="comm-entry"><strong>${esc(item.label)}</strong><small>${esc(item.object_id)} · ${esc(item.scope)} · ${esc(item.state || '')}${item.revision ? ` · r${esc(item.revision)}` : ''}</small>${pages.has(item.page) ? `<a href="${esc(projectPath(item.page, { consumer_type: item.object_type || '', consumer_id: item.object_id }))}">Manage consumer</a>` : ''}</div>`).join('')}
     <p>Coverage: ${esc((usage.coverage || []).join(', '))}.</p><p>${esc((usage.limitations || []).join(' '))}</p>`;
 }
 

@@ -1,6 +1,7 @@
 (async () => {
   const BASE = window.location.pathname.startsWith('/codex') ? '/codex' : '';
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { secretLinks, referenceAttributes, focusReference } = await import(`${BASE}/static/reference_links.js`);
   const { statusBadge: sharedStatusBadge, identityChip: sharedIdentityChip } = await import(`${BASE}/static/workspace_components.js`);
   let currentInventory = { providers: [], runtimes: [], sessions: [], actor: null, capacity: [], capacityWaits: [] };
 
@@ -81,6 +82,7 @@
     const provider = discovery.provider || discovery;
     const item = document.createElement('article');
     item.className = 'agent-provider-item';
+    item.dataset.referenceKind = 'agent_provider'; item.dataset.referenceId = provider.id;
 
     const head = document.createElement('div');
     head.className = 'agent-provider-head';
@@ -125,11 +127,9 @@
     }
 
     if (provider.credential_refs?.length) {
-      item.appendChild(textNode(
-        'div',
-        'agent-provider-note',
-        `Credential references: ${provider.credential_refs.join(', ')} (values are not returned)`,
-      ));
+      const links = textNode('div', 'agent-provider-note', '');
+      links.innerHTML = `Credential references: ${secretLinks(provider.credential_refs)} (values are not returned)`;
+      item.appendChild(links);
     }
     if (!discovery.eligible && discovery.reasons?.length) {
       item.appendChild(textNode(
@@ -511,6 +511,8 @@
         providerList.appendChild(providerView(provider, runtimeByProvider, inventory.capacity));
       }
     }
+
+    focusReference(providerList);
 
     if (!inventory.sessions.length) {
       sessionList.appendChild(textNode('div', 'agent-empty', 'No canonical AgentSessions yet.'));

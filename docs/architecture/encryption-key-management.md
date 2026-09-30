@@ -123,3 +123,34 @@ Likely early adopters are Executive memory/knowledge, Decisions, selected integr
 The platform administration UI and operator workspaces should expose key IDs, purpose, scope, backend type/health, versions, active/decrypt-only/revoked state, creation/rotation/revocation timestamps, manifest/restore validation, and guarded rotation/revocation actions.
 
 Raw key material must never be rendered.
+
+## Canonical dependency impact
+
+`GET /api/crypto/keys/{key_id}/usage?version=...&project_id=...` returns
+schema `1.0` reference metadata from the current recovery policy, encrypted
+backup envelopes and frozen restore key manifests. Optional Project context
+filters key detail, listing, manifest, events and mutations through the same
+canonical Project/resource view. Workspace keys remain shared. Tenant admin or
+`crypto:admin` authority is required; the view does not grant mutation authority.
+
+The projection scans at most 5,000 records/references and displays at most 100
+rows. Scan exhaustion or malformed canonical state makes impact unavailable
+(503), never an empty dependency set. Counts include omitted rows. A frozen
+backup manifest is a restore prerequisite, not proof that each listed key
+actually encrypted snapshot contents. Unregistered encrypted domains and
+external copies are explicitly outside coverage. No envelope, material,
+backend path or destination pointer appears in this projection.
+
+Key/version retirement checks these canonical dependencies inside a StateStore
+transaction shared with recovery reference creation. A retained dependency
+rejects revocation with 409. Recovery policy and backup-manifest writes validate
+key versions under the same transaction, so concurrent revocation cannot create
+a newly committed broken reference. A failed backup registration removes its
+new encrypted candidate. Rotation remains available and preserves decrypt-only
+versions; it does not migrate existing backups or remove frozen restore
+requirements. No override or independent key-material deletion is introduced.
+
+The Configuration key surface shows current dependencies before confirmation,
+explains blocked retirement, links manifest/version references to key metadata,
+and discards late impact responses after Project navigation. Displaying impact
+is not authority: the transaction repeats the dependency check on mutation.

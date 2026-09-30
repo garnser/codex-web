@@ -14,7 +14,15 @@ from codex_web.artifact_evidence import (
 )
 from codex_web.autonomy_audit import AuditIntegrityStatus, AutonomyAuditState
 from codex_web.canonical_events import CanonicalEventType
-from codex_web.crypto import EncryptionContext, EncryptedEnvelope, KeyPurpose
+from codex_web.crypto import (
+    CryptoKeyState,
+    EncryptedEnvelope,
+    EncryptionContext,
+    KeyManifestEntry,
+    KeyPurpose,
+    KeyStatus,
+    KeyVersionStatus,
+)
 from codex_web.identity import AuthenticationActor
 from codex_web.recovery import (
     BackupDestination,
@@ -160,6 +168,32 @@ class RecoveryService:
     def policy(self) -> RecoveryPolicy | None:
         return self.store.load().policy
 
+    def _write_key_bound(self, updater, *, actor, requirements, active_key=None):
+        if self.crypto.store.store is not self.store.store:
+            raise RecoveryConflictError('Recovery and keys require the same canonical transactional store')
+        key_namespace = self.crypto.store.namespace
+
+        def apply(documents):
+            keys = self.crypto.store._decode(documents[key_namespace])
+            for entry in requirements:
+                key = self.crypto._key(keys, entry.key_id, actor)
+                if key.status == KeyStatus.REVOKED or any(
+                    self.crypto._version(key, version).status == KeyVersionStatus.REVOKED
+                    for version in entry.versions
+                ):
+                    raise RecoveryConflictError('A required key version is revoked; recovery reference rejected')
+                if entry.key_id == active_key and (key.status != KeyStatus.ACTIVE or key.purpose != KeyPurpose.BACKUP):
+                    raise RecoveryConflictError('Backup policy requires an active backup key')
+            current = RecoveryStore._decode(documents[self.store.namespace])
+            documents[self.store.namespace] = updater(current).model_dump(mode='json')
+            return documents
+
+        result = self.store.store.update_many({
+            key_namespace: CryptoKeyState().model_dump(mode='json'),
+            self.store.namespace: RecoveryState().model_dump(mode='json'),
+        }, apply)
+        return RecoveryStore._decode(result[self.store.namespace])
+
     def configure(
         self,
         policy: RecoveryPolicy,
@@ -172,8 +206,10 @@ class RecoveryService:
                 "recovery policy backup key must have KeyPurpose.BACKUP"
             )
         self._destination(policy.destination_id)
-        state = self.store.update(
-            lambda current: current.model_copy(update={"policy": policy})
+        state = self._write_key_bound(
+            lambda current: current.model_copy(update={"policy": policy}),
+            actor=actor, active_key=key.id,
+            requirements=(KeyManifestEntry(key_id=key.id, versions=(key.current_version,)),),
         )
         if self.scheduler is not None:
             self._ensure_schedules(policy, actor=actor)
@@ -358,7 +394,17 @@ class RecoveryService:
             current.backups[manifest.id] = manifest
             return current
 
-        self.store.update(apply)
+        try:
+            self._write_key_bound(apply, actor=actor, requirements=(
+                *manifest.key_manifest,
+                KeyManifestEntry(key_id=manifest.key_id, versions=(manifest.key_version,)),
+            ))
+        except Exception:
+            try:
+                destination.delete(destination_ref)
+            except Exception:
+                raise RecoveryConflictError('Key validation failed and encrypted candidate cleanup failed') from None
+            raise
         self._enforce_retention(policy, actor=actor)
         return manifest
 

@@ -1,19 +1,13 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { esc: escapeHtml, secretLinks, referenceAttributes, focusReference, bindWhenReady } = await import(`${BASE}/static/reference_links.js`);
   const { populateTaskRouteControls, readTaskRoutePreferences } = await import(
     `${BASE}/static/model_gateway_route_controls.js`
   );
   const MAX_INVOCATIONS = 50;
   let snapshot = { providers: [], models: [], prompts: [], policy: null, invocations: [], capacity: [], capacityWaits: [] };
 
-  function escapeHtml(value) {
-    return String(value ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;");
-  }
 
   function timeText(value) {
     if (!value) return "none";
@@ -62,15 +56,16 @@
       const capacityLine = capacity
         ? `<small>Capacity: ${escapeHtml(capacity.status)} · retry/reset: ${timeText(capacity.retry_at)}${capacity.reason ? ` · ${escapeHtml(capacity.reason)}` : ""}</small>`
         : "<small>Capacity: no active throttle/depletion record</small>";
-      return `<div class="comm-entry">
+      return `<div class="comm-entry" ${referenceAttributes("model_provider", item.id)}>
       <strong>${escapeHtml(item.display_name)} · ${escapeHtml(item.status)}</strong>
       <small>ID: ${escapeHtml(item.id)} · Adapter: ${escapeHtml(item.adapter_type)} · Base URL: ${escapeHtml(item.base_url || "provider default")}</small>
-      <small>Credential reference: ${escapeHtml(item.credential_ref || "none")} · Credential required: ${item.credential_required ? "yes" : "no"}</small>
+      <small>Credential reference: ${secretLinks([item.credential_ref])} · Credential required: ${item.credential_required ? "yes" : "no"}</small>
       <small>Residency: ${listText(item.residency_tags)} · Compliance: ${listText(item.compliance_tags)}</small>
       ${capacityLine}
       <small>Updated by: ${escapeHtml(item.updated_by)} · ${timeText(item.updated_at)}</small>
     </div>`;
     }).join("") || '<div class="comm-entry"><strong>No model providers registered.</strong></div>';
+    focusReference(host);
   }
 
   function renderModels(items) {
@@ -259,5 +254,5 @@
     if (panel?.open) refresh().catch(console.error);
   }
 
-  window.addEventListener("DOMContentLoaded", bind);
+  bindWhenReady(bind);
 })();
