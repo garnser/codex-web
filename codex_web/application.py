@@ -271,6 +271,7 @@ from codex_web.services.control_plane_broker import (
 from codex_web.services.crypto_keys import CryptoKeyService
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.execution_profile_definitions import install_execution_profile_definitions
+from codex_web.services.execution_profile_usage import ExecutionProfileUsageService
 from codex_web.services.execution_role_definitions import install_execution_role_definitions
 from codex_web.services.executive_roles import install_executive_role_definitions
 from codex_web.services.executive_management import ExecutiveManagementService
@@ -2635,6 +2636,14 @@ agent_team_usage_service = AgentTeamUsageService(
 )
 agent_team_service.usage_loader = agent_team_usage_service.snapshot
 app.state.agent_team_usage_service = agent_team_usage_service
+execution_profile_usage_service = ExecutionProfileUsageService(
+    catalogs=execution_profile_definition_service, projects=project_service,
+    profiles=agent_profile_service, assignments=_agent_profile_assignment_history,
+    queues=turn_queue_repository, settings=runtime_state.thread_settings.load,
+    thread_scope=thread_scope_service,
+)
+execution_profile_definition_service.usage_loader = execution_profile_usage_service.snapshot
+app.state.execution_profile_usage_service = execution_profile_usage_service
 core._load_turn_queues = turn_queue_repository.load
 core._save_turn_queues = turn_queue_repository.save
 core._thread_queue_record = turn_queue_repository.get

@@ -94,7 +94,7 @@ export function render(profileId, escapeHtml) {
   if (profile) {
     const capabilities = (profile.requiredWorkerCapabilities || []).join(", ") || "none";
     const prefix = window.location.pathname.startsWith("/codex") ? "/codex" : "";
-    const definitionsPath = `${prefix}/projects/${encodeURIComponent(activeProjectId || "home")}/definitions`;
+    const definitionsPath = `${prefix}/projects/${encodeURIComponent(activeProjectId || "home")}/definitions?execution_profile=${encodeURIComponent(profile.id)}`;
     const definition = catalog.definition;
     const provenance = definition
       ? ` Canonical definition: ${escapeHtml(definition.definition_id)}@r${escapeHtml(definition.revision)}.`

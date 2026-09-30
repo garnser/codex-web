@@ -7,6 +7,7 @@ import {
   timeline,
 } from "./workspace_components.js";
 import { managementActions, openEditor } from "./collaboration_management.js";
+import { profilePath } from './execution_profile_editor.js';
 
 const state = { profiles: [], teams: [], skills: [], loaded: false };
 let activeCollaborationPage = "agents";
@@ -341,6 +342,11 @@ async function loadAgentDetails(profile, details) {
       { label: "Max concurrency", value: profile.budgets?.max_concurrency },
     ]));
     target.appendChild(executionPolicy);
+    if (profile.execution_profile_id) {
+      const link = el('a', 'ghost-button', 'View / manage Execution Profile');
+      link.href = profilePath(projectId, profile.execution_profile_id);
+      executionPolicy.appendChild(link);
+    }
     details.dataset.loaded = "true";
   } catch (error) {
     if (!current() || error?.name === 'AbortError') return;

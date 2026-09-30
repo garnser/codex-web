@@ -152,7 +152,7 @@ class DefinitionPublishRequest(BaseModel):
 
     actor: str = Field(min_length=1)
     reason: str | None = None
-    expected_active_revision: int | None = None
+    expected_active_revision: int | None = Field(default=None, ge=0)
     approval_metadata: dict[str, str] = Field(default_factory=dict)
 
 
@@ -166,7 +166,7 @@ class DefinitionRollbackRequest(BaseModel):
     target_revision: int = Field(ge=1)
     actor: str = Field(min_length=1)
     reason: str | None = None
-    expected_active_revision: int | None = None
+    expected_active_revision: int | None = Field(default=None, ge=0)
     approval_metadata: dict[str, str] = Field(default_factory=dict)
 
 

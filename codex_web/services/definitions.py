@@ -489,7 +489,7 @@ class DefinitionRegistryService:
         active_revision = active.revision if active else None
         if (
             request.expected_active_revision is not None
-            and request.expected_active_revision != active_revision
+            and request.expected_active_revision != (active_revision or 0)
         ):
             raise DefinitionConflictError(
                 "active definition revision changed before publication"

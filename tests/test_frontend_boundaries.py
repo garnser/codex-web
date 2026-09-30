@@ -300,6 +300,9 @@ class FrontendBoundaryTests(unittest.TestCase):
 
     def test_typed_definition_editor_modules_have_focused_budgets(self) -> None:
         budgets = {
+            "execution_profile_management.js": 15_000,
+            "execution_profile_editor.js": 7_000,
+            "execution_profile_impact.js": 2_000,
             "definition_typed_editor.js": 12_000,
             "definition_typed_authority_editor.js": 13_000,
             "definition_typed_execution_editor.js": 6_000,
