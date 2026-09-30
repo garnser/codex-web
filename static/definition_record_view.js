@@ -1,3 +1,5 @@
+import { referenceLink } from './reference_navigation.js';
+import { referenceAttributes } from './reference_links.js';
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -31,9 +33,9 @@ function compatibilityText(record) {
 
 function provenanceHtml(record) {
   const links = [
-    record.supersedes_record_id ? `supersedes ${record.supersedes_record_id}` : null,
-    record.superseded_by_record_id ? `superseded by ${record.superseded_by_record_id}` : null,
-    record.rollback_of_record_id ? `rollback of ${record.rollback_of_record_id}` : null,
+    record.supersedes_record_id ? `supersedes ${referenceLink("definition", record.supersedes_record_id)}` : null,
+    record.superseded_by_record_id ? `superseded by ${referenceLink("definition", record.superseded_by_record_id)}` : null,
+    record.rollback_of_record_id ? `rollback of ${referenceLink("definition", record.rollback_of_record_id)}` : null,
   ].filter(Boolean);
   const approvals = Object.entries(record.approval_metadata || {})
     .map(([key, value]) => `${key}=${value}`)
@@ -42,12 +44,12 @@ function provenanceHtml(record) {
     <small>Validated: ${escapeHtml(record.validated_by || "none")} · ${timeText(record.validated_at)} · Published: ${escapeHtml(record.published_by || "none")} · ${timeText(record.published_at)}</small>
     ${record.publish_reason ? `<small>Publish/lifecycle reason: ${escapeHtml(record.publish_reason)}</small>` : ""}
     ${approvals ? `<small>Approvals: ${escapeHtml(approvals)}</small>` : ""}
-    ${links.length ? `<small>Revision links: ${escapeHtml(links.join(" · "))}</small>` : ""}`;
+    ${links.length ? `<small>Revision links: ${links.join(" · ")}</small>` : ""}`;
 }
 
 export function renderRecord(record) {
   const payload = JSON.stringify(record.payload || {}, null, 2);
-  return `<details class="comm-entry" data-definition-record="${escapeHtml(record.record_id)}">
+  return `<details class="comm-entry" data-definition-record="${escapeHtml(record.record_id)}" data-definition-id="${escapeHtml(record.definition_id)}" data-reference-revision="${escapeHtml(record.revision)}" ${referenceAttributes("definition", record.record_id)}>
     <summary><strong>${escapeHtml(record.kind)} · ${escapeHtml(record.definition_id)} · r${escapeHtml(record.revision)} · ${escapeHtml(record.lifecycle)}</strong></summary>
     <small>Record: ${escapeHtml(record.record_id)} · Scope: ${escapeHtml(scopeText(record))} · Definition schema: ${escapeHtml(record.definition_schema_version)}</small>
     <small>Checksum: ${escapeHtml(record.checksum)} · Effective: ${escapeHtml(effectiveText(record))} · Compatibility: ${escapeHtml(compatibilityText(record))}</small>

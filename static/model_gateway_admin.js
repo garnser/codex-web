@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { referenceLink } = await import(`${BASE}/static/reference_navigation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const { esc: escapeHtml, secretLinks, referenceAttributes, focusReference, bindWhenReady } = await import(`${BASE}/static/reference_links.js`);
   const { populateTaskRouteControls, readTaskRoutePreferences } = await import(
@@ -55,14 +56,15 @@
   function renderModels(items) {
     const host = document.getElementById("model-definition-list");
     if (!host) return;
-    host.innerHTML = items.map((item) => `<div class="comm-entry">
+    host.innerHTML = items.map((item) => `<div class="comm-entry" ${referenceAttributes("model", item.id)}>
       <strong>${escapeHtml(item.id)} · ${escapeHtml(item.lifecycle)}</strong>
-      <small>Provider: ${escapeHtml(item.provider_id)} · Concrete model: ${escapeHtml(item.concrete_model)}${item.model_version ? ` · version ${escapeHtml(item.model_version)}` : ""}</small>
+      <small>Provider: ${referenceLink("model_provider", item.provider_id)} · Concrete model: ${escapeHtml(item.concrete_model)}${item.model_version ? ` · version ${escapeHtml(item.model_version)}` : ""}</small>
       <small>Classes: ${listText(item.model_classes)} · Workloads: ${listText(item.workload_classes)} · Capabilities: ${listText(item.capabilities)} · Modalities: ${listText(item.modalities)} · Tools: ${item.supports_tools ? "yes" : "no"}</small>
       <small>Context: ${escapeHtml(item.context_window_tokens)} · Max output: ${escapeHtml(item.max_output_tokens)} · Latency: ${escapeHtml(item.latency_class)} · Route priority: ${escapeHtml(item.route_priority)}</small>
       <small>Pricing / 1M tokens: input ${item.input_price_per_million_usd == null ? "unknown" : `$${escapeHtml(item.input_price_per_million_usd)}`} · output ${item.output_price_per_million_usd == null ? "unknown" : `$${escapeHtml(item.output_price_per_million_usd)}`}</small>
       <small>Residency: ${listText(item.residency_tags)} · Compliance: ${listText(item.compliance_tags)} · Updated by: ${escapeHtml(item.updated_by)}</small>
     </div>`).join("") || '<div class="comm-entry"><strong>No model definitions registered.</strong></div>';
+    focusReference(host);
   }
 
   function renderPrompts(items) {
@@ -91,10 +93,10 @@
         item.decision_id ? `decision=${item.decision_id}` : null,
         item.execution_id ? `execution=${item.execution_id}` : null,
       ].filter(Boolean).join(" · ");
-      return `<details class="comm-entry">
+      return `<details class="comm-entry" ${referenceAttributes("invocation", item.id)}>
         <summary><strong>${escapeHtml(item.model_class)} · ${escapeHtml(item.workload_class || "unspecified workload")} · ${escapeHtml(item.status)} · ${escapeHtml(item.purpose)}</strong></summary>
         <small>ID: ${escapeHtml(item.id)} · ${timeText(item.created_at)} · actor ${escapeHtml(item.actor_id)}</small>
-        <small>Selected: ${escapeHtml(item.selected_provider_id || "none")} / ${escapeHtml(item.selected_model_id || "none")} · ${escapeHtml(item.selected_concrete_model || "none")}${item.selected_model_version ? ` @ ${escapeHtml(item.selected_model_version)}` : ""}</small>
+        <small>Selected: ${referenceLink("model_provider", item.selected_provider_id)} / ${referenceLink("model", item.selected_model_id)} · ${escapeHtml(item.selected_concrete_model || "none")}${item.selected_model_version ? ` @ ${escapeHtml(item.selected_model_version)}` : ""}</small>
         <small>Template: ${escapeHtml(item.prompt_template_id)} @ ${escapeHtml(item.prompt_template_version)} · checksum ${escapeHtml(item.prompt_template_checksum_sha256)}</small>
         <small>Route reason: ${escapeHtml(item.route_reason)} · Policy fingerprint: ${escapeHtml(item.policy_fingerprint_sha256)}</small>
         <small>Override: ${escapeHtml(item.pinned_model_id || "automatic")} · Preferred latency: ${listText(item.preferred_latency_classes)} · Prefer lower cost: ${item.prefer_lower_cost ? "yes" : "no"}</small>
@@ -103,6 +105,7 @@
         ${attempts}
       </details>`;
     }).join("") || '<div class="comm-entry"><strong>No model invocation metadata.</strong><small>Prompt/message content is not stored in this feed.</small></div>';
+    focusReference(host);
   }
 
   function populatePreviewControls() {

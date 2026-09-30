@@ -1,3 +1,4 @@
+import { referenceLink } from './reference_navigation.js';
 import { request } from "./api_client.js";
 
 const state = {
@@ -177,6 +178,11 @@ async function selectSkill(root, skillId, revision = null) {
     request(`/api/skills/${encodeURIComponent(skillId)}/usage${revision ? `?revision=${encodeURIComponent(revision)}` : ""}`),
   ]);
   state.selected = payload(skill);
+  root.dataset.referenceKind = "skill"; root.dataset.referenceId = skillId;
+  const url = new URL(location.href);
+  url.searchParams.set("skill_id", skillId);
+  url.searchParams.set("skill_revision", String(state.selected.revision));
+  history.replaceState(history.state, "", url);
   state.revisions = revisions?.items || [];
   state.usage = usage?.items || [];
   renderList(root);
@@ -203,7 +209,7 @@ function usageRows() {
   if (!state.usage.length) return '<div class="skill-state">No Agent Profiles currently reference this exact revision.</div>';
   return state.usage.map((item) => `
     <div class="skill-usage-row">
-      <span><strong>${esc(item.object_id)}</strong><small>profile revision ${esc(item.revision ?? "—")}</small></span>
+      <span><strong>${referenceLink("agent_profile", item.object_id)}</strong><small>profile revision ${esc(item.revision ?? "—")}</small></span>
       <button class="ghost-button" type="button" data-skill-detach="${esc(item.object_id)}">Detach</button>
     </div>`).join("");
 }
@@ -514,6 +520,13 @@ async function install() {
   query(root, "[data-skill-lifecycle]").addEventListener("change", () => loadSkills(root));
   bindImport(root);
   await Promise.all([loadProfiles(), loadSkills(root)]);
+  const params = new URLSearchParams(location.search);
+  const selected = params.get("skill_id");
+  if (selected) {
+    const revision = Number(params.get("skill_revision"));
+    try { await selectSkill(root, selected, Number.isInteger(revision) && revision > 0 ? revision : null); }
+    catch (error) { query(root, "[data-skill-detail]").textContent = `Referenced Skill unavailable: ${errorText(error)}`; }
+  }
 }
 
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", install, { once: true });

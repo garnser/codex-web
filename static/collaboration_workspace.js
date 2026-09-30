@@ -7,6 +7,8 @@ import {
   timeline,
 } from "./workspace_components.js";
 import { managementActions, openEditor } from "./collaboration_management.js";
+import { referenceNode } from './reference_navigation.js';
+import { focusReference } from './reference_links.js';
 import { profilePath } from './execution_profile_editor.js';
 import { showPageEditor } from './page_editor.js';
 import { trackDirtyEditor, confirmDiscard } from './dirty_editor.js';
@@ -257,6 +259,12 @@ function skillConsumers() {
 }
 
 function agentIdentity(profile) {
+  const node = referenceNode("agent_profile", profile.profile_id, { label: profile.name || profile.profile_id });
+  node.querySelector("a")?.replaceChildren(profileIdentityChip(profile));
+  return node;
+}
+
+function profileIdentityChip(profile) {
   return identityChip({
     id: profile.profile_id,
     label: profile.name || profile.profile_id,
@@ -353,6 +361,8 @@ async function loadAgentDetails(profile, details) {
       { label: "Sandbox", value: profile.sandbox_requirement || profile.runtime_policy?.required_sandbox_profile },
       { label: "Max concurrency", value: profile.budgets?.max_concurrency },
     ]));
+    for (const id of profile.runtime_policy?.preferred_provider_ids || []) executionPolicy.appendChild(referenceNode("agent_provider", id));
+    executionPolicy.appendChild(el("small", "", "Runtime and model-class preferences are routing constraints; available runtimes are adapter-owned. Change preferences with Edit Agent Profile."));
     target.appendChild(executionPolicy);
     if (profile.execution_profile_id) {
       const link = el('a', 'ghost-button', 'View / manage Execution Profile');
@@ -374,8 +384,9 @@ async function loadAgentDetails(profile, details) {
 
 function agentCard(profile, onChanged) {
   const article = el("article", "collab-card collab-agent-card");
+  article.dataset.referenceKind = "agent_profile"; article.dataset.referenceId = profile.profile_id;
   const head = el("div", "collab-card-head");
-  const identity = agentIdentity(profile);
+  const identity = profileIdentityChip(profile);
   const teamRefs = state.teams.filter((team) => (
     team.leader_profile_id === profile.profile_id
     || (team.members || []).some((member) => member.profile_id === profile.profile_id)
@@ -385,6 +396,7 @@ function agentCard(profile, onChanged) {
     onChanged,
   }));
   article.appendChild(head);
+  for (const team of teamRefs) article.appendChild(referenceNode("team", team.team_id, { label: team.name || team.team_id }));
   if (profile.description) article.appendChild(el("p", "collab-description", profile.description));
   const editSkills = el("button", "ghost-button collab-manage-skills", "Edit skills");
   editSkills.type = "button";
@@ -395,13 +407,13 @@ function agentCard(profile, onChanged) {
   browseSkills.href = projectPageHref("skills");
   const skillManagement = el("span", "collab-skill-management");
   skillManagement.append(
-    document.createTextNode((profile.skill_refs || profile.skillRefs || []).map(refId).filter(Boolean).join(", ") || "None"),
+    ...((profile.skill_refs || profile.skillRefs || []).length ? (profile.skill_refs || profile.skillRefs).map(ref => referenceNode("skill", refId(ref), { revision: ref.revision })) : [document.createTextNode("None")]),
     editSkills,
     browseSkills,
   );
   article.appendChild(metadataGrid([
-    { label: "Role", value: profile.role_id },
-    { label: "Owner", value: profile.owner_identity_id },
+    { label: "Role", node: referenceNode("role", profile.role_id, { readOnlyReason: "Role assignment is changed through Edit Agent Profile; role contracts remain Definition-owned." }) },
+    { label: "Owner", node: referenceNode("identity", profile.owner_identity_id) },
     { label: "Revision", value: profile.revision },
     { label: "Skills", node: skillManagement },
   ]));
@@ -419,6 +431,7 @@ function agentCard(profile, onChanged) {
 
 function teamCard(team, profilesById, onChanged) {
   const article = el("article", "collab-card collab-team-card");
+  article.dataset.referenceKind = "team"; article.dataset.referenceId = team.team_id;
   const leader = profilesById.get(team.leader_profile_id);
   const members = team.members || [];
   const head = el("div", "collab-card-head");
@@ -535,6 +548,7 @@ function render(card) {
       skills.appendChild(skillUsageCard(skill, consumers.get(id) || []));
     });
   }
+  focusReference(card);
 }
 
 async function refresh(card) {

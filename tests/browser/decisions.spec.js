@@ -499,3 +499,12 @@ test('a delayed Decision mutation cannot update a later visit to the same Projec
   await expect(page.locator('.decisions-status')).toHaveText('Up to date');
   await expect(page.locator('#decisions-dialog')).not.toContainText('Old Decision mutation conflict');
 });
+
+test('a denied Decision deep link does not silently substitute the first Decision', async ({ page }) => {
+  await mockDecisionApis(page, []);
+  await page.route('**/api/decisions/not-visible**', route => route.fulfill({ status: 403, json: { detail: 'Referenced Decision is not visible in this Project' } }));
+  await page.goto('http://127.0.0.1:18766/tests/browser/decisions_fixture.html?consumer_type=decision&consumer_id=not-visible');
+  await page.locator('#decisions-button').click();
+  await expect(page.locator('.decision-detail')).toContainText('Referenced Decision is not visible');
+  await expect(page.locator('.decision-detail')).not.toContainText('Choose rollout strategy');
+});

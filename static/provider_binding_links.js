@@ -1,7 +1,6 @@
-import { currentProjectId } from './project_view_scope.js';
+import { referencePath } from './reference_navigation.js';
 export function bindingPath(id, kind = 'agent') {
-  const project = currentProjectId();
-  return project ? `/projects/${encodeURIComponent(project)}/operations?${kind === 'model' ? 'model_provider_id' : 'provider_id'}=${encodeURIComponent(id)}` : null;
+  return referencePath(kind === 'model' ? 'model_provider' : 'agent_provider', id);
 }
 export function updateRuntimeBindingLinks(card) {
   for (const select of card.querySelectorAll('.agent-new-runtime,.agent-preference-runtime')) {

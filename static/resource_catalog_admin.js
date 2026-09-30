@@ -2,6 +2,8 @@
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const { resourceRowsCanRender } = await import(`${BASE}/static/resource_editor_state.js`);
+  const { referenceLink } = await import(`${BASE}/static/reference_navigation.js`);
+  const { referenceAttributes, focusReference } = await import(`${BASE}/static/reference_links.js`);
   let resources = [];
   const relationshipCache = new Map();
 
@@ -72,7 +74,7 @@
       const peer = incoming ? relationship.from_resource_id : relationship.to_resource_id;
       const direction = incoming ? "from" : "to";
       return `<div class="comm-entry">
-        <small>${escapeHtml(relationship.relationship_type)} · ${direction} ${escapeHtml(relationshipName(peer))}</small>
+        <small>${escapeHtml(relationship.relationship_type)} · ${direction} ${referenceLink("resource", peer, { label: relationshipName(peer) })}</small>
       </div>`;
     }).join("") || "<small>No canonical relationships.</small>";
   }
@@ -91,7 +93,7 @@
     status.textContent = `${visible.length} of ${resources.length} canonical resource(s)`;
     list.innerHTML = visible.map((item) => {
       const provenance = item.provenance || null;
-      return `<div class="comm-entry" data-resource-row="${escapeHtml(item.id)}">
+      return `<div class="comm-entry" data-resource-row="${escapeHtml(item.id)}" ${referenceAttributes("resource", item.id)}>
         <strong>${escapeHtml(item.name)} · ${escapeHtml(item.resource_type)}</strong>
         <small>ID: ${escapeHtml(item.id)} · Lifecycle: ${escapeHtml(item.lifecycle)}</small>
         <small>Owner: ${escapeHtml(item.owner_identity_id || "unassigned")} · Risk: ${escapeHtml(item.risk)} · Sensitivity: ${escapeHtml(item.sensitivity)}</small>
@@ -107,6 +109,7 @@
     relationshipCache.forEach((relationships, resourceId) => {
       renderRelationships(resourceId, relationships);
     });
+    focusReference(list);
     window.dispatchEvent(new CustomEvent("codex:resource-catalog-rendered", {
       detail: { resources },
     }));

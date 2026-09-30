@@ -557,3 +557,12 @@ test('Goal mutation responses are fenced even after A to B to A navigation', asy
   await expect(page.locator('.goals-status')).toHaveText('Up to date');
   await expect(page.locator('#goals-dialog')).not.toContainText('Old generation mutation failed');
 });
+
+test('a denied Goal deep link does not silently substitute the first Goal', async ({ page }) => {
+  await mockGoalApis(page, []);
+  await page.route('**/api/goals/not-visible**', route => route.fulfill({ status: 403, json: { detail: 'Referenced Goal is not visible in this Project' } }));
+  await page.goto('http://127.0.0.1:18766/tests/browser/goals_fixture.html?consumer_type=goal&consumer_id=not-visible');
+  await page.locator('#goals-button').click();
+  await expect(page.locator('.goal-detail')).toContainText('Referenced Goal is not visible');
+  await expect(page.locator('.goal-detail')).not.toContainText('Ship verified Goal flow');
+});

@@ -1,12 +1,11 @@
 import { formValidation } from './form_validation.js';
 import { trackDirtyEditor } from './dirty_editor.js';
+import { projectPath } from './reference_navigation.js';
 
 export const esc = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 export const requiredProfiles = new Set(['repository-write', 'orchestration-only']);
 export function profilePath(projectId, profileId = '') {
-  const base = location.pathname.startsWith('/codex/') ? '/codex' : '';
-  const query = new URLSearchParams({ execution_profile: profileId });
-  return `${base}/projects/${encodeURIComponent(projectId)}/definitions?${query}`;
+  return projectPath('definitions', { execution_profile: profileId }, projectId);
 }
 export function recordPath(projectId, recordId) {
   return `${profilePath(projectId)}&definition_record=${encodeURIComponent(recordId)}`;

@@ -1,3 +1,4 @@
+import { requestedReference, rememberReference } from './reference_navigation.js';
 import { request } from './api_client.js';
 import { currentProjectId as activeProjectId } from './project_view_scope.js';
 
@@ -138,7 +139,7 @@ async function refreshAll({ projectId = activeProjectId() } = {}) {
     ) return;
     state.goals = Array.isArray(payload?.items) ? payload.items : [];
     if (!state.selectedGoalId || !state.goals.some((row) => row.goal?.id === state.selectedGoalId)) {
-      state.selectedGoalId = state.goals[0]?.goal?.id || '';
+      state.selectedGoalId = requestedReference("goal", normalizedProjectId) || state.goals[0]?.goal?.id || '';
     }
     renderGoalList();
     if (state.selectedGoalId) {
@@ -186,6 +187,7 @@ function renderGoalList() {
   }).join('');
   list.querySelectorAll('.goal-row').forEach((row) => row.addEventListener('click', async () => {
     state.selectedGoalId = row.dataset.goalId;
+    rememberReference("goal", state.selectedGoalId);
     renderGoalList();
     await loadGoal(state.selectedGoalId, {
       projectId: state.projectId,

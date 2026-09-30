@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { focusReference } = await import(`${BASE}/static/reference_links.js`);
   const { projectViewOperation } = await import(`${BASE}/static/project_view_scope.js`);
   const apiRequest = (...args) => projectViewOperation(setStatus).request(...args);
   const { timeText, scopeText, renderRecord } = await import(`${BASE}/static/definition_record_view.js`);
@@ -112,6 +113,7 @@
       target.scrollIntoView({ block: 'nearest' });
     }
     setStatus(`${visible.length} of ${records.length} visible definition revision(s). Definitions are versioned data; schema/interpreter/security engines remain code-owned.`);
+    focusReference(host);
     publishCatalog();
   }
 

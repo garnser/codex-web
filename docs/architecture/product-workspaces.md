@@ -327,3 +327,30 @@ ownership or automatic use authority. Configuration and TaskSource credential
 selectors link to this surface; readiness secret remediation opens it directly.
 Reference URLs carry only the non-secret reference ID. The canonical lifecycle,
 redaction and impact boundaries are described in [secrets.md](secrets.md).
+
+## Contextual object references
+
+`reference_navigation.js` owns typed UI destinations and escaped View links.
+It preserves the deployment prefix and selected Project; a link carries no tenant
+switch or authority. The canonical target API still decides visibility and
+mutation permissions. A known object with no supported editor displays inspection
+or ownership guidance instead of an invented Edit operation. Runtime registrations
+remain adapter/deployment-owned; immutable invocation/evidence records are
+inspection surfaces, not editable execution history.
+
+The reference inventory includes Agent Profile/Team membership and Skill pins,
+profile Execution Profile/provider/owner references, Run provider/worker/assignment
+and repository references, resource relationships, provider consumers, Secret/key
+usage, Definition and Configuration revision chains, and Work Item Goal/Decision
+references. Secret, key, Execution Profile and provider helpers share the same
+Project path builder. Logical routing-definition/configuration references carry
+an explicit revision; record references select their exact record. Skill links
+preserve historical pins rather than silently opening the latest revision.
+
+Targets select or focus the canonical object after hydration. A missing or denied
+requested detail remains visibly unavailable rather than substituting another
+object. Lists stay bounded; an absent reference may require changing filters or
+loading more canonical records. Normal anchors preserve browser navigation and
+the shared unsaved-change guard. Source object identifiers can be written into
+the current history entry so Back restores that object; editor values, credentials,
+and arbitrary return URLs are never captured by this mechanism.

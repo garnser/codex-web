@@ -1,5 +1,7 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { referenceLink } = await import(`${BASE}/static/reference_navigation.js`);
+  const { referenceAttributes, focusReference } = await import(`${BASE}/static/reference_links.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   let workers = [];
   let assignments = [];
@@ -129,7 +131,7 @@
         : worker.lifecycle === "draining"
           ? "No new work should be assigned; existing fenced leases may continue."
           : "Not trusted for execution.";
-      return `<details class="comm-entry">
+      return `<details class="comm-entry" ${referenceAttributes("worker", worker.id)}>
         <summary><strong>${escapeHtml(worker.pool)} · ${escapeHtml(worker.id)} · ${escapeHtml(worker.lifecycle)}</strong></summary>
         <small>Service identity: ${escapeHtml(worker.service_identity_id)} · version: ${escapeHtml(worker.version)} · registered by: ${escapeHtml(worker.registered_by)}</small>
         <small>Capabilities: ${listText(worker.capabilities)} · max concurrency: ${escapeHtml(worker.max_concurrency)} · active leased assignments: ${active}</small>
@@ -155,14 +157,14 @@
       const worker = workers.find((candidate) => candidate.id === item.assigned_worker_id);
       const network = item.network || {};
       const limits = item.limits || {};
-      return `<details class="comm-entry">
+      return `<details class="comm-entry" ${referenceAttributes("assignment", item.id)}>
         <summary><strong>${escapeHtml(subjectText(item))} · ${escapeHtml(item.execution_id)} · ${escapeHtml(item.status)}</strong></summary>
-        <small>Assignment: ${escapeHtml(item.id)} · worker: ${escapeHtml(item.assigned_worker_id || "unassigned")}${worker ? ` (${escapeHtml(worker.pool)} / ${escapeHtml(worker.lifecycle)})` : ""} · execution workspace: ${escapeHtml(item.execution_workspace_id || "none")}</small>
-        <small>Project: ${escapeHtml(item.project_id || "none")} · resources: ${listText(item.resource_ids)} · base revision: ${escapeHtml(item.base_revision || "none")} · contract: ${escapeHtml(item.execution_contract_version)}</small>
+        <small>Assignment: ${escapeHtml(item.id)} · worker: ${referenceLink("worker", item.assigned_worker_id)}${worker ? ` (${escapeHtml(worker.pool)} / ${escapeHtml(worker.lifecycle)})` : ""} · execution workspace: ${escapeHtml(item.execution_workspace_id || "none")}</small>
+        <small>Project: ${escapeHtml(item.project_id || "none")} · resources: ${(item.resource_ids || []).map(id => referenceLink("resource", id)).join(", ") || "none"} · base revision: ${escapeHtml(item.base_revision || "none")} · contract: ${escapeHtml(item.execution_contract_version)}</small>
         <small>Required capabilities: ${listText(item.required_capabilities)} · sandbox: ${escapeHtml(item.sandbox)} · approval policy: ${escapeHtml(item.approval_policy)}</small>
         <small>Network: ${network.enabled ? "enabled" : "disabled"} · allowlist: ${listText(network.allowed_hosts)} · deadline: ${timeText(item.deadline_at)}</small>
         <small>Limits: CPU ${escapeHtml(limits.cpu_seconds)}s · wall ${escapeHtml(limits.wall_seconds)}s · memory ${bytes(limits.memory_bytes)} · disk ${bytes(limits.disk_bytes)} · processes ${escapeHtml(limits.process_count)}</small>
-        <small>Secret references: ${listText(item.secret_refs)}. Raw secret material is never present in an assignment.</small>
+        <small>Secret references: ${(item.secret_refs || []).map(id => referenceLink("secret", id)).join(", ") || "none"}. Raw secret material is never present in an assignment.</small>
         ${leaseHtml(item)}
         <small>Created by: ${escapeHtml(item.created_by)} · created: ${timeText(item.created_at)} · started: ${timeText(item.started_at)} · completed: ${timeText(item.completed_at)} · fence: ${escapeHtml(item.fence)}</small>
         ${item.failure_code || item.failure_message ? `<small>Failure: ${escapeHtml(item.failure_code || "unknown")} · ${escapeHtml(item.failure_message || "no detail")}</small>` : ""}
@@ -186,6 +188,8 @@
     renderWorkers();
     renderAssignments();
     renderEvents();
+    focusReference(document.getElementById("execution-worker-list"));
+    focusReference(document.getElementById("execution-assignment-list"));
     const active = workers.filter((item) => item.lifecycle === "active").length;
     const unhealthy = workers.filter((item) => ["quarantined", "revoked", "offline"].includes(item.lifecycle)).length;
     const running = assignments.filter((item) => ["claimed", "running"].includes(item.status)).length;
