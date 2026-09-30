@@ -1,4 +1,5 @@
 import { trackDirtyEditor, confirmDiscard } from './dirty_editor.js';
+import { resourceEditorActions } from './page_editor.js';
 
 // Page-memory editor guards, not a second resource cache or persistence layer.
 const editors = new Map();
@@ -19,6 +20,7 @@ export function resourceEditor(root, { row = false, label = 'Resource', onDiscar
     if (confirmDiscard(editor)) onDiscard?.();
   });
   root.appendChild(discard);
+  resourceEditorActions(root, editor);
   return editor;
 }
 

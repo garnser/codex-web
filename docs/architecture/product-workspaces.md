@@ -75,6 +75,34 @@ into Project-filtered APIs or change the actor's tenant authority.
 
 ## Unsaved editor state
 
+Substantive editors use the main-content page rather than a modal window.
+`page_editor.js` moves the live editor DOM into the active workspace, temporarily
+hides its originating cards, and restores those cards, scroll position and focus
+on Back. It preserves canonical API handlers and form ownership. Project/page
+navigation closes the presentation after the shell's dirty-state guard; it does
+not transfer unsaved values to another Project. The standalone fallback is also
+a full-width, non-modal page. This is presentation state, not a second resource
+or authority store.
+
+Resource create/edit/relationship and Definition/Configuration forms share
+sticky primary-action bars. Resource records containing editors are not bounded
+by the log viewer's height or scrolling rules. Long text fields can grow and
+resize vertically; the page is the enclosing scroll container. Agent Profile,
+Team, Skill-assignment, membership, consumer and revision views reuse the same
+page presentation. Executive consultations, the company operating view and Bot
+Integration also use this surface. Bot credential inputs are write-only and clear
+on close; they never enter dirty-editor snapshots or browser draft storage.
+
+Routed Goals, Decisions, Metrics, Company Operations, Memory, Attention and
+Project Setup already adopt their canonical domain DOM non-modally.
+Direct Work Item commands preserve their requested target while entering the
+same routed Work Items page; post-creation and programmatic Project Setup
+launches also enter that routed page instead of bypassing it with a modal. Mature
+administration editors remain in their adopted workspace cards. Lightweight
+Project creation, command selection and deliberate lifecycle/approval
+confirmations remain transient dialogs. Those dialogs must not become containers
+for unrelated substantial editing workflows.
+
 Substantive editors can register with `dirty_editor.js`. The shared guard compares
 current field values with the editor's saved baseline, exposes a live unsaved
 status, and protects workspace/Project navigation, history navigation, and browser

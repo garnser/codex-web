@@ -5,6 +5,7 @@
   const transferUi = await import(`${BASE}/static/definition_registry_transfer.js`);
   const { projectViewOperation } = await import(`${BASE}/static/project_view_scope.js`);
   const { trackDirtyEditor } = await import(`${BASE}/static/dirty_editor.js`);
+  const { inlineEditorActions } = await import(`${BASE}/static/page_editor.js`);
   let draftEditor = null;
   const publicationUi = await import(`${BASE}/static/definition_publication_ui.js`);
   const { catalogImpact } = await import(`${BASE}/static/execution_profile_impact.js`);
@@ -381,6 +382,7 @@
   function bind() {
     const draft = document.querySelector('#definition-lifecycle-panel > .route-test');
     if (draft) draftEditor = trackDirtyEditor(draft, { label: 'Definition draft' });
+    if (draft) inlineEditorActions(draft.parentElement, draftEditor, { selector: '#create-definition-draft', backText: 'Back to Definitions' });
     document.getElementById("definition-draft-scope")?.addEventListener("change", updateDraftScopeState);
     document.getElementById("create-definition-draft")?.addEventListener("click", () => createDraft().catch(console.error));
     document.getElementById("export-definitions")?.addEventListener("click", () => (

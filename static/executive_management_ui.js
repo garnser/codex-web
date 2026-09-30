@@ -1,4 +1,5 @@
 import { request } from './api_client.js';
+import { showPageEditor } from './page_editor.js';
 
 const state = {
   roles: [],
@@ -85,7 +86,7 @@ function ensureShell() {
   document.body.appendChild(dialog);
 
   button.addEventListener('click', async () => {
-    dialog.showModal();
+    showPageEditor(dialog, { workspace: 'organization' });
     await refreshAll();
   });
   dialog.querySelector('.exec-mgmt-close').addEventListener('click', () => dialog.close());

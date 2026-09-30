@@ -127,7 +127,8 @@ test('Agent and Team editors protect Escape, retain invalid payload, and keep dr
       const { openEditor } = await import('/static/collaboration_management.js');
       openEditor(kind);
     }, kind);
-    const dialog = page.locator('dialog:modal');
+    const dialog = page.locator('dialog.page-editor[open]');
+    await expect(page.locator('dialog:modal')).toHaveCount(0);
     await dialog.locator('[data-payload]').fill('draft-private-marker');
     await dialog.locator('[data-save]').click();
     await expect(dialog.locator('[data-status]')).toContainText('JSON is invalid');

@@ -3,6 +3,7 @@ import { loadConsumerUsage } from './collaboration_lifecycle_usage.js';
 import { request } from "./api_client.js";
 import { trackUx } from "./ux_telemetry.js";
 import { trackDirtyEditor } from "./dirty_editor.js";
+import { showPageEditor } from './page_editor.js';
 
 const EDITABLE_PROFILE_FIELDS = [
   "name", "avatar_ref", "description", "owner_identity_id", "role_id",
@@ -107,6 +108,7 @@ export function openEditor(kind, item, { onChanged } = {}) {
         method: creating ? "POST" : "PATCH",
         body: JSON.stringify(payload),
       });
+      if (!dialog.isConnected) return;
       status(dialog, `Saved revision ${result?.item?.revision || "successfully"}.`);
       dirty.markSaved();
       void trackUx("workflow_completed", {
@@ -128,7 +130,7 @@ export function openEditor(kind, item, { onChanged } = {}) {
       area.readOnly = false;
     }
   });
-  dialog.showModal();
+  showPageEditor(dialog);
 }
 
 function lifecycleImpact(kind, item, action, usage) {
@@ -187,7 +189,7 @@ export function openLifecycle(kind, item, action, { usage = "", onChanged } = {}
 export async function openUsage(kind, item) {
   const noun = kind === 'profile' ? 'Agent Profile' : 'Team';
   const dialog = dialogShell(`${noun} consumers`, 'Canonical dependencies, delegation history, execution assignments and queued invocations.');
-  dialog.showModal();
+  showPageEditor(dialog);
   await loadConsumerUsage(dialog.querySelector('[data-body]'), kind, item.profile_id || item.team_id);
 }
 
@@ -200,7 +202,7 @@ export async function openHistory(kind, item) {
   );
   const body = dialog.querySelector("[data-body]");
   body.textContent = "Loading revisions…";
-  dialog.showModal();
+  showPageEditor(dialog);
   try {
     const result = await request(`/api/${plural}/${encodeURIComponent(id)}/revisions`);
     const items = result?.items || [];

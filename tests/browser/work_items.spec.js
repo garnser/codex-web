@@ -459,12 +459,15 @@ test('command palette opens the requested loaded Work Item through canonical ope
     window.dispatchEvent(new CustomEvent('codex:open-work-items'));
   });
   await expect(page.locator('.work-item-row')).toHaveCount(2);
-  await page.locator('.work-items-close').click();
+  await expect(page.locator('dialog:modal')).toHaveCount(0);
+  await page.evaluate(() => window.CodexProductUI.openWorkspace('overview'));
   await page.keyboard.press('Control+K');
   await page.locator('#product-workspace-search').fill('Second Work Item');
   await expect(page.locator('#product-command-results')).toContainText('Project A');
   await page.keyboard.press('Enter');
   await expect(page.locator('.work-item-detail')).toContainText('Second Work Item');
+  await expect(page.locator('[data-product-workspace-host="work"] > .work-items-shell')).toBeVisible();
+  await expect(page.locator('dialog:modal')).toHaveCount(0);
   await expect(page.locator('#product-workspace-switcher')).not.toBeVisible();
 });
 

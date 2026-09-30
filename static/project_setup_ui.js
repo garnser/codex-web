@@ -1,5 +1,6 @@
 import { actionFeedback } from "./workspace_components.js";
 import { trackUx } from "./ux_telemetry.js";
+import { showPageEditor } from './page_editor.js';
 
 const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
 const state = { projectId: "", project: null, resources: [], readiness: null, bootstrap: null, plan: null, error: null, actionState: null, applying: false };
@@ -308,7 +309,14 @@ async function refresh() {
 }
 function open() {
   const dialog = document.getElementById("project-setup-dialog");
-  if (dialog && !dialog.open) dialog.showModal();
+  const internal = document.getElementById('project-setup-launch')?.dataset.productSectionInternalLaunch === 'true';
+  if (!internal && document.getElementById('product-workspace-page') && window.CodexProductUI?.openWorkspace) {
+    return window.CodexProductUI.openWorkspace('setup');
+  }
+  if (dialog && !dialog.open) {
+    if (internal) dialog.showModal(); // The workspace launcher docks it synchronously.
+    else showPageEditor(dialog, { closeOnNavigation: false });
+  }
   refresh();
 }
 function build() {
