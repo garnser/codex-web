@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from codex_web.autonomy_audit import AutonomyAuditKind, AutonomyAuditPayload
 from codex_web.crypto import KeyPurpose, ManagedKeyCreate
@@ -21,7 +22,7 @@ from codex_web.recovery import (
     RestoreVerificationStatus,
 )
 from codex_web.services.autonomy_audit import AutonomyAuditService
-from codex_web.services.crypto_keys import CryptoKeyService
+from codex_web.services.crypto_keys import CryptoKeyService, CryptoKeyConflictError, CryptoKeyImpactUnavailableError
 from codex_web.services.canonical_events import (
     CanonicalEventBus,
     CanonicalEventIngestionService,
@@ -130,6 +131,62 @@ class RecoveryTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_key_usage_exposes_only_scoped_metadata_and_blocks_retirement(self):
+        manifest = self.service.create_backup(actor=self.actor)
+        foreign = manifest.model_copy(update={'id': 'foreign-backup-hidden', 'organization_id': 'org-b', 'workspace_id': 'ws-b'})
+        self.service.store.update(lambda state: state.model_copy(update={'backups': {**state.backups, foreign.id: foreign}}))
+        impact = self.crypto.usage(self.backup_key.id, self.actor)
+        self.assertEqual(impact['count'], 3)
+        encoded = json.dumps(impact)
+        for forbidden in ('foreign-backup-hidden', manifest.destination_ref, 'ciphertext', 'backend_ref', 'nonce'):
+            self.assertNotIn(forbidden, encoded)
+        self.assertEqual({row['relationship'] for row in impact['items']}, {'active_key_reference', 'encrypted_content', 'restore_requirement'})
+        with self.assertRaises(CryptoKeyConflictError):
+            self.crypto.revoke_key(self.backup_key.id, 'unsafe', actor=self.actor)
+        self.crypto.rotate(self.backup_key.id, actor=self.actor)
+        old = self.crypto.usage(self.backup_key.id, self.actor, version=1)
+        self.assertEqual(old['blocking_count'], 2)
+        with self.assertRaises(CryptoKeyConflictError):
+            self.crypto.revoke_version(self.backup_key.id, 1, 'unsafe', actor=self.actor)
+        unused = self.crypto.create_key(ManagedKeyCreate(), actor=self.actor)
+        self.assertEqual(self.crypto.usage(unused.id, self.actor)['blocking_count'], 0)
+        self.crypto.revoke_key(unused.id, 'unused', actor=self.actor)
+
+    def test_unknown_key_impact_fails_closed(self):
+        self.service.create_backup(actor=self.actor)
+        with patch.object(self.crypto.usage_service, 'MAX_SCAN', 0):
+            with self.assertRaises(CryptoKeyImpactUnavailableError):
+                self.crypto.usage(self.backup_key.id, self.actor)
+            with self.assertRaises(CryptoKeyImpactUnavailableError):
+                self.crypto.revoke_key(self.backup_key.id, 'unverified', actor=self.actor)
+
+    def test_backup_commit_rechecks_key_requirements_after_destination_write(self):
+        auxiliary = self.crypto.create_key(ManagedKeyCreate(), actor=self.actor)
+        put = self.destination.put
+
+        def retire_before_commit(backup_id, payload):
+            result = put(backup_id, payload)
+            self.crypto.revoke_key(auxiliary.id, 'concurrent retirement', actor=self.actor)
+            return result
+
+        with patch.object(self.destination, 'put', side_effect=retire_before_commit):
+            with self.assertRaises(RecoveryConflictError):
+                self.service.create_backup(actor=self.actor)
+        self.assertFalse(self.service.store.load().backups)
+        self.assertFalse(list(self.destination.directory.iterdir()))
+
+    def test_policy_commit_rechecks_key_after_initial_validation(self):
+        replacement = self.crypto.create_key(ManagedKeyCreate(purpose=KeyPurpose.BACKUP), actor=self.actor)
+
+        def retire_before_commit():
+            self.crypto.revoke_key(replacement.id, 'concurrent retirement', actor=self.actor)
+            return True
+
+        with patch.object(self.destination, 'healthy', side_effect=retire_before_commit):
+            with self.assertRaises(RecoveryConflictError):
+                self.service.configure(self.policy.model_copy(update={'backup_key_id': replacement.id}), actor=self.actor)
+        self.assertEqual(self.service.policy().backup_key_id, self.backup_key.id)
 
     def _seed_executable_state(self) -> None:
         self.state.put(

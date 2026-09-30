@@ -1,6 +1,7 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { secretLinks, referenceAttributes, focusReference, bindWhenReady } = await import(`${BASE}/static/reference_links.js`);
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -76,15 +77,16 @@
       const binding = entry.binding || {};
       const actions = entry.actions || [];
       const status = entry.status || "unknown";
-      return `<div class="comm-entry">
+      return `<div class="comm-entry" ${referenceAttributes("action_provider", binding.id)}>
         <strong>${escapeHtml(binding.provider_type)}/${escapeHtml(binding.provider_instance)} · ${escapeHtml(status)}</strong>
         <small>Binding: ${escapeHtml(binding.id)} · Enabled: ${binding.enabled ? "yes" : "no"} · Tenant: ${escapeHtml(binding.organization_id)}/${escapeHtml(binding.workspace_id)}</small>
         <small>Project scope: ${escapeHtml(projectText(binding.project_id, projects))} · Resources: ${escapeHtml(resourceText(binding.resource_ids, resources))}</small>
-        <small>Credential reference: ${escapeHtml(binding.credential_ref || "none")} · ${actions.length} action(s) advertised</small>
+        <small>Credential reference: ${secretLinks([binding.credential_ref])} · ${actions.length} action(s) advertised</small>
         ${renderSecurity(binding.security_policy)}
         ${actions.length ? actions.map(renderAction).join("") : '<small>No action contracts currently available from this binding.</small>'}
       </div>`;
     }).join("") || '<div class="comm-entry"><strong>No ActionProvider bindings in this workspace.</strong></div>';
+    focusReference(list);
   }
 
   async function refresh() {
@@ -131,5 +133,5 @@
     if (panel?.open) refresh().catch(console.error);
   }
 
-  window.addEventListener("DOMContentLoaded", bind);
+  bindWhenReady(bind);
 })();

@@ -159,3 +159,12 @@ authority + MFA; service callers require recovery:admin.
 The Autonomy Control Center and operator workspaces present backup age, last verified restore,
 RPO/RTO status, destination/key/audit dependencies and guarded drill/restore
 operations. Operator runbooks document the corresponding recovery procedures.
+
+Key-reference creation and key retirement share an atomic StateStore update
+across recovery and key metadata. Backup destination bytes are written before
+manifest registration; if a referenced key becomes revoked before registration,
+registration fails and the new encrypted candidate is deleted. Policy changes
+likewise reject a key revoked after initial validation. Retained backup envelope
+versions and frozen key-manifest requirements prevent retirement even after
+rotation. Recovery retention/migration, followed by restore verification, owns
+removal of those requirements; key administration cannot bypass them.

@@ -27,7 +27,10 @@ from codex_web.crypto import (
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
 from codex_web.key_backends import KeyBackend, KeyBackendError
 from codex_web.services.identity import AuthorizationError, TenantIsolationError
+from codex_web.services.key_usage import KeyUsageService
 from codex_web.storage.crypto_keys import CryptoKeyStore
+from codex_web.storage.recovery import RecoveryStore
+from codex_web.recovery import RecoveryState
 
 
 class CryptoKeyError(RuntimeError):
@@ -39,6 +42,10 @@ class CryptoKeyNotFoundError(CryptoKeyError):
 
 
 class CryptoKeyConflictError(CryptoKeyError):
+    pass
+
+
+class CryptoKeyImpactUnavailableError(CryptoKeyError):
     pass
 
 
@@ -54,6 +61,43 @@ class CryptoKeyService:
     ) -> None:
         self.store = store
         self.backends = dict(backends)
+        self.usage_service = KeyUsageService(store.store)
+
+    def usage(self, key_id, actor, *, version=None):
+        key = self.get_key(key_id, actor)
+        if version is not None:
+            self._version(key, version)
+        try:
+            return self.usage_service.snapshot(key, actor, version=version)
+        except (ValueError, TypeError, AttributeError):
+            raise CryptoKeyImpactUnavailableError('Key dependency impact is unavailable') from None
+
+    def _retire(self, key_id, version, actor, updater):
+        # The same cross-domain transaction used by Recovery when adding key
+        # references prevents a backup/revocation time-of-check race.
+        def apply(documents):
+            keys = self.store._decode(documents[self.store.namespace])
+            key = self._key(keys, key_id, actor)
+            already_revoked = key.status == KeyStatus.REVOKED if version is None else self._version(key, version).status == KeyVersionStatus.REVOKED
+            if already_revoked:
+                documents[self.store.namespace] = self.store._encode(updater(keys))
+                return documents
+            try:
+                impact = self.usage_service.snapshot(
+                    key, actor, version=version,
+                    recovery=RecoveryStore._decode(documents[RecoveryStore.namespace]),
+                )
+            except (ValueError, TypeError, AttributeError):
+                raise CryptoKeyImpactUnavailableError('Key dependency impact is unavailable') from None
+            if impact['blocking_count']:
+                raise CryptoKeyConflictError('Key has canonical recovery consumers; retain referenced versions or migrate their owning recovery lifecycle before revocation')
+            documents[self.store.namespace] = self.store._encode(updater(keys))
+            return documents
+
+        self.store.store.update_many({
+            self.store.namespace: CryptoKeyState().model_dump(mode='json'),
+            RecoveryStore.namespace: RecoveryState().model_dump(mode='json'),
+        }, apply)
 
     @staticmethod
     def _require_admin(actor: AuthenticationActor) -> None:
@@ -378,7 +422,7 @@ class CryptoKeyService:
             updated.append(replacement)
             return state
 
-        self.store.update(apply)
+        self._retire(key_id, version, actor, apply)
         return updated[0]
 
     def revoke_key(
@@ -428,7 +472,7 @@ class CryptoKeyService:
             updated.append(replacement)
             return state
 
-        self.store.update(apply)
+        self._retire(key_id, None, actor, apply)
         return updated[0]
 
     def encrypt(

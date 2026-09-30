@@ -1,0 +1,88 @@
+const { test, expect } = require('@playwright/test');
+const fs = require('node:fs'); const path = require('node:path');
+const index = fs.readFileSync(path.join(__dirname, '../../static/index.html'), 'utf8');
+const marker = index.indexOf('<h2>Encryption Keys</h2>');
+const card = index.slice(index.lastIndexOf('<div class="developer-card">', marker), index.indexOf('<div class="developer-card">', marker));
+const fixture = fs.readFileSync(path.join(__dirname, 'product_workspaces_fixture.html'), 'utf8').replace('</body>', `${card}<script type="module" src="/static/crypto_key_admin.js"></script></body>`);
+const key = { id: 'key-backup', purpose: 'backup', status: 'active', current_version: 2, backend_type: 'local', scope: { organization_id: 'org', workspace_id: 'ws' }, versions: [{ version: 1, status: 'decrypt_only', backend_ref: 'backend-reference-v1' }, { version: 2, status: 'active', backend_ref: 'backend-reference-v2' }] };
+async function mount(page, intercept) {
+  const state = { count: 1, unavailable: false, writes: [], reads: [], events: [], broken: false };
+  await page.route('**/projects/**', route => route.request().resourceType() === 'document' ? route.fulfill({ contentType: 'text/html', body: fixture }) : route.continue());
+  await page.route('**/api/**', async route => {
+    const url = new URL(route.request().url());
+    if (intercept && await intercept(route, url)) return;
+    const method = route.request().method();
+    if (url.pathname.startsWith('/api/crypto')) {
+      state.reads.push({ path: url.pathname, project: url.searchParams.get('project_id'), version: url.searchParams.get('version') });
+      if (method === 'POST') { state.writes.push({ path: url.pathname, project: url.searchParams.get('project_id') }); return route.fulfill({ json: { previous_version: 2, current_version: 3 } }); }
+    }
+    if (url.pathname.endsWith('/usage')) state.events.push('impact');
+    if (url.pathname.endsWith('/usage')) return route.fulfill(state.unavailable ? { status: 503, json: { detail: 'Impact unavailable' } } : { json: { available: true, count: state.count, blocking_count: state.count, items: state.count ? [{ object_id: 'backup-1', label: 'Encrypted recovery backup', scope: 'shared_workspace', relationship: 'encrypted_content', versions: [1], broken: state.broken }] : [], coverage: ['backup_envelopes'], limitations: ['External copies are not enumerated.'] } });
+    if (url.pathname === '/api/crypto/keys') return route.fulfill({ json: { items: [key] } });
+    if (url.pathname === '/api/crypto/backend-health') return route.fulfill({ json: { local: true } });
+    if (url.pathname === '/api/crypto/manifest') return route.fulfill({ json: { items: [{ key_id: key.id, versions: [1, 2] }] } });
+    return route.fulfill({ json: { items: [] } });
+  });
+  await page.goto('http://127.0.0.1:18766/projects/home/configuration?key_id=key-backup');
+  await page.locator('#refresh-crypto-keys').click();
+  await expect(page.locator('[data-crypto-key-row]')).toBeVisible();
+  return state;
+}
+
+test('key consumers and manifest deep links expose metadata and explain broken dependencies', async ({ page }) => {
+  const state = await mount(page); state.broken = true;
+  await page.locator('[data-crypto-usage]').click();
+  await expect(page.locator('[data-key-usage-result]')).toContainText('backup-1');
+  await expect(page.locator('[data-key-usage-result]')).toContainText('Broken:');
+  await expect(page.locator('[data-key-usage-result] a')).toHaveAttribute('href', '/projects/home/configuration?key_id=key-backup&key_version=1');
+  await expect(page.locator('#crypto-key-manifest a')).toHaveAttribute('href', '/projects/home/configuration?key_id=key-backup');
+  expect(state.reads.every(row => row.project === 'home')).toBe(true);
+});
+
+test('positive dependencies and unavailable impact block destructive confirmations and writes', async ({ page }) => {
+  const state = await mount(page); let dialogs = 0;
+  page.on('dialog', async dialog => { dialogs++; await dialog.dismiss(); });
+  await page.locator('[data-crypto-revoke]').click();
+  await expect(page.locator('#crypto-key-status')).toContainText('Revocation blocked');
+  await page.locator('[data-crypto-revoke-version]').click();
+  expect(state.reads.some(row => row.version === '1')).toBe(true);
+  state.unavailable = true;
+  await page.locator('[data-crypto-revoke]').click();
+  await expect(page.locator('#crypto-key-status')).toContainText('blocked until dependency impact');
+  expect(state.writes).toEqual([]); expect(dialogs).toBe(0);
+});
+
+test('rotation displays dependencies before confirmation and preserves scoped mutation', async ({ page }) => {
+  const state = await mount(page);
+  page.once('dialog', async dialog => { state.events.push('confirm'); await dialog.accept(); });
+  await page.locator('[data-crypto-rotate]').click();
+  await expect.poll(() => state.writes.length).toBe(1);
+  expect(state.writes[0]).toEqual({ path: '/api/crypto/keys/key-backup/rotate', project: 'home' });
+  expect(state.events).toEqual(['impact', 'confirm']);
+});
+
+test('unreferenced version retirement uses a fresh impact read before confirmation', async ({ page }) => {
+  const state = await mount(page); state.count = 0;
+  page.on('dialog', async dialog => dialog.accept(dialog.type() === 'prompt' ? 'retained copies migrated' : undefined));
+  await page.locator('[data-crypto-revoke-version]').click();
+  await expect.poll(() => state.writes.length).toBe(1);
+  expect(state.writes[0].path).toContain('/versions/1/revoke');
+});
+
+for (const returnsToOrigin of [false, true]) test(`late impact cannot authorize a key action after Project navigation${returnsToOrigin ? ' A-B-A' : ''}`, async ({ page }) => {
+  let held; let entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const state = await mount(page, async (route, url) => {
+    if (url.pathname.endsWith('/usage')) { entered(); await new Promise(resolve => { held = resolve; }); await route.fulfill({ json: { available: true, count: 0, blocking_count: 0 } }); return true; }
+  });
+  let dialogs = 0; page.on('dialog', async dialog => { dialogs++; await dialog.dismiss(); });
+  await page.locator('[data-crypto-revoke]').click(); await started;
+  await page.evaluate(back => {
+    window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: 'other' } }));
+    if (back) window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: 'home' } }));
+  }, returnsToOrigin);
+  held();
+  await expect(page.locator('#crypto-key-status')).toContainText('managed key(s)');
+  await expect(page.locator('[data-key-usage-result]')).not.toContainText('0 canonical dependency');
+  expect(state.writes).toEqual([]); expect(dialogs).toBe(0);
+});

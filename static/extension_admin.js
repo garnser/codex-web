@@ -1,6 +1,7 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { secretLinks, referenceAttributes, focusReference, bindWhenReady } = await import(`${BASE}/static/reference_links.js`);
   const { canMutateExtensions, extensionMutationAuthorityText } = await import(`${BASE}/static/extension_authority.js`);
 
   function escapeHtml(value) {
@@ -116,11 +117,11 @@
       const capabilities = manifest.capabilities || {};
       const requested = capabilities.requested || [];
       const grantsState = grantsByInstallation.get(item.id) || { items: [], error: null };
-      return `<div class="comm-entry">
+      return `<div class="comm-entry" ${referenceAttributes("extension", item.id)}>
         <strong>${escapeHtml(manifest.id || item.id)} @ ${escapeHtml(manifest.version || "unknown")}</strong>
         <small>Lifecycle: ${escapeHtml(item.lifecycle)} · Health: ${escapeHtml(item.health_status)} · Deployment: ${escapeHtml(item.deployment_mode)}</small>
         <small>Publisher: ${escapeHtml(manifest.publisher?.name || manifest.publisher?.id || "unknown")} · Digest verified: ${verification.digest_verified ? "yes" : "no"} · Signature: ${escapeHtml(verification.signature_status || "unknown")}</small>
-        <small>Requested capabilities: ${requested.length ? requested.map(escapeHtml).join(", ") : "none"} · Config refs: ${item.configuration_record_ids?.length || 0} · Secret bindings: ${Object.keys(item.secret_bindings || {}).length}</small>
+        <small>Requested capabilities: ${requested.length ? requested.map(escapeHtml).join(", ") : "none"} · Config refs: ${item.configuration_record_ids?.length || 0} · Secret bindings: ${secretLinks(Object.values(item.secret_bindings || {}))}</small>
         ${item.quarantine_reason ? `<small>Quarantine reason: ${escapeHtml(item.quarantine_reason)}</small>` : ""}
         ${item.disabled_reason ? `<small>Disabled reason: ${escapeHtml(item.disabled_reason)}</small>` : ""}
         ${capabilityAdministration(item, grantsState, resources, resourceError, canMutate)}
@@ -129,6 +130,7 @@
         ${extensionLifecycleActions(item, canMutate)}
       </div>`;
     }).join("");
+    focusReference(list);
     window.dispatchEvent(new CustomEvent("codex:extension-state-rendered", {
       detail: { installations, actor, canMutateMutation: canMutate },
     }));
@@ -310,5 +312,5 @@
     if (panel?.open) refreshExtensionAdmin().catch(console.error);
   }
 
-  window.addEventListener("DOMContentLoaded", bindExtensionAdmin);
+  bindWhenReady(bindExtensionAdmin);
 })();

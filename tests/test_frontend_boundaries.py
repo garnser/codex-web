@@ -116,7 +116,8 @@ class FrontendBoundaryTests(unittest.TestCase):
         source_path = STATIC / "crypto_key_admin.js"
         source = source_path.read_text()
         self.assertLessEqual(source_path.stat().st_size, 14_000)
-        self.assertIn("api_client.js", source)
+        self.assertIn("key_usage_ui.js", source)
+        self.assertIn("api_client.js", (STATIC / "key_usage_ui.js").read_text())
         self.assertIn("apiRequest", source)
         self.assertNotIn("fetch(", source)
 
@@ -308,6 +309,8 @@ class FrontendBoundaryTests(unittest.TestCase):
             "task_source_editor.js": 12_000,
             "task_source_provider_fields.js": 4_000,
             "page_editor.js": 5_000,
+            "key_usage_ui.js": 5_000,
+            "reference_links.js": 2_000,
             "bot_page_editor.js": 2_000,
             "definition_typed_editor.js": 12_000,
             "definition_typed_authority_editor.js": 13_000,

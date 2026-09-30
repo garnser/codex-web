@@ -365,3 +365,11 @@ test('Agent Providers surface remains usable on narrow screens', async ({ page }
   await expect(layout).toHaveCSS('grid-template-columns', /^\d+(?:\.\d+)?px$/);
   await expect(card.locator('.agent-route-run')).toBeVisible();
 });
+
+test('provider credential references deep-link to Project Secrets and consumer links focus the provider', async ({ page }) => {
+  await installRoutes(page);
+  await page.goto('http://127.0.0.1:18766/tests/browser/agent_provider_admin_fixture.html?project=project-a&consumer_type=agent_provider&consumer_id=openai');
+  const provider = page.locator('[data-reference-kind="agent_provider"][data-reference-id="openai"]');
+  await expect(provider.getByRole('link', { name: 'secret-codex', exact: true })).toHaveAttribute('href', '/projects/project-a/secrets?secret_id=secret-codex');
+  await expect(provider).toBeFocused();
+});

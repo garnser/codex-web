@@ -872,7 +872,6 @@ crypto_key_service = CryptoKeyService(
     crypto_key_store,
     {"local": local_key_backend},
 )
-app.include_router(build_crypto_keys_router(crypto_key_service))
 app.state.crypto_key_store = crypto_key_store
 app.state.crypto_key_service = crypto_key_service
 app.state.local_key_backend = local_key_backend
@@ -994,6 +993,7 @@ core._sandbox_policy = project_runtime_service.sandbox_policy
 
 resource_catalog_store = ResourceCatalogStore(state_store)
 resource_catalog_service = ResourceCatalogService(resource_catalog_store)
+app.include_router(build_crypto_keys_router(crypto_key_service, project_service, resource_catalog_service))
 app.include_router(build_resources_router(resource_catalog_service, project_service))
 app.state.resource_catalog_store = resource_catalog_store
 app.state.resource_catalog_service = resource_catalog_service
