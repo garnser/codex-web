@@ -1,4 +1,5 @@
 import { request } from './api_client.js';
+import { showPageEditor } from './page_editor.js';
 
 const operatingState = { view: null };
 
@@ -55,7 +56,7 @@ function ensureOperatingShell() {
   document.body.appendChild(dialog);
 
   button.addEventListener('click', async () => {
-    dialog.showModal();
+    showPageEditor(dialog, { workspace: 'company' });
     await loadOperatingView();
   });
   dialog.querySelector('.business-kpi-close').addEventListener('click', () => dialog.close());

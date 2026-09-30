@@ -145,3 +145,79 @@ test('successful resource save releases navigation and pristine filters do not p
   expect(dialogs).toEqual([]);
   expect(state.writes).toHaveLength(1);
 });
+
+for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 720 }, { width: 390, height: 844 }]) {
+  test(`long resource editing uses page scroll and persistent actions at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const { editor } = await setup(page);
+    await expect(page.locator('dialog:modal')).toHaveCount(0);
+    const scroll = page.locator('.product-workspace-panels');
+    await expect(editor.locator('[data-resource-save]')).toBeVisible();
+    expect(await page.locator('#resource-catalog-list').evaluate(node => ({ max: getComputedStyle(node).maxHeight, overflow: getComputedStyle(node).overflowY }))).toEqual({ max: 'none', overflow: 'visible' });
+    await editor.locator('[data-resource-edit-description]').fill('Long resource description\n'.repeat(100));
+    await editor.locator('[data-resource-edit-description]').evaluate(node => { node.style.height = '1400px'; });
+    await scroll.evaluate(node => { node.scrollTop += 650; });
+    const bounds = await editor.locator('.page-editor-actions').boundingBox();
+    expect(bounds.y).toBeGreaterThanOrEqual(0);
+    expect(bounds.y + bounds.height).toBeLessThan(viewport.height);
+    expect(await editor.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+    page.once('dialog', dialog => dialog.accept());
+    await editor.getByRole('button', { name: 'Back to resources' }).click();
+    await expect(editor).not.toHaveAttribute('open');
+    await expect(editor.locator('summary')).toBeFocused();
+  });
+}
+
+test('substantive collaborator editor occupies the routed main page and restores its origin', async ({ page }) => {
+  await setup(page);
+  await page.locator('#refresh-resources').focus();
+  await page.evaluate(async () => {
+    const { openEditor } = await import('/static/collaboration_management.js');
+    openEditor('profile');
+  });
+  const editor = page.locator('[data-product-workspace-host="resources"] > dialog.page-editor');
+  await expect(editor).toBeVisible();
+  await expect(page.locator('dialog:modal')).toHaveCount(0);
+  await expect(page.locator('#resource-catalog-list')).toBeHidden();
+  await expect(editor.locator('h2')).toBeFocused();
+  await editor.locator('[data-payload]').fill('Draft kept on cancelled back');
+  await editor.locator('[data-payload]').evaluate(node => { node.style.height = '1400px'; });
+  await page.locator('.product-workspace-panels').evaluate(node => { node.scrollTop = 650; });
+  const bounds = await editor.locator('[data-save]').boundingBox();
+  expect(bounds.y).toBeGreaterThanOrEqual(0);
+  expect(bounds.y + bounds.height).toBeLessThan(900);
+  page.once('dialog', dialog => dialog.dismiss());
+  await editor.locator('[data-close]').click();
+  await expect(editor.locator('[data-payload]')).toHaveValue('Draft kept on cancelled back');
+  page.once('dialog', dialog => dialog.accept());
+  await editor.locator('[data-close]').click();
+  await expect(editor).toHaveCount(0);
+  await expect(page.locator('#resource-catalog-list')).toBeVisible();
+  await expect(page.locator('#refresh-resources')).toBeFocused();
+});
+
+test('Bot Integration uses the same page, retains submit ownership and clears write-only inputs on close', async ({ page }) => {
+  await setup(page);
+  const botStart = index.indexOf('<dialog id="bot-dialog">');
+  const bot = index.slice(botStart, index.indexOf('</dialog>', botStart) + '</dialog>'.length);
+  await page.evaluate(html => {
+    document.body.insertAdjacentHTML('beforeend', html);
+    document.getElementById('close-bot-dialog').onclick = () => document.getElementById('bot-dialog').close();
+  }, bot);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await page.evaluate(async () => {
+      const { showBotEditor } = await import('/static/bot_page_editor.js');
+      showBotEditor(document.getElementById('bot-dialog'));
+    });
+    const dialog = page.locator('#bot-dialog');
+    await expect(dialog).toBeVisible();
+    await expect(page.locator('dialog:modal')).toHaveCount(0);
+    await expect(dialog.locator('.page-editor-actions')).toHaveCount(1);
+    expect(await dialog.locator('#save-bot-integration').evaluate(button => button.form.id)).toBe('bot-form');
+    await dialog.locator('#bot-token').fill('write-only-test-marker');
+    await dialog.locator('#close-bot-dialog').click();
+    await expect(dialog).not.toBeVisible();
+    await expect(dialog.locator('#bot-token')).toHaveValue('');
+    expect(await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }))).not.toContain('write-only-test-marker');
+  }
+});

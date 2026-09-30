@@ -1,4 +1,5 @@
 import{captureThreadView,renameSelectedThread,archiveSelectedThread}from"./thread_view_actions.js";
+import{showBotEditor}from"./bot_page_editor.js";
 import{installThreadCommands}from"./object_commands.js";
 import*as ep from"./execution_profile_controls.js";
 import{loadProjectUiStateForRefresh}from"./project_ui_state.js";
@@ -1206,7 +1207,7 @@ async function openBotIntegration(target) {
   $("bot-bind-existing-thread").disabled = !bindExisting;
   $("bot-result").hidden = true;
   const dialog = $("bot-dialog");
-  if (!dialog.open) dialog.showModal();
+  if (!dialog.open && !showBotEditor(dialog)) return;
   try {
     await refreshBotConnections();
   } catch (error) {

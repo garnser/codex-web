@@ -1,0 +1,23 @@
+/* Main-content editors share the page scroll and persistent primary actions. */
+.page-editor{position:static!important;inset:auto!important;width:100%!important;max-width:none!important;max-height:none!important;height:auto!important;margin:0!important;padding:0!important;border:0!important;overflow:visible!important;background:var(--surface,#fff);color:var(--text,#172033);grid-column:1/-1}
+.page-editor>div,.page-editor>form{max-height:none!important;max-width:none!important;overflow:visible!important;display:block!important}
+.page-editor .exec-mgmt-layout,.page-editor .exec-mgmt-detail,.page-editor .exec-mgmt-sidebar,.page-editor .business-kpi-content{max-height:none!important;overflow:visible!important}
+.page-editor header,.page-inline-editor>.page-editor-actions{position:sticky;top:0;z-index:5;background:var(--surface,#fff);border-bottom:1px solid var(--line,#bbb);padding:12px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.page-editor header h2{margin:0;font-size:1.2rem}
+.page-editor header p{margin:6px 0;max-width:70ch;overflow-wrap:anywhere}
+.page-editor-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.page-editor-actions button{width:auto!important;min-height:36px}
+.page-editor [data-body],.page-editor [data-skill-options],.page-editor [data-member-options]{padding:16px;max-height:none!important;overflow:visible!important}
+.page-editor .route-test{grid-template-columns:minmax(0,1fr)}
+.page-editor textarea,.page-inline-editor textarea{width:100%;box-sizing:border-box;max-height:none!important;min-height:10rem;resize:vertical}
+.page-editor textarea[data-payload]{min-height:55vh}
+.page-editor-standalone{min-height:100vh!important;box-sizing:border-box;padding:16px!important}
+.product-workspace-host:has(.page-inline-editor[open]){grid-template-columns:minmax(0,1fr)}
+.product-workspace-host .comm-log:has(.page-inline-editor){max-height:none;overflow:visible;font-family:inherit}
+.product-workspace-host .page-inline-editor{min-width:0}
+.product-workspace-host>.developer-card:has(textarea){grid-column:1/-1}
+.product-workspace-host .route-test textarea{max-height:none;min-height:10rem;resize:vertical}
+.product-workspace-host .page-inline-editor>summary{padding:12px 0;font-weight:700;cursor:pointer}
+.product-workspace-host .page-inline-editor .route-test{grid-template-columns:repeat(2,minmax(0,1fr))}
+.product-workspace-host .page-inline-editor .route-test>textarea{grid-column:1/-1}
+@media(max-width:700px){.page-editor header{align-items:flex-start}.page-editor header>div{min-width:0}.page-editor-actions{width:100%}.page-editor-actions button{flex:1}.product-workspace-host .page-inline-editor .route-test{grid-template-columns:minmax(0,1fr)}}

@@ -5,6 +5,7 @@
   const { projectViewOperation } = await import(`${BASE}/static/project_view_scope.js`);
   const lifecycleUi = await import(`${BASE}/static/configuration_lifecycle_ui.js`);
   const { trackDirtyEditor } = await import(`${BASE}/static/dirty_editor.js`);
+  const { inlineEditorActions } = await import(`${BASE}/static/page_editor.js`);
   let draftEditor = null;
   let activeProjectId = null;
   let contextAvailable = true;
@@ -308,6 +309,7 @@
   function bind() {
     const draft = document.querySelector('#configuration-management-panel > .route-test');
     if (draft) draftEditor = trackDirtyEditor(draft, { label: 'Configuration draft' });
+    if (draft) inlineEditorActions(draft.parentElement, draftEditor, { selector: '#create-configuration-draft', backText: 'Back to Configuration' });
     window.dispatchEvent(new CustomEvent('codex:configuration-state-request'));
     document.getElementById("configuration-draft-key")?.addEventListener("change", updateSpecControls);
     document.getElementById("configuration-draft-scope")?.addEventListener("change", updateScopeTargets);

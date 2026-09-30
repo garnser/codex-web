@@ -8,6 +8,8 @@ import {
 } from "./workspace_components.js";
 import { managementActions, openEditor } from "./collaboration_management.js";
 import { profilePath } from './execution_profile_editor.js';
+import { showPageEditor } from './page_editor.js';
+import { trackDirtyEditor, confirmDiscard } from './dirty_editor.js';
 
 const state = { profiles: [], teams: [], skills: [], loaded: false };
 let activeCollaborationPage = "agents";
@@ -110,7 +112,10 @@ function openAgentSkillEditor(profile, onChanged) {
   if (!state.skills.length) {
     options.appendChild(statePanel({ kind: "empty", title: "No Skills available", detail: "Create a Skill before attaching it to this Agent Profile." }));
   }
-  const close = () => dialog.close();
+  const dirty = trackDirtyEditor(dialog, { label: dialog.querySelector('h2').textContent });
+  dialog.dirtyEditor = dirty;
+  dialog.addEventListener('close', () => dirty.dispose(), { once: true });
+  const close = () => { if (confirmDiscard(dirty)) dialog.close(); };
   dialog.querySelector("[data-close]").addEventListener("click", close);
   dialog.querySelector("[data-save]").addEventListener("click", async (event) => {
     const reason = dialog.querySelector("[data-reason]").value.trim();
@@ -130,6 +135,8 @@ function openAgentSkillEditor(profile, onChanged) {
         method: "PATCH",
         body: JSON.stringify({ skill_refs: refs, reason }),
       });
+      if (!dialog.isConnected) return;
+      dirty.markSaved();
       await onChanged?.(result?.item);
       dialog.close();
     } catch (error) {
@@ -141,7 +148,7 @@ function openAgentSkillEditor(profile, onChanged) {
   });
   document.body.appendChild(dialog);
   dialog.addEventListener("close", () => dialog.remove(), { once: true });
-  dialog.showModal();
+  showPageEditor(dialog);
 }
 
 
@@ -191,7 +198,10 @@ function openTeamMembersEditor(team, onChanged) {
     }));
   }
 
-  dialog.querySelector("[data-close]").addEventListener("click", () => dialog.close());
+  const dirty = trackDirtyEditor(dialog, { label: dialog.querySelector('h2').textContent });
+  dialog.dirtyEditor = dirty;
+  dialog.addEventListener('close', () => dirty.dispose(), { once: true });
+  dialog.querySelector("[data-close]").addEventListener("click", () => { if (confirmDiscard(dirty)) dialog.close(); });
   dialog.querySelector("[data-save]").addEventListener("click", async (event) => {
     const reason = dialog.querySelector("[data-reason]").value.trim();
     const status = dialog.querySelector("[data-status]");
@@ -217,6 +227,8 @@ function openTeamMembersEditor(team, onChanged) {
         method: "PATCH",
         body: JSON.stringify({ members, reason }),
       });
+      if (!dialog.isConnected) return;
+      dirty.markSaved();
       await onChanged?.(result?.item);
       dialog.close();
     } catch (error) {
@@ -228,7 +240,7 @@ function openTeamMembersEditor(team, onChanged) {
   });
   document.body.appendChild(dialog);
   dialog.addEventListener("close", () => dialog.remove(), { once: true });
-  dialog.showModal();
+  showPageEditor(dialog);
 }
 
 function skillConsumers() {
