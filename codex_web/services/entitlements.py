@@ -46,11 +46,19 @@ class UsageIdempotencyConflictError(EntitlementError):
     pass
 
 
+class EntitlementConflictError(EntitlementError):
+    pass
+
+
 class EntitlementService:
     """Commercial/service entitlement boundary, separate from authorization."""
 
     def __init__(self, store: EntitlementStore) -> None:
         self.store = store
+
+    def _require_control(self, state, actor, expected_revision=None):
+        from codex_web.services.entitlement_control import EntitlementAdministration
+        EntitlementAdministration(self).require_control(state, actor, expected_revision)
 
     @staticmethod
     def _scope(actor: AuthenticationActor) -> tuple[str, str]:
@@ -289,11 +297,13 @@ class EntitlementService:
         mode: EntitlementMode,
         *,
         actor: AuthenticationActor,
+        expected_revision: str | None = None,
     ) -> TenantEntitlementSettings:
         self._require_admin(actor)
         updated: list[TenantEntitlementSettings] = []
 
         def apply(state: EntitlementState) -> EntitlementState:
+            self._require_control(state, actor, expected_revision)
             now = time.time()
             replacement = TenantEntitlementSettings(
                 organization_id=actor.organization_id,
@@ -318,6 +328,7 @@ class EntitlementService:
         payload: CapabilityEntitlementUpdate,
         *,
         actor: AuthenticationActor,
+        expected_revision: str | None = None,
     ) -> CapabilityEntitlement:
         self._require_admin(actor)
         key = capability.strip()
@@ -326,6 +337,7 @@ class EntitlementService:
         updated: list[CapabilityEntitlement] = []
 
         def apply(state: EntitlementState) -> EntitlementState:
+            self._require_control(state, actor, expected_revision)
             existing = next(
                 (
                     item
@@ -363,6 +375,7 @@ class EntitlementService:
         payload: QuotaPolicyUpdate,
         *,
         actor: AuthenticationActor,
+        expected_revision: str | None = None,
     ) -> QuotaPolicy:
         self._require_admin(actor)
         key = metric.strip()
@@ -371,6 +384,7 @@ class EntitlementService:
         updated: list[QuotaPolicy] = []
 
         def apply(state: EntitlementState) -> EntitlementState:
+            self._require_control(state, actor, expected_revision)
             existing = next(
                 (
                     item

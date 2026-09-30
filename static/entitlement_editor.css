@@ -1,0 +1,11 @@
+.developer-card.entitlement-management-card { grid-column: 1 / -1; min-width: 0; }
+.entitlement-management-card .route-test { display: flex; flex-wrap: wrap; gap: 12px; }
+.entitlement-management-card .route-test > button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.entitlement-management-form { min-width: 0; }
+.entitlement-management-form fieldset { min-width: 0; }
+.entitlement-management-form fieldset .route-test { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.entitlement-management-form label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.entitlement-management-form input, .entitlement-management-form select { width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; }
+@media (max-width: 700px) {
+  .entitlement-management-form fieldset .route-test { grid-template-columns: minmax(0, 1fr); }
+}

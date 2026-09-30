@@ -163,3 +163,13 @@ See [Reproducible documentation screenshots](../screenshots/README.md) and the [
 - [First successful task](../tutorials/first-successful-task.md)
 - [Operations](../operations/README.md)
 - [Core concepts](../core-concepts/README.md)
+
+### Manage local entitlements and quotas
+
+In Configuration, **Entitlements & Usage** identifies the shared workspace and
+whether control is local or registered to an external service. Local administrators
+with sufficient session assurance can edit mode, grants and quota policies in the
+main page. Preview the impact, inspect current window usage and confirm the exact
+target before applying. A Project view inherits these values; editing affects all
+Projects in that workspace. External controls show read-only source guidance.
+Usage remains a separate ledger and is retained when a limit is retired.

@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from codex_web.api.project_record_scope import ProjectRecordScope, project_record_context_parameter
+from codex_web.services.entitlement_control import EntitlementAdministration
 
 from codex_web.api.identity import request_actor
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.entitlements import (
     CapabilityEntitlementUpdate,
+    EntitlementChangePreview,
+    EntitlementControlUpdate,
     QuotaPolicyUpdate,
     TenantModeUpdate,
     UsageEventCreate,
@@ -15,6 +19,7 @@ from codex_web.entitlements import (
 )
 from codex_web.services.entitlements import (
     EntitlementDeniedError,
+    EntitlementConflictError,
     EntitlementError,
     EntitlementService,
     QuotaExceededError,
@@ -30,7 +35,7 @@ def _error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=429, detail=str(exc))
     if isinstance(exc, EntitlementDeniedError):
         return HTTPException(status_code=403, detail=str(exc))
-    if isinstance(exc, UsageIdempotencyConflictError):
+    if isinstance(exc, (UsageIdempotencyConflictError, EntitlementConflictError)):
         return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, (EntitlementError, ValueError)):
         return HTTPException(status_code=422, detail=str(exc))
@@ -39,8 +44,15 @@ def _error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
-def build_entitlements_router(service: EntitlementService) -> APIRouter:
-    router = APIRouter(prefix="/api/entitlements", tags=["entitlements"])
+def build_entitlements_router(service: EntitlementService, projects=None) -> APIRouter:
+    router = APIRouter(prefix="/api/entitlements", tags=["entitlements"],
+                      dependencies=[Depends(project_record_context_parameter)])
+    administration = EntitlementAdministration(service)
+
+    def context(request: Request):
+        ProjectRecordScope.from_request(request, request_actor(request), projects)
+
+    router.dependencies.append(Depends(context))
 
     def mutation_actor(request: Request):
         actor = request_actor(request)
@@ -48,6 +60,38 @@ def build_entitlements_router(service: EntitlementService) -> APIRouter:
             IdentityService.require_admin(actor)
             IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
         return actor
+
+    @router.get("/administration")
+    async def administration_snapshot(request: Request):
+        result = administration.snapshot(request_actor(request))
+        try:
+            mutation_actor(request)
+        except AuthorizationError as exc:
+            result.update(can_manage=False, denial_reason=str(exc))
+        return result
+
+    @router.post("/administration/preview")
+    async def administration_preview(payload: EntitlementChangePreview, request: Request):
+        try:
+            return administration.preview(payload, actor=mutation_actor(request))
+        except (EntitlementError, AuthorizationError, ValueError) as exc:
+            raise _error(exc) from exc
+
+    @router.put("/control")
+    async def control(payload: EntitlementControlUpdate, request: Request, expected_revision: str):
+        try:
+            item = administration.set_control(payload, actor=request_actor(request), expected_revision=expected_revision)
+            return {"item": item.model_dump(mode="json")}
+        except (EntitlementError, AuthorizationError, ValueError) as exc:
+            raise _error(exc) from exc
+
+    @router.delete("/quotas/{metric}")
+    async def retire_quota(metric: str, request: Request, expected_revision: str):
+        try:
+            administration.retire_quota(metric, actor=mutation_actor(request), expected_revision=expected_revision)
+            return {"retired": True}
+        except (EntitlementError, AuthorizationError, ValueError) as exc:
+            raise _error(exc) from exc
 
     @router.get("/status")
     async def status(
@@ -72,9 +116,10 @@ def build_entitlements_router(service: EntitlementService) -> APIRouter:
     async def set_mode(
         payload: TenantModeUpdate,
         request: Request,
+        expected_revision: str | None = None,
     ) -> dict[str, Any]:
         try:
-            item = service.set_mode(payload.mode, actor=mutation_actor(request))
+            item = service.set_mode(payload.mode, actor=mutation_actor(request), expected_revision=expected_revision)
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (EntitlementError, AuthorizationError, ValueError)):
@@ -95,12 +140,13 @@ def build_entitlements_router(service: EntitlementService) -> APIRouter:
         capability: str,
         payload: CapabilityEntitlementUpdate,
         request: Request,
+        expected_revision: str | None = None,
     ) -> dict[str, Any]:
         try:
             item = service.set_capability(
                 capability,
                 payload,
-                actor=mutation_actor(request),
+                actor=mutation_actor(request), expected_revision=expected_revision,
             )
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
@@ -122,9 +168,10 @@ def build_entitlements_router(service: EntitlementService) -> APIRouter:
         metric: str,
         payload: QuotaPolicyUpdate,
         request: Request,
+        expected_revision: str | None = None,
     ) -> dict[str, Any]:
         try:
-            item = service.set_quota(metric, payload, actor=mutation_actor(request))
+            item = service.set_quota(metric, payload, actor=mutation_actor(request), expected_revision=expected_revision)
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (EntitlementError, AuthorizationError, ValueError)):

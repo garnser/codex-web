@@ -862,7 +862,6 @@ app.state.business_context_service = business_context_service
 
 entitlement_store = EntitlementStore(state_store)
 entitlement_service = EntitlementService(entitlement_store)
-app.include_router(build_entitlements_router(entitlement_service))
 app.state.entitlement_store = entitlement_store
 app.state.entitlement_service = entitlement_service
 
@@ -969,6 +968,7 @@ thread_index_repository = install_thread_index_repository(
 thread_history_repository = ThreadHistoryRepository(state_store)
 app.state.thread_history_repository = thread_history_repository
 project_service = ProjectService(project_repository)
+app.include_router(build_entitlements_router(entitlement_service, project_service))
 app.include_router(build_secrets_router(secret_broker, project_service))
 thread_scope_service = ThreadScopeService(project_service, agent_session_service, thread_index_repository)
 app.include_router(

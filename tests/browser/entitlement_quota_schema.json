@@ -1,0 +1,90 @@
+{
+  "$defs": {
+    "QuotaBehavior": {
+      "enum": [
+        "hard_stop",
+        "degraded",
+        "grace",
+        "notify"
+      ],
+      "title": "QuotaBehavior",
+      "type": "string"
+    },
+    "QuotaWindow": {
+      "enum": [
+        "lifetime",
+        "hour",
+        "day",
+        "month"
+      ],
+      "title": "QuotaWindow",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "organization_id": {
+      "minLength": 1,
+      "title": "Organization Id",
+      "type": "string"
+    },
+    "workspace_id": {
+      "minLength": 1,
+      "title": "Workspace Id",
+      "type": "string"
+    },
+    "metric": {
+      "minLength": 1,
+      "title": "Metric",
+      "type": "string"
+    },
+    "limit": {
+      "minimum": 0.0,
+      "title": "Limit",
+      "type": "number"
+    },
+    "window": {
+      "$ref": "#/$defs/QuotaWindow",
+      "default": "month"
+    },
+    "behavior": {
+      "$ref": "#/$defs/QuotaBehavior",
+      "default": "hard_stop"
+    },
+    "warning_fraction": {
+      "default": 0.8,
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Warning Fraction",
+      "type": "number"
+    },
+    "source": {
+      "default": "manual",
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "updated_by": {
+      "minLength": 1,
+      "title": "Updated By",
+      "type": "string"
+    },
+    "updated_at": {
+      "title": "Updated At",
+      "type": "number"
+    }
+  },
+  "required": [
+    "organization_id",
+    "workspace_id",
+    "metric",
+    "limit",
+    "updated_by"
+  ],
+  "title": "QuotaPolicy",
+  "type": "object"
+}
