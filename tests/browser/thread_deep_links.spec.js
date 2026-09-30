@@ -171,3 +171,88 @@ test('a Thread from another Project is rejected visibly without loading its conv
   await expect(page).not.toHaveURL(/thread=home-thread/);
   expect(reads).not.toContain('home-thread');
 });
+
+async function selectProject(page, projectId) {
+  await page.evaluate(id => window.dispatchEvent(new CustomEvent('codex:project-select', {
+    detail: { projectId: id },
+  })), projectId);
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/chat`));
+  await expect(page.locator('#thread-title')).toHaveText('Select a thread');
+}
+
+for (const action of ['name', 'archive']) {
+  test(`late ${action} completion cannot mutate a subsequent visit to the same Thread`, async ({ page }) => {
+    await mockChatApi(page);
+    let pending;
+    await page.route(`**/api/threads/home-thread/${action}`, route => { pending = route; });
+    await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+    await expect(page.locator('#thread-title')).toHaveText('Home thread');
+    await page.locator('#thread-settings-menu > summary').click();
+    if (action === 'name') page.once('dialog', dialog => dialog.accept('Old visit rename'));
+    await page.locator(action === 'name' ? '#rename-thread' : '#archive-thread').click();
+    await expect.poll(() => Boolean(pending)).toBe(true);
+    await selectProject(page, 'alpha');
+    await selectProject(page, 'home');
+    await page.locator('#threads .item-main', { hasText: 'Home thread' }).click({ force: true });
+    await expect(page.locator('#thread-title')).toHaveText('Home thread');
+    await pending.fulfill({ json: {} });
+    await page.waitForTimeout(150);
+    await expect(page.locator('#thread-title')).toHaveText('Home thread');
+    await expect(page).toHaveURL(/thread=home-thread/);
+  });
+}
+
+test('sending while Thread creation is pending cannot deliver the prompt into another Project', async ({ page }) => {
+  const { threadTurns } = await mockChatApi(page);
+  let pending;
+  await page.route('**/api/threads?**', route => {
+    if (route.request().method() === 'POST') pending = route;
+    else return route.fallback();
+  });
+  await page.goto('http://127.0.0.1:18766/projects/home/chat');
+  await expect(page.locator('#threads')).toContainText('Home thread');
+  await page.locator('#prompt').fill('Original Project prompt');
+  await page.locator('#prompt').press('Enter');
+  await expect.poll(() => Boolean(pending)).toBe(true);
+  expect(new URL(pending.request().url()).searchParams.get('project_id')).toBe('home');
+  await selectProject(page, 'alpha');
+  await page.locator('#threads .item-main', { hasText: 'Alpha thread' }).click({ force: true });
+  await expect(page.locator('#thread-title')).toHaveText('Alpha thread');
+  await page.locator('#prompt').fill('New Project draft');
+  await pending.fulfill({ json: { thread: { id: 'created-home', projectId: 'home', name: 'Created at Home' } } });
+  await page.waitForTimeout(200);
+  await expect(page.locator('#thread-title')).toHaveText('Alpha thread');
+  await expect(page.locator('#prompt')).toHaveValue('New Project draft');
+  await expect(page).toHaveURL(/projects\/alpha\/chat\?thread=alpha-thread/);
+  expect(threadTurns).toEqual({});
+});
+
+for (const action of ['name', 'archive']) {
+  test(`current Thread ${action} completion still updates the selected conversation`, async ({ page }) => {
+    await mockChatApi(page);
+    await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+    await expect(page.locator('#thread-title')).toHaveText('Home thread');
+    await page.locator('#thread-settings-menu > summary').click();
+    if (action === 'name') page.once('dialog', dialog => dialog.accept('Current rename'));
+    await page.locator(action === 'name' ? '#rename-thread' : '#archive-thread').click();
+    await expect(page.locator('#thread-title')).toHaveText(action === 'name' ? 'Current rename' : 'Select a thread');
+    if (action === 'archive') await expect(page).not.toHaveURL(/thread=/);
+  });
+}
+
+test('a previous conversation send failure does not appear in the current conversation', async ({ page }) => {
+  await mockChatApi(page);
+  let pending;
+  await page.route('**/api/threads/home-thread/turns', route => { pending = route; });
+  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await expect(page.locator('#thread-title')).toHaveText('Home thread');
+  await page.locator('#prompt').fill('Old conversation message');
+  await page.locator('#prompt').press('Enter');
+  await expect.poll(() => Boolean(pending)).toBe(true);
+  await selectProject(page, 'alpha');
+  await page.locator('#threads .item-main', { hasText: 'Alpha thread' }).click({ force: true });
+  await expect(page.locator('#thread-title')).toHaveText('Alpha thread');
+  await pending.fulfill({ status: 503, json: { detail: 'Old conversation unavailable' } });
+  await page.waitForTimeout(150);
+  await expect(page.locator('#messages')).not.toContainText('Old conversation unavailable');
+});

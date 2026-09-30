@@ -1,7 +1,6 @@
 import { request } from './api_client.js';
 
-// A UI response fence, never an authorization decision. The API checks actors
-// and target scope independently for every operation.
+// UI response fence only. APIs independently authorize actor and target scope.
 let generation = 0;
 function initialProjectId() {
   const route = location.pathname.match(/\/projects\/([^/]+)(?:\/|$)/);
@@ -16,10 +15,14 @@ window.addEventListener('codex:project-changed', event => {
   if (next !== projectId) { generation += 1; projectId = next; }
 });
 
-export function projectViewOperation(report, refreshControl = 'refresh-definitions') {
+export function captureProjectView() {
   const started = generation;
+  return { generation: started, current: () => started === generation };
+}
+
+export function projectViewOperation(report, refreshControl = 'refresh-definitions') {
+  const { current } = captureProjectView();
   const selectedProject = projectId;
-  const current = () => started === generation;
   const assertCurrent = () => {
     if (!current()) throw new DOMException('Project changed', 'AbortError');
   };

@@ -1,3 +1,4 @@
+import{captureThreadView,renameSelectedThread,archiveSelectedThread}from"./thread_view_actions.js";
 import{installThreadCommands}from"./object_commands.js";
 import*as ep from"./execution_profile_controls.js";
 import{loadProjectUiStateForRefresh}from"./project_ui_state.js";
@@ -1320,6 +1321,7 @@ function clearSelectedThread({ historyMode = "none" } = {}) {
 threadHistoryController()?.configure?.({ reloadThread: loadThread });
 
 async function newThread() {
+  const current = captureThreadView(state);
   persistRunSettings();
   const settings = currentRunSettings();
   const qs = new URLSearchParams({
@@ -1333,6 +1335,7 @@ async function newThread() {
     qs.append("read_only_repository_resource_id", id);
   });
   const data = await api(`/api/threads?${qs}`, { method: "POST" });
+  if (!current()) return null;
   const thread = data.thread || data;
   state.threadId = thread.id;
   state.threadLoadGeneration += 1;
@@ -1341,6 +1344,7 @@ async function newThread() {
   renderNewThreadShell(thread);
   renderTokenUsage();
  scheduleRefresh(100);
+  return thread.id;
 }
 
 function blockRepositoryTarget(target) {
@@ -1356,7 +1360,8 @@ async function sendPrompt() {
   if (!prompt) return;
   persistRunSettings();
   if (blockRepositoryTarget(repositoryTargetState())) return;
-  if (!state.threadId) await newThread();
+  if (!state.threadId && !(await newThread())) return;
+  const current = captureThreadView(state);
   const threadId = state.threadId;
   if (blockRepositoryTarget(repositoryTargetState(threadId))) return;
   const willQueue = isThreadBusy(threadId) || queuedDepth(threadId) > 0;
@@ -1423,7 +1428,7 @@ async function sendPrompt() {
     } else {
       clearThreadBusy(threadId);
     }
-    if(!(await pfUi.handleError(error,threadId)))addMessage("Error",error.message,"tool",new Date());
+    if(current() && !(await pfUi.handleError(error,threadId)) && current())addMessage("Error",error.message,"tool",new Date());
   }
 }
 
@@ -1448,18 +1453,8 @@ async function steerQueuedMessage(message) {
   }
 }
 
-async function renameThread() {
-  if (!state.threadId) return;
-  const currentTitle = $("thread-title").textContent === "No thread selected" ? "" : $("thread-title").textContent;
-  const name = window.prompt("Thread name", currentTitle);
-  if (!name || !name.trim()) return;
-  const threadId = state.threadId;
-  await api(`/api/threads/${threadId}/name`, {
-    method: "POST",
-    body: JSON.stringify({ name: name.trim() }),
-  });
-  $("thread-title").textContent = name.trim();
-  uiEvents.patchThread(threadId,{name:name.trim(),updatedAt:Date.now()/1000});
+function renameThread() {
+  return renameSelectedThread({state,api,title:$("thread-title"),patchThread:uiEvents.patchThread});
 }
 
 function handleEvent(event) {
@@ -2313,12 +2308,8 @@ $("thread-search").addEventListener("input", () => {
     scheduleRefresh(0);
   }, 180);
 });
-$("archive-thread").addEventListener("click", async () => {
-  if (!state.threadId) return;
-  await api(`/api/threads/${state.threadId}/archive`, { method: "POST" });
-  clearSelectedThread({ historyMode: "replace" });
-  await refresh();
-});
+$("archive-thread").addEventListener("click", () =>
+  archiveSelectedThread({state,api,clearSelectedThread,refresh}));
 document.addEventListener("click", (event) => {
   if (event.target.closest("#new-project")) {
     $("project-dialog").showModal();
