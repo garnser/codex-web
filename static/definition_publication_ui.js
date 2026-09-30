@@ -65,15 +65,15 @@ export async function publishRecord(record, { actor, active, setStatus }) {
         method: "POST",
         body: JSON.stringify({
           reason: reason.trim() || null,
-          expected_active_revision: active?.revision ?? null,
+          expected_active_revision: active?.revision ?? 0,
           approval_metadata: approvalMetadata,
         }),
       },
     );
     report(`Published ${record.definition_id} r${record.revision}.`);
     operation.refresh();
+    return true;
   } catch (error) {
     report(`Definition publication failed: ${error.message}`);
   }
 }
-

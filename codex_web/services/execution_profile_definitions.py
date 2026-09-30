@@ -23,6 +23,7 @@ class ExecutionProfileDefinitionService:
 
     def __init__(self, registry: DefinitionRegistryService) -> None:
         self.registry = registry
+        self.usage_loader = None
 
     def bootstrap(self) -> None:
         self.registry.bootstrap(

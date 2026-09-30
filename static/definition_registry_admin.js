@@ -8,6 +8,7 @@
   let schemas = [];
   let generation = 0;
   let controller = null;
+  let openedRecord = '';
   function initialProjectId() {
     const match = location.pathname.match(/\/projects\/([^/]+)(?:\/|$)/);
     if (match) { try { return decodeURIComponent(match[1]); } catch { return ''; } }
@@ -104,6 +105,12 @@
     const visible = records.filter(matches);
     host.innerHTML = visible.map(renderRecord).join("")
       || '<div class="comm-entry"><strong>No definition revisions match the current filters.</strong></div>';
+    const requested = new URLSearchParams(location.search).get('definition_record');
+    const target = [...host.querySelectorAll('[data-definition-record]')].find(item => item.dataset.definitionRecord === requested);
+    if (target && openedRecord !== requested) {
+      openedRecord = requested; target.open = true;
+      target.scrollIntoView({ block: 'nearest' });
+    }
     setStatus(`${visible.length} of ${records.length} visible definition revision(s). Definitions are versioned data; schema/interpreter/security engines remain code-owned.`);
     publishCatalog();
   }

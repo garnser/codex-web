@@ -29,7 +29,7 @@ async function mount(page) {
 test('Project switching clears profile controls and keeps management links in the current Project', async ({ page }) => {
   await mount(page);
   await page.evaluate(value => { profiles.setCatalog(value, 'project-a'); renderProfiles(); }, catalog('A'));
-  await expect(page.locator('#manage-execution-profiles')).toHaveAttribute('href', '/codex/projects/project-a/definitions');
+  await expect(page.locator('#manage-execution-profiles')).toHaveAttribute('href', '/codex/projects/project-a/definitions?execution_profile=repository-write');
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:project-changed', {
     detail: { projectId: 'project-b' },
   })));
@@ -41,7 +41,7 @@ test('Project switching clears profile controls and keeps management links in th
   await expect(page.locator('#execution-profile')).toBeEnabled();
   await expect(page.locator('#repository-write-targets')).toBeEnabled();
   await expect(page.locator('#execution-profile option')).toHaveText('B');
-  await expect(page.locator('#manage-execution-profiles')).toHaveAttribute('href', '/codex/projects/project-b/definitions');
+  await expect(page.locator('#manage-execution-profiles')).toHaveAttribute('href', '/codex/projects/project-b/definitions?execution_profile=repository-write');
   await page.evaluate(() => { profiles.setCatalog({ items: [] }, 'empty'); renderProfiles(); });
   await expect(page.locator('#execution-profile')).toBeDisabled();
   await expect(page.locator('#repository-read-context')).toBeDisabled();
@@ -60,7 +60,7 @@ test('a late profile response cannot replace a newer Project snapshot even if ca
   await page.evaluate(value => { profiles.setCatalog(value, 'project-b'); renderProfiles(); }, catalog('B'));
   await page.evaluate(async () => { releaseOld(); await oldLoad; renderProfiles(); });
   await expect(page.locator('#execution-profile option')).toHaveText('B');
-  await expect(page.locator('#manage-execution-profiles')).toHaveAttribute('href', '/codex/projects/project-b/definitions');
+  await expect(page.locator('#manage-execution-profiles')).toHaveAttribute('href', '/codex/projects/project-b/definitions?execution_profile=repository-write');
 });
 
 test('failed or absent Project context leaves controls disabled and never loads a fallback Project', async ({ page }) => {

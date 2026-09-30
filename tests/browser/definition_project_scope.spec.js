@@ -187,3 +187,27 @@ test('Definition mutations and exports carry the selected Project to canonical A
   });
   expect(calls.at(-1).project).toBe('project-c');
 });
+
+test('catalog quarantine requires available Project consumer impact and shows its scope', async ({ page }) => {
+  let unavailable = true, mutations = 0; const confirmations = [];
+  await mount(page, async (route, url) => {
+    if (url.pathname === '/api/execution-profiles') {
+      expect(url.searchParams.get('project_id')).toBe('project-a');
+      await route.fulfill({ json: { items: [{ id: 'repository-write' }] } }); return true;
+    }
+    if (url.pathname.startsWith('/api/execution-profiles/') && url.pathname.endsWith('/usage')) {
+      await route.fulfill(unavailable ? { status: 503, json: { detail: 'Unavailable impact' } }
+        : { json: { available: true, count: 4, restricted_count: 1 } }); return true;
+    }
+    if (url.pathname.endsWith('/quarantine')) { mutations++; await route.fulfill({ json: { record: record('project-a') } }); return true; }
+  });
+  await page.locator('[data-definition-record]').evaluate(node => { node.open = true; });
+  await page.locator('[data-definition-action="quarantine"]').click();
+  await expect(page.locator('#definition-lifecycle-status')).toContainText('impact unavailable'); expect(mutations).toBe(0);
+  unavailable = false;
+  page.on('dialog', async dialog => { confirmations.push(dialog.message()); await dialog.accept(dialog.type() === 'prompt' ? 'Reviewed consumers' : undefined); });
+  await page.locator('[data-definition-action="quarantine"]').click();
+  await expect.poll(() => mutations).toBe(1);
+  expect(confirmations.join(' ')).toContain('4 profile consumer reference(s)');
+  expect(confirmations.join(' ')).toContain('sibling Project consumers are outside this preview');
+});

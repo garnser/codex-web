@@ -68,7 +68,7 @@ class DefinitionPublishHttpRequest(BaseModel):
 
     actor: str | None = None  # legacy compatibility; authenticated actor wins.
     reason: str | None = None
-    expected_active_revision: int | None = None
+    expected_active_revision: int | None = Field(default=None, ge=0)
     approval_metadata: dict[str, str] = Field(default_factory=dict)
 
 
@@ -82,7 +82,7 @@ class DefinitionRollbackHttpRequest(BaseModel):
     target_revision: int = Field(ge=1)
     actor: str | None = None  # legacy compatibility; authenticated actor wins.
     reason: str | None = None
-    expected_active_revision: int | None = None
+    expected_active_revision: int | None = Field(default=None, ge=0)
     approval_metadata: dict[str, str] = Field(default_factory=dict)
 
 

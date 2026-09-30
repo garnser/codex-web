@@ -35,4 +35,20 @@ def build_execution_profiles_router(
             project_id=project_id,
         )
 
+    @router.get("/api/execution-profiles/{profile_id}/usage")
+    async def profile_usage(profile_id: str, project_id: str, request: Request) -> dict[str, Any]:
+        actor = request_actor(request)
+        try:
+            projects.get(project_id, actor.tenant)
+            service.resolve(profile_id, organization_id=actor.organization_id,
+                            workspace_id=actor.workspace_id, project_id=project_id)
+        except (ProjectNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=404, detail="Execution Profile or Project not found") from exc
+        if service.usage_loader is None:
+            raise HTTPException(status_code=503, detail="Execution Profile usage is unavailable")
+        try:
+            return service.usage_loader(profile_id, project_id, actor)
+        except ValueError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     return router

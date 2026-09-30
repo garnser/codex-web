@@ -34,6 +34,10 @@ Supported lifecycle states are:
 Definitions may also be deprecated, disabled or quarantined. Publication validates through the code-owned schema even if a caller skips the explicit validate step.
 
 Only one published revision may occupy a canonical `kind + definition_id + scope` slot. Publication supports optimistic `expected_active_revision` checks so concurrent editors cannot silently replace a revision they did not review.
+An explicit `expected_active_revision: 0` requires an empty publication slot,
+including first Project overrides; a concurrent first publisher causes a conflict.
+Positive values require that exact active revision. Omitting the value retains
+legacy API compatibility.
 
 A quarantined, missing, corrupt, unsupported-schema or engine-incompatible definition does not fall back to an unrelated stored payload.
 
@@ -225,6 +229,36 @@ and reject responses from the previous Project. Missing or failed metadata leave
 the controls disabled; it must not appear as a usable fallback profile. Management
 links retain the selected Project and deployment prefix. Catalog display and
 selection do not grant execution or provider authority.
+
+The Project Definitions surface provides an Execution Profile editor over this
+same catalog. Editing, cloning, adding or removing an entry creates an inactive
+Project-scoped catalog draft; it preserves the other entries and records the
+source record ID, revision and checksum. Same-slot drafts also use the canonical
+derivation link. Validation, independent approval assessment, publication,
+quarantine and rollback use the existing Definition lifecycle and actor checks.
+Publication compares the Project slot against the revision used for editing
+(explicit zero for an empty slot), so concurrent publication requires a fresh
+review. Required structural entries and the current default cannot be removed.
+There is no independent per-profile archive/restore lifecycle. Catalog lifecycle
+links target the exact Definition record; selector links retain Project and
+profile identity. Unsaved values stay only in the editor and use the shared dirty
+navigation guard; failed saves preserve them.
+
+`GET /api/execution-profiles/{profile_id}/usage?project_id=...` is a read-only,
+schema `1.0` projection of the selected Project default, shared workspace Agent
+Profiles, owned Thread settings, queued turns and pinned execution assignments.
+Private Agent Profiles contribute a restricted count without names or IDs.
+Foreign Project consumers and prompt content are excluded. Queue/configuration
+references may resolve a later catalog; pinned execution references retain their
+exact revision. The projection scans at most 5,000 consumer records and displays
+at most 100 visible references, with complete counts and truncation metadata.
+Exceeding the scan bound returns unavailable impact, never a false empty result.
+The editor requires fresh consumer impact before changing/removing an existing
+entry and before publication; a default change also checks the previous default.
+Catalog quarantine and rollback require a fresh bounded preview of up to 25
+current profiles and explicitly identify sibling Projects as outside its scope.
+This is review evidence, not an authorization grant or a promise that no new
+consumer can be added concurrently. No additional model calls are introduced.
 
 The Project Definitions browser requests `GET /api/definitions/records` with
 `project_id`. This context must resolve to a visible Project before listing;

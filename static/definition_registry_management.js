@@ -7,6 +7,7 @@
   const { trackDirtyEditor } = await import(`${BASE}/static/dirty_editor.js`);
   let draftEditor = null;
   const publicationUi = await import(`${BASE}/static/definition_publication_ui.js`);
+  const { catalogImpact } = await import(`${BASE}/static/execution_profile_impact.js`);
   let activeProjectId = null;
   let actor = null;
   let records = [];
@@ -239,13 +240,17 @@
     const operation = projectViewOperation(setStatus);
     const report = operation.status;
     const request = operation.request;
+    let impact;
+    try { impact = await catalogImpact(record, operation); }
+    catch (error) { report(`Quarantine impact unavailable: ${error.message}`); return; }
+    if (!operation.current()) return;
     const reason = window.prompt(
       `Quarantine reason for ${record.definition_id} r${record.revision}:`,
       "",
     );
     if (reason === null || !reason.trim()) return;
     if (!window.confirm(
-      `Quarantine ${record.definition_id} r${record.revision}? If it is currently effective, canonical resolution will fail closed or fall back only according to remaining valid scoped definitions.`,
+      `Quarantine ${record.definition_id} r${record.revision}? If it is currently effective, canonical resolution will fail closed or fall back only according to remaining valid scoped definitions.${impact}`,
     )) return;
     try {
       await request(
@@ -265,13 +270,17 @@
     const request = operation.request;
     const active = activeFor(record);
     if (!active || active.record_id === record.record_id) return;
+    let impact;
+    try { impact = await catalogImpact(record, operation); }
+    catch (error) { report(`Rollback impact unavailable: ${error.message}`); return; }
+    if (!operation.current()) return;
     const reason = window.prompt(
       `Reason for rollback to ${record.definition_id} r${record.revision}:`,
       "",
     );
     if (reason === null) return;
     if (!window.confirm(
-      `Rollback ${record.kind}:${record.definition_id} from active r${active.revision} to the payload of r${record.revision}? The server creates a new immutable revision and publishes it with optimistic active-revision protection; historical records are preserved.`,
+      `Rollback ${record.kind}:${record.definition_id} from active r${active.revision} to the payload of r${record.revision}? The server creates a new immutable revision and publishes it with optimistic active-revision protection; historical records are preserved.${impact}`,
     )) return;
     try {
       const response = await request("/api/definitions/rollback", {

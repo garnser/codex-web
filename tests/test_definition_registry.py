@@ -81,6 +81,17 @@ class DefinitionRegistryTests(unittest.TestCase):
             )
         )
 
+    def test_zero_expected_revision_requires_an_empty_publication_slot(self) -> None:
+        first = self._draft()
+        concurrent = self._draft()
+        published = self.service.publish(first.record_id, DefinitionPublishRequest(
+            actor="publisher", expected_active_revision=0))
+        self.assertEqual(published.lifecycle, DefinitionLifecycle.PUBLISHED)
+        with self.assertRaises(DefinitionConflictError):
+            self.service.publish(concurrent.record_id, DefinitionPublishRequest(
+                actor="publisher", expected_active_revision=0))
+        self.assertEqual(self.service.get_record(concurrent.record_id).lifecycle, DefinitionLifecycle.DRAFT)
+
     def test_validate_publish_supersede_and_rollback_are_versioned(self) -> None:
         first = self._draft()
         validated = self.service.validate(first.record_id, actor="reviewer")
