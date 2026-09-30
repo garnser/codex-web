@@ -2022,7 +2022,7 @@ recovery_service = RecoveryService(
 app.state.recovery_store = recovery_store
 app.state.recovery_service = recovery_service
 app.state.local_backup_destination = local_backup_destination
-app.include_router(build_recovery_router(recovery_service))
+app.include_router(build_recovery_router(recovery_service, project_service))
 
 upgrade_store = UpgradeStore(state_store)
 upgrade_service = UpgradeService(

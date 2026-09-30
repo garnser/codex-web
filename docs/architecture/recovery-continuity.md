@@ -33,8 +33,9 @@ ActionIntents, Resources, Evidence metadata, organizational memory metadata,
 release/incident state, extension/worker configuration, audit state and other
 StateStore-backed domains.
 
-Recovery's own manifest state is excluded from the snapshot to prevent recursive
-backup growth.
+Recovery policy, owner scope and policy-change history are included in the
+snapshot. Recovery's backup/verification manifest collections are excluded to
+prevent recursive backup growth.
 
 Transport/broker queues are not backed up as business truth. After restore they
 are reconstructed from canonical state/outbox semantics.
@@ -57,7 +58,10 @@ CryptoKeyService with a tenant/workspace-bound EncryptionContext:
 The encrypted envelope records key ID/version and authenticated context. Backup
 payloads cannot silently decrypt under another tenant/workspace or object scope.
 
-The snapshot also freezes the complete canonical key manifest. Restore
+The snapshot also freezes the usable key-version inventory from that exact
+canonical key-state snapshot. Revoked tombstones remain historical metadata but
+are not prerequisites for a new backup. Existing backup manifests are never
+rewritten when a key changes. Restore
 verification calls CryptoKeyService.validate_manifest, so missing/revoked key
 versions fail recovery qualification rather than being discovered during an
 emergency.
@@ -168,3 +172,76 @@ likewise reject a key revoked after initial validation. Retained backup envelope
 versions and frozen key-manifest requirements prevent retirement even after
 rotation. Recovery retention/migration, followed by restore verification, owns
 removal of those requirements; key administration cannot bypass them.
+
+## Recovery policy administration
+
+The Operations page separates typed RecoveryPolicy settings from read-only
+backup/verification evidence. The policy is effective operational configuration
+in the existing RecoveryState, not a reusable template or a second Definition
+Registry. Mutable policy values remain data; validation, transaction engines,
+cryptographic requirements and unsupported capability constraints remain code.
+No model reasoning or new external provider execution path is introduced.
+
+Metadata responses expose the current policy, exact fingerprint, immutable
+policy-change records, actor/time provenance, registered destination IDs,
+capabilities and the typed schema. Optional Project context is validated but
+does not turn the shared recovery policy into a Project-owned copy. Policy scope
+is bound to organization/workspace, including legacy ownership derived from its
+existing backup key. If legacy key metadata is missing, ownership cannot be
+inferred; recover that metadata before adopting the policy. A configured recovery
+execution identity must belong to the policy's tenant.
+
+Changes require the existing canonical recovery-admin authorization and human
+MFA (or the service scope), plus the key boundary's authority. The editor uses
+`POST /api/recovery/policy/preview` and supplies its current fingerprint to
+`PUT /api/recovery/policy?expected_fingerprint=...`. A stale fingerprint rejects
+the mutation with 409. Legacy API callers may omit the optimistic precondition;
+all writes still use the same canonical scope, key and transaction checks.
+Changing the policy's stable identity, enabling unsupported point-in-time
+recovery, or disabling the engine's key-manifest capability is rejected. The
+backup key must be workspace-scoped because the recovery envelope protects a
+physical canonical-state snapshot, not an individual Project export.
+
+Policy publication atomically persists its immutable change record, validates
+key references and replaces both canonical schedule records. Old records are
+cancelled with incremented revisions and cleared leases; paused/cancelled timers
+remain paused in their replacements. Scheduler wake-up follows commit. Stale
+queued schedule IDs, tenant scope and policy fingerprints are rejected before
+execution. Operations already running are not reversed. Recovery objectives,
+retention and intervals apply to subsequent operations without application
+restart. Destination registration/backend configuration and worker topology
+remain deployment settings. Retention only considers backup records in the
+acting organization/workspace; another tenant's retained backups are untouched.
+
+`POST /api/recovery/policy/rollback/{change_id}` requires a current fingerprint,
+revalidates the retained policy and its current key/destination dependencies,
+and records a new policy change attributed to the restored revision. This is
+**policy-only rollback**. It cannot restore expired backup bytes, undo completed
+operations, revive revoked key material, or roll back an application/schema
+upgrade. Historical policies are not active key consumers; attempting to restore
+one whose key was retired fails explicitly.
+
+The UI requires impact review before publication/rollback, explains retention
+and schedule effects, retains invalid/conflicted drafts, protects dirty
+navigation and fences late Project responses. Backup and policy consumers link
+to key metadata, and key dependency rows link back to the exact recovery record.
+Stored destination paths, envelope contents and secret/key material are omitted
+from the UI. Missing/revoked-key restore findings remain visible as evidence.
+
+### State compatibility
+
+Recovery state `1.1` adds immutable policy-change records and policy owner scope.
+The explicit `1.0 → 1.1` migration preserves all existing policy, backup,
+verification and schedule data. Unknown future versions fail closed. Legacy
+ownership is adopted only from canonical key metadata, never request text. Once
+`1.1` has been persisted, application rollback requires an engine supporting
+that contract; older binaries must not be assumed able to read the new fields.
+Policy rollback does not downgrade this state contract.
+
+Policy history survives isolated restore without recursively including old
+backup/verification manifests. New backup key requirements come from the exact
+frozen key document and exclude already revoked versions; retiring an unused
+reference therefore does not make every future backup impossible. Revocation
+racing with backup creation still fails the atomic reference-creation check.
+Legacy policy adoption uses the transaction's locked key document rather than
+opening a nested StateStore connection.
