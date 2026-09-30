@@ -559,6 +559,48 @@ class DefinitionRegistryApiTests(unittest.TestCase):
         tenant_list = self.client.get("/api/definitions/records").json()["items"]
         self.assertEqual(len(tenant_list), 5)
 
+    def test_project_context_fences_record_reads_mutations_export_and_import(self):
+        rows = {}
+        for scope, scope_id in [("workspace", "ws-a"), ("project", "project-a"), ("project", "project-c")]:
+            record = self.service.create_draft(DefinitionDraftCreate(**self._draft_payload(scope_type=scope, scope_id=scope_id)))
+            rows[scope_id] = record
+        foreign = rows["project-c"]
+        params = {"project_id": "project-a"}
+        for suffix in ("usage", "publication-assessment"):
+            self.assertEqual(self.client.get(f"/api/definitions/{foreign.record_id}/{suffix}", params=params).status_code, 404)
+        for suffix, payload in [("validate", {}), ("publish", {}), ("quarantine", {"reason": "wrong Project"}),
+                                ("publication-approvals", {"reference": "review", "reason": "wrong Project"})]:
+            self.assertEqual(self.client.post(f"/api/definitions/{foreign.record_id}/{suffix}", params=params, json=payload).status_code, 404)
+        self.assertEqual(self.client.get("/api/definitions/diff", params={**params, "left": rows["project-a"].record_id, "right": foreign.record_id}).status_code, 404)
+        exported = self.client.get("/api/definitions/export", params=params)
+        self.assertEqual(exported.status_code, 200)
+        self.assertEqual({row["record_id"] for row in exported.json()["records"]}, {rows["ws-a"].record_id, rows["project-a"].record_id})
+        before = len(self.service.list_records())
+        foreign_draft = self._draft_payload(scope_type="project", scope_id="project-c")
+        self.assertEqual(self.client.post("/api/definitions/drafts", params=params, json=foreign_draft).status_code, 404)
+        self.assertEqual(self.client.post("/api/definitions/rollback", params=params, json={"definition_id": foreign.definition_id, "kind": foreign.kind, "scope_type": "project", "scope_id": "project-c", "target_revision": 1}).status_code, 404)
+        document = {"format": "codex-web-definitions", "version": "1.0", "records": [rows["project-a"].model_dump(mode="json"), foreign.model_dump(mode="json")]}
+        self.assertEqual(self.client.post("/api/definitions/import", params=params, json={"document": document}).status_code, 404)
+        self.assertEqual(len(self.service.list_records()), before)
+        self.assertEqual(self.service.get_record(foreign.record_id).lifecycle.value, "draft")
+        self.assertEqual(self.client.post(f"/api/definitions/{rows['project-a'].record_id}/validate", params=params, json={}).status_code, 200)
+        self.assertEqual(self.client.post(f"/api/definitions/{foreign.record_id}/validate", json={}).status_code, 200)
+        # Shared records stay visible, while existing mutation authority remains mandatory.
+        self.actor = self.actor.model_copy(update={"assurance": AuthenticationAssurance.PRIMARY})
+        self.assertEqual(self.client.get(f"/api/definitions/{rows['ws-a'].record_id}/usage", params=params).status_code, 200)
+        self.assertEqual(self.client.post(f"/api/definitions/{rows['ws-a'].record_id}/validate", params=params, json={}).status_code, 403)
+
+    def test_project_resolution_rejects_mismatched_context(self):
+        parameters = self.client.get("/openapi.json").json()["paths"]["/api/definitions/{record_id}/publish"]["post"]["parameters"]
+        self.assertTrue(any(item["name"] == "project_id" and item["in"] == "query" for item in parameters))
+        response = self.client.post("/api/definitions/resolve", params={"project_id": "project-a"}, json={
+            "definition_id": EXECUTION_ROLE_CATALOG_ID, "kind": EXECUTION_ROLE_CATALOG_KIND,
+            "context": {"project_id": "project-c"},
+        })
+        self.assertEqual(response.status_code, 404)
+        for endpoint in ("export", "bootstrap"):
+            self.assertEqual(self.client.get(f"/api/definitions/{endpoint}", params={"project_id": "foreign"}).status_code, 404)
+
     def test_project_record_list_rejects_missing_or_foreign_context(self):
         for project in ("", "missing", "foreign"):
             response = self.client.get("/api/definitions/records", params={"project_id": project})

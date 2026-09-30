@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.api.identity import request_actor
+from codex_web.api.project_record_scope import ProjectRecordScope, project_record_context_parameter
 from codex_web.configuration import (
     ConfigurationContext,
     ConfigurationDraftCreate,
@@ -107,10 +108,11 @@ def build_configuration_router(
     projects: ProjectService | None = None,
     resources: ResourceCatalogService | None = None,
 ) -> APIRouter:
-    router = APIRouter(prefix="/api/configuration", tags=["configuration"])
+    router = APIRouter(prefix="/api/configuration", tags=["configuration"], dependencies=[Depends(project_record_context_parameter)])
 
-    def authenticated(request: Request) -> AuthenticationActor:
-        return request_actor(request)
+    def authenticated(request: Request) -> tuple[AuthenticationActor, ProjectRecordScope]:
+        actor = request_actor(request)
+        return actor, ProjectRecordScope.from_request(request, actor, projects, resources)
 
     def project_visible(project_id: str | None, actor: AuthenticationActor) -> bool:
         if not project_id or projects is None:
@@ -143,7 +145,8 @@ def build_configuration_router(
             return resource_visible(record.scope_id, actor)
         return False
 
-    def require_visible(record: ConfigurationRecord, actor: AuthenticationActor) -> None:
+    def require_visible(record: ConfigurationRecord, actor: AuthenticationActor, view: ProjectRecordScope) -> None:
+        view.require(record.scope_type, record.scope_id)
         if not record_visible(record, actor):
             raise HTTPException(status_code=404, detail="configuration record not found")
 
@@ -153,7 +156,9 @@ def build_configuration_router(
         scope_type: ConfigurationScope,
         scope_id: str | None,
         mutation: bool,
+        view: ProjectRecordScope,
     ) -> str | None:
+        view.require(scope_type, scope_id)
         platform_scope = scope_type in {
             ConfigurationScope.DEPLOYMENT,
             ConfigurationScope.GLOBAL,
@@ -253,19 +258,7 @@ def build_configuration_router(
         scope_id: str | None = None,
         project_id: str | None = None,
     ) -> dict[str, Any]:
-        actor = authenticated(request)
-        project_resource_ids: set[str] = set()
-        if project_id is not None:
-            if not project_id or projects is None:
-                raise HTTPException(status_code=404, detail="Project not found")
-            try:
-                project = projects.get(project_id, actor.tenant)
-            except ProjectNotFoundError as exc:
-                raise HTTPException(status_code=404, detail="Project not found") from exc
-            if resources is not None:
-                project_resource_ids = {
-                    item.id for item in resources.project_resources(project, actor=actor)
-                }
+        actor, view = authenticated(request)
         normalized_scope_id = scope_id
         try:
             if scope_type is not None:
@@ -274,6 +267,7 @@ def build_configuration_router(
                     scope_type=scope_type,
                     scope_id=scope_id,
                     mutation=False,
+                    view=view,
                 )
             records = service.list_records(
                 key=key,
@@ -286,15 +280,7 @@ def build_configuration_router(
             record.model_dump(mode="json")
             for record in records
             if record_visible(record, actor)
-            and (
-                project_id is None
-                or (
-                    record.scope_type != ConfigurationScope.PROJECT
-                    and record.scope_type != ConfigurationScope.RESOURCE
-                )
-                or (record.scope_type == ConfigurationScope.PROJECT and record.scope_id == project_id)
-                or (record.scope_type == ConfigurationScope.RESOURCE and record.scope_id in project_resource_ids)
-            )
+            and view.includes(record.scope_type, record.scope_id)
         ]
         return {"items": items, "count": len(items)}
 
@@ -303,13 +289,14 @@ def build_configuration_router(
         payload: ConfigurationDraftApiRequest,
         request: Request,
     ) -> dict[str, Any]:
-        actor = authenticated(request)
+        actor, view = authenticated(request)
         try:
             scope_id = require_scope(
                 actor,
                 scope_type=payload.scope_type,
                 scope_id=payload.scope_id,
                 mutation=True,
+                view=view,
             )
             record = service.create_draft(
                 ConfigurationDraftCreate(
@@ -334,9 +321,9 @@ def build_configuration_router(
 
     @router.post("/{record_id}/validate")
     async def validate_record(record_id: str, request: Request) -> dict[str, Any]:
-        actor = authenticated(request)
+        actor, view = authenticated(request)
         try:
-            require_visible(service.get_record(record_id), actor)
+            require_visible(service.get_record(record_id), actor, view)
             return service.validate_record(record_id)
         except (
             ConfigurationError,
@@ -351,15 +338,16 @@ def build_configuration_router(
         payload: ConfigurationPublishApiRequest,
         request: Request,
     ) -> dict[str, Any]:
-        actor = authenticated(request)
+        actor, view = authenticated(request)
         try:
             selected = service.get_record(record_id)
-            require_visible(selected, actor)
+            require_visible(selected, actor, view)
             require_scope(
                 actor,
                 scope_type=selected.scope_type,
                 scope_id=selected.scope_id,
                 mutation=True,
+                view=view,
             )
             record = service.publish(
                 record_id,
@@ -384,13 +372,14 @@ def build_configuration_router(
         payload: ConfigurationRollbackApiRequest,
         request: Request,
     ) -> dict[str, Any]:
-        actor = authenticated(request)
+        actor, view = authenticated(request)
         try:
             scope_id = require_scope(
                 actor,
                 scope_type=payload.scope_type,
                 scope_id=payload.scope_id,
                 mutation=True,
+                view=view,
             )
             record = service.rollback(
                 ConfigurationRollbackRequest(
@@ -418,13 +407,14 @@ def build_configuration_router(
         payload: ConfigurationResetApiRequest,
         request: Request,
     ) -> dict[str, Any]:
-        actor = authenticated(request)
+        actor, view = authenticated(request)
         try:
             scope_id = require_scope(
                 actor,
                 scope_type=payload.scope_type,
                 scope_id=payload.scope_id,
                 mutation=True,
+                view=view,
             )
             record = service.reset_override(
                 ConfigurationResetRequest(
@@ -451,8 +441,8 @@ def build_configuration_router(
         payload: ConfigurationResolveRequest,
         request: Request,
     ) -> dict[str, Any]:
-        actor = authenticated(request)
-        context = tenant_context(payload.context, actor)
+        actor, view = authenticated(request)
+        context = view.bind_context(tenant_context(payload.context, actor))
         try:
             effective = service.resolve(payload.key, context)
         except (ConfigurationError, ConfigurationNotFoundError, ValueError) as exc:
@@ -461,9 +451,9 @@ def build_configuration_router(
 
     @router.get("/{record_id}/impact")
     async def impact(record_id: str, request: Request) -> dict[str, Any]:
-        actor = authenticated(request)
+        actor, view = authenticated(request)
         try:
-            require_visible(service.get_record(record_id), actor)
+            require_visible(service.get_record(record_id), actor, view)
             result = service.impact(record_id)
             result["more_specific_overrides"] = [
                 item

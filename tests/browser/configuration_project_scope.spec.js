@@ -137,7 +137,7 @@ test('switching Project during impact preflight prevents later publication and p
   await expect.poll(() => requested).toBe(true);
   await changeProject(page, 'project-c');
   await expect(page.locator('#configuration-record-list')).toContainText('project-c');
-  const response = page.waitForResponse(url => url.url().endsWith('/impact'));
+  const response = page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/impact'));
   release(); await response;
   await page.waitForTimeout(100);
   expect(writes).toEqual([]); expect(dialogs).toEqual([]);
@@ -153,4 +153,28 @@ test('unsaved Configuration draft survives same-Project refresh and cancelled na
   page.once('dialog', dialog => dialog.dismiss());
   expect(await page.evaluate(async () => (await import('/static/dirty_editor.js')).confirmDiscard())).toBe(false);
   await expect(page.locator('#configuration-draft-reason')).toHaveValue('Keep this draft');
+});
+
+test('Configuration validation carries Project context and the shared client rejects mismatched targets', async ({ page }) => {
+  const calls = [];
+  await mount(page, async (route, url) => {
+    if (url.pathname.endsWith('/validate')) {
+      calls.push({ path: url.pathname, project: url.searchParams.get('project_id') });
+      await route.fulfill({ json: { valid: true } });
+      return true;
+    }
+  });
+  await page.evaluate(async () => {
+    const { validateRecord } = await import('/static/configuration_lifecycle_ui.js');
+    await validateRecord({ id: 'record-project-a' }, { setStatus: () => {} });
+  });
+  expect(calls).toEqual([{ path: '/api/configuration/record-project-a/validate', project: 'project-a' }]);
+  const error = await page.evaluate(async () => {
+    const { projectViewOperation } = await import('/static/project_view_scope.js');
+    try {
+      await projectViewOperation(() => {}).request('/api/configuration/record-project-c/validate?project_id=project-c', { method: 'POST' });
+    } catch (error) { return error.name; }
+  });
+  expect(error).toBe('AbortError');
+  expect(calls).toHaveLength(1);
 });

@@ -1,6 +1,7 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
-  const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { projectViewOperation } = await import(`${BASE}/static/project_view_scope.js`);
+  const apiRequest = (...args) => projectViewOperation(setStatus).request(...args);
   const { timeText, scopeText, renderRecord } = await import(`${BASE}/static/definition_record_view.js`);
   let records = [];
   let projects = [];

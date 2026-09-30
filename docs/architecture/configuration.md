@@ -128,3 +128,15 @@ Startup-only settings must be presented as requiring restart/reload. The UI must
 Configuration records contain actor/time/reason provenance but are not a substitute for the immutable autonomy/security audit introduced later. Sensitive administration will additionally require human identity, step-up authentication, and canonical role-authority controls.
 
 Configuration resolution is deterministic and must never require an LLM.
+
+The optional `project_id` query context applies to detail/validation/impact,
+draft/publish/rollback/reset and resolution as well as listing. It is exposed in
+OpenAPI and carried by the shared Project view client. The canonical API rejects
+sibling Project targets and resource targets outside the selected Project's
+canonical bindings. Resolution fills an omitted Project from the query context
+and rejects a conflicting Project or unbound resource in the body. Existing
+actor, tenant, assurance, revision and platform-scope authority checks still apply.
+Inherited shared records retain their original scope and impact; their usage and
+more-specific override metadata describe that shared record's authorized consumers,
+not a claim that those consumers belong to the selected Project. Omitting the
+query context retains the existing shared-administration contract.

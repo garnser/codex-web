@@ -577,6 +577,40 @@ class ConfigurationApiTests(unittest.TestCase):
             self.assertEqual(response.json()["count"], len(expected))
         self.assertEqual(self.client.get("/api/configuration/records").json()["count"], 7)
 
+    def test_project_context_fences_record_and_resource_mutations(self):
+        params = {"project_id": "project-a"}
+        for scope, scope_id in [("project", "project-c"), ("resource", "resource-c")]:
+            with self.subTest(scope=scope):
+                row = self.service.create_draft(ConfigurationDraftCreate(**self._draft_payload(scope_type=scope, scope_id=scope_id)))
+                for suffix in ("validate", "publish"):
+                    self.assertEqual(self.client.post(f"/api/configuration/{row.id}/{suffix}", params=params, json={}).status_code, 404)
+                self.assertEqual(self.client.get(f"/api/configuration/{row.id}/impact", params=params).status_code, 404)
+                self.assertEqual(self.client.post("/api/configuration/drafts", params=params, json=self._draft_payload(scope_type=scope, scope_id=scope_id)).status_code, 404)
+                for endpoint in ("rollback", "reset"):
+                    payload = {"key": row.key, "scope_type": scope, "scope_id": scope_id}
+                    if endpoint == "rollback": payload["target_revision"] = 1
+                    self.assertEqual(self.client.post(f"/api/configuration/{endpoint}", params=params, json=payload).status_code, 404)
+                self.assertEqual(self.service.get_record(row.id).state.value, "draft")
+                self.assertEqual(self.client.post(f"/api/configuration/{row.id}/validate").status_code, 200)
+        for scope, scope_id in [("project", "project-a"), ("resource", "resource-a"), ("workspace", "ws-a")]:
+            response = self.client.post("/api/configuration/drafts", params=params, json=self._draft_payload(scope_type=scope, scope_id=scope_id))
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["record"]["scope_id"], scope_id)
+
+    def test_project_resolution_inherits_context_and_rejects_foreign_targets(self):
+        parameters = self.client.get("/openapi.json").json()["paths"]["/api/configuration/{record_id}/publish"]["post"]["parameters"]
+        self.assertTrue(any(item["name"] == "project_id" and item["in"] == "query" for item in parameters))
+        params = {"project_id": "project-a"}
+        row = self.service.create_draft(ConfigurationDraftCreate(**self._draft_payload(scope_type="project", scope_id="project-a")))
+        self.service.publish(row.id, ConfigurationPublishRequest(actor="bootstrap"))
+        response = self.client.post("/api/configuration/resolve", params=params, json={"key": row.key})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["effective"]["value"])
+        for context in ({"project_id": "project-c"}, {"resource_id": "resource-c"}):
+            self.assertEqual(self.client.post("/api/configuration/resolve", params=params, json={"key": row.key, "context": context}).status_code, 404)
+        self.actor = self.actor.model_copy(update={"assurance": AuthenticationAssurance.PRIMARY})
+        self.assertEqual(self.client.post(f"/api/configuration/{row.id}/publish", params=params, json={}).status_code, 403)
+
     def test_project_catalog_rejects_blank_missing_and_foreign_projects(self):
         for project in ("", "missing", "foreign"):
             response = self.client.get("/api/configuration/records", params={"project_id": project})

@@ -133,7 +133,7 @@ test(`changing Project during ${stage} prevents a later publish`, async ({ page 
   await expect.poll(() => requested).toBe(true);
   await changeProject(page, 'project-c');
   await expect(page.locator('#definition-registry-list')).toContainText('Profile project-c');
-  const response = page.waitForResponse(url => url.url().endsWith('/' + stage));
+  const response = page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/' + stage));
   release();
   await response;
   await page.waitForTimeout(100);
@@ -158,4 +158,32 @@ test('a dirty Definition draft can cancel navigation without losing its input', 
   expect(allowed).toBe(false);
   await expect(page.locator('#definition-draft-id')).toHaveValue('unsaved.profile.catalog');
   await expect(page.locator('#definition-draft-payload')).toHaveValue('{"profiles":[]}');
+});
+
+test('Definition mutations and exports carry the selected Project to canonical APIs', async ({ page }) => {
+  const calls = [];
+  await mount(page, async (route, url) => {
+    if (url.pathname.endsWith('/validate') || url.pathname.endsWith('/export')) {
+      calls.push({ path: url.pathname, project: url.searchParams.get('project_id') });
+      await route.fulfill({ json: { records: [] } });
+      return true;
+    }
+  });
+  await page.locator('[data-definition-record="record-project-a"]').evaluate(node => { node.open = true; });
+  page.once('dialog', dialog => dialog.accept());
+  await page.locator('[data-definition-action="validate"]').click();
+  await expect.poll(() => calls.length).toBe(1);
+  await page.evaluate(async () => {
+    const { exportDefinitions } = await import('/static/definition_registry_transfer.js');
+    await exportDefinitions(() => {});
+  });
+  await expect.poll(() => calls.length).toBe(2);
+  expect(calls.every(call => call.project === 'project-a')).toBe(true);
+  await changeProject(page, 'project-c');
+  await expect(page.locator('#definition-registry-list')).toContainText('Profile project-c');
+  await page.evaluate(async () => {
+    const { exportDefinitions } = await import('/static/definition_registry_transfer.js');
+    await exportDefinitions(() => {});
+  });
+  expect(calls.at(-1).project).toBe('project-c');
 });

@@ -18,6 +18,7 @@ window.addEventListener('codex:project-changed', event => {
 
 export function projectViewOperation(report, refreshControl = 'refresh-definitions') {
   const started = generation;
+  const selectedProject = projectId;
   const current = () => started === generation;
   const assertCurrent = () => {
     if (!current()) throw new DOMException('Project changed', 'AbortError');
@@ -26,9 +27,16 @@ export function projectViewOperation(report, refreshControl = 'refresh-definitio
     current,
     status(message) { if (current()) report(message); },
     refresh() { if (current()) document.getElementById(refreshControl)?.click(); },
-    async request(...args) {
+    async request(path, options) {
       assertCurrent();
-      const result = await request(...args);
+      if (selectedProject && /^\/api\/(definitions|configuration)(\/|\?|$)/.test(path)) {
+        const url = new URL(path, location.origin);
+        const requested = url.searchParams.get('project_id');
+        if (requested !== null && requested !== selectedProject) throw new DOMException('Project scope changed', 'AbortError');
+        url.searchParams.set('project_id', selectedProject);
+        path = url.pathname + url.search;
+      }
+      const result = await request(path, options);
       assertCurrent();
       return result;
     },
