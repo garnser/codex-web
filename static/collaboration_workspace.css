@@ -54,3 +54,7 @@
 .collab-context-menu .ghost-button{text-align:left;width:100%}
 .collab-destructive-action{border-color:var(--danger,var(--cw-color-danger,#b42318));color:var(--danger,var(--cw-color-danger,#b42318))}
 @media(max-width:520px){.collab-context-actions{justify-content:flex-start}.collab-context-menu{left:0;right:auto}}
+
+.collab-agent-card .cw-metadata-grid>div:has(.collab-skill-management){grid-column:1/-1}
+.collab-skill-management{display:flex;flex-wrap:wrap}.collab-skill-management>*{flex-shrink:0;max-width:100%}
+.collab-agent-card .cw-metadata-grid dd small{display:block;font-weight:400;font-size:.82rem;margin-top:.25rem}
