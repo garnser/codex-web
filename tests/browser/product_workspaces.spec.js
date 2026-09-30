@@ -639,6 +639,35 @@ test('Work Items navigation opens the canonical operator in the main workspace h
   await expect(page.locator('[data-product-workspace-title]')).toHaveText('Work Items');
 });
 
+test('direct Work Item command docks the operator and preserves the requested target', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+  await page.evaluate(async () => {
+    const { installWorkItemsMount } = await import('/static/work_items_mount_ui.js');
+    const dialog = document.createElement('dialog');
+    dialog.innerHTML = '<div class="work-items-shell"><header><h2>Work Items</h2><button class="work-items-close">Close</button></header></div>';
+    document.body.appendChild(dialog);
+    installWorkItemsMount(dialog, detail => { window.commandTarget = detail.commandRef; });
+    window.dispatchEvent(new CustomEvent('codex:open-work-items', { detail: { commandRef: 'repo#1', commandProject: 'home' } }));
+  });
+  await expect(page.locator('[data-product-workspace-host="work"] > .work-items-shell')).toBeVisible();
+  await expect(page.locator('dialog:modal')).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => window.commandTarget)).toBe('repo#1');
+});
+
+test('post-creation Project Setup enters the routed page without a modal', async ({ page }) => {
+  await page.route('**/api/**', route => route.fulfill({ json: new URL(route.request().url()).pathname.endsWith('/projects') ? [] : { items: [] } }));
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+  await page.evaluate(() => {
+    document.getElementById('project-setup-launch').remove();
+    document.getElementById('project-setup-dialog').remove();
+  });
+  await page.addScriptTag({ url: '/static/project_setup_ui.js', type: 'module' });
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:project-created', { detail: { projectId: 'home' } })));
+  await expect(page.locator('[data-product-workspace-host="setup"] > #project-setup-dialog')).toBeVisible();
+  await expect(page.locator('dialog:modal')).toHaveCount(0);
+  await expect(page.locator('[data-product-workspace-title]')).toHaveText('Project Settings');
+});
+
 
 test('required section destinations are discoverable in project navigation and route into the main pane', async ({ page }) => {
   const fs = require('fs');

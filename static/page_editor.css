@@ -6,6 +6,7 @@
 .page-editor header h2{margin:0;font-size:1.2rem}
 .page-editor header p{margin:6px 0;max-width:70ch;overflow-wrap:anywhere}
 .page-editor-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.page-editor-actions strong{overflow-wrap:anywhere;min-width:0}
 .page-editor-actions button{width:auto!important;min-height:36px}
 .page-editor [data-body],.page-editor [data-skill-options],.page-editor [data-member-options]{padding:16px;max-height:none!important;overflow:visible!important}
 .page-editor .route-test{grid-template-columns:minmax(0,1fr)}

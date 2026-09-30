@@ -94,7 +94,10 @@ Integration also use this surface. Bot credential inputs are write-only and clea
 on close; they never enter dirty-editor snapshots or browser draft storage.
 
 Routed Goals, Decisions, Metrics, Company Operations, Memory, Attention and
-Project Setup already adopt their canonical domain DOM non-modally. Mature
+Project Setup already adopt their canonical domain DOM non-modally.
+Direct Work Item commands preserve their requested target while entering the
+same routed Work Items page; post-creation and programmatic Project Setup
+launches also enter that routed page instead of bypassing it with a modal. Mature
 administration editors remain in their adopted workspace cards. Lightweight
 Project creation, command selection and deliberate lifecycle/approval
 confirmations remain transient dialogs. Those dialogs must not become containers

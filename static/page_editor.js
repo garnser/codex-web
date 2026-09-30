@@ -7,7 +7,7 @@ if (!document.querySelector('[data-page-editor-style]')) {
 }
 
 // Presentation only: move the live editor, retaining canonical API handlers.
-export function showPageEditor(dialog, { workspace } = {}) {
+export function showPageEditor(dialog, { workspace, closeOnNavigation = true } = {}) {
   if (dialog.open) return;
   if (workspace && window.CodexProductUI?.openWorkspace?.(workspace) === false) return false;
   const opener = document.activeElement;
@@ -42,8 +42,10 @@ export function showPageEditor(dialog, { workspace } = {}) {
   // Navigation has already passed the shell's shared dirty-editor guard.
   const leave = () => dialog.close();
   window.addEventListener('keydown', escape);
-  window.addEventListener('codex:project-workspace-page', leave);
-  window.addEventListener('codex:project-changed', leave);
+  if (closeOnNavigation) {
+    window.addEventListener('codex:project-workspace-page', leave);
+    window.addEventListener('codex:project-changed', leave);
+  }
   dialog.addEventListener('close', () => {
     window.removeEventListener('keydown', escape);
     window.removeEventListener('codex:project-workspace-page', leave);
@@ -60,6 +62,9 @@ export function showPageEditor(dialog, { workspace } = {}) {
 export function inlineEditorActions(root, editor, { selector, backText = 'Back' } = {}) {
   root.classList.add('page-inline-editor');
   const actions = document.createElement('div'); actions.className = 'page-editor-actions';
+  const identity = document.createElement('strong');
+  identity.textContent = root.dataset.resourceId ? `Resource ${root.dataset.resourceId}` : root.querySelector('summary')?.textContent || 'Editor';
+  actions.appendChild(identity);
   const back = document.createElement('button'); back.type = 'button'; back.textContent = backText;
   back.addEventListener('click', () => {
     if (!confirmDiscard(editor)) return;
