@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const { renderOperationsOverview } = await import(`${BASE}/static/operations_overview.js`);
   let actor = null;
@@ -218,9 +219,7 @@
       setStatus("Runtime recovery requires human admin + MFA/step-up or the runtime:admin service scope.");
       return;
     }
-    if (!window.confirm(
-      "Resume stale active threads and schedule drains for queued turns? This changes runtime execution scheduling but does not mark Work Items successful or bypass approvals.",
-    )) return;
+    if (!await confirmAction({ action: 'Resume runtime recovery', target: 'Stale active Threads and queued turns', risk: 'high', consequence: 'The server schedules eligible recovery work. Work Items are not marked successful and approvals remain enforced.', recovery: 'Recovery scheduling does not undo completed external effects.' })) return;
     try {
       const result = await apiRequest("/api/recovery/resume", { method: "POST" });
       setStatus(`Recovery scheduled · stale threads: ${result.resumingStaleThreads?.length || 0} · active turns: ${result.activeTurns} · queued turns: ${result.queuedTurns}.`);

@@ -354,3 +354,52 @@ loading more canonical records. Normal anchors preserve browser navigation and
 the shared unsaved-change guard. Source object identifiers can be written into
 the current history entry so Back restores that object; editor values, credentials,
 and arbitrary return URLs are never captured by this mechanism.
+
+### Consequential action review
+
+`action_confirmation.js` provides the shared transient review dialog for consequential
+operator actions. This is a presentation contract, not an approval, policy decision,
+or ActionIntent. Existing domain APIs retain authorization, step-up, independent
+approval, dependency validation, revision checks, durable receipts and reconciliation.
+The browser does not infer that a displayed acknowledgement grants permission.
+
+Callers supply an explicit action label, target identity/scope, consequence and a
+truthful recovery path. Known canonical impact is included with its visibility and
+completeness limits. A failed required impact read blocks submission rather than
+presenting zero dependencies. Secret values, token material and key material must
+never enter the confirmation; reference IDs and non-sensitive metadata are sufficient.
+
+Presentation risk has two levels. Bounded changes use one review with Cancel as the
+initial focus; high-impact changes also require explicit acknowledgement and use
+visually distinct action styling. Revocation, destructive lifecycle changes, live
+publication/routing changes, authority grants and recovery with irreversible effects
+use the high-impact review. Inactive draft creation and read-only validation use their
+normal form feedback without another confirmation. Synchronous unsaved-edit navigation
+protection remains a separate contract in `dirty_editor.js`.
+
+The same review pattern covers identity/session/token and membership controls, Secret
+and Key lifecycle, Resource changes, Agent Profile/Team lifecycle, Execution Profiles,
+Definitions/Configuration, provider binding, model routing, entitlements, Work Graph,
+extensions, workers/workspaces, artifacts/evidence and recovery operations. Existing
+specialized lifecycle forms can use `protectActionDialog` while retaining their own
+required reason, dependency and revision controls. These action labels and structural
+UI routes are code-owned presentation of existing API contracts, not a second mutable
+authority or Definition catalog.
+
+Dialogs render supplied labels as text, trap keyboard focus, support Escape/Cancel,
+and return focus to the initiating control. Project/route navigation invalidates the
+review, including an A-to-B-to-A visit; callers also fence mutable selection/revision
+state where applicable. Dialogs fit narrow viewports and enlarged text. Only a
+currently valid accepted review proceeds to the existing canonical API. Recovery text
+must distinguish a later authorized replacement/revision from Undo; irreversible
+revocation, discarded data and already completed external effects have no invented
+Undo path. Uncertain provider results still require canonical reconciliation.
+
+Thread archive offers a direct **Unarchive Thread** recovery control through the
+existing canonical restore API, scoped to the Project visit. Knowledge deletion
+explains its lack of Undo. Skill publish/archive and pin changes review exact
+revisions and available usage. Autonomy resume, scoped unpause and leaving dry-run
+or simulation require review. Emergency pause/kill controls remain immediate so
+stopping work is not delayed by a modal. Automation publication reviews its Project,
+prior revision and resulting lifecycle before creating/publishing the candidate;
+ordinary manual run admission still uses its existing canonical gates.

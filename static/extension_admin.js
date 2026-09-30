@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { confirmExtensionLifecycle, confirmExtensionRevoke, confirmExtensionGrant } = await import(`${BASE}/static/extension_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const { secretLinks, referenceAttributes, focusReference, bindWhenReady } = await import(`${BASE}/static/reference_links.js`);
   const { canMutateExtensions, extensionMutationAuthorityText } = await import(`${BASE}/static/extension_authority.js`);
@@ -196,10 +197,7 @@
       reason = window.prompt(`Reason for ${action.replace("-", " ")} of ${label}:`, "");
       if (reason === null) return;
     }
-    const confirmation = action === "remove"
-      ? `Remove ${label}? Current lifecycle: ${lifecycle}. Removal revokes active grants, stops future runtime use, and preserves the canonical tombstone; hard deletion is not supported.`
-      : `${action.replace("-", " ")} ${label}? Current lifecycle: ${lifecycle}. This updates canonical extension state.`;
-    if (!window.confirm(confirmation)) return;
+    if (!await confirmExtensionLifecycle({ action, label, installationId, lifecycle, button })) return;
 
     const status = document.getElementById("extension-admin-status");
     button.disabled = true;
@@ -239,7 +237,7 @@
       const scope = resourceIds.length
         ? `${resourceIds.length} selected canonical resource(s)`
         : "workspace-wide with no resource restriction";
-      if (!window.confirm(`Grant ${capability} to this extension with ${scope}? Installation and enablement remain separate operations.`)) return;
+      if (!await confirmExtensionGrant({ installationId, capability, scope, button })) return;
       button.disabled = true;
       try {
         await apiRequest(
@@ -269,7 +267,7 @@
         && button.dataset.extensionLifecycle === "enabled"
         ? " This is a mandatory capability; the server will quarantine the enabled extension."
         : "";
-      if (!window.confirm(`Revoke ${capability}?${quarantineWarning}`)) return;
+      if (!await confirmExtensionRevoke({ installationId, capability, grantId, quarantineWarning, button })) return;
       button.disabled = true;
       try {
         await apiRequest(

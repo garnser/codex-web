@@ -1,3 +1,4 @@
+import { confirmSkillAction } from './skill_action_confirmation.js';
 import { referenceLink } from './reference_navigation.js';
 import { request } from "./api_client.js";
 
@@ -427,11 +428,16 @@ function bindDetail(root) {
   const item = state.selected;
   query(root, "[data-skill-revision]")?.addEventListener("change", (event) => selectSkill(root, item.skillId, Number(event.target.value)));
   query(root, "[data-skill-edit]")?.addEventListener("click", () => showEditor(root, item));
-  query(root, "[data-skill-publish]")?.addEventListener("click", () => mutation(root,
+  query(root, "[data-skill-publish]")?.addEventListener("click", async () => {
+    if (!await confirmSkillAction("Publish", item, root, () => state.selected === item)) return;
+    return mutation(root,
     `/api/skills/${encodeURIComponent(item.skillId)}/revisions/${encodeURIComponent(item.recordId)}/publish`,
     { reason: "Publish reviewed Skill revision" }
-  ));
-  query(root, "[data-skill-archive]")?.addEventListener("click", () => mutation(root, `/api/skills/${encodeURIComponent(item.skillId)}/archive`, { reason: "Archive Skill" }));
+  ); });
+  query(root, "[data-skill-archive]")?.addEventListener("click", async () => {
+    if (!await confirmSkillAction("Archive", item, root, () => state.selected === item)) return;
+    return mutation(root, `/api/skills/${encodeURIComponent(item.skillId)}/archive`, { reason: "Archive Skill" });
+  });
   query(root, "[data-skill-restore]")?.addEventListener("click", () => mutation(root, `/api/skills/${encodeURIComponent(item.skillId)}/restore`, { reason: "Restore Skill" }));
   query(root, "[data-skill-export]")?.addEventListener("click", async () => {
     const bundle = await request(`/api/skills/${encodeURIComponent(item.skillId)}/export?revision=${encodeURIComponent(item.revision)}`);
@@ -444,10 +450,11 @@ function bindDetail(root) {
   });
   query(root, "[data-skill-attach]")?.addEventListener("click", async () => {
     const profileId = query(root, "[data-skill-profile]")?.value;
-    if (!profileId) return;
+    if (!profileId || !await confirmSkillAction("Attach", item, root, () => state.selected === item, profileId)) return;
     await mutation(root, `/api/skills/${encodeURIComponent(item.skillId)}/profiles/${encodeURIComponent(profileId)}?revision=${encodeURIComponent(item.revision)}`, null);
   });
   root.querySelectorAll("[data-skill-detach]").forEach((button) => button.addEventListener("click", async () => {
+    if (!await confirmSkillAction("Detach", item, root, () => state.selected === item, button.dataset.skillDetach)) return;
     await mutation(root, `/api/skills/${encodeURIComponent(item.skillId)}/profiles/${encodeURIComponent(button.dataset.skillDetach)}`, null, "DELETE");
   }));
   query(root, "[data-provenance-load]")?.addEventListener("click", () => {

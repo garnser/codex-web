@@ -35,7 +35,7 @@ class WorkGraphAdminUiTests(unittest.TestCase):
         self.assertIn("blocking_refs", javascript)
         self.assertIn("downstream", javascript)
         self.assertIn("upstream", javascript)
-        self.assertIn("window.confirm", javascript)
+        self.assertIn("confirmAction", javascript)
         self.assertIn("server will reject cycles", javascript)
         self.assertIn("graph-runnable does not grant execution authority", javascript)
         self.assertIn("Open canonical Work Item operator detail", javascript)

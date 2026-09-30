@@ -23,8 +23,8 @@ class ResourceCatalogManagementUiTests(unittest.TestCase):
         self.assertIn("owner_identity_id", javascript)
         self.assertIn("membership.organization_id === actor.organization_id", javascript)
         self.assertIn("membership.workspace_id === actor.workspace_id", javascript)
-        self.assertIn("unavailable for privileged resolution", javascript)
-        self.assertIn("window.confirm", javascript)
+        self.assertIn("Privileged resolution will no longer treat this resource as available", (ROOT / "static" / "resource_lifecycle_confirmation.js").read_text())
+        self.assertIn("confirmAction", javascript)
 
 
 if __name__ == "__main__":

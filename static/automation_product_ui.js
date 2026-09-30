@@ -1,3 +1,4 @@
+import { confirmAction } from './action_confirmation.js';
 import { actionFeedback } from "./workspace_components.js";
 import { trackUx } from "./ux_telemetry.js";
 import { trackDirtyEditor, confirmDiscard } from "./dirty_editor.js";
@@ -511,6 +512,12 @@ async function saveEditor(event) {
   const existingItem = state.creating ? null : selected();
   const definition = definitionFromEditor(form, existingItem?.definition || {});
   const automationId = form.elements.automation_id.value.trim();
+  if (!await confirmAction({ action: 'Publish Automation changes', target: `${automationId} in Project ${context.projectId}`, risk: 'high',
+    consequence: `Creates and publishes a new canonical revision with lifecycle ${definition.lifecycle}. Future event, schedule and manual admission use that revision.`,
+    impact: `Replaces active revision ${existingItem?.definitionRef?.revision || 'none'}. Existing run provenance is retained; external effects are not exhaustively previewed here.`,
+    recovery: 'Edit and publish a subsequent revision or pause the Automation. Already dispatched effects are not undone.',
+    current: () => context.current() && form.isConnected,
+  })) return;
   form.dataset.saving = 'true';
   const controls = [...form.querySelectorAll('input,select,textarea,button[type="submit"]')];
   const disabled = controls.map(control => control.disabled);

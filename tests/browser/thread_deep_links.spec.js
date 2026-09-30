@@ -241,6 +241,24 @@ for (const action of ['name', 'archive']) {
   });
 }
 
+test('archived Thread offers canonical unarchive in its original Project visit', async ({ page }) => {
+  await mockChatApi(page);
+  const restored = [];
+  await page.route('**/api/threads/home-thread/unarchive?*', route => {
+    restored.push(new URL(route.request().url()).searchParams.get('project_id'));
+    return route.fulfill({ json: {} });
+  });
+  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await expect(page.locator('#thread-title')).toHaveText('Home thread');
+  await page.locator('#thread-settings-menu > summary').click();
+  await page.locator('#archive-thread').click();
+  await page.getByRole('button', { name: 'Unarchive Thread' }).click();
+  await expect(page.locator('[data-thread-archive-recovery]')).toContainText('Restored Thread home-thread');
+  expect(restored).toEqual(['home']);
+  await selectProject(page, 'alpha');
+  await expect(page.locator('[data-thread-archive-recovery]')).toHaveCount(0);
+});
+
 test('a previous conversation send failure does not appear in the current conversation', async ({ page }) => {
   await mockChatApi(page);
   let pending;

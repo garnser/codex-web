@@ -1,3 +1,4 @@
+const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require('@playwright/test');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -207,6 +208,7 @@ test('catalog quarantine requires available Project consumer impact and shows it
   unavailable = false;
   page.on('dialog', async dialog => { confirmations.push(dialog.message()); await dialog.accept(dialog.type() === 'prompt' ? 'Reviewed consumers' : undefined); });
   await page.locator('[data-definition-action="quarantine"]').click();
+  confirmations.push(await resolveAction(page));
   await expect.poll(() => mutations).toBe(1);
   expect(confirmations.join(' ')).toContain('4 profile consumer reference(s)');
   expect(confirmations.join(' ')).toContain('sibling Project consumers are outside this preview');

@@ -32,7 +32,7 @@ class ExtensionPackageAdminUiTests(unittest.TestCase):
             '/api/extensions/packages/${encodeURIComponent(packageRef)}/install',
             javascript,
         )
-        self.assertIn("window.confirm", javascript)
+        self.assertIn("confirmAction", javascript)
         self.assertIn("data-extension-upgrade-host", javascript)
         self.assertIn("codex:extension-packages-rendered", javascript)
         self.assertIn("canMutateMutation", javascript)

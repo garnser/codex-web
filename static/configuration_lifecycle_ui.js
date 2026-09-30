@@ -1,3 +1,4 @@
+import { confirmAction } from './action_confirmation.js';
 import { projectViewOperation } from './project_view_scope.js';
 
 export async function validateRecord(record, { active, setStatus }) {
@@ -18,15 +19,16 @@ export async function publishRecord(record, { active, setStatus }) {
   let impact = null;
   try {
     impact = await request(`/api/configuration/${encodeURIComponent(record.id)}/impact`);
-  } catch (_) {}
+  } catch (error) {
+    report(`Configuration impact unavailable: ${error.message}. Retry before publishing.`);
+    return;
+  }
   if (!operation.current()) return;
   const reason = window.prompt(`Publication reason for ${record.key} r${record.revision}:`, record.create_reason || "");
   if (reason === null) return;
   const overrides = impact?.more_specific_overrides?.length || 0;
   const startup = impact?.startup_only ? " This is startup-only and will not hot-reload." : "";
-  if (!window.confirm(
-    `Publish ${record.key} r${record.revision}? Active revision in this exact slot: ${active?.revision ?? "none"}. ${overrides} more-specific published override(s) currently exist.${startup} Publishing changes runtime configuration but cannot grant authority.`,
-  )) return;
+  if (!await confirmAction({ action: 'Publish configuration', target: `${record.key} r${record.revision} at ${record.scope_type}:${record.scope_id || "default"}`, risk: 'high', consequence: `Publish ${record.key} r${record.revision}? Active revision in this exact slot: ${active?.revision ?? "none"}. ${overrides} more-specific published override(s) currently exist.${startup} Publishing changes runtime configuration but cannot grant authority.`, recovery: 'A later rollback publishes a new immutable revision after canonical validation.', current: operation.current })) return;
   try {
     await request(`/api/configuration/${encodeURIComponent(record.id)}/publish`, {
       method: "POST",
@@ -48,9 +50,7 @@ export async function rollbackRecord(record, { active, setStatus }) {
   if (!active || active.id === record.id) return;
   const reason = window.prompt(`Reason for rollback to ${record.key} r${record.revision}:`, "");
   if (reason === null) return;
-  if (!window.confirm(
-    `Rollback ${record.key} from active r${active.revision} to the value of r${record.revision}? The server creates and publishes a new immutable revision; history is preserved.`,
-  )) return;
+  if (!await confirmAction({ action: 'Roll back configuration', target: `${record.key} r${record.revision} at ${record.scope_type}:${record.scope_id || "default"}`, risk: 'high', consequence: `Rollback ${record.key} from active r${active.revision} to the value of r${record.revision}? The server creates and publishes a new immutable revision; history is preserved.`, recovery: 'History is preserved; subsequent changes require a new validated revision.', current: operation.current })) return;
   try {
     const response = await request("/api/configuration/rollback", {
       method: "POST",
@@ -76,9 +76,7 @@ export async function resetRecord(record, { active, setStatus }) {
   if (!active || active.id !== record.id) return;
   const reason = window.prompt(`Reason for reverting ${record.key} r${record.revision} to inherited/default resolution:`, "");
   if (reason === null) return;
-  if (!window.confirm(
-    `Revert the explicit ${record.key} override at ${record.scope_type}${record.scope_id ? `:${record.scope_id}` : ""}? The active revision is preserved in history and superseded by a disabled tombstone. Resolution will fall through to the next applicable published scope or code-owned default.`,
-  )) return;
+  if (!await confirmAction({ action: 'Reset configuration override', target: `${record.key} r${record.revision} at ${record.scope_type}:${record.scope_id || "default"}`, risk: 'high', consequence: `Revert the explicit ${record.key} override at ${record.scope_type}${record.scope_id ? `:${record.scope_id}` : ""}? The active revision is preserved in history and superseded by a disabled tombstone. Resolution will fall through to the next applicable published scope or code-owned default.`, recovery: 'Restore an explicit value by publishing a new authorized revision.', current: operation.current })) return;
   try {
     const response = await request("/api/configuration/reset", {
       method: "POST",

@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   let generation = 0;
 
@@ -142,7 +143,7 @@
       if (slot && select.value) secretBindings[slot] = select.value;
     });
 
-    if (!window.confirm(`Update canonical configuration references for ${label}? Only configuration record IDs and secret IDs are stored; this does not grant authority or reveal secret material.`)) return;
+    if (!await confirmAction({ action: 'Change extension configuration', target: `${label} (${installationId})`, risk: 'high', consequence: `Update canonical configuration references for ${label}? Only configuration record IDs and secret IDs are stored; this does not grant authority or reveal secret material.`, recovery: 'Previous reference selections can be resubmitted only with current canonical authorization.', current: () => root.isConnected })) return;
     button.disabled = true;
     try {
       await apiRequest(

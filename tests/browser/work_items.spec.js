@@ -1,3 +1,4 @@
+const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require('@playwright/test');
 
 function projectPayload() {
@@ -538,10 +539,8 @@ test('dirty TaskSource supports cancellation, failed-save recovery and confirmed
   page.once('dialog', dialog => dialog.accept());
   await page.getByRole('button', { name: 'Discard source edits' }).click();
   await expect(page.locator('.work-source-scope')).toHaveValue('team/project-a');
-  page.once('dialog', dialog => dialog.dismiss());
-  await page.locator('.work-source-clear').click(); expect(deletes).toBe(0);
-  page.once('dialog', dialog => dialog.accept());
-  await page.locator('.work-source-clear').click();
+  await page.locator('.work-source-clear').click(); await resolveAction(page, false); expect(deletes).toBe(0);
+  await page.locator('.work-source-clear').click(); await resolveAction(page);
   await expect.poll(() => deletes).toBe(1);
 });
 

@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   let actor = null;
   let intents = [];
@@ -203,9 +204,7 @@
     if (!canRecover()) {
       return setRecoveryStatus("Stale ActionIntent recovery requires admin + MFA/step-up or action-intent:admin service authority.");
     }
-    if (!window.confirm(
-      "Recover stale ActionIntent worker claims? Expired CLAIMED intents return to PENDING; expired EXECUTING intents become UNCERTAIN because the external outcome may already have occurred.",
-    )) return;
+    if (!await confirmAction({ action: 'Recover stale ActionIntents', target: 'Expired canonical worker claims', risk: 'high', consequence: 'Expired CLAIMED intents return to PENDING. Expired EXECUTING intents become UNCERTAIN because external effects may already exist.', recovery: 'Reconcile uncertain outcomes before any safe retry; recovery is not evidence that the provider action failed.' })) return;
     try {
       const result = await apiRequest("/api/action-intents/recover-stale", { method: "POST" });
       setRecoveryStatus(`Recovered ${result.intent_ids?.length || 0} stale ActionIntent claim(s). Executing expiries remain explicitly uncertain until reconciled.`);

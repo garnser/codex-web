@@ -34,9 +34,9 @@ class CryptoKeyAdminUiTests(unittest.TestCase):
             '/api/crypto/keys/${encodeURIComponent(keyId)}/revoke',
             javascript,
         )
-        self.assertIn("becomes decrypt-only", javascript)
-        self.assertIn("may become undecryptable", javascript)
-        self.assertIn("Key material is never exposed", javascript)
+        self.assertIn("becomes decrypt-only", (ROOT / "static" / "key_lifecycle_confirmation.js").read_text())
+        self.assertIn("may become undecryptable", (ROOT / "static" / "key_lifecycle_confirmation.js").read_text())
+        self.assertIn("Key material is never exposed", (ROOT / "static" / "key_lifecycle_confirmation.js").read_text())
         self.assertNotIn("ciphertext_b64", javascript)
         self.assertNotIn("wrapped_data_key_b64", javascript)
         self.assertNotIn("localStorage", javascript)

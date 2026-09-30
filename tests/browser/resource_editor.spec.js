@@ -1,3 +1,4 @@
+const { resolveAction } = require('./action_confirmation_helpers');
 const fs = require('fs');
 const path = require('path');
 const { test, expect } = require('@playwright/test');
@@ -19,6 +20,7 @@ async function setup(page) {
     const pathname = new URL(route.request().url()).pathname;
     if (pathname === '/api/identity/me') return route.fulfill({ json: { organization_id: 'org', workspace_id: 'ws' } });
     if (pathname === '/api/identity') return route.fulfill({ json: { humans: [{ id: 'owner', display_name: 'Owner' }], memberships: [{ identity_id: 'owner', organization_id: 'org', workspace_id: 'ws' }] } });
+    if (pathname.endsWith('/relationships') && route.request().method() === 'GET') return route.fulfill(state.failRead ? { status: 503, json: { detail: 'Relationships unavailable' } } : { json: { items: [{ from_resource_id: 'one', to_resource_id: 'two', relationship_type: 'depends_on' }] } });
     if (pathname.startsWith('/api/resources')) {
       if (route.request().method() !== 'GET') {
         state.writes.push(route.request().postDataJSON());
@@ -84,16 +86,14 @@ test('failed save retains draft and a late successful save does not erase newer 
   const name = editor.locator('[data-resource-edit-name]');
   await name.fill('Submitted value');
   state.failWrite = true;
-  page.once('dialog', dialog => dialog.accept());
-  await editor.locator('[data-resource-save]').click();
+  await editor.locator('[data-resource-save]').click(); await resolveAction(page);
   await expect(page.locator('#resource-management-status')).toContainText('conflict');
   await expect(name).toHaveValue('Submitted value');
   await expect(editor.locator('[data-dirty-editor-status]')).toHaveText('Unsaved changes');
   state.failWrite = false;
   let release;
   state.holdWrite = new Promise(resolve => { release = resolve; });
-  page.once('dialog', dialog => dialog.accept());
-  await editor.locator('[data-resource-save]').click();
+  await editor.locator('[data-resource-save]').click(); await resolveAction(page);
   await expect.poll(() => state.writes.length).toBe(2);
   await name.fill('Newer draft');
   release();
@@ -120,7 +120,7 @@ test('create and relationship drafts retain selected values on catalog hydration
   await expect(page.locator('#resource-relationship-to')).toHaveValue('two');
   state.failWrite = true;
   page.once('dialog', dialog => dialog.accept());
-  await page.locator('#create-resource-relationship').click();
+  await page.locator('#create-resource-relationship').click(); await resolveAction(page);
   await expect(page.locator('#resource-management-status')).toContainText('conflict');
   await expect(relationship.locator('[data-dirty-editor-status]')).toHaveText('Unsaved changes');
   page.once('dialog', dialog => dialog.accept());
@@ -132,8 +132,7 @@ test('create and relationship drafts retain selected values on catalog hydration
 test('successful resource save releases navigation and pristine filters do not prompt', async ({ page }) => {
   const { state, editor } = await setup(page);
   await editor.locator('[data-resource-edit-name]').fill('Saved resource name');
-  page.once('dialog', dialog => dialog.accept());
-  await editor.locator('[data-resource-save]').click();
+  await editor.locator('[data-resource-save]').click(); await resolveAction(page);
   await expect(page.locator('#resource-management-status')).toContainText('Updated one');
   await expect(editor.locator('[data-dirty-editor-status]')).toHaveText('No unsaved changes');
   await page.locator('#resource-search').fill('two');
@@ -220,4 +219,26 @@ test('Bot Integration uses the same page, retains submit ownership and clears wr
     await expect(dialog.locator('#bot-token')).toHaveValue('');
     expect(await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }))).not.toContain('write-only-test-marker');
   }
+});
+
+
+test('resource disable reviews canonical relationships and allows cancellation before mutation', async ({ page }) => {
+  const { state, editor } = await setup(page);
+  await editor.locator('[data-resource-edit-lifecycle]').selectOption('disabled');
+  await editor.locator('[data-resource-save]').click();
+  await expect(page.locator('[data-action-confirmation]')).toContainText('Target: one');
+  await expect(page.locator('[data-action-impact]')).toContainText('depends_on: one → two');
+  await resolveAction(page, false); expect(state.writes).toEqual([]);
+  await expect(editor.locator('[data-resource-save]')).toBeFocused();
+  await editor.locator('[data-resource-save]').click(); await resolveAction(page);
+  await expect.poll(() => state.writes.length).toBe(1);
+  expect(state.writes[0].lifecycle).toBe('disabled');
+});
+
+test('resource lifecycle does not proceed when canonical relationship impact is unavailable', async ({ page }) => {
+  const { state, editor } = await setup(page); state.failRead = true;
+  await editor.locator('[data-resource-edit-lifecycle]').selectOption('deleted');
+  await editor.locator('[data-resource-save]').click();
+  await expect(page.locator('#resource-management-status')).toContainText('Resource lifecycle blocked');
+  await expect(page.locator('[data-action-confirmation]')).toHaveCount(0); expect(state.writes).toEqual([]);
 });

@@ -1,3 +1,4 @@
+import { confirmAction } from './action_confirmation.js';
 import { projectViewOperation } from './project_view_scope.js';
 import {
   captureAuthority,
@@ -102,7 +103,7 @@ function cloneRole(index) {
   render();
 }
 
-function removeRole(index) {
+async function removeRole(index) {
   capture();
   const role = state.payload.roles[index];
   if (!role) return;
@@ -113,7 +114,12 @@ function removeRole(index) {
     setStatus('Required structural execution roles cannot be removed.');
     return;
   }
-  if (!window.confirm('Remove Role ' + role.id + ' from this draft payload?')) return;
+  const payload = state.payload;
+  if (!await confirmAction({ action: 'Remove draft Role', target: role.id,
+    consequence: 'Remove this Role and its draft bindings, delegations and inheritance references. Published definitions remain unchanged.',
+    recovery: 'Reload the source to discard draft edits, or edit the inactive draft before publication.',
+    current: () => state.payload === payload && payload.roles[index] === role,
+  })) return;
   state.payload.roles.splice(index, 1);
   if (state.source.kind === 'authority-role-catalog') {
     state.payload.bindings = (state.payload.bindings || [])

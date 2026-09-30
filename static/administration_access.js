@@ -1,3 +1,4 @@
+import { confirmAction } from './action_confirmation.js';
 function esc(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -327,7 +328,7 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
       return;
     }
     const bindingId = button.dataset.accessRemoveBinding;
-    if (!window.confirm(`Remove direct authority binding ${bindingId} from this scope?`)) return;
+    if (!await confirmAction({ action: 'Remove direct authority', target: bindingId, risk: 'high', consequence: `Remove this direct grant in Project ${project.value || 'shared scope'}. Other inherited grants remain canonical.`, recovery: 'A new grant requires current canonical authority and a new reason.', trigger: button })) return;
     button.disabled = true;
     setMessage("Removing canonical direct assignment…");
     try {

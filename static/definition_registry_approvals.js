@@ -1,3 +1,4 @@
+import { confirmAction } from './action_confirmation.js';
 import { request as apiRequest } from './api_client.js';
 
 export function canApprove(actor, scopeType) {
@@ -36,10 +37,8 @@ export async function recordPublicationApproval(record, actor, current = () => t
     '',
   );
   if (reason === null || !reason.trim()) return null;
-  if (!window.confirm(
-    'Record publication approval as ' + (actor?.identity_id || 'current actor')
-      + '? A sensitive publication still requires a different identity to perform the final publish.',
-  )) return null;
+  if (!await confirmAction({ action: 'Record publication approval', target: `${record.definition_id} r${record.revision} (${record.record_id})`, risk: 'high', consequence: 'Record publication approval as ' + (actor?.identity_id || 'current actor')
+      + '? A sensitive publication still requires a different identity to perform the final publish.', recovery: 'Approval is durable evidence for this candidate; it does not itself publish the definition.', current: current })) return null;
 
   const response = await apiRequest(
     '/api/definitions/' + encodeURIComponent(record.record_id) + '/publication-approvals',

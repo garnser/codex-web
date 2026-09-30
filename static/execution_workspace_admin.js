@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   let actor = null;
   let inspections = [];
@@ -220,7 +221,7 @@
     const consequence = discard
       ? "The workspace is terminal and the backend may delete its branch/worktree according to canonical cleanup semantics."
       : "The lease is released and the isolated workspace is cleaned up; the branch is retained where the backend supports it.";
-    if (!window.confirm(`${label} ${subjectText(item.workspace)} / ${item.workspace.execution_id}? ${consequence}`)) return;
+    if (!await confirmAction({ action: label, target: `${subjectText(item.workspace)} / ${item.workspace.execution_id}`, risk: 'high', consequence, recovery: discard ? 'Discarded uncommitted workspace data cannot be recovered through Undo.' : 'Any later workspace use requires a new canonical lease.' })) return;
     const reason = window.prompt("Release reason (optional):", discard ? "operator discard" : "operator release");
     if (reason === null) return;
     try {
@@ -239,9 +240,7 @@
     if (!canRecover()) {
       return setStatus("Expired-workspace recovery requires human admin + MFA/step-up or execution-workspace:admin service authority.");
     }
-    if (!window.confirm(
-      "Recover expired workspace leases? Expired workspaces become ABANDONED and git worktrees are cleaned without claiming successful integration.",
-    )) return;
+    if (!await confirmAction({ action: 'Recover expired workspaces', target: 'Expired canonical workspace leases', risk: 'high', consequence: 'Eligible workspaces become ABANDONED and git worktrees are cleaned. Integration is not declared successful.', recovery: 'Uncommitted data cleaned by recovery has no Undo in this interface.' })) return;
     try {
       const result = await apiRequest("/api/execution-workspaces/recover", { method: "POST" });
       setStatus(`Recovered ${result.items?.length || 0} expired workspace(s).`);

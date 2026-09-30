@@ -1,3 +1,4 @@
+const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require("@playwright/test");
 
 function scopedAutomation(project) {
@@ -93,7 +94,7 @@ for (const action of ['manual', 'draft', 'unmounted-draft']) {
     await expect(card).toContainText('Automation project-a');
     if (action.endsWith('draft')) {
       await card.locator('[data-automation-edit]').click();
-      await card.locator('[data-automation-editor] button[type="submit"]').click();
+      await card.locator('[data-automation-editor] button[type="submit"]').click(); await resolveAction(page);
     } else {
       await card.locator('[data-automation-run-now]').click();
     }
@@ -322,7 +323,7 @@ test("Automation editor drafts and publishes through canonical APIs", async ({ p
   await editor.locator('[name="name"]').fill("Edited review");
   await editor.locator('[name="lifecycle"]').selectOption("paused");
   await editor.locator('[name="max_concurrency"]').fill("2");
-  await editor.locator('button[type="submit"]').click();
+  await editor.locator('button[type="submit"]').click(); await resolveAction(page);
 
   await expect.poll(() => drafts.length).toBe(1);
   expect(drafts[0].automation_id).toBe("nightly-review");

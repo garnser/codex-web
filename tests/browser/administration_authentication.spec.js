@@ -138,7 +138,13 @@ test("Administration Authentication revokes sessions and tokens through canonica
   const result = await page.evaluate(async () => {
     const { renderAdministrationAuthentication } = await import("/static/administration_authentication.js");
     const calls = [];
-    window.confirm = () => true;
+    const acceptConfirmation = async () => {
+      const dialog = document.querySelector('[data-action-confirmation]');
+      if (!dialog) throw new Error('Expected a consequence confirmation');
+      const closed = new Promise(resolve => dialog.addEventListener('close', resolve, { once: true }));
+      dialog.querySelector('[data-action-ack]')?.click(); dialog.querySelector('[data-action-apply]').click();
+      await closed;
+    };
     const context = {
       allowed: true,
       organizationId: "org-a",
@@ -164,10 +170,13 @@ test("Administration Authentication revokes sessions and tokens through canonica
     renderAdministrationAuthentication(host, { context, api });
 
     host.querySelector("[data-auth-revoke-others]").click();
+    await acceptConfirmation();
     await new Promise((resolve) => setTimeout(resolve, 0));
     host.querySelector("[data-auth-revoke-session='session-other']").click();
+    await acceptConfirmation();
     await new Promise((resolve) => setTimeout(resolve, 0));
     host.querySelector("[data-auth-revoke-token='token-a']").click();
+    await acceptConfirmation();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     return { calls, message: host.querySelector("[data-auth-message]").textContent };
@@ -187,7 +196,13 @@ test("Administration Authentication preserves canonical revocation feedback with
     const { renderAdministrationAuthentication } = await import("/static/administration_authentication.js");
     const calls = [];
     let changed = 0;
-    window.confirm = () => true;
+    const acceptConfirmation = async () => {
+      const dialog = document.querySelector('[data-action-confirmation]');
+      if (!dialog) throw new Error('Expected a consequence confirmation');
+      const closed = new Promise(resolve => dialog.addEventListener('close', resolve, { once: true }));
+      dialog.querySelector('[data-action-ack]')?.click(); dialog.querySelector('[data-action-apply]').click();
+      await closed;
+    };
     const context = {
       allowed: true,
       organizationId: "org-a",
@@ -218,11 +233,13 @@ test("Administration Authentication preserves canonical revocation feedback with
     });
 
     host.querySelector("[data-auth-revoke-session='session-other']").click();
+    await acceptConfirmation();
     await new Promise((resolve) => setTimeout(resolve, 0));
     const sessionMessage = host.querySelector("[data-auth-message]").textContent;
     const sessionGone = !host.querySelector("[data-auth-session='session-other']");
 
     host.querySelector("[data-auth-revoke-token='token-a']").click();
+    await acceptConfirmation();
     await new Promise((resolve) => setTimeout(resolve, 0));
     const tokenMessage = host.querySelector("[data-auth-message]").textContent;
     const tokenButtonGone = !host.querySelector("[data-auth-revoke-token='token-a']");
@@ -333,7 +350,13 @@ test("Administration Authentication rotates a service token and shows the replac
   const result = await page.evaluate(async () => {
     const { renderAdministrationAuthentication } = await import("/static/administration_authentication.js");
     const calls = [];
-    window.confirm = () => true;
+    const acceptConfirmation = async () => {
+      const dialog = document.querySelector('[data-action-confirmation]');
+      if (!dialog) throw new Error('Expected a consequence confirmation');
+      const closed = new Promise(resolve => dialog.addEventListener('close', resolve, { once: true }));
+      dialog.querySelector('[data-action-ack]')?.click(); dialog.querySelector('[data-action-apply]').click();
+      await closed;
+    };
     const context = {
       allowed: true,
       organizationId: "org-a",
@@ -370,6 +393,7 @@ test("Administration Authentication rotates a service token and shows the replac
     document.body.appendChild(host);
     renderAdministrationAuthentication(host, { context, api });
     host.querySelector("[data-auth-rotate-token='token-a']").click();
+    await acceptConfirmation();
     await new Promise((resolve) => setTimeout(resolve, 0));
     return {
       calls,

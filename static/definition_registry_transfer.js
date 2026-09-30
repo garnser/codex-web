@@ -1,3 +1,4 @@
+import { confirmAction } from './action_confirmation.js';
 import { projectViewOperation } from './project_view_scope.js';
 
 export async function exportDefinitions(report) {
@@ -39,11 +40,9 @@ export async function importDefinitions({ canManage, setStatus: report, refresh 
       + scopes + '); nothing was submitted.');
     return;
   }
-  if (!window.confirm(
-    'Import ' + imported.length
+  if (!await confirmAction({ action: 'Import definition drafts', target: `${imported.length} records: ${imported.map(record => `${record.definition_id} at ${record.scope_type}:${record.scope_id || "global"}`).join(", ")}`, risk: 'bounded', consequence: 'Import ' + imported.length
       + ' versioned definition record(s) as new inactive drafts? '
-      + 'All records are revalidated server-side and none are published automatically.',
-  )) return;
+      + 'All records are revalidated server-side and none are published automatically.', recovery: 'Review and validate each inactive draft before publishing.', current: operation.current })) return;
   try {
     const response = await apiRequest('/api/definitions/import', {
       method: 'POST',

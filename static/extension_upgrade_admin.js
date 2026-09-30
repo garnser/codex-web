@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const ACCEPTED_EVIDENCE = new Set([
     "policy_evaluation",
@@ -104,9 +105,7 @@
     const evidenceText = migrationEvidenceId
       ? ` Migration evidence: ${migrationEvidenceId}.`
       : " No migration evidence will be sent.";
-    if (!window.confirm(
-      `Upgrade ${extensionId} to ${targetVersion} using server-verified package ${packageRef}?${evidenceText} The server revokes removed capabilities, prunes obsolete secret bindings, resets health, and leaves the extension disabled or incompatible.`,
-    )) return;
+    if (!await confirmAction({ action: 'Upgrade extension', target: `${extensionId} (${installationId}) to ${targetVersion}`, risk: 'high', consequence: `Upgrade ${extensionId} to ${targetVersion} using server-verified package ${packageRef}?${evidenceText} The server revokes removed capabilities, prunes obsolete secret bindings, resets health, and leaves the extension disabled or incompatible.`, recovery: 'No automatic downgrade is promised; recovery requires compatible packages and canonical validation.', current: () => root.isConnected })) return;
 
     button.disabled = true;
     const status = document.getElementById("extension-package-status");

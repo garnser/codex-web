@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   let actor = null;
   let workers = [];
@@ -93,7 +94,7 @@
       quarantine: "This removes the worker from trusted execution and causes existing lease validation to fail closed.",
       revoke: "This permanently revokes the worker identity from execution. Revoked workers cannot be reactivated.",
     };
-    if (!window.confirm(`${action.toUpperCase()} worker ${worker.id} in pool ${worker.pool}? ${impacts[action]}`)) return;
+    if (!await confirmAction({ action: `${action.toUpperCase()} worker`, target: `${worker.id} · pool ${worker.pool}`, risk: 'high', consequence: impacts[action], impact: `${assignments.filter(item => item.assigned_worker_id === worker.id && ['claimed', 'running'].includes(item.status)).length} claimed/running assignments in the loaded canonical inventory. Lease validation remains authoritative.`, recovery: action === 'revoke' ? 'Revocation is permanent. Enroll a new trusted worker to replace it.' : 'Trusted reactivation remains subject to lifecycle and compatibility checks.' })) return;
     try {
       const options = { method: "POST" };
       if (action !== "activate") {
@@ -111,9 +112,7 @@
   }
 
   async function retryAssignment(item) {
-    if (!window.confirm(
-      `Retry ${item.work_item_ref} / ${item.execution_id} from assignment ${item.id}? The assignment returns to pending with its prior bounded resource, capability, sandbox, network and secret-reference contract; a worker must claim a new fenced lease before execution.`,
-    )) return;
+    if (!await confirmAction({ action: 'Retry assignment', target: `${item.id} · ${item.work_item_ref} / ${item.execution_id}`, consequence: 'Returns the prior bounded execution contract to pending. A worker must acquire a new fenced lease before execution.', recovery: 'Retry does not undo prior external effects; unknown outcomes remain subject to canonical reconciliation.' })) return;
     try {
       const response = await apiRequest(
         `/api/execution-workers/assignments/${encodeURIComponent(item.id)}/retry`,
@@ -127,9 +126,7 @@
   }
 
   async function recoverStaleWorkers() {
-    if (!window.confirm(
-      "Mark workers with stale heartbeats offline? Active workers with recent heartbeats are unchanged; offline workers cannot claim new work until the trusted reactivation/heartbeat path restores them.",
-    )) return;
+    if (!await confirmAction({ action: 'Recover stale workers', target: 'Workers with expired canonical heartbeats', risk: 'high', consequence: 'The server marks eligible stale workers offline; they cannot claim new work. Fresh workers remain active.', recovery: 'Use the trusted reactivation/heartbeat path to restore eligibility.' })) return;
     try {
       const response = await apiRequest("/api/execution-workers/recover-stale-workers", {
         method: "POST",
@@ -142,9 +139,7 @@
   }
 
   async function recoverExpiredAssignments() {
-    if (!window.confirm(
-      "Recover expired assignment leases? Claimed/running assignments whose trusted lease expired become LOST and must be explicitly retried before another worker can claim them.",
-    )) return;
+    if (!await confirmAction({ action: 'Recover expired leases', target: 'Claimed/running assignments with expired canonical leases', risk: 'high', consequence: 'Eligible assignments become LOST and cannot continue under the expired fence.', recovery: 'Explicit retry is required before a worker can claim a new lease. External effects are not undone.' })) return;
     try {
       const response = await apiRequest("/api/execution-workers/assignments/recover-expired", {
         method: "POST",

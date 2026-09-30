@@ -1,3 +1,4 @@
+const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require('@playwright/test');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -124,7 +125,7 @@ test('edge mutation uses explicit Project context and its late receipt cannot re
   });
   await page.locator('#work-graph-management-panel').evaluate(node => { node.open = true; });
   page.once('dialog', dialog => dialog.accept());
-  await page.locator('#add-work-graph-edge').click();
+  await page.locator('#add-work-graph-edge').click(); await resolveAction(page);
   await expect.poll(() => requested).toBe(true);
   expect(writes).toHaveLength(1);
   expect(writes[0]).toMatchObject({ project: 'project-a', body: { source_ref: 'project-a-1', target_ref: 'project-a-2' } });

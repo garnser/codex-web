@@ -1,3 +1,4 @@
+const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require('@playwright/test');
 const fs = require('node:fs'); const path = require('node:path');
 const schema = require('./recovery_policy_schema.json');
@@ -38,8 +39,7 @@ test('typed policy edits require preview and publish through scoped canonical CA
   await page.locator('[name=retention_count]').fill('2');
   await page.locator('[data-recovery-preview]').click();
   await expect(page.locator('[data-recovery-impact]')).toContainText('4 retained backups');
-  page.once('dialog', dialog => dialog.accept());
-  await page.locator('[data-recovery-save]').click();
+  await page.locator('[data-recovery-save]').click(); await resolveAction(page);
   await expect.poll(() => state.writes.length).toBe(1);
   expect(state.writes[0].project).toBe('home'); expect(state.writes[0].expected).toBe('current-fingerprint');
   expect(state.writes[0].payload.retention_count).toBe(2);
@@ -54,8 +54,8 @@ test('invalid input and stale publication preserve form values and block blind r
   await page.locator('[name=retention_count]').fill('2');
   await page.locator('[data-recovery-preview]').click();
   await expect(page.locator('[data-recovery-save]')).toBeEnabled();
-  state.fail = true; page.once('dialog', dialog => dialog.accept());
-  await page.locator('[data-recovery-save]').click();
+  state.fail = true;
+  await page.locator('[data-recovery-save]').click(); await resolveAction(page);
   await expect(page.locator('#recovery-policy-status')).toContainText('conflicted');
   await expect(page.locator('[name=retention_count]')).toHaveValue('2');
   await expect(page.locator('[data-recovery-save]')).toBeDisabled();
@@ -75,8 +75,7 @@ test('policy rollback reviews impact, uses expected fingerprint and leaves evide
   const state = await mount(page);
   await page.getByRole('button', { name: 'Review rollback', exact: true }).click();
   await expect(page.locator('[data-recovery-impact]')).toContainText('Cannot recover expired backup bytes');
-  page.once('dialog', dialog => dialog.accept());
-  await page.getByRole('button', { name: 'Confirm policy rollback', exact: true }).click();
+  await page.getByRole('button', { name: 'Confirm policy rollback', exact: true }).click(); await resolveAction(page);
   await expect.poll(() => state.writes.length).toBe(1);
   expect(state.writes[0].path).toBe('/api/recovery/policy/rollback/change-one');
   expect(state.writes[0].payload.expected_fingerprint).toBe('current-fingerprint');

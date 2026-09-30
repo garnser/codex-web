@@ -175,9 +175,7 @@
     if (!feedback.validate(errors)) return;
     const targeting = featureTargeting(spec, forceDisabled);
     const reason = document.getElementById("configuration-draft-reason")?.value.trim() || null;
-    if (!window.confirm(
-      `Create a typed draft for ${spec.key} at ${scope}${target ? `:${target}` : ""}? This does not publish or activate the value. ${forceDisabled ? "This draft is an explicit force-disabled kill switch." : ""}`,
-    )) return;
+
     try {
       const response = await operation.request("/api/configuration/drafts", {
         method: "POST",

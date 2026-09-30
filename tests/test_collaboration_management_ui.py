@@ -25,7 +25,7 @@ class CollaborationManagementUiTests(unittest.TestCase):
         self.assertNotIn('"profile_id", "revision"', javascript)
         self.assertNotIn('"record_id"', javascript.split("EDITABLE_PROFILE_FIELDS", 1)[1].split("];", 1)[0])
         self.assertIn("reason is required for a revision", javascript)
-        self.assertIn("Confirm the impact before applying", javascript)
+        self.assertIn("Confirm the impact before applying", (ROOT / "static" / "collaboration_lifecycle_dialog.js").read_text())
         self.assertIn("/revisions", javascript)
         self.assertIn("managementActions", workspace)
         self.assertIn("Create Agent Profile", workspace)

@@ -1,3 +1,4 @@
+import { confirmAction } from './action_confirmation.js';
 const accEsc = (value) => String(value ?? "")
   .replaceAll("&", "&amp;")
   .replaceAll("<", "&lt;")
@@ -224,6 +225,7 @@ function accRender(card, data) {
       const id = button.dataset.accApproval;
       const outcome = button.dataset.accOutcome;
       const reason = window.prompt("Optional decision reason:") || null;
+      if (!await confirmAction({ action: `${outcome} approval request`, target: id, risk: outcome === 'approve' ? 'high' : 'bounded', consequence: 'Records a canonical approval decision. Approved work can proceed only if the server validates all remaining policy and authority gates.', recovery: 'A durable decision is not undone here. Review the governed action outcome separately.', current: () => button.isConnected, trigger: button })) return;
       try {
         await accRequest("/api/approval-requests/" + encodeURIComponent(id) + "/decisions", {
           method: "POST",
@@ -240,7 +242,8 @@ function accRender(card, data) {
     });
   });
   card.querySelectorAll("[data-acc-unpause]").forEach(function (button) {
-    button.addEventListener("click", function () {
+    button.addEventListener("click", async function () {
+      if (!await confirmAction({ action: 'Remove autonomy pause', target: button.dataset.accUnpause, risk: 'high', consequence: 'Eligible autonomous work in this scope may resume, subject to all remaining canonical controls.', recovery: 'Apply a new scoped pause to stop future work; dispatched effects are not undone.', current: () => button.isConnected, trigger: button })) return;
       accMutate(
         card,
         "/api/autonomy/scoped-pauses/" + encodeURIComponent(button.dataset.accUnpause),
@@ -364,10 +367,21 @@ function accBuild() {
     "</div>";
   card.querySelector("[data-acc-refresh]").addEventListener("click", function () { accLoad(card); });
   card.querySelector("[data-acc-pause]").addEventListener("click", function () { accMutate(card, "/api/autonomy/pause", { method: "POST" }, "Pausing autonomy…"); });
-  card.querySelector("[data-acc-resume]").addEventListener("click", function () { accMutate(card, "/api/autonomy/resume", { method: "POST" }, "Resuming autonomy…"); });
+  card.querySelector("[data-acc-resume]").addEventListener("click", async function (event) {
+    if (!await confirmAction({ action: 'Resume autonomy', target: 'Canonical global autonomy control', risk: 'high', consequence: 'Eligible autonomous work may resume. Scoped pauses, approvals, budgets and policy remain authoritative.', recovery: 'Pause or kill stops future eligible work; already completed effects are not undone.', current: () => card.isConnected, trigger: event.currentTarget })) return;
+    accMutate(card, "/api/autonomy/resume", { method: "POST" }, "Resuming autonomy…");
+  });
   card.querySelector("[data-acc-kill]").addEventListener("click", function () { accMutate(card, "/api/autonomy/kill", { method: "POST" }, "Applying global kill…"); });
-  card.querySelector("[data-acc-dry]").addEventListener("change", function (event) { accMutate(card, "/api/autonomy/control", { method: "PATCH", body: JSON.stringify({ dry_run: event.target.checked }) }, "Updating dry-run…"); });
-  card.querySelector("[data-acc-sim]").addEventListener("change", function (event) { accMutate(card, "/api/autonomy/control", { method: "PATCH", body: JSON.stringify({ simulation: event.target.checked }) }, "Updating simulation…"); });
+  card.querySelector("[data-acc-dry]").addEventListener("change", async function (event) {
+    const control = event.target, enabled = control.checked;
+    if (!enabled && !await confirmAction({ action: 'Disable dry run', target: 'Canonical global autonomy control', risk: 'high', consequence: 'Eligible work may produce real effects once other canonical controls permit it.', recovery: 'Re-enable this control to limit future work; prior external effects are not undone.', current: () => control.isConnected, trigger: control })) { control.checked = true; return; }
+    accMutate(card, "/api/autonomy/control", { method: "PATCH", body: JSON.stringify({ dry_run: enabled }) }, "Updating autonomy control…");
+  });
+  card.querySelector("[data-acc-sim]").addEventListener("change", async function (event) {
+    const control = event.target, enabled = control.checked;
+    if (!enabled && !await confirmAction({ action: 'Disable simulation', target: 'Canonical global autonomy control', risk: 'high', consequence: 'Eligible work may produce real effects once other canonical controls permit it.', recovery: 'Re-enable this control to limit future work; prior external effects are not undone.', current: () => control.isConnected, trigger: control })) { control.checked = true; return; }
+    accMutate(card, "/api/autonomy/control", { method: "PATCH", body: JSON.stringify({ simulation: enabled }) }, "Updating autonomy control…");
+  });
   card.querySelector("[data-acc-explain]").addEventListener("click", function () { accExplain(card); });
   card.querySelector("[data-acc-intent]").addEventListener("keydown", function (event) { if (event.key === "Enter") accExplain(card); });
   return card;
