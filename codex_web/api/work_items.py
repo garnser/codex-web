@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from codex_web.models import WorkItemAckCreate, WorkItemHandoffCreate, WorkItemProgressUpdate
+from codex_web.models import TaskSourceConfiguration, WorkItemAckCreate, WorkItemHandoffCreate, WorkItemProgressUpdate
 from codex_web.services.identity import IdentityError, IdentityService, identity_http_error
 from codex_web.services.work_item_execution import WorkItemExecutionLifecycleService
 from codex_web.services.work_item_operator import WorkItemOperatorService
@@ -111,6 +111,7 @@ def build_work_items_router(
         payload = operator.task_source_catalog()
         return {
             **payload,
+            "configuration_schema": TaskSourceConfiguration.model_json_schema(),
             "items": [
                 item
                 for item in payload.get("items", [])

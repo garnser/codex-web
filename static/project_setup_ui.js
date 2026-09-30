@@ -93,7 +93,8 @@ function remediation(route) {
   if (route.startsWith("/api/secrets")) return window.CodexProductUI?.openWorkspace?.("secrets");
   if (route.includes("/resources")) return window.CodexProductUI?.openWorkspace?.("resources");
   if (route.includes("execution-workers")) return window.CodexProductUI?.openWorkspace?.("workers");
-  if (route.includes("task-source")) return window.CodexProductUI?.openWorkspace?.("work");
+  if (route.includes("task-source") || route.startsWith("/api/work-items")) return window.CodexProductUI?.openWorkspace?.("work", { page: "work-items" });
+  if (route.startsWith("/api/configuration")) return window.CodexProductUI?.openWorkspace?.("settings", { page: "configuration" });
   if (route.includes("/bootstrap/")) return setPanel("plan");
   location.hash = "#setup/route/" + encodeURIComponent(route);
 }

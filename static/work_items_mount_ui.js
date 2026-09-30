@@ -1,4 +1,4 @@
-export function installWorkItemsMount(dialog, onOpen) {
+export function installWorkItemsMount(dialog, onOpen, canClose = () => true) {
   const shell = dialog.querySelector('.work-items-shell');
   const closeButton = dialog.querySelector('.work-items-close');
 
@@ -21,7 +21,8 @@ export function installWorkItemsMount(dialog, onOpen) {
     await onOpen(event.detail);
   });
 
-  closeButton.addEventListener('click', () => dialog.close());
+  closeButton.addEventListener('click', () => { if (canClose()) dialog.close(); });
+  dialog.addEventListener('cancel', event => { if (!canClose()) event.preventDefault(); });
 }
 
 export function workItemsSurfaceActive() {
