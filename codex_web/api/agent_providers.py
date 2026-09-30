@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from codex_web.api.project_record_scope import ProjectRecordScope, project_record_context_parameter
+from codex_web.services.agent_provider_administration import AgentProviderAdministration
 from pydantic import BaseModel, ConfigDict
 
 from codex_web.agent_providers import (
@@ -34,8 +36,26 @@ def _error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
-def build_agent_providers_router(service: AgentProviderService) -> APIRouter:
-    router = APIRouter(prefix="/api/agent-providers", tags=["agent-providers"])
+def build_agent_providers_router(service: AgentProviderService, projects=None, administration=None) -> APIRouter:
+    router = APIRouter(prefix="/api/agent-providers", tags=["agent-providers"],
+                      dependencies=[Depends(project_record_context_parameter)])
+    administration = administration or AgentProviderAdministration(service)
+
+    def context(request: Request):
+        ProjectRecordScope.from_request(request, request_actor(request), projects)
+
+    router.dependencies.append(Depends(context))
+
+    @router.get("/administration")
+    async def administration_catalog(request: Request):
+        return administration.catalog(request_actor(request))
+
+    @router.get("/{provider_id}/impact")
+    async def provider_impact(provider_id: str, request: Request):
+        try:
+            return administration.impact(provider_id, request_actor(request))
+        except Exception as exc:
+            raise _error(exc) from exc
 
     @router.get("")
     async def list_providers(request: Request) -> dict[str, Any]:
@@ -55,11 +75,12 @@ def build_agent_providers_router(service: AgentProviderService) -> APIRouter:
         provider_id: str,
         payload: AgentProviderUpsert,
         request: Request,
+        expected_revision: int | None = None,
     ) -> dict[str, Any]:
         if provider_id != payload.id:
             raise HTTPException(status_code=422, detail="provider id mismatch")
         try:
-            item = service.upsert(payload, actor=request_actor(request))
+            item = service.upsert(payload, actor=request_actor(request), expected_revision=expected_revision)
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             raise _error(exc) from exc

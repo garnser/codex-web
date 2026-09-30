@@ -187,3 +187,34 @@ interpret `1.3` state as an older schema. Workload values remain canonical model
 registry data (not a new hard-coded workload catalog); request preferences do
 not grant authority or relax tenant policy. This request-level foundation does
 not introduce provider discovery, runtime catalogs, or layered override rules.
+
+## Provider binding administration
+
+Operations' Provider Binding Management edits existing ModelGateway binding
+metadata through the existing provider PUT endpoint, independently from any
+AgentProvider record or synthesized view. Active, degraded and disabled statuses
+are local routing state; they do not change remote accounts, plans or credentials.
+Adapter registration is deployment-owned. Registry edits make no provider call and
+add no LLM usage. Credential inputs remain SecretReference IDs only.
+
+`GET /api/model-gateway/provider-administration` exposes the typed schema and
+administrator/MFA or service-scope permission. `GET /api/model-gateway/providers/{id}/impact`
+returns tenant-filtered model, policy, AgentProvider, profile and retained invocation
+references. Each inventory has a 5,000-record scan bound and 100-row display bound;
+unavailable or invalid dependencies fail visibly. Invocation projection includes
+only ID/status, not prompt data or private invocation payloads. Arbitrary future
+request preferences are not enumerable and the preview is not a consumer lock.
+
+The optional `expected_revision` on provider PUT is a SHA-256 fingerprint of the
+current canonical binding, checked inside the same mutation transaction. `none`
+means create-if-absent. It is a concurrency token, not a model version or immutable
+revision-history claim. Existing API callers remain compatible when omitting it;
+UI writes always supply the reviewed fingerprint. Stale writes return 409 without
+replacing current configuration. No stored contract migration is needed.
+
+Both provider administration APIs validate optional Project view context through
+the canonical Project boundary. Bindings remain workspace-scoped and inherited,
+not Project-specific overrides. Disabling prevents subsequent selection, including
+linked AgentProvider eligibility, but does not cancel already-accepted invocations
+or delete model definitions. The remote provider's own management surface remains
+the authority for account lifecycle.

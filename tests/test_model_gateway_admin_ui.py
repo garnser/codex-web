@@ -11,6 +11,7 @@ class ModelGatewayAdminUiTests(unittest.TestCase):
     def test_model_gateway_browser_exposes_routing_provenance_without_invocation(self) -> None:
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (ROOT / "static" / "model_gateway_admin.js").read_text(encoding="utf-8")
+        provider_cards = (ROOT / "static" / "model_provider_cards.js").read_text(encoding="utf-8")
         route_controls = (ROOT / "static" / "model_gateway_route_controls.js").read_text(
             encoding="utf-8"
         )
@@ -38,7 +39,7 @@ class ModelGatewayAdminUiTests(unittest.TestCase):
         self.assertIn("prompt_template_checksum_sha256", javascript)
         self.assertIn("selected_provider_id", javascript)
         self.assertIn("selected_model_id", javascript)
-        self.assertIn("credential_ref", javascript)
+        self.assertIn("credential_ref", provider_cards)
         self.assertIn("residency_tags", javascript)
         self.assertIn("compliance_tags", javascript)
         self.assertIn("input_price_per_million_usd", javascript)
@@ -48,7 +49,7 @@ class ModelGatewayAdminUiTests(unittest.TestCase):
         self.assertIn("pinned_model_id", route_controls)
         self.assertIn("preferred_latency_classes", route_controls)
         self.assertIn("prefer_lower_cost", route_controls)
-        self.assertIn("capacity.retry_at", javascript)
+        self.assertIn("capacity.retry_at", provider_cards)
         self.assertIn("capacityWaits", javascript)
         self.assertIn("no model/provider invocation occurred", javascript)
         self.assertIn("codex:model-gateway-rendered", javascript)

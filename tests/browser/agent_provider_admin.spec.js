@@ -373,3 +373,14 @@ test('provider credential references deep-link to Project Secrets and consumer l
   await expect(provider.getByRole('link', { name: 'secret-codex', exact: true })).toHaveAttribute('href', '/projects/project-a/secrets?secret_id=secret-codex');
   await expect(provider).toBeFocused();
 });
+
+test('provider cards and selected or resolved runtimes link to the owning binding editor', async ({ page }) => {
+  await installRoutes(page);
+  await page.goto('http://127.0.0.1:18766/tests/browser/agent_provider_admin_fixture.html?project=project-a');
+  const card = page.locator('#agent-provider-card');
+  await expect(card.locator('[data-reference-id="openai"]').getByRole('link', { name: 'Manage provider binding' })).toHaveAttribute('href', '/projects/project-a/operations?provider_id=openai');
+  await card.locator('.agent-new-runtime').selectOption('openai/codex');
+  await expect(card.locator('.agent-new-runtime').locator('..').locator('[data-runtime-binding-link]')).toHaveAttribute('href', '/projects/project-a/operations?provider_id=openai');
+  await card.locator('.agent-preference-project').fill('project-a'); await card.locator('.agent-preference-load').click();
+  await expect(card.locator('.agent-preference-runtime').locator('..').locator('[data-runtime-binding-link]')).toHaveAttribute('href', '/projects/project-a/operations?provider_id=anthropic');
+});

@@ -26,6 +26,10 @@ class AgentProviderNotFoundError(KeyError):
     pass
 
 
+class AgentProviderRevisionConflictError(RuntimeError):
+    pass
+
+
 class AgentProviderStore:
     namespace = "agent_providers"
 
@@ -67,7 +71,7 @@ class AgentProviderStore:
             key=lambda item: (item.organization_id, item.workspace_id, item.id),
         )
 
-    def upsert(self, record: AgentProviderRecord) -> AgentProviderRecord:
+    def upsert(self, record: AgentProviderRecord, *, expected_revision: int | None = None) -> AgentProviderRecord:
         result: dict[str, AgentProviderRecord] = {}
 
         def apply(state: AgentProviderState) -> AgentProviderState:
@@ -81,6 +85,8 @@ class AgentProviderStore:
                 ),
                 None,
             )
+            if expected_revision is not None and expected_revision != (existing.revision if existing else 0):
+                raise AgentProviderRevisionConflictError("provider binding changed; reload and review again")
             if existing is None:
                 state.providers.append(record)
                 result["value"] = record

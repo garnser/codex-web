@@ -299,6 +299,7 @@ const CARD_RULES = [
   [/^Artifacts, Evidence & Verification$/i, "operations"],
   [/^Operations & Observability$/i, "operations"],
   [/^Recovery Policy & Evidence$/i, "operations"],
+  [/^Provider Binding Management$/i, "operations"],
   [/^Structured Logs$/i, "operations"],
   [/^Autonomy Control Center$/i, "autonomy"],
   [/^Orchestration Inspector$/i, "autonomy"],

@@ -1,0 +1,242 @@
+{
+  "agent": {
+    "$defs": {
+      "AgentProviderCapability": {
+        "enum": [
+          "model_inference",
+          "agent_execution",
+          "persistent_sessions",
+          "streaming",
+          "interrupt_cancel",
+          "filesystem_editing",
+          "shell_tools",
+          "git_operations",
+          "interactive_approvals",
+          "native_context_compaction",
+          "native_execution_objectives",
+          "subagents",
+          "mcp_tool_servers",
+          "usage_exact",
+          "usage_partial"
+        ],
+        "title": "AgentProviderCapability",
+        "type": "string"
+      },
+      "AgentProviderCompatibility": {
+        "enum": [
+          "compatible",
+          "incompatible"
+        ],
+        "title": "AgentProviderCompatibility",
+        "type": "string"
+      },
+      "AgentProviderHealth": {
+        "enum": [
+          "unknown",
+          "healthy",
+          "degraded",
+          "unavailable"
+        ],
+        "title": "AgentProviderHealth",
+        "type": "string"
+      },
+      "AgentProviderLifecycle": {
+        "enum": [
+          "active",
+          "disabled"
+        ],
+        "title": "AgentProviderLifecycle",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "maxLength": 200,
+        "minLength": 1,
+        "title": "Id",
+        "type": "string"
+      },
+      "display_name": {
+        "maxLength": 300,
+        "minLength": 1,
+        "title": "Display Name",
+        "type": "string"
+      },
+      "declared_capabilities": {
+        "default": [],
+        "items": {
+          "$ref": "#/$defs/AgentProviderCapability"
+        },
+        "title": "Declared Capabilities",
+        "type": "array"
+      },
+      "granted_capabilities": {
+        "default": [],
+        "items": {
+          "$ref": "#/$defs/AgentProviderCapability"
+        },
+        "title": "Granted Capabilities",
+        "type": "array"
+      },
+      "model_provider_ids": {
+        "default": [],
+        "items": {
+          "type": "string"
+        },
+        "title": "Model Provider Ids",
+        "type": "array"
+      },
+      "extension_installation_id": {
+        "anyOf": [
+          {
+            "maxLength": 500,
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Extension Installation Id"
+      },
+      "configuration_refs": {
+        "default": [],
+        "items": {
+          "type": "string"
+        },
+        "title": "Configuration Refs",
+        "type": "array"
+      },
+      "credential_refs": {
+        "default": [],
+        "items": {
+          "type": "string"
+        },
+        "title": "Credential Refs",
+        "type": "array"
+      },
+      "residency_tags": {
+        "default": [],
+        "items": {
+          "type": "string"
+        },
+        "title": "Residency Tags",
+        "type": "array"
+      },
+      "compliance_tags": {
+        "default": [],
+        "items": {
+          "type": "string"
+        },
+        "title": "Compliance Tags",
+        "type": "array"
+      },
+      "lifecycle": {
+        "$ref": "#/$defs/AgentProviderLifecycle",
+        "default": "active"
+      },
+      "health": {
+        "$ref": "#/$defs/AgentProviderHealth",
+        "default": "unknown"
+      },
+      "compatibility": {
+        "$ref": "#/$defs/AgentProviderCompatibility",
+        "default": "compatible"
+      }
+    },
+    "required": [
+      "id",
+      "display_name"
+    ],
+    "title": "AgentProviderUpsert",
+    "type": "object"
+  },
+  "model": {
+    "$defs": {
+      "ModelProviderStatus": {
+        "enum": [
+          "active",
+          "degraded",
+          "disabled"
+        ],
+        "title": "ModelProviderStatus",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "minLength": 1,
+        "title": "Id",
+        "type": "string"
+      },
+      "adapter_type": {
+        "minLength": 1,
+        "title": "Adapter Type",
+        "type": "string"
+      },
+      "display_name": {
+        "minLength": 1,
+        "title": "Display Name",
+        "type": "string"
+      },
+      "base_url": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Base Url"
+      },
+      "credential_ref": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Credential Ref"
+      },
+      "credential_required": {
+        "default": true,
+        "title": "Credential Required",
+        "type": "boolean"
+      },
+      "residency_tags": {
+        "default": [],
+        "items": {
+          "type": "string"
+        },
+        "title": "Residency Tags",
+        "type": "array"
+      },
+      "compliance_tags": {
+        "default": [],
+        "items": {
+          "type": "string"
+        },
+        "title": "Compliance Tags",
+        "type": "array"
+      },
+      "status": {
+        "$ref": "#/$defs/ModelProviderStatus",
+        "default": "active"
+      }
+    },
+    "required": [
+      "id",
+      "adapter_type",
+      "display_name"
+    ],
+    "title": "ModelProviderUpsert",
+    "type": "object"
+  }
+}
