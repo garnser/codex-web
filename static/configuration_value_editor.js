@@ -1,4 +1,5 @@
 // Typed presentation and parsing use canonical configuration specifications.
+import { secretPath } from './secret_reference_ui.js';
 function escapeHtml(value) {
   return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
@@ -33,10 +34,10 @@ export function valueEditor(spec, { secrets = [], definitions = [] } = {}) {
   }
   if (kind === "secret_ref") {
     const options = secrets
-      .filter((item) => item.status !== "revoked")
+      .filter((item) => item.status === "active" && item.use_allowed !== false)
       .map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name || item.id)} · ${escapeHtml(item.id)} · ${escapeHtml(item.status || "unknown")}</option>`)
       .join("");
-    return `<label>SecretBroker reference <select id="configuration-draft-value"><option value="">Select secret reference</option>${options}</select></label><small>Raw secret values are never configuration.</small>`;
+    return `<label>SecretBroker reference <select id="configuration-draft-value"><option value="">Select secret reference</option>${options}</select></label><small>Raw secret values are never configuration. <a href="${escapeHtml(secretPath())}">Manage Project Secrets</a></small>`;
   }
   if (kind === "definition_ref") {
     const options = definitions

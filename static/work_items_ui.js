@@ -3,6 +3,7 @@ import { createWorkItemViewScope, workItemLoadError } from "./work_item_view_sco
 import { createRunTimelineUi } from "./work_item_runs_ui.js";
 import { workItemSummaryHtml } from "./work_item_summary_ui.js";
 import { request } from './api_client.js';
+import { renderSecretOptions } from './task_source_credentials.js';
 import { observeRender } from './frontend_perf.js';
 import { applyWorkItemSearch, installWorkItemSearch } from './work_items_search_ui.js';
 import { installWorkItemsMount, workItemsSurfaceActive } from './work_items_mount_ui.js';
@@ -184,22 +185,6 @@ function catalogEntry(sourceType) {
     || entries.find((entry) => entry.source_type === sourceType)
     || null;
 }
-function renderSecretOptions(selectedId = '') {
-  const select = document.querySelector('.work-source-secret');
-  if (!select) return;
-  const options = state.secrets.map((item) => ({
-    id: String(item.id || ''),
-    label: item.name || item.label || item.id,
-    status: item.status || '',
-  })).filter((item) => item.id);
-  if (selectedId && !options.some((item) => item.id === selectedId)) {
-    options.unshift({ id: selectedId, label: selectedId, status: 'not listed' });
-  }
-  select.innerHTML = [
-    '<option value="">Select a canonical secret…</option>',
-    ...options.map((item) => `<option value="${esc(item.id)}" ${item.id === selectedId ? 'selected' : ''}>${esc(item.label)}${item.status ? ` (${esc(item.status)})` : ''}</option>`),
-  ].join('');
-}
 function renderProviderFields(sourceType, config = null) {
   const normalized = String(sourceType || '').toLowerCase();
   const wrapper = document.querySelector('.work-source-provider-fields');
@@ -210,14 +195,14 @@ function renderProviderFields(sourceType, config = null) {
   const closedRow = document.querySelector('.work-source-servicenow-closed-row');
   const isJira = normalized === 'jira';
   const isServiceNow = normalized === 'servicenow';
-  const needsCredential = isJira || isServiceNow;
+  const needsCredential = isJira || isServiceNow || normalized === 'gitlab' || Boolean(config?.credential_secret_id);
   if (wrapper) wrapper.hidden = !needsCredential;
   if (secretRow) secretRow.hidden = !needsCredential;
   if (jiraRow) jiraRow.hidden = !isJira;
   if (tableRow) tableRow.hidden = !isServiceNow;
   if (activeRow) activeRow.hidden = !isServiceNow;
   if (closedRow) closedRow.hidden = !isServiceNow;
-  renderSecretOptions(config?.credential_secret_id || '');
+  renderSecretOptions(document.querySelector('.work-source-secret'), state.secrets, config?.credential_secret_id || '', state.projectId);
   if (isJira) {
     document.querySelector('.work-source-jira-username').value = config?.provider_settings?.username || '';
   }
@@ -271,8 +256,9 @@ async function saveSource() {
     return;
   }
   const payload = { source_type, source_instance, scope };
+  const credential_secret_id = document.querySelector('.work-source-secret').value.trim();
+  if (credential_secret_id) payload.credential_secret_id = credential_secret_id;
   if (source_type === 'jira' || source_type === 'servicenow') {
-    const credential_secret_id = document.querySelector('.work-source-secret').value.trim();
     if (!credential_secret_id) {
       setStatus('A canonical credential SecretReference is required for this provider', true);
       return;

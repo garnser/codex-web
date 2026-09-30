@@ -386,8 +386,12 @@
                     <button id="refresh-secrets" type="button" class="ghost-button">Refresh</button>
                   </div>
                   <div id="secret-admin-status" class="form-result" aria-live="polite">Open to load secret metadata.</div>
+                  <p>Secrets are workspace-owned references shared by canonical permissions. Project selection shows consumer context; it does not create a separate secret store. Bind or unbind references through their TaskSource or configuration settings.</p>
+                  <p id="secret-create-assurance" role="status">Checking management authority…</p>
+                  <label>Find secret references <input id="secret-search" type="search" /></label>
+                  <div id="secret-broken-references" class="comm-log"></div>
                   <details id="secret-create-panel">
-                    <summary>Create secret reference</summary>
+                    <summary>Create workspace secret reference</summary>
                     <div class="route-test">
                       <input aria-label="Secret reference name" id="secret-create-name" placeholder="Reference name" />
                       <input aria-label="Provider (optional)" id="secret-create-provider" placeholder="Provider (optional)" />

@@ -172,8 +172,9 @@ stored ActionIntent provenance. Navigation and refresh do not invoke a model.
 ## Sensitive references
 
 The workspace shell never renders secret values or cryptographic key material.
-Existing Secrets/Credentials and Encryption Key controls are adopted intact and
-continue to expose reference/metadata only.
+Secrets/Credentials occupy the Project Secrets page with explicit shared
+workspace ownership and Project consumer context. Encryption Key controls remain
+in Configuration. Both expose reference/metadata only.
 
 Tenant/workspace scope, identity assurance, canonical IDs and lifecycle/status
 metadata remain visible so operators can understand why an action is permitted,
@@ -290,3 +291,11 @@ checks described in the identity/tenancy contract.
 Explicit history and preflight refreshes request a scoped conversation reload,
 while duplicate route navigation remains a no-op. History controls preserve
 keyboard focus when live message maintenance rebuilds their display.
+
+Project Secrets is a stable `/projects/{id}/secrets` page in Project navigation,
+with a Secrets command and full-page content. It presents workspace-owned secret
+references in a selected-Project consumer context, rather than implying Project
+ownership or automatic use authority. Configuration and TaskSource credential
+selectors link to this surface; readiness secret remediation opens it directly.
+Reference URLs carry only the non-secret reference ID. The canonical lifecycle,
+redaction and impact boundaries are described in [secrets.md](secrets.md).

@@ -47,6 +47,16 @@ Secrets are stored and referenced through the canonical secret boundary.
 Provider/action/runtime state should contain a secret reference, never the raw
 credential.
 
+Open **Project → Secrets** to search references available to your identity,
+inspect their shared workspace ownership and current consumers, or create a
+write-only credential. Bind the resulting reference through **TaskSource
+settings** or **Configuration**; Project selection does not grant use permission.
+For rotation or revocation, inspect the consumer preview, including the count
+outside the selected Project, before confirming. Revocation affects every use of
+that shared reference. A revoked reference remains visible for audit; create a
+replacement and update its consumer bindings when recovery is needed. Values are
+cleared after submission and must be re-entered after a failed write.
+
 Cryptographic key material is a separate boundary:
 
 - keys have purpose, backend, ID and version metadata;
