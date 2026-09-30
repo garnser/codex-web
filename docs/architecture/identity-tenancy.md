@@ -81,3 +81,33 @@ Identity middleware enforces:
 `AuthenticationRateLimiter` is a shared deterministic brute-force hook for current/future local/OIDC authentication adapters. Successful authentication clears the key; repeated failures within the configured window fail closed.
 
 Future identity-provider, SCIM, recovery, approval, secret, resource, worker, and policy features must build on these canonical identities/memberships instead of maintaining independent authorization state.
+
+
+## Thread API ownership
+
+Thread, turn/queue, preflight and context endpoints resolve the authenticated
+actor and the existing Thread owner before invoking services or runtimes. A
+canonical AgentSession's organization/workspace/Project is authoritative. Native
+session IDs with conflicting owners fail closed. A foreign canonical session
+cannot fall through to a local legacy index record. For pre-session legacy rows,
+a persisted Project ID is used; a path-only row must resolve to exactly one
+canonical Project across the catalog. Unknown and ambiguous ownership returns
+404 without runtime discovery. Recovery must establish a canonical ownership
+record before such a session can be operated; provider output cannot grant it.
+
+Optional `project_id` query context narrows reads and mutations. When a body also
+contains Project context it must agree with the query and Thread owner. An
+existing Thread operation without explicit context uses its resolved owning
+Project, not the deployment's default Project. Collection/create requests without
+context select the authenticated tenant's default Project. Thread-settings
+collections contain only the resolved Project's owned Threads. The browser sends
+Project context for Thread operations, including context/queue requests.
+
+List discovery can refresh known canonical/legacy Threads, but cannot claim an
+unknown native session or move a foreign Thread into the requested Project. The
+existing compact index keeps its storage contract and path index; ownership is
+checked before pagination limits, including when Projects share a path. One
+session-ownership snapshot is reused per list request. Legacy unclaimed runtime
+sessions require canonical adoption through the existing session/recovery
+boundary; an ordinary list read is not an ownership mutation. These checks are
+additional to existing API capability, session/CSRF and worker/action controls.

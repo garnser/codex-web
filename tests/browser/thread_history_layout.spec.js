@@ -36,12 +36,14 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1024, height: 768
     await expect.poll(() => page.evaluate(() => window.reloadCount)).toBe(1);
     await expectSeparated(page);
 
+    await button.focus();
     await page.evaluate(() => {
       document.getElementById('messages').append(window.makeMessage('live'));
       document.getElementById('approvals').textContent = 'Approval requested';
     });
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await expectSeparated(page);
-    await button.focus();
+    await expect(button).toBeFocused();
     await page.keyboard.press('Enter');
     await expect.poll(() => page.evaluate(() => window.reloadCount)).toBe(2);
     await expectSeparated(page);

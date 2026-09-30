@@ -34,6 +34,7 @@ from codex_web.services.project_runtime import (
     ProjectRuntimeService,
     assignment_sandbox_policy,
 )
+from codex_web.services.thread_scope import ThreadScopeService
 from codex_web.services.thread_bot_collaboration import ThreadBotCollaborationService
 from codex_web.services.thread_execution_settings import ThreadExecutionSettingsService
 from codex_web.services.thread_naming import ThreadNamingService
@@ -99,6 +100,7 @@ class ThreadService:
         naming: ThreadNamingService | None = None,
         collaboration: ThreadBotCollaborationService | None = None,
         thread_index: ThreadIndexRepository | None = None,
+        thread_scope: ThreadScopeService | None = None,
         thread_history: ThreadHistoryRepository | None = None,
         active_turn_loader: Callable[[], dict[str, Any]] | None = None,
         active_turn_getter: Callable[[str], Any | None] | None = None,
@@ -124,6 +126,7 @@ class ThreadService:
         self.naming = naming
         self.collaboration = collaboration
         self.thread_index = thread_index
+        self.thread_scope = thread_scope
         self.thread_history = thread_history
         self.active_turn_loader = active_turn_loader
         self.active_turn_getter = active_turn_getter
@@ -518,10 +521,32 @@ class ThreadService:
         *,
         limit: int | None = None,
         cursor: str | None = None,
+        actor: AuthenticationActor | None = None,
     ) -> dict[str, Any]:
         page_size = self.coerce_list_limit(limit)
+        if self.thread_scope is not None:
+            effective_actor = actor or self.control_actor
+            if effective_actor is None:
+                raise HTTPException(status_code=403, detail="Thread actor is required")
+            project_id = self.thread_scope.project(project_id, effective_actor).id
         project = self._projects().get(project_id) if project_id else None
         project_path = project.path if project is not None else None
+        ownership = self.thread_scope.ownership_snapshot() if self.thread_scope else None
+
+        def belongs(thread_id: str) -> bool:
+            if self.thread_scope is None:
+                indexed = self._index().get(thread_id)
+                return not (project_id and indexed and indexed.project_id and indexed.project_id != project_id)
+            effective_actor = actor or self.control_actor
+            if effective_actor is None:
+                return False
+            try:
+                self.thread_scope.for_thread(thread_id, effective_actor, project_id, ownership=ownership)
+                return True
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+                return False
         cursor_payload = (
             self._decode_list_cursor(
                 cursor,
@@ -588,6 +613,9 @@ class ThreadService:
             for item in runtime_items:
                 if not isinstance(item, dict):
                     continue
+                candidate_id = str(item.get("id") or item.get("threadId") or "").strip()
+                if not candidate_id or not belongs(candidate_id):
+                    continue
                 indexed = self._compact_runtime_thread(
                     item,
                     project_id=project_id,
@@ -617,6 +645,7 @@ class ThreadService:
             search=search,
             after=after,
             limit=page_size,
+            include=lambda item: belongs(item.id),
         )
 
         fallback_active_turns = (

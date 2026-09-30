@@ -2,8 +2,9 @@
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   await import(`${BASE}/static/control_plane_ui.js`);
+  const { captureProjectView, currentProjectId } = await import(`${BASE}/static/project_view_scope.js`);
+  let selectionGeneration = 0, refreshGeneration = 0;
   let refreshTimer = null;
-  let lastThreadId = null;
 
   function currentThreadId() {
     const value = document.getElementById("thread-meta")?.textContent || "";
@@ -20,8 +21,17 @@
     status.dataset.error = error ? "true" : "false";
   }
 
-  async function getStatus(threadId) {
-    return apiRequest(`/api/threads/${encodeURIComponent(threadId)}/context`);
+  function captureSelection() {
+    const project = captureProjectView(), generation = selectionGeneration;
+    const threadId = currentThreadId(), projectId = currentProjectId();
+    return { threadId, projectId,
+      current: () => project.current() && generation === selectionGeneration && currentThreadId() === threadId,
+    };
+  }
+
+  function contextRequest(view, suffix, options) {
+    const query = new URLSearchParams({ project_id: view.projectId });
+    return apiRequest(`/api/threads/${encodeURIComponent(view.threadId)}/${suffix}?${query}`, options);
   }
 
   function statusText(status) {
@@ -39,19 +49,20 @@
   async function refresh() {
     const button = document.getElementById("compact-context");
     if (!button) return;
-    const threadId = currentThreadId();
-    lastThreadId = threadId;
+    const view = captureSelection(), generation = ++refreshGeneration;
+    const threadId = view.threadId;
     if (!threadId) {
       button.disabled = true;
       setStatus("Select a thread to manage context");
       return;
     }
     try {
-      const status = await getStatus(threadId);
-      if (currentThreadId() !== threadId) return;
+      const status = await contextRequest(view, "context");
+      if (!view.current() || generation !== refreshGeneration) return;
       button.disabled = !status.eligible || status.inProgress;
       setStatus(statusText(status));
     } catch (error) {
+      if (!view.current() || generation !== refreshGeneration) return;
       button.disabled = true;
       setStatus(`Context status unavailable: ${error.message}`, { error: true });
     }
@@ -59,18 +70,20 @@
 
   async function compact() {
     const button = document.getElementById("compact-context");
-    const threadId = currentThreadId();
-    if (!button || !threadId) return;
+    const view = captureSelection();
+    if (!button || !view.threadId) return;
     button.disabled = true;
     setStatus("Requesting native Codex compaction…");
     try {
-      await apiRequest(`/api/threads/${encodeURIComponent(threadId)}/compact`, { method: "POST" });
+      await contextRequest(view, "compact", { method: "POST" });
+      if (!view.current()) return;
       setStatus("Compaction accepted by Codex; refreshing usage…");
-      window.setTimeout(() => document.getElementById("refresh-token-usage")?.click(), 1000);
-      window.setTimeout(refresh, 1500);
+      window.setTimeout(() => { if (view.current()) document.getElementById("refresh-token-usage")?.click(); }, 1000);
+      window.setTimeout(() => { if (view.current()) refresh(); }, 1500);
     } catch (error) {
+      if (!view.current()) return;
       setStatus(`Compaction failed: ${error.message}`, { error: true });
-      window.setTimeout(refresh, 1500);
+      window.setTimeout(() => { if (view.current()) refresh(); }, 1500);
     }
   }
 
@@ -82,14 +95,14 @@
     }, delay);
   }
 
-  window.addEventListener("DOMContentLoaded", () => {
+  function bind() {
     document.getElementById("compact-context")?.addEventListener("click", compact);
 
     const meta = document.getElementById("thread-meta");
     if (meta) {
       new MutationObserver(() => {
-        const threadId = currentThreadId();
-        if (threadId !== lastThreadId) scheduleRefresh(0);
+        selectionGeneration += 1;
+        scheduleRefresh(0);
       }).observe(meta, { childList: true, characterData: true, subtree: true });
     }
 
@@ -104,5 +117,7 @@
 
     scheduleRefresh(0);
     window.setInterval(refresh, 10000);
-  });
+  }
+  if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", bind, { once: true });
+  else bind();
 })();

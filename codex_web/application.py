@@ -94,6 +94,7 @@ from codex_web.api.slack import build_slack_router
 from codex_web.api.system import build_system_router
 from codex_web.api.telegram import build_telegram_router
 from codex_web.api.threads import build_threads_router
+from codex_web.services.thread_scope import ThreadScopeService
 from codex_web.api.turns import build_turns_router
 from codex_web.api.ui import build_ui_router
 from codex_web.api.work_items import build_work_items_router
@@ -968,6 +969,7 @@ thread_index_repository = install_thread_index_repository(
 thread_history_repository = ThreadHistoryRepository(state_store)
 app.state.thread_history_repository = thread_history_repository
 project_service = ProjectService(project_repository)
+thread_scope_service = ThreadScopeService(project_service, agent_session_service, thread_index_repository)
 app.include_router(
     build_execution_profiles_router(execution_profile_definition_service, project_service)
 )
@@ -3225,6 +3227,7 @@ def _binding_public(binding):
 
 
 thread_service = ThreadService(
+    thread_scope=thread_scope_service,
     runtime_transport=codex_runtime,
     runtime_request_for_thread=turn_execution_service.request_for_thread,
     event_sink=bot_runtime_telemetry.append,
@@ -4296,16 +4299,16 @@ EXTRACTED_ROUTE_COUNTS = {
         )
     ),
     "project-ui": _include_domain_router(
-        build_project_ui_state_router(project_ui_state_service)
+        build_project_ui_state_router(project_ui_state_service, thread_scope_service)
     ),
     "threads": _include_domain_router(
-        build_threads_router(thread_service)
+        build_threads_router(thread_service, thread_scope_service)
     ),
     "turns": _include_domain_router(
-        build_turns_router(turn_service)
+        build_turns_router(turn_service, thread_scope_service)
     ),
     "context": _include_domain_router(
-        build_context_router(context_service)
+        build_context_router(context_service, thread_scope_service)
     ),
     "runtime": _include_domain_router(
         build_runtime_router(runtime_service)

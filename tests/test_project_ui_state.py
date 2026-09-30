@@ -79,6 +79,7 @@ class _Threads:
         *,
         limit=None,
         cursor=None,
+        actor=None,
     ):
         self.calls.append(
             {

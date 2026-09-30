@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from codex_web.api.identity import request_actor
+from codex_web.api.thread_scope import thread_scope_dependency
+from codex_web.services.thread_scope import ThreadScopeService
 
 from codex_web.models import (
     ThreadPrimaryChannelUpdate,
@@ -13,11 +17,12 @@ from codex_web.models import (
 from codex_web.services.threads import ThreadService
 
 
-def build_threads_router(service: ThreadService) -> APIRouter:
-    router = APIRouter(tags=["threads"])
+def build_threads_router(service: ThreadService, scope: ThreadScopeService) -> APIRouter:
+    router = APIRouter(tags=["threads"], dependencies=[Depends(thread_scope_dependency(scope))])
 
     @router.get("/api/threads")
     async def list_threads(
+        request: Request,
         project_id: str | None = None,
         archived: bool = False,
         search: str | None = None,
@@ -25,11 +30,12 @@ def build_threads_router(service: ThreadService) -> APIRouter:
         cursor: str | None = None,
     ) -> dict[str, Any]:
         return await service.list(
-            project_id,
+            request.state.thread_project.id,
             archived,
             search,
             limit=limit,
             cursor=cursor,
+            actor=request.state.identity_actor,
         )
 
     @router.post("/api/threads")
@@ -49,7 +55,7 @@ def build_threads_router(service: ThreadService) -> APIRouter:
         agent_profile_revision: int | None = None,
     ) -> dict[str, Any]:
         return await service.create(
-            project_id=project_id,
+            project_id=request.state.thread_project.id,
             sandbox=sandbox,
             approval_policy=approval_policy,
             model=model,
@@ -87,8 +93,21 @@ def build_threads_router(service: ThreadService) -> APIRouter:
         return service.update_settings(thread_id, payload)
 
     @router.get("/api/thread-settings")
-    async def list_thread_settings() -> dict[str, Any]:
-        return service.list_settings()
+    async def list_thread_settings(request: Request) -> dict[str, Any]:
+        actor = request_actor(request)
+        result = {}
+        ownership = scope.ownership_snapshot()
+        for thread_id, settings in service.list_settings().items():
+            try:
+                scope.for_thread(
+                    thread_id, actor, request.state.thread_project.id, ownership=ownership,
+                )
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+                continue
+            result[thread_id] = settings
+        return result
 
     @router.get("/api/threads/{thread_id}/settings")
     async def get_thread_settings(thread_id: str) -> dict[str, Any]:

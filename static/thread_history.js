@@ -66,6 +66,7 @@
     const meta = threadId ? threadMeta.get(threadId) : null;
     const hasOlder = Boolean(meta?.truncated || (threadId && locallyPruned.has(threadId)));
 
+    const restoreFocus = control.contains(document.activeElement);
     control.replaceChildren();
     control.hidden = !hasOlder;
     if (!hasOlder || !threadId) return;
@@ -118,6 +119,7 @@
     });
 
     control.appendChild(button);
+    if (restoreFocus) button.focus({ preventScroll: true });
   }
 
   function pruneLiveDom(threadId = currentThreadId(), messages = messagesElement) {

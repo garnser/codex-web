@@ -66,3 +66,21 @@ test('repository target authorization and stale-state blockers remain canonical'
     await expect(card).toContainText('Repository: repo-app');
   }
 });
+
+for (const outcome of ['resolve', 'reject']) {
+  test(`late preflight retry ${outcome} does not reload or show errors in a later Project visit`, async ({ page }) => {
+    await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?holdRetry');
+    await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: 'a' } })));
+    await page.getByRole('button', { name: 'Retry', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => Boolean(window.__finishRetry))).toBe(true);
+    await page.evaluate(outcome => {
+      for (const projectId of ['b', 'a']) window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId } }));
+      window.__finishRetry[outcome](outcome === 'reject' ? new Error('Old retry failed') : {});
+    }, outcome);
+    await page.waitForTimeout(100);
+    expect(await page.evaluate(() => window.__reloadCalls)).toEqual([]);
+    expect(await page.evaluate(() => window.__refreshCalls)).toEqual([]);
+    await expect(page.locator('#messages')).not.toContainText('Old retry failed');
+  });
+}

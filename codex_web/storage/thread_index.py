@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from codex_web.models import IndexedThread
 from codex_web.storage.operational_state import ModelListRepository
@@ -305,6 +305,7 @@ class ThreadIndexRepository:
         after: str | None,
         limit: int,
         scan_budget: int | None = None,
+        include: Callable[[IndexedThread], bool] | None = None,
     ) -> tuple[list[IndexedThread], str | None, bool]:
         """Return one stable page without materializing the complete index."""
 
@@ -349,6 +350,8 @@ class ThreadIndexRepository:
                 if not isinstance(payload, dict):
                     continue
                 thread = IndexedThread.model_validate(payload)
+                if include is not None and not include(thread):
+                    continue
                 if normalized_search and normalized_search not in (
                     f"{thread.name} {thread.preview or ''} {thread.id}"
                 ).casefold():

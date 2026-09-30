@@ -140,8 +140,8 @@ function applyTheme(theme) {
 function developerPanelOpen(){return Boolean($("developer-panel")?.open)}
 function scheduleCommunicationLogRender(){if(!developerPanelOpen()||state.commLogRenderPending)return;state.commLogRenderPending=true;requestAnimationFrame(()=>{state.commLogRenderPending=false;renderCommunicationLog()})}
 
-const api=createLoggedApi(logEvent);
-const pfUi=createPfUi({api,addMessage,loadThread,scheduleRefresh,logEvent});
+const api=createLoggedApi(logEvent,()=>state.projectId);
+const pfUi=createPfUi({api,addMessage,loadThread:id=>loadThread(id,{force:true}),scheduleRefresh,logEvent,captureView:()=>captureThreadView(state)});
 const threadRoute=createThreadRoute({state,api,clearSelection:clearSelectedThread,loadThread,addMessage});
 
 const uiEvents=createProjectUiEventReconciler({state,api,renderThreads,reconcileWorkspace:refresh,logEvent,getSearch:()=>$("thread-search")?.value||""});
@@ -1268,10 +1268,10 @@ async function saveBotIntegration(event) {
   $("bot-dialog").close();
 }
 
-async function loadThread(threadId, { historyMode = "none" } = {}) {
+async function loadThread(threadId, { historyMode = "none", force = false } = {}) {
   if (!threadId) return clearSelectedThread({ historyMode });
   threadId = String(threadId);
-  if (state.threadId === threadId && threadRoute.idFromLocation() === threadId) return;
+  if (!force && state.threadId === threadId && threadRoute.idFromLocation() === threadId) return;
   if (!await threadRoute.find(threadId)) return;
   if (historyMode !== "none") threadRoute.updateLocation(threadId, { historyMode });
   state.threadId = threadId;
@@ -1318,7 +1318,7 @@ function clearSelectedThread({ historyMode = "none" } = {}) {
   renderRepositoryTargetStatus();
 }
 
-threadHistoryController()?.configure?.({ reloadThread: loadThread });
+threadHistoryController()?.configure?.({ reloadThread: id=>loadThread(id,{force:true}) });
 
 async function newThread() {
   const current = captureThreadView(state);

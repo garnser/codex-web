@@ -69,7 +69,12 @@
     const api = async (path, options = {}) => {
       window.__apiCalls.push({ path, method: options.method || "GET" });
       if (path.includes("/preflight-attempts?")) return { items: attempts };
-      if (path.endsWith("/retry")) return { ok: true };
+      if (path.endsWith("/retry")) {
+        if (new URLSearchParams(location.search).has("holdRetry")) {
+          return new Promise((resolve, reject) => { window.__finishRetry = { resolve, reject }; });
+        }
+        return { ok: true };
+      }
       throw new Error(`unexpected path: ${path}`);
     };
 
