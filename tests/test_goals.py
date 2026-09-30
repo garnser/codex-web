@@ -510,6 +510,44 @@ class GoalApiAssuranceTests(unittest.TestCase):
             "budget": {"max_model_calls": 3, "max_cost_usd": 2.0},
         }
 
+    def test_project_event_collection_filters_before_limit_and_keeps_shared_goals(self) -> None:
+        project_b_goal = self.service.create(
+            GoalCreate(title="B only", description="Project B outcome", owner_identity_id="owner-a",
+                work_graph_bindings=(GoalWorkGraphBinding(project_id="project-b"),)),
+            scope=self.scope, actor_id="bootstrap",
+        )
+        shared = self.service.create(
+            GoalCreate(title="Shared", description="Shared outcome", owner_identity_id="owner-a",
+                work_graph_bindings=(GoalWorkGraphBinding(project_id="project-a"),
+                    GoalWorkGraphBinding(project_id="project-b"))),
+            scope=self.scope, actor_id="bootstrap",
+        )
+        # A newer event in B must not consume A's result limit.
+        self.service.revise(project_b_goal.id,
+            GoalUpdate(title="New B title", reason="B revision"),
+            scope=self.scope, actor_id="bootstrap")
+        response = self.client.get("/api/goals/events", params={"project_id": "project-a", "limit": 1})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["count"], 1)
+        self.assertEqual(response.json()["items"][0]["goal_id"], shared.id)
+        response = self.client.get("/api/goals/events", params={"project_id": "project-a"})
+        self.assertEqual({row["goal_id"] for row in response.json()["items"]}, {shared.id, self.trace_goal.id})
+        self.assertGreater(self.client.get("/api/goals/events").json()["count"], 2)
+        denied = self.client.get("/api/goals/events", params={"project_id": "project-a", "goal_id": project_b_goal.id})
+        self.assertEqual(denied.status_code, 404)
+
+    def test_goal_collections_reject_missing_foreign_and_blank_projects(self) -> None:
+        for endpoint in ("/api/goals", "/api/goals/events"):
+            with self.subTest(endpoint=endpoint):
+                self.assertEqual(self.client.get(endpoint, params={"project_id": "missing"}).status_code, 404)
+                self.assertEqual(self.client.get(endpoint, params={"project_id": ""}).status_code, 422)
+        self.service.projects.allowed = {"project-a", "project-b", "empty"}
+        self.assertEqual(self.client.get("/api/goals/events", params={"project_id": "empty"}).json(), {"items": [], "count": 0})
+        self.actor = self.actor.model_copy(update={"workspace_id": "foreign"})
+        for endpoint in ("/api/goals", "/api/goals/events"):
+            self.assertEqual(self.client.get(endpoint, params={"project_id": "project-a"}).status_code, 404)
+        self.assertEqual(self.client.get("/api/goals/events").json(), {"items": [], "count": 0})
+
     def test_slow_graph_list_does_not_block_goal_event_requests(self) -> None:
         original_snapshot = self.service.work_graph.snapshot
         started = threading.Event()

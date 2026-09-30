@@ -244,9 +244,9 @@ async function loadDecision(
     renderDetail();
   } catch (error) {
     if (
-      error?.name !== 'AbortError'
+      error?.name !== 'AbortError' && !controller.signal.aborted
       && generation === state.refreshGeneration
-      && projectId === state.projectId
+      && projectId === state.projectId && decisionId === state.selectedDecisionId
     ) {
       host.innerHTML = `<div class="decision-error">${esc(error.message || 'Failed to load Decision')}</div>`;
     }
@@ -599,7 +599,12 @@ function renderDetail() {
 
 async function mutate(path, body, message) {
   const projectId = state.projectId;
-  if (!projectId) {
+  const generation = state.refreshGeneration;
+  const decisionId = state.selectedDecisionId;
+  const current = () => generation === state.refreshGeneration
+    && projectId === state.projectId && projectId === activeProjectId()
+    && decisionId === state.selectedDecisionId;
+  if (!projectId || !current()) {
     setStatus('Project changed; reload the Decision before acting.', true);
     return;
   }
@@ -610,9 +615,9 @@ async function mutate(path, body, message) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (projectId === state.projectId) await refreshAll({ projectId });
+    if (current()) await refreshAll({ projectId });
   } catch (error) {
-    if (projectId === state.projectId) {
+    if (current()) {
       setStatus(error.message || 'Decision action failed', true);
     }
   }

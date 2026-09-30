@@ -465,3 +465,37 @@ test('approved Decision generates work only through canonical Decision work endp
   await expect(dialog).toContainText('intent-work-1');
   await expect(dialog.locator('.decision-work-state.queued')).toHaveText('queued');
 });
+
+test('a delayed Decision mutation cannot update a later visit to the same Project', async ({ page }) => {
+  await mockDecisionApis(page, [], 'analysis');
+  await page.route('**/api/decisions?*', async route => {
+    if (new URL(route.request().url()).searchParams.get('project_id') === 'project-a') return route.fallback();
+    return route.fulfill({ json: { items: [], count: 0 } });
+  });
+  let release;
+  let pending = false;
+  const held = new Promise(resolve => { release = resolve; });
+  await page.route('**/api/decisions/decision-a/approval-request?*', async route => {
+    pending = true;
+    await held;
+    await route.fulfill({ status: 409, json: { detail: 'Old Decision mutation conflict' } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/decisions_fixture.html');
+  await page.locator('#decisions-button').click();
+  await page.locator('.decision-request-approval').click();
+  await expect.poll(() => pending).toBe(true);
+  const select = projectId => page.evaluate(projectId => {
+    document.body.dataset.projectId = projectId;
+    window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId } }));
+  }, projectId);
+  await select('project-empty');
+  await expect(page.locator('.decision-detail')).toContainText('No Decisions exist in this Project');
+  await select('project-a');
+  await expect(page.locator('.decisions-status')).toHaveText('Up to date');
+  const response = page.waitForResponse('**/api/decisions/decision-a/approval-request?*');
+  release();
+  await (await response).finished();
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  await expect(page.locator('.decisions-status')).toHaveText('Up to date');
+  await expect(page.locator('#decisions-dialog')).not.toContainText('Old Decision mutation conflict');
+});
