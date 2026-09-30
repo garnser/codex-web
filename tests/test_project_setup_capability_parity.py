@@ -17,7 +17,7 @@ class ProjectSetupCapabilityParityTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn('route.includes("task-source")', javascript)
-        self.assertIn('openWorkspace?.("work")', javascript)
+        self.assertIn('openWorkspace?.("work", { page: "work-items" })', javascript)
         self.assertIn(
             "| Project readiness / bootstrap / task-source authority | Y | Y | Y |",
             matrix,

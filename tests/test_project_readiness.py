@@ -620,6 +620,8 @@ class ProjectReadinessTests(unittest.TestCase):
             bootstrap=_BootstrapStore((execution,))
         ).evaluate(self.project.id, actor=_actor())
         self.assertIn("task_source_missing", {x.code for x in value.blockers})
+        task = next(item for item in value.blockers if item.code == "task_source_missing")
+        self.assertEqual(task.remediation_route, f"/api/projects/{self.project.id}/task-source")
 
     def test_missing_task_source_secret_reference_is_blocked(self):
         self.project = self.project.model_copy(

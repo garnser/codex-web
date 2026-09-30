@@ -208,3 +208,23 @@ test('explicit repository policy is ready while requiring a target per turn', as
   await expect(dialog.locator('.project-setup-metrics')).toContainText('Explicit per turn');
   await expect(dialog.locator('[data-check-id="repository:execution-target"]')).toContainText('repository_target_required_per_turn');
 });
+
+test('readiness remediation opens canonical configuration, Secrets and TaskSource management', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/project_setup_ui_fixture.html');
+  await page.locator('#project-setup-launch').click();
+  await page.evaluate(async () => {
+    window.remediationDestinations = [];
+    window.CodexProductUI = { openWorkspace: (workspace, options) => window.remediationDestinations.push({ workspace, options }) };
+    const original = window.fetch;
+    window.fetch = (url, options) => String(url).endsWith('/readiness')
+      ? Promise.resolve(new Response(JSON.stringify({ project_id: 'project-a', execution_ready: false, checks: [
+        { id: 'configuration', status: 'blocked', code: 'configuration', message: 'Configure runtime', remediation_route: '/api/configuration' },
+        { id: 'secret', status: 'blocked', code: 'secret', message: 'Bind secret', remediation_route: '/api/secrets' },
+        { id: 'source', status: 'blocked', code: 'source', message: 'Configure source', remediation_route: '/api/projects/project-a/task-source' },
+      ] }), { headers: { 'Content-Type': 'application/json' } })) : original(url, options);
+    await window.CodexProjectSetup.refresh();
+  });
+  for (const id of ['configuration', 'secret', 'source']) await page.locator(`[data-check-id="${id}"] [data-setup-route]`).click();
+  expect(await page.evaluate(() => remediationDestinations.map(item => item.workspace))).toEqual(['settings', 'secrets', 'work']);
+  expect(await page.evaluate(() => location.hash)).not.toContain('setup/route');
+});

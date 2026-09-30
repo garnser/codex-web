@@ -503,3 +503,92 @@ test('GitLab TaskSource preserves, replaces and unbinds canonical SecretReferenc
   await expect.poll(() => saved.length).toBe(3);
   expect(saved[2]).not.toHaveProperty('credential_secret_id');
 });
+
+test('TaskSource editor rejects sibling adapter fallback and explains explicit Project authority', async ({ page }) => {
+  await mockOperatorApis(page, []);
+  const projects = projectPayload(); projects[0].authoritative_task_source = null;
+  await page.route('**/api/projects', route => route.fulfill({ json: projects }));
+  await page.route('**/api/task-sources', route => route.fulfill({ json: { items: [{ project_id: 'other-project', source_type: 'gitlab', source_instance: 'https://foreign-instance.example', available: true }] } }));
+  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
+  await expect(page.locator('.work-source-instance')).toHaveValue('');
+  await expect(page.locator('[data-source-provenance]')).toContainText('no explicit authoritative TaskSource');
+  await expect(page.locator('.work-source-capabilities')).toContainText('Adapter not registered');
+  await expect(page.locator('#work-items-dialog')).not.toContainText('foreign-instance');
+});
+
+test('dirty TaskSource supports cancellation, failed-save recovery and confirmed clear', async ({ page }) => {
+  await mockOperatorApis(page, []); let deletes = 0;
+  await page.route('**/api/projects/project-a/task-source', route => {
+    if (route.request().method() === 'DELETE') { deletes++; return route.fulfill({ json: {} }); }
+    return route.fulfill({ status: 403, json: { detail: 'Project administration denied' } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
+  await page.locator('.work-source-scope').fill('retained-draft');
+  page.once('dialog', dialog => dialog.dismiss());
+  await page.locator('.work-items-close').click();
+  await expect(page.locator('#work-items-dialog')).toBeVisible();
+  await page.locator('.work-source-save').click();
+  await expect(page.locator('.work-source-config [role=alert]')).toContainText('Project administration denied');
+  await expect(page.locator('.work-source-scope')).toHaveValue('retained-draft');
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: 'Discard source edits' }).click();
+  await expect(page.locator('.work-source-scope')).toHaveValue('team/project-a');
+  page.once('dialog', dialog => dialog.dismiss());
+  await page.locator('.work-source-clear').click(); expect(deletes).toBe(0);
+  page.once('dialog', dialog => dialog.accept());
+  await page.locator('.work-source-clear').click();
+  await expect.poll(() => deletes).toBe(1);
+});
+
+for (const backToOriginal of [false, true]) {
+  test(`late TaskSource save stays with its originating Project${backToOriginal ? ' after an A-B-A visit' : ''}`, async ({ page }) => {
+    await mockOperatorApis(page, []);
+    const projects = [...projectPayload(), { ...projectPayload()[0], id: 'project-b', name: 'Project B', authoritative_task_source: { source_type: 'gitlab', source_instance: 'https://b.example', scope: 'scope-b' } }];
+    await page.route('**/api/projects', route => route.fulfill({ json: projects }));
+    let release, requested = false;
+    const pending = new Promise(resolve => { release = resolve; });
+    await page.route('**/api/projects/project-a/task-source', async route => { requested = true; await pending; await route.fulfill({ json: projects[0] }); });
+    await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html?work_item_project=project-a');
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
+    await page.locator('.work-source-scope').fill('old-save'); await page.locator('.work-source-save').click();
+    await expect.poll(() => requested).toBe(true);
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: 'project-b' } })));
+    await expect(page.locator('.work-source-scope')).toHaveValue('scope-b');
+    if (backToOriginal) {
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: 'project-a' } })));
+      await expect(page.locator('.work-source-scope')).toHaveValue('team/project-a');
+    }
+    const response = page.waitForResponse(url => url.url().endsWith('/api/projects/project-a/task-source'));
+    release(); await response;
+    await expect(page.locator('.work-source-scope')).toHaveValue(backToOriginal ? 'team/project-a' : 'scope-b');
+    await expect(page.locator('.work-items-status')).not.toHaveText('Authoritative source saved');
+  });
+}
+
+test('ServiceNow editor preserves all canonical mappings and edits schema-declared field names', async ({ page }) => {
+  await mockOperatorApis(page, []);
+  const projects = projectPayload();
+  projects[0].authoritative_task_source = { source_type: 'servicenow', source_instance: 'https://snow.example', scope: 'team', credential_secret_id: 'secret-snow', provider_settings: {
+    kind: 'servicenow', table: 'task', fields: { title: 'custom_title', assignee: 'custom_owner' },
+    canonical_state_values: { implementation_active: '2', ready_for_validation: '3', validation_running: '4', closed: '7' },
+  } };
+  await page.route('**/api/projects', route => route.fulfill({ json: projects }));
+  await page.route('**/api/task-sources', route => route.fulfill({ json: { items: [], configuration_schema: { $defs: {
+    ServiceNowFieldSettings: { properties: { title: { type: 'string', title: 'Title', default: 'short_description' }, assignee: { type: 'string', title: 'Assignee', default: 'assigned_to' } } },
+    ServiceNowTaskSourceSettings: { properties: { canonical_state_values: { propertyNames: { enum: ['implementation_active', 'ready_for_validation', 'validation_running', 'closed'] } } } },
+  } } } }));
+  let saved;
+  await page.route('**/api/projects/project-a/task-source', route => { saved = route.request().postDataJSON(); projects[0].authoritative_task_source = saved; return route.fulfill({ json: projects[0] }); });
+  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
+  await page.locator('[data-source-provider-details] summary').click();
+  await expect(page.getByLabel('Title field name', { exact: true })).toHaveValue('custom_title');
+  await page.getByLabel('Title field name', { exact: true }).fill('new_title');
+  await page.getByLabel('validation_running state value', { exact: true }).fill('5');
+  await page.locator('.work-source-save').click();
+  await expect.poll(() => saved?.provider_settings?.fields?.title).toBe('new_title');
+  expect(saved.provider_settings.fields.assignee).toBe('custom_owner');
+  expect(saved.provider_settings.canonical_state_values).toEqual({ implementation_active: '2', ready_for_validation: '3', validation_running: '5', closed: '7' });
+});

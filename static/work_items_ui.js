@@ -3,7 +3,7 @@ import { createWorkItemViewScope, workItemLoadError } from "./work_item_view_sco
 import { createRunTimelineUi } from "./work_item_runs_ui.js";
 import { workItemSummaryHtml } from "./work_item_summary_ui.js";
 import { request } from './api_client.js';
-import { renderSecretOptions } from './task_source_credentials.js';
+import { createTaskSourceEditor } from './task_source_editor.js';
 import { observeRender } from './frontend_perf.js';
 import { applyWorkItemSearch, installWorkItemSearch } from './work_items_search_ui.js';
 import { installWorkItemsMount, workItemsSurfaceActive } from './work_items_mount_ui.js';
@@ -41,6 +41,9 @@ function currentProjectContext(){const query=new URLSearchParams(location.search
 function persistWorkItemProject(projectId){if(!projectId)return;sessionStorage.setItem(WORK_ITEM_PROJECT_KEY,projectId);if(document.body?.dataset.activeProject||routedProjectContext())return;const url=new URL(location.href);url.searchParams.set('work_item_project',projectId);history.replaceState({...history.state,workItemProjectId:projectId},'',url)}
 const { resetPaging, captureScope, scopedPath } = createWorkItemViewScope(state, renderItemList);
 const openCommand = installWorkItemCommands(state, loadDetail);
+const sourceEditor = createTaskSourceEditor(state, { refreshAll, setStatus, esc, fmtTime });
+const renderSourceConfig = () => sourceEditor.render();
+let catalogGeneration = 0;
 function ensureShell() {
   if (document.querySelector('#work-items-dialog')) return;
   const link = document.createElement('link');
@@ -111,7 +114,7 @@ function ensureShell() {
     if (contextProject) state.projectId = contextProject;
     await refreshAll();
     await openCommand(detail);
-  });
+  }, () => sourceEditor.canLeave());
   dialog.querySelector('.work-items-refresh').addEventListener('click', refreshAll);
   installWorkItemSearch(dialog, () => {
     state.selectedRef = '';
@@ -119,18 +122,16 @@ function ensureShell() {
     void loadItems({ reset: true });
   });
   dialog.querySelector('.work-items-project').addEventListener('change', async (event) => {
+    if (!sourceEditor.canLeave()) { event.target.value = state.projectId; return; }
+    catalogGeneration += 1;
     state.projectId = event.target.value;
     state.selectedRef = '';
     persistWorkItemProject(state.projectId);
     resetPaging();
-    renderSourceConfig();
+    sourceEditor.projectChanged();
     await loadItems({ reset: true });
   });
-  dialog.querySelector('.work-source-type').addEventListener('change', (event) => {
-    renderProviderFields(event.target.value);
-  });
-  dialog.querySelector('.work-source-save').addEventListener('click', saveSource);
-  dialog.querySelector('.work-source-clear').addEventListener('click', clearSource);
+  sourceEditor.bind(dialog.querySelector('.work-source-config'));
   dialog.querySelector('.work-items-sync').addEventListener('click', syncSource);
 }
 function setStatus(message, isError = false) {
@@ -139,7 +140,10 @@ function setStatus(message, isError = false) {
   target.textContent = message || '';
   target.classList.toggle('error', Boolean(isError));
 }
-async function refreshAll() {
+async function refreshAll({ preserveSource = true } = {}) {
+  if (preserveSource && sourceEditor.isDirty() && !sourceEditor.canLeave()) return;
+  const visit = ++catalogGeneration; const startedProject = state.projectId;
+  const current = () => visit === catalogGeneration && startedProject === state.projectId;
   setStatus('Loading…');
   try {
     const [projects, catalog, secretsPayload] = await Promise.all([
@@ -147,6 +151,7 @@ async function refreshAll() {
       request('/api/task-sources'),
       request('/api/secrets').catch(() => ({ items: [] })),
     ]);
+    if (!current()) return;
     state.projects = Array.isArray(projects) ? projects : [];
     state.catalog = catalog || { items: [], sync: {} };
     state.secrets = Array.isArray(secretsPayload?.items) ? secretsPayload.items : [];
@@ -160,9 +165,9 @@ async function refreshAll() {
     renderProjectSelect();
     renderSourceConfig();
     await loadItems({ reset: true });
-    setStatus('Up to date');
+    if (visit === catalogGeneration) setStatus('Up to date');
   } catch (error) {
-    setStatus(error.message || 'Failed to load operator state', true);
+    if (current()) setStatus(error.message || 'Failed to load operator state', true);
   }
 }
 function renderProjectSelect() {
@@ -175,144 +180,20 @@ function renderProjectSelect() {
     )),
   ].join('');
 }
-function selectedProject() {
-  return state.projects.find((project) => project.id === state.projectId) || null;
-}
-function catalogEntry(sourceType) {
-  const entries = Array.isArray(state.catalog?.items) ? state.catalog.items : [];
-  return entries.find((entry) => entry.project_id === state.projectId && entry.source_type === sourceType)
-    || entries.find((entry) => entry.project_id == null && entry.source_type === sourceType)
-    || entries.find((entry) => entry.source_type === sourceType)
-    || null;
-}
-function renderProviderFields(sourceType, config = null) {
-  const normalized = String(sourceType || '').toLowerCase();
-  const wrapper = document.querySelector('.work-source-provider-fields');
-  const secretRow = document.querySelector('.work-source-secret-row');
-  const jiraRow = document.querySelector('.work-source-jira-username-row');
-  const tableRow = document.querySelector('.work-source-servicenow-table-row');
-  const activeRow = document.querySelector('.work-source-servicenow-active-row');
-  const closedRow = document.querySelector('.work-source-servicenow-closed-row');
-  const isJira = normalized === 'jira';
-  const isServiceNow = normalized === 'servicenow';
-  const needsCredential = isJira || isServiceNow || normalized === 'gitlab' || Boolean(config?.credential_secret_id);
-  if (wrapper) wrapper.hidden = !needsCredential;
-  if (secretRow) secretRow.hidden = !needsCredential;
-  if (jiraRow) jiraRow.hidden = !isJira;
-  if (tableRow) tableRow.hidden = !isServiceNow;
-  if (activeRow) activeRow.hidden = !isServiceNow;
-  if (closedRow) closedRow.hidden = !isServiceNow;
-  renderSecretOptions(document.querySelector('.work-source-secret'), state.secrets, config?.credential_secret_id || '', state.projectId);
-  if (isJira) {
-    document.querySelector('.work-source-jira-username').value = config?.provider_settings?.username || '';
-  }
-  if (isServiceNow) {
-    const settings = config?.provider_settings || {};
-    const mapping = settings.canonical_state_values || {};
-    document.querySelector('.work-source-servicenow-table').value = settings.table || 'task';
-    document.querySelector('.work-source-servicenow-active').value = mapping.implementation_active || '';
-    document.querySelector('.work-source-servicenow-closed').value = mapping.closed || '';
-  }
-}
-function renderSourceConfig() {
-  const project = selectedProject();
-  const config = project?.authoritative_task_source || null;
-  const type = config?.source_type || 'gitlab';
-  const entry = catalogEntry(type);
-  const typeInput = document.querySelector('.work-source-type');
-  const instanceInput = document.querySelector('.work-source-instance');
-  const scopeInput = document.querySelector('.work-source-scope');
-  if (!typeInput || !instanceInput || !scopeInput) return;
-  const sourceTypes = [...new Set([
-    'gitlab',
-    'jira',
-    'servicenow',
-    ...(Array.isArray(state.catalog?.items) ? state.catalog.items.map((item) => item.source_type) : []),
-    type,
-  ].filter(Boolean))];
-  typeInput.innerHTML = sourceTypes.map((sourceType) => (
-    `<option value="${esc(sourceType)}" ${sourceType === type ? 'selected' : ''}>${esc(sourceType)}</option>`
-  )).join('');
-  instanceInput.value = config?.source_instance || entry?.source_instance || '';
-  scopeInput.value = config?.scope || '';
-  renderProviderFields(type, config);
-  const caps = entry?.capabilities || [];
-  const sync = state.catalog?.sync || {};
-  document.querySelector('.work-source-capabilities').textContent = [
-    entry ? `Adapter: ${entry.available ? 'ready' : 'not ready'}` : 'Adapter not registered',
-    caps.length ? `Capabilities: ${caps.join(', ')}` : 'Capabilities unavailable',
-    entry?.error ? `Adapter error: ${entry.error}` : '',
-    sync.last_success_at ? `Last sync: ${fmtTime(sync.last_success_at)}` : 'No successful sync recorded',
-    sync.last_error ? `Last error: ${sync.last_error}` : '',
-  ].filter(Boolean).join(' · ');
-}
-async function saveSource() {
-  if (!state.projectId) return;
-  const source_type = document.querySelector('.work-source-type').value.trim();
-  const source_instance = document.querySelector('.work-source-instance').value.trim();
-  const scope = document.querySelector('.work-source-scope').value.trim();
-  if (!source_type || !source_instance || !scope) {
-    setStatus('Source type, instance and scope are required', true);
-    return;
-  }
-  const payload = { source_type, source_instance, scope };
-  const credential_secret_id = document.querySelector('.work-source-secret').value.trim();
-  if (credential_secret_id) payload.credential_secret_id = credential_secret_id;
-  if (source_type === 'jira' || source_type === 'servicenow') {
-    if (!credential_secret_id) {
-      setStatus('A canonical credential SecretReference is required for this provider', true);
-      return;
-    }
-    payload.credential_secret_id = credential_secret_id;
-    if (source_type === 'jira') {
-      const username = document.querySelector('.work-source-jira-username').value.trim();
-      payload.provider_settings = { kind: 'jira' };
-      if (username) payload.provider_settings.username = username;
-    } else {
-      const table = document.querySelector('.work-source-servicenow-table').value.trim() || 'task';
-      const active = document.querySelector('.work-source-servicenow-active').value.trim();
-      const closed = document.querySelector('.work-source-servicenow-closed').value.trim();
-      const canonical_state_values = {};
-      if (active) canonical_state_values.implementation_active = active;
-      if (closed) canonical_state_values.closed = closed;
-      payload.provider_settings = { kind: 'servicenow', table, canonical_state_values };
-    }
-  }
-  setStatus('Saving source…');
-  try {
-    await request(`/api/projects/${encodeURIComponent(state.projectId)}/task-source`, {
-      method: 'PUT',
-      body: JSON.stringify(payload),
-    });
-    await refreshAll();
-    setStatus('Authoritative source saved');
-  } catch (error) {
-    setStatus(error.message || 'Failed to save source', true);
-  }
-}
-async function clearSource() {
-  if (!state.projectId) return;
-  setStatus('Clearing source…');
-  try {
-    await request(`/api/projects/${encodeURIComponent(state.projectId)}/task-source`, { method: 'DELETE' });
-    await refreshAll();
-    setStatus('Authoritative source cleared');
-  } catch (error) {
-    setStatus(error.message || 'Failed to clear source', true);
-  }
-}
 async function syncSource() {
-  if (!state.projectId) return;
+  if (!state.projectId || !sourceEditor.canLeave()) return;
+  const op = sourceEditor.capture();
   setStatus('Reconciling authoritative source…');
   try {
-    const result = await request(`/api/work-items/sync/${encodeURIComponent(state.projectId)}`, {
+    const result = await request(`/api/work-items/sync/${encodeURIComponent(op.projectId)}`, {
       method: 'POST',
       body: JSON.stringify({ actor: 'operator', reason: 'operator requested source resync' }),
     });
+    if (!op.current()) return;
     await refreshAll();
-    setStatus(`Synced ${result.synced ?? 0} work items`);
+    if (op.current()) setStatus(`Synced ${result.synced ?? 0} work items`);
   } catch (error) {
-    setStatus(error.message || 'Source sync failed', true);
+    if (op.current()) setStatus(error.message || 'Source sync failed', true);
   }
 }
 function renderItemList() {
@@ -631,11 +512,13 @@ window.addEventListener('codex:work-item-run-updated', (event) => {
 });
 window.addEventListener('codex:project-changed', async (event) => {
   const projectId = String(event.detail?.projectId || '').trim();
-  if (!projectId || projectId === state.projectId) return;
+  if (projectId === state.projectId) return;
+  catalogGeneration += 1;
   state.projectId = projectId;
   state.selectedRef = '';
   persistWorkItemProject(projectId);
   resetPaging();
+  sourceEditor.projectChanged();
   if (workItemsSurfaceActive()) {
     renderProjectSelect();
     renderSourceConfig();

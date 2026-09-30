@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -10,6 +12,8 @@ from pydantic import ValidationError
 
 from codex_web.api.identity import install_identity_middleware
 from codex_web.api.projects import build_projects_router
+from codex_web.api.work_items import build_work_items_router
+from codex_web.identity import AuthenticationActor, AuthenticationAssurance, MembershipRole, PrincipalKind
 from codex_web.models import Project, ProjectCreate, TaskSourceConfiguration
 from codex_web.services.identity import IdentityService
 from codex_web.services.projects import ProjectService
@@ -19,6 +23,22 @@ from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
 class ProjectTaskSourceConfigurationTests(unittest.TestCase):
+    def test_catalog_exposes_canonical_configuration_schema_and_filters_foreign_projects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            projects = self._service(root)
+            app = self._app(root, projects)
+            service = SimpleNamespace(state_machine=SimpleNamespace(),
+                work_items=SimpleNamespace(load_projects=projects.list))
+            app.include_router(build_work_items_router(service))
+            with patch('codex_web.services.work_item_operator.WorkItemOperatorService.task_source_catalog',
+                       return_value={'items': [{'project_id': 'home'}, {'project_id': 'foreign'}]}):
+                with TestClient(app) as client:
+                    response = client.get('/api/task-sources')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()['items'], [{'project_id': 'home'}])
+            self.assertEqual(response.json()['configuration_schema'], TaskSourceConfiguration.model_json_schema())
+
     def _service(self, root: Path) -> ProjectService:
         repository = ProjectRepository(root / "projects.json")
         service = ProjectService(repository)
@@ -171,6 +191,35 @@ class ProjectTaskSourceConfigurationTests(unittest.TestCase):
                 },
             )
             self.assertEqual(response.status_code, 404)
+
+    def test_task_source_mutations_require_admin_and_actor_tenant(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = self._service(root)
+            service.repository.save([*service.list(), Project(id='foreign', name='Foreign', path=str(root),
+                organization_id='other', workspace_id='default')])
+            actor = AuthenticationActor(identity_id='operator', principal_kind=PrincipalKind.HUMAN,
+                organization_id='local', workspace_id='default', roles=(MembershipRole.MEMBER,),
+                assurance=AuthenticationAssurance.MFA)
+            app = FastAPI()
+            @app.middleware('http')
+            async def identity(request, call_next):
+                request.state.identity_actor = actor
+                request.state.tenant_scope = actor.tenant
+                return await call_next(request)
+            app.include_router(build_projects_router(service))
+            source = {'source_type': 'gitlab', 'source_instance': 'https://gitlab.example',
+                      'scope': 'team/project', 'credential_secret_id': 'secret-reference'}
+            with TestClient(app) as client:
+                self.assertEqual(client.put('/api/projects/home/task-source', json=source).status_code, 403)
+                self.assertEqual(client.delete('/api/projects/home/task-source').status_code, 403)
+                actor = actor.model_copy(update={'roles': (MembershipRole.ADMIN,)})
+                self.assertEqual(client.put('/api/projects/foreign/task-source', json=source).status_code, 404)
+                self.assertEqual(client.delete('/api/projects/foreign/task-source').status_code, 404)
+                self.assertEqual(client.put('/api/projects/home/task-source', json=source).status_code, 200)
+                self.assertEqual(service.get('home').authoritative_task_source.credential_secret_id, 'secret-reference')
+                self.assertEqual(client.delete('/api/projects/home/task-source').status_code, 200)
+                self.assertIsNone(service.get('home').authoritative_task_source)
 
 
 if __name__ == "__main__":

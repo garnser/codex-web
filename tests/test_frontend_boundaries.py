@@ -305,6 +305,8 @@ class FrontendBoundaryTests(unittest.TestCase):
             "execution_profile_impact.js": 2_000,
             "secret_reference_ui.js": 6_000,
             "task_source_credentials.js": 2_000,
+            "task_source_editor.js": 12_000,
+            "task_source_provider_fields.js": 4_000,
             "definition_typed_editor.js": 12_000,
             "definition_typed_authority_editor.js": 13_000,
             "definition_typed_execution_editor.js": 6_000,

@@ -444,10 +444,10 @@ class ProjectReadinessService:
                     affected_type="project",
                     affected_id=project.id,
                     remediation=(
-                        "Complete TaskSource bootstrap/reconciliation."
+                        "Configure the authoritative TaskSource in Project Work Items."
                     ),
                     remediation_route=(
-                        f"/api/projects/{project.id}/bootstrap/plan"
+                        f"/api/projects/{project.id}/task-source"
                     ),
                 )
             )
@@ -464,7 +464,7 @@ class ProjectReadinessService:
                     affected_type="project",
                     affected_id=project.id,
                     remediation_route=(
-                        f"/api/projects/{project.id}/bootstrap/plan"
+                        f"/api/projects/{project.id}/task-source"
                     ),
                 )
             )

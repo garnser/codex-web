@@ -127,11 +127,19 @@ The existing canonical `Project` object carries one optional `authoritative_task
 
 - `source_type` — the adapter/provider family;
 - `source_instance` — the configured external system instance or workspace identifier;
-- `scope` — the provider-native discovery/read scope interpreted by that adapter.
+- `scope` — the provider-native discovery/read scope interpreted by that adapter;
+- optional `credential_secret_id` — a stable canonical SecretReference, never credential material;
+- optional typed `provider_settings` — the supported adapter schema (Jira account metadata or ServiceNow table/state mapping), validated against the source type.
 
 Because the field is singular, a project can represent exactly one authoritative mutable external task source or none. A list of simultaneous mutable authorities is deliberately not part of the model; federation would require an explicit future policy rather than emerging accidentally from configuration.
 
-Provider credentials, tokens, webhook secrets, provider-specific routing options, and transport configuration do not belong in `TaskSourceConfiguration`. Those remain integration concerns. The project binding says **which configured task source is authoritative**, not how to authenticate to it.
+Raw provider credentials, tokens and webhook secrets do not belong in
+`TaskSourceConfiguration`. A credential reference does not grant use permission:
+the runtime still resolves it through SecretBroker under its canonical actor.
+Typed non-secret adapter settings are schema-owned; arbitrary executable or
+credential-bearing settings are not accepted. Transport implementations remain
+integration concerns. The singular Project binding identifies the authoritative
+source and references the configuration needed by its supported adapter.
 
 The canonical project API exposes:
 
@@ -141,6 +149,29 @@ The canonical project API exposes:
 Project creation may also include the same optional binding. Existing stored projects remain valid because the field is optional.
 
 Replacing or clearing a project binding does not silently rewrite `WorkItemState.source_identity`. Existing work retains its provenance. If that provenance does not match the configured authority, reconciliation must surface the mismatch/conflict until an explicit migration or reassignment path resolves it. This prevents a configuration edit from silently transferring authority over existing work.
+
+The Project Work Items editor exposes these same set/replace/clear operations,
+typed provider settings and canonical credential selectors. Its provenance text
+distinguishes the explicit Project binding from mere adapter availability. Adapter
+metadata may come from that Project or the shared catalog, never a sibling
+Project. Clearing requires confirmation and does not delete provider tasks, revoke
+shared credentials or invent a replacement authority. The editor does not offer
+an inherited-source reset when no such canonical inheritance primitive exists.
+
+The TaskSource catalog adds `configuration_schema`, generated from the canonical
+Pydantic configuration model. ServiceNow field-name controls and all supported
+state mappings derive from that schema and preserve existing values. Schema and
+protocol field names remain code-owned; mutable mapping values stay in the
+canonical Project binding. A missing schema cannot silently erase mappings.
+
+Draft field values remain ephemeral and use the shared dirty-editor/inline-error
+controls. Failed writes preserve metadata edits. Save, clear, refresh and resync
+responses are fenced to the originating Project visit, including A→B→A changes;
+Project switches clear prior source fields. Server admin and tenant checks remain
+authoritative. Readiness blockers for missing authority open this editor, while
+credential/configuration blockers open Project Secrets or Configuration. These
+navigation and state checks are deterministic and add no model calls or direct
+provider mutation path.
 
 ## Migration architecture
 
