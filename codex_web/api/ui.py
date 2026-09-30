@@ -22,6 +22,16 @@ PROJECT_UI_PAGES = frozenset(
         "project-settings",
         "configuration",
         "definitions",
+        "goals",
+        "decisions",
+        "metrics",
+        "company",
+        "memory",
+        "skills",
+        "integrations",
+        "workers",
+        "resources",
+        "organization",
     }
 )
 

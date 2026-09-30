@@ -51,8 +51,18 @@ The current shell exposes:
 - Settings / Security.
 
 The shell supports direct navigation, a workspace switcher, responsive sidebar
-shortcuts, Ctrl/Cmd+K keyboard access and hash deep links such as
-`#workspace/resources`.
+shortcuts and Ctrl/Cmd+K keyboard access. Every Project workspace has a stable
+`/projects/{project_id}/{page}` route, also supported beneath the deployment mount
+prefix. The server serves the shell only for supported page names; unknown pages
+remain 404. Legacy hash entries such as `#workspace/resources` migrate to their
+corresponding page. Workers have a distinct route from Operations, so reload and
+browser history preserve the selected surface.
+
+A Project route supplies navigation context, not resource ownership or authority.
+Skills, Integrations, Workers, Resources and Organization retain their canonical
+organization/workspace scope and label it explicitly. Definitions display selected
+Project and inherited shared records. Domain APIs remain responsible for actor,
+tenant and resource authorization; route names never grant access.
 
 Projects and Threads remain directly accessible in the sidebar rather than being
 forced through management screens.
