@@ -505,3 +505,55 @@ test('rapid Project switching ignores late Goal responses from the previous Proj
   await expect(dialog).toContainText('Project B Goal');
   await expect(dialog).not.toContainText('Project A Goal');
 });
+
+test('late Goal detail failures cannot replace the newly selected Project', async ({ page }) => {
+  await mockProjectScopedGoalReads(page);
+  let release;
+  let pending = false;
+  const held = new Promise(resolve => { release = resolve; });
+  await page.route('**/api/goals/goal-a?*', async route => {
+    pending = true;
+    await held;
+    await route.fulfill({ status: 503, json: { detail: 'Old Project A detail failed' } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/goals_fixture.html');
+  await page.locator('#goals-button').click();
+  await expect.poll(() => pending).toBe(true);
+  await switchProject(page, 'project-b');
+  await expect(page.locator('.goal-detail')).toContainText('Project B Goal');
+  const response = page.waitForResponse('**/api/goals/goal-a?*');
+  release();
+  await (await response).finished();
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  await expect(page.locator('.goal-detail')).toContainText('Project B Goal');
+  await expect(page.locator('#goals-dialog')).not.toContainText('Old Project A detail failed');
+});
+
+test('Goal mutation responses are fenced even after A to B to A navigation', async ({ page }) => {
+  await mockProjectScopedGoalReads(page);
+  let release;
+  let pending = false;
+  const held = new Promise(resolve => { release = resolve; });
+  await page.route('**/api/goals/goal-a/decompositions/generate?*', async route => {
+    expect(new URL(route.request().url()).searchParams.get('project_id')).toBe('project-a');
+    pending = true;
+    await held;
+    await route.fulfill({ status: 409, json: { detail: 'Old generation mutation failed' } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/goals_fixture.html');
+  await page.locator('#goals-button').click();
+  await expect(page.locator('.goal-detail')).toContainText('Project A Goal');
+  await page.locator('.goal-generate-reason').fill('Explicit operator request');
+  await page.locator('.goal-generate').click();
+  await expect.poll(() => pending).toBe(true);
+  await switchProject(page, 'project-b');
+  await expect(page.locator('.goal-detail')).toContainText('Project B Goal');
+  await switchProject(page, 'project-a');
+  await expect(page.locator('.goals-status')).toHaveText('Up to date');
+  const response = page.waitForResponse('**/api/goals/goal-a/decompositions/generate?*');
+  release();
+  await (await response).finished();
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  await expect(page.locator('.goals-status')).toHaveText('Up to date');
+  await expect(page.locator('#goals-dialog')).not.toContainText('Old generation mutation failed');
+});

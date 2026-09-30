@@ -1,4 +1,5 @@
 import { request } from './api_client.js';
+import { currentProjectId as activeProjectId } from './project_view_scope.js';
 
 const state = {
   projectId: '',
@@ -21,14 +22,6 @@ const esc = (value) => String(value ?? '')
   .replaceAll('>', '&gt;')
   .replaceAll('"', '&quot;')
   .replaceAll("'", '&#039;');
-
-function activeProjectId() {
-  return String(
-    document.body?.dataset?.projectId
-    || new URLSearchParams(window.location.search).get('project')
-    || '',
-  ).trim();
-}
 
 function scopedGoalPath(path, projectId) {
   const separator = path.includes('?') ? '&' : '?';
@@ -210,6 +203,10 @@ async function loadGoal(
 ) {
   const detail = document.querySelector('.goal-detail');
   if (!detail) return;
+  const current = () => generation === state.refreshGeneration
+    && projectId === state.projectId && projectId === activeProjectId()
+    && goalId === state.selectedGoalId;
+  if (!current()) return;
   detail.innerHTML = '<div class="goal-empty">Loading Goal detail…</div>';
   try {
     const encoded = encodeURIComponent(goalId);
@@ -232,12 +229,7 @@ async function loadGoal(
       goalRequest(`/api/goals/${encoded}/execution-bindings`, undefined, projectId),
       goalRequest('/api/goals/runtime-objectives/unbound', undefined, projectId),
     ]);
-    if (
-      generation !== state.refreshGeneration
-      || projectId !== state.projectId
-      || projectId !== activeProjectId()
-      || goalId !== state.selectedGoalId
-    ) return;
+    if (!current()) return;
     state.detail = detailPayload?.snapshot || null;
     state.revisions = revisions?.items || [];
     state.events = events?.items || [];
@@ -248,6 +240,7 @@ async function loadGoal(
     state.unboundRuntimeObjectives = unboundRuntimeObjectives?.items || [];
     renderGoalDetail();
   } catch (error) {
+    if (!current()) return;
     detail.innerHTML = `<div class="goal-error">${esc(error.message || 'Failed to load Goal')}</div>`;
   }
 }
@@ -627,18 +620,18 @@ function currentGoal() {
   return state.detail?.goal || null;
 }
 
-async function mutate(path, body, statusText) {
+async function mutateGoal(path, body, statusText, context) {
+  if (!context.current()) return;
   setStatus(statusText || 'Applying…');
   try {
-    const projectId = state.projectId || activeProjectId();
+    const projectId = context.projectId;
     await goalRequest(path, {
       method: 'POST',
       body: JSON.stringify(body),
     }, projectId);
-    if (projectId === activeProjectId()) await refreshAll({ projectId });
+    if (context.current()) await refreshAll({ projectId });
   } catch (error) {
-    setStatus(error.message || 'Operation failed', true);
-    throw error;
+    if (context.current()) setStatus(error.message || 'Operation failed', true);
   }
 }
 
@@ -649,6 +642,14 @@ function proposalById(id) {
 function wireGoalActions() {
   const goal = currentGoal();
   if (!goal) return;
+  const projectId = state.projectId;
+  const generation = state.refreshGeneration;
+  const context = {
+    projectId,
+    current: () => generation === state.refreshGeneration
+      && projectId === activeProjectId() && goal.id === state.selectedGoalId,
+  };
+  const mutate = (path, body, statusText) => mutateGoal(path, body, statusText, context);
   const encodedGoal = encodeURIComponent(goal.id);
   const detail = document.querySelector('.goal-detail');
 

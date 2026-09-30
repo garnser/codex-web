@@ -12,3 +12,11 @@ Parent/blocking relationships are created through the canonical WorkGraph servic
 The Decision trace endpoint joins the canonical Goal snapshot, Decision record, Work Items, ActionIntent histories/receipts, and post-execution reviews. It does not copy provider payloads into a second trace store. The workspace reads this endpoint to show the `Goal -> Decision -> Work -> Result` chain.
 
 Canonical Evidence and MetricSnapshot references in the Decision workspace link to their canonical read APIs. The UI does not synthesize duplicate evidence records.
+
+## Project response fencing
+
+The workspace binds each mutation response to the selected Project, Decision and
+view generation. Navigating away and back does not make an old in-flight result
+current again. Aborted or superseded detail failures cannot replace the current
+selection. This UI fence does not cancel a mutation already accepted by the
+canonical API or grant authority; subsequent reads reconcile its actual result.

@@ -727,14 +727,22 @@ class GoalService:
         *,
         scope: TenantScope,
         goal_id: str | None = None,
+        project_id: str | None = None,
         limit: int = 100,
     ) -> tuple[GoalEvent, ...]:
+        if project_id is not None:
+            self._require_project(project_id, scope)
+        state = self.store.load()
+        if goal_id is not None:
+            self._goal(state, goal_id, scope, project_id=project_id)
         visible_ids = {
-            item.id for item in self.store.load().goals if self._visible(item, scope)
+            item.id for item in state.goals
+            if self._visible(item, scope)
+            and (project_id is None or self._project_visible(item, project_id))
         }
         rows = [
             item
-            for item in self.store.load().events
+            for item in state.events
             if item.goal_id in visible_ids
             and (goal_id is None or item.goal_id == goal_id)
         ]

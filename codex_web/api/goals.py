@@ -99,7 +99,10 @@ def build_goals_router(
                 "count": len(rows),
             }
 
-        return await asyncio.to_thread(load)
+        try:
+            return await asyncio.to_thread(load)
+        except (GoalError, ValueError) as exc:
+            raise _error(exc) from exc
 
     @router.get("/events")
     async def events(
@@ -115,6 +118,7 @@ def build_goals_router(
             rows = service.events(
                 scope=actor.tenant,
                 goal_id=goal_id,
+                project_id=project_id,
                 limit=limit,
             )
         except (GoalError, ValueError) as exc:

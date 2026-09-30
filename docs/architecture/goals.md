@@ -79,6 +79,14 @@ This lets one Goal produce work across multiple projects while keeping the origi
 
 Goal decomposition uses these bindings when committing proposed work so generated Work Items remain attributable to the originating Goal.
 
+Project-scoped Goal collections, including the event collection, validate the
+Project in the actor's tenant and filter canonical bindings before applying result
+limits. A Goal bound to multiple Projects is intentionally visible in each;
+unbound Goals remain available through the tenant collection. Unknown/foreign
+Projects and mismatched Goal IDs fail safely. The UI fences both successful and
+failed detail/mutation responses by Project generation and selected Goal, including
+A → B → A navigation, so a late error cannot replace the current Project's view.
+
 ## Deterministic progress
 
 Goal progress is derived from canonical Work Graph nodes, not agent prose. Over the unique set of bound Work Items the service records:
