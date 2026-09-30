@@ -1,6 +1,7 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { resourceRowsCanRender } = await import(`${BASE}/static/resource_editor_state.js`);
   let resources = [];
   const relationshipCache = new Map();
 
@@ -80,6 +81,11 @@
     const list = document.getElementById("resource-catalog-list");
     const status = document.getElementById("resource-catalog-status");
     if (!list || !status) return;
+    if (!resourceRowsCanRender()) {
+      status.hidden = false;
+      status.textContent = 'Catalog display update deferred: save or discard resource edits to apply the latest data and filters.';
+      return;
+    }
     const visible = resources.filter(resourceMatches);
     status.hidden = false;
     status.textContent = `${visible.length} of ${resources.length} canonical resource(s)`;
@@ -121,7 +127,8 @@
       resources = [];
       if (status) status.textContent = `Resource Catalog unavailable: ${error.message}`;
       const list = document.getElementById("resource-catalog-list");
-      if (list) list.innerHTML = "";
+      if (list && resourceRowsCanRender()) list.innerHTML = "";
+      else if (status) status.textContent += ' Unsaved resource edits are preserved; retry refresh before relying on displayed catalog state.';
     }
   }
 
@@ -164,5 +171,6 @@
     if (panel?.open) refreshResources().catch(console.error);
   }
 
-  window.addEventListener("DOMContentLoaded", bind);
+  if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", bind, { once: true });
+  else bind();
 })();

@@ -1,6 +1,7 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { resourceEditor } = await import(`${BASE}/static/resource_editor_state.js`);
   let resources = [];
   let owners = [];
   let identityError = null;
@@ -24,6 +25,12 @@
 
   function refreshCatalog() {
     document.getElementById("refresh-resources")?.click();
+  }
+
+  function draftEditor(kind) {
+    return resourceEditor(document.getElementById(`resource-${kind}-panel`), {
+      label: `Resource ${kind}`, onDiscard: refreshCatalog,
+    });
   }
 
   async function loadOwners() {
@@ -104,6 +111,9 @@
         <button type="button" class="ghost-button" data-resource-save>Save resource</button>
       </div>
     </details>`;
+    resourceEditor(host.querySelector('[data-resource-editor]'), {
+      row: true, label: `Resource ${item.name}`, onDiscard: refreshCatalog,
+    });
   }
 
   function populateRelationshipControls() {
@@ -134,8 +144,10 @@
       identityError = error.message;
     }
     if (current !== generation) return;
-    populateCreateOwner();
-    populateRelationshipControls();
+    const create = draftEditor('create');
+    const relationship = draftEditor('relationship');
+    if (!create?.dirty()) { populateCreateOwner(); create?.markSaved(); }
+    if (!relationship?.dirty()) { populateRelationshipControls(); relationship?.markSaved(); }
     resources.forEach(renderEditor);
   }
 
@@ -155,17 +167,22 @@
       aliases: [],
     };
     if (!window.confirm(`Create canonical ${payload.resource_type} resource "${name}" with ${payload.risk} risk and ${payload.sensitivity} sensitivity?`)) return;
+    const editor = draftEditor('create');
+    const submitted = editor?.snapshot();
+    const button = document.getElementById('create-resource');
+    button.disabled = true;
     setStatus(`Creating ${name}...`);
     try {
       await apiRequest("/api/resources", {
         method: "POST",
         body: JSON.stringify(payload),
       });
+      editor?.markSaved(submitted);
       setStatus(`Created ${name}.`);
       refreshCatalog();
     } catch (error) {
       setStatus(`Resource creation failed: ${error.message}`);
-    }
+    } finally { button.disabled = false; }
   }
 
   async function saveResource(button) {
@@ -192,18 +209,20 @@
       ? " This lifecycle makes the resource unavailable for privileged resolution."
       : "";
     if (!window.confirm(`Update canonical resource ${resourceId}? Target lifecycle: ${lifecycle}; risk: ${payload.risk}; sensitivity: ${payload.sensitivity}.${impact}`)) return;
+    const editor = resourceEditor(root);
+    const submitted = editor.snapshot();
     button.disabled = true;
     try {
       await apiRequest(`/api/resources/${encodeURIComponent(resourceId)}`, {
         method: "PATCH",
         body: JSON.stringify(payload),
       });
+      editor.markSaved(submitted);
       setStatus(`Updated ${resourceId}.`);
       refreshCatalog();
     } catch (error) {
-      button.disabled = false;
       setStatus(`Resource update failed: ${error.message}`);
-    }
+    } finally { button.disabled = false; }
   }
 
   async function createRelationship() {
@@ -219,6 +238,10 @@
       return;
     }
     if (!window.confirm(`Create canonical relationship ${fromResourceId} —${relationshipType}→ ${toResourceId}?`)) return;
+    const editor = draftEditor('relationship');
+    const submitted = editor?.snapshot();
+    const button = document.getElementById('create-resource-relationship');
+    button.disabled = true;
     try {
       await apiRequest("/api/resources/relationships", {
         method: "POST",
@@ -228,18 +251,21 @@
           relationship_type: relationshipType,
         }),
       });
+      editor?.markSaved(submitted);
       setStatus("Resource relationship created.");
       refreshCatalog();
     } catch (error) {
       setStatus(`Relationship creation failed: ${error.message}`);
-    }
+    } finally { button.disabled = false; }
   }
 
   window.addEventListener("codex:resource-catalog-rendered", (event) => {
     hydrate(event.detail?.resources || []).catch(console.error);
   });
 
-  window.addEventListener("DOMContentLoaded", () => {
+  function bind() {
+    draftEditor('create');
+    draftEditor('relationship');
     document.getElementById("create-resource")?.addEventListener("click", () => {
       createResource().catch(console.error);
     });
@@ -250,5 +276,7 @@
       const button = event.target.closest?.("[data-resource-save]");
       if (button) saveResource(button).catch(console.error);
     });
-  });
+  }
+  if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", bind, { once: true });
+  else bind();
 })();
