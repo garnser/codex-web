@@ -3,6 +3,7 @@
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const { secretLinks, referenceAttributes, focusReference } = await import(`${BASE}/static/reference_links.js`);
   const { statusBadge: sharedStatusBadge, identityChip: sharedIdentityChip } = await import(`${BASE}/static/workspace_components.js`);
+  const { bindingPath, updateRuntimeBindingLinks } = await import(`${BASE}/static/provider_binding_links.js`);
   let currentInventory = { providers: [], runtimes: [], sessions: [], actor: null, capacity: [], capacityWaits: [] };
 
   const capabilityLabel = (value) => String(value || '').replaceAll('_', ' ');
@@ -98,6 +99,8 @@
     const health = sharedStatusBadge(provider.health || 'unknown', provider.health || 'unknown', { className: 'agent-health' });
     head.append(titleBox, health);
     item.appendChild(head);
+    const managePath = bindingPath(provider.id);
+    if (managePath) { const link = document.createElement('a'); link.href = managePath; link.textContent = 'Manage provider binding'; item.append(link); }
 
     const effective = discovery.effective_capabilities
       || (provider.declared_capabilities || []).filter((cap) => (provider.granted_capabilities || []).includes(cap));
@@ -350,6 +353,7 @@
       preferenceRuntime.innerHTML = options;
       if ([...preferenceRuntime.options].some((option) => option.value === previous)) preferenceRuntime.value = previous;
     }
+    updateRuntimeBindingLinks(card);
   }
 
   function splitRuntime(value) {
@@ -427,6 +431,7 @@
       const select = card.querySelector('.agent-preference-runtime');
       select.value = [...select.options].some((option) => option.value === value) ? value : '';
       card.querySelector('.agent-preference-fallback').checked = fallback.value !== false;
+      updateRuntimeBindingLinks(card);
       status.textContent = `Effective source: ${runtimes.source || providers.source || 'default'}${runtimes.scope_type ? ` · ${runtimes.scope_type}${runtimes.scope_id ? ':' + runtimes.scope_id : ''}` : ''}`;
     } catch (error) {
       status.textContent = `Preference resolution failed: ${error.message}`;
@@ -628,6 +633,10 @@
       </div>
     `;
     grid.prepend(card);
+    for (const select of card.querySelectorAll('.agent-new-runtime,.agent-preference-runtime')) {
+      const link = document.createElement('a'); link.dataset.runtimeBindingLink = ''; link.textContent = 'Manage selected provider binding'; link.hidden = true; select.parentElement.append(link);
+      select.addEventListener('change', () => updateRuntimeBindingLinks(card));
+    }
     card.querySelector('.agent-provider-refresh').addEventListener('click', () => refreshCard(card));
     card.querySelector('.agent-route-run').addEventListener('click', () => explainRoute(card));
     card.querySelector('.agent-new-thread').addEventListener('click', () => startThreadWithRuntime(card));

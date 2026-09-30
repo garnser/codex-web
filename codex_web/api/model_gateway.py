@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from codex_web.api.project_record_scope import ProjectRecordScope, project_record_context_parameter
+from codex_web.services.model_provider_administration import ModelProviderAdministration
 
 from codex_web.api.identity import request_actor
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
@@ -34,8 +36,26 @@ def _error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
-def build_model_gateway_router(service: ModelGatewayService) -> APIRouter:
-    router = APIRouter(prefix="/api/model-gateway", tags=["model-gateway"])
+def build_model_gateway_router(service: ModelGatewayService, projects=None, administration=None) -> APIRouter:
+    router = APIRouter(prefix="/api/model-gateway", tags=["model-gateway"],
+                      dependencies=[Depends(project_record_context_parameter)])
+    administration = administration or ModelProviderAdministration(service)
+
+    def context(request: Request):
+        ProjectRecordScope.from_request(request, request_actor(request), projects)
+
+    router.dependencies.append(Depends(context))
+
+    @router.get("/provider-administration")
+    async def provider_administration(request: Request):
+        return administration.catalog(request_actor(request))
+
+    @router.get("/providers/{provider_id}/impact")
+    async def provider_impact(provider_id: str, request: Request):
+        try:
+            return administration.impact(provider_id, request_actor(request))
+        except Exception as exc:
+            raise _error(exc) from exc
 
     def mutation_actor(request: Request):
         actor = request_actor(request)
@@ -53,11 +73,12 @@ def build_model_gateway_router(service: ModelGatewayService) -> APIRouter:
         provider_id: str,
         payload: ModelProviderUpsert,
         request: Request,
+        expected_revision: str | None = None,
     ) -> dict[str, Any]:
         if provider_id != payload.id:
             raise HTTPException(status_code=422, detail="provider id mismatch")
         try:
-            item = service.upsert_provider(payload, actor=mutation_actor(request))
+            item = service.upsert_provider(payload, actor=mutation_actor(request), expected_revision=expected_revision)
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (ModelGatewayError, AuthorizationError, ValueError)):

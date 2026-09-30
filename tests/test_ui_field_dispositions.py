@@ -65,7 +65,7 @@ class UiFieldDispositionParityTests(unittest.TestCase):
 
         self.assertIn("## Declared API-only exceptions", matrix)
         self.assertIn("Authentication policy and session-policy create/update", matrix)
-        self.assertIn("Provider/runtime versioned lifecycle and archive/restore", matrix)
+        self.assertIn("Provider/runtime registration, immutable-history rollback and archive/delete", matrix)
         self.assertIn("External entitlement control registration", matrix)
         self.assertIn(
             "Recovery policy archive/retirement and deployment recovery actions",

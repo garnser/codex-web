@@ -173,6 +173,12 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("form_validation.js", source_path.read_text())
         self.assertNotIn("fetch(", source_path.read_text())
 
+    def test_provider_binding_management_modules_remain_bounded(self) -> None:
+        for name, budget in [("provider_binding_management.js", 13_000), ("provider_binding_form.js", 5_000), ("provider_binding_links.js", 2_000), ("model_provider_cards.js", 3_000)]:
+            source = STATIC / name
+            self.assertLessEqual(source.stat().st_size, budget)
+            self.assertNotIn("fetch(", source.read_text())
+
     def test_configuration_admin_has_its_own_budget_and_api_client(self) -> None:
         source_path = STATIC / "configuration_admin.js"
         source = source_path.read_text()

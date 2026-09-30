@@ -16,6 +16,8 @@ from codex_web.api.agent_teams import build_agent_teams_router
 from codex_web.api.agent_team_execution import build_agent_team_execution_router
 from codex_web.api.skills import build_skills_router
 from codex_web.api.agent_providers import build_agent_providers_router
+from codex_web.services.agent_provider_administration import AgentProviderAdministration
+from codex_web.services.model_provider_administration import ModelProviderAdministration
 from codex_web.api.agent_routing import build_agent_routing_router
 from codex_web.api.agent_runtime_usage import build_agent_runtime_usage_router
 from codex_web.api.agent_sessions import build_agent_sessions_router
@@ -940,7 +942,6 @@ model_gateway_service = ModelGatewayService(
 )
 model_gateway_service.register_adapter(OpenAIModelProviderAdapter())
 model_gateway_service.register_adapter(AnthropicModelProviderAdapter())
-app.include_router(build_model_gateway_router(model_gateway_service))
 app.state.model_gateway_store = model_gateway_store
 app.state.model_gateway_service = model_gateway_service
 
@@ -1669,9 +1670,16 @@ agent_provider_service = AgentProviderService(
     model_gateway=model_gateway_store,
     extensions=extension_state_store,
 )
-app.include_router(build_agent_providers_router(agent_provider_service))
+agent_provider_administration = AgentProviderAdministration(
+    agent_provider_service, runtimes=agent_runtime_registry, sessions=agent_session_store,
+    profiles=agent_profile_store, configuration=configuration_registry_store,
+    definitions=definition_registry_store, projects=project_service, resources=resource_catalog_service,
+)
+app.include_router(build_agent_providers_router(agent_provider_service, project_service, agent_provider_administration))
 app.state.agent_provider_store = agent_provider_store
 app.state.agent_provider_service = agent_provider_service
+model_provider_administration = ModelProviderAdministration(model_gateway_service, agents=agent_provider_store, profiles=agent_profile_store)
+app.include_router(build_model_gateway_router(model_gateway_service, project_service, model_provider_administration))
 
 agent_routing_service = AgentRoutingService(
     agent_provider_service,

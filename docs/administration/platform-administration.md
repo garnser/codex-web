@@ -273,3 +273,25 @@ and are read-only for tenant administrators. Contact that controller to change o
 release the plan; changing a source label cannot bypass it. Missing permissions,
 insufficient session assurance, invalid input and stale edits preserve entered
 values. Reload and review current state before retrying a conflicting change.
+
+### Provider and runtime binding lifecycle
+
+Open **Operations → Provider Binding Management** or follow **Manage provider
+binding** from a provider/runtime selection. Choose the owning AgentProvider or
+ModelGateway binding; a synthesized AgentProvider view links to the ModelGateway
+owner. Inspect tenant scope, health/status, exact revision/fingerprint, credential
+references and current consumer evidence before editing.
+
+The main-page editor supports the fields in the canonical schema. AgentProvider
+bindings can be active or disabled; ModelGateway bindings can be active, degraded
+or disabled. Preview impact, then confirm the target and apply with its current
+concurrency token. Dirty values survive validation and conflict errors. A missing
+or invalid consumer inventory disables mutation controls until repaired.
+
+Disabling changes future routing. It does not terminate running sessions, cancel
+accepted model calls, remove runtime adapters or alter remote provider accounts.
+Re-enable the local binding to restore eligibility subject to normal checks.
+Archive/delete and remote account retirement are not supported here. Change the
+adapter deployment for runtime registrations; contact the provider for account
+or subscription changes. No credential material is displayed or accepted in these
+reference fields.

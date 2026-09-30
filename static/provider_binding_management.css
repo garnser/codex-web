@@ -1,0 +1,17 @@
+.product-workspace-host > .developer-card:has(#provider-binding-content) { grid-column: 1 / -1; min-width: 0; }
+#provider-binding-content { overflow-wrap: anywhere; }
+.provider-binding-form fieldset { min-width: 0; }
+.provider-binding-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.provider-binding-fields label { display: flex; flex-direction: column; min-width: 0; gap: 6px; }
+.provider-binding-fields input, .provider-binding-fields select { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
+#provider-binding-content [data-binding-list] { display: flex; flex-wrap: wrap; gap: 8px; }
+@media(max-width:700px) { .provider-binding-fields { grid-template-columns: minmax(0, 1fr); } }
+.provider-binding-fields input[type=checkbox] { width:24px; min-height:24px; }
+.provider-binding-fields label:has(input[type=checkbox]) { min-height:44px; }
+.provider-binding-fields select[multiple] { height: auto; min-height: 10rem; }
+@media(max-width:700px) {
+  .provider-binding-form .page-editor-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .provider-binding-form .page-editor-actions button { overflow-wrap:normal; }
+  .provider-binding-form [data-binding-discard] { grid-column:1/-1; }
+}
+.provider-binding-fields input:not([type=checkbox]) { padding:9px 12px; min-height:38px; border:1px solid var(--border,#cbd5e1); border-radius:8px; background:var(--input-bg,var(--surface,#fff)); color:inherit; }

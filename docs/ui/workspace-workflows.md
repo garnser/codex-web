@@ -173,3 +173,14 @@ main page. Preview the impact, inspect current window usage and confirm the exac
 target before applying. A Project view inherits these values; editing affects all
 Projects in that workspace. External controls show read-only source guidance.
 Usage remains a separate ledger and is retained when a limit is retired.
+
+### Manage provider bindings without changing remote accounts
+
+**Operations → Provider Binding Management** separates AgentProvider bindings,
+read-only synthesized views and their ModelGateway owners. Links from provider
+cards and runtime selections open the requested binding. Inspect ownership,
+reference metadata and current consumers, edit supported fields, preview impact
+and confirm. Concurrency conflicts retain your edits for review against current
+state. Disable/re-enable affects future routing; running sessions and remote
+accounts are unaffected. Runtime registrations are changed through deployment,
+not this binding editor. Creation remains on canonical registration APIs.

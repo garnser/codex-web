@@ -1136,6 +1136,11 @@
                   <div id="structured-log-list" class="comm-log"></div>
                 </div>
                 <div class="developer-card">
+                  <div class="section-title"><h2>Provider Binding Management</h2><button id="refresh-provider-bindings" type="button" class="ghost-button">Refresh</button></div>
+                  <div id="provider-binding-status" class="form-result" aria-live="polite">Select a binding to inspect ownership and impact.</div>
+                  <div id="provider-binding-content"></div>
+                </div>
+                <div class="developer-card">
                   <div class="section-title"><h2>Recovery Policy & Evidence</h2><button id="refresh-recovery-policy" type="button" class="ghost-button">Refresh</button></div>
                   <p id="recovery-policy-status" role="status" aria-live="polite">Open Operations to inspect canonical recovery policy and evidence.</p>
                   <div id="recovery-policy-content"></div>
@@ -1345,6 +1350,7 @@
     <script src="static/orchestration_ui.js" type="module"></script>
     <script src="static/operations_observability.js" type="module"></script>
     <script src="static/recovery_policy_ui.js" type="module"></script>
+    <script src="static/provider_binding_management.js" type="module"></script>
     <script src="static/structured_log_admin.js" type="module"></script>
     <script src="static/definition_registry_admin.js" type="module"></script>
     <script src="static/authority_policy_explorer.js" type="module"></script>

@@ -80,3 +80,38 @@ Unavailable/incompatible/disabled providers fail closed. Missing requested capab
 AgentRuntimeAdapter and AgentSession own execution-session behavior, while the routing policy owns model/runtime selection. Those layers must consume effective AgentProvider capabilities and must not route from raw declarations.
 
 The provider layer intentionally does not execute actions, start sessions, reveal credentials, or authorize resource access. Those remain behind canonical runtime/worker, identity, policy, ApprovalRequest, ActionIntent, resource, secret and data-governance boundaries.
+
+## Binding administration and impact
+
+Operations exposes explicit AgentProvider bindings separately from ModelGateway
+bindings. AgentProvider lifecycle remains `active` / `disabled`; no archive,
+delete, remote account retirement or runtime deployment operation is inferred.
+Synthesized ModelGateway views are read-only and link to their actual owner.
+Runtime registrations and adapter capability revisions remain code-owned technical
+contracts. Operational provider metadata remains in the existing canonical stores,
+not a second catalog or executable Definition Registry entry.
+
+`GET /api/agent-providers/administration` publishes the typed binding schema and
+canonical administration permission. `GET /api/agent-providers/{id}/impact` projects
+explicit runtime registrations, retained sessions, profile revisions, published
+routing definitions/preferences and linked models/policies. Scope filtering uses
+canonical tenant, Project and resource visibility. References are metadata only;
+secret values, prompts and runtime payloads are excluded. The scan bounds each
+inventory to 5,000 records and displays at most 100 matching references with an
+explicit total/truncation flag. Missing, invalid or over-bound inventories make
+impact unavailable, never a misleading zero-consumer result.
+
+`PUT /api/agent-providers/{id}?expected_revision=N` checks the expected revision
+inside the existing provider-store transaction. Zero means create-if-absent;
+existing API callers may omit it for compatibility. Canonical administrator/MFA
+or service-scope authorization remains mandatory. The UI requires current impact
+and matching revision before applying edits; server validation remains authoritative.
+A preview is not a lock on future references, and unconstrained future routing can
+also select the provider. Disabling affects future discovery and routing, not
+already-running sessions or the linked ModelGateway's independent inference state.
+
+The editor preserves dirty values after denied/invalid/conflicted writes, blocks
+late responses across Project visits and distinguishes declared health metadata
+from runtime-reported health. Re-enabling a binding does not grant additional
+capabilities or override dependency, policy, sandbox or credential checks. Revisions
+identify current state; no immutable-history rollback operation is promised.

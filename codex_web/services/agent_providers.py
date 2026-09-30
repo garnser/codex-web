@@ -211,6 +211,7 @@ class AgentProviderService:
         payload: AgentProviderUpsert,
         *,
         actor: AuthenticationActor,
+        expected_revision: int | None = None,
     ) -> AgentProviderRecord:
         self._require_admin(actor)
         self._validate_model_links(payload.model_provider_ids, actor)
@@ -265,7 +266,11 @@ class AgentProviderService:
             updated_by=actor.identity_id,
             revision=existing.revision if existing else 1,
         )
-        return self.store.upsert(record)
+        from codex_web.storage.agent_providers import AgentProviderRevisionConflictError
+        try:
+            return self.store.upsert(record, expected_revision=expected_revision)
+        except AgentProviderRevisionConflictError as exc:
+            raise AgentProviderConflictError(str(exc)) from exc
 
     def _extension_reasons(
         self,

@@ -476,6 +476,7 @@ class ModelGatewayService:
         payload: ModelProviderUpsert,
         *,
         actor: AuthenticationActor,
+        expected_revision: str | None = None,
     ) -> ModelProviderRecord:
         self._require_admin(actor)
         updated: list[ModelProviderRecord] = []
@@ -489,6 +490,9 @@ class ModelGatewayService:
                 ),
                 None,
             )
+            from codex_web.services.model_provider_administration import provider_fingerprint
+            if expected_revision is not None and expected_revision != provider_fingerprint(existing):
+                raise ModelRegistryConflictError("model provider binding changed; reload and review again")
             now = time.time()
             item = ModelProviderRecord(
                 **payload.model_dump(mode="python"),
