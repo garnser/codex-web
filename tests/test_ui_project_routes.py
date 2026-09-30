@@ -87,7 +87,7 @@ class ProjectWorkspaceRouteTests(unittest.TestCase):
     PAGES = (
         'overview', 'work-items', 'runs', 'chat', 'agents', 'agent-profiles',
         'teams', 'automations', 'attention', 'operations', 'project-settings',
-        'configuration', 'definitions', 'goals', 'decisions', 'metrics',
+        'configuration', 'secrets', 'definitions', 'goals', 'decisions', 'metrics',
         'company', 'memory', 'skills', 'integrations', 'workers', 'resources',
         'organization',
     )

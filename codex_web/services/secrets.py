@@ -81,6 +81,7 @@ class SecretBroker:
     ) -> None:
         self.store = store
         self.backends = dict(backends)
+        self.usage_service = None
 
     def _reference(self, secret_id: str) -> SecretReference:
         state = self.store.load()

@@ -467,3 +467,39 @@ test('command palette opens the requested loaded Work Item through canonical ope
   await expect(page.locator('.work-item-detail')).toContainText('Second Work Item');
   await expect(page.locator('#product-workspace-switcher')).not.toBeVisible();
 });
+
+test('GitLab TaskSource preserves, replaces and unbinds canonical SecretReferences', async ({ page }) => {
+  await mockOperatorApis(page, []);
+  const projects = projectPayload();
+  projects[0].authoritative_task_source.credential_secret_id = 'secret-old';
+  await page.route('**/api/projects', route => route.fulfill({ json: projects }));
+  await page.route('**/api/secrets', route => route.fulfill({ json: { items: [
+    { id: 'secret-old', name: 'Original GitLab credential', status: 'active' },
+    { id: 'secret-new', name: 'Replacement GitLab credential', status: 'active' },
+  ] } }));
+  const saved = [];
+  await page.route('**/api/projects/project-a/task-source', route => {
+    const source = route.request().postDataJSON(); saved.push(source);
+    projects[0].authoritative_task_source = source;
+    return route.fulfill({ json: projects[0] });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
+  const dialog = page.locator('#work-items-dialog');
+  await expect(dialog.locator('.work-source-secret')).toBeVisible();
+  await expect(dialog.locator('.work-source-secret')).toHaveValue('secret-old');
+  await expect(dialog.locator('[data-manage-source-secret]')).toHaveAttribute('href', '/projects/project-a/secrets?secret_id=secret-old');
+  await dialog.locator('.work-source-save').click();
+  await expect.poll(() => saved.length).toBe(1);
+  expect(saved[0].credential_secret_id).toBe('secret-old');
+  await expect(dialog.locator('.work-items-status')).toHaveText('Authoritative source saved');
+  await dialog.locator('.work-source-secret').selectOption('secret-new');
+  await dialog.locator('.work-source-save').click();
+  await expect.poll(() => saved.length).toBe(2);
+  expect(saved[1].credential_secret_id).toBe('secret-new');
+  await expect(dialog.locator('.work-items-status')).toHaveText('Authoritative source saved');
+  await dialog.locator('.work-source-secret').selectOption('');
+  await dialog.locator('.work-source-save').click();
+  await expect.poll(() => saved.length).toBe(3);
+  expect(saved[2]).not.toHaveProperty('credential_secret_id');
+});

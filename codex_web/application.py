@@ -272,6 +272,7 @@ from codex_web.services.crypto_keys import CryptoKeyService
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.execution_profile_definitions import install_execution_profile_definitions
 from codex_web.services.execution_profile_usage import ExecutionProfileUsageService
+from codex_web.services.secret_usage import SecretUsageService
 from codex_web.services.execution_role_definitions import install_execution_role_definitions
 from codex_web.services.executive_roles import install_executive_role_definitions
 from codex_web.services.executive_management import ExecutiveManagementService
@@ -879,7 +880,6 @@ app.state.local_key_backend = local_key_backend
 secret_state_store = SecretStateStore(state_store)
 local_secret_backend = LocalFileSecretBackend(SECRET_MATERIAL_DIR)
 secret_broker = SecretBroker(secret_state_store, {"local": local_secret_backend})
-app.include_router(build_secrets_router(secret_broker))
 app.state.secret_state_store = secret_state_store
 app.state.secret_broker = secret_broker
 app.state.local_secret_backend = local_secret_backend
@@ -970,6 +970,7 @@ thread_index_repository = install_thread_index_repository(
 thread_history_repository = ThreadHistoryRepository(state_store)
 app.state.thread_history_repository = thread_history_repository
 project_service = ProjectService(project_repository)
+app.include_router(build_secrets_router(secret_broker, project_service))
 thread_scope_service = ThreadScopeService(project_service, agent_session_service, thread_index_repository)
 app.include_router(
     build_execution_profiles_router(execution_profile_definition_service, project_service)
@@ -2644,6 +2645,15 @@ execution_profile_usage_service = ExecutionProfileUsageService(
 )
 execution_profile_definition_service.usage_loader = execution_profile_usage_service.snapshot
 app.state.execution_profile_usage_service = execution_profile_usage_service
+secret_usage_service = SecretUsageService(
+    projects=project_service, resources=resource_catalog_service,
+    configuration=configuration_service, providers=action_provider_registry,
+    models=model_gateway_service, agents=agent_provider_service,
+    extensions=extension_service, actions=action_intent_service,
+    assignments=_agent_profile_assignment_history, connections=bot_state.connections.load,
+)
+secret_broker.usage_service = secret_usage_service
+app.state.secret_usage_service = secret_usage_service
 core._load_turn_queues = turn_queue_repository.load
 core._save_turn_queues = turn_queue_repository.save
 core._thread_queue_record = turn_queue_repository.get

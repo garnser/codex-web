@@ -51,3 +51,53 @@ Legacy raw fields remain readable only as a compatibility path for existing inst
 The secrets administration API supports metadata listing, create, rotate, revoke and audit. Raw values are accepted on create/rotate requests but never returned. There is intentionally no ordinary reveal endpoint.
 
 Sensitive secret administration requires canonical identity administration authority plus step-up/MFA-equivalent assurance. In local-trusted self-hosted mode the deliberate local administrator compatibility identity satisfies that assurance; enforced deployments should use a real authentication adapter.
+
+## Project Secrets and consumer context
+
+`/projects/{project_id}/secrets` (including the `/codex` mount) exposes the
+existing broker lifecycle in main page content. Secret references remain owned
+by their organization/workspace and governed by their existing identity ACLs.
+Project selection does not create a new secret store, ownership field or grant.
+The view labels shared ownership, current-actor use permission, the absence of a
+reveal API, status, provider/purpose metadata and rotation/audit provenance.
+Creation produces a workspace reference; binding and unbinding use the existing
+TaskSource and typed configuration workflows. Those selectors link back to the
+Project Secrets page. Independent restore or hard deletion of a revoked reference
+is not supported; operators create a replacement and update its consumer binding.
+
+The secret metadata and mutation routes accept an optional `project_id` context.
+When supplied, a missing or foreign Project fails before a mutation. Tenant and
+per-secret metadata/use checks remain canonical, and sensitive mutations retain
+the existing admin plus elevated-assurance gate. Omitting Project context retains
+the shared administration API. Malformed secret requests receive a generic 422
+response; framework validation input values are never echoed in the response.
+
+`GET /api/secrets/{secret_id}/usage?project_id=...` returns a schema `1.0`,
+metadata-only projection of canonical TaskSource credentials, typed configuration
+revisions, ActionProvider bindings, Model and Agent provider credentials,
+extension bindings, bot integration reference fields, execution assignments and
+ActionIntents. It never resolves backend material or reads legacy raw credential
+fields. Shared workspace consumers and selected-Project consumers are visible;
+other Project/resource references contribute an outside-view count without names
+or IDs. Configuration and execution history remain labeled with state/revision;
+a reference count is not a claim of active use. Noncanonical environment/file
+credentials are outside this projection. Key dependency visibility remains a
+separate concern tracked by #905.
+
+The projection is computed from canonical stores, not a second dependency ledger.
+It bounds scanning at 5,000 records/references and displays at most 100 visible
+consumers. Missing configuration schemas or exhausted bounds make impact
+unavailable, never falsely empty. Project metadata listing identifies missing,
+unauthorized, expired or revoked references in visible consumer configurations
+without distinguishing absent from unauthorized secret metadata. Lifecycle
+controls require a fresh preview and identify the shared impact beyond the
+selected Project before rotation/revocation. This review does not grant authority
+or lock out concurrent consumer changes.
+
+Write-only values exist only in the entry field and outgoing broker request.
+They are cleared on submission, failed lifecycle attempts, Project changes and
+leaving the Secrets surface; they are not copied into dirty-editor snapshots,
+browser storage, URLs, telemetry or error messages. Metadata-only audit is labeled
+as workspace-wide. Project generation fences reject late reads and prevent a
+pending impact lookup from mutating after a Project switch. No LLM calls or new
+external provider paths are introduced by this workflow.

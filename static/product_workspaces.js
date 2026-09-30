@@ -34,6 +34,7 @@ const WORKSPACES = [
   { id: "resources", label: "Resources", group: "Organization", kind: "embedded", description: "Canonical resources and relationships." },
   { id: "definitions", label: "Definitions / Contracts", group: "Organization", kind: "embedded", description: "Definition lifecycle, exact revisions, compatibility and usage." },
   { id: "settings", label: "Settings / Security", group: "Organization", kind: "embedded", description: "Configuration, entitlements, secret references, keys and trust diagnostics." },
+  { id: "secrets", label: "Secrets", group: "Organization", kind: "embedded", description: "Shared secret references, Project consumers and write-only credential lifecycle." },
   { id: "memory", label: "Memory", group: "Organization", kind: "launcher", selector: "#memory-button", dialogSelector: "#memory-dialog", description: "Governed organizational memory and retrieval." },
 ];
 
@@ -82,6 +83,7 @@ const PROJECT_NAVIGATION_TREE = [
   },
   { id: "project-settings", label: "Project Setup / Readiness", workspace: "setup", page: "project-settings", description: "Topology, readiness and execution defaults." },
   { id: "configuration", label: "Configuration", workspace: "settings", page: "configuration", description: "Typed configuration, feature rollout, entitlements and secret/key references." },
+  { id: "secrets", label: "Secrets", workspace: "secrets", page: "secrets", description: "Credential references, scope, consumers, rotation and revocation." },
   { id: "memory", label: "Memory", workspace: "memory", page: "memory", description: "Governed organizational memory and retrieval." },
 ];
 
@@ -160,6 +162,11 @@ const PROJECT_PAGE_PRESENTATION = Object.freeze({
     purpose: "Inspect Project definitions and inherited shared definitions with their exact scope and revision.",
     scope: "Project / inherited shared definitions",
   },
+  secrets: {
+    title: "Secrets",
+    purpose: "Manage workspace-owned secret references available to this Project, inspect consumers and change credentials through write-only canonical APIs.",
+    scope: "Workspace secrets / Project consumer context",
+  },
   skills: {
     title: "Skills",
     purpose: "Manage reusable organization and workspace procedures; Project selection does not change library ownership.",
@@ -226,6 +233,7 @@ const PROJECT_PAGE_WORKSPACES = Object.freeze({
   workers: "workers",
   "project-settings": "setup",
   configuration: "settings",
+  secrets: "secrets",
   definitions: "definitions",
   skills: "skills",
   integrations: "integrations",
@@ -258,6 +266,7 @@ const WORKSPACE_DEFAULT_PAGE = Object.freeze({
   workers: "workers",
   setup: "project-settings",
   settings: "configuration",
+  secrets: "secrets",
   definitions: "definitions",
   skills: "skills",
   integrations: "integrations",
@@ -295,7 +304,7 @@ const CARD_RULES = [
   [/^ActionIntents & Side Effects$/i, "autonomy"],
   [/^Entitlements & Usage$/i, "settings"],
   [/^Configuration & Features$/i, "settings"],
-  [/^Secrets & Credentials$/i, "settings"],
+  [/^Secrets & Credentials$/i, "secrets"],
   [/^Encryption Keys$/i, "settings"],
   [/^Security & Trust Diagnostics$/i, "settings"],
 ];

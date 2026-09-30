@@ -10,15 +10,16 @@ ROOT = Path(__file__).resolve().parents[1]
 class SecretAdminUiTests(unittest.TestCase):
     def test_secret_admin_uses_metadata_only_broker_surfaces(self) -> None:
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        javascript = (ROOT / "static" / "secret_admin.js").read_text(encoding="utf-8")
+        javascript = ((ROOT / "static" / "secret_admin.js").read_text(encoding="utf-8")
+                      + (ROOT / "static" / "secret_reference_ui.js").read_text(encoding="utf-8"))
 
         self.assertIn('id="secret-admin-list"', html)
         self.assertIn('id="secret-audit-list"', html)
         self.assertIn('type="password"', html)
         self.assertIn("Use permission identities", html)
         self.assertIn("Reveal permission identities", html)
-        self.assertIn('apiRequest("/api/secrets")', javascript)
-        self.assertIn('apiRequest("/api/secrets/audit")', javascript)
+        self.assertIn("apiRequest('/api/secrets')", javascript)
+        self.assertIn("apiRequest('/api/secrets/audit')", javascript)
         self.assertIn("allowed_identity_ids", javascript)
         self.assertIn("reveal_identity_ids", javascript)
         self.assertIn("item.owner_identity_id", javascript)

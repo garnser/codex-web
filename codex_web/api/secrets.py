@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 
 from codex_web.api.identity import request_actor
+from codex_web.api.project_record_scope import ProjectRecordScope, project_record_context_parameter
+from codex_web.services.projects import ProjectService
 from codex_web.identity import AuthenticationAssurance
 from codex_web.secrets import SecretCreate, SecretRotate
 from codex_web.services.identity import IdentityError, IdentityService, identity_http_error
@@ -17,10 +21,27 @@ from codex_web.services.secrets import (
 )
 
 
-def _metadata(reference) -> dict[str, Any]:
+class SecretMetadataRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def safe_handler(request):
+            try:
+                return await handler(request)
+            except RequestValidationError:
+                # Framework validation includes rejected input by default. A
+                # malformed write-only credential must never be echoed back.
+                raise HTTPException(status_code=422, detail='Invalid secret request. Review the metadata and re-enter the write-only value.') from None
+        return safe_handler
+
+
+def _metadata(reference, actor=None, broker=None) -> dict[str, Any]:
     return {
         **reference.model_dump(mode="json"),
         "status": reference.status().value,
+        "scope_type": "workspace",
+        "use_allowed": broker._can_use(actor, reference) if actor is not None else None,
+        "reveal_api_available": False,
     }
 
 
@@ -34,19 +55,60 @@ def _broker_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
-def build_secrets_router(broker: SecretBroker) -> APIRouter:
-    router = APIRouter(tags=["secrets"])
+def build_secrets_router(broker: SecretBroker, projects: ProjectService | None = None) -> APIRouter:
+    router = APIRouter(tags=["secrets"], route_class=SecretMetadataRoute,
+                      dependencies=[Depends(project_record_context_parameter)])
+
+    def context(request):
+        actor = request_actor(request)
+        view = ProjectRecordScope.from_request(request, actor, projects)
+        return actor, view
 
     def sensitive_admin(request: Request):
-        actor = request_actor(request)
+        actor, _ = context(request)
         IdentityService.require_admin(actor)
         IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
         return actor
 
     @router.get("/api/secrets")
     async def list_secrets(request: Request) -> dict[str, Any]:
-        actor = request_actor(request)
-        return {"items": [_metadata(item) for item in broker.list(actor)]}
+        actor, view = context(request)
+        items = [_metadata(item, actor, broker) for item in broker.list(actor)]
+        result = {"items": items, "project_id": view.project_id, "scope_type": "workspace",
+                  "broken_references": [], "impact_available": False}
+        if view.project_id is not None and broker.usage_service is not None:
+            try:
+                index = broker.usage_service.index(view.project_id, actor)
+                visible = {item['id']: item for item in items}
+                for item in items:
+                    references = index.get(item['id'], [])
+                    item['project_reference_count'] = sum(row['visible'] and row['project_id'] == view.project_id for row in references)
+                    item['shared_reference_count'] = sum(row['scope'] == 'shared_workspace' for row in references)
+                result['broken_references'] = [
+                    {'secret_id': secret_id, 'status': visible[secret_id]['status'] if secret_id in visible else 'missing_or_unavailable',
+                     'consumers': [row for row in rows if row['visible']][:100]}
+                    for secret_id, rows in index.items()
+                    if any(row['visible'] for row in rows)
+                    and (secret_id not in visible or visible[secret_id]['status'] != 'active')
+                ][:100]
+                result['impact_available'] = True
+            except ValueError:
+                result['impact_error'] = 'Consumer impact is unavailable; retry before a lifecycle change.'
+        return result
+
+    @router.get('/api/secrets/{secret_id}/usage')
+    async def secret_usage(secret_id: str, project_id: str, request: Request):
+        actor, _ = context(request)
+        try:
+            broker.metadata(secret_id, actor=actor)
+        except (SecretBrokerError, IdentityError):
+            raise HTTPException(status_code=404, detail='Secret reference not found') from None
+        if broker.usage_service is None:
+            raise HTTPException(status_code=503, detail='Secret consumer impact is unavailable')
+        try:
+            return broker.usage_service.snapshot(secret_id, project_id, actor)
+        except ValueError:
+            raise HTTPException(status_code=503, detail='Secret consumer impact exceeds its bounded scan or is unavailable') from None
 
     @router.post("/api/secrets")
     async def create_secret(payload: SecretCreate, request: Request) -> dict[str, Any]:

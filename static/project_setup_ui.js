@@ -90,7 +90,7 @@ function manifestInput() {
 }
 function remediation(route) {
   if (!route) return;
-  if (route.startsWith("/api/secrets")) return window.CodexProductUI?.openWorkspace?.("settings");
+  if (route.startsWith("/api/secrets")) return window.CodexProductUI?.openWorkspace?.("secrets");
   if (route.includes("/resources")) return window.CodexProductUI?.openWorkspace?.("resources");
   if (route.includes("execution-workers")) return window.CodexProductUI?.openWorkspace?.("workers");
   if (route.includes("task-source")) return window.CodexProductUI?.openWorkspace?.("work");
