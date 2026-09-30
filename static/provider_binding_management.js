@@ -1,4 +1,5 @@
 import './page_editor.js';
+import { projectPath, referenceLink, referencePath } from './reference_navigation.js';
 import { request } from './api_client.js';
 import { captureProjectView, currentProjectId } from './project_view_scope.js';
 import { esc, secretLinks, bindWhenReady } from './reference_links.js';
@@ -9,8 +10,7 @@ import { bindingForm, readBinding } from './provider_binding_form.js';
 const style = document.createElement('link'); style.rel = 'stylesheet'; style.href = new URL('./provider_binding_management.css', import.meta.url).href; document.head.appendChild(style);
 let generation = 0; let editor = null; let selected = null;
 export function providerBindingPath(id) {
-  const project = currentProjectId();
-  return project ? `/projects/${encodeURIComponent(project)}/operations?provider_id=${encodeURIComponent(id)}` : '#provider-binding-content';
+  return referencePath('agent_provider', id) || '#provider-binding-content';
 }
 function operation() {
   const view = captureProjectView(); const project = currentProjectId(); const opened = generation;
@@ -25,12 +25,12 @@ function operation() {
 function status(text) { const node = document.getElementById('provider-binding-status'); if (node) node.textContent = text; }
 function ownerLink(page, label, query = {}) {
   const project = currentProjectId(); if (!project) return esc(label);
-  const path = `/projects/${encodeURIComponent(project)}/${page}?${new URLSearchParams(query)}`;
+  const path = projectPath(page, query, project);
   return `<a href="${esc(path)}">${esc(label)}</a>`;
 }
 function impactHTML(impact) {
-  const destinations = { agent_provider: 'operations', invocation: 'agents', runtime: 'operations', session: 'operations', profile: 'agent-profiles', definition: 'configuration', configuration: 'configuration', model: 'agents', model_policy: 'agents' };
-  return `<p>${esc(impact.effect)}</p><p>${esc(impact.limitations)}</p><p>${impact.available ? `${esc(impact.total)} explicit retained references${impact.truncated ? '; first 100 displayed' : ''}.` : esc((impact.blockers || []).join(' '))}</p><ul>${(impact.consumers || []).map(item => `<li>${esc(item.kind)} ${ownerLink(destinations[item.kind] || 'operations', item.id)} · ${esc(item.status || '')}${item.revision ? ` · revision ${esc(item.revision)}` : ''}${item.project_id ? ` · Project ${esc(item.project_id)}` : ''}</li>`).join('')}</ul>`;
+  const kinds = { profile: 'agent_profile', agent_provider: 'agent_provider', definition: 'definition_family', configuration: 'configuration_key' };
+  return `<p>${esc(impact.effect)}</p><p>${esc(impact.limitations)}</p><p>${impact.available ? `${esc(impact.total)} explicit retained references${impact.truncated ? '; first 100 displayed' : ''}.` : esc((impact.blockers || []).join(' '))}</p><ul>${(impact.consumers || []).map(item => `<li>${esc(item.kind)} ${referenceLink(kinds[item.kind] || item.kind, item.id, { projectId: item.project_id || currentProjectId(), revision: item.revision })} · ${esc(item.status || '')}${item.revision ? ` · revision ${esc(item.revision)}` : ''}${item.project_id ? ` · Project ${esc(item.project_id)}` : ''}</li>`).join('')}</ul>`;
 }
 async function load(force = false) {
   const root = document.getElementById('provider-binding-content'); if (!root) return;
@@ -54,7 +54,7 @@ async function load(force = false) {
         const impact = await op.request(`${endpoint}${encodeURIComponent(id)}/impact`);
         if (!current()) return;
         const provider = impact.provider;
-        detail.innerHTML = `<h3 tabindex="-1">${esc(provider.display_name)} · revision / fingerprint ${esc(provider.revision || impact.expected_revision)}</h3><p>Owner: ${esc(impact.owner)} · lifecycle ${esc(provider.lifecycle || provider.status)} · health ${esc(provider.health || "reported by runtime/capacity surfaces")} · compatibility ${esc(provider.compatibility || "adapter-owned")}.</p><p>Credentials: ${secretLinks(provider.credential_refs || [provider.credential_ref])}</p><p>Linked model providers: ${(provider.model_provider_ids || []).map(model => ownerLink('agents', model, { consumer_type: 'model_provider', consumer_id: model })).join(', ') || 'none'}. Extension: ${provider.extension_installation_id ? ownerLink('integrations', provider.extension_installation_id, { consumer_type: 'extension_installation', consumer_id: provider.extension_installation_id }) : 'none'}.</p>${impactHTML(impact)}`;
+        detail.innerHTML = `<h3 tabindex="-1">${esc(provider.display_name)} · revision / fingerprint ${esc(provider.revision || impact.expected_revision)}</h3><p>Owner: ${esc(impact.owner)} · lifecycle ${esc(provider.lifecycle || provider.status)} · health ${esc(provider.health || "reported by runtime/capacity surfaces")} · compatibility ${esc(provider.compatibility || "adapter-owned")}.</p><p>Credentials: ${secretLinks(provider.credential_refs || [provider.credential_ref])}</p><p>Linked model providers: ${(provider.model_provider_ids || []).map(model => ownerLink('agents', model, { consumer_type: 'model_provider', consumer_id: model })).join(', ') || 'none'}. Extension: ${provider.extension_installation_id ? ownerLink('integrations', provider.extension_installation_id, { consumer_type: 'extension', consumer_id: provider.extension_installation_id }) : 'none'}.</p>${impactHTML(impact)}`;
         if (impact.owner === 'model_gateway') {
           detail.insertAdjacentHTML('beforeend', `<p>This synthesized view is read-only. ${ownerLink('operations', 'Manage owning ModelGateway binding', { model_provider_id: provider.model_provider_ids?.[0] || provider.id })}. Its status is controlled by ModelGateway; no remote account state is changed here.</p>`);
         } else {

@@ -4,10 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Collaboration workspace fixture</title>
+  <link rel="stylesheet" href="/static/design_tokens.css">
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/mobile_responsive.css">
   <link rel="stylesheet" href="/static/workspace_components.css">
   <link rel="stylesheet" href="/static/collaboration_workspace.css">
+  <!-- Pin web-safe fixture fonts so visual signatures do not depend on host system-ui discovery. -->
+  <style>:root{--cw-font-sans:Arial,sans-serif;--cw-font-mono:"Courier New",monospace}html,body{height:auto;overflow:auto}body{display:block;padding:24px;box-sizing:border-box;min-height:100vh}.developer-grid{grid-template-columns:minmax(0,1fr)}.collaboration-workspace{width:100%;box-sizing:border-box}</style>
 </head>
 <body data-project-id="project-a">
   <details id="developer-panel" open>

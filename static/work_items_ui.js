@@ -1,3 +1,4 @@
+import { requestedReference, rememberReference } from './reference_navigation.js';
 import { installWorkItemCommands } from "./object_commands.js";
 import { createWorkItemViewScope, workItemLoadError } from "./work_item_view_scope.js";
 import { createRunTimelineUi } from "./work_item_runs_ui.js";
@@ -240,6 +241,7 @@ function renderItemList() {
     </button>`).join('') + controls;
   list.querySelectorAll('.work-item-row').forEach((row) => row.addEventListener('click', async () => {
     state.selectedRef = row.dataset.ref;
+    rememberReference('work_item', state.selectedRef);
     renderItemList();
     await loadDetail(state.selectedRef);
   }));
@@ -308,7 +310,7 @@ async function loadItems({ reset = false } = {}) {
     state.hasMore = Boolean(payload?.hasMore && state.nextCursor);
     state.pageError = '';
     if (!state.items.some((item) => item.ref === state.selectedRef)) {
-      state.selectedRef = state.items[0]?.ref || '';
+      state.selectedRef = requestedReference('work_item', state.projectId) || state.items[0]?.ref || '';
     }
     renderItemList();
     if (reset && state.selectedRef) {

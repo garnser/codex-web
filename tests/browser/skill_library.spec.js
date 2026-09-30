@@ -87,3 +87,17 @@ test('responsive layout collapses to one column', async ({ page }) => {
   const columns = await page.locator('.skill-layout').evaluate(node => getComputedStyle(node).gridTemplateColumns);
   expect(columns.trim().split(' ')).toHaveLength(1);
 });
+
+test('deep link opens the exact historical Skill revision and links its Agent consumer', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/skill_library_fixture.html?project=project-a&skill_id=release-check&skill_revision=1');
+  await expect(page.locator('[data-skill-detail]')).toContainText('record skill-record-1');
+  await expect(page.locator('[data-skill-detail]')).toContainText('superseded');
+  await expect(page.getByRole('link', { name: 'View agent profile: release-agent' })).toHaveAttribute('href', '/projects/project-a/agent-profiles?consumer_type=agent_profile&consumer_id=release-agent');
+});
+
+test('missing deep-linked Skill reports failure without selecting an unrelated object', async ({ page }) => {
+  await page.route('**/api/skills/missing**', route => route.fulfill({ status: 404, json: { detail: 'Skill not visible' } }));
+  await page.goto('http://127.0.0.1:18766/tests/browser/skill_library_fixture.html?skill_id=missing');
+  await expect(page.locator('[data-skill-detail]')).toContainText('Referenced Skill unavailable');
+  await expect(page.locator('[data-skill-detail]')).not.toContainText('Release Check');
+});

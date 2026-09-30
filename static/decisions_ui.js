@@ -1,3 +1,4 @@
+import { requestedReference, rememberReference } from './reference_navigation.js';
 import { request } from './api_client.js';
 
 const state = {
@@ -162,7 +163,7 @@ async function refreshAll({ projectId = activeProjectId() } = {}) {
       !state.selectedDecisionId
       || !state.decisions.some((item) => item.id === state.selectedDecisionId)
     ) {
-      state.selectedDecisionId = state.decisions[0]?.id || '';
+      state.selectedDecisionId = requestedReference("decision", normalizedProjectId) || state.decisions[0]?.id || '';
     }
     renderList();
     if (state.selectedDecisionId) {
@@ -206,6 +207,7 @@ function renderList() {
   host.querySelectorAll('.decision-row').forEach((row) => {
     row.addEventListener('click', async () => {
       state.selectedDecisionId = row.dataset.decisionId;
+      rememberReference("decision", state.selectedDecisionId);
       renderList();
       await loadDecision(state.selectedDecisionId);
     });

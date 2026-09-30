@@ -213,6 +213,7 @@
   function sessionView(session, refresh) {
     const item = document.createElement('article');
     item.className = 'agent-session-item';
+    item.dataset.referenceKind = 'session'; item.dataset.referenceId = session.id;
 
     const head = document.createElement('div');
     head.className = 'agent-session-head';
@@ -526,6 +527,7 @@
         sessionList.appendChild(sessionView(session, refresh));
       }
     }
+    focusReference(sessionList);
   }
 
   async function refreshCard(card) {

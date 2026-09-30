@@ -384,3 +384,11 @@ test('provider cards and selected or resolved runtimes link to the owning bindin
   await card.locator('.agent-preference-project').fill('project-a'); await card.locator('.agent-preference-load').click();
   await expect(card.locator('.agent-preference-runtime').locator('..').locator('[data-runtime-binding-link]')).toHaveAttribute('href', '/projects/project-a/operations?provider_id=anthropic');
 });
+
+test('a canonical Session deep link focuses the requested session without mutating it', async ({ page }) => {
+  const actions = [];
+  await installRoutes(page, actions);
+  await page.goto('http://127.0.0.1:18766/tests/browser/agent_provider_admin_fixture.html?project=project-a&consumer_type=session&consumer_id=agent-session-claude');
+  await expect(page.locator('[data-reference-kind=session][data-reference-id=agent-session-claude]')).toBeFocused();
+  expect(actions).toEqual([]);
+});

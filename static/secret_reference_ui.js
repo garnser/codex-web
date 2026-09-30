@@ -1,11 +1,9 @@
 import { request } from './api_client.js';
 import { captureProjectView, currentProjectId } from './project_view_scope.js';
+import { projectPath } from './reference_navigation.js';
+export { projectPath };
 
 export const esc = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
-export function projectPath(page, query = {}, projectId = currentProjectId()) {
-  const prefix = location.pathname.startsWith('/codex/') ? '/codex' : '';
-  return `${prefix}/projects/${encodeURIComponent(projectId)}/${page}?${new URLSearchParams(query)}`;
-}
 export function secretPath(secretId = '', projectId = currentProjectId()) { return projectPath('secrets', { secret_id: secretId }, projectId); }
 export function secretOperation(report) {
   const view = captureProjectView(); const project = currentProjectId();

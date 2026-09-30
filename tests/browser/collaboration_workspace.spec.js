@@ -664,3 +664,20 @@ test('empty Agent and Team collections expose contextual create actions', async 
   await expect(agentEmpty.getByRole('button', { name: '+ Create Agent Profile' })).toBeVisible();
   await expect(teamEmpty.getByRole('button', { name: '+ Create Team' })).toBeVisible();
 });
+
+test('cross-object links preserve Project and return to the originating Team', async ({ page }) => {
+  const fs = require('fs');
+  const fixture = fs.readFileSync('tests/browser/collaboration_workspace_fixture.html', 'utf8');
+  await mockApis(page);
+  await page.route('**/projects/project-a/**', route => route.request().resourceType() === 'document' ? route.fulfill({ contentType: 'text/html', body: fixture }) : route.continue());
+  await page.goto('http://127.0.0.1:18766/projects/project-a/teams');
+  const team = page.locator('[data-reference-kind=team][data-reference-id=delivery]');
+  await team.getByRole('link', { name: 'View agent profile: Maya' }).click();
+  await expect(page).toHaveURL(/projects\/project-a\/agent-profiles\?consumer_type=agent_profile&consumer_id=maya/);
+  const maya = page.locator('[data-reference-kind=agent_profile][data-reference-id=maya]');
+  await expect(maya).toBeFocused();
+  await expect(maya.getByRole('link', { name: 'View skill: python-review' })).toHaveAttribute('href', '/projects/project-a/skills?skill_id=python-review&skill_revision=2');
+  await page.goBack();
+  await expect(page).toHaveURL(/teams\?consumer_type=team&consumer_id=delivery/);
+  await expect(team).toBeFocused();
+});

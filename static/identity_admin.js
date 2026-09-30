@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { referenceAttributes, focusReference } = await import(`${BASE}/static/reference_links.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   let actor = null;
 
@@ -66,16 +67,17 @@
   }
 
   function renderPrincipals(state) {
-    const humans = (state.humans || []).map((item) => `<div class="comm-entry">
+    const humans = (state.humans || []).map((item) => `<div class="comm-entry" ${referenceAttributes("identity", item.id)}>
       <strong>${escapeHtml(item.display_name)} · human</strong>
       <small>ID: ${escapeHtml(item.id)} · Email: ${escapeHtml(item.email || "none")} · Status: ${item.disabled_at ? "disabled" : "active"}</small>
       <small>${escapeHtml(externalLinks(item))}</small>
     </div>`);
-    const services = (state.services || []).map((item) => `<div class="comm-entry">
+    const services = (state.services || []).map((item) => `<div class="comm-entry" ${referenceAttributes("identity", item.id)}>
       <strong>${escapeHtml(item.name)} · service</strong>
       <small>ID: ${escapeHtml(item.id)} · Status: ${item.disabled_at ? "disabled" : "active"}${item.description ? ` · ${escapeHtml(item.description)}` : ""}</small>
     </div>`);
     setHtml("identity-principals", [...humans, ...services].join("") || '<div class="comm-entry"><strong>No identities.</strong></div>');
+    focusReference(document.getElementById('identity-principals'));
   }
 
   function renderMemberships(state) {

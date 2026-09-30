@@ -1,7 +1,9 @@
+import { referenceLink } from './reference_navigation.js';
 export function createRunTimelineUi({ state, request, esc, fmtTime, pathRef, scopedPath, captureScope, setStatus, pageSize }) {
 function keyValueRows(values) {
+  const kinds = { agent: 'agent_profile', provider: 'agent_provider', worker: 'worker', assignment_id: 'assignment' };
   return Object.entries(values).map(([key, value]) => `
-    <div><span>${esc(key.replaceAll('_', ' '))}</span><strong>${esc(value ?? '—')}</strong></div>`).join('');
+    <div><span>${esc(key.replaceAll('_', ' '))}</span><strong>${kinds[key] ? referenceLink(kinds[key], value) : esc(value ?? '—')}</strong></div>`).join('');
 }
 
 function repositoryScopeSummary(scope) {
@@ -43,7 +45,7 @@ function repositoryOutcomesHtml(outcomes) {
     ].filter(Boolean).join(' · ');
     return `
       <div class="work-run-activity-row">
-        <strong>${esc(entry.repositoryId || 'repository')} · ${esc(entry.status || 'pending')}</strong>
+        <strong>${referenceLink('resource', entry.repositoryId || 'repository')} · ${esc(entry.status || 'pending')}</strong>
         <span>${esc(detail || 'No integration result recorded')}</span>
         <small>${esc(fmtTime(integration.recordedAt))}</small>
       </div>`;

@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { focusReference } = await import(`${BASE}/static/reference_links.js`);
   const { renderEffectiveConfiguration } = await import(`${BASE}/static/configuration_resolution.js`);
   const { renderConfigurationRecord } = await import(`${BASE}/static/configuration_record_view.js`);
   const { projectViewOperation, currentProjectId } = await import(`${BASE}/static/project_view_scope.js`);
@@ -148,6 +149,7 @@
     })).join("")
       || '<div class="comm-entry"><strong>No records match the filters.</strong></div>';
     setStatus(`${visible.length} of ${records.length} revisions · ${specs.length} specs · ${SCOPE_PRECEDENCE.join(" → ")}.`);
+    focusReference(host);
     publishState();
   }
   function populateResolveControls() {

@@ -1,3 +1,4 @@
+import { referenceLink } from './reference_navigation.js';
 function value(value) {
   if (Array.isArray(value)) return value.length ? value.join(', ') : '—';
   return value == null || value === '' ? '—' : String(value);
@@ -21,9 +22,9 @@ export function workItemSummaryHtml({ item = {}, diagnostics = [], esc }) {
   const condition = stateLabel(item, execution, diagnostics);
   const findings = Array.isArray(item.blocking_findings) ? item.blocking_findings : [];
   const related = [
-    ['Goal', item.goal_id],
-    ['Decision', item.decision_id],
-    ['Resources', value(item.resource_ids)],
+    ['Goal', item.goal_id, 'goal'],
+    ['Decision', item.decision_id, 'decision'],
+    ['Resources', value(item.resource_ids), 'resources'],
     ['Merge requests', value(item.mr_refs)],
   ].filter(([, entry]) => entry && entry !== '—');
 
@@ -75,7 +76,7 @@ export function workItemSummaryHtml({ item = {}, diagnostics = [], esc }) {
       <section class="work-detail-card">
         <h4>Related canonical objects</h4>
         <div class="work-related-objects">
-          ${related.length ? related.map(([label, entry]) => `<div><span>${esc(label)}</span><strong>${esc(entry)}</strong></div>`).join('') : '<small>No related goal, decision, resource, or merge-request references recorded.</small>'}
+          ${related.length ? related.map(([label, entry, kind]) => `<div><span>${esc(label)}</span><strong>${kind === "resources" ? (item.resource_ids || []).map(id => referenceLink("resource", id)).join(", ") : kind ? referenceLink(kind, entry) : esc(entry)}</strong></div>`).join('') : '<small>No related goal, decision, resource, or merge-request references recorded.</small>'}
         </div>
         ${item.url ? `<a class="work-external-link" href="${esc(item.url)}" target="_blank" rel="noreferrer">Open authoritative item</a>` : ''}
       </section>

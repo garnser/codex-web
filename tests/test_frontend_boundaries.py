@@ -9,6 +9,9 @@ STATIC = ROOT / "static"
 
 
 class FrontendBoundaryTests(unittest.TestCase):
+    def test_reference_navigation_remains_bounded(self) -> None:
+        self.assertLessEqual((STATIC / "reference_navigation.js").stat().st_size, 5_000)
+
     def test_legacy_app_bundle_cannot_grow(self) -> None:
         # New UI behavior belongs in focused modules. Keep a small allowance for
         # corrective edits, but force substantive feature work out of app.js.
