@@ -429,6 +429,11 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("/api/threads", source)
         self.assertNotIn("fetch(", source)
 
+    def test_thread_view_actions_have_focused_budget(self) -> None:
+        source_path = STATIC / "thread_view_actions.js"
+        self.assertLessEqual(source_path.stat().st_size, 3_000)
+        self.assertNotIn("fetch(", source_path.read_text())
+
     def test_project_context_module_is_focused_and_network_free(self) -> None:
         source_path = STATIC / "project_context.js"
         source = source_path.read_text(encoding="utf-8")

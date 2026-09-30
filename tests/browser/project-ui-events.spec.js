@@ -266,3 +266,77 @@ test("failed narrow revalidation keeps usable state and clears inflight status",
   expect(result.status.pending).toEqual([]);
   expect(result.status.inflight).toEqual([]);
 });
+
+for (const kind of ['threads', 'bindings']) {
+  test(`${kind} response from an earlier Project visit cannot overwrite the return visit`, async ({ page }) => {
+    await openFixture(page);
+    const result = await page.evaluate(async (kind) => {
+      const state = { projectId: 'a', refreshGeneration: 1, threads: { data: [] }, botBindings: [], botChannels: [] };
+      const visit = (id) => {
+        state.projectId = id;
+        window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: id } }));
+      };
+      visit('a');
+      const pending = [];
+      const reconciler = window.createProjectUiEventReconciler({ state,
+        api: path => new Promise(resolve => pending.push({ path, resolve })),
+        renderThreads() {}, reconcileWorkspace: async () => {}, logEvent() {},
+      });
+      const schedule = () => kind === 'threads' ? reconciler.scheduleThreadPage('test') : reconciler.scheduleBindings('thread-a');
+      const tick = () => new Promise(resolve => setTimeout(resolve, 120));
+      schedule(); await tick();
+      visit('b'); visit('a');
+      schedule(); await tick();
+      const response = id => kind === 'threads' ? { data: [{ id }] }
+        : { bindings: { items: [{ id, project_id: 'a', thread_id: 'thread-a' }] }, channels: { items: [] } };
+      if (pending[1]) pending[1].resolve(response('fresh'));
+      await tick();
+      pending[0].resolve(response('stale'));
+      await tick();
+      return { calls: pending.map(item => item.path), rows: kind === 'threads' ? state.threads.data : state.botBindings, status: reconciler.status() };
+    }, kind);
+    expect(result.calls).toHaveLength(2);
+    expect(result.rows.map(row => row.id)).toEqual(['fresh']);
+    expect(result.status.pending).toEqual([]);
+    expect(result.status.inflight).toEqual([]);
+  });
+}
+
+test('scheduled narrow reads retain their originating view and never retarget after a switch', async ({ page }) => {
+  await openFixture(page);
+  const calls = await page.evaluate(async () => {
+    const state = { projectId: 'a' };
+    const calls = [];
+    const reconciler = window.createProjectUiEventReconciler({ state,
+      api: async path => { calls.push(path); return {}; },
+      renderThreads() {}, reconcileWorkspace: async () => {}, logEvent() {},
+    });
+    reconciler.scheduleThreadPage('old'); reconciler.scheduleBindings('old-thread');
+    state.projectId = 'b';
+    window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: 'b' } }));
+    await new Promise(resolve => setTimeout(resolve, 160));
+    return calls;
+  });
+  expect(calls).toEqual([]);
+});
+
+test('full refresh and search changes invalidate outstanding narrow Thread results', async ({ page }) => {
+  await openFixture(page);
+  const result = await page.evaluate(async () => {
+    const state = { projectId: 'a', refreshGeneration: 1, threads: { data: [{ id: 'current' }] } };
+    let search = '', resolveRequest;
+    const reconciler = window.createProjectUiEventReconciler({ state,
+      api: () => new Promise(resolve => { resolveRequest = resolve; }), getSearch: () => search,
+      renderThreads() {}, reconcileWorkspace: async () => {}, logEvent() {},
+    });
+    const tick = () => new Promise(resolve => setTimeout(resolve, 120));
+    reconciler.scheduleThreadPage('before-refresh'); await tick();
+    state.refreshGeneration += 1;
+    resolveRequest({ data: [{ id: 'stale-refresh' }] }); await tick();
+    reconciler.scheduleThreadPage('before-search'); await tick();
+    search = 'new-search';
+    resolveRequest({ data: [{ id: 'stale-search' }] }); await tick();
+    return state.threads.data;
+  });
+  expect(result).toEqual([{ id: 'current' }]);
+});

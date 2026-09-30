@@ -263,3 +263,20 @@ all forms/dialogs and checks every control's computed name, while browser
 interaction qualification covers 320 CSS pixel reflow, enlarged text, reduced
 motion and keyboard navigation. These targeted checks cover their stated
 behaviors; they do not establish full WCAG conformance.
+
+### Chat and realtime view continuations
+
+Chat actions capture the selected Project visit and Thread selection generation.
+Accepted server mutations retain their canonical outcome, but a late create,
+rename or archive response cannot change the current conversation after navigation,
+even when the user returns to the same Project and Thread. Sending a prompt that
+first needs a Thread stops its UI continuation if that creation's view is stale;
+it cannot select a different Project's Thread and send the original prompt there.
+
+Narrow realtime Thread/binding refreshes capture Project visit, full-refresh
+generation and search context when scheduled. They check that context before the
+request and before applying results. A return visit has independent coalescing
+keys, so its fresh request is not blocked by an older outstanding response. Global
+stream sequence/reconnect reconciliation remains independent of Project visits.
+These are display fences; existing canonical APIs retain authorization and action
+ownership, and no model calls or durable execution records are added.

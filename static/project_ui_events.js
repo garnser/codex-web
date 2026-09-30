@@ -1,3 +1,4 @@
+import { captureProjectView } from "./project_view_scope.js";
 import { observeEventVisible } from "./frontend_perf.js";
 export function connectProjectUiEventStream({
   base = "",
@@ -53,7 +54,7 @@ export function createProjectUiEventReconciler({
   let disconnected = false;
   const timers = new Map();
   const inflight = new Map();
-  const rerun = new Set();
+  const rerun = new Map();
 
   function rows() {
     const value = state.threads?.data
@@ -68,20 +69,22 @@ export function createProjectUiEventReconciler({
     timers.set(key, setTimeout(async () => {
       timers.delete(key);
       if (inflight.has(key)) {
-        rerun.add(key);
+        rerun.set(key, task);
         return;
       }
       const promise = Promise.resolve()
         .then(task)
         .catch((error) => {
           logEvent("ui.reconcile.error", {
-            key,
+            kind: key.split(":")[0],
             message: error?.message || String(error),
           });
         })
         .finally(() => {
           inflight.delete(key);
-          if (rerun.delete(key)) runKeyed(key, task, 0);
+          const next = rerun.get(key);
+          rerun.delete(key);
+          if (next) runKeyed(key, next, 0);
         });
       inflight.set(key, promise);
       await promise;
@@ -99,38 +102,53 @@ export function createProjectUiEventReconciler({
     );
   }
 
-  async function revalidateThreadPage() {
+  function captureScope() {
+    const view = captureProjectView();
+    const projectId = state.projectId;
+    const refresh = state.refreshGeneration;
+    const search = String(getSearch() || "").trim();
+    return {
+      projectId, search,
+      key: JSON.stringify([view.generation, projectId, refresh, search]),
+      current: () => view.current() && state.projectId === projectId
+        && state.refreshGeneration === refresh && String(getSearch() || "").trim() === search,
+    };
+  }
+
+  async function revalidateThreadPage(scope) {
+    if (!scope.current()) return;
     const qs = new URLSearchParams({
-      project_id: state.projectId,
+      project_id: scope.projectId,
       archived: "false",
       limit: "50",
     });
-    const search = String(getSearch() || "").trim();
+    const search = scope.search;
     if (search) qs.set("search", search);
-    const projectAtStart = state.projectId;
     const response = await api(`/api/threads?${qs}`);
-    if (state.projectId !== projectAtStart) return;
+    if (!scope.current()) return;
     state.threads = response;
     renderThreads();
   }
 
   function scheduleThreadPage(reason) {
+    const scope = captureScope();
     runKeyed(
-      `threads:${state.projectId}`,
+      `threads:${scope.key}`,
       async () => {
         logEvent("ui.reconcile.threads", { reason });
-        await revalidateThreadPage();
+        await revalidateThreadPage(scope);
       },
       80,
     );
   }
 
-  async function revalidateBindings(threadId) {
-    const projectAtStart = state.projectId;
+  async function revalidateBindings(threadId, scope) {
+    if (!scope.current()) return;
+    const projectAtStart = scope.projectId;
     const response = await api(
       `/api/projects/${encodeURIComponent(projectAtStart)}/ui-state/bindings?thread_id=${encodeURIComponent(threadId)}`,
     );
-    if (state.projectId !== projectAtStart) return;
+    if (!scope.current()) return;
     const replacements = response.bindings?.items || [];
     state.botBindings = [
       ...(state.botBindings || []).filter((binding) => !(
@@ -155,11 +173,12 @@ export function createProjectUiEventReconciler({
 
   function scheduleBindings(threadId, reason = "binding.updated") {
     if (!threadId) return;
+    const scope = captureScope();
     runKeyed(
-      `bindings:${state.projectId}:${threadId}`,
+      `bindings:${scope.key}:${threadId}`,
       async () => {
         logEvent("ui.reconcile.bindings", { reason, threadId });
-        await revalidateBindings(threadId);
+        await revalidateBindings(threadId, scope);
       },
       80,
     );
@@ -182,6 +201,7 @@ export function createProjectUiEventReconciler({
   }
 
   function handleBotInbound(event) {
+    if (event.projectId && event.projectId !== state.projectId) return;
     const patched = patchThread(event.threadId, {
       updatedAt: eventTime(event),
       status: event.queued
@@ -193,6 +213,7 @@ export function createProjectUiEventReconciler({
   }
 
   function handleCodexSummary(message, event) {
+    if (event?.projectId && event.projectId !== state.projectId) return {};
     const params = message?.params || {};
     const threadId = (
       params.threadId
