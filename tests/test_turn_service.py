@@ -726,7 +726,15 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         service, queue, execution, _events, _settings = self._service()
         execution.start_error = RuntimeError("Codex app-server stopped")
         app = FastAPI()
-        app.include_router(build_turns_router(service))
+        from codex_web.identity import AuthenticationActor, PrincipalKind
+        actor = AuthenticationActor(identity_id="test", principal_kind=PrincipalKind.HUMAN,
+                                    organization_id="local", workspace_id="default", assurance=AuthenticationAssurance.MFA)
+        scope = SimpleNamespace(for_thread=lambda *args: SimpleNamespace(id="home"))
+        @app.middleware("http")
+        async def identity(request, call_next):
+            request.state.identity_actor = actor
+            return await call_next(request)
+        app.include_router(build_turns_router(service, scope))
 
         response = TestClient(app).post(
             f"/api/threads/thread-1/queue/{queue.queued[0].id}/steer"

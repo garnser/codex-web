@@ -1,22 +1,27 @@
+import { captureProjectView } from "./project_view_scope.js";
 export function createExecutionPreflightUi({
   api,
   addMessage,
   loadThread,
   scheduleRefresh,
   logEvent,
+  captureView = () => captureProjectView().current,
 }) {
   const attemptsByThread = new Map();
 
   async function load(threadId, limit = 50) {
+    const current = captureView();
     try {
       const response = await api(
         `/api/threads/${threadId}/preflight-attempts?limit=${limit}`,
       );
+      if (!current()) return;
       attemptsByThread.set(
         threadId,
         Array.isArray(response?.items) ? response.items : [],
       );
     } catch (error) {
+      if (!current()) return;
       logEvent?.("preflight.error", { message: error.message });
       attemptsByThread.set(threadId, []);
     }
@@ -101,17 +106,20 @@ export function createExecutionPreflightUi({
           : "Retry";
         retry.disabled = status === "retrying";
         retry.addEventListener("click", async () => {
+          const current = captureView();
           retry.disabled = true;
           retry.textContent = "Retrying…";
           try {
             await api(attempt.retry_href, { method: "POST" });
           } catch (error) {
-            if (error?.detail?.code !== "execution_preflight_blocked") {
+            if (current() && error?.detail?.code !== "execution_preflight_blocked") {
               addMessage("Error", error.message, "tool", new Date());
             }
           } finally {
-            await loadThread(threadId);
-            scheduleRefresh(0);
+            if (current()) {
+              await loadThread(threadId);
+              if (current()) scheduleRefresh(0);
+            }
           }
         });
         actions.appendChild(retry);

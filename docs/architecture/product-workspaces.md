@@ -280,3 +280,13 @@ keys, so its fresh request is not blocked by an older outstanding response. Glob
 stream sequence/reconnect reconciliation remains independent of Project visits.
 These are display fences; existing canonical APIs retain authorization and action
 ownership, and no model calls or durable execution records are added.
+
+The context-compaction panel uses the same Project visit fence plus its Thread
+selection generation. Delayed status, success/failure messages and post-compaction
+refresh timers cannot change a later conversation. Context/compaction requests
+carry the captured Project query context and use the canonical Thread ownership
+checks described in the identity/tenancy contract.
+
+Explicit history and preflight refreshes request a scoped conversation reload,
+while duplicate route navigation remains a no-op. History controls preserve
+keyboard focus when live message maintenance rebuilds their display.

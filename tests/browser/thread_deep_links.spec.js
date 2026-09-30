@@ -90,7 +90,7 @@ async function mockChatApi(page) {
     }
     await route.fulfill({ json: {} });
   });
-  return { reads, threadTurns };
+  return { reads, threadTurns, threads };
 }
 
 test('CLI reply completed while inactive is restored from canonical Thread history', async ({ page }) => {
@@ -184,13 +184,14 @@ for (const action of ['name', 'archive']) {
   test(`late ${action} completion cannot mutate a subsequent visit to the same Thread`, async ({ page }) => {
     await mockChatApi(page);
     let pending;
-    await page.route(`**/api/threads/home-thread/${action}`, route => { pending = route; });
+    await page.route(`**/api/threads/home-thread/${action}?*`, route => { pending = route; });
     await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
     await expect(page.locator('#thread-title')).toHaveText('Home thread');
     await page.locator('#thread-settings-menu > summary').click();
     if (action === 'name') page.once('dialog', dialog => dialog.accept('Old visit rename'));
     await page.locator(action === 'name' ? '#rename-thread' : '#archive-thread').click();
     await expect.poll(() => Boolean(pending)).toBe(true);
+    expect(new URL(pending.request().url()).searchParams.get('project_id')).toBe('home');
     await selectProject(page, 'alpha');
     await selectProject(page, 'home');
     await page.locator('#threads .item-main', { hasText: 'Home thread' }).click({ force: true });
@@ -243,7 +244,7 @@ for (const action of ['name', 'archive']) {
 test('a previous conversation send failure does not appear in the current conversation', async ({ page }) => {
   await mockChatApi(page);
   let pending;
-  await page.route('**/api/threads/home-thread/turns', route => { pending = route; });
+  await page.route('**/api/threads/home-thread/turns?*', route => { pending = route; });
   await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
   await expect(page.locator('#thread-title')).toHaveText('Home thread');
   await page.locator('#prompt').fill('Old conversation message');
@@ -255,4 +256,47 @@ test('a previous conversation send failure does not appear in the current conver
   await pending.fulfill({ status: 503, json: { detail: 'Old conversation unavailable' } });
   await page.waitForTimeout(150);
   await expect(page.locator('#messages')).not.toContainText('Old conversation unavailable');
+});
+
+for (const outcome of ['success', 'failure']) {
+  test(`late context compaction ${outcome} cannot overwrite another Project's context status`, async ({ page }) => {
+    await mockChatApi(page);
+    let pending;
+    await page.route('**/api/threads/*/context?*', route => route.fulfill({ json: {
+      eligible: true, autoEnabled: true, autoThresholdPercent: 80,
+    } }));
+    await page.route('**/api/threads/home-thread/compact?*', route => { pending = route; });
+    await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+    await expect(page.locator('#compact-context')).toBeEnabled();
+    await page.locator('.token-footer > summary').click();
+    await page.locator('#compact-context').click();
+    await expect.poll(() => Boolean(pending)).toBe(true);
+    expect(new URL(pending.request().url()).searchParams.get('project_id')).toBe('home');
+    await selectProject(page, 'alpha');
+    await page.locator('#threads .item-main', { hasText: 'Alpha thread' }).click({ force: true });
+    await expect(page.locator('#context-compact-status')).toHaveText('Auto-compacts at 80%');
+    await pending.fulfill({ status: outcome === 'success' ? 200 : 503, json: { detail: 'Old compaction failure' } });
+    await page.waitForTimeout(150);
+    await expect(page.locator('#context-compact-status')).toHaveText('Auto-compacts at 80%');
+  });
+}
+
+test('loading earlier activity performs a scoped read for the already selected Thread', async ({ page }) => {
+  const { threads } = await mockChatApi(page);
+  threads.home[0].messagesTruncated = true;
+  threads.home[0].messagesOmitted = 120;
+  const readQueries = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname === '/api/threads/home-thread') readQueries.push({
+      limit: url.searchParams.get('message_limit'), project: url.searchParams.get('project_id'),
+    });
+  });
+  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await expect(page.locator('#thread-title')).toHaveText('Home thread');
+  await expect(page.locator('#thread-history-control button')).toBeEnabled();
+  await page.locator('#thread-history-control button').click();
+  await expect.poll(() => readQueries.some(query => query.limit === '80' && query.project === 'home')).toBe(true);
+  await expect(page.locator('#thread-history-control button')).toBeEnabled();
+  await expect(page).toHaveURL(/projects\/home\/chat\?thread=home-thread/);
 });

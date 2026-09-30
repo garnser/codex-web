@@ -257,6 +257,7 @@ class ProjectUiStateService:
             search=search,
             limit=limit,
             cursor=thread_cursor,
+            actor=actor,
         )
         thread_rows = [
             item

@@ -2,19 +2,23 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
+
+from codex_web.api.thread_scope import thread_scope_dependency
+from codex_web.services.thread_scope import ThreadScopeService
 
 from codex_web.api.identity import request_actor
 from codex_web.models import TurnCreate
 from codex_web.services.turns import TurnService
 
 
-def build_turns_router(service: TurnService) -> APIRouter:
-    router = APIRouter(tags=["turns"])
+def build_turns_router(service: TurnService, scope: ThreadScopeService) -> APIRouter:
+    router = APIRouter(tags=["turns"], dependencies=[Depends(thread_scope_dependency(scope))])
 
     @router.post("/api/threads/{thread_id}/resume")
     async def resume_thread(
         thread_id: str,
+        request: Request,
         project_id: str | None = None,
         sandbox: str | None = None,
         approval_policy: str | None = None,
@@ -24,7 +28,7 @@ def build_turns_router(service: TurnService) -> APIRouter:
     ) -> dict[str, Any]:
         return await service.resume(
             thread_id,
-            project_id=project_id,
+            project_id=request.state.thread_project.id,
             sandbox=sandbox,
             approval_policy=approval_policy,
             model=model,
@@ -44,7 +48,7 @@ def build_turns_router(service: TurnService) -> APIRouter:
     ) -> dict[str, Any]:
         return await service.start(
             thread_id,
-            payload,
+            payload.model_copy(update={"project_id": request.state.thread_project.id}),
             actor=request_actor(request),
         )
 

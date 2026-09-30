@@ -6,11 +6,13 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from codex_web.api.identity import request_actor
 from codex_web.services.project_ui_state import ProjectUiStateService
+from codex_web.services.thread_scope import ThreadScopeService
 from codex_web.services.projects import ProjectNotFoundError
 
 
 def build_project_ui_state_router(
     service: ProjectUiStateService,
+    scope: ThreadScopeService,
 ) -> APIRouter:
     router = APIRouter(tags=["project-ui"])
 
@@ -21,6 +23,7 @@ def build_project_ui_state_router(
         request: Request,
         response: Response,
     ) -> Any:
+        scope.for_thread(thread_id, request_actor(request), project_id)
         try:
             payload = service.binding_state(
                 project_id,
