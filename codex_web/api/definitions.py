@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.api.identity import request_actor
+from codex_web.api.project_record_scope import ProjectRecordScope, project_record_context_parameter
 from codex_web.definitions import (
     DefinitionContext,
     DefinitionDraftCreate,
@@ -142,10 +143,11 @@ def build_definitions_router(
     service: DefinitionRegistryService,
     projects: ProjectService | None = None,
 ) -> APIRouter:
-    router = APIRouter(prefix="/api/definitions", tags=["definitions"])
+    router = APIRouter(prefix="/api/definitions", tags=["definitions"], dependencies=[Depends(project_record_context_parameter)])
 
-    def authenticated(request: Request) -> AuthenticationActor:
-        return request_actor(request)
+    def authenticated(request: Request) -> tuple[AuthenticationActor, ProjectRecordScope]:
+        actor = request_actor(request)
+        return actor, ProjectRecordScope.from_request(request, actor, projects)
 
     def project_visible(project_id: str | None, actor: AuthenticationActor) -> bool:
         if not project_id or projects is None:
@@ -167,7 +169,8 @@ def build_definitions_router(
             return project_visible(record.scope_id, actor)
         return False
 
-    def require_visible(record: DefinitionRecord, actor: AuthenticationActor) -> None:
+    def require_visible(record: DefinitionRecord, actor: AuthenticationActor, view: ProjectRecordScope) -> None:
+        view.require(record.scope_type, record.scope_id)
         if not record_visible(record, actor):
             raise HTTPException(status_code=404, detail="definition record not found")
 
@@ -176,7 +179,9 @@ def build_definitions_router(
         *,
         scope_type: DefinitionScope,
         scope_id: str | None,
+        view: ProjectRecordScope,
     ) -> None:
+        view.require(scope_type, scope_id)
         if actor.principal_kind == PrincipalKind.SERVICE:
             required = (
                 "definitions:global-admin"
@@ -222,6 +227,7 @@ def build_definitions_router(
         actor: AuthenticationActor,
         *,
         record: DefinitionRecord,
+        view: ProjectRecordScope,
     ) -> None:
         if actor.principal_kind == PrincipalKind.SERVICE:
             required = (
@@ -248,7 +254,7 @@ def build_definitions_router(
                 raise AuthorizationError(
                     "global definition approval requires local-trusted platform context"
                 )
-        require_visible(record, actor)
+        require_visible(record, actor, view)
 
     def tenant_context(
         context: DefinitionContext,
@@ -284,11 +290,11 @@ def build_definitions_router(
             visible.append(item)
         return visible
 
-    def visible_records(actor: AuthenticationActor, **filters: Any) -> list[DefinitionRecord]:
+    def visible_records(actor: AuthenticationActor, view: ProjectRecordScope, **filters: Any) -> list[DefinitionRecord]:
         return [
             item
             for item in service.list_records(**filters)
-            if record_visible(item, actor)
+            if record_visible(item, actor) and view.includes(item.scope_type, item.scope_id)
         ]
 
     @router.get("/schemas")
@@ -299,9 +305,9 @@ def build_definitions_router(
 
     @router.get("/bootstrap")
     async def bootstrap_status(request: Request) -> dict[str, Any]:
-        actor = authenticated(request)
+        actor, view = authenticated(request)
         status = service.bootstrap_status()
-        records = visible_records(actor)
+        records = visible_records(actor, view)
         active = [item for item in records if item.lifecycle.value == "published"]
         return {
             **status,
@@ -318,23 +324,15 @@ def build_definitions_router(
         scope_id: str | None = None,
         project_id: str | None = None,
     ) -> dict[str, Any]:
-        actor = authenticated(request)
-        if project_id is not None and not project_visible(project_id, actor):
-            raise HTTPException(status_code=404, detail="Project not found")
+        actor, view = authenticated(request)
         try:
             items = visible_records(
-                actor,
+                actor, view,
                 kind=kind,
                 definition_id=definition_id,
                 scope_type=scope_type,
                 scope_id=scope_id,
             )
-            if project_id is not None:
-                items = [
-                    item for item in items
-                    if item.scope_type != DefinitionScope.PROJECT
-                    or item.scope_id == project_id
-                ]
         except (DefinitionError, ValueError) as exc:
             raise _error(exc) from exc
         return {
@@ -344,12 +342,13 @@ def build_definitions_router(
 
     @router.post("/drafts")
     async def create_draft(payload: DefinitionDraftRequest, request: Request) -> dict[str, Any]:
-        actor = authenticated(request)
+        actor, view = authenticated(request)
         try:
             require_mutation_actor(
                 actor,
                 scope_type=payload.scope_type,
                 scope_id=payload.scope_id,
+                view=view,
             )
             record = service.create_draft(
                 DefinitionDraftCreate(
@@ -378,10 +377,10 @@ def build_definitions_router(
         record_id: str,
         request: Request,
     ) -> dict[str, Any]:
-        actor = authenticated(request)
+        actor, view = authenticated(request)
         try:
             record = service.get_record(record_id)
-            require_visible(record, actor)
+            require_visible(record, actor, view)
             assessment = service.publication_assessment(record_id)
         except (
             DefinitionError,
@@ -410,10 +409,10 @@ def build_definitions_router(
         payload: DefinitionPublicationApprovalHttpRequest,
         request: Request,
     ) -> dict[str, Any]:
-        actor = authenticated(request)
+        actor, view = authenticated(request)
         try:
             existing = service.get_record(record_id)
-            require_approval_actor(actor, record=existing)
+            require_approval_actor(actor, record=existing, view=view)
             record = service.approve_publication(
                 record_id,
                 actor=actor.identity_id,
@@ -437,14 +436,15 @@ def build_definitions_router(
         payload: DefinitionValidateRequest,
         request: Request,
     ) -> dict[str, Any]:
-        actor = authenticated(request)
+        actor, view = authenticated(request)
         try:
             existing = service.get_record(record_id)
-            require_visible(existing, actor)
+            require_visible(existing, actor, view)
             require_mutation_actor(
                 actor,
                 scope_type=existing.scope_type,
                 scope_id=existing.scope_id,
+                view=view,
             )
             record = service.validate(record_id, actor=actor.identity_id)
         except (
@@ -464,14 +464,15 @@ def build_definitions_router(
         payload: DefinitionPublishHttpRequest,
         request: Request,
     ) -> dict[str, Any]:
-        actor = authenticated(request)
+        actor, view = authenticated(request)
         try:
             existing = service.get_record(record_id)
-            require_visible(existing, actor)
+            require_visible(existing, actor, view)
             require_mutation_actor(
                 actor,
                 scope_type=existing.scope_type,
                 scope_id=existing.scope_id,
+                view=view,
             )
             record = service.publish(
                 record_id,
@@ -497,14 +498,15 @@ def build_definitions_router(
         payload: DefinitionQuarantineRequest,
         request: Request,
     ) -> dict[str, Any]:
-        actor = authenticated(request)
+        actor, view = authenticated(request)
         try:
             existing = service.get_record(record_id)
-            require_visible(existing, actor)
+            require_visible(existing, actor, view)
             require_mutation_actor(
                 actor,
                 scope_type=existing.scope_type,
                 scope_id=existing.scope_id,
+                view=view,
             )
             record = service.quarantine(
                 record_id,
@@ -527,12 +529,13 @@ def build_definitions_router(
         payload: DefinitionRollbackHttpRequest,
         request: Request,
     ) -> dict[str, Any]:
-        actor = authenticated(request)
+        actor, view = authenticated(request)
         try:
             require_mutation_actor(
                 actor,
                 scope_type=payload.scope_type,
                 scope_id=payload.scope_id,
+                view=view,
             )
             record = service.rollback(
                 DefinitionRollbackRequest(
@@ -553,15 +556,15 @@ def build_definitions_router(
 
     @router.post("/resolve")
     async def resolve(payload: DefinitionResolveRequest, request: Request) -> dict[str, Any]:
-        actor = authenticated(request)
+        actor, view = authenticated(request)
         try:
-            context = tenant_context(payload.context, actor)
+            context = view.bind_context(tenant_context(payload.context, actor))
             record = service.resolve(
                 definition_id=payload.definition_id,
                 kind=payload.kind,
                 context=context,
             )
-            require_visible(record, actor)
+            require_visible(record, actor, view)
         except (
             DefinitionError,
             DefinitionNotFoundError,
@@ -574,10 +577,10 @@ def build_definitions_router(
 
     @router.get("/{record_id}/usage")
     async def usage(record_id: str, request: Request) -> dict[str, Any]:
-        actor = authenticated(request)
+        actor, view = authenticated(request)
         try:
             record = service.get_record(record_id)
-            require_visible(record, actor)
+            require_visible(record, actor, view)
             result = service.usage(record_id)
             items = visible_usage(result.get("items", []), actor)
             return {
@@ -590,20 +593,20 @@ def build_definitions_router(
 
     @router.get("/diff")
     async def diff(left: str, right: str, request: Request) -> dict[str, Any]:
-        actor = authenticated(request)
+        actor, view = authenticated(request)
         try:
             left_record = service.get_record(left)
             right_record = service.get_record(right)
-            require_visible(left_record, actor)
-            require_visible(right_record, actor)
+            require_visible(left_record, actor, view)
+            require_visible(right_record, actor, view)
             return service.diff(left, right)
         except (DefinitionError, DefinitionNotFoundError, ValueError) as exc:
             raise _error(exc) from exc
 
     @router.get("/export")
     async def export(request: Request, kind: str | None = None) -> dict[str, Any]:
-        actor = authenticated(request)
-        records = visible_records(actor, kind=kind)
+        actor, view = authenticated(request)
+        records = visible_records(actor, view, kind=kind)
         return {
             "format": "codex-web-definitions",
             "version": "1.0",
@@ -615,7 +618,7 @@ def build_definitions_router(
         payload: DefinitionImportRequest,
         request: Request,
     ) -> dict[str, Any]:
-        actor = authenticated(request)
+        actor, view = authenticated(request)
         try:
             raw_records = payload.document.get("records", [])
             for raw in raw_records:
@@ -624,6 +627,7 @@ def build_definitions_router(
                     actor,
                     scope_type=source.scope_type,
                     scope_id=source.scope_id,
+                    view=view,
                 )
             records = service.import_records(
                 payload.document,

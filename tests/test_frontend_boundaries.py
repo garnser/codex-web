@@ -285,7 +285,8 @@ class FrontendBoundaryTests(unittest.TestCase):
         source_path = STATIC / "definition_registry_admin.js"
         source = source_path.read_text()
         self.assertLessEqual(source_path.stat().st_size, 17_000)
-        self.assertIn("api_client.js", source)
+        self.assertIn("project_view_scope.js", source)
+        self.assertIn("api_client.js", (STATIC / "project_view_scope.js").read_text())
         self.assertIn("apiRequest", source)
         self.assertNotIn("fetch(", source)
 

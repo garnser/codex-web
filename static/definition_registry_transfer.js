@@ -9,7 +9,7 @@ export async function exportDefinitions(report) {
     const host = document.getElementById('definition-transfer-document');
     if (host) host.value = JSON.stringify(documentValue, null, 2);
     setStatus('Loaded ' + (documentValue.records?.length || 0)
-      + ' tenant-visible definition record(s) for export.');
+      + ' definition record(s) in the current scope for export.');
   } catch (error) {
     setStatus('Definition export failed: ' + error.message);
   }

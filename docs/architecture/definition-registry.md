@@ -308,3 +308,18 @@ A database definition cannot:
 - weaken hard fail-closed constraints.
 
 Sensitive Definition publication approval is enforced by code-owned schema classifiers and durable candidate-bound attestations. The Definition Registry remains distinct from runtime Role evaluation: stored policy can require or constrain authority, but cannot weaken the publication classifier or hard fail-closed semantics.
+
+Project context also applies to record detail/usage, publication assessment and
+approval, lifecycle actions, diff, import/export, bootstrap counts and resolution.
+The optional `project_id` query parameter is part of each route's OpenAPI contract.
+When supplied, the API resolves the Project through canonical tenant visibility
+and rejects a sibling Project record or mutation target before acting. An import
+preflights every target before creating any draft. Resolution rejects a mismatched
+body context and supplies the selected Project when the body omits it.
+
+The shared Project view client carries that same context for reads and mutations,
+including export. Inherited global/organization/workspace records remain shared;
+inspecting their canonical usage can show other authorized consumers, and changing
+them retains the existing broader-scope authority and impact requirements. This
+optional view constraint narrows the existing tenant/role/assurance checks; it
+never grants additional permission. Unscoped administration remains compatible.
