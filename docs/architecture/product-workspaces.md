@@ -83,8 +83,14 @@ and lets the editor close. Successful persistence clears the guard, while failed
 validation or saving leaves entered values available for correction. Browser
 unload warnings remain subject to browser support and user activation.
 
-Automation, Agent Profile/Team, and generic Definition/Configuration draft editors
-use this contract. Definition and Configuration drafts preserve edited inputs
+Automation, Agent Profile/Team, Resource create/edit/relationship forms, and generic
+Definition/Configuration draft editors use this contract. Resource catalog display
+updates and filters defer while a row has unsaved changes, with an explicit status
+and discard action. Read failures retain drafts with an unavailable-state message;
+create/relationship selections survive catalog hydration. A successful save clears
+only the submitted snapshot, so typing during an outstanding request remains dirty.
+Resource metadata remains in page memory and canonical mutation APIs still enforce
+authority; deferred display state is not an authorization or concurrency guarantee. Definition and Configuration drafts preserve edited inputs
 across same-Project refreshes. Automation retains
 the active form across background renders, suppresses same-Project refresh while
 editing, and prevents a discarded/detached draft response from continuing into
