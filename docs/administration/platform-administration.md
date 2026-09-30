@@ -192,6 +192,32 @@ canonical Goal/Decision/Work/Action boundaries.
 Do not mark a Goal complete solely because a task or agent says it succeeded;
 verify the measured outcome.
 
+## Recovery policy and evidence
+
+Open **Operations → Recovery Policy & Evidence** to inspect the shared workspace
+policy, its exact fingerprint and actor-attributed change history. The typed
+editor selects a registered destination and workspace backup key, sets backup
+and verification intervals, retention, audit-continuity requirements and
+recovery objectives. Destination registration and worker topology remain
+operator deployment settings.
+
+Use **Preview impact** before **Publish policy**. The preview identifies scope,
+retained backups, retention effects and timer replacement. The server rejects a
+stale policy fingerprint; reload and review instead of blindly retrying.
+Publishing changes subsequent operations immediately. Paused timers remain
+paused. Policy editing requires recovery administration and sufficient session
+assurance; key authority is checked independently.
+
+**Review rollback** previews a retained policy revision before confirmation.
+Rollback restores policy settings only. It cannot recover deleted backup bytes,
+undo completed operations or revive a revoked key. Key/destination dependencies
+are revalidated. Changing policy is not evidence of a successful restore.
+
+The read-only evidence section shows retained backup metadata, restore results,
+missing/revoked-key findings and links to key metadata. Follow **Inspect recovery
+consumer** from key usage to focus the owning policy or backup. No stored key,
+envelope content or destination filesystem path is displayed.
+
 ## Autonomy administration
 
 Autonomy level, budgets, qualification gates, scoped pauses, dry-run/simulation

@@ -34,7 +34,7 @@ test('key consumers and manifest deep links expose metadata and explain broken d
   await page.locator('[data-crypto-usage]').click();
   await expect(page.locator('[data-key-usage-result]')).toContainText('backup-1');
   await expect(page.locator('[data-key-usage-result]')).toContainText('Broken:');
-  await expect(page.locator('[data-key-usage-result] a')).toHaveAttribute('href', '/projects/home/configuration?key_id=key-backup&key_version=1');
+  await expect(page.locator('[data-key-usage-result] [data-key-link]')).toHaveAttribute('href', '/projects/home/configuration?key_id=key-backup&key_version=1');
   await expect(page.locator('#crypto-key-manifest a')).toHaveAttribute('href', '/projects/home/configuration?key_id=key-backup');
   expect(state.reads.every(row => row.project === 'home')).toBe(true);
 });

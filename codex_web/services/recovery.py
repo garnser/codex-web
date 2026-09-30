@@ -168,7 +168,7 @@ class RecoveryService:
     def policy(self) -> RecoveryPolicy | None:
         return self.store.load().policy
 
-    def _write_key_bound(self, updater, *, actor, requirements, active_key=None):
+    def _write_key_bound(self, updater, *, actor, requirements, active_key=None, scheduler_update=None):
         if self.crypto.store.store is not self.store.store:
             raise RecoveryConflictError('Recovery and keys require the same canonical transactional store')
         key_namespace = self.crypto.store.namespace
@@ -185,100 +185,31 @@ class RecoveryService:
                 if entry.key_id == active_key and (key.status != KeyStatus.ACTIVE or key.purpose != KeyPurpose.BACKUP):
                     raise RecoveryConflictError('Backup policy requires an active backup key')
             current = RecoveryStore._decode(documents[self.store.namespace])
-            documents[self.store.namespace] = updater(current).model_dump(mode='json')
+            updated = updater(current, keys)
+            if scheduler_update is not None:
+                schedules = self.scheduler.store._decode(documents[self.scheduler.store.namespace])
+                scheduler_update(updated, schedules)
+                documents[self.scheduler.store.namespace] = schedules.model_dump(mode='json')
+            documents[self.store.namespace] = updated.model_dump(mode='json')
             return documents
 
-        result = self.store.store.update_many({
+        defaults = {
             key_namespace: CryptoKeyState().model_dump(mode='json'),
             self.store.namespace: RecoveryState().model_dump(mode='json'),
-        }, apply)
+        }
+        if scheduler_update is not None:
+            from codex_web.scheduler import SchedulerState
+            if self.scheduler.store.store is not self.store.store:
+                raise RecoveryConflictError('Recovery schedules require the same canonical transactional store')
+            defaults[self.scheduler.store.namespace] = SchedulerState().model_dump(mode='json')
+        result = self.store.store.update_many(defaults, apply)
         return RecoveryStore._decode(result[self.store.namespace])
 
-    def configure(
-        self,
-        policy: RecoveryPolicy,
-        *,
-        actor: AuthenticationActor,
-    ) -> RecoveryPolicy:
-        key = self.crypto.get_key(policy.backup_key_id, actor)
-        if key.purpose != KeyPurpose.BACKUP:
-            raise RecoveryConflictError(
-                "recovery policy backup key must have KeyPurpose.BACKUP"
-            )
-        self._destination(policy.destination_id)
-        state = self._write_key_bound(
-            lambda current: current.model_copy(update={"policy": policy}),
-            actor=actor, active_key=key.id,
-            requirements=(KeyManifestEntry(key_id=key.id, versions=(key.current_version,)),),
-        )
-        if self.scheduler is not None:
-            self._ensure_schedules(policy, actor=actor)
-        return state.policy  # type: ignore[return-value]
-
-    def _ensure_schedules(
-        self,
-        policy: RecoveryPolicy,
-        *,
-        actor: AuthenticationActor,
-    ) -> None:
-        if self.scheduler is None:
-            return
-        state = self.store.load()
-        now = float(self.clock())
-        backup_schedule_id = state.backup_schedule_id
-        verification_schedule_id = state.verification_schedule_id
-        existing_ids = {item.id for item in self.scheduler.list()}
-
-        if not backup_schedule_id or backup_schedule_id not in existing_ids:
-            backup = self.scheduler.create(
-                ScheduleCreate(
-                    name="recovery-backup",
-                    tenant_id=actor.organization_id,
-                    workspace_id=actor.workspace_id,
-                    trigger_type=self.BACKUP_TRIGGER,
-                    payload={},
-                    due_at=now + policy.backup_interval_seconds,
-                    recurrence=ScheduleRecurrence(
-                        kind=RecurrenceKind.INTERVAL,
-                        interval_seconds=policy.backup_interval_seconds,
-                    ),
-                    misfire_policy=MisfirePolicy.FIRE_ONCE,
-                ),
-                actor_id=actor.identity_id,
-            )
-            backup_schedule_id = backup.id
-
-        if (
-            not verification_schedule_id
-            or verification_schedule_id not in existing_ids
-        ):
-            verify = self.scheduler.create(
-                ScheduleCreate(
-                    name="recovery-restore-verification",
-                    tenant_id=actor.organization_id,
-                    workspace_id=actor.workspace_id,
-                    trigger_type=self.VERIFY_TRIGGER,
-                    payload={},
-                    due_at=now + policy.restore_verification_interval_seconds,
-                    recurrence=ScheduleRecurrence(
-                        kind=RecurrenceKind.INTERVAL,
-                        interval_seconds=policy.restore_verification_interval_seconds,
-                    ),
-                    misfire_policy=MisfirePolicy.FIRE_ONCE,
-                ),
-                actor_id=actor.identity_id,
-            )
-            verification_schedule_id = verify.id
-
-        self.store.update(
-            lambda current: current.model_copy(
-                update={
-                    "backup_schedule_id": backup_schedule_id,
-                    "verification_schedule_id": verification_schedule_id,
-                }
-            )
-        )
-        self.scheduler.notify_state_changed()
+    def configure(self, policy: RecoveryPolicy, *, actor: AuthenticationActor,
+                  expected_fingerprint: str | None = None, restored_from_id: str | None = None) -> RecoveryPolicy:
+        from codex_web.services.recovery_policy import RecoveryPolicyControl
+        return RecoveryPolicyControl(self).configure(policy, actor=actor,
+            expected_fingerprint=expected_fingerprint, restored_from_id=restored_from_id)
 
     @staticmethod
     def _canonical_bytes(value: Any) -> bytes:
@@ -289,13 +220,23 @@ class RecoveryService:
         ).encode("utf-8")
 
     def _snapshot_documents(self) -> dict[str, Any]:
-        # Recovery state itself is deliberately excluded to avoid recursive
-        # backup manifests while all business/control-plane state is retained.
-        return {
-            key: value
-            for key, value in self.state_store.documents().items()
-            if key != RecoveryStore.namespace
-        }
+        documents = self.state_store.documents()
+        if RecoveryStore.namespace in documents:
+            # Preserve policy provenance without recursively embedding backup
+            # and verification manifests in subsequent backups.
+            recovery = RecoveryStore._decode(documents[RecoveryStore.namespace])
+            documents[RecoveryStore.namespace] = recovery.model_copy(update={
+                'backups': {}, 'verifications': {},
+            }).model_dump(mode='json')
+        return documents
+
+    def _snapshot_key_manifest(self, documents, actor):
+        keys = self.crypto.store._decode(documents.get(self.crypto.store.namespace))
+        return tuple(KeyManifestEntry(key_id=key.id, versions=versions)
+            for key in keys.keys
+            if self.crypto._same_scope(key, actor) and key.status != KeyStatus.REVOKED
+            if (versions := tuple(version.version for version in key.versions
+                                  if version.status != KeyVersionStatus.REVOKED)))
 
     def _audit_anchor(
         self,
@@ -337,7 +278,7 @@ class RecoveryService:
         backup_id = (
             f"backup-{hashlib.sha256(backup_material).hexdigest()[:32]}"
         )
-        key_manifest = self.crypto.manifest(actor)
+        key_manifest = self._snapshot_key_manifest(documents, actor)
         snapshot = BackupSnapshot(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
@@ -390,7 +331,7 @@ class RecoveryService:
             created_at=now,
         )
 
-        def apply(current: RecoveryState) -> RecoveryState:
+        def apply(current: RecoveryState, _keys: CryptoKeyState) -> RecoveryState:
             current.backups[manifest.id] = manifest
             return current
 
@@ -414,10 +355,10 @@ class RecoveryService:
         *,
         actor: AuthenticationActor,
     ) -> None:
-        del actor
         state = self.store.load()
         rows = sorted(
-            state.backups.values(),
+            (item for item in state.backups.values()
+             if (item.organization_id, item.workspace_id) == (actor.organization_id, actor.workspace_id)),
             key=lambda item: (item.created_at, item.id),
             reverse=True,
         )
@@ -803,7 +744,21 @@ class RecoveryService:
     async def _handle_schedule_event(self, event) -> None:
         if self.service_actor is None:
             return
+        state = self.store.load()
         trigger = event.payload.get("trigger_type")
+        expected_schedule = state.backup_schedule_id if trigger == self.BACKUP_TRIGGER else state.verification_schedule_id
+        if event.payload.get('schedule_id') != expected_schedule or expected_schedule is None:
+            return
+        if (getattr(event, 'tenant_id', None), getattr(event, 'workspace_id', None)) != (self.service_actor.organization_id, self.service_actor.workspace_id):
+            return
+        if self.scheduler is not None:
+            from codex_web.scheduler import ScheduleStatus
+            schedule = self.scheduler.store.load().schedules.get(expected_schedule)
+            if schedule is None or schedule.status != ScheduleStatus.ACTIVE:
+                return
+        fingerprint = (event.payload.get('payload') or {}).get('policy_fingerprint')
+        if fingerprint and (state.policy is None or fingerprint != state.policy.fingerprint()):
+            return
         if trigger == self.BACKUP_TRIGGER:
             self.create_backup(actor=self.service_actor)
             return

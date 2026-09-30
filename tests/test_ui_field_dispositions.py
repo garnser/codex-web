@@ -68,7 +68,7 @@ class UiFieldDispositionParityTests(unittest.TestCase):
         self.assertIn("Provider/runtime versioned lifecycle and archive/restore", matrix)
         self.assertIn("Entitlement/quota create, update and retirement", matrix)
         self.assertIn(
-            "Recovery/operational policy create, update, archive and retirement",
+            "Recovery policy archive/retirement and deployment recovery actions",
             matrix,
         )
         self.assertIn(

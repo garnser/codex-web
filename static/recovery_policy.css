@@ -1,0 +1,12 @@
+.product-workspace-host>.developer-card:has(#recovery-policy-content){grid-column:1/-1}
+.recovery-policy-form fieldset{min-width:0;margin:12px 0;padding:12px;border:1px solid var(--border,#bbb)}
+.recovery-policy-form .route-test{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:12px 0}
+.recovery-policy-form label{display:grid;gap:6px;min-width:0;overflow-wrap:anywhere}
+.recovery-policy-form input:not([type=checkbox]),.recovery-policy-form select{box-sizing:border-box;min-width:0;max-width:100%;width:100%}
+#recovery-policy-content{min-width:0;overflow-wrap:anywhere}
+#recovery-policy-content [data-recovery-impact]:not(:empty){padding:12px;border:1px solid var(--border,#bbb)}
+@media(max-width:700px){.recovery-policy-form .route-test{grid-template-columns:minmax(0,1fr)}}
+.recovery-policy-form label:has(input[type=checkbox]){display:flex;align-items:center;gap:8px;min-height:44px}
+.recovery-policy-form input[type=checkbox]{width:24px;min-height:24px;margin:0;flex:none}
+.product-workspace-host .recovery-policy-form [data-objective]{grid-template-columns:minmax(0,1fr) repeat(2,minmax(0,1fr))}
+@media(max-width:700px){.product-workspace-host .recovery-policy-form [data-objective]{grid-template-columns:minmax(0,1fr)}}

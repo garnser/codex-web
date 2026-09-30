@@ -40,7 +40,7 @@ export async function inspectKeyUsage(row, operation, { retire = false, version 
     host.innerHTML = `<p>${esc(usage.count)} canonical dependency reference(s). ${usage.truncated ? 'Display is limited; totals include omitted references.' : ''}</p>
       ${(usage.items || []).map(item => `<div class="comm-entry" data-key-consumer="${esc(item.object_id)}"><strong>${esc(item.label)} · ${esc(item.object_id)}</strong>
         <small>${esc(item.relationship)} · ${esc(item.scope)} · ${item.broken ? 'Broken: required key/version is unavailable. Repair the owning recovery reference and verify restore.' : 'Required key versions retained'}</small>
-        <small>Key metadata: ${(item.versions || []).map(number => keyLink(id, number)).join(', ')}</small></div>`).join('')}
+        <a href="${esc(projectPath('operations', { consumer_type: item.object_type, consumer_id: item.object_id }))}">Inspect recovery consumer</a><small>Key metadata: ${(item.versions || []).map(number => keyLink(id, number)).join(', ')}</small></div>`).join('')}
       <p>Coverage: ${esc((usage.coverage || []).join(', '))}</p><p>${esc((usage.limitations || []).join(' '))}</p>`;
     if (retire && usage.blocking_count > 0) {
       operation.status('Revocation blocked: canonical recovery consumers still require this key/version. Retain it or migrate references through recovery management and verify restore. Rotation preserves decrypt-only versions.');

@@ -115,7 +115,14 @@ Use the canonical reason/remediation fields rather than interpreting raw error s
 
 For a new runtime, use the existing **Add runtime** / enrollment flow. Do not manually manufacture worker state.
 
-Screenshot fixture: **runtime-operations**.
+The **Recovery Policy & Evidence** card separates a typed policy editor from
+read-only backup and restore evidence. Preview scope and retention/scheduling
+impact before publishing. Review a retained revision before policy-only
+rollback; rollback does not recover deleted backups or key material. Key links
+open the corresponding metadata, while consumer links focus the owning recovery
+record. See [platform administration](../administration/platform-administration.md#recovery-policy-and-evidence).
+
+Screenshot fixture: **runtime-operations** (runtime health and telemetry).
 
 ## Home: orient before drilling down
 

@@ -10,6 +10,10 @@ from typing import Any, Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.crypto import EncryptedEnvelope, KeyManifestEntry
+from codex_web.compatibility import ContractSpec
+
+
+RECOVERY_STATE_CONTRACT = ContractSpec("recovery-state", "1.1", ("1.1",))
 
 
 class RecoveryDeploymentMode(StrEnum):
@@ -166,15 +170,35 @@ class RecoveryHealth(BaseModel):
     blockers: tuple[str, ...] = ()
 
 
+class RecoveryPolicyChange(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(default_factory=lambda: f"recovery-policy-change-{uuid.uuid4().hex}")
+    organization_id: str
+    workspace_id: str
+    actor_id: str
+    occurred_at: float
+    previous_fingerprint: str | None = None
+    policy: RecoveryPolicy
+    restored_from_id: str | None = None
+
+
 class RecoveryState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.0"
+    schema_version: str = RECOVERY_STATE_CONTRACT.current
+    policy_organization_id: str | None = None
+    policy_workspace_id: str | None = None
+    policy_changes: tuple[RecoveryPolicyChange, ...] = ()
     policy: RecoveryPolicy | None = None
     backups: dict[str, BackupManifest] = Field(default_factory=dict)
     verifications: dict[str, RestoreVerification] = Field(default_factory=dict)
     backup_schedule_id: str | None = None
     verification_schedule_id: str | None = None
+
+
+    def model_post_init(self, __context: Any) -> None:
+        RECOVERY_STATE_CONTRACT.require(self.schema_version)
 
 
 @runtime_checkable

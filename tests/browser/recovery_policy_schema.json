@@ -1,0 +1,139 @@
+{
+  "$defs": {
+    "RecoveryDataClass": {
+      "enum": [
+        "canonical_state",
+        "audit",
+        "artifact_metadata",
+        "configuration",
+        "memory"
+      ],
+      "title": "RecoveryDataClass",
+      "type": "string"
+    },
+    "RecoveryDeploymentMode": {
+      "enum": [
+        "local",
+        "shared",
+        "replicated"
+      ],
+      "title": "RecoveryDeploymentMode",
+      "type": "string"
+    },
+    "RecoveryObjective": {
+      "additionalProperties": false,
+      "properties": {
+        "data_class": {
+          "$ref": "#/$defs/RecoveryDataClass"
+        },
+        "rpo_seconds": {
+          "maximum": 31536000,
+          "minimum": 0,
+          "title": "Rpo Seconds",
+          "type": "integer"
+        },
+        "rto_seconds": {
+          "exclusiveMinimum": 0,
+          "maximum": 31536000,
+          "title": "Rto Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "data_class",
+        "rpo_seconds",
+        "rto_seconds"
+      ],
+      "title": "RecoveryObjective",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "default": "recovery-policy-default",
+      "minLength": 1,
+      "title": "Id",
+      "type": "string"
+    },
+    "version": {
+      "default": "1",
+      "minLength": 1,
+      "title": "Version",
+      "type": "string"
+    },
+    "deployment_mode": {
+      "$ref": "#/$defs/RecoveryDeploymentMode",
+      "default": "local"
+    },
+    "backup_key_id": {
+      "minLength": 1,
+      "title": "Backup Key Id",
+      "type": "string"
+    },
+    "destination_id": {
+      "default": "local",
+      "minLength": 1,
+      "title": "Destination Id",
+      "type": "string"
+    },
+    "backup_interval_seconds": {
+      "default": 3600,
+      "minimum": 60,
+      "title": "Backup Interval Seconds",
+      "type": "integer"
+    },
+    "restore_verification_interval_seconds": {
+      "default": 86400,
+      "minimum": 300,
+      "title": "Restore Verification Interval Seconds",
+      "type": "integer"
+    },
+    "retention_count": {
+      "default": 30,
+      "maximum": 10000,
+      "minimum": 1,
+      "title": "Retention Count",
+      "type": "integer"
+    },
+    "objectives": {
+      "default": [
+        {
+          "data_class": "canonical_state",
+          "rpo_seconds": 3600,
+          "rto_seconds": 14400
+        },
+        {
+          "data_class": "audit",
+          "rpo_seconds": 3600,
+          "rto_seconds": 14400
+        }
+      ],
+      "items": {
+        "$ref": "#/$defs/RecoveryObjective"
+      },
+      "title": "Objectives",
+      "type": "array"
+    },
+    "require_audit_integrity": {
+      "default": true,
+      "title": "Require Audit Integrity",
+      "type": "boolean"
+    },
+    "require_key_manifest": {
+      "default": true,
+      "title": "Require Key Manifest",
+      "type": "boolean"
+    },
+    "allow_point_in_time_recovery": {
+      "default": false,
+      "title": "Allow Point In Time Recovery",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "backup_key_id"
+  ],
+  "title": "RecoveryPolicy",
+  "type": "object"
+}

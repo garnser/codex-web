@@ -298,6 +298,7 @@ const CARD_RULES = [
   [/^Execution Workspaces & Leases$/i, "workers"],
   [/^Artifacts, Evidence & Verification$/i, "operations"],
   [/^Operations & Observability$/i, "operations"],
+  [/^Recovery Policy & Evidence$/i, "operations"],
   [/^Structured Logs$/i, "operations"],
   [/^Autonomy Control Center$/i, "autonomy"],
   [/^Orchestration Inspector$/i, "autonomy"],
