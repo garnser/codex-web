@@ -98,7 +98,7 @@ for (const capture of manifest.captures) {
     expect(
       Math.abs(actual.height - expected.height),
       `${capture.name}: full-page height drift`,
-    ).toBeLessThanOrEqual(4);
+    ).toBeLessThanOrEqual(expected.height_tolerance || 4);
 
     const deltas = actual.luma.map((value, index) => (
       Math.abs(value - expected.luma[index])
