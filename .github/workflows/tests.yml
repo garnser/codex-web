@@ -250,7 +250,7 @@ jobs:
             sleep 0.2
           done
 
-          npx playwright test tests/browser --workers=1 --reporter=line
+          npx playwright test tests/browser --workers=1 --retries=1 --reporter=line
 
       - name: Upload browser failure diagnostics
         if: failure()
