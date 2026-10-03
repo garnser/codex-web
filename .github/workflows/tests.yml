@@ -207,10 +207,14 @@ jobs:
       - name: Exercise PostgreSQL and Redis replicated semantics
         run: python -m unittest tests.test_distributed_backends
 
-  browser:
-    name: chromium
+  browser-suite:
+    name: chromium-${{ matrix.suite }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [functional, visual]
 
     steps:
       - name: Check out repository
@@ -250,25 +254,48 @@ jobs:
             sleep 0.2
           done
 
-          npx playwright test tests/browser --workers=1 --retries=1 --reporter=line
+          if [[ "${{ matrix.suite }}" == "visual" ]]; then
+            npx playwright test \
+              tests/browser/visual_regression.spec.js \
+              tests/browser/routed_project_visual.spec.js \
+              --workers=1 --retries=1 --reporter=line
+          else
+            npx playwright test tests/browser \
+              --grep-invert "visual baseline" \
+              --workers=1 --retries=1 --reporter=line
+          fi
 
       - name: Upload browser failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: browser-failure-diagnostics
+          name: browser-failure-diagnostics-${{ matrix.suite }}
           path: test-results/
           if-no-files-found: warn
 
       - name: Generate sanitized documentation screenshots
+        if: matrix.suite == 'visual'
         run: npm run docs:screenshots
 
       - name: Upload documentation screenshot artifact
+        if: matrix.suite == 'visual'
         uses: actions/upload-artifact@v4
         with:
           name: documentation-screenshots
           path: docs/assets/screenshots/generated/
           if-no-files-found: error
+
+  browser:
+    name: chromium
+    needs: browser-suite
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every Chromium suite
+        env:
+          BROWSER_SUITE_RESULT: ${{ needs.browser-suite.result }}
+        run: test "$BROWSER_SUITE_RESULT" = success
 
   docker:
     name: docker-smoke
