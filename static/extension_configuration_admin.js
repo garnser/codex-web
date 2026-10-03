@@ -1,5 +1,12 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  let latestDetail = null, ready = false;
+  window.addEventListener("codex:extension-state-rendered", event => {
+    latestDetail = event.detail;
+    if (ready) hydrateConfiguration(latestDetail?.installations || [], Boolean(latestDetail?.canMutateMutation)).catch(console.error);
+  });
+  const { trackExtensionEditor, extensionSubmission } = await import(`${BASE}/static/extension_editor_state.js`);
+  const { bindWhenReady } = await import(`${BASE}/static/reference_links.js`);
   const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   let generation = 0;
@@ -104,6 +111,7 @@
       ${secretSlots}
       <button type="button" class="ghost-button" data-extension-config-save ${disabled ? "disabled" : ""}>Save configuration references</button>
     </div>`;
+    trackExtensionEditor(host.firstElementChild, `Extension ${item.id} configuration`);
   }
 
   async function hydrateConfiguration(installations, canMutate) {
@@ -134,6 +142,7 @@
     const label = root?.dataset.extensionLabel || installationId;
     if (!root || !installationId || button.disabled) return;
 
+    const ticket = extensionSubmission(root);
     const configSelect = root.querySelector("[data-extension-config-records]");
     const configurationRecordIds = Array.from(configSelect?.selectedOptions || [])
       .map((option) => option.value);
@@ -143,7 +152,7 @@
       if (slot && select.value) secretBindings[slot] = select.value;
     });
 
-    if (!await confirmAction({ action: 'Change extension configuration', target: `${label} (${installationId})`, risk: 'high', consequence: `Update canonical configuration references for ${label}? Only configuration record IDs and secret IDs are stored; this does not grant authority or reveal secret material.`, recovery: 'Previous reference selections can be resubmitted only with current canonical authorization.', current: () => root.isConnected })) return;
+    if (!await confirmAction({ action: 'Change extension configuration', target: `${label} (${installationId})`, risk: 'high', consequence: `Update canonical configuration references for ${label}? Only configuration record IDs and secret IDs are stored; this does not grant authority or reveal secret material.`, recovery: 'Previous reference selections can be resubmitted only with current canonical authorization.', current: ticket.current })) return;
     button.disabled = true;
     try {
       await apiRequest(
@@ -156,22 +165,21 @@
           }),
         },
       );
+      if (!ticket.current()) return;
+      ticket.saved(); button.disabled = false;
       document.getElementById("refresh-extensions")?.click();
     } catch (error) {
+      if (!ticket.current()) return;
       button.disabled = false;
       const status = document.getElementById("extension-admin-status");
       if (status) status.textContent = `Extension configuration failed: ${error.message}`;
     }
   }
 
-  window.addEventListener("codex:extension-state-rendered", (event) => {
-    hydrateConfiguration(
-      event.detail?.installations || [],
-      Boolean(event.detail?.canMutateMutation),
-    ).catch(console.error);
-  });
+  ready = true;
+  if (latestDetail) hydrateConfiguration(latestDetail.installations || [], Boolean(latestDetail.canMutateMutation)).catch(console.error);
 
-  window.addEventListener("DOMContentLoaded", () => {
+  bindWhenReady(() => {
     document.getElementById("extension-admin-list")?.addEventListener("click", (event) => {
       const button = event.target.closest?.("[data-extension-config-save]");
       if (button) saveConfiguration(button).catch(console.error);

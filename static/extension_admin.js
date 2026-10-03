@@ -3,6 +3,7 @@
   const { confirmExtensionLifecycle, confirmExtensionRevoke, confirmExtensionGrant } = await import(`${BASE}/static/extension_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const { secretLinks, referenceAttributes, focusReference, bindWhenReady } = await import(`${BASE}/static/reference_links.js`);
+  const { deferExtensionRefresh, extensionEditsPending, trackExtensionGrants, extensionSubmission } = await import(`${BASE}/static/extension_editor_state.js`);
   const { canMutateExtensions, extensionMutationAuthorityText } = await import(`${BASE}/static/extension_authority.js`);
 
   function escapeHtml(value) {
@@ -99,6 +100,7 @@
   }
 
   function renderExtensionAdmin(installations, grantsByInstallation, resources, resourceError, actor) {
+    if (deferExtensionRefresh()) return;
     const list = document.getElementById("extension-admin-list");
     const status = document.getElementById("extension-admin-status");
     if (!list || !status) return;
@@ -131,6 +133,7 @@
         ${extensionLifecycleActions(item, canMutate)}
       </div>`;
     }).join("");
+    trackExtensionGrants(list);
     focusReference(list);
     window.dispatchEvent(new CustomEvent("codex:extension-state-rendered", {
       detail: { installations, actor, canMutateMutation: canMutate },
@@ -181,7 +184,7 @@
     } catch (error) {
       if (status) status.textContent = `Unable to load extensions: ${error.message}`;
       const list = document.getElementById("extension-admin-list");
-      if (list) list.innerHTML = "";
+      if (list && !extensionEditsPending()) list.innerHTML = "";
     }
   }
 
@@ -232,6 +235,7 @@
     if (!row || !installationId || !capability || !action) return;
 
     if (action === "grant") {
+      const ticket = extensionSubmission(row);
       const select = row.querySelector("[data-extension-resource-scope]");
       const resourceIds = Array.from(select?.selectedOptions || []).map((option) => option.value);
       const scope = resourceIds.length
@@ -250,8 +254,9 @@
             }),
           },
         );
-        await refreshExtensionAdmin();
+        if (ticket.current()) { ticket.saved(); button.disabled = false; await refreshExtensionAdmin(); }
       } catch (error) {
+        if (!ticket.current()) return;
         button.disabled = false;
         if (status) status.textContent = `Capability grant failed: ${error.message}`;
       }

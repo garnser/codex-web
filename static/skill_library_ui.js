@@ -1,3 +1,4 @@
+import { skillEditorOpen, leaveSkillEditor, skillView, trackSkillEditor, trackSkillImport } from './skill_editor_state.js';
 import { confirmSkillAction } from './skill_action_confirmation.js';
 import { referenceLink } from './reference_navigation.js';
 import { request } from "./api_client.js";
@@ -75,7 +76,7 @@ function cardMarkup() {
         <div class="skill-import-grid">
           <section>
             <h3>Import portable bundle</h3>
-            <textarea data-skill-import-json rows="8" spellcheck="false" placeholder='{"format":"codex-web-skill-bundle",...}'></textarea>
+            <textarea data-skill-import-json aria-label="Portable Skill bundle" rows="8" spellcheck="false" placeholder='{"format":"codex-web-skill-bundle",...}'></textarea>
             <div class="skill-actions">
               <button class="ghost-button" type="button" data-skill-import-preview>Preview</button>
               <button class="primary-button" type="button" data-skill-import-confirm disabled>Create draft</button>
@@ -119,7 +120,7 @@ async function loadSkills(root) {
     if (lifecycle) params.set("lifecycle", lifecycle);
     const result = await request(`/api/skills?${params.toString()}`);
     state.items = result?.items || [];
-    if (state.selected) {
+    if (state.selected && !skillEditorOpen()) {
       state.selected = state.items.find((item) => item.skillId === state.selected.skillId) || state.selected;
     }
   } catch (error) {
@@ -172,12 +173,15 @@ function renderList(root) {
 }
 
 async function selectSkill(root, skillId, revision = null) {
+  if (!leaveSkillEditor()) return;
+  const view = skillView(root);
   const suffix = revision ? `?revision=${encodeURIComponent(revision)}` : "";
   const [skill, revisions, usage] = await Promise.all([
     request(`/api/skills/${encodeURIComponent(skillId)}${suffix}`),
     request(`/api/skills/${encodeURIComponent(skillId)}/revisions`),
     request(`/api/skills/${encodeURIComponent(skillId)}/usage${revision ? `?revision=${encodeURIComponent(revision)}` : ""}`),
   ]);
+  if (!view.current()) return;
   state.selected = payload(skill);
   root.dataset.referenceKind = "skill"; root.dataset.referenceId = skillId;
   const url = new URL(location.href);
@@ -228,6 +232,7 @@ function editorMarkup(item) {
   const assetsJson = JSON.stringify(skill.assets || [], null, 2);
   return `
     <form data-skill-editor class="skill-editor">
+      <p>Save a draft before leaving. Saved revisions can be reopened from the Skill list; publication is separate.</p>
       <input type="hidden" data-field="skillId" value="${esc(item?.skillId || "")}">
       <div class="skill-form-grid">
         <label>Skill ID <input data-field="newSkillId" ${isNew ? "" : "disabled"} value="${esc(item?.skillId || "")}" pattern="[a-z0-9][a-z0-9._-]*" required></label>
@@ -357,27 +362,39 @@ function editorPayload(form, isNew) {
 }
 
 function showEditor(root, item = null) {
+  if (!leaveSkillEditor()) return;
   const host = query(root, "[data-skill-detail]");
   host.innerHTML = editorMarkup(item);
   const form = query(host, "[data-skill-editor]");
-  query(form, "[data-editor-cancel]").addEventListener("click", () => item ? renderDetail(root) : (host.innerHTML='<div class="skill-empty">Select a Skill or create a new draft.</div>'));
+  const dirty = trackSkillEditor(form, () => { leaveSkillEditor(); item ? renderDetail(root) : (host.innerHTML='<div class="skill-empty">Select a Skill or create a new draft.</div>'); });
+  query(form, "[data-editor-cancel]").addEventListener("click", () => {
+    if (!leaveSkillEditor()) return;
+    item ? renderDetail(root) : (host.innerHTML='<div class="skill-empty">Select a Skill or create a new draft.</div>');
+  });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (form.dataset.saving) return;
+    const view = skillView(form), submitted = dirty.snapshot();
     const result = query(form, "[data-editor-result]");
     try {
       const isNew = !item;
       const body = editorPayload(form, isNew);
+      form.dataset.saving = "true";
       const response = await request(isNew ? "/api/skills" : `/api/skills/${encodeURIComponent(item.skillId)}`, {
         method: isNew ? "POST" : "PATCH",
         body: JSON.stringify(body),
       });
+      if (!view.current()) return;
       const saved = payload(response);
+      dirty.markSaved(submitted);
+      result.hidden = false;
+      result.textContent = `Saved inactive draft ${saved.skillId} r${saved.revision}. Reopen this revision from the Skill list after interruption; publishing is separate.`;
       await loadSkills(root);
+      if (!view.current() || dirty.dirty()) return;
       await selectSkill(root, saved.skillId, saved.revision);
     } catch (error) {
-      result.hidden = false;
-      result.textContent = errorText(error);
-    }
+      if (view.current()) { result.hidden = false; result.textContent = errorText(error); }
+    } finally { delete form.dataset.saving; }
   });
 }
 
@@ -464,12 +481,20 @@ function bindDetail(root) {
 }
 
 function bindImport(root) {
-  let preview = null;
+  const importRoot = query(root, '[data-skill-import-json]').closest('section');
+  const promoteRoot = query(root, '[data-promote-id]').closest('section');
+  const importDirty = trackSkillImport(importRoot, 'Skill bundle import');
+  const promoteDirty = trackSkillImport(promoteRoot, 'Skill procedure promotion');
+  let preview = null, previewSource = '';
+  query(root, '[data-skill-import-json]').addEventListener('input', () => {
+    preview = null; query(root, '[data-skill-import-confirm]').disabled = true;
+  });
   query(root, "[data-skill-import-preview]").addEventListener("click", () => {
     const result = query(root, "[data-skill-import-result]");
     const confirm = query(root, "[data-skill-import-confirm]");
     try {
-      preview = JSON.parse(query(root, "[data-skill-import-json]").value);
+      previewSource = query(root, "[data-skill-import-json]").value;
+      preview = JSON.parse(previewSource);
       if (preview?.format !== "codex-web-skill-bundle" || !preview?.manifest?.skill_id || !preview?.manifest?.instructions) {
         throw new Error("Bundle must use codex-web-skill-bundle and include manifest.skill_id and instructions.");
       }
@@ -482,15 +507,19 @@ function bindImport(root) {
     }
   });
   query(root, "[data-skill-import-confirm]").addEventListener("click", async () => {
-    if (!preview) return;
+    if (!preview || previewSource !== query(root, '[data-skill-import-json]').value) return;
+    const view = skillView(root), submitted = importDirty.snapshot();
     const result = query(root, "[data-skill-import-result]");
     try {
       const response = await request("/api/skills/import", { method: "POST", body: JSON.stringify(preview) });
+      if (!view.current()) return;
+      importDirty.markSaved(submitted);
       result.textContent = `Created draft ${payload(response).skillId} r${payload(response).revision}. Human review and publish are still required.`;
       await loadSkills(root);
-    } catch (error) { result.textContent = errorText(error); }
+    } catch (error) { if (view.current()) result.textContent = errorText(error); }
   });
   query(root, "[data-skill-promote]").addEventListener("click", async () => {
+    const view = skillView(root), submitted = promoteDirty.snapshot();
     const result = query(root, "[data-promote-result]");
     try {
       const response = await request("/api/skills/promote-verified", {
@@ -504,12 +533,13 @@ function bindImport(root) {
           reason: "Promote verified procedure to draft Skill for human review",
         }),
       });
+      if (!view.current()) return;
+      promoteDirty.markSaved(submitted);
       result.hidden = false;
       result.textContent = `Created draft ${payload(response).skillId} r${payload(response).revision}; publication requires a separate review action.`;
       await loadSkills(root);
     } catch (error) {
-      result.hidden = false;
-      result.textContent = errorText(error);
+      if (view.current()) { result.hidden = false; result.textContent = errorText(error); }
     }
   });
 }
