@@ -74,6 +74,36 @@ MODEL_GATEWAY_MIGRATIONS.register(
     },
 )
 MODEL_GATEWAY_MIGRATIONS.register(
+    "1.4",
+    "1.5",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.5",
+        "invocations": [
+            {
+                **dict(item),
+                "attempts": [
+                    {
+                        **dict(attempt),
+                        "actual_cost": dict(attempt).get("actual_cost_usd"),
+                        "cost_currency": (
+                            "USD"
+                            if dict(attempt).get("actual_cost_usd") is not None
+                            else None
+                        ),
+                        # Legacy records did not retain enough information to
+                        # prove whether a value was reported or calculated.
+                        "cost_source": None,
+                        "pricing_revision": None,
+                    }
+                    for attempt in dict(item).get("attempts", [])
+                ],
+            }
+            for item in payload.get("invocations", [])
+        ],
+    },
+)
+MODEL_GATEWAY_MIGRATIONS.register(
     "1.0",
     "1.1",
     lambda payload: {

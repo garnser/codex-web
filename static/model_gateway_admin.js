@@ -72,7 +72,7 @@
         Attempt ${index + 1}: ${escapeHtml(attempt.provider_id)}/${escapeHtml(attempt.model_id)} · ${escapeHtml(attempt.outcome)}
         ${attempt.error_code ? ` · ${escapeHtml(attempt.error_code)}` : ""}
         · input ${escapeHtml(attempt.input_tokens ?? "n/a")} · output ${escapeHtml(attempt.output_tokens ?? "n/a")}
-        · cost ${attempt.actual_cost_usd == null ? "n/a" : `$${escapeHtml(attempt.actual_cost_usd)}`}
+        · cost ${attempt.actual_cost == null && attempt.actual_cost_usd == null ? "n/a" : `${escapeHtml(attempt.actual_cost ?? attempt.actual_cost_usd)} ${escapeHtml(attempt.cost_currency || "USD")}${attempt.cost_source === "codex_calculated" ? " estimated" : ""}`}
       </small>`).join("");
       const refs = [
         item.work_item_ref ? `work=${item.work_item_ref}` : null,

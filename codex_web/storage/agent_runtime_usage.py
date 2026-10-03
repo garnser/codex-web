@@ -20,6 +20,17 @@ AGENT_RUNTIME_USAGE_MIGRATIONS.register(
         "records": list(payload.get("records", [])),
     },
 )
+AGENT_RUNTIME_USAGE_MIGRATIONS.register(
+    "1.0",
+    "1.1",
+    lambda payload: {
+        "schema_version": AGENT_RUNTIME_USAGE_STATE_CONTRACT.current,
+        "records": [
+            {**record, "resources": list(record.get("resources", []))}
+            for record in payload.get("records", [])
+        ],
+    },
+)
 
 
 class AgentRuntimeUsageStore:

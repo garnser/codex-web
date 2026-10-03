@@ -69,6 +69,29 @@ Queued turns do not consume retry attempts while waiting for capacity. This prev
 
 `GET /api/provider-capacity` exposes scoped capacity records and waits. The Developer Model Gateway and Agent Provider surfaces show capacity status, reset time, waiting work count, runtime capacity, routing rejection reasons, and fallback choice. Secret values are never returned.
 
+The provider-neutral usage projection is complementary evidence rather than a
+second routing system. `GET /api/agent-runtime-usage` returns historical runtime
+records plus typed resource observations for token usage, quotas, money,
+requests, rate limits, and compute. Each resource retains provider, account,
+runtime, model/version, unit/currency, period/reset, source, freshness, and
+whether the provider made the value authoritative. Incremental usage can be
+summed only inside an identical accounting boundary; balance and quota snapshots
+use the newest observation. Independent providers, accounts, currencies, quota
+windows, and models remain distinguishable.
+
+`GET /api/account/rate-limits` normalizes Codex app-server windows into these
+resources on the server. Provider adapters may emit the same canonical
+`usage_resources` shape, including monetary balance or spend when their API
+supplies it. Provider-specific payload shapes do not become frontend contracts.
+The existing capacity service may consume the same underlying observations for
+deterministic routing, while display code only reports them and cannot make a
+routing decision.
+
+The chat sidebar renders one compact component per resource. It shows a progress
+bar only when both consumption and an authoritative positive limit are present.
+Usage or balance without a denominator stays absolute. Monetary values use the
+recorded currency, and calculated cost is labeled estimated.
+
 ## Invariants
 
 1. Capacity routing is deterministic and uses zero LLM tokens.

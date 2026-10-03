@@ -12,6 +12,10 @@ from codex_web.agent_runtime_usage import (
     AgentRuntimeUsage,
     RuntimeTelemetryCompleteness,
     RuntimeTerminalOutcome,
+    UsageMeasurementMode,
+    UsageResource,
+    UsageResourceKind,
+    UsageResourceSource,
 )
 from codex_web.artifact_evidence import (
     EvidenceCreate,
@@ -79,6 +83,9 @@ class AgentRuntimeTelemetryService:
         project_id: str | None = None,
         execution_id: str | None = None,
         agent_session_id: str | None = None,
+        provider_id: str | None = None,
+        runtime_id: str | None = None,
+        model_id: str | None = None,
     ) -> list[AgentRuntimeUsage]:
         records = [
             record
@@ -96,7 +103,53 @@ class AgentRuntimeTelemetryService:
                 for record in records
                 if record.agent_session_id == agent_session_id
             ]
+        if provider_id is not None:
+            records = [record for record in records if record.provider_id == provider_id]
+        if runtime_id is not None:
+            records = [record for record in records if record.runtime_id == runtime_id]
+        if model_id is not None:
+            records = [
+                record for record in records if model_id in record.observed_model_ids
+            ]
         return records
+
+    @staticmethod
+    def aggregate_resources(records: list[AgentRuntimeUsage]) -> list[UsageResource]:
+        """Roll up increments without crossing provider/account/unit boundaries.
+
+        Quotas and balances are snapshots, so only the freshest compatible
+        observation survives. Incremental turn usage is summed inside its exact
+        accounting key. Independent windows and currencies remain separate.
+        """
+
+        grouped: dict[tuple[str | None, ...], UsageResource] = {}
+        for record in sorted(records, key=lambda item: item.observed_at):
+            for resource in record.resources:
+                key = resource.accounting_key()
+                current = grouped.get(key)
+                if current is None or resource.measurement_mode == UsageMeasurementMode.SNAPSHOT:
+                    if current is None or resource.observed_at >= current.observed_at:
+                        grouped[key] = resource
+                    continue
+                grouped[key] = resource.model_copy(
+                    update={
+                        "consumed": (current.consumed or 0.0)
+                        + (resource.consumed or 0.0),
+                        "remaining": resource.remaining,
+                        "observed_at": max(current.observed_at, resource.observed_at),
+                        "authoritative": current.authoritative and resource.authoritative,
+                    }
+                )
+        return sorted(
+            grouped.values(),
+            key=lambda item: (
+                item.provider_id,
+                item.account_id or "",
+                item.runtime_id,
+                item.resource_id,
+                item.model_id or "",
+            ),
+        )
 
     def _canonical_session(
         self,
@@ -228,6 +281,93 @@ class AgentRuntimeTelemetryService:
             "cost_usd": cost,
             "runtime_duration_seconds": duration,
         }
+
+    @classmethod
+    def _usage_resources(
+        cls,
+        payload: dict[str, Any],
+        *,
+        provider_id: str,
+        runtime_id: str,
+        model_ids: tuple[str, ...],
+        observed_at: float,
+        usage: dict[str, int | float | None],
+    ) -> tuple[UsageResource, ...]:
+        resources: list[UsageResource] = []
+        raw_resources = payload.get("usage_resources")
+        if raw_resources is None:
+            raw_resources = payload.get("usageResources")
+        if isinstance(raw_resources, list):
+            for raw in raw_resources:
+                if not isinstance(raw, dict):
+                    continue
+                candidate = {
+                    **raw,
+                    "provider_id": raw.get("provider_id") or provider_id,
+                    "runtime_id": raw.get("runtime_id") or runtime_id,
+                    "model_id": raw.get("model_id") or (model_ids[0] if len(model_ids) == 1 else None),
+                    "observed_at": raw.get("observed_at", observed_at),
+                    "source": raw.get("source", UsageResourceSource.PROVIDER_REPORTED),
+                }
+                try:
+                    resources.append(UsageResource.model_validate(candidate))
+                except (TypeError, ValueError):
+                    # Provider payload is untrusted telemetry. Invalid resource
+                    # observations are ignored rather than weakening the schema.
+                    continue
+
+        total_tokens = usage.get("total_tokens")
+        if total_tokens is not None:
+            resources.append(
+                UsageResource(
+                    resource_id="tokens",
+                    label="Token usage",
+                    kind=UsageResourceKind.TOKEN_USAGE,
+                    consumed=float(total_tokens),
+                    unit="tokens",
+                    source=UsageResourceSource.PROVIDER_REPORTED,
+                    authoritative=True,
+                    measurement_mode=UsageMeasurementMode.INCREMENT,
+                    provider_id=provider_id,
+                    runtime_id=runtime_id,
+                    model_id=model_ids[0] if len(model_ids) == 1 else None,
+                    observed_at=observed_at,
+                )
+            )
+        cost = usage.get("cost_usd")
+        if cost is not None:
+            resources.append(
+                UsageResource(
+                    resource_id="provider-cost-usd",
+                    label="Provider-reported cost",
+                    kind=UsageResourceKind.MONEY,
+                    consumed=float(cost),
+                    unit="currency",
+                    currency="USD",
+                    source=UsageResourceSource.PROVIDER_REPORTED,
+                    authoritative=True,
+                    measurement_mode=UsageMeasurementMode.INCREMENT,
+                    provider_id=provider_id,
+                    runtime_id=runtime_id,
+                    model_id=model_ids[0] if len(model_ids) == 1 else None,
+                    observed_at=observed_at,
+                )
+            )
+        # Explicit provider resources win over equivalent compatibility fields.
+        deduplicated: dict[tuple[str | None, ...], UsageResource] = {}
+        for resource in resources:
+            deduplicated.setdefault(resource.accounting_key(), resource)
+        return tuple(deduplicated.values())
+
+    @staticmethod
+    def _merge_resources(
+        existing: tuple[UsageResource, ...],
+        observed: tuple[UsageResource, ...],
+    ) -> tuple[UsageResource, ...]:
+        merged = {item.accounting_key(): item for item in existing}
+        for item in observed:
+            merged[item.accounting_key()] = item
+        return tuple(merged.values())
 
     @staticmethod
     def _models(payload: dict[str, Any]) -> tuple[str, ...]:
@@ -458,10 +598,28 @@ class AgentRuntimeTelemetryService:
         now = self.clock()
         attribution = self._attribution(session)
         usage = self._usage_fields(event.payload)
+        event_models = tuple(
+            dict.fromkeys(
+                [
+                    *((session.model,) if session.model else ()),
+                    *self._models(event.payload),
+                ]
+            )
+        )
+        resources = self._usage_resources(
+            event.payload,
+            provider_id=provider_id,
+            runtime_id=runtime_id,
+            model_ids=event_models,
+            observed_at=now,
+            usage=usage,
+        )
         counts = self._tool_counts(event)
         outcome = self._terminal_outcome(event.event_type, event.payload)
-        has_measurement = any(value is not None for value in usage.values()) or any(
-            counts.values()
+        has_measurement = (
+            bool(resources)
+            or any(value is not None for value in usage.values())
+            or any(counts.values())
         )
         completeness = (
             RuntimeTelemetryCompleteness.PARTIAL
@@ -492,14 +650,7 @@ class AgentRuntimeTelemetryService:
                 provider_native_session_id=event.provider_native_session_id,
                 provider_native_turn_id=event.provider_native_turn_id,
                 provider_request_ids=self._request_ids(event.payload),
-                observed_model_ids=tuple(
-                    dict.fromkeys(
-                        [
-                            *((session.model,) if session.model else ()),
-                            *self._models(event.payload),
-                        ]
-                    )
-                ),
+                observed_model_ids=event_models,
                 runtime_version=self._runtime_version(event.payload),
                 context_compaction_count=(
                     1
@@ -520,6 +671,7 @@ class AgentRuntimeTelemetryService:
                     now if outcome != RuntimeTerminalOutcome.UNKNOWN else None
                 ),
                 observed_at=now,
+                resources=resources,
                 event_fingerprints=(fingerprint,),
                 **usage,
                 **counts,
@@ -575,6 +727,7 @@ class AgentRuntimeTelemetryService:
                     else existing.completed_at
                 ),
                 "observed_at": now,
+                "resources": self._merge_resources(existing.resources, resources),
                 "event_fingerprints": (
                     *existing.event_fingerprints,
                     fingerprint,

@@ -236,6 +236,12 @@ an older schema. Workload values remain canonical model registry data (not a new
 hard-coded workload catalog); request preferences do not grant authority or relax
 tenant policy.
 
+Version `1.5` adds immutable monetary provenance to invocation attempts. New
+records retain provider-reported currency and source, or the exact model version
+and pricing fingerprint used for a codex-web calculation. Migration preserves a
+legacy `actual_cost_usd` value but leaves its source and pricing revision unknown
+because `1.4` did not retain enough evidence to reconstruct them safely.
+
 ## Provider binding administration
 
 Operations' Provider Binding Management edits existing ModelGateway binding

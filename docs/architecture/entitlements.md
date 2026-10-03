@@ -108,6 +108,20 @@ The model gateway emits successful provider usage through the same canonical usa
 
 Usage idempotency is keyed by canonical model invocation ID plus metric. Model metering does not copy prompts, responses, provider credentials, or arbitrary model metadata into entitlement records. A metering sink failure does not rewrite a provider-successful model invocation; reconciliation can repair usage independently.
 
+Model invocation history distinguishes provider-reported monetary cost from a
+codex-web calculation. Provider-reported cost and currency take precedence.
+Calculated USD cost is permitted only when the exact selected model definition
+contains input and output pricing; the invocation stores the model/version and a
+fingerprint of that pricing revision and marks the result
+`codex_calculated`. Historical invocation records are immutable, so a later
+catalog or price change does not rewrite their accounting semantics.
+
+The runtime usage resource projection and the entitlement ledger have different
+jobs. Resource observations describe what a provider reports or bills, including
+unknown denominators and provider balances. Entitlement quota events enforce
+locally configured service limits atomically. A displayed provider balance does
+not grant an entitlement, and an entitlement cannot invent provider capacity.
+
 ## Privacy and governance
 
 Meter events intentionally do not contain prompt text, response text, secret values, request payloads, or provider credentials. They are quantitative attribution records.

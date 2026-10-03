@@ -5,8 +5,9 @@ import time
 import uuid
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from codex_web.agent_runtime_usage import UsageResourceSource
 from codex_web.compatibility import ContractSpec
 from codex_web.failures import FailureRecord
 from codex_web.input_plugins import InputGatedProposal, InputPluginProvenance
@@ -14,9 +15,9 @@ from codex_web.input_plugins import InputGatedProposal, InputPluginProvenance
 
 MODEL_GATEWAY_CONTRACT = ContractSpec(
     "model-gateway-state",
-    "1.4",
-    ("1.0", "1.1", "1.2", "1.3", "1.4"),
-    deprecated=("1.0", "1.1", "1.2", "1.3"),
+    "1.5",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5"),
+    deprecated=("1.0", "1.1", "1.2", "1.3", "1.4"),
 )
 
 MODEL_CLASS_LIGHTWEIGHT = "lightweight"
@@ -316,6 +317,19 @@ class ModelProviderUsage(BaseModel):
 
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cost: float | None = Field(default=None, ge=0.0)
+    currency: str | None = None
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, value: str | None) -> str | None:
+        return value.upper() if value else None
+
+    @model_validator(mode="after")
+    def validate_cost(self) -> "ModelProviderUsage":
+        if self.cost is not None and not self.currency:
+            raise ValueError("provider-reported cost requires currency")
+        return self
 
 
 class ModelProviderResult(BaseModel):
@@ -341,6 +355,10 @@ class ModelInvocationAttempt(BaseModel):
     input_tokens: int | None = None
     output_tokens: int | None = None
     actual_cost_usd: float | None = None
+    actual_cost: float | None = None
+    cost_currency: str | None = None
+    cost_source: UsageResourceSource | None = None
+    pricing_revision: str | None = None
     provider_request_id: str | None = None
     provider_stop_reason: str | None = None
     started_at: float

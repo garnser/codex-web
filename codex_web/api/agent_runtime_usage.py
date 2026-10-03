@@ -22,16 +22,24 @@ def build_agent_runtime_usage_router(
         project_id: str | None = None,
         execution_id: str | None = None,
         agent_session_id: str | None = None,
+        provider_id: str | None = None,
+        runtime_id: str | None = None,
+        model_id: str | None = None,
     ) -> dict[str, Any]:
         items = service.list(
             request_actor(request),
             project_id=project_id,
             execution_id=execution_id,
             agent_session_id=agent_session_id,
+            provider_id=provider_id,
+            runtime_id=runtime_id,
+            model_id=model_id,
         )
+        aggregates = service.aggregate_resources(items)
         return {
             "items": [item.model_dump(mode="json") for item in items],
             "count": len(items),
+            "resources": [item.model_dump(mode="json") for item in aggregates],
         }
 
     return router

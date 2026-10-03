@@ -74,6 +74,7 @@ class _FakeAdapter:
         self.capacity_models: set[str] = set()
         self.catalogs: dict[str, tuple[ModelCatalogEntry, ...]] = {}
         self.catalog_error: set[str] = set()
+        self.reported_cost: tuple[float, str] | None = None
 
     async def discover_models(self, provider, *, credential):
         if provider.id in self.catalog_error:
@@ -91,9 +92,15 @@ class _FakeAdapter:
             )
         if model.id in self.transient_models:
             raise ModelProviderTransientError("temporary provider outage")
+        reported_cost, reported_currency = self.reported_cost or (None, None)
         return ModelProviderResult(
             text=f"reply:{model.id}",
-            usage=ModelProviderUsage(input_tokens=100, output_tokens=20),
+            usage=ModelProviderUsage(
+                input_tokens=100,
+                output_tokens=20,
+                cost=reported_cost,
+                currency=reported_currency,
+            ),
             provider_request_id=f"request:{model.id}",
         )
 
@@ -227,10 +234,11 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(migrated.schema_version, MODEL_GATEWAY_CONTRACT.current)
-        self.assertEqual(MODEL_GATEWAY_CONTRACT.current, "1.4")
+        self.assertEqual(MODEL_GATEWAY_CONTRACT.current, "1.5")
         self.assertIn("1.0", MODEL_GATEWAY_CONTRACT.supported)
         self.assertIn("1.1", MODEL_GATEWAY_CONTRACT.supported)
         self.assertIn("1.2", MODEL_GATEWAY_CONTRACT.supported)
+        self.assertIn("1.4", MODEL_GATEWAY_CONTRACT.supported)
 
     async def test_discovered_catalog_fences_routing_and_records_upstream_revision(self) -> None:
         self._provider("aggregate", catalog_discovery_enabled=True, catalog_ttl_seconds=60)
@@ -307,7 +315,7 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        self.assertEqual(migrated.schema_version, "1.4")
+        self.assertEqual(migrated.schema_version, "1.5")
         self.assertEqual(migrated.models[0].workload_classes, ())
 
     @staticmethod
@@ -578,6 +586,32 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.invocation.attempts[1].outcome, "success")
         self.assertEqual(result.invocation.selected_model_id, "second")
+
+    async def test_cost_prefers_provider_report_and_records_derived_pricing_revision(self) -> None:
+        self._provider("p1")
+        self._model(
+            "priced",
+            "p1",
+            model_version="2026-10",
+            input_price_per_million_usd=10,
+            output_price_per_million_usd=20,
+        )
+
+        derived = await self.service.invoke(self._request(), actor=self.actor)
+        derived_attempt = derived.invocation.attempts[-1]
+        self.assertEqual(derived_attempt.cost_source.value, "codex_calculated")
+        self.assertEqual(derived_attempt.actual_cost, 0.0014)
+        self.assertEqual(derived_attempt.cost_currency, "USD")
+        self.assertEqual(len(derived_attempt.pricing_revision or ""), 64)
+
+        self.adapter.reported_cost = (0.75, "EUR")
+        reported = await self.service.invoke(self._request(), actor=self.actor)
+        reported_attempt = reported.invocation.attempts[-1]
+        self.assertEqual(reported_attempt.cost_source.value, "provider_reported")
+        self.assertEqual(reported_attempt.actual_cost, 0.75)
+        self.assertEqual(reported_attempt.cost_currency, "EUR")
+        self.assertIsNone(reported_attempt.actual_cost_usd)
+        self.assertIsNone(reported_attempt.pricing_revision)
 
     async def test_capacity_failure_falls_back_and_persists_provider_cooldown(self) -> None:
         self._provider("p1")
