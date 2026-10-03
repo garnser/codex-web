@@ -29,6 +29,14 @@ from codex_web.model_gateway import (
     PromptTemplateUpsert,
     TenantModelPolicyUpdate,
 )
+from codex_web.model_qualification import (
+    ModelQualificationStatus,
+    ModelQualificationUpdate,
+    ModelRoutingDefinitionCreate,
+    ModelRoutingRollback,
+    ModelRoutingRole,
+    WorkloadEvaluationProfileUpsert,
+)
 from codex_web.input_plugins import (
     InputContextBlock,
     InputPatch,
@@ -234,7 +242,7 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(migrated.schema_version, MODEL_GATEWAY_CONTRACT.current)
-        self.assertEqual(MODEL_GATEWAY_CONTRACT.current, "1.5")
+        self.assertEqual(MODEL_GATEWAY_CONTRACT.current, "1.6")
         self.assertIn("1.0", MODEL_GATEWAY_CONTRACT.supported)
         self.assertIn("1.1", MODEL_GATEWAY_CONTRACT.supported)
         self.assertIn("1.2", MODEL_GATEWAY_CONTRACT.supported)
@@ -315,7 +323,7 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        self.assertEqual(migrated.schema_version, "1.5")
+        self.assertEqual(migrated.schema_version, "1.6")
         self.assertEqual(migrated.models[0].workload_classes, ())
 
     @staticmethod
@@ -909,6 +917,237 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(ModelRoutingError):
             self.service.route(self._request(), actor=other)
+
+    async def test_qualification_matrix_routes_primary_and_independent_critic(self) -> None:
+        self._provider("p1")
+        self._provider("p2")
+        self._model("architect", "p1", workload_classes=("architecture",))
+        self._model("critic", "p2", workload_classes=("architecture",))
+        profile = self.service.upsert_evaluation_profile(
+            WorkloadEvaluationProfileUpsert(
+                workload_class="architecture",
+                metrics=("quality", "cost-per-success"),
+                minimum_quality_score=0.8,
+                maximum_cost_per_successful_outcome_usd=0.5,
+                required_suite_ids=("architecture-replay",),
+            ),
+            actor=self.actor,
+        )
+
+        def run_for(run_id, *, actor):
+            del actor
+            model_id = run_id.removeprefix("run-")
+            return types.SimpleNamespace(
+                passed=True,
+                models=(types.SimpleNamespace(model_id=model_id),),
+                suite_ids=("architecture-replay",),
+                trace=types.SimpleNamespace(quality_score=0.9, cost_usd=0.2),
+            )
+
+        self.service.evaluation_run_resolver = run_for
+        qualifications = {}
+        for model_id in ("architect", "critic"):
+            qualifications[model_id] = self.service.record_qualification(
+                ModelQualificationUpdate(
+                    model_id=model_id,
+                    workload_class="architecture",
+                    status=ModelQualificationStatus.QUALIFIED,
+                    evaluation_profile_revision=profile.revision,
+                    evaluation_run_ids=(f"run-{model_id}",),
+                    reason="recorded replay met the published gate",
+                ),
+                actor=self.actor,
+            )
+        mapping = self.service.publish_routing_definition(
+            ModelRoutingDefinitionCreate(
+                mapping_id="executive-architecture",
+                function_id="executive-advice",
+                workload_class="architecture",
+                primary_model_ids=("architect",),
+                critic_model_ids=("critic",),
+                required_capabilities=("reasoning",),
+                qualification_revision="architecture-eval-2026-10-03",
+                evaluated_at=1_900_000_000.0,
+            ),
+            actor=self.actor,
+        )
+
+        primary = self.service.route(
+            self._request(workload_class="architecture"),
+            actor=self.actor,
+        )
+        critic = self.service.route(
+            self._request(
+                workload_class="architecture",
+                routing_role=ModelRoutingRole.CRITIC,
+            ),
+            actor=self.actor,
+        )
+
+        self.assertEqual(primary.candidates[0].model_id, "architect")
+        self.assertEqual(critic.candidates[0].model_id, "critic")
+        self.assertEqual(primary.routing_definition_id, mapping.mapping_id)
+        self.assertEqual(primary.routing_definition_revision, 1)
+        self.assertEqual(
+            primary.candidates[0].qualification_revision_id,
+            qualifications["architect"].id,
+        )
+
+        restricted = self.service.record_qualification(
+            ModelQualificationUpdate(
+                model_id="architect",
+                workload_class="architecture",
+                status=ModelQualificationStatus.RESTRICTED,
+                evaluation_profile_revision=profile.revision,
+                reason="production telemetry breached the quality gate",
+            ),
+            actor=self.actor,
+        )
+        self.assertEqual(restricted.previous_revision_id, qualifications["architect"].id)
+        with self.assertRaisesRegex(ModelRoutingError, "qualification_not_active"):
+            self.service.route(
+                self._request(workload_class="architecture"),
+                actor=self.actor,
+            )
+
+    async def test_routing_definition_history_is_immutable_and_rollback_creates_revision(self) -> None:
+        self._provider("p1")
+        self._model("m1", workload_classes=("strategic",))
+        profile = self.service.upsert_evaluation_profile(
+            WorkloadEvaluationProfileUpsert(
+                workload_class="strategic",
+                minimum_quality_score=0.5,
+            ),
+            actor=self.actor,
+        )
+        self.service.evaluation_run_resolver = lambda run_id, actor: types.SimpleNamespace(
+            passed=True,
+            models=(types.SimpleNamespace(model_id="m1"),),
+            suite_ids=(),
+            trace=types.SimpleNamespace(quality_score=0.8, cost_usd=0.1),
+        )
+        self.service.record_qualification(
+            ModelQualificationUpdate(
+                model_id="m1",
+                workload_class="strategic",
+                status="qualified",
+                evaluation_profile_revision=profile.revision,
+                evaluation_run_ids=("run-1",),
+                reason="passed replay",
+            ),
+            actor=self.actor,
+        )
+        first = self.service.publish_routing_definition(
+            ModelRoutingDefinitionCreate(
+                mapping_id="strategic",
+                function_id="*",
+                workload_class="strategic",
+                primary_model_ids=("m1",),
+                qualification_revision="eval-1",
+                evaluated_at=1_900_000_000.0,
+            ),
+            actor=self.actor,
+        )
+        second = self.service.publish_routing_definition(
+            ModelRoutingDefinitionCreate(
+                mapping_id="strategic",
+                function_id="*",
+                workload_class="strategic",
+                primary_model_ids=("m1",),
+                qualification_revision="eval-2",
+                evaluated_at=1_900_000_001.0,
+            ),
+            actor=self.actor,
+        )
+        rollback = self.service.rollback_routing_definition(
+            "strategic",
+            ModelRoutingRollback(target_revision=1, reason="canary regression"),
+            actor=self.actor,
+        )
+
+        history = self.service.list_routing_definitions(self.actor)
+        self.assertEqual([item.revision for item in history], [1, 2, 3])
+        self.assertFalse(history[0].active)
+        self.assertFalse(history[1].active)
+        self.assertTrue(rollback.active)
+        self.assertEqual(rollback.qualification_revision, first.qualification_revision)
+        self.assertEqual(rollback.previous_known_good_revision_id, first.id)
+        self.assertEqual(second.previous_revision_id, first.id)
+
+    async def test_canary_and_provider_reported_cost_gates_fail_closed(self) -> None:
+        self._provider("p1")
+        self._model("m1", workload_classes=("operator",))
+        profile = self.service.upsert_evaluation_profile(
+            WorkloadEvaluationProfileUpsert(
+                workload_class="operator",
+                minimum_quality_score=0.8,
+                maximum_cost_per_successful_outcome_usd=0.25,
+                require_provider_reported_cost=True,
+                require_canary=True,
+            ),
+            actor=self.actor,
+        )
+        self.service.evaluation_run_resolver = lambda run_id, actor: types.SimpleNamespace(
+            passed=True,
+            models=(types.SimpleNamespace(model_id="m1"),),
+            suite_ids=(),
+            trace=types.SimpleNamespace(quality_score=0.9, cost_usd=0.2),
+        )
+        base = dict(
+            model_id="m1",
+            workload_class="operator",
+            evaluation_profile_revision=profile.revision,
+            evaluation_run_ids=("run-operator",),
+            reason="passed incident replay",
+        )
+        with self.assertRaisesRegex(ModelRegistryConflictError, "provider-reported"):
+            self.service.record_qualification(
+                ModelQualificationUpdate(status="qualified", **base),
+                actor=self.actor,
+            )
+        qualified = self.service.record_qualification(
+            ModelQualificationUpdate(
+                status="qualified", cost_source="provider_reported", **base
+            ),
+            actor=self.actor,
+        )
+        mapping = ModelRoutingDefinitionCreate(
+            mapping_id="operator-incidents",
+            function_id="incident.strategy",
+            workload_class="operator",
+            primary_model_ids=("m1",),
+            qualification_revision="operator-eval-1",
+            evaluated_at=1_900_000_000.0,
+        )
+        with self.assertRaisesRegex(ModelRegistryConflictError, "production-qualified"):
+            self.service.publish_routing_definition(mapping, actor=self.actor)
+        with self.assertRaisesRegex(ModelRegistryConflictError, "prior canary"):
+            self.service.record_qualification(
+                ModelQualificationUpdate(
+                    status="active", cost_source="provider_reported", **base
+                ),
+                actor=self.actor,
+            )
+        canary = self.service.record_qualification(
+            ModelQualificationUpdate(
+                status="canary", cost_source="provider_reported", **base
+            ),
+            actor=self.actor,
+        )
+        with self.assertRaisesRegex(ModelRegistryConflictError, "production-qualified"):
+            self.service.publish_routing_definition(mapping, actor=self.actor)
+        active = self.service.record_qualification(
+            ModelQualificationUpdate(
+                status="active", cost_source="provider_reported", **base
+            ),
+            actor=self.actor,
+        )
+        self.assertEqual(canary.previous_revision_id, qualified.id)
+        self.assertEqual(active.previous_revision_id, canary.id)
+        self.assertEqual(
+            self.service.publish_routing_definition(mapping, actor=self.actor).revision,
+            1,
+        )
 
     async def test_reference_openai_adapter_satisfies_provider_protocol_and_classifies_429(self) -> None:
         adapter = OpenAIModelProviderAdapter()

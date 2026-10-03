@@ -6,6 +6,14 @@ Canonical model-gateway and prompt-governance foundation.
 
 The model gateway owns provider/model identity and deterministic routing. Agent/role identity does not select provider-specific model names directly.
 
+Workload routing uses stable semantic classes and versioned qualification state.
+The dated concrete recommendation seed is a Definition Registry record; production
+eligibility is recorded in Model Gateway evaluation profiles, qualification revisions,
+and effective routing-definition revisions. Every mapped route and invocation records
+the exact mapping and qualification revision. A discovered catalog model remains
+ineligible until replay evidence satisfies the workload profile, and an independent
+critic mapping must resolve to a different provider family from its primary mapping.
+
 ## Stable model classes
 
 Core orchestration should request a stable class/capability such as:

@@ -86,6 +86,7 @@
         <small>Selected: ${referenceLink("model_provider", item.selected_provider_id)} / ${referenceLink("model", item.selected_model_id)} · ${escapeHtml(item.selected_concrete_model || "none")}${item.selected_model_version ? ` @ ${escapeHtml(item.selected_model_version)}` : ""}</small>
         <small>Template: ${escapeHtml(item.prompt_template_id)} @ ${escapeHtml(item.prompt_template_version)} · checksum ${escapeHtml(item.prompt_template_checksum_sha256)}</small>
         <small>Route reason: ${escapeHtml(item.route_reason)} · Policy fingerprint: ${escapeHtml(item.policy_fingerprint_sha256)}</small>
+        <small>Routing definition: ${escapeHtml(item.routing_definition_id || "legacy class routing")} @ ${escapeHtml(item.routing_definition_revision ?? "n/a")} · role ${escapeHtml(item.routing_role || "primary")} · qualification ${escapeHtml(item.qualification_revision || "not mapped")}</small>
         <small>Catalog: ${escapeHtml(item.selected_catalog_revision || "static")} · discovered ${timeText(item.selected_catalog_discovered_at)} · upstream ${escapeHtml(item.selected_upstream_provider_id || "unknown")} / ${escapeHtml(item.selected_upstream_model_id || "unknown")}</small>
         <small>Override: ${escapeHtml(item.pinned_model_id || "automatic")} · Preferred latency: ${listText(item.preferred_latency_classes)} · Prefer lower cost: ${item.prefer_lower_cost ? "yes" : "no"}</small>
         <small>Capabilities: ${listText(item.required_capabilities)} · Residency: ${listText(item.required_residency_tags)} · Compliance: ${listText(item.required_compliance_tags)} · Max cost: ${item.max_cost_usd == null ? "none" : `$${escapeHtml(item.max_cost_usd)}`}</small>
@@ -131,11 +132,13 @@
       <strong>Deterministic route · ${escapeHtml(result.model_class)} · ${escapeHtml(result.workload_class || "unspecified workload")}</strong>
       <small>Template: ${escapeHtml(result.prompt_template_id)} @ ${escapeHtml(result.prompt_template_version)} · checksum ${escapeHtml(result.prompt_template_checksum_sha256)}</small>
       <small>Policy attempts: ${escapeHtml(result.policy_max_attempts)} · fingerprint ${escapeHtml(result.policy_fingerprint_sha256)}</small>
+      <small>Routing definition: ${escapeHtml(result.routing_definition_id || "legacy class routing")} @ ${escapeHtml(result.routing_definition_revision ?? "n/a")} · role ${escapeHtml(result.routing_role || "primary")} · qualification ${escapeHtml(result.qualification_revision || "not mapped")}</small>
       <small>Effective residency: ${listText(result.effective_required_residency_tags)} · compliance: ${listText(result.effective_required_compliance_tags)} · max cost: ${result.effective_max_cost_usd == null ? "none" : `$${escapeHtml(result.effective_max_cost_usd)}`}</small>
       <small>Override: ${escapeHtml(result.pinned_model_id || "automatic")} · Preferred latency: ${listText(result.preferred_latency_classes)} · Prefer lower cost: ${result.prefer_lower_cost ? "yes" : "no"}</small>
       ${(result.candidates || []).map((candidate, index) => `<div class="comm-entry">
         <strong>#${index + 1} ${escapeHtml(candidate.provider_id)} / ${escapeHtml(candidate.model_id)}</strong>
         <small>${escapeHtml(candidate.concrete_model)}${candidate.model_version ? ` @ ${escapeHtml(candidate.model_version)}` : ""} · ${escapeHtml(candidate.routing_reason)}</small>
+        <small>Qualification revision: ${escapeHtml(candidate.qualification_revision_id || "not mapped")}</small>
         <small>Catalog: ${escapeHtml(candidate.catalog_revision || "static")} · upstream ${escapeHtml(candidate.upstream_provider_id || "unknown")} / ${escapeHtml(candidate.upstream_model_id || "unknown")}</small>
         <small>Estimated input: ${escapeHtml(candidate.estimated_input_tokens)} · max output: ${escapeHtml(candidate.max_output_tokens)} · upper cost: ${candidate.estimated_upper_cost_usd == null ? "unknown" : `$${escapeHtml(candidate.estimated_upper_cost_usd)}`}</small>
       </div>`).join("")}
@@ -172,6 +175,7 @@
           max_cost_usd: maxCostValue ? Number(maxCostValue) : null,
           allow_fallback: Boolean(document.getElementById("model-route-fallback")?.checked),
           purpose: "ui.route-preview",
+          routing_role: document.getElementById("model-route-role")?.value || "primary",
         }),
       });
       renderRoutePreview(result);

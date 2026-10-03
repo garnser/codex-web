@@ -104,6 +104,31 @@ MODEL_GATEWAY_MIGRATIONS.register(
     },
 )
 MODEL_GATEWAY_MIGRATIONS.register(
+    "1.5",
+    "1.6",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.6",
+        "evaluation_profiles": list(payload.get("evaluation_profiles", [])),
+        "qualifications": list(payload.get("qualifications", [])),
+        "routing_definitions": list(payload.get("routing_definitions", [])),
+        "invocations": [
+            {
+                **dict(item),
+                "routing_role": dict(item).get("routing_role", "primary"),
+                "routing_definition_id": dict(item).get("routing_definition_id"),
+                "routing_definition_revision": dict(item).get(
+                    "routing_definition_revision"
+                ),
+                "qualification_revision": dict(item).get(
+                    "qualification_revision"
+                ),
+            }
+            for item in payload.get("invocations", [])
+        ],
+    },
+)
+MODEL_GATEWAY_MIGRATIONS.register(
     "1.0",
     "1.1",
     lambda payload: {

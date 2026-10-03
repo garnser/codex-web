@@ -169,6 +169,7 @@ from codex_web.agent_providers import AgentProviderHealth, AgentProviderUpsert
 from codex_web.services.agent_routing import AgentRoutingService
 from codex_web.services.agent_routing_configuration import install_agent_routing_configuration
 from codex_web.services.agent_routing_definitions import install_agent_routing_definitions
+from codex_web.services.model_routing_baseline import install_model_routing_baseline
 from codex_web.services.agent_runtime import AgentRuntimeRegistry, AgentSessionService
 from codex_web.services.agent_runtime_telemetry import AgentRuntimeTelemetryService
 from codex_web.services.agent_session_trace import AgentSessionTraceService
@@ -797,6 +798,9 @@ executive_role_definition_service = install_executive_role_definitions(
 agent_routing_definition_service = install_agent_routing_definitions(
     definition_registry_service
 )
+model_routing_baseline_service = install_model_routing_baseline(
+    definition_registry_service
+)
 input_pipeline_definition_service = install_input_plugin_definitions(
     definition_registry_service
 )
@@ -805,6 +809,7 @@ app.state.execution_role_definition_service = execution_role_definition_service
 app.state.execution_profile_definition_service = execution_profile_definition_service
 app.state.executive_role_definition_service = executive_role_definition_service
 app.state.agent_routing_definition_service = agent_routing_definition_service
+app.state.model_routing_baseline_service = model_routing_baseline_service
 app.state.input_pipeline_definition_service = input_pipeline_definition_service
 app.include_router(build_input_plugins_router(input_pipeline_definition_service))
 core._execution_role_definition_service = execution_role_definition_service
@@ -939,6 +944,10 @@ model_gateway_service = ModelGatewayService(
     entitlements=entitlement_service,
     input_pipeline_resolver=input_pipeline_definition_service.pipeline_for,
     provider_capacity=provider_capacity_service,
+    routing_baseline_resolver=lambda actor: model_routing_baseline_service.resolve(
+        organization_id=actor.organization_id,
+        workspace_id=actor.workspace_id,
+    ),
 )
 model_gateway_service.register_adapter(OpenAIModelProviderAdapter())
 model_gateway_service.register_adapter(AnthropicModelProviderAdapter())
@@ -1472,6 +1481,7 @@ evaluation_service = EvaluationService(
     definition_registry_service,
     artifact_evidence=artifact_evidence_service,
 )
+model_gateway_service.evaluation_run_resolver = evaluation_service.get_run
 app.state.evaluation_store = evaluation_store
 app.state.evaluation_service = evaluation_service
 app.include_router(build_evaluations_router(evaluation_service))

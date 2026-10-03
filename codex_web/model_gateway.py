@@ -11,13 +11,19 @@ from codex_web.agent_runtime_usage import UsageResourceSource
 from codex_web.compatibility import ContractSpec
 from codex_web.failures import FailureRecord
 from codex_web.input_plugins import InputGatedProposal, InputPluginProvenance
+from codex_web.model_qualification import (
+    ModelQualificationRevision,
+    ModelRoutingDefinitionRevision,
+    ModelRoutingRole,
+    WorkloadEvaluationProfile,
+)
 
 
 MODEL_GATEWAY_CONTRACT = ContractSpec(
     "model-gateway-state",
-    "1.5",
-    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5"),
-    deprecated=("1.0", "1.1", "1.2", "1.3", "1.4"),
+    "1.6",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6"),
+    deprecated=("1.0", "1.1", "1.2", "1.3", "1.4", "1.5"),
 )
 
 MODEL_CLASS_LIGHTWEIGHT = "lightweight"
@@ -261,6 +267,7 @@ class ModelInvocationRequest(BaseModel):
     decision_id: str | None = None
     execution_id: str | None = None
     purpose: str = Field(default="general", min_length=1)
+    routing_role: ModelRoutingRole = ModelRoutingRole.PRIMARY
 
     @model_validator(mode="after")
     def normalize_task_preferences(self) -> "ModelInvocationRequest":
@@ -291,6 +298,7 @@ class ModelRouteCandidate(BaseModel):
     max_output_tokens: int
     estimated_upper_cost_usd: float | None = None
     routing_reason: str
+    qualification_revision_id: str | None = None
 
 
 class ModelRouteResult(BaseModel):
@@ -310,6 +318,10 @@ class ModelRouteResult(BaseModel):
     effective_required_residency_tags: tuple[str, ...] = ()
     effective_required_compliance_tags: tuple[str, ...] = ()
     effective_max_cost_usd: float | None = None
+    routing_role: ModelRoutingRole = ModelRoutingRole.PRIMARY
+    routing_definition_id: str | None = None
+    routing_definition_revision: int | None = None
+    qualification_revision: str | None = None
 
 
 class ModelProviderUsage(BaseModel):
@@ -380,6 +392,7 @@ class ModelInvocationRecord(BaseModel):
     preferred_latency_classes: tuple[ModelLatencyClass, ...] = ()
     prefer_lower_cost: bool = False
     purpose: str
+    routing_role: ModelRoutingRole = ModelRoutingRole.PRIMARY
     prompt_template_id: str
     prompt_template_version: str
     prompt_template_checksum_sha256: str
@@ -392,6 +405,9 @@ class ModelInvocationRecord(BaseModel):
     max_cost_usd: float | None = None
     policy_fingerprint_sha256: str
     route_reason: str
+    routing_definition_id: str | None = None
+    routing_definition_revision: int | None = None
+    qualification_revision: str | None = None
     work_item_ref: str | None = None
     goal_id: str | None = None
     decision_id: str | None = None
@@ -449,3 +465,6 @@ class ModelGatewayState(BaseModel):
     prompt_templates: list[PromptTemplateRecord] = Field(default_factory=list)
     policies: list[TenantModelPolicy] = Field(default_factory=list)
     invocations: list[ModelInvocationRecord] = Field(default_factory=list)
+    evaluation_profiles: list[WorkloadEvaluationProfile] = Field(default_factory=list)
+    qualifications: list[ModelQualificationRevision] = Field(default_factory=list)
+    routing_definitions: list[ModelRoutingDefinitionRevision] = Field(default_factory=list)
