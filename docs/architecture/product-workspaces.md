@@ -434,3 +434,11 @@ page-memory dirty-state contract. Refresh defers while selections are unsaved;
 explicit discard restores their baseline. Saves retain failed input and acknowledge
 only submitted selections, so a late success cannot erase newer edits. Only reference
 IDs enter these forms; no secret material or browser draft storage is introduced.
+
+Identity administration forms track organization/workspace, principal, membership
+and token-request metadata independently. Refresh preserves unsaved forms; changing
+one form's tenant selector cannot rewrite another form's selection. Discard restores
+dependent option catalogs and their saved selections. Late successful mutations
+acknowledge their submitted metadata only and are fenced by the initiating Project;
+a late one-time token response cannot appear after that Project changes. Raw token
+results are not part of editor snapshots or browser persistence.

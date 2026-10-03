@@ -228,3 +228,88 @@ test('readiness remediation opens canonical configuration, Secrets and TaskSourc
   expect(await page.evaluate(() => remediationDestinations.map(item => item.workspace))).toEqual(['settings', 'secrets', 'work']);
   expect(await page.evaluate(() => location.hash)).not.toContain('setup/route');
 });
+
+async function openManifest(page, query = '') {
+  await page.goto(`http://127.0.0.1:18766/tests/browser/project_setup_ui_fixture.html${query}`);
+  await page.locator('#project-setup-launch').click();
+  const dialog = page.locator('#project-setup-dialog');
+  await dialog.locator('[data-setup-tab="plan"]').click();
+  await dialog.locator('.project-setup-manifest-panel summary').click();
+  return dialog;
+}
+
+test('invalid setup drafts survive validation and readiness refresh; Back and reset require discard', async ({ page }) => {
+  const dialog = await openManifest(page);
+  const input = dialog.locator('[data-project-setup-manifest]');
+  const initial = await input.inputValue();
+  await input.fill('{ unfinished desired topology');
+  await dialog.locator('[data-setup-plan]').click();
+  await expect(dialog.locator('.project-setup-error')).toContainText('normalized JSON');
+  await expect(input).toHaveValue('{ unfinished desired topology');
+  await page.evaluate(() => window.CodexProjectSetup.refresh());
+  await expect(input).toHaveValue('{ unfinished desired topology');
+  await expect(dialog.locator('[data-dirty-editor-status]')).toHaveText('Unsaved changes');
+  page.once('dialog', value => value.dismiss());
+  await dialog.locator('[data-project-setup-close]').click();
+  await expect(dialog).toBeVisible();
+  page.once('dialog', value => value.dismiss());
+  await dialog.locator('[data-setup-reset]').click();
+  await expect(input).toHaveValue('{ unfinished desired topology');
+  page.once('dialog', value => value.accept());
+  await dialog.locator('[data-setup-reset]').click();
+  await expect(input).toHaveValue(initial);
+  await expect(dialog.locator('[data-dirty-editor-status]')).toHaveText('No unsaved changes');
+  expect(await page.evaluate(() => `${JSON.stringify(localStorage)} ${JSON.stringify(sessionStorage)}`)).not.toContain('unfinished desired topology');
+});
+
+test('failed setup apply retains the edited normalized manifest', async ({ page }) => {
+  const dialog = await openManifest(page, '?failApply=1');
+  const input = dialog.locator('[data-project-setup-manifest]');
+  const manifest = JSON.parse(await input.inputValue()); manifest.project.name = 'Unsaved setup revision';
+  const raw = JSON.stringify(manifest);
+  await input.fill(raw);
+  await dialog.locator('[data-setup-plan]').click();
+  await expect(dialog.locator('.project-setup-plan-summary')).toContainText('bootstrap-plan-1');
+  await dialog.locator('[data-setup-apply]').click();
+  await expect(dialog.locator('[data-setup-action-feedback]')).toContainText('worker stopped during apply');
+  await expect(input).toHaveValue(raw);
+  await expect(dialog.locator('[data-dirty-editor-status]')).toHaveText('Unsaved changes');
+});
+
+test('late setup plan and apply preserve newer typing and acknowledge only submitted inputs', async ({ page }) => {
+  const dialog = await openManifest(page);
+  const input = dialog.locator('[data-project-setup-manifest]');
+  const manifest = JSON.parse(await input.inputValue()); manifest.project.name = 'Reviewed setup';
+  await input.fill(JSON.stringify(manifest));
+  await page.evaluate(() => {
+    const original = window.fetch;
+    window.setupHold = { kind: 'plan', pending: false };
+    window.fetch = async (url, options) => {
+      if (String(url).endsWith(`/bootstrap/${window.setupHold.kind}`)) {
+        window.setupHold.pending = true;
+        await new Promise(resolve => { window.setupHold.release = resolve; });
+      }
+      return original(url, options);
+    };
+  });
+  await dialog.locator('[data-setup-plan]').click();
+  await expect.poll(() => page.evaluate(() => window.setupHold.pending)).toBe(true);
+  manifest.project.name = 'Newer than plan'; const newer = JSON.stringify(manifest);
+  await input.fill(newer);
+  await page.evaluate(() => window.setupHold.release());
+  await expect(dialog.locator('.project-setup-plan-summary')).toContainText('bootstrap-plan-1');
+  await expect(input).toHaveValue(newer);
+  await page.evaluate(() => { window.setupHold.kind = ''; window.setupHold.pending = false; });
+  await dialog.locator('[data-setup-plan]').click();
+  await expect.poll(() => page.evaluate(() => window.fixture.calls.filter(item => item.path.endsWith('/bootstrap/plan')).length)).toBe(2);
+  await page.evaluate(() => { window.setupHold.kind = 'apply'; });
+  await dialog.locator('[data-setup-apply]').click();
+  await expect.poll(() => page.evaluate(() => window.setupHold.pending)).toBe(true);
+  manifest.project.name = 'Newer than apply'; const latest = JSON.stringify(manifest);
+  await input.fill(latest);
+  await page.evaluate(() => window.setupHold.release());
+  await expect(dialog.locator('[data-setup-action-feedback]')).toContainText('Project setup completed');
+  await dialog.locator('[data-setup-tab="plan"]').click();
+  await expect(input).toHaveValue(latest);
+  await expect(dialog.locator('[data-dirty-editor-status]')).toHaveText('Unsaved changes');
+});

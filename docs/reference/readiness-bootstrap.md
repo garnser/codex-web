@@ -69,3 +69,11 @@ Optional operator switches include `--migrate-legacy`, `--approve-authority-chan
 There is no separate resume flag. An interrupted apply is resumed by rerunning the same reviewed apply; stale plans require a new review.
 
 See [Project bootstrap](../operations/project-bootstrap.md) for procedure-level guidance.
+
+The manifest editor tracks unsaved changes in page memory. Planning, failed
+validation/apply and same-Project readiness refresh preserve its raw text, including
+invalid JSON being edited. Back and Reset from Project require explicit discard;
+global navigation uses the shared unsaved-edit guard. An accepted apply acknowledges
+only the submitted text, retaining newer edits as unsaved. Project changes clear the
+previous Project draft after the shell's navigation decision. Browser storage does
+not retain manifests or credential-shaped input.

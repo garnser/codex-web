@@ -1,3 +1,4 @@
+import { preserveSetupEditor, mountSetupEditor, discardSetupEditor, setupSubmission } from './project_setup_editor_state.js';
 import { actionFeedback } from "./workspace_components.js";
 import { trackUx } from "./ux_telemetry.js";
 import { showPageEditor } from './page_editor.js';
@@ -109,6 +110,7 @@ function operationHtml(op) {
 function render() {
   const body = document.querySelector("[data-project-setup-body]");
   if (!body) return;
+  preserveSetupEditor(state.projectId);
   const checks = Array.isArray(state.readiness?.checks) ? [...state.readiness.checks] : [];
   const order = { blocked: 0, warning: 1, ready: 2, not_applicable: 3 };
   checks.sort((a,b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
@@ -143,14 +145,12 @@ function render() {
     '<section data-setup-panel="bootstrap" hidden>' + (latest ? '<div class="project-setup-bootstrap-meta"><div><span>Execution</span><code>' + esc(latest.id) + '</code></div><div><span>Plan</span><code>' + esc(latest.plan_id || latest.plan?.id || "") + '</code></div><div><span>Status</span>' + badge(latest.status) + '</div></div><div class="project-setup-operations">' + latestOps.map(operationHtml).join("") + '</div>' : '<div class="project-setup-empty">No durable ProjectBootstrap execution is recorded.</div>') + '</section>' +
     '<section data-setup-panel="plan" hidden><div class="project-setup-toolbar"><button type="button" class="ghost-button" data-setup-preflight>Run preflight</button><button type="button" class="ghost-button" data-setup-plan>Build plan</button><label><input type="checkbox" data-setup-approve> Approve material authority changes</label><button type="button" class="primary-button" data-setup-apply ' + (!plan || state.plan?.blocked || state.applying ? "disabled" : "") + '>' + (state.applying ? "Applying…" : "Apply reviewed plan") + '</button></div>' +
     (plan ? '<div class="project-setup-plan-summary"><code>' + esc(plan.id) + '</code></div><div class="project-setup-operations">' + planOps.map(operationHtml).join("") + '</div>' : '<div class="project-setup-empty">Build a deterministic plan before applying changes.</div>') +
-    '<details class="project-setup-manifest-panel"><summary>Advanced: normalized desired state</summary><p>References only. Never place raw credentials here.</p><textarea data-project-setup-manifest rows="16" spellcheck="false"></textarea><button type="button" class="ghost-button" data-setup-reset>Reset from Project</button></details></section>';
+    '<details class="project-setup-manifest-panel"><summary>Advanced: normalized desired state</summary><p>References only. Never place raw credentials here.</p><textarea aria-label="Project bootstrap manifest" data-project-setup-manifest rows="16" spellcheck="false"></textarea><button type="button" class="ghost-button" data-setup-reset>Reset from Project</button></details></section>';
   if (state.actionState) {
     body.querySelector("[data-setup-action-feedback]").replaceChildren(actionFeedback(state.actionState));
   }
-  const textarea = body.querySelector("[data-project-setup-manifest]");
-  if (textarea && (state.plan?.reviewedManifest || inferredManifest())) {
-    textarea.value = JSON.stringify(state.plan?.reviewedManifest || inferredManifest(), null, 2);
-  }
+  const activePanel = mountSetupEditor(body, JSON.stringify(state.plan?.reviewedManifest || inferredManifest(), null, 2) || '');
+  if (activePanel) setPanel(activePanel);
   for (const selector of ['[data-setup-preflight]', '[data-setup-plan]', '[data-setup-fresh]']) {
     const button = body.querySelector(selector);
     if (button) button.disabled = loading || !state.project;
@@ -195,6 +195,7 @@ async function applyPlan() {
     render(); setPanel('plan');
     return;
   }
+  const submission = setupSubmission();
   const telemetryStartedAt = performance.now();
   void trackUx("workflow_started", { workflow: "project_setup", step: "apply_plan" });
   state.applying = true;
@@ -205,6 +206,7 @@ async function applyPlan() {
     render();
     await api("/api/projects/" + encodeURIComponent(context.projectId) + "/bootstrap/apply", { method: "POST", body: JSON.stringify(payload) });
     if (!context.current()) return;
+    submission.saved();
     state.plan = null;
     await refresh();
     if (!context.current()) return;
@@ -248,7 +250,10 @@ function wire(body) {
   body.querySelector("[data-setup-preflight]")?.addEventListener("click", () => planning("preflight"));
   body.querySelector("[data-setup-plan]")?.addEventListener("click", () => planning("plan"));
   body.querySelector("[data-setup-apply]")?.addEventListener("click", applyPlan);
-  body.querySelector("[data-setup-reset]")?.addEventListener("click", () => { const textarea = body.querySelector("[data-project-setup-manifest]"); if (textarea) textarea.value = JSON.stringify(inferredManifest(), null, 2); });
+  body.querySelector("[data-setup-reset]")?.addEventListener("click", () => {
+    if (!discardSetupEditor(JSON.stringify(inferredManifest(), null, 2))) return;
+    state.plan = null; render(); setPanel("plan");
+  });
   body.querySelector("[data-setup-fresh]")?.addEventListener("click", async () => {
     const context = projectContext();
     if (!context.current() || loading || !state.project) return;
@@ -330,7 +335,8 @@ function build() {
     dialog.id = "project-setup-dialog"; dialog.className = "project-setup-dialog";
     dialog.innerHTML = '<div class="project-setup-shell"><header class="project-setup-header"><div><small>Project lifecycle</small><h2>Setup, migration & readiness</h2><p>Canonical readiness and deterministic remediation.</p></div><button type="button" class="icon-button" data-project-setup-close>×</button></header><div class="project-setup-body" data-project-setup-body></div></div>';
     document.body.appendChild(dialog);
-    dialog.querySelector("[data-project-setup-close]").addEventListener("click", () => dialog.close());
+    dialog.querySelector("[data-project-setup-close]").addEventListener("click", () => { if (discardSetupEditor()) dialog.close(); });
+    dialog.addEventListener("cancel", event => { if (!discardSetupEditor()) event.preventDefault(); });
   }
   const grid = document.querySelector("#developer-panel .developer-grid");
   if (grid && !document.getElementById("project-setup-workspace-card")) {
