@@ -45,8 +45,8 @@
 
       <details class="token-footer">
         <summary class="section-title">
-          <span>Token Utilization</span>
-          <button aria-label="Refresh token usage" id="refresh-token-usage" class="icon-button" type="button" title="Refresh token usage">↻</button>
+          <span>Usage &amp; capacity</span>
+          <button aria-label="Refresh usage" id="refresh-token-usage" class="icon-button" type="button" title="Refresh usage">↻</button>
         </summary>
         <div class="token-panel">
           <div class="token-row">
@@ -74,28 +74,7 @@
               <strong id="token-output">--</strong>
             </div>
           </div>
-          <div class="limit-grid">
-            <div class="limit-card">
-              <div class="token-row">
-                <span>5 hour limit</span>
-                <strong id="token-limit-5h">--</strong>
-              </div>
-              <div class="token-meter limit-meter" aria-hidden="true">
-                <span id="token-limit-5h-fill"></span>
-              </div>
-              <small id="token-limit-5h-reset">Rate limit unavailable</small>
-            </div>
-            <div class="limit-card">
-              <div class="token-row">
-                <span>Weekly limit</span>
-                <strong id="token-limit-weekly">--</strong>
-              </div>
-              <div class="token-meter limit-meter" aria-hidden="true">
-                <span id="token-limit-weekly-fill"></span>
-              </div>
-              <small id="token-limit-weekly-reset">Rate limit unavailable</small>
-            </div>
-          </div>
+          <div id="usage-resources" class="limit-grid" aria-live="polite"></div>
         </div>
       </details>
     </aside>

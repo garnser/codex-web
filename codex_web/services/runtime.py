@@ -9,6 +9,12 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from codex_web.agent_runtime_usage import (
+    UsageMeasurementMode,
+    UsageResource,
+    UsageResourceKind,
+    UsageResourceSource,
+)
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
 
 
@@ -535,8 +541,67 @@ class RuntimeService:
             },
         }
 
+    @staticmethod
+    def _rate_limit_resources(payload: Any) -> list[UsageResource]:
+        if not isinstance(payload, dict):
+            return []
+        snapshot: Any = payload.get("rateLimitsByLimitId")
+        if isinstance(snapshot, dict):
+            snapshot = snapshot.get("codex") or next(iter(snapshot.values()), None)
+        if not isinstance(snapshot, dict):
+            snapshot = payload.get("rateLimits") or payload.get("rate_limits") or payload
+        if not isinstance(snapshot, dict):
+            return []
+        limit_id = str(snapshot.get("limitId") or snapshot.get("limit_id") or "codex")
+        resources: list[UsageResource] = []
+        for name, default_label in (("primary", "Primary rate limit"), ("secondary", "Secondary rate limit")):
+            window = snapshot.get(name)
+            if not isinstance(window, dict):
+                continue
+            used = window.get("usedPercent", window.get("used_percent"))
+            if isinstance(used, bool):
+                continue
+            try:
+                consumed = float(used)
+            except (TypeError, ValueError):
+                continue
+            duration = window.get("windowDurationMins", window.get("window_minutes"))
+            reset_at = window.get("resetsAt", window.get("resets_at"))
+            label = default_label
+            if isinstance(duration, (int, float)) and duration > 0:
+                if duration % 10080 == 0:
+                    label = "Weekly rate limit"
+                elif duration % 60 == 0:
+                    label = f"{duration / 60:g} hour rate limit"
+                else:
+                    label = f"{duration:g} minute rate limit"
+            resources.append(
+                UsageResource(
+                    resource_id=f"{limit_id}:{name}",
+                    label=label,
+                    kind=UsageResourceKind.RATE_LIMIT,
+                    consumed=max(0.0, consumed),
+                    limit=100.0,
+                    remaining=max(0.0, 100.0 - consumed),
+                    unit="percent",
+                    period=(f"{duration:g} minutes" if isinstance(duration, (int, float)) else None),
+                    reset_at=float(reset_at) if isinstance(reset_at, (int, float)) else None,
+                    source=UsageResourceSource.PROVIDER_REPORTED,
+                    authoritative=True,
+                    measurement_mode=UsageMeasurementMode.SNAPSHOT,
+                    provider_id="openai",
+                    runtime_id="codex",
+                )
+            )
+        return resources
+
     async def rate_limits(self) -> dict[str, Any]:
-        return await self.codex.request("account/rateLimits/read")
+        raw = await self.codex.request("account/rateLimits/read")
+        result = dict(raw) if isinstance(raw, dict) else {"provider_payload": raw}
+        result["usage_resources"] = [
+            item.model_dump(mode="json") for item in self._rate_limit_resources(raw)
+        ]
+        return result
 
     async def models(
         self,

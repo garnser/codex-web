@@ -320,6 +320,51 @@ class AgentRuntimeTelemetryTests(unittest.TestCase):
         self.assertIsNone(record.input_tokens)
         self.assertIsNone(record.cost_usd)
 
+    def test_provider_resource_payload_preserves_balance_and_quota_semantics(self) -> None:
+        record = self.service.observe_event(
+            "anthropic",
+            "claude-code",
+            AgentRuntimeEvent(
+                event_type="usage/updated",
+                provider_native_session_id="native-session-1",
+                provider_native_turn_id="turn-resources",
+                payload={
+                    "usage_resources": [
+                        {
+                            "resource_id": "balance",
+                            "label": "Mammouth balance",
+                            "kind": "money",
+                            "remaining": 10.38,
+                            "unit": "currency",
+                            "currency": "eur",
+                            "account_id": "account-7",
+                            "source": "provider_reported",
+                            "authoritative": True,
+                        },
+                        {
+                            "resource_id": "requests",
+                            "label": "Request allowance",
+                            "kind": "request_quota",
+                            "consumed": 72,
+                            "limit": 100,
+                            "unit": "requests",
+                            "reset_at": 2000,
+                            "source": "provider_reported",
+                            "authoritative": True,
+                        },
+                    ]
+                },
+            ),
+        )
+
+        assert record is not None
+        self.assertEqual(len(record.resources), 2)
+        balance, quota = record.resources
+        self.assertEqual((balance.remaining, balance.currency), (10.38, "EUR"))
+        self.assertIsNone(balance.utilization_percent)
+        self.assertEqual(quota.utilization_percent, 72)
+        self.assertEqual(quota.reset_at, 2000)
+
     def test_ambiguous_provider_native_session_id_is_never_used_as_canonical_identity(self) -> None:
         self.session_service.adopt(
             provider_id="anthropic",

@@ -12,8 +12,8 @@ from codex_web.compatibility import ContractSpec
 
 AGENT_RUNTIME_USAGE_STATE_CONTRACT = ContractSpec(
     "agent-runtime-usage-state",
-    "1.0",
-    ("1.0",),
+    "1.1",
+    ("1.0", "1.1"),
 )
 
 
@@ -28,6 +28,110 @@ class RuntimeTerminalOutcome(StrEnum):
     FAILED = "failed"
     INTERRUPTED = "interrupted"
     UNKNOWN = "unknown"
+
+
+class UsageResourceKind(StrEnum):
+    TOKEN_USAGE = "token_usage"
+    TOKEN_QUOTA = "token_quota"
+    MONEY = "money"
+    REQUEST_QUOTA = "request_quota"
+    RATE_LIMIT = "rate_limit"
+    COMPUTE = "compute"
+    OTHER = "other"
+
+
+class UsageResourceSource(StrEnum):
+    PROVIDER_REPORTED = "provider_reported"
+    CODEX_CALCULATED = "codex_calculated"
+
+
+class UsageMeasurementMode(StrEnum):
+    """Whether observations add usage or replace a point-in-time snapshot."""
+
+    INCREMENT = "increment"
+    SNAPSHOT = "snapshot"
+
+
+class UsageResource(BaseModel):
+    """Provider-neutral usage, balance, budget, or quota observation.
+
+    A missing limit is meaningful: callers must present the absolute value and
+    must not invent a percentage. Scope and provenance are copied into every
+    observation so historical records keep their original accounting meaning.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    resource_id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    kind: UsageResourceKind
+    consumed: float | None = Field(default=None, ge=0.0)
+    limit: float | None = Field(default=None, ge=0.0)
+    remaining: float | None = Field(default=None, ge=0.0)
+    unit: str = Field(min_length=1)
+    currency: str | None = None
+    period: str | None = None
+    period_started_at: float | None = None
+    reset_at: float | None = None
+    source: UsageResourceSource
+    authoritative: bool = False
+    measurement_mode: UsageMeasurementMode = UsageMeasurementMode.SNAPSHOT
+    provider_id: str = Field(min_length=1)
+    runtime_id: str = Field(min_length=1)
+    account_id: str | None = None
+    model_id: str | None = None
+    model_version: str | None = None
+    pricing_revision: str | None = None
+    observed_at: float = Field(default_factory=time.time)
+    freshness_seconds: float | None = Field(default=None, ge=0.0)
+
+    @model_validator(mode="after")
+    def validate_semantics(self) -> "UsageResource":
+        self.unit = self.unit.casefold()
+        if self.kind == UsageResourceKind.MONEY:
+            if not self.currency:
+                raise ValueError("money usage requires a currency")
+            self.currency = self.currency.upper()
+        elif self.currency is not None:
+            raise ValueError("currency is only valid for money usage")
+        if self.consumed is None and self.limit is None and self.remaining is None:
+            raise ValueError("usage resource requires a measured value")
+        if self.source == UsageResourceSource.CODEX_CALCULATED:
+            if self.kind == UsageResourceKind.MONEY and not (
+                self.model_id and self.pricing_revision
+            ):
+                raise ValueError(
+                    "calculated money usage requires model and pricing revisions"
+                )
+            self.authoritative = False
+        return self
+
+    @property
+    def utilization_percent(self) -> float | None:
+        if (
+            not self.authoritative
+            or self.limit is None
+            or self.limit <= 0
+            or self.consumed is None
+        ):
+            return None
+        return min(100.0, max(0.0, self.consumed / self.limit * 100.0))
+
+    def accounting_key(self) -> tuple[str | None, ...]:
+        return (
+            self.provider_id,
+            self.account_id,
+            self.runtime_id,
+            self.model_id,
+            self.model_version,
+            self.resource_id,
+            self.kind.value,
+            self.unit,
+            self.currency,
+            self.period,
+            str(self.period_started_at),
+            str(self.reset_at),
+        )
 
 
 class AgentRuntimeUsage(BaseModel):
@@ -69,6 +173,7 @@ class AgentRuntimeUsage(BaseModel):
     total_tokens: int | None = Field(default=None, ge=0)
     cost_usd: float | None = Field(default=None, ge=0.0)
     runtime_duration_seconds: float | None = Field(default=None, ge=0.0)
+    resources: tuple[UsageResource, ...] = ()
 
     tool_call_count: int = Field(default=0, ge=0)
     shell_command_count: int = Field(default=0, ge=0)

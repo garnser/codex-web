@@ -119,6 +119,51 @@ test('CLI reply completed while inactive is restored from canonical Thread histo
   );
 });
 
+test('usage panel renders provider resources and only meters authoritative denominators', async ({ page }) => {
+  await mockChatApi(page);
+  await page.route('**/api/account/rate-limits', route => route.fulfill({ json: {
+    usage_resources: [{
+      resource_id: 'codex:primary', label: '5 hour rate limit', kind: 'rate_limit',
+      consumed: 64, limit: 100, remaining: 36, unit: 'percent', currency: null,
+      source: 'provider_reported', authoritative: true, measurement_mode: 'snapshot',
+      provider_id: 'openai', runtime_id: 'codex', reset_at: 2000000000,
+    }],
+  } }));
+  await page.route('**/api/agent-runtime-usage?*', route => route.fulfill({ json: {
+    items: [], count: 0, resources: [
+      {
+        resource_id: 'budget', label: 'Monthly spend', kind: 'money',
+        consumed: 14.62, limit: 25, remaining: 10.38, unit: 'currency', currency: 'USD',
+        source: 'provider_reported', authoritative: true, measurement_mode: 'snapshot',
+        provider_id: 'mammouth', runtime_id: 'mammouth-code', model_id: 'large',
+      },
+      {
+        resource_id: 'tokens', label: 'Usage this period', kind: 'token_usage',
+        consumed: 184230, limit: null, remaining: null, unit: 'tokens', currency: null,
+        source: 'provider_reported', authoritative: true, measurement_mode: 'increment',
+        provider_id: 'another-provider', runtime_id: 'runtime', model_id: 'model-a',
+      },
+      {
+        resource_id: 'balance', label: 'Mammouth balance', kind: 'money',
+        consumed: null, limit: null, remaining: 10.38, unit: 'currency', currency: 'EUR',
+        source: 'provider_reported', authoritative: true, measurement_mode: 'snapshot',
+        provider_id: 'mammouth', runtime_id: 'mammouth-code', account_id: 'account-7',
+      },
+    ],
+  } }));
+
+  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await page.locator('.token-footer > summary').click();
+  await expect(page.locator('#usage-resources .usage-resource')).toHaveCount(4);
+  await expect(page.locator('[data-resource-id="codex:primary"] [role="progressbar"]')).toHaveAttribute('aria-valuenow', '64');
+  await expect(page.locator('[data-resource-id="budget"] [role="progressbar"]')).toHaveAttribute('aria-valuenow', '58');
+  await expect(page.locator('[data-resource-id="tokens"]')).toContainText('184k tokens');
+  await expect(page.locator('[data-resource-id="tokens"] [role="progressbar"]')).toHaveCount(0);
+  await expect(page.locator('[data-resource-id="balance"]')).toContainText(/€10\.38|10\.38\s*€/);
+  await expect(page.locator('[data-resource-id="balance"] [role="progressbar"]')).toHaveCount(0);
+  await expect(page.locator('[data-resource-id="budget"]')).toContainText('mammouth · large');
+});
+
 test('project-scoped Thread deep links, reload, and Back/Forward restore conversation selection', async ({ page }) => {
   const { reads } = await mockChatApi(page);
   await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');

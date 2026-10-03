@@ -17,6 +17,7 @@ import{createThreadRoute}from"./thread_route.js";
 import{reconcileSteeringFailure}from"./queue_steering.js";
 import*as rtui from"./repository_target_ui.js";
 import*as tsui from"./thread_settings_ui.js";
+import{normalizeUsageResources,renderUsageResources}from"./usage_resources.js";
 
 const state={
   projects: [],
@@ -33,7 +34,8 @@ const state={
   waiting: false,
   eventLog: [],
   tokenUsageByThread: {},
-  accountRateLimits: null,
+  accountUsageResources: [],
+  usageProjectId: null,
   models: [],
   threadSettings: {},
   botConnections: [],
@@ -347,49 +349,6 @@ function usagePercent(usage) {
   return Math.min(100, Math.round((total / windowSize) * 100));
 }
 
-function normalizeRateLimitWindow(window = {}) {
-  if (!window) return null;
-  return {
-    usedPercent: numeric(window.usedPercent ?? window.used_percent),
-    windowDurationMins: window.windowDurationMins ?? window.window_minutes ?? null,
-    resetsAt: window.resetsAt ?? window.resets_at ?? null,
-  };
-}
-
-function normalizeRateLimits(raw = {}) {
-  const snapshot = raw.rateLimitsByLimitId?.codex || raw.rate_limits_by_limit_id?.codex || raw.rateLimits || raw.rate_limits || raw;
-  if (!snapshot) return null;
-  return {
-    limitId: snapshot.limitId ?? snapshot.limit_id ?? null,
-    planType: snapshot.planType ?? snapshot.plan_type ?? null,
-    primary: normalizeRateLimitWindow(snapshot.primary),
-    secondary: normalizeRateLimitWindow(snapshot.secondary),
-    rateLimitReachedType: snapshot.rateLimitReachedType ?? snapshot.rate_limit_reached_type ?? null,
-  };
-}
-
-function formatLimitReset(window) {
-  if (!window?.resetsAt) return "Reset time unavailable";
-  return `Resets ${new Date(window.resetsAt * 1000).toLocaleString()}`;
-}
-
-function renderLimitWindow(prefix, window) {
-  const label = $(`token-limit-${prefix}`);
-  const fill = $(`token-limit-${prefix}-fill`);
-  const reset = $(`token-limit-${prefix}-reset`);
-  if (!label || !fill || !reset) return;
-  if (!window) {
-    label.textContent = "--";
-    fill.style.width = "0%";
-    reset.textContent = "Rate limit unavailable";
-    return;
-  }
-  const percent = Math.max(0, Math.min(100, Math.round(window.usedPercent)));
-  label.textContent = `${percent}% used`;
-  fill.style.width = `${percent}%`;
-  reset.textContent = formatLimitReset(window);
-}
-
 function renderTokenUsage() {
   const usage = state.threadId ? state.tokenUsageByThread[state.threadId] : null;
   const context = $("token-context");
@@ -418,8 +377,7 @@ function renderTokenUsage() {
     output.textContent = "--";
   }
 
-  renderLimitWindow("5h", state.accountRateLimits?.primary);
-  renderLimitWindow("weekly", state.accountRateLimits?.secondary);
+  renderUsageResources($("usage-resources"), state.accountUsageResources);
 }
 
 function loadSidebarPreference() {
@@ -1072,6 +1030,7 @@ async function refresh({ reloadProjects = false } = {}) {
     renderProjects();
     renderThreads();
     if (threadRoute.idFromLocation() || threadIdBeforeRefresh !== state.threadId) await threadRoute.restore();
+    if (state.usageProjectId !== projectId) refreshTokenUsage();
     markMilestone("project-useful",startedAt);
   })();
 
@@ -1486,8 +1445,7 @@ function handleEvent(event) {
       renderTokenUsage();
     }
   } else if (message.method === "account/rateLimits/updated") {
-    state.accountRateLimits = normalizeRateLimits(message.params?.rateLimits);
-    renderTokenUsage();
+    refreshTokenUsage();
   }
   if (!isActiveThreadEvent(message)) {
     updateWaitingFromState();
@@ -2127,7 +2085,7 @@ async function refreshDeveloperInfo() {
         waiting: state.waiting,
         theme: currentTheme(),
         tokenUsage: state.threadId ? state.tokenUsageByThread[state.threadId] : null,
-        accountRateLimits: state.accountRateLimits,
+        accountUsageResources: state.accountUsageResources,
         agentChannelPresence: state.agentChannelPresence,
       },
     };
@@ -2179,9 +2137,23 @@ async function recoverDaemon() {
 }
 
 async function refreshTokenUsage() {
+  const projectId = state.projectId;
   try {
-    const limits = await api("/api/account/rate-limits");
-    state.accountRateLimits = normalizeRateLimits(limits);
+    const [limitsResult, usageResult] = await Promise.allSettled([
+      api("/api/account/rate-limits"),
+      api(`/api/agent-runtime-usage${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`),
+    ]);
+    if (projectId !== state.projectId) return;
+    const resources = [
+      ...(limitsResult.status === "fulfilled" ? normalizeUsageResources(limitsResult.value) : []),
+      ...(usageResult.status === "fulfilled" && Array.isArray(usageResult.value.resources) ? usageResult.value.resources : []),
+    ];
+    const unique = new Map(resources.map(resource => [
+      [resource.provider_id, resource.account_id, resource.runtime_id, resource.model_id, resource.resource_id, resource.period_started_at, resource.reset_at].join("|"),
+      resource,
+    ]));
+    state.accountUsageResources = [...unique.values()];
+    state.usageProjectId = projectId;
     renderTokenUsage();
   } catch (error) {
     logEvent("token.error", { message: error.message });

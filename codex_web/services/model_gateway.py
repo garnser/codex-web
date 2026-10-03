@@ -391,6 +391,25 @@ class ModelGatewayService:
         ) / 1_000_000.0
 
     @staticmethod
+    def _pricing_revision(model: ModelDefinitionRecord) -> str | None:
+        if (
+            model.input_price_per_million_usd is None
+            or model.output_price_per_million_usd is None
+        ):
+            return None
+        payload = {
+            "model_id": model.id,
+            "concrete_model": model.concrete_model,
+            "model_version": model.model_version,
+            "input_price_per_million_usd": model.input_price_per_million_usd,
+            "output_price_per_million_usd": model.output_price_per_million_usd,
+            "definition_updated_at": model.updated_at,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
     def _policy(state: ModelGatewayState, actor: AuthenticationActor) -> TenantModelPolicy:
         existing = next(
             (
@@ -1397,11 +1416,19 @@ class ModelGatewayService:
                     source="model-provider-success",
                     metadata={"model_id": model.id},
                 )
-            actual_cost = self._price(
-                model,
-                result.usage.input_tokens or candidate.estimated_input_tokens,
-                result.usage.output_tokens or candidate.max_output_tokens,
-            )
+            provider_cost = result.usage.cost
+            currency = result.usage.currency
+            calculated_cost = None
+            pricing_revision = None
+            if provider_cost is None:
+                calculated_cost = self._price(
+                    model,
+                    result.usage.input_tokens or candidate.estimated_input_tokens,
+                    result.usage.output_tokens or candidate.max_output_tokens,
+                )
+                currency = "USD" if calculated_cost is not None else None
+                pricing_revision = self._pricing_revision(model)
+            actual_cost = provider_cost if provider_cost is not None else calculated_cost
             attempts.append(
                 ModelInvocationAttempt(
                     provider_id=provider.id,
@@ -1412,7 +1439,15 @@ class ModelGatewayService:
                     estimated_upper_cost_usd=candidate.estimated_upper_cost_usd,
                     input_tokens=result.usage.input_tokens,
                     output_tokens=result.usage.output_tokens,
-                    actual_cost_usd=actual_cost,
+                    actual_cost_usd=(actual_cost if currency == "USD" else None),
+                    actual_cost=actual_cost,
+                    cost_currency=currency,
+                    cost_source=(
+                        "provider_reported" if provider_cost is not None
+                        else "codex_calculated" if calculated_cost is not None
+                        else None
+                    ),
+                    pricing_revision=pricing_revision,
                     provider_request_id=result.provider_request_id,
                     provider_stop_reason=result.stop_reason,
                     started_at=started,
