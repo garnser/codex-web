@@ -1,3 +1,5 @@
+import { formDraft } from './form_draft.js';
+
 export function installExecutionWorkerEnrollment({
   apiRequest,
   canManage,
@@ -5,6 +7,18 @@ export function installExecutionWorkerEnrollment({
   escapeHtml,
   base = "",
 }) {
+  const draft = formDraft('Runtime enrollment metadata');
+  const button = document.getElementById('create-execution-worker-enrollment');
+  const editor = button?.closest('#execution-worker-enrollment-panel, .route-test');
+  if (editor) {
+    draft.mount(editor);
+    const discard = document.createElement('button'); discard.type = 'button'; discard.textContent = 'Discard metadata edits'; discard.dataset.enrollmentDiscard = '';
+    discard.onclick = () => draft.discard(); editor.appendChild(discard);
+  }
+  let creating = false;
+  window.addEventListener('codex:project-changed', () => {
+    document.getElementById('execution-worker-enrollment-result')?.replaceChildren();
+  });
   function capabilities() {
     return Array.from(
       document.querySelectorAll("#execution-worker-enrollment-capabilities input[type='checkbox']:checked"),
@@ -28,16 +42,20 @@ export function installExecutionWorkerEnrollment({
 
   async function refresh() {
     if (!canManage()) return render([]);
+    const current = draft.view();
     try {
       const response = await apiRequest("/api/execution-workers/enrollments");
+      if (!current()) return;
       render(response.items || []);
     } catch (error) {
-      const host = document.getElementById("execution-worker-enrollment-result");
-      if (host) host.textContent = `Enrollment history unavailable: ${error.message}`;
+      if (!current()) return;
+      setStatus(`Enrollment history unavailable: ${error.message}`);
     }
   }
 
   async function create() {
+    if (creating) return;
+    const ticket = draft.submission();
     if (!canManage()) {
       setStatus("Runtime enrollment requires canonical admin authority and elevated assurance.");
       return;
@@ -52,6 +70,9 @@ export function installExecutionWorkerEnrollment({
       if (result) result.textContent = "Service identity and at least one allowed capability are required.";
       return;
     }
+    creating = true;
+    if (button) button.disabled = true;
+    result?.replaceChildren();
     try {
       const response = await apiRequest("/api/execution-workers/enrollments", {
         method: "POST",
@@ -63,6 +84,8 @@ export function installExecutionWorkerEnrollment({
           max_concurrency_ceiling: concurrency,
         }),
       });
+      if (!ticket.current()) return;
+      ticket.saved();
       const endpoint = `${window.location.origin}${base}/api/execution-workers/enroll`;
       const command = `curl -sS -X POST '${endpoint}' -H 'Content-Type: application/json' --data '{"token":"${response.token}","version":"<runtime-version>","capabilities":${JSON.stringify(allowed)},"max_concurrency":${concurrency},"probe_results":{}}'`;
       if (result) {
@@ -71,8 +94,8 @@ export function installExecutionWorkerEnrollment({
       }
       await refresh();
     } catch (error) {
-      if (result) result.textContent = `Runtime enrollment failed: ${error.message}`;
-    }
+      if (ticket.current() && result) result.textContent = `Runtime enrollment failed: ${error.message}`;
+    } finally { creating = false; if (button) button.disabled = false; }
   }
 
   document.getElementById("create-execution-worker-enrollment")

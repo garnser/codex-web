@@ -88,3 +88,53 @@ for (const returnsToOrigin of [false, true]) test(`late impact cannot authorize 
   await expect(page.locator('[data-key-usage-result]')).not.toContainText('0 canonical dependency');
   expect(state.writes).toEqual([]); expect(dialogs).toBe(0);
 });
+
+test('key metadata refresh defers edits and failed creation keeps the form', async ({ page }) => {
+  await mount(page, async (route, url) => {
+    if (url.pathname === '/api/crypto/keys' && route.request().method() === 'POST') {
+      await route.fulfill({ status: 409, json: { detail: 'Key scope changed' } }); return true;
+    }
+  });
+  await page.locator('#crypto-key-create-panel summary').click();
+  await page.locator('#crypto-key-project-id').fill('project-draft');
+  await page.locator('#refresh-crypto-keys').click();
+  await expect(page.locator('#crypto-key-status')).toContainText('Refresh deferred');
+  await page.locator('#create-crypto-key').click(); await resolveAction(page);
+  await expect(page.locator('#crypto-key-status')).toContainText('Key scope changed');
+  await expect(page.locator('#crypto-key-project-id')).toHaveValue('project-draft');
+  page.once('dialog', dialog => dialog.accept());
+  await page.locator('[data-key-discard]').click();
+  await expect(page.locator('#crypto-key-project-id')).toHaveValue('');
+});
+
+test('late key creation retains newer scope metadata', async ({ page }) => {
+  let held;
+  await mount(page, async (route, url) => {
+    if (url.pathname === '/api/crypto/keys' && route.request().method() === 'POST') { held = route; return true; }
+  });
+  await page.locator('#crypto-key-create-panel summary').click();
+  await page.locator('#crypto-key-project-id').fill('submitted-project');
+  await page.locator('#create-crypto-key').click(); await resolveAction(page);
+  await expect.poll(() => Boolean(held)).toBe(true);
+  await page.locator('#crypto-key-project-id').fill('newer-project');
+  await held.fulfill({ json: { item: key } });
+  await expect(page.locator('#crypto-key-status')).toContainText('Newer metadata remains unsaved');
+  await expect(page.locator('#crypto-key-project-id')).toHaveValue('newer-project');
+  await expect(page.locator('#crypto-key-create-panel [data-dirty-editor-status]')).toHaveText('Unsaved changes');
+});
+
+test('typing during initial key catalog load retains scope while enabling backend selection', async ({ page }) => {
+  const held = []; let released = false;
+  const mounting = mount(page, async (route, url) => {
+    if (!released && url.pathname === '/api/crypto/backend-health') { held.push(route); return true; }
+  });
+  await expect.poll(() => held.length).toBeGreaterThan(0);
+  await page.locator('#crypto-key-create-panel summary').click();
+  await page.locator('#crypto-key-project-id').fill('Typed while loading');
+  released = true;
+  await Promise.all(held.map(route => route.fulfill({ json: { local: true } })));
+  await mounting;
+  await expect(page.locator('#crypto-key-backend')).toHaveValue('local');
+  await expect(page.locator('#crypto-key-project-id')).toHaveValue('Typed while loading');
+  await expect(page.locator('#crypto-key-create-panel [data-dirty-editor-status]')).toHaveText('Unsaved changes');
+});

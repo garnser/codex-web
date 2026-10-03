@@ -1,4 +1,5 @@
 import { confirmAction } from './action_confirmation.js';
+import { administrationEditsPending, clearAdministrationEditors, trackAdministrationEditor } from './administration_editor_state.js';
 function esc(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -111,9 +112,12 @@ function query(params) {
 export function renderAdministrationAccess(container, { context, api } = {}) {
   if (!container) return;
   if (!context?.allowed) {
+    clearAdministrationEditors(container);
     container.innerHTML = '<div class="workspace-state workspace-state-error">Administration access is required.</div>';
     return;
   }
+  if (administrationEditsPending(container)) return;
+  clearAdministrationEditors(container);
 
   const humans = scopedHumans(context);
   container.className = "administration-access-surface";
@@ -185,6 +189,12 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
   const targetResults = container.querySelector("[data-access-target-results]");
   let current = null;
   let targetLoaded = false;
+  let scopeGeneration = 0;
+  const editor = trackAdministrationEditor(role.closest('.administration-user-create-fields'), 'Direct access assignment');
+  const submission = () => {
+    const ticket = editor.submission(), version = scopeGeneration;
+    return { current: () => ticket.current() && version === scopeGeneration, saved: ticket.saved };
+  };
 
   const setMessage = (value, kind = "info") => {
     message.hidden = !value;
@@ -198,6 +208,7 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
   };
 
   const loadEffective = async () => {
+    const ticket = submission();
     if (!identity.value) {
       current = null;
       assignments.innerHTML = '<div class="workspace-state">Select a user to inspect direct and delegated access.</div>';
@@ -206,10 +217,13 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
     }
     setMessage("Loading canonical effective access…");
     try {
-      current = await api(`/api/authority/effective${query({ identity_id: identity.value, project_id: project.value })}`);
+      const result = await api(`/api/authority/effective${query({ identity_id: identity.value, project_id: project.value })}`);
+      if (!ticket.current()) return;
+      current = result;
       setMessage("");
       renderResult();
     } catch (error) {
+      if (!ticket.current()) return;
       current = null;
       setMessage(error?.message || "Unable to load canonical effective access.", "error");
       renderResult();
@@ -217,19 +231,22 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
   };
 
   const loadRoles = async () => {
+    const ticket = submission();
     role.disabled = true;
     try {
       const result = await api(`/api/authority/roles${query({ project_id: project.value })}`);
+      if (!ticket.current()) return;
       const items = result?.items || [];
       role.innerHTML = [
         '<option value="">Select a canonical Role…</option>',
         ...items.map((item) => `<option value="${esc(item.id)}" title="${esc(item.description || "")}">${esc(item.name || item.id)} · ${esc(item.id)}</option>`),
       ].join("");
     } catch (error) {
+      if (!ticket.current()) return;
       role.innerHTML = '<option value="">Canonical Roles unavailable</option>';
       setMessage(error?.message || "Unable to load canonical operational Roles.", "error");
     } finally {
-      role.disabled = false;
+      if (ticket.current()) role.disabled = false;
     }
   };
 
@@ -282,6 +299,8 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
   const mutationReason = () => String(reason.value || "").trim();
 
   addButton.addEventListener("click", async () => {
+    if (addButton.disabled) return;
+    const ticket = submission();
     if (!identity.value || !role.value) {
       setMessage("Select a user and canonical Role before staging a direct assignment.", "error");
       return;
@@ -304,15 +323,17 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
           reason: why,
         }),
       });
+      if (!ticket.current()) return;
+      ticket.saved();
       const outcomeMessage = result?.status === "pending_approval"
         ? "Direct assignment is staged and pending independent publication approval."
         : result?.status === "already_effective"
           ? "That direct assignment is already effective."
           : "Direct assignment published.";
       await refreshAfterMutation();
-      setMessage(outcomeMessage, "info");
+      if (ticket.current()) setMessage(editor.dirty() ? `${outcomeMessage} Newer edits remain unsaved.` : outcomeMessage, "info");
     } catch (error) {
-      setMessage(error?.message || "Unable to stage canonical direct assignment.", "error");
+      if (ticket.current()) setMessage(error?.message || "Unable to stage canonical direct assignment.", "error");
     } finally {
       addButton.disabled = false;
     }
@@ -350,8 +371,18 @@ export function renderAdministrationAccess(container, { context, api } = {}) {
     }
   });
 
-  identity.addEventListener("change", () => void loadEffective());
+  const selectedScope = { identity: identity.value, project: project.value };
+  const acceptScope = (field, key) => {
+    if (!editor.discard()) { field.value = selectedScope[key]; return false; }
+    selectedScope[key] = field.value; scopeGeneration += 1;
+    role.value = ''; reason.value = ''; editor.reset();
+    return true;
+  };
+  identity.addEventListener("change", () => {
+    if (acceptScope(identity, 'identity')) void Promise.all([loadRoles(), loadEffective()]);
+  });
   project.addEventListener("change", () => {
+    if (!acceptScope(project, 'project')) return;
     targetLoaded = false;
     targetResults.innerHTML = '<div class="workspace-state">Load the canonical access-subject projection for this scope.</div>';
     void Promise.all([loadRoles(), loadEffective()]);

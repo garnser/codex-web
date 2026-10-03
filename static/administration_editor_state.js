@@ -30,6 +30,7 @@ export function trackAdministrationEditor(root, label) {
   root.appendChild(discard);
   return {
     dirty: editor.dirty,
+    discard: () => confirmDiscard(editor),
     reset: () => editor.markSaved(),
     submission() {
       const snapshot = editor.snapshot(), view = captureProjectView();

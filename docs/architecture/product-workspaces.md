@@ -91,7 +91,11 @@ resize vertically; the page is the enclosing scroll container. Agent Profile,
 Team, Skill-assignment, membership, consumer and revision views reuse the same
 page presentation. Executive consultations, the company operating view and Bot
 Integration also use this surface. Bot credential inputs are write-only and clear
-on close; they never enter dirty-editor snapshots or browser draft storage.
+on close and immediately after submission; they never enter dirty-editor snapshots
+or browser draft storage. Bot metadata, GitLab routing, agent channel presence and
+Work Graph relationship edits retain failed input and acknowledge only the submitted
+snapshot. Their refresh paths defer while local edits are dirty, and their explicit
+discard actions restore the saved baseline.
 
 Routed Goals, Decisions, Metrics, Company Operations, Memory, Attention and
 Project Setup already adopt their canonical domain DOM non-modally.
@@ -101,7 +105,10 @@ launches also enter that routed page instead of bypassing it with a modal. Matur
 administration editors remain in their adopted workspace cards. Lightweight
 Project creation, command selection and deliberate lifecycle/approval
 confirmations remain transient dialogs. Those dialogs must not become containers
-for unrelated substantial editing workflows.
+for unrelated substantial editing workflows. The Project-creation dialog still uses
+the shared dirty-state contract: Cancel or Escape requires deliberate discard, a
+failed create keeps its input, duplicate submission is suppressed, and a late
+success leaves newer input available without activating a different Project.
 
 Substantive editors can register with `dirty_editor.js`. The shared guard compares
 current field values with the editor's saved baseline, exposes a live unsaved
@@ -118,8 +125,9 @@ and discard action. Read failures retain drafts with an unavailable-state messag
 create/relationship selections survive catalog hydration. A successful save clears
 only the submitted snapshot, so typing during an outstanding request remains dirty.
 Resource metadata remains in page memory and canonical mutation APIs still enforce
-authority; deferred display state is not an authorization or concurrency guarantee. Definition and Configuration drafts preserve edited inputs
-across same-Project refreshes. Automation retains
+authority; deferred display state is not an authorization or concurrency guarantee.
+Definition and Configuration drafts preserve edited inputs across same-Project
+refreshes. Automation retains
 the active form across background renders, suppresses same-Project refresh while
 editing, and prevents a discarded/detached draft response from continuing into
 publication. An authoritative Project change still clears the old Project's
@@ -461,3 +469,12 @@ reads and mutation responses are fenced against a replaced view. Service-token
 request metadata follows the same behavior, while one-time credential output stays
 outside snapshots and is rendered only in the initiating view. Accepted user,
 membership and token metadata remain canonical; no browser draft storage is used.
+
+Direct Access assignment role/reason drafts require discard before changing their
+identity or Project scope. Failed staging keeps input; accepted staging acknowledges
+the submitted draft while preserving newer edits and the canonical approval status.
+Secret-reference and managed-key creation protect metadata from refresh and late
+saves. Secret values are excluded from snapshots and retain their write-only clearing
+behavior. Runtime-enrollment metadata uses the same transient contract; one-time
+enrollment output stays outside drafts, survives a separate history-read failure,
+and clears on Project change. Late credential responses never populate another view.
