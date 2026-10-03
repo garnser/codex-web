@@ -9,7 +9,7 @@ export function installExecutionWorkerEnrollment({
 }) {
   const draft = formDraft('Runtime enrollment metadata');
   const button = document.getElementById('create-execution-worker-enrollment');
-  const editor = button?.closest('.route-test');
+  const editor = button?.closest('#execution-worker-enrollment-panel, .route-test');
   if (editor) {
     draft.mount(editor);
     const discard = document.createElement('button'); discard.type = 'button'; discard.textContent = 'Discard metadata edits'; discard.dataset.enrollmentDiscard = '';

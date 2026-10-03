@@ -1,5 +1,9 @@
 import{captureThreadView,renameSelectedThread,archiveSelectedThread}from"./thread_view_actions.js";
 import{showBotEditor}from"./bot_page_editor.js";
+import{saveBotIntegration}from"./bot_integration_save.js";
+import{integrationEditors}from"./integration_editor_state.js";
+import{saveIntegrationDraft}from"./integration_mutation.js";
+import{projectCreationEditor}from"./project_creation.js";
 import{installThreadCommands}from"./object_commands.js";
 import*as ep from"./execution_profile_controls.js";
 import{loadProjectUiStateForRefresh}from"./project_ui_state.js";
@@ -57,6 +61,8 @@ const SETTINGS_KEY = "codex-web-project-settings";
 const TOKEN_USAGE_KEY = "codex-web-token-usage";
 const SIDEBAR_KEY = "codex-web-sidebar";
 const GITLAB_AGENT_NAMES = ["carl", "dana", "james", "janice", "larry", "maya", "nora", "quinn", "riley", "sally", "tom"];
+const integrationDrafts=integrationEditors();
+const projectCreator=projectCreationEditor($("project-dialog"));
 
 const SLACK_ICON_MAP = {
   ":large_blue_circle:": "🔵",
@@ -1216,59 +1222,6 @@ async function openBotIntegration(target) {
   }
 }
 
-async function saveBotIntegration(event) {
-  event.preventDefault();
-  const target = state.botIntegrationTarget;
-  if (!target) return;
-  const provider = $("bot-provider").value;
-  const conversationId = provider === "slack"
-    ? $("bot-conversation-id").value.trim()
-    : $("bot-telegram-chat-id").value.trim();
-  if (!conversationId) {
-    $("bot-result").hidden = false;
-    $("bot-result").textContent = provider === "slack" ? "Slack channel ID is required." : "Telegram chat ID is required.";
-    return;
-  }
-  const connectionPayload = {
-    id: $("bot-connection").value || null,
-    provider,
-    name: $("bot-name").value.trim(),
-    project_id: target.projectId,
-    bot_token: $("bot-token").value.trim() || null,
-    slack_app_token: provider === "slack" ? ($("bot-slack-app-token").value.trim() || null) : null,
-    signing_secret: provider === "slack" ? ($("bot-signing-secret").value.trim() || null) : null,
-    webhook_secret: provider === "telegram" ? ($("bot-webhook-secret").value.trim() || null) : null,
-    default_external_conversation_id: conversationId,
-    default_external_name: $("bot-external-name").value.trim() || null,
-  };
-  const connection = await api("/api/bots/connections", {
-    method: "POST",
-    body: JSON.stringify(connectionPayload),
-  });
-  const bindToThread = target.scope === "thread" && $("bot-bind-existing-thread").checked;
-  const binding = await api("/api/bots/bindings", {
-    method: "POST",
-    body: JSON.stringify({
-      connection_id: connection.id,
-      provider,
-      external_conversation_id: conversationId,
-      external_name: $("bot-external-name").value.trim() || null,
-      project_id: target.projectId,
-      thread_id: bindToThread ? target.threadId : null,
-      thread_name: bindToThread ? null : $("bot-route-prefix").value.trim(),
-      route_prefix: $("bot-route-prefix").value.trim() || target.title,
-      post_in_thread: provider === "slack" ? $("bot-post-in-thread").checked : false,
-      sandbox: currentRunSettings().sandbox,
-      approval_policy: currentRunSettings().approvalPolicy,
-    }),
-  });
-  $("bot-result").hidden = false;
-  $("bot-result").textContent = `Saved ${connection.name}; bound ${provider} conversation ${conversationId} to thread ${binding.thread_id}.`;
-  await refreshBotConnections();
-  await refresh();
-  $("bot-dialog").close();
-}
-
 async function loadThread(threadId, { historyMode = "none", force = false } = {}) {
   if (!threadId) return clearSelectedThread({ historyMode });
   threadId = String(threadId);
@@ -1986,7 +1939,7 @@ function gitLabRouteAgentChoices(selectedChannelIds = [], selectedAgents = []) {
 
 function renderAgentChannelPresence(projectSettings = activeAgentChannelPresenceProjectSettings()) {
   const container = $("agent-channel-presence");
-  if (!container) return;
+  if (!container || integrationDrafts.dirty('presence')) return;
   container.innerHTML = "";
   agentChannelNames(projectSettings).forEach((agent) => {
     const row = document.createElement("div");
@@ -2006,6 +1959,7 @@ function renderAgentChannelPresence(projectSettings = activeAgentChannelPresence
     row.append(name, dropdown.picker);
     container.appendChild(row);
   });
+  integrationDrafts.reset('presence');
 }
 
 function collectAgentChannelPresence() {
@@ -2080,7 +2034,7 @@ function collectGitLabRoutingSelection() {
 
 function renderGitLabIntegration() {
   const settings = state.gitlabIntegration;
-  if (!settings || !$("gitlab-enabled")) return;
+  if (!settings || !$("gitlab-enabled") || integrationDrafts.dirty('gitlab')) return;
   const projectSettings = activeGitLabProjectSettings(settings);
   $("gitlab-enabled").checked = Boolean(projectSettings.enabled);
   $("gitlab-webhook-path").value = settings.webhookPath || "/bots/gitlab/events";
@@ -2088,24 +2042,28 @@ function renderGitLabIntegration() {
   $("gitlab-ignored-kinds").value = (settings.ignored_event_kinds || []).join(", ");
   $("gitlab-project-paths").value = (projectSettings.project_paths || []).join("\n");
   renderGitLabRoutingRoutes(projectSettings);
+  integrationDrafts.reset('gitlab');
 }
 
 async function refreshGitLabIntegration() {
-  state.gitlabIntegration = await api("/api/integrations/gitlab");
+  const current = integrationDrafts.view('gitlab');
+  const response = await api("/api/integrations/gitlab");
+  if (!current()) return;
+  state.gitlabIntegration = response;
   renderGitLabIntegration();
 }
 
 async function refreshAgentChannelPresence() {
-  state.agentChannelPresence = await api("/api/integrations/agent-presence");
+  const current = integrationDrafts.view('presence');
+  const response = await api("/api/integrations/agent-presence");
+  if (!current()) return;
+  state.agentChannelPresence = response;
   renderAgentChannelPresence();
 }
 
 async function saveGitLabIntegration() {
   const result = $("gitlab-routing-result");
-  if (result) {
-    result.hidden = false;
-    result.textContent = "Saving...";
-  }
+  const button = $("save-gitlab-routing");
   const projects = gitLabProjectsCopy(state.gitlabIntegration);
   const routingSelection = collectGitLabRoutingSelection();
   projects[state.projectId] = {
@@ -2120,42 +2078,23 @@ async function saveGitLabIntegration() {
     ignored_event_kinds: parseList($("gitlab-ignored-kinds").value),
     projects,
   };
-  try {
-    const response = await api("/api/integrations/gitlab", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    state.gitlabIntegration = response;
-    renderGitLabIntegration();
-    if (result) result.textContent = "Saved";
-    await refreshDeveloperInfo();
-  } catch (error) {
-    if (result) result.textContent = error.message;
-  }
+  await saveIntegrationDraft({ editors: integrationDrafts, key: 'gitlab', button, result, api,
+    path: '/api/integrations/gitlab', payload,
+    apply(response) { state.gitlabIntegration = response; renderGitLabIntegration(); },
+    refresh: refreshDeveloperInfo });
 }
 
 async function saveAgentChannelPresence() {
   const result = $("agent-channel-presence-result");
-  if (result) {
-    result.hidden = false;
-    result.textContent = "Saving...";
-  }
+  const button = $("save-agent-channel-presence");
   const projects = agentChannelProjectsCopy(state.agentChannelPresence);
   projects[state.projectId] = {
     agent_channels: collectAgentChannelPresence(),
   };
-  try {
-    const response = await api("/api/integrations/agent-presence", {
-      method: "POST",
-      body: JSON.stringify({ projects }),
-    });
-    state.agentChannelPresence = response;
-    renderAgentChannelPresence();
-    if (result) result.textContent = "Saved";
-    await refreshDeveloperInfo();
-  } catch (error) {
-    if (result) result.textContent = error.message;
-  }
+  await saveIntegrationDraft({ editors: integrationDrafts, key: 'presence', button, result, api,
+    path: '/api/integrations/agent-presence', payload: { projects },
+    apply(response) { state.agentChannelPresence = response; renderAgentChannelPresence(); },
+    refresh: refreshDeveloperInfo });
 }
 
 async function refreshDeveloperInfo() {
@@ -2290,7 +2229,10 @@ $("bot-provider").addEventListener("change", () => {
 $("bot-connection").addEventListener("change", () => fillBotDialogFromConnection(selectedBotConnection()));
 $("close-bot-dialog").addEventListener("click", () => $("bot-dialog").close());
 $("cancel-bot-integration").addEventListener("click", () => $("bot-dialog").close());
-$("save-bot-integration").addEventListener("click", (event) => saveBotIntegration(event).catch((error) => {
+$("save-bot-integration").addEventListener("click", (event) => saveBotIntegration(event, {
+  target: state.botIntegrationTarget, api, runSettings: currentRunSettings,
+  refreshConnections: refreshBotConnections, refresh,
+}).catch((error) => {
   $("bot-result").hidden = false;
   $("bot-result").textContent = error.message;
 }));
@@ -2313,31 +2255,23 @@ $("archive-thread").addEventListener("click", () =>
   archiveSelectedThread({state,api,clearSelectedThread,refresh}));
 document.addEventListener("click", (event) => {
   if (event.target.closest("#new-project")) {
-    $("project-dialog").showModal();
+    projectCreator.open();
     return;
   }
   if (event.target.closest("[data-project-bot-integration]")) {
     openActiveProjectBotIntegration();
   }
 });
-$("save-project").addEventListener("click", async (event) => {
-  event.preventDefault();
-  const payload = {
-    name: $("project-name").value,
-    path: $("project-path").value,
-    model: $("project-model").value || null,
-  };
-  const project = await api("/api/projects", { method: "POST", body: JSON.stringify(payload) });
-  state.projects = [
-    ...state.projects.filter((item) => item.id !== project.id),
-    project,
-  ];
-  delete state.projectUiStatic[project.id];
-  activateProject(state,project.id);
-  window.dispatchEvent(new CustomEvent("codex:project-created",{detail:{projectId:project.id,freshBootstrap:project.freshBootstrap||null}}));
-  $("project-dialog").close();
-  await refresh();
-});
+$("save-project").addEventListener("click", event => projectCreator.save(event, {
+  api, refresh,
+  accept(project, { activate }) {
+    state.projects = [...state.projects.filter(item => item.id !== project.id), project];
+    delete state.projectUiStatic[project.id];
+    if (!activate) return;
+    activateProject(state, project.id);
+    window.dispatchEvent(new CustomEvent("codex:project-created", { detail: { projectId: project.id, freshBootstrap: project.freshBootstrap || null } }));
+  },
+}));
 
 installThreadCommands(state,loadThread);
 activateProject(state,state.projectId);

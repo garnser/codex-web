@@ -136,3 +136,52 @@ test('edge mutation uses explicit Project context and its late receipt cannot re
   await expect(page.locator('#work-graph-management-status')).toBeEmpty();
   await expect(page.locator('#work-graph-source')).toHaveValue('project-c-1');
 });
+
+test('relationship refresh and failed save preserve edits until deliberate discard', async ({ page }) => {
+  let writes = 0;
+  await mount(page, async (route) => {
+    if (route.request().method() === 'POST') {
+      writes += 1;
+      await route.fulfill({ status: 409, json: { detail: 'Relationship changed concurrently' } });
+      return true;
+    }
+  });
+  await page.locator('#work-graph-management-panel').evaluate(node => { node.open = true; });
+  await page.locator('#work-graph-edge-reason').fill('Keep this graph reason');
+  await page.locator('#refresh-work-graph').click();
+  await expect(page.locator('#work-graph-status')).toContainText('Refresh deferred');
+  await expect(page.locator('#work-graph-edge-reason')).toHaveValue('Keep this graph reason');
+  await page.locator('#add-work-graph-edge').click(); await resolveAction(page);
+  await expect.poll(() => writes).toBe(1);
+  await expect(page.locator('#work-graph-management-status')).toContainText('Relationship changed concurrently');
+  await expect(page.locator('#work-graph-edge-reason')).toHaveValue('Keep this graph reason');
+  page.once('dialog', dialog => dialog.dismiss());
+  await page.locator('[data-graph-discard]').click();
+  await expect(page.locator('#work-graph-edge-reason')).toHaveValue('Keep this graph reason');
+  page.once('dialog', dialog => dialog.accept());
+  await page.locator('[data-graph-discard]').click();
+  await expect(page.locator('#work-graph-edge-reason')).toHaveValue('');
+  await expect(page.locator('#work-graph-management-panel [data-dirty-editor-status]')).toHaveText('No unsaved changes');
+});
+
+test('late relationship save retains newer edits and suppresses duplicate submission', async ({ page }) => {
+  let held, writes = 0;
+  await mount(page, async (route) => {
+    if (route.request().method() === 'POST') {
+      writes += 1; held = route; return true;
+    }
+  });
+  await page.locator('#work-graph-management-panel').evaluate(node => { node.open = true; });
+  await page.locator('#work-graph-edge-reason').fill('Submitted reason');
+  await page.locator('#add-work-graph-edge').click(); await resolveAction(page);
+  await expect.poll(() => Boolean(held)).toBe(true);
+  await page.locator('#add-work-graph-edge').click();
+  expect(writes).toBe(1);
+  await page.locator('#work-graph-edge-reason').fill('Newer reason');
+  await held.fulfill({ json: { edge: { id: 'edge-a' } } });
+  await expect(page.locator('#work-graph-management-status')).toContainText('Newer edits remain unsaved');
+  await expect(page.locator('#work-graph-edge-reason')).toHaveValue('Newer reason');
+  page.once('dialog', dialog => dialog.accept());
+  await page.locator('[data-graph-discard]').click();
+  await expect(page.locator('#work-graph-edge-reason')).toHaveValue('Submitted reason');
+});

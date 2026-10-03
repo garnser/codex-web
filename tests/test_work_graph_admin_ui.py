@@ -10,8 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 class WorkGraphAdminUiTests(unittest.TestCase):
     def test_work_graph_ui_uses_canonical_graph_facts_and_server_validated_edits(self) -> None:
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        javascript = (ROOT / "static" / "work_graph_admin.js").read_text(
-            encoding="utf-8"
+        javascript = (
+            (ROOT / "static" / "work_graph_admin.js").read_text(encoding="utf-8")
+            + (ROOT / "static" / "work_graph_edge_editor.js").read_text(encoding="utf-8")
         )
         styles = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
 

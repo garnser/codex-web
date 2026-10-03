@@ -3,6 +3,10 @@
   const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { projectViewOperation, currentProjectId } = await import(`${BASE}/static/project_view_scope.js`);
   const { layout } = await import(`${BASE}/static/work_graph_layout.js`);
+  const { formDraft } = await import(`${BASE}/static/form_draft.js`);
+  const { edgeCreator } = await import(`${BASE}/static/work_graph_edge_editor.js`);
+  const draft = formDraft("Work Graph relationship");
+  const addEdge = edgeCreator({ draft, canMutate, setManagementStatus, loadGraph });
   let sequence = 0;
   let focusSequence = 0;
   let controller = null;
@@ -212,10 +216,14 @@
     const source = document.getElementById("work-graph-source");
     const target = document.getElementById("work-graph-target");
     const options = nodeOptions();
-    if (source) source.innerHTML = options;
-    if (target) {
-      target.innerHTML = options;
-      if (target.options.length > 1) target.selectedIndex = 1;
+    const preserve = draft.dirty();
+    if (!preserve || !source?.options.length) {
+      if (source) source.innerHTML = options;
+      if (target) {
+        target.innerHTML = options;
+        if (target.options.length > 1) target.selectedIndex = 1;
+      }
+      if (!preserve) draft.reset();
     }
     if (!edgeHost) return;
     edgeHost.innerHTML = (graph?.edges || []).map((edge) => `<div class="comm-entry">
@@ -279,6 +287,7 @@
   }
 
   async function loadGraph() {
+    if (graph && draft.dirty()) return setStatus('Refresh deferred. Add or discard unsaved relationship edits first.');
     const projectId = selectedProjectId();
     const requestSequence = ++sequence;
     controller?.abort();
@@ -306,6 +315,7 @@
   }
 
   async function refresh() {
+    if (graph && draft.dirty()) return setStatus('Refresh deferred. Add or discard unsaved relationship edits first.');
     const projectId = selectedProjectId();
     const requestSequence = ++sequence;
     const operation = projectViewOperation(setStatus, 'refresh-work-graph');
@@ -331,36 +341,6 @@
     }
   }
 
-  async function addEdge() {
-    const operation = projectViewOperation(setManagementStatus, 'refresh-work-graph');
-    if (!canMutate()) return setManagementStatus("Graph mutation requires admin + MFA/step-up or work-graph:admin service authority.");
-    const relation = document.getElementById("work-graph-relation")?.value || "blocks";
-    const sourceRef = document.getElementById("work-graph-source")?.value || "";
-    const targetRef = document.getElementById("work-graph-target")?.value || "";
-    const failure = document.getElementById("work-graph-failure-behavior")?.value || "pause";
-    const reason = document.getElementById("work-graph-edge-reason")?.value.trim() || null;
-    if (!sourceRef || !targetRef) return setManagementStatus("Choose both source and target Work Items.");
-    if (sourceRef === targetRef) return setManagementStatus("A relationship cannot target the same Work Item.");
-    const failureBehavior = relation === "parent" ? "pause" : failure;
-    if (!await confirmAction({ action: 'Add Work Item relationship', target: `${sourceRef} ${relation} ${targetRef}`, risk: 'bounded', consequence: `Add ${relation} relationship ${sourceRef} → ${targetRef}? The server will reject cycles, scope conflicts and duplicate-policy conflicts before saving.`, recovery: 'An authorized operator can remove this relationship; readiness will be recomputed.', current: operation.current })) return;
-    try {
-      await operation.request(`/api/work-graph/edges?project_id=${encodeURIComponent(currentProjectId())}`, {
-        method: "POST",
-        body: JSON.stringify({
-          relation,
-          source_ref: sourceRef,
-          target_ref: targetRef,
-          failure_behavior: failureBehavior,
-          reason,
-        }),
-      });
-      setManagementStatus("Relationship saved through the canonical graph service.");
-      await loadGraph();
-    } catch (error) {
-      if (!operation.current()) return;
-      setManagementStatus(`Relationship rejected: ${error.message}`);
-    }
-  }
 
   async function removeEdge(edgeId) {
     const operation = projectViewOperation(setManagementStatus, 'refresh-work-graph');
@@ -396,6 +376,12 @@
 
   function bind() {
     const panel = document.getElementById("developer-panel");
+    const editor = document.querySelector('#work-graph-management-panel .route-test');
+    if (editor) {
+      draft.mount(editor);
+      const discard = document.createElement('button'); discard.type = 'button'; discard.textContent = 'Discard relationship edits'; discard.dataset.graphDiscard = '';
+      discard.onclick = () => { if (draft.discard()) syncRelationControls(); }; editor.appendChild(discard);
+    }
     document.getElementById("refresh-work-graph")?.addEventListener("click", refresh);
     document.getElementById("refresh-developer")?.addEventListener("click", refresh);
     document.getElementById("work-graph-search")?.addEventListener("input", renderAll);
@@ -444,7 +430,9 @@
       document.getElementById('work-graph-project')?.replaceChildren();
       document.getElementById('work-graph-management-status')?.replaceChildren();
       document.getElementById('work-graph-management-assurance')?.replaceChildren();
+      draft.clear();
       clearGraph();
+      if (editor) draft.mount(editor);
       if ((workspace && !workspace.hidden) || panel?.open) refresh().catch(console.error);
     });
   }
