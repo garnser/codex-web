@@ -17,6 +17,13 @@ function fmtTime(value) {
   }
 }
 
+function fmtDuration(value) {
+  const seconds = Number(value || 0);
+  if (seconds >= 3600 && seconds % 3600 === 0) return `${seconds / 3600} hour(s)`;
+  if (seconds >= 60 && seconds % 60 === 0) return `${seconds / 60} minute(s)`;
+  return `${seconds} second(s)`;
+}
+
 function humanName(context, identityId) {
   const human = (context?.identity?.humans || []).find((item) => item.id === identityId);
   return human?.display_name || identityId;
@@ -64,6 +71,9 @@ function authenticationStatusView(status) {
   const recoveryProviders = (recovery.providers || [])
     .map((item) => `${item.provider} (${Number(item.active_factor_count || 0)} active)`)
     .join(", ");
+  const ownership = (status?.field_ownership || []).map((item) => `
+    <li><strong>${esc(item.field)}</strong> · ${esc(item.disposition)} · ${esc(item.owner)}<br><small>${esc(item.change_path)}</small></li>
+  `).join("");
 
   return `
     <div class="administration-user-card" data-auth-status-loaded>
@@ -79,7 +89,33 @@ function authenticationStatusView(status) {
       <small>Linked identities: ${Number(external.linked_identity_count || 0)}. External claims grant authority: ${external.claims_grant_authority ? "yes" : "no — codex-web authorization remains canonical and separately scoped"}.</small>
       <p>Recovery factors: ${recovery.configured ? esc(recoveryProviders || `${Number(recovery.active_factor_count || 0)} active`) : "none configured"}.</p>
       <small>Active Workspace sessions: ${Number(status?.active_session_count || 0)} · active service tokens: ${Number(status?.active_service_token_count || 0)}.</small>
+      <details data-auth-field-ownership>
+        <summary>Field ownership and change paths</summary>
+        <ul>${ownership || "<li>No ownership metadata was returned.</li>"}</ul>
+      </details>
     </div>
+  `;
+}
+
+function authenticationPolicyView(policy) {
+  const events = policy?.audit_events || [];
+  const latest = events.at(-1);
+  const ownership = (policy?.field_ownership || []).map((item) => (
+    `${item.field}: ${item.disposition} (${item.owner})`
+  )).join(" · ");
+  return `
+    <article class="administration-user-card" data-auth-policy-loaded>
+      <header>
+        <div>
+          <h3>Workspace policy revision ${Number(policy?.revision || 0)}</h3>
+          <p>Source: ${esc(policy?.source || "code_default")} · scope ${esc(policy?.organization_id || "unknown")}/${esc(policy?.workspace_id || "unknown")}</p>
+        </div>
+        <span class="product-status-badge ${policy?.revision ? "status-positive" : ""}">${policy?.revision ? "Locally managed" : "Defaults active"}</span>
+      </header>
+      <p>Idle ${esc(fmtDuration(policy?.values?.session_idle_seconds))} · absolute ${esc(fmtDuration(policy?.values?.session_absolute_seconds))} · step-up ${esc(fmtDuration(policy?.values?.step_up_seconds))}.</p>
+      <small>${esc(ownership || "Session policy fields are locally managed by codex-web.")}</small>
+      ${latest ? `<p>Last change by ${esc(latest.actor_id)} at ${esc(fmtTime(latest.created_at))}: ${esc(latest.reason)}. Revoked sessions: ${Number(latest.invalidated_session_count || 0)}.</p>` : "<p>No local policy mutation has been audited yet.</p>"}
+    </article>
   `;
 }
 
@@ -148,6 +184,20 @@ export function renderAdministrationAuthentication(container, {
     </section>
     <div class="administration-users-message" data-auth-message role="status" hidden></div>
 
+    <section class="administration-user-create" data-auth-policy-editor>
+      <h3>Workspace authentication policy</h3>
+      <p>These session controls are locally managed. Changes require administrator MFA/step-up, a current revision, impact preview, confirmation, and an audit reason.</p>
+      <div class="workspace-state workspace-state-loading" data-auth-policy-summary role="status">Loading canonical authentication policy…</div>
+      <div class="administration-user-create-fields" data-auth-policy-fields>
+        <label><span>Idle session lifetime (seconds)</span><input data-auth-policy-idle type="number" min="60" max="86400" required /></label>
+        <label><span>Absolute session lifetime (seconds)</span><input data-auth-policy-absolute type="number" min="300" max="604800" required /></label>
+        <label><span>Step-up window (seconds)</span><input data-auth-policy-step-up type="number" min="60" max="3600" required /></label>
+        <label><span>Audit reason</span><input data-auth-policy-reason type="text" maxlength="500" required placeholder="Why this policy is changing" /></label>
+        <label><input data-auth-policy-invalidate type="checkbox" /> Revoke other active Workspace sessions when applying</label>
+      </div>
+      <div class="administration-membership-actions"><button type="button" data-auth-policy-save>Preview and update policy</button></div>
+    </section>
+
     <section>
       <h3>Active sessions</h3>
       <p>Session revocation is canonical. Revoking another user's session requires administrator MFA/step-up at the API boundary.</p>
@@ -157,7 +207,7 @@ export function renderAdministrationAuthentication(container, {
     <section class="administration-user-create">
       <h3>Create service token</h3>
       <p>Service tokens represent non-human identities. The raw token is shown once at creation and is never retrievable from stored token metadata.</p>
-      <div class="administration-user-create-fields">
+      <div class="administration-user-create-fields" data-auth-token-fields>
         <label><span>Service identity</span>
           <select data-auth-service>
             <option value="">Select service identity…</option>
@@ -201,9 +251,17 @@ export function renderAdministrationAuthentication(container, {
   const revokeOthers = container.querySelector("[data-auth-revoke-others]");
   const createdSecret = container.querySelector("[data-auth-created-secret]");
   const authStatus = container.querySelector("[data-auth-status]");
+  const policySummary = container.querySelector("[data-auth-policy-summary]");
+  const policyIdle = container.querySelector("[data-auth-policy-idle]");
+  const policyAbsolute = container.querySelector("[data-auth-policy-absolute]");
+  const policyStepUp = container.querySelector("[data-auth-policy-step-up]");
+  const policyReason = container.querySelector("[data-auth-policy-reason]");
+  const policyInvalidate = container.querySelector("[data-auth-policy-invalidate]");
+  const policySave = container.querySelector("[data-auth-policy-save]");
   // Snapshot request metadata only; the one-time credential output is outside this root.
-  const editor = trackAdministrationEditor(container.querySelector('.administration-user-create-fields'), 'Service token request');
+  const editor = trackAdministrationEditor(container.querySelector('[data-auth-token-fields]'), 'Service token request');
   let tokenMutationPending = false;
+  let policyRevision = null;
 
   const loadAuthenticationStatus = async () => {
     try {
@@ -220,13 +278,88 @@ export function renderAdministrationAuthentication(container, {
     }
   };
 
-  queueMicrotask(() => { void loadAuthenticationStatus(); });
+  const loadAuthenticationPolicy = async () => {
+    try {
+      const policy = await api("/api/identity/authentication-policy");
+      policyRevision = Number(policy?.revision || 0);
+      policyIdle.value = Number(policy?.values?.session_idle_seconds || 3600);
+      policyAbsolute.value = Number(policy?.values?.session_absolute_seconds || 43200);
+      policyStepUp.value = Number(policy?.values?.step_up_seconds || 900);
+      policyReason.value = "";
+      policyInvalidate.checked = false;
+      policySummary.className = "";
+      policySummary.innerHTML = authenticationPolicyView(policy);
+    } catch (error) {
+      policyRevision = null;
+      policySummary.className = "workspace-state workspace-state-denied";
+      policySummary.innerHTML = `<strong>Authentication policy requires administrator step-up</strong><p>${esc(error?.message || "Canonical authentication policy is unavailable.")}</p>`;
+      policySave.disabled = true;
+    }
+  };
+
+  queueMicrotask(() => { void Promise.all([loadAuthenticationStatus(), loadAuthenticationPolicy()]); });
 
   const setMessage = (value, kind = "info") => {
     message.hidden = !value;
     message.dataset.kind = kind;
     message.textContent = value || "";
   };
+
+  policySave.addEventListener("click", async () => {
+    if (policyRevision == null) return;
+    const payload = {
+      session_idle_seconds: Number(policyIdle.value),
+      session_absolute_seconds: Number(policyAbsolute.value),
+      step_up_seconds: Number(policyStepUp.value),
+      invalidate_existing_sessions: policyInvalidate.checked,
+      reason: policyReason.value.trim(),
+    };
+    if (!payload.reason) {
+      setMessage("An audit reason is required for authentication policy changes.", "error");
+      policyReason.focus();
+      return;
+    }
+    policySave.disabled = true;
+    try {
+      const preview = await api("/api/identity/authentication-policy/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const confirmed = await confirmAction({
+        action: "Update authentication policy",
+        target: `${context.organizationId}/${context.workspaceId} revision ${preview.expected_revision}`,
+        risk: payload.invalidate_existing_sessions ? "high" : "medium",
+        consequence: `${preview.consequence} ${preview.assurance_consequence}`,
+        impact: `${Number(preview.invalidated_session_count || 0)} other active session(s) will be revoked. Changed fields: ${(preview.changed_fields || []).join(", ") || "none"}.`,
+        recovery: "Publish another policy revision. Revoked sessions must authenticate again.",
+        trigger: policySave,
+      });
+      if (!confirmed) return;
+      const result = await api(`/api/identity/authentication-policy?expected_revision=${encodeURIComponent(preview.expected_revision)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (payload.invalidate_existing_sessions) {
+        context.identity.sessions = (context.identity.sessions || []).map((item) => (
+          item.organization_id === context.organizationId
+          && item.workspace_id === context.workspaceId
+          && item.id !== context.actor?.session_id
+          && item.revoked_at == null
+            ? { ...item, revoked_at: Date.now() / 1000, revoke_reason: `authentication-policy-revision:${result?.item?.revision}` }
+            : item
+        ));
+        sessions.innerHTML = sessionRows(context);
+      }
+      setMessage(`Authentication policy revision ${Number(result?.item?.revision || 0)} saved. ${Number(result?.invalidated_session_count || 0)} session(s) revoked.`);
+      await loadAuthenticationPolicy();
+    } catch (error) {
+      setMessage(error?.message || "Unable to update authentication policy.", "error");
+    } finally {
+      if (policyRevision != null) policySave.disabled = false;
+    }
+  });
 
   revokeOthers.addEventListener("click", async () => {
     if (!await confirmAction({ action: 'Revoke other sessions', target: context.actor?.identity_id || 'Current identity', risk: 'high', consequence: 'All other active sessions of this identity lose access; this session remains.', impact: `${(context.identity.sessions || []).filter(item => item.identity_id === context.actor?.identity_id && item.id !== context.actor?.session_id && item.revoked_at == null).length} other sessions in the loaded canonical inventory.`, recovery: 'Authenticate again to create a new session.', trigger: revokeOthers })) return;

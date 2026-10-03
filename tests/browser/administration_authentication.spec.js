@@ -290,6 +290,10 @@ test("Administration Authentication renders canonical authentication status with
           },
           active_session_count: 4,
           active_service_token_count: 2,
+          field_ownership: [
+            { field: "identity_mode", disposition: "external", owner: "deployment environment", change_path: "Set the deployment setting." },
+            { field: "current_assurance", disposition: "computed", owner: "canonical session", change_path: "Complete step-up." },
+          ],
         };
       }
       return {};
@@ -310,6 +314,93 @@ test("Administration Authentication renders canonical authentication status with
   expect(result.text).toContain("External claims grant authority: no");
   expect(result.text).toContain("webauthn (2 active)");
   expect(result.text).toContain("Active Workspace sessions: 4");
+  expect(result.text).toContain("identity_mode");
+  expect(result.text).toContain("external");
+});
+
+test("Administration Authentication previews and updates locally managed session policy", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html");
+  await page.evaluate(async () => {
+    const { renderAdministrationAuthentication } = await import("/static/administration_authentication.js");
+    const context = {
+      allowed: true,
+      organizationId: "org-a",
+      workspaceId: "workspace-a",
+      actor: { identity_id: "human-admin", session_id: "session-current", assurance: "mfa" },
+      identity: {
+        humans: [{ id: "human-admin", display_name: "Admin" }, { id: "human-user", display_name: "User" }],
+        services: [], service_tokens: [],
+        sessions: [
+          { id: "session-current", identity_id: "human-admin", organization_id: "org-a", workspace_id: "workspace-a", assurance: "mfa", revoked_at: null },
+          { id: "session-other", identity_id: "human-user", organization_id: "org-a", workspace_id: "workspace-a", assurance: "oidc", revoked_at: null },
+        ],
+      },
+    };
+    const state = { revision: 2, writes: [] };
+    window.authenticationPolicyState = state;
+    const policy = () => ({
+      organization_id: "org-a", workspace_id: "workspace-a", revision: state.revision,
+      source: "workspace_policy",
+      values: { session_idle_seconds: 3600, session_absolute_seconds: 43200, step_up_seconds: 900 },
+      field_ownership: [
+        { field: "session_idle_seconds", disposition: "local", owner: "codex-web workspace authentication policy" },
+        { field: "session_absolute_seconds", disposition: "local", owner: "codex-web workspace authentication policy" },
+        { field: "step_up_seconds", disposition: "local", owner: "codex-web workspace authentication policy" },
+      ],
+      audit_events: [],
+    });
+    const api = async (path, options = {}) => {
+      if (path === "/api/identity/authentication-status") return { field_ownership: [] };
+      if (path === "/api/identity/authentication-policy" && !options.method) return policy();
+      if (path === "/api/identity/authentication-policy/preview") {
+        const payload = JSON.parse(options.body);
+        state.writes.push({ phase: "preview", payload });
+        return {
+          expected_revision: state.revision,
+          changed_fields: ["session_idle_seconds", "step_up_seconds"],
+          invalidated_session_count: 1,
+          consequence: "New sessions use the proposed lifetimes. One other session will be revoked.",
+          assurance_consequence: "Step-up lasts five minutes.",
+        };
+      }
+      if (path.startsWith("/api/identity/authentication-policy?")) {
+        const payload = JSON.parse(options.body);
+        state.writes.push({ phase: "update", path, payload });
+        state.revision += 1;
+        return { item: { revision: state.revision }, invalidated_session_count: 1 };
+      }
+      return {};
+    };
+    const host = document.createElement("div"); host.id = "authentication-policy-host"; document.body.appendChild(host);
+    renderAdministrationAuthentication(host, { context, api });
+  });
+
+  const host = page.locator("#authentication-policy-host");
+  await expect(host.locator("[data-auth-policy-loaded]")).toContainText("revision 2");
+  await expect(host.locator("[data-auth-policy-loaded]")).toContainText("session_idle_seconds: local");
+  await host.locator("[data-auth-policy-idle]").fill("1800");
+  await host.locator("[data-auth-policy-step-up]").fill("300");
+  await host.locator("[data-auth-policy-reason]").fill("Reduce exposure after assurance review");
+  await host.locator("[data-auth-policy-invalidate]").check();
+  await host.locator("[data-auth-policy-save]").click();
+  const dialog = page.getByRole("dialog", { name: "Update authentication policy" });
+  await expect(dialog).toContainText("One other session will be revoked");
+  await dialog.locator("[data-action-ack]").click();
+  await dialog.locator("[data-action-apply]").click();
+  await expect(host.locator("[data-auth-message]")).toContainText("revision 3 saved");
+  await expect(host.locator("[data-auth-session='session-other']")).toHaveCount(0);
+
+  const writes = await page.evaluate(() => window.authenticationPolicyState.writes);
+  expect(writes[0].phase).toBe("preview");
+  expect(writes[0].payload).toEqual({
+    session_idle_seconds: 1800,
+    session_absolute_seconds: 43200,
+    step_up_seconds: 300,
+    invalidate_existing_sessions: true,
+    reason: "Reduce exposure after assurance review",
+  });
+  expect(writes[1].phase).toBe("update");
+  expect(writes[1].path).toContain("expected_revision=2");
 });
 
 test("Administration Authentication fails closed when canonical status requires step-up", async ({ page }) => {

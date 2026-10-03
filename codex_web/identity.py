@@ -236,6 +236,45 @@ class RecoveryFactor(BaseModel):
     disabled_at: float | None = None
 
 
+class AuthenticationPolicyRecord(BaseModel):
+    """Workspace session controls owned by codex-web identity administration."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    organization_id: str = Field(min_length=1)
+    workspace_id: str = Field(min_length=1)
+    revision: int = Field(ge=1)
+    session_idle_seconds: int = Field(default=3600, ge=60, le=86400)
+    session_absolute_seconds: int = Field(default=43200, ge=300, le=604800)
+    step_up_seconds: int = Field(default=900, ge=60, le=3600)
+    updated_by: str = Field(min_length=1)
+    updated_at: float = Field(default_factory=time.time)
+    change_reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_session_lifetimes(self) -> "AuthenticationPolicyRecord":
+        if self.session_idle_seconds > self.session_absolute_seconds:
+            raise ValueError("session idle lifetime cannot exceed absolute lifetime")
+        return self
+
+
+class AuthenticationPolicyAuditEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    id: str = Field(default_factory=lambda: f"auth-policy-event-{uuid.uuid4().hex}")
+    organization_id: str = Field(min_length=1)
+    workspace_id: str = Field(min_length=1)
+    revision: int = Field(ge=1)
+    action: Literal["create", "update"]
+    changed_fields: list[str] = Field(default_factory=list)
+    previous_values: dict[str, int] = Field(default_factory=dict)
+    proposed_values: dict[str, int] = Field(default_factory=dict)
+    invalidated_session_count: int = Field(default=0, ge=0)
+    actor_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=500)
+    created_at: float = Field(default_factory=time.time)
+
+
 class AuthenticationActor(BaseModel):
     """Canonical request actor independent from agent/execution-role identity."""
 
@@ -280,7 +319,7 @@ class ExternalAuthenticationResult(BaseModel):
 class IdentityState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.3"
+    schema_version: str = "1.4"
     organizations: list[Organization] = Field(default_factory=list)
     workspaces: list[Workspace] = Field(default_factory=list)
     humans: list[HumanIdentity] = Field(default_factory=list)
@@ -290,6 +329,8 @@ class IdentityState(BaseModel):
     sessions: list[SessionRecord] = Field(default_factory=list)
     service_tokens: list[ServiceTokenRecord] = Field(default_factory=list)
     recovery_factors: list[RecoveryFactor] = Field(default_factory=list)
+    authentication_policies: list[AuthenticationPolicyRecord] = Field(default_factory=list)
+    authentication_policy_events: list[AuthenticationPolicyAuditEvent] = Field(default_factory=list)
 
 
 class OrganizationCreate(BaseModel):
@@ -369,6 +410,22 @@ class SessionCreate(BaseModel):
     assurance: AuthenticationAssurance = AuthenticationAssurance.PRIMARY
     idle_seconds: int = Field(default=3600, ge=60, le=86400)
     absolute_seconds: int = Field(default=43200, ge=300, le=604800)
+
+
+class AuthenticationPolicyChange(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    session_idle_seconds: int = Field(ge=60, le=86400)
+    session_absolute_seconds: int = Field(ge=300, le=604800)
+    step_up_seconds: int = Field(ge=60, le=3600)
+    invalidate_existing_sessions: bool = False
+    reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_session_lifetimes(self) -> "AuthenticationPolicyChange":
+        if self.session_idle_seconds > self.session_absolute_seconds:
+            raise ValueError("session idle lifetime cannot exceed absolute lifetime")
+        return self
 
 
 class SessionRefresh(BaseModel):

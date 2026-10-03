@@ -44,6 +44,23 @@ Session controls include:
 - step-up/MFA assurance windows;
 - CSRF validation for cookie-authenticated state-changing requests.
 
+Workspace authentication policy owns the idle session lifetime, absolute session
+lifetime, and step-up window. Administration exposes the effective values,
+source, revision, actor/time/reason, and retained audit history. An update first
+returns a deterministic impact preview and then requires the exact current
+revision, administrator authority, and MFA-equivalent assurance. Operators may
+revoke all other active Workspace sessions as part of the update; the current
+session remains active so the result and audit receipt can be observed. New
+sessions use the latest idle and absolute lifetime. Existing sessions adopt the
+latest idle limit when next used but keep their existing absolute expiry unless
+explicitly revoked. Step-up requests use the latest step-up window.
+
+Deployment identity mode and IdP/MFA mechanism configuration remain externally
+managed. The Authentication surface labels those fields with the owning system
+and change path. Computed session/token counts and current assurance are also
+labelled rather than presented as editable policy. External claims still cannot
+grant codex-web authority.
+
 A detected refresh-token replay revokes the affected session before returning the authentication error.
 
 Bearer-authenticated API sessions do not require CSRF because the credential is not ambient browser state.
