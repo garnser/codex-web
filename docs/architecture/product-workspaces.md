@@ -403,3 +403,11 @@ or simulation require review. Emergency pause/kill controls remain immediate so
 stopping work is not delayed by a modal. Automation publication reviews its Project,
 prior revision and resulting lifecycle before creating/publishing the candidate;
 ordinary manual run admission still uses its existing canonical gates.
+
+Goal activation/resume, terminal cancellation/completion and execution-binding
+resume/cancel/outcome reconciliation use the same review, identifying the Goal
+revision, known Project bindings and selected evaluation/binding. Goal terminal
+transitions have no Undo and do not rewrite bound Work Items. The Orchestration
+Inspector reviews schedule resume/cancel and live autonomy changes; pause/kill stay
+immediate. Confirmation never substitutes for provider evidence when reconciling an
+unknown runtime outcome.

@@ -1,3 +1,4 @@
+const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require('@playwright/test');
 
 function goalSnapshot(status = 'active') {
@@ -359,6 +360,7 @@ test('Goal completion posts explicit observations then uses returned evaluation 
 
   await expect(dialog.locator('.goal-complete')).toBeEnabled();
   await dialog.locator('.goal-complete').click();
+  await resolveAction(page);
   await expect.poll(() => posts.some((item) => item.action === 'transition')).toBeTruthy();
   expect(posts.find((item) => item.action === 'transition').body).toMatchObject({
     status: 'completed',
@@ -565,4 +567,56 @@ test('a denied Goal deep link does not silently substitute the first Goal', asyn
   await page.locator('#goals-button').click();
   await expect(page.locator('.goal-detail')).toContainText('Referenced Goal is not visible');
   await expect(page.locator('.goal-detail')).not.toContainText('Ship verified Goal flow');
+});
+
+test('Goal cancellation requires consequence review and cancels safely on Project navigation', async ({ page }) => {
+  const posts = [];
+  await mockGoalApis(page, posts);
+  await page.goto('http://127.0.0.1:18766/tests/browser/goals_fixture.html');
+  await page.locator('#goals-button').click();
+  page.on('dialog', dialog => dialog.accept('Operator verified cancellation'));
+  await page.locator('.goal-cancel').click();
+  const text = await resolveAction(page, false);
+  expect(text).toContain('goal-a@4');
+  expect(text).toContain('project-a');
+  expect(text).toContain('terminal');
+  expect(posts.some(item => item.action === 'transition')).toBeFalsy();
+  await page.locator('.goal-cancel').click();
+  await expect(page.locator('[data-action-confirmation]')).toBeVisible();
+  await page.route(/\/api\/goals.*project_id=project-b/, route => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ items: [], count: 0 }) }));
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: 'project-b' } })));
+  await expect(page.locator('[data-action-confirmation]')).toHaveCount(0);
+  expect(posts.some(item => item.action === 'transition')).toBeFalsy();
+});
+
+test('accepted Goal cancellation submits the confirmed terminal transition', async ({ page }) => {
+  const posts = [];
+  await mockGoalApis(page, posts);
+  await page.goto('http://127.0.0.1:18766/tests/browser/goals_fixture.html');
+  await page.locator('#goals-button').click();
+  page.once('dialog', dialog => dialog.accept('Operator verified cancellation'));
+  await page.locator('.goal-cancel').click();
+  await resolveAction(page);
+  await expect.poll(() => posts.filter(item => item.action === 'transition').length).toBe(1);
+  expect(posts.find(item => item.action === 'transition').body).toMatchObject({ status: 'cancelled', reason: 'Operator verified cancellation' });
+});
+
+test('runtime cancellation identifies its binding and does not claim provider work was undone', async ({ page }) => {
+  const posts = [];
+  await mockGoalApis(page, posts);
+  await page.route('**/api/goals/goal-a/execution-bindings/goal-binding-a/cancel?*', async route => {
+    posts.push({ action: 'runtime-cancel', body: route.request().postDataJSON() });
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({}) });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/goals_fixture.html');
+  await page.locator('#goals-button').click();
+  page.on('dialog', dialog => dialog.accept('Verified operator cancellation'));
+  await page.locator('.goal-runtime-cancel').click();
+  const message = await resolveAction(page, false);
+  expect(message).toContain('goal-binding-a');
+  expect(message).toContain('does not prove');
+  expect(posts.some(item => item.action === 'runtime-cancel')).toBeFalsy();
+  await page.locator('.goal-runtime-cancel').click();
+  await resolveAction(page);
+  await expect.poll(() => posts.filter(item => item.action === 'runtime-cancel').length).toBe(1);
 });

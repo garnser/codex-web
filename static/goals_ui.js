@@ -1,3 +1,4 @@
+import { confirmGoalAction } from './goal_action_confirmation.js';
 import { requestedReference, rememberReference } from './reference_navigation.js';
 import { request } from './api_client.js';
 import { currentProjectId as activeProjectId } from './project_view_scope.js';
@@ -728,6 +729,7 @@ function wireGoalActions() {
     node.querySelector('.goal-runtime-resume')?.addEventListener('click', async () => {
       const reason = window.prompt('Resume reason', 'operator resumed Goal runtime continuation');
       if (!reason) return;
+      if (!await confirmGoalAction('Resume runtime', goal, context, node.dataset.bindingId)) return;
       await mutate(
         `/api/goals/${encodedGoal}/execution-bindings/${bindingId}/resume`,
         { reason },
@@ -737,6 +739,7 @@ function wireGoalActions() {
     node.querySelector('.goal-runtime-cancel')?.addEventListener('click', async () => {
       const reason = window.prompt('Cancellation reason', 'operator cancelled Goal runtime binding');
       if (!reason) return;
+      if (!await confirmGoalAction('Cancel runtime', goal, context, node.dataset.bindingId)) return;
       await mutate(
         `/api/goals/${encodedGoal}/execution-bindings/${bindingId}/cancel`,
         { reason },
@@ -757,6 +760,7 @@ function wireGoalActions() {
         'operator verified provider turn outcome',
       );
       if (!reason) return;
+      if (!await confirmGoalAction('Reconcile runtime', goal, context, `${node.dataset.bindingId} → ${outcome}`)) return;
       await mutate(
         `/api/goals/${encodedGoal}/execution-bindings/${bindingId}/reconcile`,
         { outcome, reason },
@@ -823,23 +827,27 @@ function wireGoalActions() {
   });
 
   detail.querySelector('.goal-complete')?.addEventListener('click', async () => {
-    if (!state.completion?.id) return;
+    const evaluationId = state.completion?.id;
+    if (!evaluationId || !await confirmGoalAction('Complete Goal', goal, context, evaluationId)) return;
     await mutate(
       `/api/goals/${encodedGoal}/transition`,
       {
         status: 'completed',
         reason: 'current completion evaluation passed',
-        completion_evaluation_id: state.completion.id,
+        completion_evaluation_id: evaluationId,
       },
       'Completing Goal…',
     );
   });
 
-  detail.querySelector('.goal-activate')?.addEventListener('click', () => mutate(
-    `/api/goals/${encodedGoal}/transition`,
-    { status: 'active', reason: goal.status === 'paused' ? 'operator resumed Goal' : 'operator activated Goal' },
-    goal.status === 'paused' ? 'Resuming Goal…' : 'Activating Goal…',
-  ));
+  detail.querySelector('.goal-activate')?.addEventListener('click', async () => {
+    if (!await confirmGoalAction(goal.status === 'paused' ? 'Resume Goal' : 'Activate Goal', goal, context)) return;
+    await mutate(
+      `/api/goals/${encodedGoal}/transition`,
+      { status: 'active', reason: goal.status === 'paused' ? 'operator resumed Goal' : 'operator activated Goal' },
+      goal.status === 'paused' ? 'Resuming Goal…' : 'Activating Goal…',
+    );
+  });
   detail.querySelector('.goal-pause')?.addEventListener('click', () => mutate(
     `/api/goals/${encodedGoal}/transition`,
     { status: 'paused', reason: 'operator paused Goal' },
@@ -847,7 +855,7 @@ function wireGoalActions() {
   ));
   detail.querySelector('.goal-cancel')?.addEventListener('click', async () => {
     const reason = window.prompt('Goal cancellation reason', 'operator cancelled Goal');
-    if (!reason) return;
+    if (!reason || !await confirmGoalAction('Cancel Goal', goal, context)) return;
     await mutate(
       `/api/goals/${encodedGoal}/transition`,
       { status: 'cancelled', reason },
