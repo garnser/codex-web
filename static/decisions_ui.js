@@ -1,3 +1,5 @@
+import { formDraft } from './form_draft.js';
+const draft = formDraft('Decision work');
 import { requestedReference, rememberReference } from './reference_navigation.js';
 import { request } from './api_client.js';
 
@@ -50,6 +52,7 @@ function projectPath(path, projectId = state.projectId) {
 }
 
 function clearProjectState(projectId) {
+  draft.clear();
   state.refreshController?.abort();
   state.detailController?.abort();
   state.refreshController = null;
@@ -116,7 +119,8 @@ function ensureShell() {
     dialog.showModal();
     await refreshAll();
   });
-  dialog.querySelector('.decisions-close').addEventListener('click', () => dialog.close());
+  dialog.querySelector('.decisions-close').addEventListener('click', () => { if (draft.leave()) dialog.close(); });
+  dialog.addEventListener('cancel', event => { if (!draft.leave()) event.preventDefault(); });
   dialog.querySelector('.decisions-refresh').addEventListener('click', refreshAll);
 }
 
@@ -139,6 +143,7 @@ function freshnessBadge(value) {
 async function refreshAll({ projectId = activeProjectId() } = {}) {
   const normalizedProjectId = String(projectId || '').trim();
   if (state.projectId !== normalizedProjectId) clearProjectState(normalizedProjectId);
+  if (draft.dirty()) { setStatus('Refresh deferred. Generate or discard unsaved Decision work first.'); return; }
   if (!normalizedProjectId) {
     setStatus('Select a Project');
     return;
@@ -158,6 +163,7 @@ async function refreshAll({ projectId = activeProjectId() } = {}) {
       || generation !== state.refreshGeneration
       || normalizedProjectId !== state.projectId
     ) return;
+    if (draft.dirty()) { setStatus('Refresh deferred. Generate or discard unsaved Decision work first.'); return; }
     state.decisions = Array.isArray(payload?.items) ? payload.items : [];
     if (
       !state.selectedDecisionId
@@ -206,6 +212,7 @@ function renderList() {
   }).join('');
   host.querySelectorAll('.decision-row').forEach((row) => {
     row.addEventListener('click', async () => {
+      if (!draft.leave()) return;
       state.selectedDecisionId = row.dataset.decisionId;
       rememberReference("decision", state.selectedDecisionId);
       renderList();
@@ -219,7 +226,8 @@ async function loadDecision(
   { projectId = state.projectId, generation = state.refreshGeneration } = {},
 ) {
   const host = document.querySelector('.decision-detail');
-  if (!host || !projectId) return;
+  if (!host || !projectId || draft.dirty()) return;
+  draft.clear();
   state.detailController?.abort();
   const controller = new AbortController();
   state.detailController = controller;
@@ -550,8 +558,17 @@ function renderDetail() {
     </section>`;
 
   const workForm = host.querySelector('.decision-work-form');
+  if (workForm) {
+    draft.mount(workForm);
+    const discard = document.createElement('button'); discard.type = 'button'; discard.textContent = 'Discard edits';
+    discard.dataset.decisionWorkDiscard = '';
+    discard.onclick = () => { if (draft.leave()) loadDecision(decision.id); };
+    workForm.appendChild(discard);
+  }
   if (workForm) workForm.addEventListener('submit', async (event) => {
     event.preventDefault();
+    if (workForm.dataset.saving) return;
+    const ticket = draft.submission();
     const form = new FormData(workForm);
     const itemId = workForm.dataset.itemId;
     const body = {
@@ -566,11 +583,12 @@ function renderDetail() {
       }],
       reason: 'Generate approved Decision consequence as canonical work.',
     };
-    await mutate(
+    workForm.dataset.saving = 'true';
+    try { await mutate(
       `/api/decisions/${encodeURIComponent(decision.id)}/work`,
       body,
-      'Generating canonical Decision work…',
-    );
+      'Generating canonical Decision work…', ticket,
+    ); } finally { delete workForm.dataset.saving; }
   });
   const reconcileWork = host.querySelector('.decision-reconcile-work');
   if (reconcileWork) reconcileWork.addEventListener('click', () => mutate(
@@ -599,13 +617,14 @@ function renderDetail() {
   ));
 }
 
-async function mutate(path, body, message) {
+async function mutate(path, body, message, ticket = null) {
+  if (draft.dirty() && !ticket) { setStatus('Generate or discard unsaved Decision work before another action.'); return; }
   const projectId = state.projectId;
   const generation = state.refreshGeneration;
   const decisionId = state.selectedDecisionId;
   const current = () => generation === state.refreshGeneration
     && projectId === state.projectId && projectId === activeProjectId()
-    && decisionId === state.selectedDecisionId;
+    && decisionId === state.selectedDecisionId && (!ticket || ticket.current());
   if (!projectId || !current()) {
     setStatus('Project changed; reload the Decision before acting.', true);
     return;
@@ -617,7 +636,11 @@ async function mutate(path, body, message) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (current()) await refreshAll({ projectId });
+    if (current()) {
+      ticket?.saved();
+      if (draft.dirty()) { setStatus('Decision work submitted. Newer edits remain unsaved.'); return; }
+      draft.clear(); await refreshAll({ projectId });
+    }
   } catch (error) {
     if (current()) {
       setStatus(error.message || 'Decision action failed', true);
@@ -627,7 +650,7 @@ async function mutate(path, body, message) {
 
 window.addEventListener('codex:open-decision', async (event) => {
   const decisionId = String(event.detail?.decisionId || '').trim();
-  if (!decisionId) return;
+  if (!decisionId || !draft.leave()) return;
   ensureShell();
   const dialog = document.querySelector('#decisions-dialog');
   if (!dialog.open) dialog.showModal();

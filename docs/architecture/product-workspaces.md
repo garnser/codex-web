@@ -442,3 +442,13 @@ dependent option catalogs and their saved selections. Late successful mutations
 acknowledge their submitted metadata only and are fenced by the initiating Project;
 a late one-time token response cannot appear after that Project changes. Raw token
 results are not part of editor snapshots or browser persistence.
+
+Executive consultation requests and Decision work forms use transient dirty-editor
+state. Refresh defers if input changes before or during the read; selection, Cancel
+and closing the editor require deliberate discard. Failed requests retain input,
+and successful requests acknowledge only the submitted snapshot, preserving newer
+typing. Concurrent submission of the same form is suppressed. Results are fenced
+by the initiating view and Project, while accepted activations and generated work
+remain recoverable through their canonical records. These guards add no model
+calls, authority decisions or browser draft persistence; creating an Executive
+activation remains separate from requesting consultation.

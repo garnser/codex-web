@@ -422,3 +422,67 @@ test('Executive management remains navigable on mobile', async ({ page }) => {
   await expect(dialog).toContainText('External side effects');
   await expect(dialog).toContainText('forbidden');
 });
+
+test('consultation draft survives refresh and failed creation, and selection requires discard', async ({ page }) => {
+  await installRoutes(page);
+  await page.route('**/api/executive/activations', route => route.request().method() === 'POST'
+    ? route.fulfill({ status: 409, json: { detail: 'Activation scope changed' } }) : route.fallback());
+  await page.goto('http://127.0.0.1:18766/tests/browser/executive_management_fixture.html');
+  await page.locator('#executive-management-button').click();
+  await page.locator('.exec-mgmt-new').click();
+  const form = page.locator('.exec-mgmt-create-form');
+  await form.locator('[name=subject]').fill('Draft consultation');
+  await form.locator('[name=request]').fill('Keep this unsaved reasoning request');
+  await page.locator('.exec-mgmt-refresh').click();
+  await expect(page.locator('.exec-mgmt-status')).toContainText('Refresh deferred');
+  await expect(form.locator('[name=request]')).toHaveValue('Keep this unsaved reasoning request');
+  await form.locator('[type=submit]').click();
+  await expect(page.locator('.exec-mgmt-status')).toContainText('Activation scope changed');
+  await expect(form.locator('[data-dirty-editor-status]')).toHaveText('Unsaved changes');
+  page.once('dialog', dialog => dialog.dismiss());
+  await page.locator('[data-role-id=cto]').click();
+  await expect(form).toBeVisible();
+  page.once('dialog', dialog => dialog.accept());
+  await form.locator('.exec-mgmt-cancel-create').click();
+  await expect(form).toHaveCount(0);
+});
+
+test('late consultation creation retains newer typing without replaying the request', async ({ page }) => {
+  await installRoutes(page);
+  let held, posts = 0;
+  await page.route('**/api/executive/activations', route => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    held = route; posts += 1;
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/executive_management_fixture.html');
+  await page.locator('#executive-management-button').click();
+  await page.locator('.exec-mgmt-new').click();
+  const form = page.locator('.exec-mgmt-create-form');
+  await form.locator('[name=subject]').fill('Submitted consultation');
+  await form.locator('[name=request]').fill('Submitted reasoning request');
+  await form.locator('[type=submit]').click();
+  await expect.poll(() => Boolean(held)).toBe(true);
+  await form.locator('[type=submit]').click();
+  expect(posts).toBe(1);
+  await form.locator('[name=request]').fill('Newer reasoning request');
+  await held.fulfill({ json: { item: { id: 'activation-new' } } });
+  await expect(page.locator('.exec-mgmt-status')).toContainText('Newer edits remain unsaved');
+  await expect(form.locator('[name=request]')).toHaveValue('Newer reasoning request');
+  await expect(form.locator('[data-dirty-editor-status]')).toHaveText('Unsaved changes');
+});
+
+test('consultation typing started during refresh survives its late result', async ({ page }) => {
+  await installRoutes(page);
+  await page.goto('http://127.0.0.1:18766/tests/browser/executive_management_fixture.html');
+  await page.locator('#executive-management-button').click();
+  await page.locator('.exec-mgmt-new').click();
+  let held;
+  await page.route('**/api/executive/roles', route => { held = route; });
+  await page.locator('.exec-mgmt-refresh').click();
+  await expect.poll(() => Boolean(held)).toBe(true);
+  const input = page.locator('.exec-mgmt-create-form [name=request]');
+  await input.fill('Started after the refresh request');
+  await held.fulfill({ json: { catalog: roleCatalog() } });
+  await expect(page.locator('.exec-mgmt-status')).toContainText('Refresh deferred');
+  await expect(input).toHaveValue('Started after the refresh request');
+});

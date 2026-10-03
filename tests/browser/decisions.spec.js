@@ -508,3 +508,48 @@ test('a denied Decision deep link does not silently substitute the first Decisio
   await expect(page.locator('.decision-detail')).toContainText('Referenced Decision is not visible');
   await expect(page.locator('.decision-detail')).not.toContainText('Choose rollout strategy');
 });
+
+test('Decision work draft survives refresh and failed generation, with deliberate discard', async ({ page }) => {
+  const posts = [];
+  await mockDecisionApis(page, posts, 'approved');
+  await page.route('**/api/decisions/decision-a/work?*', route => route.fulfill({ status: 409, json: { detail: 'Decision changed' } }));
+  await page.goto('http://127.0.0.1:18766/tests/browser/decisions_fixture.html');
+  await page.locator('#decisions-button').click();
+  const form = page.locator('.decision-work-form');
+  await form.locator('[name=project_id]').fill('project-a');
+  await form.locator('[name=title]').fill('Unsaved consequence');
+  await form.locator('[name=description]').fill('Keep this approved work description');
+  await page.locator('.decisions-refresh').click();
+  await expect(page.locator('.decisions-status')).toContainText('Refresh deferred');
+  await form.locator('[type=submit]').click();
+  await expect(page.locator('.decisions-status')).toContainText('Decision changed');
+  await expect(form.locator('[name=description]')).toHaveValue('Keep this approved work description');
+  page.once('dialog', dialog => dialog.dismiss());
+  await page.locator('.decisions-close').click();
+  await expect(page.locator('#decisions-dialog')).toBeVisible();
+  page.once('dialog', dialog => dialog.accept());
+  await form.locator('[data-decision-work-discard]').click();
+  await expect(form.locator('[data-dirty-editor-status]')).toHaveText('No unsaved changes');
+  await expect(form.locator('[name=description]')).toHaveValue('');
+});
+
+test('late Decision generation preserves newer work text and prevents duplicate submission', async ({ page }) => {
+  const posts = [];
+  await mockDecisionApis(page, posts, 'approved');
+  let held, count = 0;
+  await page.route('**/api/decisions/decision-a/work?*', route => { held = route; count += 1; });
+  await page.goto('http://127.0.0.1:18766/tests/browser/decisions_fixture.html');
+  await page.locator('#decisions-button').click();
+  const form = page.locator('.decision-work-form');
+  await form.locator('[name=project_id]').fill('project-a');
+  await form.locator('[name=title]').fill('Submitted consequence');
+  await form.locator('[name=description]').fill('Submitted work description');
+  await form.locator('[type=submit]').click();
+  await expect.poll(() => Boolean(held)).toBe(true);
+  await form.locator('[type=submit]').click(); expect(count).toBe(1);
+  await form.locator('[name=description]').fill('Newer work description');
+  await held.fulfill({ json: {} });
+  await expect(page.locator('.decisions-status')).toContainText('Newer edits remain unsaved');
+  await expect(form.locator('[name=description]')).toHaveValue('Newer work description');
+  await expect(form.locator('[data-dirty-editor-status]')).toHaveText('Unsaved changes');
+});
