@@ -1,3 +1,5 @@
+import { formDraft } from './form_draft.js';
+const draft = formDraft('Executive consultation');
 import { request } from './api_client.js';
 import { showPageEditor } from './page_editor.js';
 
@@ -89,7 +91,8 @@ function ensureShell() {
     showPageEditor(dialog, { workspace: 'organization' });
     await refreshAll();
   });
-  dialog.querySelector('.exec-mgmt-close').addEventListener('click', () => dialog.close());
+  dialog.querySelector('.exec-mgmt-close').addEventListener('click', () => { if (draft.leave()) dialog.close(); });
+  dialog.addEventListener('cancel', event => { if (!draft.leave()) event.preventDefault(); });
   dialog.querySelector('.exec-mgmt-refresh').addEventListener('click', refreshAll);
   dialog.querySelector('.exec-mgmt-new').addEventListener('click', renderCreateForm);
 }
@@ -102,12 +105,16 @@ function setStatus(message, isError = false) {
 }
 
 async function refreshAll() {
+  if (draft.dirty()) { setStatus('Refresh deferred. Save or discard the consultation draft first.'); return; }
+  const current = draft.view();
   setStatus('Loading canonical Executive state…');
   try {
     const [roles, activations] = await Promise.all([
       request('/api/executive/roles'),
       request('/api/executive/activations?limit=100'),
     ]);
+    if (!current()) return;
+    if (draft.dirty()) { setStatus('Refresh deferred. Save or discard the consultation draft first.'); return; }
     state.roles = roles?.catalog?.roles || [];
     state.catalogDefinition = roles?.definition || null;
     state.activations = activations?.items || [];
@@ -142,7 +149,7 @@ async function refreshAll() {
     }
     setStatus('Up to date');
   } catch (error) {
-    setStatus(error.message || 'Failed to load Executive management state', true);
+    if (current()) setStatus(error.message || 'Failed to load Executive management state', true);
   }
 }
 
@@ -173,6 +180,7 @@ function renderSidebar() {
 
   roleHost.querySelectorAll('[data-role-id]').forEach((button) => {
     button.addEventListener('click', () => {
+      if (!draft.leave()) return;
       state.mode = 'role';
       state.selectedRoleId = button.dataset.roleId;
       state.selectedActivationId = '';
@@ -182,6 +190,7 @@ function renderSidebar() {
   });
   activationHost.querySelectorAll('[data-activation-id]').forEach((button) => {
     button.addEventListener('click', async () => {
+      if (!draft.leave()) return;
       state.mode = 'activation';
       state.selectedActivationId = button.dataset.activationId;
       state.selectedRoleId = '';
@@ -275,6 +284,7 @@ function renderRoleDetail(roleId) {
 
   host.querySelectorAll('[data-role-activation-id]').forEach((button) => {
     button.addEventListener('click', async () => {
+      if (!draft.leave()) return;
       state.mode = 'activation';
       state.selectedActivationId = button.dataset.roleActivationId;
       state.selectedRoleId = '';
@@ -339,6 +349,8 @@ function bindCanonicalLinks(host) {
 }
 
 async function loadActivation(activationId) {
+  if (draft.dirty()) return;
+  const current = draft.view();
   const host = document.querySelector('.exec-mgmt-detail');
   if (!host) return;
   host.innerHTML = '<div class="exec-mgmt-empty">Loading canonical activation…</div>';
@@ -348,11 +360,12 @@ async function loadActivation(activationId) {
       request(`/api/executive/activations/${encoded}`),
       request(`/api/executive/activations/${encoded}/revisions`),
     ]);
+    if (!current()) return;
     state.activation = detail?.item || null;
     state.revisions = revisions?.items || [];
     renderActivation();
   } catch (error) {
-    host.innerHTML = `<div class="exec-mgmt-error">${esc(error.message || 'Failed to load activation')}</div>`;
+    if (current()) host.innerHTML = `<div class="exec-mgmt-error">${esc(error.message || 'Failed to load activation')}</div>`;
   }
 }
 
@@ -599,6 +612,7 @@ async function materializeProposal(activationId, proposalId) {
 }
 
 function renderCreateForm() {
+  if (!draft.leave()) return;
   state.mode = 'create';
   state.selectedActivationId = '';
   state.selectedRoleId = '';
@@ -624,7 +638,8 @@ function renderCreateForm() {
         </div>
       </form>
     </section>`;
-  host.querySelector('.exec-mgmt-cancel-create').addEventListener('click', refreshAll);
+  draft.mount(host.querySelector('.exec-mgmt-create-form'));
+  host.querySelector('.exec-mgmt-cancel-create').addEventListener('click', () => { if (draft.leave()) refreshAll(); });
   host.querySelector('.exec-mgmt-create-form').addEventListener('submit', createActivation);
 }
 
@@ -638,6 +653,8 @@ function csv(form, name) {
 async function createActivation(event) {
   event.preventDefault();
   const form = event.currentTarget;
+  if (form.dataset.saving) return;
+  const ticket = draft.submission();
   const data = new FormData(form);
   const body = {
     subject: String(data.get('subject') || '').trim(),
@@ -649,6 +666,7 @@ async function createActivation(event) {
     work_item_refs: csv(form, 'work_item_refs'),
     evidence_ids: csv(form, 'evidence_ids'),
   };
+  form.dataset.saving = 'true';
   setStatus('Creating canonical Executive activation…');
   try {
     const result = await request('/api/executive/activations', {
@@ -656,12 +674,16 @@ async function createActivation(event) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
+    if (!ticket.current()) return;
+    ticket.saved();
+    if (draft.dirty()) { setStatus(`Created activation ${result.item.id}. Newer edits remain unsaved.`); return; }
+    draft.leave();
     state.mode = 'activation';
     state.selectedActivationId = result.item.id;
     await refreshAll();
   } catch (error) {
-    setStatus(error.message || 'Failed to create Executive activation', true);
-  }
+    if (ticket.current()) setStatus(error.message || 'Failed to create Executive activation', true);
+  } finally { delete form.dataset.saving; }
 }
 
 ensureShell();
