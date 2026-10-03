@@ -214,7 +214,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [functional, visual-autonomy, visual-agent, visual-other, screenshots]
+        suite: [functional, visual, screenshots]
 
     steps:
       - name: Check out repository
@@ -254,19 +254,10 @@ jobs:
             sleep 0.2
           done
 
-          if [[ "${{ matrix.suite }}" == "visual-autonomy" ]]; then
-            npx playwright test tests/browser/visual_regression.spec.js \
-              --grep "visual baseline: autonomy-control-center$" \
-              --workers=1 --retries=1 --reporter=line
-          elif [[ "${{ matrix.suite }}" == "visual-agent" ]]; then
-            npx playwright test tests/browser/visual_regression.spec.js \
-              --grep "visual baseline: agent-team-skill$" \
-              --workers=1 --retries=1 --reporter=line
-          elif [[ "${{ matrix.suite }}" == "visual-other" ]]; then
+          if [[ "${{ matrix.suite }}" == "visual" ]]; then
             npx playwright test \
               tests/browser/visual_regression.spec.js \
               tests/browser/routed_project_visual.spec.js \
-              --grep-invert "visual baseline: (autonomy-control-center|agent-team-skill)$" \
               --workers=1 --retries=1 --reporter=line
           elif [[ "${{ matrix.suite }}" == "functional" ]]; then
             npx playwright test tests/browser \

@@ -26,8 +26,12 @@ async function visualSignature(page, capture) {
     const trigger = page.locator(capture.open_selector);
     await expect(trigger).toBeVisible();
     await trigger.click();
-    await page.waitForTimeout(50);
   }
+  await page.waitForFunction(
+    (landmarks) => landmarks.every((landmark) => document.body.innerText.includes(landmark)),
+    capture.landmarks || [],
+    { timeout: 10_000 },
+  );
   expect(errors, `${capture.name}: uncaught page exceptions`).toEqual([]);
 
   const png = await page.screenshot({
