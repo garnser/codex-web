@@ -16,8 +16,16 @@ AGENT_PROFILE_MIGRATIONS.register(
     "0.0",
     "1.0",
     lambda payload: {
-        "schema_version": AGENT_PROFILE_STATE_CONTRACT.current,
+        "schema_version": "1.0",
         "revisions": list(payload.get("revisions", [])),
+    },
+)
+AGENT_PROFILE_MIGRATIONS.register(
+    "1.0",
+    "1.1",
+    lambda payload: {
+        **payload,
+        "schema_version": AGENT_PROFILE_STATE_CONTRACT.current,
     },
 )
 

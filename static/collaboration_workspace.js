@@ -356,13 +356,20 @@ async function loadAgentDetails(profile, details) {
     executionPolicy.appendChild(metadataGrid([
       { label: "Execution profile", value: profile.execution_profile_id },
       { label: "Model class", value: profile.model_policy?.model_class },
+      { label: "Workload class", value: profile.model_policy?.workload_class },
+      { label: "Pinned model", value: profile.model_policy?.pinned_model_id },
+      { label: "Model providers", value: (profile.model_policy?.preferred_provider_ids || []).join(", ") },
+      { label: "Model latency", value: (profile.model_policy?.preferred_latency_classes || []).join(", ") },
+      { label: "Prefer lower cost", value: profile.model_policy?.prefer_lower_cost },
+      { label: "Max model cost", value: profile.model_policy?.max_cost_usd },
+      { label: "Model fallback", value: profile.model_policy?.allow_fallback },
       { label: "Provider preference", value: (profile.runtime_policy?.preferred_provider_ids || []).join(", ") },
       { label: "Runtime preference", value: (profile.runtime_policy?.preferred_runtime_ids || []).join(", ") },
       { label: "Sandbox", value: profile.sandbox_requirement || profile.runtime_policy?.required_sandbox_profile },
       { label: "Max concurrency", value: profile.budgets?.max_concurrency },
     ]));
     for (const id of profile.runtime_policy?.preferred_provider_ids || []) executionPolicy.appendChild(referenceNode("agent_provider", id));
-    executionPolicy.appendChild(el("small", "", "Runtime and model-class preferences are routing constraints; available runtimes are adapter-owned. Change preferences with Edit Agent Profile."));
+    executionPolicy.appendChild(el("small", "", "Workflow or turn preferences apply first, followed by this Agent Profile revision, scoped Configuration, and defaults. Hard cost and fallback constraints retain the tightest effective value. Change profile defaults with Edit Agent Profile."));
     target.appendChild(executionPolicy);
     if (profile.execution_profile_id) {
       const link = el('a', 'ghost-button', 'View / manage Execution Profile');

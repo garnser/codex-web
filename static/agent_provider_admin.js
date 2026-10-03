@@ -41,8 +41,9 @@
       .agent-trace-links{display:flex;gap:6px;flex-wrap:wrap}
       .agent-trace-links a{font-size:10px}
       .agent-route-explainer{grid-column:1/-1;border-top:1px solid var(--border,var(--line,#313744));padding-top:10px;display:grid;gap:7px}
-      .agent-route-form{display:grid;grid-template-columns:minmax(140px,1fr) minmax(140px,1fr) auto;gap:7px}
+      .agent-route-form{display:grid;grid-template-columns:repeat(2,minmax(140px,1fr));gap:7px}
       .agent-route-form input{min-width:0;height:36px;border:1px solid var(--line,#313744);border-radius:7px;background:var(--input-bg,var(--surface));color:var(--text);padding:7px 9px}
+      .agent-route-form button{justify-self:start}
       .agent-route-result{font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid var(--border,var(--line,#313744));border-radius:7px;padding:8px;background:var(--code,var(--surface-soft))}
       .agent-runtime-controls{grid-column:1/-1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;border-top:1px solid var(--border,var(--line,#313744));padding-top:10px}
       .agent-runtime-control{display:grid;gap:7px;min-width:0}
@@ -551,6 +552,10 @@
     const status = card.querySelector('.agent-route-result');
     const projectId = card.querySelector('.agent-route-project').value.trim();
     const provider = card.querySelector('.agent-route-provider').value.trim();
+    const modelClass = card.querySelector('.agent-route-model-class').value.trim();
+    const workload = card.querySelector('.agent-route-workload').value.trim();
+    const modelPin = card.querySelector('.agent-route-model-pin').value.trim();
+    const modelProvider = card.querySelector('.agent-route-model-provider').value.trim();
     if (!projectId) {
       status.textContent = 'Project ID is required.';
       return;
@@ -561,6 +566,13 @@
         project_id: projectId,
         require_persistent_session: true,
         preferred_provider_ids: provider ? [provider] : [],
+        model_request: {
+          model_class: modelClass || 'primary-coding',
+          workload_class: workload || null,
+          pinned_model_id: modelPin || null,
+          preferred_provider_ids: modelProvider ? [modelProvider] : [],
+          messages: [],
+        },
       };
       const result = await apiRequest('/api/agent-routing/route', {
         method: 'POST',
@@ -572,6 +584,15 @@
         .map((candidate) => `${candidate.provider_id}/${candidate.runtime_id}: ${candidate.routing_reason}`)
         .join('\n');
       const rejected = (route.rejected_reasons || []).join('\n');
+      const modelCandidates = (route.model_route?.candidates || [])
+        .map((candidate) => `${candidate.provider_id}/${candidate.model_id}: ${candidate.routing_reason}`)
+        .join('\n');
+      const modelSelected = route.model_route?.candidates?.[0];
+      const effectiveModel = route.effective_model_preferences;
+      const modelConfiguration = (route.configuration_sources || [])
+        .filter((source) => source.key?.startsWith('model.routing.') && source.source !== 'default')
+        .map((source) => `${source.key} ← ${source.source}${source.scope_type ? ` ${source.scope_type}/${source.scope_id}` : ''}${source.revision ? ` r${source.revision}` : ''}`)
+        .join('\n');
       status.textContent = [
         `Selected: ${selected.provider_id || '?'} /${selected.runtime_id || '?'}`,
         `Reason: ${selected.routing_reason || 'not supplied'}`,
@@ -579,6 +600,12 @@
         route.earliest_capacity_retry_at ? `Earliest blocked-capacity reset: ${new Date(Number(route.earliest_capacity_retry_at) * 1000).toLocaleString()}` : '',
         candidates ? `Candidates:\n${candidates}` : '',
         rejected ? `Rejected:\n${rejected}` : '',
+        modelSelected ? `Model: ${modelSelected.provider_id}/${modelSelected.model_id}` : '',
+        effectiveModel ? `Effective model request: class=${effectiveModel.model_class}; workload=${effectiveModel.workload_class || 'automatic'}; pin=${effectiveModel.pinned_model_id || 'automatic'}; providers=${(effectiveModel.preferred_provider_ids || []).join(', ') || 'policy order'}; latency=${(effectiveModel.preferred_latency_classes || []).join(', ') || 'any'}; lower cost=${Boolean(effectiveModel.prefer_lower_cost)}; max cost=${effectiveModel.max_cost_usd ?? 'policy'}; fallback=${Boolean(effectiveModel.allow_fallback)}` : '',
+        modelCandidates ? `Model candidates:\n${modelCandidates}` : '',
+        route.agent_profile ? `Agent Profile: ${route.agent_profile.profile_id} r${route.agent_profile.profile_revision}` : '',
+        modelConfiguration ? `Model configuration sources:\n${modelConfiguration}` : '',
+        'Preference precedence: workflow/turn, Agent Profile revision, scoped Configuration, defaults. Hard constraints use the tightest effective value.',
       ].filter(Boolean).join('\n');
     } catch (error) {
       status.textContent = `Routing failed: ${error.message}`;
@@ -624,10 +651,14 @@
           </div>
         </section>
         <section class="agent-route-explainer">
-          <h3>Explain runtime routing</h3>
+          <h3>Explain runtime and model routing</h3>
           <div class="agent-route-form">
             <input class="agent-route-project" aria-label="Project ID" value="home" placeholder="Project ID">
-            <input class="agent-route-provider" aria-label="Preferred provider ID" placeholder="Preferred provider (optional)">
+            <input class="agent-route-provider" aria-label="Preferred execution provider ID" placeholder="Execution provider (optional)">
+            <input class="agent-route-model-class" aria-label="Model class" value="primary-coding" placeholder="Model class">
+            <input class="agent-route-workload" aria-label="Workload class" placeholder="Workload class (optional)">
+            <input class="agent-route-model-pin" aria-label="Pinned model ID" placeholder="Pinned model (optional)">
+            <input class="agent-route-model-provider" aria-label="Preferred model provider ID" placeholder="Model provider (optional)">
             <button type="button" class="ghost-button agent-route-run">Explain</button>
           </div>
           <div class="agent-route-result" aria-live="polite">No routing evaluation run yet.</div>

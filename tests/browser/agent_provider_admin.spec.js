@@ -4,6 +4,7 @@ function installRoutes(page, actions = [], state = {}) {
   state.threadCreates ||= [];
   state.configurationDrafts ||= [];
   state.configurationPublishes ||= [];
+  state.routingRequests ||= [];
   return Promise.all([
     page.route('**/api/agent-providers/discover', async (route) => route.fulfill({
       contentType: 'application/json',
@@ -157,9 +158,11 @@ function installRoutes(page, actions = [], state = {}) {
         body: JSON.stringify({ result: {} }),
       });
     }),
-    page.route('**/api/agent-routing/route', async (route) => route.fulfill({
-      contentType: 'application/json',
-      body: JSON.stringify({
+    page.route('**/api/agent-routing/route', async (route) => {
+      state.routingRequests.push(route.request().postDataJSON());
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
         route: {
           selected_runtime: {
             provider_id: 'anthropic',
@@ -174,9 +177,34 @@ function installRoutes(page, actions = [], state = {}) {
             },
           ],
           rejected_reasons: ['openai/codex:provider_preference_penalty'],
+          model_route: {
+            candidates: [{
+              provider_id: 'openai',
+              model_id: 'gpt-coding',
+              routing_reason: 'turn preference then project configuration',
+            }],
+          },
+          effective_model_preferences: {
+            model_class: 'primary-coding',
+            workload_class: 'code-review',
+            pinned_model_id: 'gpt-coding',
+            preferred_provider_ids: ['openai'],
+            preferred_latency_classes: ['standard'],
+            prefer_lower_cost: true,
+            max_cost_usd: 0.04,
+            allow_fallback: false,
+          },
+          configuration_sources: [{
+            key: 'model.routing.preferred_provider_ids',
+            source: 'record',
+            scope_type: 'project',
+            scope_id: 'project-a',
+            revision: 3,
+          }],
         },
-      }),
-    })),
+        }),
+      });
+    }),
     page.route('**/api/identity/me', async (route) => route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({
@@ -290,18 +318,37 @@ test('AgentSession execution trace links canonical assignment/runtime/action/evi
 });
 
 test('routing explanation is rendered from canonical route response', async ({ page }) => {
-  await installRoutes(page);
+  const state = {};
+  await installRoutes(page, [], state);
   await page.goto('http://127.0.0.1:18766/tests/browser/agent_provider_admin_fixture.html');
 
   const card = page.locator('#agent-provider-card');
   await card.locator('.agent-route-project').fill('project-a');
   await card.locator('.agent-route-provider').fill('anthropic');
+  await card.locator('.agent-route-workload').fill('code-review');
+  await card.locator('.agent-route-model-pin').fill('gpt-coding');
+  await card.locator('.agent-route-model-provider').fill('openai');
   await card.locator('.agent-route-run').click();
 
   const result = card.locator('.agent-route-result');
   await expect(result).toContainText('Selected: anthropic /claude-code');
   await expect(result).toContainText('preferred provider; capabilities satisfied');
   await expect(result).toContainText('Rejected:');
+  await expect(result).toContainText('Model: openai/gpt-coding');
+  await expect(result).toContainText('Effective model request: class=primary-coding; workload=code-review; pin=gpt-coding');
+  await expect(result).toContainText('model.routing.preferred_provider_ids ← record project/project-a r3');
+  await expect(result).toContainText('workflow/turn, Agent Profile revision, scoped Configuration, defaults');
+  expect(state.routingRequests[0]).toMatchObject({
+    project_id: 'project-a',
+    preferred_provider_ids: ['anthropic'],
+    model_request: {
+      model_class: 'primary-coding',
+      workload_class: 'code-review',
+      pinned_model_id: 'gpt-coding',
+      preferred_provider_ids: ['openai'],
+      messages: [],
+    },
+  });
 });
 
 test('explicit runtime thread creation forces the selected runtime through the thread API', async ({ page }) => {

@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from codex_web.agent_profiles import (
+    AGENT_PROFILE_STATE_CONTRACT,
     AgentProfileAccessMode,
     AgentProfileExecutionBinding,
     AgentProfileAccessPolicy,
@@ -14,6 +15,7 @@ from codex_web.agent_profiles import (
     AgentProfileLifecycleChange,
     AgentProfileModelPolicy,
     AgentProfileRuntimePolicy,
+    AgentProfileState,
     AgentProfileUpdate,
 )
 from codex_web.agent_providers import (
@@ -35,6 +37,12 @@ from codex_web.identity import (
     MembershipRole,
     PrincipalKind,
 )
+from codex_web.model_gateway import (
+    ModelInvocationRequest,
+    ModelLatencyClass,
+    ModelRouteCandidate,
+    ModelRouteResult,
+)
 from codex_web.services.agent_profiles import (
     AgentProfileAccessDenied,
     AgentProfileNotFound,
@@ -50,7 +58,10 @@ from codex_web.services.definitions import (
     DefinitionKindSchema,
     DefinitionRegistryService,
 )
-from codex_web.storage.agent_profiles import AgentProfileStore
+from codex_web.storage.agent_profiles import (
+    AGENT_PROFILE_MIGRATIONS,
+    AgentProfileStore,
+)
 from codex_web.storage.agent_providers import AgentProviderStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
@@ -126,6 +137,32 @@ class _Runtime:
         return self._health
 
 
+class _ModelGateway:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def route(self, request, *, actor):
+        self.requests.append((request, actor))
+        return ModelRouteResult(
+            model_class=request.model_class,
+            prompt_template_id="generic.system",
+            prompt_template_version="1",
+            prompt_template_checksum_sha256="abc123",
+            candidates=(
+                ModelRouteCandidate(
+                    provider_id="model-provider",
+                    model_id="turn-model",
+                    concrete_model="turn-model",
+                    estimated_input_tokens=1,
+                    max_output_tokens=128,
+                    routing_reason="test",
+                ),
+            ),
+            policy_max_attempts=1,
+            policy_fingerprint_sha256="policy123",
+        )
+
+
 class AgentProfileTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -165,6 +202,27 @@ class AgentProfileTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_state_1_0_migration_preserves_automatic_model_defaults(self) -> None:
+        record = self._create().model_dump(mode="json")
+        for key in (
+            "workload_class",
+            "pinned_model_id",
+            "preferred_latency_classes",
+            "prefer_lower_cost",
+            "max_cost_usd",
+        ):
+            record["model_policy"].pop(key)
+        migrated = AGENT_PROFILE_MIGRATIONS.migrate(
+            {"schema_version": "1.0", "revisions": [record]},
+            from_version="1.0",
+            to_version=AGENT_PROFILE_STATE_CONTRACT.current,
+        )
+
+        state = AgentProfileState.model_validate(migrated)
+        self.assertEqual(state.schema_version, "1.1")
+        self.assertIsNone(state.revisions[0].model_policy.pinned_model_id)
+        self.assertFalse(state.revisions[0].model_policy.prefer_lower_cost)
 
     def _publish_definition(
         self,
@@ -754,6 +812,74 @@ class AgentProfileTests(unittest.IsolatedAsyncioTestCase):
             result.selected_runtime.provider_id,
             "provider-a",
         )
+
+    async def test_turn_model_preferences_override_profile_defaults_and_keep_constraints(self) -> None:
+        capabilities = (AgentProviderCapability.AGENT_EXECUTION,)
+        provider_service = AgentProviderService(
+            AgentProviderStore(self.sqlite)
+        )
+        provider_service.upsert(
+            AgentProviderUpsert(
+                id="provider-a",
+                display_name="provider-a",
+                declared_capabilities=capabilities,
+                granted_capabilities=capabilities,
+            ),
+            actor=self.admin,
+        )
+        runtimes = AgentRuntimeRegistry()
+        runtimes.register(_Runtime("provider-a", "runtime-a", capabilities))
+        self._create(
+            model_policy=AgentProfileModelPolicy(
+                model_class="primary-coding",
+                workload_class="profile-workload",
+                pinned_model_id="profile-model",
+                preferred_provider_ids=("profile-provider",),
+                preferred_latency_classes=(ModelLatencyClass.STANDARD,),
+                prefer_lower_cost=True,
+                max_cost_usd=0.05,
+                allow_fallback=False,
+            ),
+        )
+        models = _ModelGateway()
+        routing = AgentRoutingService(
+            provider_service,
+            runtimes,
+            profiles=self.profiles,
+            model_gateway=models,
+        )
+
+        await routing.route(
+            AgentRoutingRequest(
+                project_id="project-a",
+                agent_profile_id="coder",
+                model_request=ModelInvocationRequest(
+                    model_class="primary-coding",
+                    workload_class="turn-workload",
+                    pinned_model_id="turn-model",
+                    preferred_provider_ids=("turn-provider",),
+                    preferred_latency_classes=(ModelLatencyClass.LOW,),
+                    max_cost_usd=0.08,
+                    messages=(),
+                ),
+            ),
+            actor=self.member,
+        )
+
+        effective = models.requests[0][0]
+        self.assertEqual(effective.workload_class, "turn-workload")
+        self.assertEqual(effective.pinned_model_id, "turn-model")
+        self.assertEqual(
+            effective.preferred_provider_ids,
+            ("turn-provider", "profile-provider"),
+        )
+        self.assertEqual(
+            effective.preferred_latency_classes,
+            (ModelLatencyClass.LOW, ModelLatencyClass.STANDARD),
+        )
+        self.assertTrue(effective.prefer_lower_cost)
+        self.assertEqual(effective.max_cost_usd, 0.05)
+        self.assertFalse(effective.allow_fallback)
 
 
 if __name__ == "__main__":
