@@ -331,3 +331,121 @@ test("Memberships page does not invent a user-creation control", async ({ page }
 
   expect(count).toBe(0);
 });
+
+async function editableUsers(page, mode = 'held') {
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+  await page.evaluate(async mode => {
+    const { renderAdministrationUsers } = await import('/static/administration_users.js');
+    const host = document.createElement('div'); host.id = 'draft-users'; document.body.appendChild(host);
+    const context = { allowed: true, organizationId: 'org-a', workspaceId: 'workspace-a', identity: {
+      humans: [{ id: 'human-a', display_name: 'Casey', disabled_at: null }], teams: [],
+      memberships: [{ id: 'membership-a', identity_id: 'human-a', principal_kind: 'human', organization_id: 'org-a', workspace_id: 'workspace-a', roles: ['member'], revoked_at: null }],
+    } };
+    window.userCalls = []; window.userChanged = 0;
+    const options = { context, api: async (path, options) => {
+      window.userCalls.push({ path, body: JSON.parse(options.body || '{}') });
+      if (mode === 'failure') throw new Error('Canonical validation failed');
+      return new Promise(resolve => { window.finishUserSave = resolve; });
+    }, onChanged: async () => { window.userChanged += 1; } };
+    renderAdministrationUsers(host, options);
+    window.rerenderUsers = () => renderAdministrationUsers(host, options);
+    window.denyUsers = () => renderAdministrationUsers(host, { ...options, context: { allowed: false } });
+  }, mode);
+}
+
+test('Administration user search and refresh preserve failed drafts and deliberate discard restores baseline', async ({ page }) => {
+  await editableUsers(page, 'failure');
+  const form = page.locator('#draft-users [data-create-user]');
+  await form.locator('[name=display_name]').fill('Unsaved user');
+  await page.locator('#draft-users [data-administration-user-search]').fill('No match');
+  await expect(page.locator('#draft-users [data-human-id]')).toBeHidden();
+  await expect(form.locator('[name=display_name]')).toHaveValue('Unsaved user');
+  await form.locator('[type=submit]').click();
+  await expect(page.locator('#draft-users [data-administration-users-message]')).toContainText('Canonical validation failed');
+  await page.locator('#draft-users [data-administration-users-refresh]').click();
+  await page.evaluate(() => window.rerenderUsers());
+  await expect(form.locator('[name=display_name]')).toHaveValue('Unsaved user');
+  await expect.poll(() => page.evaluate(() => window.userChanged)).toBe(0);
+  page.once('dialog', dialog => dialog.dismiss());
+  await form.locator('[data-administration-discard]').click();
+  await expect(form.locator('[name=display_name]')).toHaveValue('Unsaved user');
+  page.once('dialog', dialog => dialog.accept());
+  await form.locator('[data-administration-discard]').click();
+  await expect(form.locator('[name=display_name]')).toHaveValue('');
+  await expect(form.locator('[data-dirty-editor-status]')).toHaveText('No unsaved changes');
+});
+
+test('late user creation preserves newer input and independent membership edits', async ({ page }) => {
+  await editableUsers(page);
+  const form = page.locator('#draft-users [data-create-user]');
+  const roles = page.locator('#draft-users [data-membership-roles]');
+  await form.locator('[name=display_name]').fill('Submitted user');
+  await form.locator('[type=submit]').click();
+  await expect.poll(() => page.evaluate(() => window.userCalls.length)).toBe(1);
+  await form.evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  await expect.poll(() => page.evaluate(() => window.userCalls.length)).toBe(1);
+  await form.locator('[name=display_name]').fill('Newer user');
+  await roles.selectOption(['admin']);
+  await page.evaluate(() => window.finishUserSave({}));
+  await expect(page.locator('#draft-users [data-administration-users-message]')).toContainText('User created. Unsaved edits remain');
+  await expect(form.locator('[name=display_name]')).toHaveValue('Newer user');
+  await expect(roles).toHaveValues(['admin']);
+  await expect.poll(() => page.evaluate(() => window.userChanged)).toBe(0);
+  page.once('dialog', dialog => dialog.accept());
+  await form.locator('[data-administration-discard]').click();
+  await expect(form.locator('[name=display_name]')).toHaveValue('Submitted user');
+});
+
+test('late membership save retains newer roles and a separate user draft', async ({ page }) => {
+  await editableUsers(page);
+  const row = page.locator('#draft-users [data-membership-id]');
+  await row.locator('[data-membership-roles]').selectOption(['admin']);
+  await row.locator('[data-save-membership]').click();
+  await expect.poll(() => page.evaluate(() => window.userCalls.length)).toBe(1);
+  await row.locator('[data-membership-roles]').selectOption(['approver']);
+  await page.locator('#draft-users [name=display_name]').fill('Independent user');
+  await page.evaluate(() => window.finishUserSave({}));
+  await expect(page.locator('#draft-users [data-administration-users-message]')).toContainText('Membership roles updated. Unsaved edits remain');
+  await expect(row.locator('[data-membership-roles]')).toHaveValues(['approver']);
+  await expect(row.locator('[data-dirty-editor-status]')).toHaveText('Unsaved changes');
+  await expect.poll(() => page.evaluate(() => window.userChanged)).toBe(0);
+});
+
+test('user creation result cannot reset a draft after Project changes', async ({ page }) => {
+  await editableUsers(page);
+  const form = page.locator('#draft-users [data-create-user]');
+  await form.locator('[name=display_name]').fill('Original Project');
+  await form.locator('[type=submit]').click();
+  await expect.poll(() => page.evaluate(() => window.userCalls.length)).toBe(1);
+  await page.evaluate(() => {
+    window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: 'another-project' } }));
+    window.finishUserSave({});
+  });
+  await expect(form.locator('[type=submit]')).toBeEnabled();
+  await expect(form.locator('[name=display_name]')).toHaveValue('Original Project');
+  await expect.poll(() => page.evaluate(() => window.userChanged)).toBe(0);
+});
+
+test('Project switching requires deliberate discard of Administration user edits', async ({ page }) => {
+  await editableUsers(page);
+  const input = page.locator('#draft-users [name=display_name]');
+  await input.fill('Keep my user draft');
+  const switcher = page.locator('#product-project-switcher');
+  await expect(switcher).toHaveValue('home');
+  page.once('dialog', dialog => dialog.dismiss());
+  await switcher.selectOption('alpha');
+  await expect(switcher).toHaveValue('home');
+  await expect(input).toHaveValue('Keep my user draft');
+  page.once('dialog', dialog => dialog.accept());
+  await switcher.selectOption('alpha');
+  await expect(switcher).toHaveValue('alpha');
+  await expect(input).toHaveValue('');
+});
+
+test('denied Administration projection replaces unsaved user controls', async ({ page }) => {
+  await editableUsers(page);
+  await page.locator('#draft-users [name=display_name]').fill('Unsaved metadata');
+  await page.evaluate(() => window.denyUsers());
+  await expect(page.locator('#draft-users')).toContainText('Administration access is required');
+  await expect(page.locator('#draft-users input')).toHaveCount(0);
+});

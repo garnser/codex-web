@@ -4,6 +4,7 @@ import { coarseRoute, trackUx } from "./ux_telemetry.js";
 import { confirmDiscard } from "./dirty_editor.js";
 import { renderHomeOverview } from "./home_overview.js";
 import { renderAdministrationUsers } from "./administration_users.js";
+import { administrationEditsPending, clearAdministrationEditors } from './administration_editor_state.js';
 import { renderAdministrationAccess } from "./administration_access.js";
 import { renderAdministrationAuthentication } from "./administration_authentication.js";
 import {
@@ -466,9 +467,14 @@ function setAdministrationLocation(page = "overview", { replace = false } = {}) 
   void renderAdministrationRoute(page);
 }
 
+let administrationRenderGeneration = 0;
 async function renderAdministrationRoute(page = "overview") {
   const root = administrationRoot();
   if (!root) return;
+  if (administrationEditsPending(root)) return;
+  clearAdministrationEditors(root);
+  const generation = ++administrationRenderGeneration, origin = location.href;
+  const current = () => generation === administrationRenderGeneration && origin === location.href;
   document.body.classList.add("product-administration-page");
   document.body.classList.remove("product-routed-project-page", "product-chat-page");
   document.body.dataset.administrationPage = page;
@@ -493,6 +499,7 @@ async function renderAdministrationRoute(page = "overview") {
   `;
   try {
     const context = await loadAdministrationContext(administrationApi);
+    if (!current()) return;
     renderAdministrationNavigation(root, {
       page,
       context,
@@ -533,6 +540,7 @@ async function renderAdministrationRoute(page = "overview") {
       }
     }
   } catch (error) {
+    if (!current()) return;
     root.innerHTML = `
       <section class="product-administration-shell">
         <div class="workspace-state workspace-state-error" role="alert">

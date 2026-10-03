@@ -452,3 +452,12 @@ by the initiating view and Project, while accepted activations and generated wor
 remain recoverable through their canonical records. These guards add no model
 calls, authority decisions or browser draft persistence; creating an Executive
 activation remains separate from requesting consultation.
+
+Administration Users preserves independent create-user and membership-role edits
+when searching or when another form saves. Search filters existing cards without
+replacing editors; refresh defers while any form is dirty. Explicit discard and
+submitted-snapshot acknowledgement use the shared contract. Administration route
+reads and mutation responses are fenced against a replaced view. Service-token
+request metadata follows the same behavior, while one-time credential output stays
+outside snapshots and is rendered only in the initiating view. Accepted user,
+membership and token metadata remain canonical; no browser draft storage is used.

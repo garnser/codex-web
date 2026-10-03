@@ -417,3 +417,82 @@ test("Administration Authentication rotates a service token and shows the replac
   expect(result.storedToken).not.toHaveProperty("token");
   expect(result.html).toContain("previous secret is invalid");
 });
+
+async function tokenDraft(page, mode = 'held') {
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+  await page.evaluate(async mode => {
+    const { renderAdministrationAuthentication } = await import('/static/administration_authentication.js');
+    const host = document.createElement('div'); host.id = 'token-draft'; document.body.appendChild(host);
+    const context = { allowed: true, organizationId: 'org-a', workspaceId: 'workspace-a', actor: {}, identity: {
+      services: [{ id: 'service-a', name: 'A' }, { id: 'service-b', name: 'B' }], humans: [], sessions: [], service_tokens: [],
+    } };
+    window.tokenDraftContext = context; window.tokenDraftPosts = 0;
+    const options = { context, api: async (path, options) => {
+      if (options?.method !== 'POST') return {};
+      window.tokenDraftPosts += 1;
+      if (mode === 'failure') throw new Error('Request metadata denied');
+      return new Promise(resolve => { window.finishTokenDraft = resolve; });
+    } };
+    renderAdministrationAuthentication(host, options);
+    window.refreshTokenDraft = () => renderAdministrationAuthentication(host, options);
+    window.denyTokenDraft = () => renderAdministrationAuthentication(host, { ...options, context: { allowed: false } });
+  }, mode);
+}
+
+test('failed token metadata request survives refresh and supports deliberate discard', async ({ page }) => {
+  await tokenDraft(page, 'failure');
+  const host = page.locator('#token-draft');
+  await host.locator('[data-auth-service]').selectOption('service-a');
+  await host.locator('[data-auth-scopes]').fill('automation.run');
+  await host.locator('[data-auth-create-token]').click();
+  await expect(host.locator('[data-auth-message]')).toContainText('Request metadata denied');
+  await page.evaluate(() => window.refreshTokenDraft());
+  await expect(host.locator('[data-auth-scopes]')).toHaveValue('automation.run');
+  page.once('dialog', dialog => dialog.accept());
+  await host.locator('[data-administration-discard]').click();
+  await expect(host.locator('[data-auth-scopes]')).toHaveValue('');
+  await expect(host.locator('[data-dirty-editor-status]')).toHaveText('No unsaved changes');
+});
+
+test('late token creation preserves newer metadata and attributes the accepted request to its original service', async ({ page }) => {
+  await tokenDraft(page);
+  const host = page.locator('#token-draft');
+  await host.locator('[data-auth-service]').selectOption('service-a');
+  await host.locator('[data-auth-scopes]').fill('automation.run');
+  await host.locator('[data-auth-create-token]').click();
+  await expect.poll(() => page.evaluate(() => window.tokenDraftPosts)).toBe(1);
+  await host.locator('[data-auth-service]').selectOption('service-b');
+  await host.locator('[data-auth-scopes]').fill('newer.scope');
+  await page.evaluate(() => window.finishTokenDraft({ token_id: 'created-token', token: 'synthetic-one-time-value' }));
+  await expect(host.locator('[data-auth-message]')).toContainText('Newer request edits remain unsaved');
+  await expect(host.locator('[data-auth-scopes]')).toHaveValue('newer.scope');
+  expect(await page.evaluate(() => window.tokenDraftContext.identity.service_tokens[0].service_identity_id)).toBe('service-a');
+  page.once('dialog', dialog => dialog.accept());
+  await host.locator('[data-administration-discard]').click();
+  await expect(host.locator('[data-auth-service]')).toHaveValue('service-a');
+  await expect(host.locator('[data-dirty-editor-status]')).toHaveText('No unsaved changes');
+  expect(await page.evaluate(() => JSON.stringify(window.tokenDraftContext).includes('synthetic-one-time-value'))).toBe(false);
+});
+
+test('late one-time token response stays out of a different Project view', async ({ page }) => {
+  await tokenDraft(page);
+  const host = page.locator('#token-draft');
+  await host.locator('[data-auth-service]').selectOption('service-a');
+  await host.locator('[data-auth-create-token]').click();
+  await expect.poll(() => page.evaluate(() => window.tokenDraftPosts)).toBe(1);
+  await page.evaluate(() => {
+    window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: 'another-project' } }));
+    window.finishTokenDraft({ token_id: 'created-token', token: 'synthetic-one-time-value' });
+  });
+  await expect(host.locator('[data-auth-create-token]')).toBeEnabled();
+  await expect(host.locator('[data-auth-created-secret]')).toBeHidden();
+  await expect(host.locator('[data-auth-created-token]')).toHaveCount(0);
+});
+
+test('denied Administration projection replaces unsaved token metadata controls', async ({ page }) => {
+  await tokenDraft(page);
+  await page.locator('#token-draft [data-auth-scopes]').fill('Unsaved metadata');
+  await page.evaluate(() => window.denyTokenDraft());
+  await expect(page.locator('#token-draft')).toContainText('Administration access is required');
+  await expect(page.locator('#token-draft input')).toHaveCount(0);
+});
