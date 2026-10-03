@@ -7,7 +7,11 @@ from codex_web.agent_providers import AgentProviderCapability, AgentProviderHeal
 from codex_web.agent_runtime import AgentRuntimeHealth
 from codex_web.definitions import DefinitionReference
 from codex_web.execution_workers import ExecutionRuntimeBinding
-from codex_web.model_gateway import ModelInvocationRequest, ModelRouteResult
+from codex_web.model_gateway import (
+    ModelInvocationRequest,
+    ModelLatencyClass,
+    ModelRouteResult,
+)
 from codex_web.provider_capacity import ProviderCapacityStatus
 
 
@@ -111,6 +115,27 @@ class AgentRoutingConfigurationSource(BaseModel):
     scope_id: str | None = None
 
 
+class EffectiveModelRoutingPreferences(BaseModel):
+    """Prompt-free model preferences resolved for operator inspection."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    model_class: str
+    workload_class: str | None = None
+    pinned_model_id: str | None = None
+    preferred_provider_ids: tuple[str, ...] = ()
+    preferred_latency_classes: tuple[ModelLatencyClass, ...] = ()
+    prefer_lower_cost: bool = False
+    max_cost_usd: float | None = None
+    allow_fallback: bool = True
+    source_precedence: tuple[str, ...] = (
+        "workflow_or_turn",
+        "agent_profile_revision",
+        "scoped_configuration",
+        "defaults",
+    )
+
+
 class AgentRoutingResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -121,5 +146,6 @@ class AgentRoutingResult(BaseModel):
     earliest_capacity_retry_at: float | None = None
     rejected_reasons: tuple[str, ...] = ()
     configuration_sources: tuple[AgentRoutingConfigurationSource, ...] = ()
+    effective_model_preferences: EffectiveModelRoutingPreferences | None = None
     role_definition_ref: DefinitionReference | None = None
     agent_profile: AgentProfileExecutionBinding | None = None

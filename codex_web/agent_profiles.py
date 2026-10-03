@@ -10,12 +10,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from codex_web.agent_providers import AgentProviderCapability
 from codex_web.compatibility import ContractSpec
 from codex_web.definitions import DefinitionReference
+from codex_web.model_gateway import ModelLatencyClass
 
 
 AGENT_PROFILE_STATE_CONTRACT = ContractSpec(
     "agent-profile-state",
-    "1.0",
-    ("1.0",),
+    "1.1",
+    ("1.0", "1.1"),
+    deprecated=("1.0",),
 )
 
 
@@ -157,7 +159,12 @@ class AgentProfileModelPolicy(BaseModel):
     )
 
     model_class: str | None = None
+    workload_class: str | None = None
+    pinned_model_id: str | None = None
     preferred_provider_ids: tuple[str, ...] = ()
+    preferred_latency_classes: tuple[ModelLatencyClass, ...] = ()
+    prefer_lower_cost: bool = False
+    max_cost_usd: float | None = Field(default=None, gt=0.0)
     allow_fallback: bool = True
 
     @model_validator(mode="after")
@@ -173,6 +180,14 @@ class AgentProfileModelPolicy(BaseModel):
                 )
             ),
         )
+        object.__setattr__(
+            self,
+            "preferred_latency_classes",
+            tuple(dict.fromkeys(self.preferred_latency_classes)),
+        )
+        for field_name in ("model_class", "workload_class", "pinned_model_id"):
+            value = getattr(self, field_name)
+            object.__setattr__(self, field_name, value.strip() if value else None)
         return self
 
 

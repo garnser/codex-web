@@ -8,6 +8,7 @@ from codex_web.agent_routing import (
     AgentRoutingRequest,
     AgentRoutingResult,
     AgentRuntimeRouteCandidate,
+    EffectiveModelRoutingPreferences,
 )
 from codex_web.agent_runtime import AgentRuntimeHealth
 from codex_web.provider_capacity import ProviderCapacityStatus
@@ -25,6 +26,12 @@ from codex_web.services.agent_routing_configuration import (
     AGENT_ROUTING_PREFERRED_RUNTIMES,
     AGENT_ROUTING_REQUIRED_COMPLIANCE,
     AGENT_ROUTING_REQUIRED_RESIDENCY,
+    MODEL_ROUTING_ALLOW_FALLBACK,
+    MODEL_ROUTING_MAX_COST_USD,
+    MODEL_ROUTING_PINNED_MODEL,
+    MODEL_ROUTING_PREFERRED_LATENCIES,
+    MODEL_ROUTING_PREFERRED_PROVIDERS,
+    MODEL_ROUTING_PREFER_LOWER_COST,
 )
 from codex_web.services.agent_routing_definitions import AgentRoutingDefinitionService
 from codex_web.services.agent_runtime import AgentRuntimeRegistry
@@ -242,13 +249,31 @@ class AgentRoutingService:
                 )
             model_request = model_request.model_copy(
                 update={
+                    "workload_class": (
+                        model_request.workload_class or policy.workload_class
+                    ),
+                    "pinned_model_id": (
+                        model_request.pinned_model_id or policy.pinned_model_id
+                    ),
                     "preferred_provider_ids": self._ordered(
                         model_request.preferred_provider_ids,
                         policy.preferred_provider_ids,
                     ),
+                    "preferred_latency_classes": tuple(dict.fromkeys((
+                        *model_request.preferred_latency_classes,
+                        *policy.preferred_latency_classes,
+                    ))),
+                    "prefer_lower_cost": (
+                        model_request.prefer_lower_cost
+                        or policy.prefer_lower_cost
+                    ),
                     "max_input_tokens": max_input,
                     "max_output_tokens": max_output,
-                    "max_cost_usd": max_cost,
+                    "max_cost_usd": (
+                        min(max_cost, policy.max_cost_usd)
+                        if max_cost is not None and policy.max_cost_usd is not None
+                        else max_cost or policy.max_cost_usd
+                    ),
                     "allow_fallback": (
                         model_request.allow_fallback
                         and policy.allow_fallback
@@ -391,6 +416,45 @@ class AgentRoutingService:
         config_allowed_runtimes = tuple(
             config_values.get(AGENT_ROUTING_ALLOWED_RUNTIMES) or ()
         )
+        model_request = request.model_request
+        if model_request is not None:
+            configured_pin = str(
+                config_values.get(MODEL_ROUTING_PINNED_MODEL) or ""
+            ).strip() or None
+            configured_max_cost = config_values.get(MODEL_ROUTING_MAX_COST_USD)
+            request_max_cost = model_request.max_cost_usd
+            model_max_cost = (
+                min(request_max_cost, float(configured_max_cost))
+                if request_max_cost is not None and configured_max_cost is not None
+                else request_max_cost or configured_max_cost
+            )
+            model_request = model_request.__class__.model_validate({
+                **model_request.model_dump(mode="python"),
+                "pinned_model_id": model_request.pinned_model_id or configured_pin,
+                "preferred_provider_ids": self._ordered(
+                    model_request.preferred_provider_ids,
+                    tuple(
+                        config_values.get(MODEL_ROUTING_PREFERRED_PROVIDERS) or ()
+                    ),
+                ),
+                "preferred_latency_classes": tuple(dict.fromkeys((
+                    *model_request.preferred_latency_classes,
+                    *tuple(
+                        config_values.get(MODEL_ROUTING_PREFERRED_LATENCIES) or ()
+                    ),
+                ))),
+                "prefer_lower_cost": (
+                    model_request.prefer_lower_cost
+                    or bool(
+                        config_values.get(MODEL_ROUTING_PREFER_LOWER_COST, False)
+                    )
+                ),
+                "max_cost_usd": model_max_cost,
+                "allow_fallback": (
+                    model_request.allow_fallback
+                    and bool(config_values.get(MODEL_ROUTING_ALLOW_FALLBACK, True))
+                ),
+            })
         role_preferred_providers = role.preferred_provider_ids if role else ()
         role_preferred_runtimes = role.preferred_runtime_ids if role else ()
         role_allowed_providers = role.allowed_provider_ids if role else ()
@@ -461,6 +525,7 @@ class AgentRoutingService:
                     )
                 ),
                 "max_runtime_cost_usd": max_runtime_cost,
+                "model_request": model_request,
             }
         )
         effective = AgentRoutingRequest.model_validate(
@@ -778,6 +843,24 @@ class AgentRoutingService:
             ),
             rejected_reasons=tuple(dict.fromkeys(rejected)),
             configuration_sources=configuration_sources,
+            effective_model_preferences=(
+                EffectiveModelRoutingPreferences(
+                    model_class=request.model_request.model_class,
+                    workload_class=request.model_request.workload_class,
+                    pinned_model_id=request.model_request.pinned_model_id,
+                    preferred_provider_ids=(
+                        request.model_request.preferred_provider_ids
+                    ),
+                    preferred_latency_classes=(
+                        request.model_request.preferred_latency_classes
+                    ),
+                    prefer_lower_cost=request.model_request.prefer_lower_cost,
+                    max_cost_usd=request.model_request.max_cost_usd,
+                    allow_fallback=request.model_request.allow_fallback,
+                )
+                if request.model_request is not None
+                else None
+            ),
             role_definition_ref=role_definition_ref,
             agent_profile=(
                 self.profiles.binding_for(

@@ -92,6 +92,35 @@ budget, provider availability, or credential-boundary checks. Workload-specific
 models rank ahead of otherwise eligible generic models. Concrete workload
 catalogs and mappings are mutable registry data rather than orchestration code.
 
+## Effective request precedence
+
+The shared Agent routing path builds one effective `ModelInvocationRequest` in
+this order:
+
+1. explicit workflow or turn preferences;
+2. the exact Agent Profile revision selected for the execution;
+3. typed Configuration resolved at project, workspace, organization, then global scope;
+4. request and registry defaults.
+
+Singular preferences such as workload class and a strict model pin use the first
+non-empty value. Ordered provider and latency preferences retain higher-precedence
+entries first and remove duplicates. Cost ceilings use the lowest supplied value,
+and fallback is allowed only when every applicable layer allows it. Tenant model
+policy, model lifecycle, availability, capability, residency and compliance remain
+hard filters after preferences are resolved; no preference layer grants authority
+or broadens a constraint.
+
+Scoped model defaults use the existing typed Configuration Registry keys under
+`model.routing.*`. Agent Profile defaults remain part of the versioned profile
+revision. Workflow and turn callers pass structured request fields rather than
+creating another settings store. The route result returns exact Configuration
+record scope/revision provenance and the Agent Profile execution binding so an
+operator can explain the effective choice.
+
+Agent Profile state version `1.1` adds workload, strict pin, latency, cost and
+fallback model defaults. Migration from `1.0` supplies automatic-selection
+defaults, preserving the effective behavior of every existing profile revision.
+
 Fallback is bounded and only follows transient provider failures. Every fallback candidate is independently subjected to the same policy/residency/capability/budget constraints. The gateway conservatively charges the estimated upper-bound cost against the remaining fallback budget after an uncertain transient attempt so fallback cannot silently expand the configured budget.
 
 ## Prompt/version governance
@@ -198,13 +227,14 @@ Refreshing the preview catalog retains an explicit model pin. If the model has
 disappeared, the picker marks it unavailable and keeps the pin so the route API
 fails closed; only an explicit operator choice restores automatic selection.
 
-Gateway state version `1.3` adds workload suitability and request preference
+Gateway state version `1.3` added workload suitability and request preference
 provenance. Migration from `1.2` supplies empty workload classes and unpinned,
-no-preference defaults, retaining legacy routing order. Older readers must not
-interpret `1.3` state as an older schema. Workload values remain canonical model
-registry data (not a new hard-coded workload catalog); request preferences do
-not grant authority or relax tenant policy. This request-level foundation does
-not introduce provider discovery, runtime catalogs, or layered override rules.
+no-preference defaults, retaining legacy routing order. Version `1.4` adds
+provider-scoped discovered catalog snapshots and migrates older providers to
+explicit static availability. Older readers must not interpret either state as
+an older schema. Workload values remain canonical model registry data (not a new
+hard-coded workload catalog); request preferences do not grant authority or relax
+tenant policy.
 
 ## Provider binding administration
 

@@ -34,6 +34,7 @@ from codex_web.identity import (
 )
 from codex_web.model_gateway import (
     ModelInvocationRequest,
+    ModelLatencyClass,
     ModelRouteCandidate,
     ModelRouteResult,
 )
@@ -41,6 +42,12 @@ from codex_web.services.agent_providers import AgentProviderService
 from codex_web.services.agent_routing import AgentRoutingError, AgentRoutingService
 from codex_web.services.agent_routing_configuration import (
     AGENT_ROUTING_PREFERRED_PROVIDERS,
+    MODEL_ROUTING_ALLOW_FALLBACK,
+    MODEL_ROUTING_MAX_COST_USD,
+    MODEL_ROUTING_PINNED_MODEL,
+    MODEL_ROUTING_PREFERRED_LATENCIES,
+    MODEL_ROUTING_PREFERRED_PROVIDERS,
+    MODEL_ROUTING_PREFER_LOWER_COST,
     install_agent_routing_configuration,
 )
 from codex_web.services.agent_routing_definitions import install_agent_routing_definitions
@@ -604,6 +611,102 @@ class AgentRoutingServiceTests(unittest.IsolatedAsyncioTestCase):
             actor=self.actor,
         )
         self.assertEqual(without_role.selected_runtime.provider_id, "provider-b")
+
+    async def test_model_configuration_is_merged_with_turn_precedence_and_provenance(self) -> None:
+        capabilities = (AgentProviderCapability.AGENT_EXECUTION,)
+        self._provider("provider-a", capabilities)
+        self._runtime("provider-a", "runtime-a", capabilities)
+        configured = {
+            MODEL_ROUTING_PINNED_MODEL: "configuration-model",
+            MODEL_ROUTING_PREFERRED_PROVIDERS: ["configuration-provider"],
+            MODEL_ROUTING_PREFERRED_LATENCIES: ["standard", "high"],
+            MODEL_ROUTING_PREFER_LOWER_COST: True,
+            MODEL_ROUTING_ALLOW_FALLBACK: False,
+            MODEL_ROUTING_MAX_COST_USD: 0.04,
+        }
+        records = {}
+        for key, value in configured.items():
+            draft = self.configuration.create_draft(
+                ConfigurationDraftCreate(
+                    key=key,
+                    scope_type=ConfigurationScope.PROJECT,
+                    scope_id="project-a",
+                    value=value,
+                    actor="admin-a",
+                )
+            )
+            records[key] = self.configuration.publish(
+                draft.id,
+                ConfigurationPublishRequest(actor="admin-a"),
+            )
+
+        models = _ModelGateway()
+        service = AgentRoutingService(
+            self.providers,
+            self.runtimes,
+            configuration=self.configuration,
+            model_gateway=models,
+        )
+        result = await service.route(
+            AgentRoutingRequest(
+                project_id="project-a",
+                model_request=ModelInvocationRequest(
+                    model_class="primary-coding",
+                    pinned_model_id="turn-model",
+                    preferred_provider_ids=("turn-provider",),
+                    preferred_latency_classes=(ModelLatencyClass.LOW,),
+                    max_cost_usd=0.08,
+                    messages=(),
+                ),
+            ),
+            actor=self.actor,
+        )
+
+        effective = models.calls[0][0]
+        self.assertEqual(effective.pinned_model_id, "turn-model")
+        self.assertEqual(
+            effective.preferred_provider_ids,
+            ("turn-provider", "configuration-provider"),
+        )
+        self.assertEqual(
+            effective.preferred_latency_classes,
+            (
+                ModelLatencyClass.LOW,
+                ModelLatencyClass.STANDARD,
+                ModelLatencyClass.HIGH,
+            ),
+        )
+        self.assertTrue(effective.prefer_lower_cost)
+        self.assertEqual(effective.max_cost_usd, 0.04)
+        self.assertFalse(effective.allow_fallback)
+        self.assertEqual(
+            result.effective_model_preferences.model_dump(mode="json"),
+            {
+                "model_class": "primary-coding",
+                "workload_class": None,
+                "pinned_model_id": "turn-model",
+                "preferred_provider_ids": [
+                    "turn-provider",
+                    "configuration-provider",
+                ],
+                "preferred_latency_classes": ["low", "standard", "high"],
+                "prefer_lower_cost": True,
+                "max_cost_usd": 0.04,
+                "allow_fallback": False,
+                "source_precedence": [
+                    "workflow_or_turn",
+                    "agent_profile_revision",
+                    "scoped_configuration",
+                    "defaults",
+                ],
+            },
+        )
+        sources = {item.key: item for item in result.configuration_sources}
+        for key, record in records.items():
+            self.assertEqual(sources[key].scope_type, "project")
+            self.assertEqual(sources[key].scope_id, "project-a")
+            self.assertEqual(sources[key].record_id, record.id)
+            self.assertEqual(sources[key].revision, record.revision)
 
 
     async def test_allowlist_never_expands_during_fallback(self) -> None:

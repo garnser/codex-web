@@ -80,7 +80,8 @@
         251,
         253,
         251
-      ]
+      ],
+      "height_tolerance": 150
     },
     "company-operations": {
       "width": 1440,
@@ -1092,7 +1093,8 @@
         249,
         249,
         248
-      ]
+      ],
+      "height_tolerance": 80
     },
     "attention-inbox": {
       "width": 1440,
