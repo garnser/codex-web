@@ -449,3 +449,65 @@ test("Administration Access requires an audit reason before access mutation", as
   expect(result.message).toContain("change reason is required");
   expect(result.calls.some((item) => item.path === "/api/authority/direct-bindings")).toBe(false);
 });
+
+async function accessDraft(page, mode = 'held') {
+  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
+  await page.evaluate(async mode => {
+    const { renderAdministrationAccess } = await import('/static/administration_access.js');
+    const host = document.createElement('div'); host.id = 'access-draft'; document.body.appendChild(host);
+    const context = { allowed: true, organizationId: 'org-a', workspaceId: 'workspace-a', identity: {
+      humans: [{ id: 'human-a', display_name: 'Alice' }],
+      memberships: [{ identity_id: 'human-a', principal_kind: 'human', organization_id: 'org-a', workspace_id: 'workspace-a', revoked_at: null }],
+    } };
+    window.accessDraftPosts = 0;
+    const options = { context, api: async (path, options) => {
+      if (path === '/api/projects') return [{ id: 'project-a', name: 'A' }, { id: 'project-b', name: 'B' }];
+      if (path.startsWith('/api/authority/roles')) return { items: [{ id: 'developer', name: 'Developer' }] };
+      if (options?.method === 'POST') {
+        window.accessDraftPosts += 1;
+        if (mode === 'failure') throw new Error('Scope validation failed');
+        return new Promise(resolve => { window.finishAccessDraft = resolve; });
+      }
+      return { items: [], assignments: [], permission_matrix: [] };
+    } };
+    renderAdministrationAccess(host, options);
+    window.refreshAccessDraft = () => renderAdministrationAccess(host, options);
+  }, mode);
+  await page.locator('#access-draft [data-access-identity]').selectOption('human-a');
+  await page.locator('#access-draft [data-access-project]').selectOption('project-a');
+  await page.locator('#access-draft [data-access-role]').selectOption('developer');
+}
+
+test('failed Access staging retains role and reason, and scope change requires discard', async ({ page }) => {
+  await accessDraft(page, 'failure');
+  const host = page.locator('#access-draft');
+  await host.locator('[data-access-reason]').fill('Keep this change reason');
+  await host.locator('[data-access-add-binding]').click();
+  await expect(host.locator('[data-access-message]')).toContainText('Scope validation failed');
+  await page.evaluate(() => window.refreshAccessDraft());
+  await expect(host.locator('[data-access-reason]')).toHaveValue('Keep this change reason');
+  page.once('dialog', dialog => dialog.dismiss());
+  await host.locator('[data-access-project]').selectOption('project-b');
+  await expect(host.locator('[data-access-project]')).toHaveValue('project-a');
+  await expect(host.locator('[data-access-role]')).toHaveValue('developer');
+  page.once('dialog', dialog => dialog.accept());
+  await host.locator('[data-access-project]').selectOption('project-b');
+  await expect(host.locator('[data-access-reason]')).toHaveValue('');
+  await expect(host.locator('[data-dirty-editor-status]')).toHaveText('No unsaved changes');
+});
+
+test('late Access staging retains newer reason and acknowledges only its submitted snapshot', async ({ page }) => {
+  await accessDraft(page);
+  const host = page.locator('#access-draft');
+  await host.locator('[data-access-reason]').fill('Submitted reason');
+  await host.locator('[data-access-add-binding]').click();
+  await expect.poll(() => page.evaluate(() => window.accessDraftPosts)).toBe(1);
+  await host.locator('[data-access-reason]').fill('Newer reason');
+  await page.evaluate(() => window.finishAccessDraft({ status: 'pending_approval' }));
+  await expect(host.locator('[data-access-message]')).toContainText('Newer edits remain unsaved');
+  await expect(host.locator('[data-access-reason]')).toHaveValue('Newer reason');
+  page.once('dialog', dialog => dialog.accept());
+  await host.locator('[data-administration-discard]').click();
+  await expect(host.locator('[data-access-reason]')).toHaveValue('Submitted reason');
+  await expect(host.locator('[data-dirty-editor-status]')).toHaveText('No unsaved changes');
+});

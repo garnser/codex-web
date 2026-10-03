@@ -1,10 +1,14 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
-  const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
+  const { keyCreator } = await import(`${BASE}/static/key_creation.js`);
+  const { formDraft } = await import(`${BASE}/static/form_draft.js`);
+  const draft = formDraft('Managed key metadata');
+  const createKey = keyCreator(draft, reportStatus, refresh);
   const { confirmKeyLifecycle } = await import(`${BASE}/static/key_lifecycle_confirmation.js`);
   const { esc: escapeHtml, keyOperation, inspectKeyUsage, keyLink, focusKey, runKeyAction } = await import(`${BASE}/static/key_usage_ui.js`);
   const MAX_AUDIT_ROWS = 100;
   let resources = [];
+  let metadataReady = false;
 
 
   function timeText(value) {
@@ -104,6 +108,8 @@
   }
 
   async function refresh() {
+    if (metadataReady && draft.dirty()) { reportStatus('Refresh deferred. Create or discard unsaved key metadata first.'); return; }
+    const current = draft.view();
     const operation = keyOperation(reportStatus);
     const { request: apiRequest, status: setStatus } = operation;
     setStatus("Loading managed key metadata...");
@@ -119,9 +125,14 @@
         apiRequest("/api/crypto/events"),
         resourceLoad,
       ]);
+      if (!current()) return;
+      const preserve = draft.dirty();
+      if (metadataReady && preserve) { setStatus('Refresh deferred. Create or discard unsaved key metadata first.'); return; }
       resources = loadedResources;
       renderResourceOptions();
       renderBackendHealth(health);
+      metadataReady = true;
+      if (!preserve) draft.reset();
       renderKeys(keys.items || []);
       focusKey(document.getElementById("crypto-key-list"));
       renderManifest(manifest.items || []);
@@ -129,39 +140,10 @@
       const unhealthy = Object.entries(health || {}).filter(([, ok]) => !ok).map(([name]) => name);
       setStatus(`${keys.items?.length || 0} managed key(s). Backend health: ${unhealthy.length ? `degraded (${unhealthy.join(", ")})` : "healthy"}.${resourceError ? ` Resource scope labels unavailable: ${resourceError}.` : ""} Key material is never exposed.`);
     } catch (error) {
-      setStatus(`Key administration unavailable: ${error.message}`);
+      if (current()) setStatus(`Key administration unavailable: ${error.message}`);
     }
   }
 
-  async function createKey() {
-    const operation = keyOperation(reportStatus);
-    const { request: apiRequest, status: setStatus } = operation;
-    const backendType = document.getElementById("crypto-key-backend")?.value || "";
-    const purpose = document.getElementById("crypto-key-purpose")?.value || "application_data";
-    if (!backendType) {
-      setStatus("Choose a healthy key backend.");
-      return;
-    }
-    const projectId = document.getElementById("crypto-key-project-id")?.value.trim() || null;
-    const resourceId = document.getElementById("crypto-key-resource-id")?.value || null;
-    const scope = [projectId ? `project ${projectId}` : null, resourceId ? `resource ${resourceId}` : null].filter(Boolean).join(", ") || "workspace";
-    if (!await confirmAction({ action: 'Create key reference', target: `${purpose} using ${backendType} at ${scope}`, risk: 'bounded', consequence: `Create a ${purpose} key reference using backend ${backendType} scoped to ${scope}? Cryptographic material is generated and retained only by the configured key backend.`, recovery: 'Key material remains behind the key boundary. Later revocation requires a dependency review.' })) return;
-    try {
-      await apiRequest("/api/crypto/keys", {
-        method: "POST",
-        body: JSON.stringify({
-          project_id: projectId,
-          resource_id: resourceId,
-          purpose,
-          backend_type: backendType,
-        }),
-      });
-      setStatus("Managed key created.");
-      if (operation.current()) await refresh();
-    } catch (error) {
-      setStatus(`Key creation failed: ${error.message}`);
-    }
-  }
 
   async function rotateKey(button) {
     const operation = keyOperation(reportStatus);
@@ -231,6 +213,12 @@
 
   function bind() {
     const panel = document.getElementById("developer-panel");
+    const editor = document.querySelector('#crypto-key-create-panel .route-test');
+    if (editor) {
+      draft.mount(editor);
+      const discard = document.createElement('button'); discard.type = 'button'; discard.textContent = 'Discard metadata edits'; discard.dataset.keyDiscard = '';
+      discard.onclick = () => draft.discard(); editor.appendChild(discard);
+    }
     document.getElementById("refresh-crypto-keys")?.addEventListener("click", refresh);
     document.getElementById("refresh-developer")?.addEventListener("click", refresh);
     document.getElementById("create-crypto-key")?.addEventListener("click", () => createKey().catch(console.error));
@@ -247,8 +235,11 @@
     });
     window.addEventListener('codex:project-changed', () => {
       resources = [];
+      metadataReady = false;
       for (const id of ['crypto-key-list', 'crypto-key-manifest', 'crypto-key-audit', 'crypto-backend-health']) document.getElementById(id)?.replaceChildren();
       const project = document.getElementById('crypto-key-project-id'); if (project) project.value = '';
+      for (const id of ['crypto-key-backend', 'crypto-key-resource-id']) document.getElementById(id)?.replaceChildren();
+      draft.reset();
       refresh().catch(console.error);
     });
     if (panel?.open) refresh().catch(console.error);

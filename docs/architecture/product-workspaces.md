@@ -461,3 +461,12 @@ reads and mutation responses are fenced against a replaced view. Service-token
 request metadata follows the same behavior, while one-time credential output stays
 outside snapshots and is rendered only in the initiating view. Accepted user,
 membership and token metadata remain canonical; no browser draft storage is used.
+
+Direct Access assignment role/reason drafts require discard before changing their
+identity or Project scope. Failed staging keeps input; accepted staging acknowledges
+the submitted draft while preserving newer edits and the canonical approval status.
+Secret-reference and managed-key creation protect metadata from refresh and late
+saves. Secret values are excluded from snapshots and retain their write-only clearing
+behavior. Runtime-enrollment metadata uses the same transient contract; one-time
+enrollment output stays outside drafts, survives a separate history-read failure,
+and clears on Project change. Late credential responses never populate another view.

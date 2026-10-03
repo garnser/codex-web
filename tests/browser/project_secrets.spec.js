@@ -147,3 +147,53 @@ test('Secrets remains usable at phone width and shows broken references with rep
   await page.keyboard.press('Enter');
   await expect(page.locator('[data-secret-usage-result]')).toContainText('TaskSource');
 });
+
+test('secret metadata refresh defers unsaved changes while write-only values still clear', async ({ page }) => {
+  await mount(page);
+  await page.locator('#secret-create-panel summary').click();
+  await page.locator('#secret-create-name').fill('Draft reference');
+  await page.locator('#secret-create-purpose').fill('Draft purpose');
+  await page.locator('#secret-create-value').fill('synthetic-write-only-input');
+  await page.locator('#refresh-secrets').click();
+  await expect(page.locator('#secret-admin-status')).toContainText('Refresh deferred');
+  await expect(page.locator('#secret-create-name')).toHaveValue('Draft reference');
+  await expect(page.locator('#secret-create-value')).toHaveValue('');
+  page.once('dialog', dialog => dialog.accept());
+  await page.locator('[data-secret-discard]').click();
+  await expect(page.locator('#secret-create-name')).toHaveValue('');
+  await expect(page.locator('#secret-create-panel [data-dirty-editor-status]')).toHaveText('No unsaved changes');
+});
+
+test('late secret creation acknowledges only submitted metadata', async ({ page }) => {
+  let held;
+  await mount(page, { intercept: async (route, url) => {
+    if (url.pathname === '/api/secrets' && route.request().method() === 'POST') { held = route; return true; }
+  } });
+  await page.locator('#secret-create-panel summary').click();
+  await page.locator('#secret-create-name').fill('Submitted reference');
+  await page.locator('#secret-create-value').fill('synthetic-write-only-input');
+  await page.locator('#create-secret').click(); await resolveAction(page);
+  await expect.poll(() => Boolean(held)).toBe(true);
+  await page.locator('#secret-create-purpose').fill('Newer purpose');
+  await held.fulfill({ json: { item: { ...reference, id: 'secret-created' } } });
+  await expect(page.locator('#secret-admin-status')).toContainText('Newer reference metadata remains unsaved');
+  await expect(page.locator('#secret-create-purpose')).toHaveValue('Newer purpose');
+  await expect(page.locator('#secret-create-value')).toHaveValue('');
+  await expect(page.locator('#secret-create-panel [data-dirty-editor-status]')).toHaveText('Unsaved changes');
+});
+
+test('typing during initial secret metadata load remains editable after authority hydration', async ({ page }) => {
+  const held = []; let released = false;
+  const mounting = mount(page, { intercept: async (route, url) => {
+    if (!released && url.pathname === '/api/secrets' && route.request().method() === 'GET') { held.push(route); return true; }
+  } });
+  await expect.poll(() => held.length).toBeGreaterThan(0);
+  await page.locator('#secret-create-panel summary').click();
+  await page.locator('#secret-create-name').fill('Typed while loading');
+  released = true;
+  await Promise.all(held.map(route => route.fulfill({ json: { items: [], impact_available: true } })));
+  await mounting;
+  await expect(page.locator('#create-secret')).toBeEnabled();
+  await expect(page.locator('#secret-create-name')).toHaveValue('Typed while loading');
+  await expect(page.locator('#secret-create-panel [data-dirty-editor-status]')).toHaveText('Unsaved changes');
+});

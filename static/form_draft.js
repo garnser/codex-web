@@ -13,10 +13,12 @@ export function formDraft(label) {
   };
   return {
     dirty: () => Boolean(editor?.dirty()),
+    reset: () => editor?.markSaved(),
+    discard: () => !editor || confirmDiscard(editor),
     view, clear,
-    mount(form) {
+    mount(form, options = {}) {
       editor?.dispose(); advance(); root = form;
-      editor = trackDirtyEditor(form, { label });
+      editor = trackDirtyEditor(form, { ...options, label });
     },
     leave() {
       if (editor && !confirmDiscard(editor)) return false;
