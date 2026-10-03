@@ -411,3 +411,26 @@ transitions have no Undo and do not rewrite bound Work Items. The Orchestration
 Inspector reviews schedule resume/cancel and live autonomy changes; pause/kill stay
 immediate. Confirmation never substitutes for provider evidence when reconciling an
 unknown runtime outcome.
+
+Skill editing, portable bundle import and verified-procedure promotion use the same
+unsaved-edit contract. Invalid payloads and failed saves retain page input; a late
+successful save acknowledges only the submitted snapshot and does not erase newer
+edits. Selection/Cancel and global navigation require explicit discard. An edited
+bundle invalidates its previous preview before submission. Saved inactive Skill
+revisions can be reopened from the canonical Skill list after a reload; unsaved
+instructions, assets, procedures and imported bundles remain page memory only.
+
+Model Gateway provider/model, prompt-version and routing-policy editors also register
+independent dirty state. Source selectors are navigation controls: they are excluded
+from value snapshots but must confirm discarding an edited form before loading a
+new source. Background catalog hydration defers while any managed form is dirty,
+and successful mutations acknowledge only their submitted snapshot. Explicit discard
+restores the baseline; failed requests keep the entered values. Late module loading
+retains the latest read projection until controls are ready. These browser snapshots
+are temporary presentation state, never a second registry or authorization source.
+
+Extension configuration-reference and resource-grant selections use the same
+page-memory dirty-state contract. Refresh defers while selections are unsaved;
+explicit discard restores their baseline. Saves retain failed input and acknowledge
+only submitted selections, so a late success cannot erase newer edits. Only reference
+IDs enter these forms; no secret material or browser draft storage is introduced.

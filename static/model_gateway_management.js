@@ -1,7 +1,14 @@
 (async () => {
+  let latest = null, ready = false;
+  window.addEventListener("codex:model-gateway-rendered", event => {
+    latest = event.detail || {};
+    if (ready) hydrate(latest).catch(console.error);
+  });
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const edits = await import(`${BASE}/static/model_gateway_editor_state.js`);
+  const { bindWhenReady } = await import(`${BASE}/static/reference_links.js`);
   let snapshot = { providers: [], models: [], prompts: [], policy: null };
   let actor = null;
   let secrets = [];
@@ -210,8 +217,10 @@
     setStatus("Loaded an existing prompt version. Its content is immutable; change the version before changing content.");
   }
 
+  let hydration = 0;
   async function hydrate(detail) {
-    snapshot = detail;
+    const visit = ++hydration, view = edits.modelView();
+    if (edits.modelEditsPending()) return setStatus('Catalog display update deferred. Save or discard unsaved changes, then refresh.');
     actor = null;
     secrets = [];
     secretError = null;
@@ -224,6 +233,9 @@
         .then((value) => { secrets = value.items || []; })
         .catch((error) => { secretError = error.message; }),
     ]);
+    if (visit !== hydration || !view.current()) return;
+    if (edits.modelEditsPending()) return setStatus('Pending edits kept; refresh after saving or discarding.');
+    snapshot = detail;
     const assurance = document.getElementById("model-gateway-management-assurance");
     if (assurance) {
       assurance.textContent = `Sensitive routing administration requires canonical admin authority and MFA/step-up assurance. Current assurance: ${actor?.assurance || "unknown"}.${actorError ? ` Identity metadata unavailable: ${actorError}.` : ""}${secretError ? ` Secret metadata unavailable: ${secretError}.` : ""}`;
@@ -232,9 +244,11 @@
     populateModelControls();
     populatePromptSources();
     populatePolicy();
+    edits.resetModelEditors();
   }
 
   async function saveProvider() {
+    const submitted = edits.modelSubmission("provider");
     const id = document.getElementById("model-provider-id")?.value.trim() || "";
     const displayName = document.getElementById("model-provider-name")?.value.trim() || "";
     const adapterType = document.getElementById("model-provider-adapter")?.value.trim() || "";
@@ -250,17 +264,20 @@
       compliance_tags: csv("model-provider-compliance"),
       status: document.getElementById("model-provider-status")?.value || "active",
     };
-    if (!await confirmAction({ action: 'Save model provider', target: id, risk: 'high', consequence: `Save provider ${id} as ${payload.status}? Adapter: ${adapterType}; credential reference: ${payload.credential_ref || "none"}; residency: ${payload.residency_tags.join(", ") || "none"}. This can change where model data is routed.`, recovery: 'A later authorized configuration change can restore prior settings; sent model data cannot be recalled.' })) return;
+    if (!await confirmAction({ action: 'Save model provider', target: id, risk: 'high', consequence: `Save provider ${id} as ${payload.status}? Adapter: ${adapterType}; credential reference: ${payload.credential_ref || "none"}; residency: ${payload.residency_tags.join(", ") || "none"}. This can change where model data is routed.`, recovery: 'A later authorized configuration change can restore prior settings; sent model data cannot be recalled.', current: submitted.current })) return;
     try {
       await apiRequest(`/api/model-gateway/providers/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(payload) });
+      if (!submitted.current()) return;
+      submitted.saved();
       setStatus(`Saved provider ${id}.`);
       refreshGateway();
     } catch (error) {
-      setStatus(`Provider update failed: ${error.message}`);
+      if (submitted.current()) setStatus(`Provider update failed: ${error.message}`);
     }
   }
 
   async function saveModel() {
+    const submitted = edits.modelSubmission("model");
     const id = document.getElementById("model-definition-id")?.value.trim() || "";
     const providerId = document.getElementById("model-definition-provider")?.value || "";
     const concreteModel = document.getElementById("model-definition-concrete")?.value.trim() || "";
@@ -286,22 +303,25 @@
       route_priority: Number(document.getElementById("model-definition-priority")?.value || 100),
       lifecycle: document.getElementById("model-definition-lifecycle")?.value || "active",
     };
-    if (!await confirmAction({ action: 'Save model definition', target: id, risk: 'high', consequence: `Save model definition ${id}? Provider: ${providerId}; classes: ${classes.join(", ")}; lifecycle: ${payload.lifecycle}; priority: ${payload.route_priority}. This changes deterministic routing eligibility.`, recovery: 'A later authorized change can restore eligibility; prior invocations retain their attributed model.' })) return;
+    if (!await confirmAction({ action: 'Save model definition', target: id, risk: 'high', consequence: `Save model definition ${id}? Provider: ${providerId}; classes: ${classes.join(", ")}; lifecycle: ${payload.lifecycle}; priority: ${payload.route_priority}. This changes deterministic routing eligibility.`, recovery: 'A later authorized change can restore eligibility; prior invocations retain their attributed model.', current: submitted.current })) return;
     try {
       await apiRequest(`/api/model-gateway/models/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(payload) });
+      if (!submitted.current()) return;
+      submitted.saved();
       setStatus(`Saved model definition ${id}.`);
       refreshGateway();
     } catch (error) {
-      setStatus(`Model definition update failed: ${error.message}`);
+      if (submitted.current()) setStatus(`Model definition update failed: ${error.message}`);
     }
   }
 
   async function savePrompt() {
+    const submitted = edits.modelSubmission("prompt");
     const templateId = document.getElementById("model-prompt-id")?.value.trim() || "";
     const version = document.getElementById("model-prompt-version")?.value.trim() || "";
     const content = document.getElementById("model-prompt-content")?.value || "";
     if (!templateId || !version || !content) return setStatus("Template ID, version and content are required.");
-    if (!await confirmAction({ action: 'Publish prompt template', target: `${templateId}@${version}`, risk: 'bounded', consequence: `Publish prompt template ${templateId}@${version}? Existing version content is immutable; changing content for an existing version will be rejected. Exact checksum/version is attributed to future invocations.`, recovery: 'Published content is immutable; corrections require a new version.' })) return;
+    if (!await confirmAction({ action: 'Publish prompt template', target: `${templateId}@${version}`, risk: 'bounded', consequence: `Publish prompt template ${templateId}@${version}? Existing version content is immutable; changing content for an existing version will be rejected. Exact checksum/version is attributed to future invocations.`, recovery: 'Published content is immutable; corrections require a new version.', current: submitted.current })) return;
     try {
       await apiRequest(
         `/api/model-gateway/prompts/${encodeURIComponent(templateId)}/${encodeURIComponent(version)}`,
@@ -315,14 +335,17 @@
           }),
         },
       );
+      if (!submitted.current()) return;
+      submitted.saved();
       setStatus(`Published prompt template ${templateId}@${version}.`);
       refreshGateway();
     } catch (error) {
-      setStatus(`Prompt template update failed: ${error.message}`);
+      if (submitted.current()) setStatus(`Prompt template update failed: ${error.message}`);
     }
   }
 
   async function savePolicy() {
+    const submitted = edits.modelSubmission("policy");
     const allowedProviderIds = Array.from(document.getElementById("model-policy-providers")?.selectedOptions || []).map((item) => item.value);
     const allowedModelIds = Array.from(document.getElementById("model-policy-models")?.selectedOptions || []).map((item) => item.value);
     const payload = {
@@ -335,28 +358,28 @@
     };
     const providersText = allowedProviderIds.length ? allowedProviderIds.join(", ") : "all registered providers";
     const modelsText = allowedModelIds.length ? allowedModelIds.join(", ") : "all registered models";
-    if (!await confirmAction({ action: 'Replace model routing policy', target: "current tenant routing policy", risk: 'high', consequence: `Replace tenant routing policy? Providers: ${providersText}; models: ${modelsText}; residency: ${payload.required_residency_tags.join(", ") || "none"}; compliance: ${payload.required_compliance_tags.join(", ") || "none"}; max attempts: ${payload.max_attempts}. Empty allowlists mean unrestricted within the registered tenant catalog.`, recovery: 'Restore prior settings through a new authorized update; dispatched invocations are not undone.' })) return;
+    if (!await confirmAction({ action: 'Replace model routing policy', target: "current tenant routing policy", risk: 'high', consequence: `Replace tenant routing policy? Providers: ${providersText}; models: ${modelsText}; residency: ${payload.required_residency_tags.join(", ") || "none"}; compliance: ${payload.required_compliance_tags.join(", ") || "none"}; max attempts: ${payload.max_attempts}. Empty allowlists mean unrestricted within the registered tenant catalog.`, recovery: 'Restore prior settings through a new authorized update; dispatched invocations are not undone.', current: submitted.current })) return;
     try {
       await apiRequest("/api/model-gateway/policy", { method: "PUT", body: JSON.stringify(payload) });
+      if (!submitted.current()) return;
+      submitted.saved();
       setStatus("Tenant routing policy saved.");
       refreshGateway();
     } catch (error) {
-      setStatus(`Routing policy update failed: ${error.message}`);
+      if (submitted.current()) setStatus(`Routing policy update failed: ${error.message}`);
     }
   }
 
   function bind() {
-    document.getElementById("model-provider-existing")?.addEventListener("change", (event) => loadProvider(event.target.value));
-    document.getElementById("model-definition-existing")?.addEventListener("change", (event) => loadModel(event.target.value));
-    document.getElementById("model-prompt-source")?.addEventListener("change", (event) => loadPrompt(event.target.value));
+    edits.setupModelEditors();
+    document.getElementById("model-provider-existing")?.addEventListener("change", (event) => edits.selectModelSource("provider", event.target.value, loadProvider));
+    document.getElementById("model-definition-existing")?.addEventListener("change", (event) => edits.selectModelSource("model", event.target.value, loadModel));
+    document.getElementById("model-prompt-source")?.addEventListener("change", (event) => edits.selectModelSource("prompt", event.target.value, loadPrompt));
     document.getElementById("save-model-provider")?.addEventListener("click", () => saveProvider().catch(console.error));
     document.getElementById("save-model-definition")?.addEventListener("click", () => saveModel().catch(console.error));
     document.getElementById("save-model-prompt")?.addEventListener("click", () => savePrompt().catch(console.error));
     document.getElementById("save-model-policy")?.addEventListener("click", () => savePolicy().catch(console.error));
   }
 
-  window.addEventListener("codex:model-gateway-rendered", (event) => {
-    hydrate(event.detail || {}).catch(console.error);
-  });
-  window.addEventListener("DOMContentLoaded", bind);
+  bindWhenReady(() => { bind(); ready = true; if (latest) hydrate(latest).catch(console.error); });
 })();

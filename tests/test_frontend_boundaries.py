@@ -17,6 +17,10 @@ class FrontendBoundaryTests(unittest.TestCase):
             with self.subTest(module=name):
                 self.assertLessEqual((STATIC / name).stat().st_size, maximum)
 
+    def test_skill_editor_state_remains_bounded(self) -> None:
+        self.assertLessEqual((STATIC / "skill_editor_state.js").stat().st_size, 2_000)
+        self.assertLessEqual((STATIC / "model_gateway_editor_state.js").stat().st_size, 3_000)
+
     def test_reference_navigation_remains_bounded(self) -> None:
         self.assertLessEqual((STATIC / "reference_navigation.js").stat().st_size, 5_000)
 

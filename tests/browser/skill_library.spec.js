@@ -128,3 +128,80 @@ test('Skill archive reviews canonical exact-revision pins and blocks unavailable
   await page.locator('[data-skill-archive]').click(); await resolveAction(page);
   await expect.poll(() => writes.length).toBe(1);
 });
+
+test('Skill draft preserves invalid and rejected edits and requires explicit discard', async ({ page }) => {
+  let writes = 0;
+  await page.route('**/api/skills/release-check', route => {
+    if (route.request().method() === 'PATCH') { writes++; return route.fulfill({ status: 422, json: { detail: 'Draft validation rejected' } }); }
+    return route.fulfill({ json: { item: skill } });
+  });
+  await page.getByRole('button', { name: /Release Check/ }).click();
+  await page.locator('[data-skill-edit]').click();
+  const form = page.locator('[data-skill-editor]');
+  await form.locator('[data-field=reason]').fill('Revise instructions');
+  await form.locator('[data-field=assets]').fill('{ invalid');
+  await form.locator('button[type=submit]').click();
+  await expect(form.locator('[data-editor-result]')).toContainText('valid JSON');
+  expect(writes).toBe(0);
+  await form.locator('[data-field=assets]').fill('[]');
+  await form.locator('[data-field=instructions]').fill('Unsaved instruction draft');
+  await form.locator('button[type=submit]').click();
+  await expect(form.locator('[data-editor-result]')).toContainText('Draft validation rejected');
+  await expect(form.locator('[data-dirty-editor-status]')).toHaveText('Unsaved changes');
+  page.once('dialog', dialog => dialog.dismiss());
+  await form.locator('[data-editor-cancel]').click();
+  await expect(form.locator('[data-field=instructions]')).toHaveValue('Unsaved instruction draft');
+  page.once('dialog', dialog => dialog.dismiss());
+  await page.locator('[data-skill-new]').click();
+  await expect(form.locator('[data-field=instructions]')).toHaveValue('Unsaved instruction draft');
+  const stored = await page.evaluate(() => JSON.stringify([Object.values(localStorage), Object.values(sessionStorage)]));
+  expect(stored).not.toContain('Unsaved instruction draft');
+  page.once('dialog', dialog => dialog.accept());
+  await form.locator('[data-editor-cancel]').click();
+  await expect(form).toHaveCount(0);
+});
+
+test('late Skill draft save does not erase newer typing and saved drafts reopen from canonical revisions', async ({ page }) => {
+  let pending, saved;
+  await page.route('**/api/skills/release-check', route => {
+    if (route.request().method() === 'PATCH') { pending = route; return; }
+    return route.fulfill({ json: { item: saved || skill } });
+  });
+  await page.route('**/api/skills?**', route => route.fulfill({ json: { items: [saved || skill] } }));
+  await page.route('**/api/skills/release-check?revision=3', route => route.fulfill({ json: { item: saved } }));
+  await page.getByRole('button', { name: /Release Check/ }).click();
+  await page.locator('[data-skill-edit]').click();
+  const form = page.locator('[data-skill-editor]');
+  await form.locator('[data-field=reason]').fill('Save recovery draft');
+  await form.locator('[data-field=instructions]').fill('Submitted instructions');
+  await form.locator('button[type=submit]').click();
+  await expect.poll(() => Boolean(pending)).toBe(true);
+  await form.locator('[data-field=instructions]').fill('Newer unsaved instructions');
+  saved = { ...skill, revision: 3, recordId: 'saved-draft-3', definitionLifecycle: 'draft', skill: { ...skill.skill, instructions: 'Submitted instructions' } };
+  await pending.fulfill({ json: { item: saved } });
+  await expect(form.locator('[data-editor-result]')).toContainText('Saved inactive draft');
+  await expect(form.locator('[data-field=instructions]')).toHaveValue('Newer unsaved instructions');
+  await expect(form.locator('[data-dirty-editor-status]')).toHaveText('Unsaved changes');
+  page.once('dialog', dialog => dialog.accept());
+  await form.locator('[data-editor-cancel]').click();
+  await page.goto('http://127.0.0.1:18766/tests/browser/skill_library_fixture.html?skill_id=release-check&skill_revision=3');
+  await expect(page.locator('[data-skill-detail]')).toContainText('saved-draft-3');
+  await expect(page.locator('[data-skill-publish]')).toBeVisible();
+  await page.locator('[data-skill-edit]').click();
+  await expect(form.locator('[data-field=instructions]')).toHaveValue('Submitted instructions');
+  await expect(form.locator('[data-dirty-editor-status]')).toHaveText('No unsaved changes');
+});
+
+test('editing a reviewed Skill bundle invalidates the preview and retains an unsaved import', async ({ page }) => {
+  await page.getByText('Import / promote').click();
+  const input = page.locator('[data-skill-import-json]');
+  await input.fill(JSON.stringify({ format: 'codex-web-skill-bundle', manifest: { skill_id: 'imported', instructions: 'Review first' } }));
+  await page.locator('[data-skill-import-preview]').click();
+  await expect(page.locator('[data-skill-import-confirm]')).toBeEnabled();
+  await input.fill('{ changed');
+  await expect(page.locator('[data-skill-import-confirm]')).toBeDisabled();
+  await expect(input.locator('..').locator('[data-dirty-editor-status]')).toHaveText('Unsaved changes');
+  page.once('dialog', dialog => dialog.dismiss());
+  expect(await page.evaluate(async () => (await import('/static/dirty_editor.js')).confirmDiscard())).toBe(false);
+  await expect(input).toHaveValue('{ changed');
+});

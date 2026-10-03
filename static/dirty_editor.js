@@ -1,21 +1,21 @@
 // Ephemeral editor state only. Never persist field values to browser storage.
 const editors = new Set();
 
-function fields(root) {
+function fields(root, ignore = '') {
   return [...root.querySelectorAll('input,select,textarea')]
-    .filter(field => !['submit', 'button', 'reset'].includes(field.type));
+    .filter(field => !['submit', 'button', 'reset'].includes(field.type) && !(ignore && field.matches(ignore)));
 }
 
-function snapshot(root) {
-  return JSON.stringify(fields(root).map(field => {
+function snapshot(root, ignore) {
+  return JSON.stringify(fields(root, ignore).map(field => {
     if (field.type === 'checkbox' || field.type === 'radio') return field.checked;
     if (field.multiple) return [...field.selectedOptions].map(option => option.value);
     return field.value;
   }));
 }
 
-export function trackDirtyEditor(root, { label, onDiscard } = {}) {
-  let saved = snapshot(root);
+export function trackDirtyEditor(root, { label, onDiscard, ignore = '' } = {}) {
+  let saved = snapshot(root, ignore);
   const notice = document.createElement('p');
   notice.dataset.dirtyEditorStatus = '';
   notice.setAttribute('role', 'status');
@@ -24,12 +24,12 @@ export function trackDirtyEditor(root, { label, onDiscard } = {}) {
     label: label || 'Editor',
     location: window.location.href,
     historyState: history.state,
-    dirty: () => root.isConnected && snapshot(root) !== saved,
-    snapshot: () => snapshot(root),
-    markSaved(value = snapshot(root)) { saved = value; update(); },
+    dirty: () => root.isConnected && snapshot(root, ignore) !== saved,
+    snapshot: () => snapshot(root, ignore),
+    markSaved(value = snapshot(root, ignore)) { saved = value; update(); },
     discard() {
       const values = JSON.parse(saved);
-      fields(root).forEach((field, index) => {
+      fields(root, ignore).forEach((field, index) => {
         const value = values[index];
         if (field.type === 'checkbox' || field.type === 'radio') field.checked = value;
         else if (field.multiple) [...field.options].forEach(option => { option.selected = value.includes(option.value); });
