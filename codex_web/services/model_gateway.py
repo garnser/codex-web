@@ -28,6 +28,10 @@ from codex_web.input_plugins import (
     InputPluginPipeline,
 )
 from codex_web.model_gateway import (
+    ModelAvailabilitySource,
+    ModelCatalogEntry,
+    ModelCatalogSnapshot,
+    ModelCatalogStatus,
     ModelDefinitionRecord,
     ModelDefinitionUpsert,
     ModelGatewayState,
@@ -125,6 +129,7 @@ InputPipelineResolver = Callable[
 
 
 class ModelGatewayService:
+    MODEL_CATALOG_MAX_ENTRIES = 10_000
     def __init__(
         self,
         store: ModelGatewayStore,
@@ -134,6 +139,7 @@ class ModelGatewayService:
         input_pipeline: InputPluginPipeline | None = None,
         input_pipeline_resolver: InputPipelineResolver | None = None,
         provider_capacity: ProviderCapacityService | None = None,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         if input_pipeline is not None and input_pipeline_resolver is not None:
             raise ValueError(
@@ -145,6 +151,7 @@ class ModelGatewayService:
         self.input_pipeline = input_pipeline
         self.input_pipeline_resolver = input_pipeline_resolver
         self.provider_capacity = provider_capacity
+        self.clock = clock
         self.adapters: dict[str, ModelProviderAdapter] = {}
 
     @staticmethod
@@ -458,6 +465,146 @@ class ModelGatewayService:
             key=lambda item: (item.route_priority, item.id),
         )
 
+    def list_catalogs(self, actor: AuthenticationActor) -> list[ModelCatalogSnapshot]:
+        now = self.clock()
+        result = []
+        for item in self.store.load().catalogs:
+            if not self._same_scope(item, actor):
+                continue
+            if (
+                item.status == ModelCatalogStatus.READY
+                and item.expires_at is not None
+                and item.expires_at <= now
+            ):
+                item = item.model_copy(update={"status": ModelCatalogStatus.STALE})
+            result.append(item)
+        return sorted(result, key=lambda item: item.provider_id)
+
+    @staticmethod
+    def _catalog_revision(entries: tuple[ModelCatalogEntry, ...]) -> str:
+        payload = [item.model_dump(mode="json") for item in entries]
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    def _save_catalog(
+        self,
+        snapshot: ModelCatalogSnapshot,
+        *,
+        actor: AuthenticationActor,
+    ) -> ModelCatalogSnapshot:
+        def apply(state: ModelGatewayState) -> ModelGatewayState:
+            state.catalogs = [
+                item for item in state.catalogs
+                if not (
+                    item.provider_id == snapshot.provider_id
+                    and self._same_scope(item, actor)
+                )
+            ]
+            state.catalogs.append(snapshot)
+            return state
+        self.store.update(apply)
+        return snapshot
+
+    async def refresh_catalog(
+        self,
+        provider_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> ModelCatalogSnapshot:
+        self._require_admin(actor)
+        state = self.store.load()
+        provider = self._provider(state, provider_id, actor)
+        now = self.clock()
+        existing = next(
+            (
+                item for item in state.catalogs
+                if item.provider_id == provider.id and self._same_scope(item, actor)
+            ),
+            None,
+        )
+        if not provider.catalog_discovery_enabled:
+            return self._save_catalog(ModelCatalogSnapshot(
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                provider_id=provider.id,
+                status=ModelCatalogStatus.ERROR,
+                entries=existing.entries if existing else (),
+                revision=existing.revision if existing else None,
+                discovered_at=existing.discovered_at if existing else None,
+                expires_at=existing.expires_at if existing else None,
+                error="provider catalog discovery is disabled; static definitions are explicit fallback",
+                updated_by=actor.identity_id,
+                updated_at=now,
+            ), actor=actor)
+        adapter = self.adapters.get(provider.adapter_type)
+        discover = getattr(adapter, "discover_models", None)
+
+        async def call(credential: str | None):
+            if not callable(discover):
+                raise ModelProviderUnavailableError(
+                    f"model adapter does not support catalog discovery: {provider.adapter_type}"
+                )
+            return await asyncio.wait_for(
+                discover(provider, credential=credential), timeout=30.0
+            )
+
+        try:
+            if provider.credential_ref:
+                if self.secret_broker is None:
+                    raise ModelProviderUnavailableError(
+                        "secret broker is required for provider catalog discovery"
+                    )
+                discovered = await self.secret_broker.use_async(
+                    provider.credential_ref,
+                    actor=actor,
+                    operation="model-gateway.catalog-discover",
+                    consumer=lambda secret: call(secret),
+                    context={"provider_id": provider.id},
+                )
+            else:
+                if provider.credential_required:
+                    raise ModelProviderUnavailableError(
+                        f"provider {provider.id} requires credential_ref"
+                    )
+                discovered = await call(None)
+            normalized: dict[str, ModelCatalogEntry] = {}
+            for index, item in enumerate(discovered):
+                if index >= self.MODEL_CATALOG_MAX_ENTRIES:
+                    raise ModelProviderUnavailableError(
+                        f"provider catalog exceeds {self.MODEL_CATALOG_MAX_ENTRIES} entries"
+                    )
+                entry = ModelCatalogEntry.model_validate(item)
+                normalized[entry.concrete_model] = entry
+            entries = tuple(normalized[key] for key in sorted(normalized))
+            snapshot = ModelCatalogSnapshot(
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                provider_id=provider.id,
+                status=ModelCatalogStatus.READY,
+                entries=entries,
+                revision=self._catalog_revision(entries),
+                discovered_at=now,
+                expires_at=now + provider.catalog_ttl_seconds,
+                updated_by=actor.identity_id,
+                updated_at=now,
+            )
+        except Exception as exc:
+            snapshot = ModelCatalogSnapshot(
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                provider_id=provider.id,
+                status=ModelCatalogStatus.ERROR,
+                entries=existing.entries if existing else (),
+                revision=existing.revision if existing else None,
+                discovered_at=existing.discovered_at if existing else None,
+                expires_at=existing.expires_at if existing else None,
+                error=f"{type(exc).__name__}: {str(exc)[:400]}",
+                updated_by=actor.identity_id,
+                updated_at=now,
+            )
+        return self._save_catalog(snapshot, actor=actor)
+
     def list_templates(self, actor: AuthenticationActor) -> list[PromptTemplateRecord]:
         return sorted(
             [
@@ -524,7 +671,14 @@ class ModelGatewayService:
         updated: list[ModelDefinitionRecord] = []
 
         def apply(state: ModelGatewayState) -> ModelGatewayState:
-            self._provider(state, payload.provider_id, actor)
+            provider = self._provider(state, payload.provider_id, actor)
+            if (
+                payload.availability_source == ModelAvailabilitySource.DISCOVERED
+                and not provider.catalog_discovery_enabled
+            ):
+                raise ModelRegistryConflictError(
+                    "discovered model availability requires provider catalog discovery"
+                )
             existing = next(
                 (
                     item
@@ -717,6 +871,44 @@ class ModelGatewayService:
             }:
                 rejected.append(f"{model.id}:provider_disabled")
                 continue
+            catalog = None
+            catalog_entry = None
+            if model.availability_source == ModelAvailabilitySource.DISCOVERED:
+                if not provider.catalog_discovery_enabled:
+                    rejected.append(f"{model.id}:catalog_discovery_disabled")
+                    continue
+                catalog = next(
+                    (
+                        item for item in state.catalogs
+                        if item.provider_id == provider.id
+                        and self._same_scope(item, actor)
+                    ),
+                    None,
+                )
+                if catalog is None:
+                    rejected.append(f"{model.id}:catalog_missing")
+                    continue
+                if catalog.status != ModelCatalogStatus.READY:
+                    rejected.append(
+                        f"{model.id}:catalog_{catalog.status.value}"
+                    )
+                    continue
+                if (
+                    catalog.expires_at is None
+                    or catalog.expires_at <= self.clock()
+                ):
+                    rejected.append(f"{model.id}:catalog_stale")
+                    continue
+                catalog_entry = next(
+                    (
+                        item for item in catalog.entries
+                        if item.concrete_model == model.concrete_model
+                    ),
+                    None,
+                )
+                if catalog_entry is None:
+                    rejected.append(f"{model.id}:not_in_provider_catalog")
+                    continue
             if policy.allowed_provider_ids and provider.id not in policy.allowed_provider_ids:
                 rejected.append(f"{model.id}:provider_not_allowed")
                 continue
@@ -805,6 +997,18 @@ class ModelGatewayService:
                         model_id=model.id,
                         concrete_model=model.concrete_model,
                         model_version=model.model_version,
+                        upstream_provider_id=(
+                            catalog_entry.upstream_provider_id
+                            if catalog_entry else model.upstream_provider_id
+                        ),
+                        upstream_model_id=(
+                            catalog_entry.upstream_model_id
+                            if catalog_entry else model.upstream_model_id
+                        ),
+                        catalog_revision=(catalog.revision if catalog else None),
+                        catalog_discovered_at=(
+                            catalog.discovered_at if catalog else None
+                        ),
                         estimated_input_tokens=input_tokens,
                         max_output_tokens=output_tokens,
                         estimated_upper_cost_usd=cost,
@@ -1255,6 +1459,10 @@ class ModelGatewayService:
                 selected_model_id=model.id,
                 selected_concrete_model=model.concrete_model,
                 selected_model_version=model.model_version,
+                selected_upstream_provider_id=candidate.upstream_provider_id,
+                selected_upstream_model_id=candidate.upstream_model_id,
+                selected_catalog_revision=candidate.catalog_revision,
+                selected_catalog_discovered_at=candidate.catalog_discovered_at,
                 status="succeeded",
                 completed_at=completed,
             )

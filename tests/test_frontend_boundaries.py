@@ -150,6 +150,15 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertLessEqual(source_path.stat().st_size, 3_000)
         self.assertNotIn("fetch(", source)
 
+    def test_model_catalog_helpers_have_bounded_modules(self) -> None:
+        ui = STATIC / "model_catalog_ui.js"
+        fields = STATIC / "model_catalog_fields.js"
+        self.assertLessEqual(ui.stat().st_size, 5_000)
+        self.assertLessEqual(fields.stat().st_size, 2_000)
+        self.assertIn("api_client.js", (STATIC / "model_gateway_admin.js").read_text())
+        self.assertNotIn("fetch(", ui.read_text())
+        self.assertNotIn("fetch(", fields.read_text())
+
     def test_model_gateway_management_has_its_own_budget_and_api_client(self) -> None:
         source_path = STATIC / "model_gateway_management.js"
         source = source_path.read_text()

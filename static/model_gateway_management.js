@@ -8,60 +8,34 @@
   const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const edits = await import(`${BASE}/static/model_gateway_editor_state.js`);
-  const { bindWhenReady } = await import(`${BASE}/static/reference_links.js`);
+  const {
+    loadProviderCatalogFields, resetProviderCatalogFields,
+    loadModelCatalogFields, resetModelCatalogFields,
+    providerCatalogPayload, modelCatalogPayload, numberOrNull,
+  } = await import(`${BASE}/static/model_catalog_fields.js`);
+  const { bindWhenReady, esc: escapeHtml } = await import(`${BASE}/static/reference_links.js`);
   let snapshot = { providers: [], models: [], prompts: [], policy: null };
   let actor = null;
   let secrets = [];
   let secretError = null;
 
-  function escapeHtml(value) {
-    return String(value ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;");
-  }
+  const csvValue = (values) => (values || []).join(", ");
 
-  function csvValue(values) {
-    return (values || []).join(", ");
-  }
-
-  function csv(id) {
-    return (document.getElementById(id)?.value || "")
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean);
-  }
-
-  function numberOrNull(id) {
-    const value = document.getElementById(id)?.value ?? "";
-    return value === "" ? null : Number(value);
-  }
+  function csv(id) { return (document.getElementById(id)?.value || "").split(",").map((item) => item.trim()).filter(Boolean); }
 
   function setStatus(message) {
     const element = document.getElementById("model-gateway-management-status");
-    if (element) {
-      element.hidden = false;
-      element.textContent = message;
-    }
+    if (element) { element.hidden = false; element.textContent = message; }
   }
 
-  function refreshGateway() {
-    document.getElementById("refresh-model-gateway")?.click();
-  }
+  function refreshGateway() { document.getElementById("refresh-model-gateway")?.click(); }
 
   function setSelectValues(select, values) {
     const selected = new Set(values || []);
-    Array.from(select?.options || []).forEach((option) => {
-      option.selected = selected.has(option.value);
-    });
+    Array.from(select?.options || []).forEach((option) => { option.selected = selected.has(option.value); });
   }
 
-  function optionList(items, label) {
-    return items.map((item) => (
-      `<option value="${escapeHtml(item.id)}">${escapeHtml(label(item))} · ${escapeHtml(item.id)}</option>`
-    )).join("");
-  }
+  function optionList(items, label) { return items.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(label(item))} · ${escapeHtml(item.id)}</option>`).join(""); }
 
   function populateCredentialRefs(current = "") {
     const select = document.getElementById("model-provider-credential");
@@ -148,6 +122,7 @@
       document.getElementById("model-provider-compliance").value = "";
       document.getElementById("model-provider-status").value = "active";
       document.getElementById("model-provider-credential-required").checked = true;
+      resetProviderCatalogFields();
       populateCredentialRefs("");
       return;
     }
@@ -159,6 +134,7 @@
     document.getElementById("model-provider-compliance").value = csvValue(item.compliance_tags);
     document.getElementById("model-provider-status").value = item.status;
     document.getElementById("model-provider-credential-required").checked = Boolean(item.credential_required);
+    loadProviderCatalogFields(item);
     populateCredentialRefs(item.credential_ref || "");
   }
 
@@ -178,12 +154,14 @@
       document.getElementById("model-definition-output-price").value = "";
       document.getElementById("model-definition-priority").value = 100;
       document.getElementById("model-definition-lifecycle").value = "active";
+      resetModelCatalogFields();
       return;
     }
     document.getElementById("model-definition-id").value = item.id;
     document.getElementById("model-definition-provider").value = item.provider_id;
     document.getElementById("model-definition-concrete").value = item.concrete_model;
     document.getElementById("model-definition-version").value = item.model_version || "";
+    loadModelCatalogFields(item);
     document.getElementById("model-definition-classes").value = csvValue(item.model_classes);
     document.getElementById("model-definition-workloads").value = csvValue(item.workload_classes);
     document.getElementById("model-definition-capabilities").value = csvValue(item.capabilities);
@@ -262,6 +240,7 @@
       credential_required: Boolean(document.getElementById("model-provider-credential-required")?.checked),
       residency_tags: csv("model-provider-residency"),
       compliance_tags: csv("model-provider-compliance"),
+      ...providerCatalogPayload(),
       status: document.getElementById("model-provider-status")?.value || "active",
     };
     if (!await confirmAction({ action: 'Save model provider', target: id, risk: 'high', consequence: `Save provider ${id} as ${payload.status}? Adapter: ${adapterType}; credential reference: ${payload.credential_ref || "none"}; residency: ${payload.residency_tags.join(", ") || "none"}. This can change where model data is routed.`, recovery: 'A later authorized configuration change can restore prior settings; sent model data cannot be recalled.', current: submitted.current })) return;
@@ -288,6 +267,7 @@
       provider_id: providerId,
       concrete_model: concreteModel,
       model_version: document.getElementById("model-definition-version")?.value.trim() || null,
+      ...modelCatalogPayload(),
       model_classes: classes,
       workload_classes: csv("model-definition-workloads"),
       capabilities: csv("model-definition-capabilities"),

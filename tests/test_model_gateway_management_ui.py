@@ -13,9 +13,14 @@ class ModelGatewayManagementUiTests(unittest.TestCase):
         javascript = (ROOT / "static" / "model_gateway_management.js").read_text(
             encoding="utf-8"
         )
+        catalog_fields = (ROOT / "static" / "model_catalog_fields.js").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn('id="model-gateway-management-panel"', html)
         self.assertIn('id="model-definition-workloads"', html)
+        self.assertIn('id="model-provider-catalog-discovery"', html)
+        self.assertIn('id="model-definition-availability"', html)
         self.assertIn("admin authority and MFA/step-up assurance", html)
         self.assertIn('apiRequest("/api/identity/me")', javascript)
         self.assertIn('apiRequest("/api/secrets")', javascript)
@@ -30,6 +35,8 @@ class ModelGatewayManagementUiTests(unittest.TestCase):
         self.assertIn("input_price_per_million_usd", javascript)
         self.assertIn("output_price_per_million_usd", javascript)
         self.assertIn("workload_classes", javascript)
+        self.assertIn("catalog_discovery_enabled", catalog_fields)
+        self.assertIn("availability_source", catalog_fields)
         self.assertIn("Existing version content is immutable", javascript)
         self.assertIn("Empty allowlists mean unrestricted", javascript)
         self.assertIn("change where model data is routed", javascript)

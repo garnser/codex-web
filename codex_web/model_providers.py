@@ -8,6 +8,7 @@ from collections.abc import Mapping
 
 from codex_web.failures import FailureReason
 from codex_web.model_gateway import (
+    ModelCatalogEntry,
     ModelDefinitionRecord,
     ModelInvocationRequest,
     ModelProviderRecord,
@@ -125,6 +126,18 @@ class ModelProviderAdapter(Protocol):
         *,
         credential: str | None,
     ) -> ModelProviderResult: ...
+
+
+@runtime_checkable
+class ModelCatalogDiscoveryAdapter(Protocol):
+    adapter_type: str
+
+    async def discover_models(
+        self,
+        provider: ModelProviderRecord,
+        *,
+        credential: str | None,
+    ) -> tuple[ModelCatalogEntry, ...]: ...
 
 
 class OpenAIModelProviderAdapter:
@@ -333,6 +346,43 @@ class OpenAIModelProviderAdapter:
             provider_request_id=getattr(response, "id", None),
         )
 
+    async def discover_models(
+        self,
+        provider: ModelProviderRecord,
+        *,
+        credential: str | None,
+    ) -> tuple[ModelCatalogEntry, ...]:
+        client = self._client(provider, credential)
+        entries: dict[str, ModelCatalogEntry] = {}
+        try:
+            response = await client.models.list()
+            items = response if hasattr(response, "__aiter__") else (
+                getattr(response, "data", ()) or ()
+            )
+            if hasattr(items, "__aiter__"):
+                async for item in items:
+                    self._add_catalog_entry(entries, item)
+            else:
+                for item in items:
+                    self._add_catalog_entry(entries, item)
+        except Exception as exc:
+            raise self._classify(exc) from exc
+        return tuple(entries[key] for key in sorted(entries))
+
+    @staticmethod
+    def _add_catalog_entry(
+        entries: dict[str, ModelCatalogEntry], item: Any
+    ) -> None:
+        model_id = str(getattr(item, "id", "") or "").strip()
+        if not model_id:
+            return
+        upstream = str(getattr(item, "owned_by", "") or "").strip() or None
+        entries[model_id] = ModelCatalogEntry(
+            concrete_model=model_id,
+            upstream_provider_id=upstream,
+            upstream_model_id=model_id,
+        )
+
 
 class AnthropicModelProviderAdapter:
     """Native Anthropic Messages API adapter for the canonical ModelGateway."""
@@ -420,6 +470,86 @@ class AnthropicModelProviderAdapter:
                 )
             messages.append({"role": item.role, "content": item.content})
         return messages
+
+    async def discover_models(
+        self,
+        provider: ModelProviderRecord,
+        *,
+        credential: str | None,
+    ) -> tuple[ModelCatalogEntry, ...]:
+        if provider.credential_required and not credential:
+            raise ModelProviderAdapterError(
+                "provider credential is required",
+                reason_code=FailureReason.PROVIDER_AUTH_OR_ACCESS,
+            )
+        headers = {"anthropic-version": self.api_version}
+        if credential:
+            headers["x-api-key"] = credential
+        entries: dict[str, ModelCatalogEntry] = {}
+        after_id: str | None = None
+        try:
+            async with httpx.AsyncClient(
+                base_url=(provider.base_url or self.default_base_url).rstrip("/") + "/",
+                headers=headers,
+                timeout=30.0,
+                transport=self._transport,
+            ) as client:
+                for _page in range(100):
+                    params: dict[str, Any] = {"limit": 100}
+                    if after_id:
+                        params["after_id"] = after_id
+                    response = await client.get("v1/models", params=params)
+                    body = self._catalog_response(response)
+                    for item in body.get("data", []):
+                        if not isinstance(item, dict):
+                            continue
+                        model_id = str(item.get("id") or "").strip()
+                        if model_id:
+                            entries[model_id] = ModelCatalogEntry(
+                                concrete_model=model_id,
+                                upstream_provider_id="anthropic",
+                                upstream_model_id=model_id,
+                            )
+                    if not body.get("has_more"):
+                        break
+                    next_after_id = str(body.get("last_id") or "").strip()
+                    if not next_after_id or next_after_id == after_id:
+                        raise ModelProviderAdapterError(
+                            "Anthropic model catalog pagination did not advance"
+                        )
+                    after_id = next_after_id
+                else:
+                    raise ModelProviderAdapterError(
+                        "Anthropic model catalog exceeded 100 pages"
+                    )
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            raise ModelProviderTransientError(f"{type(exc).__name__}: {exc}") from exc
+        return tuple(entries[key] for key in sorted(entries))
+
+    def _catalog_response(self, response: httpx.Response) -> dict[str, Any]:
+        if response.status_code >= 400:
+            try:
+                body = response.json()
+                message = body.get("error", {}).get("message", response.text)
+            except (ValueError, AttributeError):
+                message = response.text
+            raise self._classify_status(
+                response.status_code, str(message or "request failed"),
+                headers=response.headers,
+            )
+        try:
+            body = response.json()
+            data = body.get("data", [])
+        except (ValueError, AttributeError) as exc:
+            raise ModelProviderAdapterError(
+                "Anthropic model catalog returned invalid JSON"
+            ) from exc
+        if not isinstance(body, dict) or not isinstance(data, list):
+            raise ModelProviderAdapterError(
+                "Anthropic model catalog returned invalid data"
+            )
+        body["data"] = data
+        return body
 
     async def invoke(
         self,

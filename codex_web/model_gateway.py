@@ -14,9 +14,9 @@ from codex_web.input_plugins import InputGatedProposal, InputPluginProvenance
 
 MODEL_GATEWAY_CONTRACT = ContractSpec(
     "model-gateway-state",
-    "1.3",
-    ("1.0", "1.1", "1.2", "1.3"),
-    deprecated=("1.0", "1.1", "1.2"),
+    "1.4",
+    ("1.0", "1.1", "1.2", "1.3", "1.4"),
+    deprecated=("1.0", "1.1", "1.2", "1.3"),
 )
 
 MODEL_CLASS_LIGHTWEIGHT = "lightweight"
@@ -43,6 +43,17 @@ class ModelLatencyClass(StrEnum):
     HIGH = "high"
 
 
+class ModelAvailabilitySource(StrEnum):
+    STATIC = "static"
+    DISCOVERED = "discovered"
+
+
+class ModelCatalogStatus(StrEnum):
+    READY = "ready"
+    STALE = "stale"
+    ERROR = "error"
+
+
 class ModelMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -61,6 +72,8 @@ class ModelProviderUpsert(BaseModel):
     credential_required: bool = True
     residency_tags: tuple[str, ...] = ()
     compliance_tags: tuple[str, ...] = ()
+    catalog_discovery_enabled: bool = False
+    catalog_ttl_seconds: int = Field(default=300, ge=30, le=86400)
     status: ModelProviderStatus = ModelProviderStatus.ACTIVE
 
 
@@ -87,6 +100,9 @@ class ModelDefinitionUpsert(BaseModel):
     provider_id: str = Field(min_length=1)
     concrete_model: str = Field(min_length=1)
     model_version: str | None = None
+    upstream_provider_id: str | None = None
+    upstream_model_id: str | None = None
+    availability_source: ModelAvailabilitySource = ModelAvailabilitySource.STATIC
     model_classes: tuple[str, ...] = ()
     workload_classes: tuple[str, ...] = ()
     capabilities: tuple[str, ...] = ("text",)
@@ -137,6 +153,31 @@ class ModelDefinitionRecord(ModelDefinitionUpsert):
         self.residency_tags = tuple(sorted(set(self.residency_tags)))
         self.compliance_tags = tuple(sorted(set(self.compliance_tags)))
         return self
+
+
+class ModelCatalogEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    concrete_model: str = Field(min_length=1, max_length=512)
+    upstream_provider_id: str | None = Field(default=None, max_length=512)
+    upstream_model_id: str | None = Field(default=None, max_length=512)
+    model_version: str | None = Field(default=None, max_length=512)
+
+
+class ModelCatalogSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    organization_id: str
+    workspace_id: str
+    provider_id: str
+    status: ModelCatalogStatus
+    revision: str | None = None
+    entries: tuple[ModelCatalogEntry, ...] = ()
+    discovered_at: float | None = None
+    expires_at: float | None = None
+    error: str | None = None
+    updated_by: str
+    updated_at: float = Field(default_factory=time.time)
 
 
 class PromptTemplateUpsert(BaseModel):
@@ -241,6 +282,10 @@ class ModelRouteCandidate(BaseModel):
     model_id: str
     concrete_model: str
     model_version: str | None = None
+    upstream_provider_id: str | None = None
+    upstream_model_id: str | None = None
+    catalog_revision: str | None = None
+    catalog_discovered_at: float | None = None
     estimated_input_tokens: int
     max_output_tokens: int
     estimated_upper_cost_usd: float | None = None
@@ -340,6 +385,10 @@ class ModelInvocationRecord(BaseModel):
     selected_model_id: str | None = None
     selected_concrete_model: str | None = None
     selected_model_version: str | None = None
+    selected_upstream_provider_id: str | None = None
+    selected_upstream_model_id: str | None = None
+    selected_catalog_revision: str | None = None
+    selected_catalog_discovered_at: float | None = None
     status: str
     created_at: float = Field(default_factory=time.time)
     completed_at: float | None = None
@@ -378,6 +427,7 @@ class ModelGatewayState(BaseModel):
     schema_version: str = MODEL_GATEWAY_CONTRACT.current
     providers: list[ModelProviderRecord] = Field(default_factory=list)
     models: list[ModelDefinitionRecord] = Field(default_factory=list)
+    catalogs: list[ModelCatalogSnapshot] = Field(default_factory=list)
     prompt_templates: list[PromptTemplateRecord] = Field(default_factory=list)
     policies: list[TenantModelPolicy] = Field(default_factory=list)
     invocations: list[ModelInvocationRecord] = Field(default_factory=list)

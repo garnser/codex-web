@@ -20,6 +20,59 @@ MODEL_GATEWAY_MIGRATIONS.register(
         "invocations": list(payload.get("invocations", [])),
     },
 )
+
+MODEL_GATEWAY_MIGRATIONS.register(
+    "1.3",
+    "1.4",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.4",
+        "catalogs": list(payload.get("catalogs", [])),
+        "providers": [
+            {
+                **dict(item),
+                "catalog_discovery_enabled": bool(
+                    dict(item).get("catalog_discovery_enabled", False)
+                ),
+                "catalog_ttl_seconds": int(
+                    dict(item).get("catalog_ttl_seconds", 300)
+                ),
+            }
+            for item in payload.get("providers", [])
+        ],
+        "models": [
+            {
+                **dict(item),
+                "availability_source": dict(item).get(
+                    "availability_source", "static"
+                ),
+                "upstream_provider_id": dict(item).get(
+                    "upstream_provider_id"
+                ),
+                "upstream_model_id": dict(item).get("upstream_model_id"),
+            }
+            for item in payload.get("models", [])
+        ],
+        "invocations": [
+            {
+                **dict(item),
+                "selected_upstream_provider_id": dict(item).get(
+                    "selected_upstream_provider_id"
+                ),
+                "selected_upstream_model_id": dict(item).get(
+                    "selected_upstream_model_id"
+                ),
+                "selected_catalog_revision": dict(item).get(
+                    "selected_catalog_revision"
+                ),
+                "selected_catalog_discovered_at": dict(item).get(
+                    "selected_catalog_discovered_at"
+                ),
+            }
+            for item in payload.get("invocations", [])
+        ],
+    },
+)
 MODEL_GATEWAY_MIGRATIONS.register(
     "1.0",
     "1.1",

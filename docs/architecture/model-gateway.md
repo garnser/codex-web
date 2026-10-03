@@ -28,6 +28,7 @@ Provider records contain metadata only:
 - secret-broker credential reference, never credential material;
 - residency/compliance tags;
 - availability state.
+- whether read-only catalog discovery is enabled and its bounded cache TTL.
 
 Model records contain:
 
@@ -40,6 +41,18 @@ Model records contain:
 - pricing metadata;
 - residency/compliance tags;
 - routing priority and lifecycle state.
+- explicit availability source (`static` or provider-discovered) and optional
+  upstream provider/model identity for aggregator catalogs.
+
+Provider catalog discovery is provider-scoped canonical state. A refresh uses the
+registered adapter and any credential reference through the SecretBroker; raw
+credentials and arbitrary provider response fields are never persisted or returned.
+Snapshots expose a content revision, discovered/expiry timestamps, normalized model
+identities and explicit ready/stale/error state. A discovered model definition is
+eligible only while its provider snapshot is ready, unexpired and still contains the
+exact concrete model. Failed refreshes retain the prior entries for inspection but
+mark the snapshot error, so routing fails closed. Static definitions remain an
+explicit fallback mode and are never presented as discovered availability.
 
 ## Tenant routing policy
 
@@ -62,12 +75,13 @@ Routing filters candidates before invocation in this order:
 2. an optional strict model pin and the stable model class;
 3. active model/provider lifecycle;
 4. tenant provider/model allowlists;
-5. optional workload suitability;
-6. required capabilities;
-7. residency and compliance constraints;
-8. context-window capacity;
-9. cost ceiling;
-10. workload specificity, preferred provider, provider health, requested latency order, requested lower estimated cost, and route priority.
+5. discovered-catalog readiness, TTL and exact concrete-model membership where required;
+6. optional workload suitability;
+7. required capabilities;
+8. residency and compliance constraints;
+9. context-window capacity;
+10. cost ceiling;
+11. workload specificity, preferred provider, provider health, requested latency order, requested lower estimated cost, and route priority.
 
 If no candidate survives, routing fails before provider invocation.
 
@@ -108,6 +122,7 @@ Every gateway invocation records metadata sufficient for audit/cost/replay attri
 - work/goal/decision/execution references;
 - ordered provider/model attempts;
 - exact selected provider, model, concrete model name and model version;
+- selected upstream provider/model and catalog revision/discovery time where applicable;
 - provider request ID and provider stop reason when available;
 - token usage and computed cost when available;
 - success/failure timestamps.
@@ -134,6 +149,9 @@ PUT /api/model-gateway/providers/{provider_id}
 
 GET /api/model-gateway/models
 PUT /api/model-gateway/models/{model_id}
+
+GET /api/model-gateway/catalogs
+POST /api/model-gateway/providers/{provider_id}/catalog/refresh
 
 GET /api/model-gateway/prompts
 PUT /api/model-gateway/prompts/{template_id}/{version}
