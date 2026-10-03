@@ -15,6 +15,12 @@ from codex_web.model_gateway import (
     PromptTemplateUpsert,
     TenantModelPolicyUpdate,
 )
+from codex_web.model_qualification import (
+    ModelQualificationUpdate,
+    ModelRoutingDefinitionCreate,
+    ModelRoutingRollback,
+    WorkloadEvaluationProfileUpsert,
+)
 from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.services.model_gateway import (
     ModelGatewayError,
@@ -157,6 +163,96 @@ def build_model_gateway_router(service: ModelGatewayService, projects=None, admi
     ) -> dict[str, Any]:
         try:
             item = service.set_policy(payload, actor=mutation_actor(request))
+            return {"item": item.model_dump(mode="json")}
+        except Exception as exc:
+            if isinstance(exc, (ModelGatewayError, AuthorizationError, ValueError)):
+                raise _error(exc) from exc
+            raise
+
+    @router.get("/qualification-profiles")
+    async def qualification_profiles(request: Request) -> dict[str, Any]:
+        items = service.list_evaluation_profiles(request_actor(request))
+        return {"items": [item.model_dump(mode="json") for item in items]}
+
+    @router.get("/routing-baseline")
+    async def routing_baseline(request: Request) -> dict[str, Any]:
+        try:
+            return service.routing_baseline(request_actor(request))
+        except Exception as exc:
+            if isinstance(exc, (ModelGatewayError, AuthorizationError, ValueError)):
+                raise _error(exc) from exc
+            raise
+
+    @router.post("/qualification-profiles")
+    async def publish_qualification_profile(
+        payload: WorkloadEvaluationProfileUpsert,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            item = service.upsert_evaluation_profile(
+                payload,
+                actor=mutation_actor(request),
+            )
+            return {"item": item.model_dump(mode="json")}
+        except Exception as exc:
+            if isinstance(exc, (ModelGatewayError, AuthorizationError, ValueError)):
+                raise _error(exc) from exc
+            raise
+
+    @router.get("/qualifications")
+    async def qualifications(request: Request) -> dict[str, Any]:
+        items = service.list_qualifications(request_actor(request))
+        return {"items": [item.model_dump(mode="json") for item in items]}
+
+    @router.post("/qualifications")
+    async def record_qualification(
+        payload: ModelQualificationUpdate,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            item = service.record_qualification(
+                payload,
+                actor=mutation_actor(request),
+            )
+            return {"item": item.model_dump(mode="json")}
+        except Exception as exc:
+            if isinstance(exc, (ModelGatewayError, AuthorizationError, ValueError)):
+                raise _error(exc) from exc
+            raise
+
+    @router.get("/routing-definitions")
+    async def routing_definitions(request: Request) -> dict[str, Any]:
+        items = service.list_routing_definitions(request_actor(request))
+        return {"items": [item.model_dump(mode="json") for item in items]}
+
+    @router.post("/routing-definitions")
+    async def publish_routing_definition(
+        payload: ModelRoutingDefinitionCreate,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            item = service.publish_routing_definition(
+                payload,
+                actor=mutation_actor(request),
+            )
+            return {"item": item.model_dump(mode="json")}
+        except Exception as exc:
+            if isinstance(exc, (ModelGatewayError, AuthorizationError, ValueError)):
+                raise _error(exc) from exc
+            raise
+
+    @router.post("/routing-definitions/{mapping_id}/rollback")
+    async def rollback_routing_definition(
+        mapping_id: str,
+        payload: ModelRoutingRollback,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            item = service.rollback_routing_definition(
+                mapping_id,
+                payload,
+                actor=mutation_actor(request),
+            )
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (ModelGatewayError, AuthorizationError, ValueError)):

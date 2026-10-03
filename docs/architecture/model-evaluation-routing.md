@@ -118,6 +118,22 @@ The canonical routing definitions should be able to express mappings equivalent 
 
 This table defines the intended *class* mapping. Concrete model assignments belong in the Model Gateway / Definition Registry and are versioned independently.
 
+The initial concrete recommendations are bootstrapped as the published Definition
+Registry record `model-routing.initial-functional-matrix` of kind
+`model-routing-baseline`. Its `initial-functional-matrix-2026-09-26` evaluation
+revision and evaluation timestamp are data, and the record explicitly declares that
+it is replaceable. This baseline is discovery input only: it does not make a provider
+catalog entry eligible for production. An operator must register the provider/model,
+record passing replay evidence against the workload's evaluation-profile revision,
+and publish an effective Model Gateway mapping revision.
+
+Effective mappings and lifecycle changes live in Model Gateway state. Qualification,
+canary, active, restricted, and retired transitions append immutable revisions.
+Publishing or rolling back a mapping also appends a revision; it never rewrites the
+invocation provenance retained against an older revision. Routing applies the mapped
+order only after tenant policy, capability, residency, compliance, context, pricing,
+catalog freshness, provider capacity, and current qualification checks pass.
+
 ## Executive-team diversity
 
 For consequential decisions, do not create an illusion of independent Executive debate by assigning every role to the same concrete model and prompt family.

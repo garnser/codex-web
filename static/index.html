@@ -510,6 +510,47 @@
                         <button id="save-model-policy" type="button" class="ghost-button">Save routing policy</button>
                       </div>
                     </details>
+                    <details id="model-qualification-management">
+                      <summary>Workload qualification & mapping</summary>
+                      <div class="route-test">
+                        <label>Workload class <select id="qualification-profile-workload">
+                          <option value="lightweight">lightweight</option><option value="primary-coding">primary-coding</option><option value="coding-deep">coding-deep</option><option value="high-reasoning">high-reasoning</option><option value="architecture">architecture</option><option value="strategic">strategic</option><option value="operator">operator</option><option value="research">research</option><option value="synthesis">synthesis</option><option value="critic">critic</option>
+                        </select></label>
+                        <input aria-label="Qualification metrics" id="qualification-profile-metrics" placeholder="quality, cost-per-success" />
+                        <input aria-label="Minimum qualification quality" id="qualification-profile-quality" type="number" min="0" max="1" step="0.01" value="0.8" />
+                        <input aria-label="Maximum qualification cost per success" id="qualification-profile-cost" type="number" min="0" step="0.0001" placeholder="Max cost / success USD" />
+                        <input aria-label="Required evaluation suite IDs" id="qualification-profile-suites" placeholder="Required evaluation suite IDs" />
+                        <label><input id="qualification-profile-provider-cost" type="checkbox" /> Require provider-reported cost</label>
+                        <label><input id="qualification-profile-canary" type="checkbox" /> Require canary before active</label>
+                        <button id="publish-qualification-profile" type="button" class="ghost-button">Publish evaluation profile</button>
+                      </div>
+                      <div class="route-test">
+                        <label>Model <select id="model-qualification-model"></select></label>
+                        <label>Workload class <select id="model-qualification-workload"></select></label>
+                        <label>Status <select id="model-qualification-status"><option value="candidate">Candidate</option><option value="qualified">Qualified</option><option value="canary">Canary</option><option value="active">Active</option><option value="degraded">Degraded</option><option value="restricted">Restricted</option><option value="retired">Retired</option></select></label>
+                        <input aria-label="Evaluation profile revision" id="model-qualification-profile-revision" type="number" min="1" value="1" />
+                        <input aria-label="Evaluation run IDs" id="model-qualification-runs" placeholder="Evaluation run IDs" />
+                        <input aria-label="Qualification quality score" id="model-qualification-quality" type="number" min="0" max="1" step="0.01" placeholder="Quality score from evidence" />
+                        <input aria-label="Qualification cost per success" id="model-qualification-cost" type="number" min="0" step="0.0001" placeholder="Cost per successful outcome" />
+                        <label>Cost source <select id="model-qualification-cost-source"><option value="">From evaluation trace</option><option value="provider_reported">Provider reported</option><option value="codex_calculated">Codex calculated</option></select></label>
+                        <input aria-label="Qualification reason" id="model-qualification-reason" placeholder="Qualification or lifecycle reason" />
+                        <button id="record-model-qualification" type="button" class="ghost-button">Record immutable qualification</button>
+                      </div>
+                      <div class="route-test">
+                        <input aria-label="Routing mapping ID" id="model-mapping-id" placeholder="Mapping ID" />
+                        <input aria-label="Routing function ID" id="model-mapping-function" placeholder="Function ID or *" />
+                        <label>Workload class <select id="model-mapping-workload"></select></label>
+                        <input aria-label="Primary model IDs" id="model-mapping-primary" placeholder="Primary model IDs" />
+                        <input aria-label="Escalation model IDs" id="model-mapping-escalation" placeholder="Escalation model IDs" />
+                        <input aria-label="Critic model IDs" id="model-mapping-critic" placeholder="Critic model IDs" />
+                        <input aria-label="Mapping required capabilities" id="model-mapping-capabilities" placeholder="Required capabilities" />
+                        <input aria-label="Qualification revision label" id="model-mapping-evaluation-revision" placeholder="Evaluation revision" />
+                        <input aria-label="Evaluation timestamp" id="model-mapping-evaluated-at" type="datetime-local" />
+                        <input aria-label="Mapping maximum cost" id="model-mapping-max-cost" type="number" min="0" step="0.0001" placeholder="Max invocation cost USD" />
+                        <label><input id="model-mapping-fallback" type="checkbox" checked /> Allow bounded fallback</label>
+                        <button id="publish-model-mapping" type="button" class="ghost-button">Publish mapping revision</button>
+                      </div>
+                    </details>
                     <div id="model-gateway-management-status" class="form-result" aria-live="polite"></div>
                   </details>
                   <div class="section-title"><span>Effective tenant policy</span></div>
@@ -521,6 +562,7 @@
                       <datalist id="model-class-options"></datalist>
                       <label>Workload class <input id="model-route-workload" list="model-workload-options" placeholder="code_review" /></label>
                       <datalist id="model-workload-options"></datalist>
+                      <label>Routing role <select id="model-route-role"><option value="primary">Primary</option><option value="escalation">Escalation</option><option value="critic">Independent critic</option></select></label>
                       <label>Pinned model <select id="model-route-pinned-model"><option value="">Automatic selection</option></select></label>
                       <label>Prompt template <select id="model-route-template"></select></label>
                       <label>Required capabilities <input id="model-route-capabilities" value="text" placeholder="text, tools" /></label>
@@ -542,6 +584,8 @@
                   <div id="model-catalog-list" class="comm-log"></div>
                   <div class="section-title"><span>Models & classes</span></div>
                   <div id="model-definition-list" class="comm-log"></div>
+                  <div class="section-title"><span>Workload qualification & routing revisions</span></div>
+                  <div id="model-qualification-list" class="comm-log"></div>
                   <div class="section-title"><span>Prompt/template versions</span></div>
                   <div id="model-prompt-list" class="comm-log"></div>
                   <div class="section-title"><span>Invocation provenance</span></div>
@@ -1310,6 +1354,7 @@
     <script src="static/secret_admin.js" type="module"></script>
     <script src="static/crypto_key_admin.js" type="module"></script>
     <script src="static/model_gateway_admin.js" type="module"></script>
+    <script src="static/model_qualification_admin.js" type="module"></script>
     <script src="static/agent_provider_admin.js" type="module"></script>
     <script src="static/model_gateway_management.js" type="module"></script>
     <script src="static/input_plugin_admin.js" type="module"></script>

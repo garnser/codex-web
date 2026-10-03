@@ -53,6 +53,17 @@ from codex_web.model_gateway import (
     TenantModelPolicy,
     TenantModelPolicyUpdate,
 )
+from codex_web.model_qualification import (
+    ModelQualificationRevision,
+    ModelQualificationStatus,
+    ModelQualificationUpdate,
+    ModelRoutingDefinitionCreate,
+    ModelRoutingDefinitionRevision,
+    ModelRoutingRollback,
+    ModelRoutingRole,
+    WorkloadEvaluationProfile,
+    WorkloadEvaluationProfileUpsert,
+)
 from codex_web.model_providers import (
     ModelProviderAdapter,
     ModelProviderAdapterError,
@@ -126,6 +137,8 @@ InputPipelineResolver = Callable[
     [ModelInvocationRequest, AuthenticationActor],
     InputPluginPipeline | None,
 ]
+EvaluationRunResolver = Callable[..., Any]
+RoutingBaselineResolver = Callable[[AuthenticationActor], Any]
 
 
 class ModelGatewayService:
@@ -139,6 +152,8 @@ class ModelGatewayService:
         input_pipeline: InputPluginPipeline | None = None,
         input_pipeline_resolver: InputPipelineResolver | None = None,
         provider_capacity: ProviderCapacityService | None = None,
+        evaluation_run_resolver: EvaluationRunResolver | None = None,
+        routing_baseline_resolver: RoutingBaselineResolver | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if input_pipeline is not None and input_pipeline_resolver is not None:
@@ -151,6 +166,8 @@ class ModelGatewayService:
         self.input_pipeline = input_pipeline
         self.input_pipeline_resolver = input_pipeline_resolver
         self.provider_capacity = provider_capacity
+        self.evaluation_run_resolver = evaluation_run_resolver
+        self.routing_baseline_resolver = routing_baseline_resolver
         self.clock = clock
         self.adapters: dict[str, ModelProviderAdapter] = {}
 
@@ -804,6 +821,407 @@ class ModelGatewayService:
         self.store.update(apply)
         return updated[0]
 
+    def list_evaluation_profiles(
+        self,
+        actor: AuthenticationActor,
+    ) -> list[WorkloadEvaluationProfile]:
+        return sorted(
+            [
+                item
+                for item in self.store.load().evaluation_profiles
+                if self._same_scope(item, actor)
+            ],
+            key=lambda item: (item.workload_class, item.revision),
+        )
+
+    def routing_baseline(self, actor: AuthenticationActor) -> dict[str, Any]:
+        if self.routing_baseline_resolver is None:
+            raise ModelRegistryConflictError("routing baseline is unavailable")
+        baseline, reference = self.routing_baseline_resolver(actor)
+        return {
+            "item": baseline.model_dump(mode="json"),
+            "definition": reference.model_dump(mode="json"),
+        }
+
+    def upsert_evaluation_profile(
+        self,
+        payload: WorkloadEvaluationProfileUpsert,
+        *,
+        actor: AuthenticationActor,
+    ) -> WorkloadEvaluationProfile:
+        self._require_admin(actor)
+        created: list[WorkloadEvaluationProfile] = []
+
+        def apply(state: ModelGatewayState) -> ModelGatewayState:
+            prior = [
+                item
+                for item in state.evaluation_profiles
+                if item.workload_class == payload.workload_class
+                and self._same_scope(item, actor)
+            ]
+            item = WorkloadEvaluationProfile(
+                **payload.model_dump(mode="python"),
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                revision=max((value.revision for value in prior), default=0) + 1,
+                created_by=actor.identity_id,
+                created_at=self.clock(),
+            )
+            state.evaluation_profiles.append(item)
+            created.append(item)
+            return state
+
+        self.store.update(apply)
+        return created[0]
+
+    def list_qualifications(
+        self,
+        actor: AuthenticationActor,
+    ) -> list[ModelQualificationRevision]:
+        return sorted(
+            [
+                item
+                for item in self.store.load().qualifications
+                if self._same_scope(item, actor)
+            ],
+            key=lambda item: (item.model_id, item.workload_class, item.revision),
+        )
+
+    def _qualification_evidence(
+        self,
+        payload: ModelQualificationUpdate,
+        *,
+        actor: AuthenticationActor,
+        profile: WorkloadEvaluationProfile,
+    ) -> None:
+        if not payload.evaluation_run_ids:
+            return
+        if self.evaluation_run_resolver is None:
+            raise ModelRegistryConflictError(
+                "evaluation evidence resolver is unavailable"
+            )
+        runs = []
+        for run_id in payload.evaluation_run_ids:
+            try:
+                run = self.evaluation_run_resolver(run_id, actor=actor)
+            except Exception as exc:
+                raise ModelRegistryConflictError(
+                    f"evaluation run is unavailable: {run_id}"
+                ) from exc
+            if not run.passed:
+                raise ModelRegistryConflictError(
+                    f"evaluation run did not pass: {run_id}"
+                )
+            if not any(item.model_id == payload.model_id for item in run.models):
+                raise ModelRegistryConflictError(
+                    f"evaluation run does not pin model {payload.model_id}: {run_id}"
+                )
+            runs.append(run)
+        available_suites = {
+            suite_id for run in runs for suite_id in run.suite_ids
+        }
+        missing = set(profile.required_suite_ids) - available_suites
+        if missing:
+            raise ModelRegistryConflictError(
+                "qualification evidence is missing required suites: "
+                + ", ".join(sorted(missing))
+            )
+        measured_quality = [
+            run.trace.quality_score
+            for run in runs
+            if run.trace.quality_score is not None
+        ]
+        quality = min(measured_quality) if measured_quality else payload.quality_score
+        if quality is None or quality < profile.minimum_quality_score:
+            raise ModelRegistryConflictError(
+                "qualification evidence does not meet the quality threshold"
+            )
+        measured_cost = sum(run.trace.cost_usd for run in runs) / len(runs)
+        cost_per_success = measured_cost
+        if (
+            profile.maximum_cost_per_successful_outcome_usd is not None
+            and cost_per_success
+            > profile.maximum_cost_per_successful_outcome_usd
+        ):
+            raise ModelRegistryConflictError(
+                "qualification evidence exceeds the cost-per-success threshold"
+            )
+        if (
+            profile.require_provider_reported_cost
+            and payload.cost_source != "provider_reported"
+        ):
+            raise ModelRegistryConflictError(
+                "qualification profile requires provider-reported cost evidence"
+            )
+
+    def record_qualification(
+        self,
+        payload: ModelQualificationUpdate,
+        *,
+        actor: AuthenticationActor,
+    ) -> ModelQualificationRevision:
+        self._require_admin(actor)
+        state = self.store.load()
+        model = next(
+            (
+                item
+                for item in state.models
+                if item.id == payload.model_id and self._same_scope(item, actor)
+            ),
+            None,
+        )
+        if model is None:
+            raise ModelRegistryConflictError(
+                f"model definition not found: {payload.model_id}"
+            )
+        profile = next(
+            (
+                item
+                for item in state.evaluation_profiles
+                if item.workload_class == payload.workload_class
+                and item.revision == payload.evaluation_profile_revision
+                and self._same_scope(item, actor)
+            ),
+            None,
+        )
+        if profile is None:
+            raise ModelRegistryConflictError(
+                "evaluation profile revision not found"
+            )
+        prior = [
+            item
+            for item in state.qualifications
+            if item.model_id == payload.model_id
+            and item.workload_class == payload.workload_class
+            and self._same_scope(item, actor)
+        ]
+        previous = max(prior, key=lambda item: item.revision) if prior else None
+        if (
+            payload.status == ModelQualificationStatus.CANARY
+            and (
+                previous is None
+                or previous.status not in {
+                    ModelQualificationStatus.QUALIFIED,
+                    ModelQualificationStatus.CANARY,
+                }
+            )
+        ):
+            raise ModelRegistryConflictError(
+                "canary requires a prior qualified revision"
+            )
+        if (
+            payload.status == ModelQualificationStatus.ACTIVE
+            and profile.require_canary
+            and (
+                previous is None
+                or previous.status != ModelQualificationStatus.CANARY
+            )
+        ):
+            raise ModelRegistryConflictError(
+                "active promotion requires a prior canary revision"
+            )
+        self._qualification_evidence(payload, actor=actor, profile=profile)
+        created: list[ModelQualificationRevision] = []
+
+        def apply(current: ModelGatewayState) -> ModelGatewayState:
+            prior = [
+                item
+                for item in current.qualifications
+                if item.model_id == payload.model_id
+                and item.workload_class == payload.workload_class
+                and self._same_scope(item, actor)
+            ]
+            previous = max(prior, key=lambda item: item.revision) if prior else None
+            item = ModelQualificationRevision(
+                **payload.model_dump(mode="python"),
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                revision=(previous.revision + 1 if previous else 1),
+                provider_id=model.provider_id,
+                model_version=model.model_version,
+                previous_revision_id=(previous.id if previous else None),
+                created_by=actor.identity_id,
+                created_at=self.clock(),
+            )
+            current.qualifications.append(item)
+            created.append(item)
+            return current
+
+        self.store.update(apply)
+        return created[0]
+
+    def list_routing_definitions(
+        self,
+        actor: AuthenticationActor,
+    ) -> list[ModelRoutingDefinitionRevision]:
+        return sorted(
+            [
+                item
+                for item in self.store.load().routing_definitions
+                if self._same_scope(item, actor)
+            ],
+            key=lambda item: (item.mapping_id, item.revision),
+        )
+
+    @staticmethod
+    def _latest_qualifications(
+        state: ModelGatewayState,
+        actor: AuthenticationActor,
+    ) -> dict[tuple[str, str], ModelQualificationRevision]:
+        latest: dict[tuple[str, str], ModelQualificationRevision] = {}
+        for item in state.qualifications:
+            if not ModelGatewayService._same_scope(item, actor):
+                continue
+            key = (item.model_id, item.workload_class)
+            if key not in latest or item.revision > latest[key].revision:
+                latest[key] = item
+        return latest
+
+    def publish_routing_definition(
+        self,
+        payload: ModelRoutingDefinitionCreate,
+        *,
+        actor: AuthenticationActor,
+        previous_known_good_revision_id: str | None = None,
+    ) -> ModelRoutingDefinitionRevision:
+        self._require_admin(actor)
+        state = self.store.load()
+        models = {
+            item.id: item
+            for item in state.models
+            if self._same_scope(item, actor)
+        }
+        referenced = tuple(
+            dict.fromkeys(
+                payload.primary_model_ids
+                + payload.escalation_model_ids
+                + payload.critic_model_ids
+            )
+        )
+        missing = [item for item in referenced if item not in models]
+        if missing:
+            raise ModelRegistryConflictError(
+                "routing definition references unknown models: "
+                + ", ".join(missing)
+            )
+        latest = self._latest_qualifications(state, actor)
+        profile = max(
+            (
+                item
+                for item in state.evaluation_profiles
+                if item.workload_class == payload.workload_class
+                and self._same_scope(item, actor)
+            ),
+            key=lambda item: item.revision,
+            default=None,
+        )
+        eligible = {
+            ModelQualificationStatus.QUALIFIED,
+            ModelQualificationStatus.CANARY,
+            ModelQualificationStatus.ACTIVE,
+        }
+        unqualified = [
+            model_id
+            for model_id in referenced
+            if latest.get((model_id, payload.workload_class)) is None
+            or latest[(model_id, payload.workload_class)].status not in eligible
+            or (
+                profile is not None
+                and profile.require_canary
+                and latest[(model_id, payload.workload_class)].status
+                != ModelQualificationStatus.ACTIVE
+            )
+        ]
+        if unqualified:
+            raise ModelRegistryConflictError(
+                "routing definition requires production-qualified models: "
+                + ", ".join(unqualified)
+            )
+        primary_families = {
+            models[item].upstream_provider_id or models[item].provider_id
+            for item in payload.primary_model_ids
+        }
+        critic_families = {
+            models[item].upstream_provider_id or models[item].provider_id
+            for item in payload.critic_model_ids
+        }
+        if primary_families & critic_families:
+            raise ModelRegistryConflictError(
+                "critic models must use a different provider family from primary models"
+            )
+        created: list[ModelRoutingDefinitionRevision] = []
+
+        def apply(current: ModelGatewayState) -> ModelGatewayState:
+            prior = [
+                item
+                for item in current.routing_definitions
+                if item.mapping_id == payload.mapping_id
+                and self._same_scope(item, actor)
+            ]
+            previous = max(prior, key=lambda item: item.revision) if prior else None
+            current.routing_definitions = [
+                item.model_copy(update={"active": False})
+                if item.mapping_id == payload.mapping_id
+                and item.active
+                and self._same_scope(item, actor)
+                else item
+                for item in current.routing_definitions
+            ]
+            item = ModelRoutingDefinitionRevision(
+                **payload.model_dump(mode="python"),
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                revision=(previous.revision + 1 if previous else 1),
+                previous_revision_id=(previous.id if previous else None),
+                previous_known_good_revision_id=(
+                    previous_known_good_revision_id
+                    or (previous.id if previous else None)
+                ),
+                created_by=actor.identity_id,
+                created_at=self.clock(),
+            )
+            current.routing_definitions.append(item)
+            created.append(item)
+            return current
+
+        self.store.update(apply)
+        return created[0]
+
+    def rollback_routing_definition(
+        self,
+        mapping_id: str,
+        payload: ModelRoutingRollback,
+        *,
+        actor: AuthenticationActor,
+    ) -> ModelRoutingDefinitionRevision:
+        self._require_admin(actor)
+        target = next(
+            (
+                item
+                for item in self.store.load().routing_definitions
+                if item.mapping_id == mapping_id
+                and item.revision == payload.target_revision
+                and self._same_scope(item, actor)
+            ),
+            None,
+        )
+        if target is None:
+            raise ModelRegistryConflictError("routing rollback target not found")
+        source = target.model_dump(
+            mode="python",
+            exclude={
+                "id", "organization_id", "workspace_id", "revision",
+                "previous_revision_id", "previous_known_good_revision_id",
+                "active", "created_by", "created_at",
+            },
+        )
+        source["source"] = f"rollback:{payload.reason}"
+        return self.publish_routing_definition(
+            ModelRoutingDefinitionCreate.model_validate(source),
+            actor=actor,
+            previous_known_good_revision_id=target.id,
+        )
+
     def route(
         self,
         request: ModelInvocationRequest,
@@ -813,6 +1231,51 @@ class ModelGatewayService:
         state = self.store.load()
         template = self._template(state, request, actor)
         policy = self._policy(state, actor)
+        matching_mappings = [
+            item
+            for item in state.routing_definitions
+            if item.active
+            and self._same_scope(item, actor)
+            and request.workload_class == item.workload_class
+            and item.function_id in {request.purpose, "*"}
+            and item.effective_at <= self.clock()
+        ]
+        matching_mappings.sort(
+            key=lambda item: (
+                item.function_id == request.purpose,
+                item.effective_at,
+                item.revision,
+            ),
+            reverse=True,
+        )
+        mapping = matching_mappings[0] if matching_mappings else None
+        mapped_model_ids: tuple[str, ...] = ()
+        if mapping is not None:
+            mapped_model_ids = {
+                ModelRoutingRole.PRIMARY: mapping.primary_model_ids,
+                ModelRoutingRole.ESCALATION: mapping.escalation_model_ids,
+                ModelRoutingRole.CRITIC: mapping.critic_model_ids,
+            }[request.routing_role]
+            if not mapped_model_ids:
+                raise ModelRoutingError(
+                    f"routing definition {mapping.mapping_id}@{mapping.revision} "
+                    f"has no {request.routing_role.value} models"
+                )
+        mapping_order = {
+            model_id: index for index, model_id in enumerate(mapped_model_ids)
+        }
+        latest_qualifications = self._latest_qualifications(state, actor)
+        mapping_profile = max(
+            (
+                item
+                for item in state.evaluation_profiles
+                if mapping is not None
+                and item.workload_class == mapping.workload_class
+                and self._same_scope(item, actor)
+            ),
+            key=lambda item: item.revision,
+            default=None,
+        )
         rendered_system_prompt = self._render_system_prompt(template, request)
         input_tokens = self._estimate_tokens(
             request,
@@ -832,10 +1295,16 @@ class ModelGatewayService:
         requested_compliance = set(policy.required_compliance_tags) | set(
             request.required_compliance_tags
         )
-        required_capabilities = set(request.required_capabilities)
+        required_capabilities = set(request.required_capabilities) | set(
+            mapping.required_capabilities if mapping is not None else ()
+        )
         max_costs = [
             value
-            for value in (policy.max_invocation_cost_usd, request.max_cost_usd)
+            for value in (
+                policy.max_invocation_cost_usd,
+                request.max_cost_usd,
+                mapping.max_cost_per_invocation_usd if mapping is not None else None,
+            )
             if value is not None
         ]
         effective_max_cost = min(max_costs) if max_costs else None
@@ -848,13 +1317,13 @@ class ModelGatewayService:
             for index, latency in enumerate(request.preferred_latency_classes)
         }
 
-        candidates: list[
-            tuple[int, int, int, int, int, float, int, str, ModelRouteCandidate]
-        ] = []
+        candidates: list[tuple[Any, ...]] = []
         rejected: list[str] = []
         capacity_blocks = []
         for model in state.models:
             if not self._same_scope(model, actor):
+                continue
+            if mapping is not None and model.id not in mapping_order:
                 continue
             if request.pinned_model_id and model.id != request.pinned_model_id:
                 continue
@@ -870,6 +1339,25 @@ class ModelGatewayService:
             if model.lifecycle != ModelLifecycle.ACTIVE:
                 rejected.append(f"{model.id}:lifecycle:{model.lifecycle.value}")
                 continue
+            qualification = None
+            if mapping is not None:
+                qualification = latest_qualifications.get(
+                    (model.id, mapping.workload_class)
+                )
+                if qualification is None or qualification.status not in {
+                    ModelQualificationStatus.QUALIFIED,
+                    ModelQualificationStatus.CANARY,
+                    ModelQualificationStatus.ACTIVE,
+                }:
+                    rejected.append(f"{model.id}:qualification_not_active")
+                    continue
+                if (
+                    mapping_profile is not None
+                    and mapping_profile.require_canary
+                    and qualification.status != ModelQualificationStatus.ACTIVE
+                ):
+                    rejected.append(f"{model.id}:canary_promotion_required")
+                    continue
             if policy.allowed_model_ids and model.id not in policy.allowed_model_ids:
                 rejected.append(f"{model.id}:model_not_allowed")
                 continue
@@ -1003,6 +1491,7 @@ class ModelGatewayService:
             )
             candidates.append(
                 (
+                    mapping_order.get(model.id, 0),
                     workload_preference,
                     preference,
                     degraded_penalty,
@@ -1040,6 +1529,16 @@ class ModelGatewayService:
                             f"low_cost={str(request.prefer_lower_cost).lower()};"
                             f"priority={model.route_priority};"
                             f"provider={provider.status.value}"
+                            + (
+                                f";mapping={mapping.mapping_id}@{mapping.revision};"
+                                f"role={request.routing_role.value};"
+                                f"qualification={qualification.id}"
+                                if mapping is not None and qualification is not None
+                                else ""
+                            )
+                        ),
+                        qualification_revision_id=(
+                            qualification.id if qualification is not None else None
                         ),
                     ),
                 )
@@ -1069,7 +1568,10 @@ class ModelGatewayService:
             )
         max_attempts = min(
             len(routed),
-            policy.max_attempts if request.allow_fallback else 1,
+            policy.max_attempts
+            if request.allow_fallback
+            and (mapping is None or mapping.allow_fallback)
+            else 1,
         )
         return ModelRouteResult(
             model_class=request.model_class,
@@ -1086,6 +1588,10 @@ class ModelGatewayService:
             effective_required_residency_tags=tuple(sorted(requested_residency)),
             effective_required_compliance_tags=tuple(sorted(requested_compliance)),
             effective_max_cost_usd=effective_max_cost,
+            routing_role=request.routing_role,
+            routing_definition_id=(mapping.mapping_id if mapping else None),
+            routing_definition_revision=(mapping.revision if mapping else None),
+            qualification_revision=(mapping.qualification_revision if mapping else None),
         )
 
     def _append_invocation(self, record: ModelInvocationRecord) -> None:
@@ -1466,6 +1972,7 @@ class ModelGatewayService:
                 ),
                 prefer_lower_cost=effective_request.prefer_lower_cost,
                 purpose=effective_request.purpose,
+                routing_role=route.routing_role,
                 prompt_template_id=route.prompt_template_id,
                 prompt_template_version=route.prompt_template_version,
                 prompt_template_checksum_sha256=route.prompt_template_checksum_sha256,
@@ -1479,6 +1986,9 @@ class ModelGatewayService:
                 max_cost_usd=route.effective_max_cost_usd,
                 policy_fingerprint_sha256=route.policy_fingerprint_sha256,
                 route_reason=candidate.routing_reason,
+                routing_definition_id=route.routing_definition_id,
+                routing_definition_revision=route.routing_definition_revision,
+                qualification_revision=candidate.qualification_revision_id,
                 work_item_ref=effective_request.work_item_ref,
                 goal_id=effective_request.goal_id,
                 decision_id=effective_request.decision_id,
@@ -1554,6 +2064,7 @@ class ModelGatewayService:
             ),
             prefer_lower_cost=effective_request.prefer_lower_cost,
             purpose=effective_request.purpose,
+            routing_role=route.routing_role,
             prompt_template_id=route.prompt_template_id,
             prompt_template_version=route.prompt_template_version,
             prompt_template_checksum_sha256=route.prompt_template_checksum_sha256,
@@ -1567,6 +2078,9 @@ class ModelGatewayService:
             max_cost_usd=route.effective_max_cost_usd,
             policy_fingerprint_sha256=route.policy_fingerprint_sha256,
             route_reason="all eligible attempts exhausted",
+            routing_definition_id=route.routing_definition_id,
+            routing_definition_revision=route.routing_definition_revision,
+            qualification_revision=route.qualification_revision,
             work_item_ref=effective_request.work_item_ref,
             goal_id=effective_request.goal_id,
             decision_id=effective_request.decision_id,
