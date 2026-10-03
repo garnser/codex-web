@@ -204,19 +204,20 @@
           headers: { 'Content-Type': 'application/json' }
         });
       }
-      if (parsed.pathname === '/api/schedules/schedule-a/pause' && (options.method || 'GET') === 'POST') {
-        inspector.schedules[0].status = 'paused';
+      if (/^\/api\/schedules\/schedule-a\/(pause|resume|cancel)$/.test(parsed.pathname) && options.method === 'POST') {
+        inspector.schedules[0].status = { pause: 'paused', resume: 'active', cancel: 'cancelled' }[parsed.pathname.split('/').at(-1)];
         return new Response(JSON.stringify({ schedule: inspector.schedules[0] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
         });
       }
+      if (parsed.pathname === '/api/autonomy/control' && options.method === 'PATCH') Object.assign(inspector.control, JSON.parse(options.body));
       return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' }
       });
     };
   </script>
-  <script src="/static/orchestration_ui.js"></script>
+  <script type="module" src="/static/orchestration_ui.js"></script>
 </body>
 </html>

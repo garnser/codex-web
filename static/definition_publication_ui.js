@@ -1,3 +1,4 @@
+import { confirmAction } from './action_confirmation.js';
 import * as approvalUi from './definition_registry_approvals.js';
 import { projectViewOperation } from './project_view_scope.js';
 
@@ -55,9 +56,7 @@ export async function publishRecord(record, { actor, active, setStatus }) {
     assessment,
     independentApprovals,
   );
-  if (!window.confirm(
-    `Publish ${record.kind}:${record.definition_id} r${record.revision}?${impact}${gate} Publication changes canonical runtime definition resolution; code-owned security invariants are unchanged.`,
-  )) return;
+  if (!await confirmAction({ action: 'Publish definition', target: `${record.definition_id} r${record.revision} (${record.record_id}) at ${record.scope_type}:${record.scope_id || "global"}`, risk: 'high', consequence: `Publish ${record.kind}:${record.definition_id} r${record.revision}?${impact}${gate} Publication changes canonical runtime definition resolution; code-owned security invariants are unchanged.`, recovery: 'Rollback creates a new revision and may require independent approval.', current: operation.current })) return;
   try {
     await request(
       `/api/definitions/${encodeURIComponent(record.record_id)}/publish`,

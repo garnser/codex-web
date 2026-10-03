@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { referenceAttributes, focusReference } = await import(`${BASE}/static/reference_links.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   let actor = null;
@@ -159,7 +160,7 @@
     const warning = current
       ? " This is the current session and successful revocation will invalidate it."
       : " The server requires appropriate administrative authority and MFA for another session.";
-    if (!window.confirm(`Revoke browser session ${sessionId}?${warning}`)) return;
+    if (!await confirmAction({ action: 'Revoke browser session', target: sessionId, risk: 'high', consequence: `Access through this session stops.${warning}`, recovery: 'The owner must authenticate again.', trigger: button })) return;
     button.disabled = true;
     try {
       await apiRequest(`/api/identity/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
@@ -171,7 +172,7 @@
   }
 
   async function revokeOtherSessions() {
-    if (!window.confirm("Revoke all other browser sessions for the current human identity?")) return;
+    if (!await confirmAction({ action: 'Revoke other sessions', target: 'Other browser sessions of the current human identity', risk: 'high', consequence: 'Those sessions lose access; the current session remains.', recovery: 'Session owners can authenticate again.' })) return;
     try {
       const result = await apiRequest("/api/identity/sessions/revoke-others", { method: "POST" });
       document.getElementById("identity-admin-status").textContent = `Revoked ${result.revoked ?? 0} other session(s).`;
@@ -184,7 +185,7 @@
   async function revokeToken(button) {
     const tokenId = button.dataset.identityRevokeToken;
     if (!tokenId) return;
-    if (!window.confirm(`Revoke service token ${tokenId}? The server requires administrative authority and MFA; this cannot reveal or recover the token material.`)) return;
+    if (!await confirmAction({ action: 'Revoke service token', target: tokenId, risk: 'high', consequence: 'Consumers using this token lose access. Unregistered consumers cannot be enumerated here.', recovery: 'Revocation cannot be undone. Create a replacement through canonical token management.', trigger: button })) return;
     button.disabled = true;
     try {
       await apiRequest(`/api/identity/service-tokens/${encodeURIComponent(tokenId)}`, { method: "DELETE" });

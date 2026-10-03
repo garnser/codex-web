@@ -1,3 +1,4 @@
+import { confirmAction } from './action_confirmation.js';
 import './page_editor.js';
 import { projectPath, referenceLink, referencePath } from './reference_navigation.js';
 import { request } from './api_client.js';
@@ -83,7 +84,7 @@ async function load(force = false) {
           };
           form.onsubmit = async event => {
             event.preventDefault(); if (busy || !reviewed || !validation.validate() || JSON.stringify(readBinding(form, schema)) !== reviewed.submitted) return;
-            if (!confirm(`Apply binding changes to ${id} in ${catalog.organization_id}/${catalog.workspace_id}? Lifecycle ${provider.lifecycle || provider.status} → ${reviewed.payload.lifecycle || reviewed.payload.status}. Future routing changes; running sessions and remote accounts are unchanged.`)) return;
+            if (!await confirmAction({ action: 'Apply provider binding', target: `${id} · ${catalog.organization_id}/${catalog.workspace_id}`, risk: 'high', consequence: `Lifecycle ${provider.lifecycle || provider.status} → ${reviewed.payload.lifecycle || reviewed.payload.status}. Future routing changes; running sessions and remote accounts remain.`, impact: form.querySelector('[data-binding-impact]').textContent, recovery: 'To recover, reload the current binding and preview a new edit. No historical rollback or remote-account mutation is performed.', current: () => current() && reviewed && JSON.stringify(readBinding(form, schema)) === reviewed.submitted, trigger: save })) return;
             busy = true; save.disabled = true; const submitted = owned.snapshot();
             try {
               await op.request(`${endpoint}${encodeURIComponent(id)}?expected_revision=${encodeURIComponent(reviewed.revision)}`, { method: 'PUT', body: reviewed.submitted });

@@ -1,3 +1,4 @@
+const { resolveAction } = require('./action_confirmation_helpers');
 const {test,expect}=require('@playwright/test');
 test.beforeEach(async({page})=>{
  await page.goto('http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html');
@@ -64,6 +65,7 @@ test('Automation required fields, malformed IDs, cross-field and server failures
     await form.locator(`[name=${name}]`).fill(value);
   }
   await form.locator('button[type=submit]').click();
+  await resolveAction(page);
   await expect(form.getByRole('alert')).toContainText('Choose an available Agent Profile.');
   await expect(form.locator('[name=target_id]')).toBeFocused();
   await expect(form.locator('[name=instructions]')).toHaveValue('Review changes');

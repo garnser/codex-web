@@ -39,7 +39,7 @@ class ActionIntentAdminUiTests(unittest.TestCase):
         self.assertIn("Request parameter keys only", javascript)
         self.assertIn("action-intent:admin", javascript)
         self.assertIn('["mfa", "local_trusted"]', javascript)
-        self.assertIn("expired EXECUTING intents become UNCERTAIN", javascript)
+        self.assertIn("Expired EXECUTING intents become UNCERTAIN", javascript)
         self.assertNotIn("/execute", javascript)
         self.assertNotIn("/claim", javascript)
         self.assertNotIn("/renew", javascript)

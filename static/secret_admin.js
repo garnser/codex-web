@@ -1,3 +1,4 @@
+import { confirmAction } from './action_confirmation.js';
 import { request as rawApiRequest } from './api_client.js';
 import { currentProjectId } from './project_view_scope.js';
 import { formValidation } from './form_validation.js';
@@ -81,7 +82,7 @@ async function createSecret() {
   if (!validation.validate()) return;
   const op = secretOperation(setStatus); const apiRequest = op.request;
   const name = byId('secret-create-name').value.trim();
-  if (!window.confirm(`Create workspace secret reference "${name}"? It will be available by canonical ACL across Projects, never rendered back, and must be bound through its consumer settings.`)) return;
+  if (!await confirmAction({ action: 'Create workspace secret', target: name, risk: 'bounded', consequence: `Create workspace secret reference "${name}"? It will be available by canonical ACL across Projects, never rendered back, and must be bound through its consumer settings.`, recovery: 'The stored value is never displayed. Rotate or revoke through the canonical lifecycle.' })) return;
   const valueInput = byId('secret-create-value'); const value = valueInput.value; valueInput.value = "";
   const expires = byId('secret-create-expires').value;
   byId('create-secret').disabled = true;
@@ -107,7 +108,10 @@ async function mutate(button, rotate) {
   const op = secretOperation(setStatus); const apiRequest = op.request; button.disabled = true;
   try {
     const usage = await showUsage(secretId, row, op);
-    if (!op.current() || !window.confirm(`${rotate ? 'Rotate' : 'Revoke'} workspace secret ${secretId}? ${usage.count} canonical reference(s), including ${usage.outside_view_count} outside this Project view. ${rotate ? 'Future use resolves the replacement value.' : 'Future use is denied across all Projects.'} Existing material will not be revealed.`)) return;
+    if (!await confirmAction({ action: rotate ? 'Rotate secret' : 'Revoke secret', target: secretId, risk: 'high',
+      consequence: rotate ? 'Future use across Projects resolves the replacement value.' : 'Future use is denied across all Projects.',
+      impact: `${usage.count} canonical reference(s), including ${usage.outside_view_count} outside this Project view. ${(usage.limitations || []).join(' ')}`,
+      recovery: 'Stored material cannot be revealed or recovered here. Bind a replacement reference through each consumer when needed.', current: op.current, trigger: button })) return;
     if (rotate) {
       const value = valueInput.value; valueInput.value = "";
       await apiRequest(`/api/secrets/${encodeURIComponent(secretId)}/rotate`, { method: 'POST', body: JSON.stringify({ value }) });

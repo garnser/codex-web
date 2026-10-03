@@ -1,3 +1,4 @@
+import { confirmAction } from './action_confirmation.js';
 function esc(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -221,7 +222,7 @@ export function renderAdministrationAuthentication(container, {
   };
 
   revokeOthers.addEventListener("click", async () => {
-    if (!window.confirm("Revoke all of your other active sessions?")) return;
+    if (!await confirmAction({ action: 'Revoke other sessions', target: context.actor?.identity_id || 'Current identity', risk: 'high', consequence: 'All other active sessions of this identity lose access; this session remains.', impact: `${(context.identity.sessions || []).filter(item => item.identity_id === context.actor?.identity_id && item.id !== context.actor?.session_id && item.revoked_at == null).length} other sessions in the loaded canonical inventory.`, recovery: 'Authenticate again to create a new session.', trigger: revokeOthers })) return;
     revokeOthers.disabled = true;
     try {
       const result = await api("/api/identity/sessions/revoke-others", { method: "POST" });
@@ -244,7 +245,7 @@ export function renderAdministrationAuthentication(container, {
     const button = event.target.closest("[data-auth-revoke-session]");
     if (!button) return;
     const sessionId = button.dataset.authRevokeSession;
-    if (!window.confirm(`Revoke session ${sessionId}?`)) return;
+    if (!await confirmAction({ action: 'Revoke session', target: sessionId, risk: 'high', consequence: 'This session loses access immediately, including this browser if it is the current session.', recovery: 'Authenticate again to create a new session.', trigger: button })) return;
     button.disabled = true;
     try {
       await api(`/api/identity/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
@@ -324,7 +325,7 @@ export function renderAdministrationAuthentication(container, {
     const rotateButton = event.target.closest("[data-auth-rotate-token]");
     if (rotateButton) {
       const tokenId = rotateButton.dataset.authRotateToken;
-      if (!window.confirm(`Rotate service token ${tokenId}? The previous secret will stop working immediately.`)) return;
+      if (!await confirmAction({ action: 'Rotate service token', target: tokenId, risk: 'high', consequence: 'The previous credential stops working immediately. Update every consumer with the replacement.', recovery: 'The replacement is shown once; rotation does not recover the previous credential.', trigger: rotateButton })) return;
       rotateButton.disabled = true;
       createdSecret.hidden = true;
       createdSecret.textContent = "";
@@ -362,7 +363,7 @@ export function renderAdministrationAuthentication(container, {
     const button = event.target.closest("[data-auth-revoke-token]");
     if (!button) return;
     const tokenId = button.dataset.authRevokeToken;
-    if (!window.confirm(`Revoke service token ${tokenId}?`)) return;
+    if (!await confirmAction({ action: 'Revoke service token', target: tokenId, risk: 'high', consequence: 'Consumers using this token lose access. Unregistered consumers cannot be enumerated here.', recovery: 'Revocation cannot be undone. Create and bind a replacement token.', trigger: button })) return;
     button.disabled = true;
     try {
       await api(`/api/identity/service-tokens/${encodeURIComponent(tokenId)}`, { method: "DELETE" });

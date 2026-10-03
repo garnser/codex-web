@@ -31,7 +31,7 @@ class ExecutionWorkerManagementUiTests(unittest.TestCase):
         self.assertIn("cannot be reactivated", javascript)
         self.assertIn("lease validation to fail closed", javascript)
         self.assertIn("new fenced lease", javascript)
-        self.assertIn("window.confirm", javascript)
+        self.assertIn("confirmAction", javascript)
         self.assertIn("window.prompt", javascript)
         self.assertNotIn('actions.push(["heartbeat"', javascript)
         self.assertNotIn('actions.push(["claim"', javascript)

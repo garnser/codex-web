@@ -1,3 +1,4 @@
+const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require("@playwright/test");
 
 test("Administration user projection is scoped and never treats revoked/disabled roles as active", async ({ page }) => {
@@ -178,7 +179,6 @@ test("routed Users administration saves roles and revokes through canonical memb
     await route.continue();
   });
 
-  page.on("dialog", (dialog) => dialog.accept());
   await page.goto("http://127.0.0.1:18766/administration/users");
   await expect(page.locator(".administration-users-surface")).toBeVisible();
   await expect(page.locator('[data-human-id="human-user"]')).toContainText("Casey User");
@@ -190,6 +190,7 @@ test("routed Users administration saves roles and revokes through canonical memb
   await expect(page.locator('[data-membership-id="membership-user"]')).toContainText("admin");
 
   await page.locator('[data-membership-id="membership-user"] [data-revoke-membership]').click();
+  await resolveAction(page);
   await expect.poll(() => requests.length).toBe(2);
   expect(requests[1]).toEqual({ method: "DELETE" });
   await expect(page.locator('[data-membership-id="membership-user"]')).toHaveAttribute("data-membership-status", "revoked");

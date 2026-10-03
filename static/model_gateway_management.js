@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   let snapshot = { providers: [], models: [], prompts: [], policy: null };
   let actor = null;
@@ -249,7 +250,7 @@
       compliance_tags: csv("model-provider-compliance"),
       status: document.getElementById("model-provider-status")?.value || "active",
     };
-    if (!window.confirm(`Save provider ${id} as ${payload.status}? Adapter: ${adapterType}; credential reference: ${payload.credential_ref || "none"}; residency: ${payload.residency_tags.join(", ") || "none"}. This can change where model data is routed.`)) return;
+    if (!await confirmAction({ action: 'Save model provider', target: id, risk: 'high', consequence: `Save provider ${id} as ${payload.status}? Adapter: ${adapterType}; credential reference: ${payload.credential_ref || "none"}; residency: ${payload.residency_tags.join(", ") || "none"}. This can change where model data is routed.`, recovery: 'A later authorized configuration change can restore prior settings; sent model data cannot be recalled.' })) return;
     try {
       await apiRequest(`/api/model-gateway/providers/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(payload) });
       setStatus(`Saved provider ${id}.`);
@@ -285,7 +286,7 @@
       route_priority: Number(document.getElementById("model-definition-priority")?.value || 100),
       lifecycle: document.getElementById("model-definition-lifecycle")?.value || "active",
     };
-    if (!window.confirm(`Save model definition ${id}? Provider: ${providerId}; classes: ${classes.join(", ")}; lifecycle: ${payload.lifecycle}; priority: ${payload.route_priority}. This changes deterministic routing eligibility.`)) return;
+    if (!await confirmAction({ action: 'Save model definition', target: id, risk: 'high', consequence: `Save model definition ${id}? Provider: ${providerId}; classes: ${classes.join(", ")}; lifecycle: ${payload.lifecycle}; priority: ${payload.route_priority}. This changes deterministic routing eligibility.`, recovery: 'A later authorized change can restore eligibility; prior invocations retain their attributed model.' })) return;
     try {
       await apiRequest(`/api/model-gateway/models/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(payload) });
       setStatus(`Saved model definition ${id}.`);
@@ -300,7 +301,7 @@
     const version = document.getElementById("model-prompt-version")?.value.trim() || "";
     const content = document.getElementById("model-prompt-content")?.value || "";
     if (!templateId || !version || !content) return setStatus("Template ID, version and content are required.");
-    if (!window.confirm(`Publish prompt template ${templateId}@${version}? Existing version content is immutable; changing content for an existing version will be rejected. Exact checksum/version is attributed to future invocations.`)) return;
+    if (!await confirmAction({ action: 'Publish prompt template', target: `${templateId}@${version}`, risk: 'bounded', consequence: `Publish prompt template ${templateId}@${version}? Existing version content is immutable; changing content for an existing version will be rejected. Exact checksum/version is attributed to future invocations.`, recovery: 'Published content is immutable; corrections require a new version.' })) return;
     try {
       await apiRequest(
         `/api/model-gateway/prompts/${encodeURIComponent(templateId)}/${encodeURIComponent(version)}`,
@@ -334,7 +335,7 @@
     };
     const providersText = allowedProviderIds.length ? allowedProviderIds.join(", ") : "all registered providers";
     const modelsText = allowedModelIds.length ? allowedModelIds.join(", ") : "all registered models";
-    if (!window.confirm(`Replace tenant routing policy? Providers: ${providersText}; models: ${modelsText}; residency: ${payload.required_residency_tags.join(", ") || "none"}; compliance: ${payload.required_compliance_tags.join(", ") || "none"}; max attempts: ${payload.max_attempts}. Empty allowlists mean unrestricted within the registered tenant catalog.`)) return;
+    if (!await confirmAction({ action: 'Replace model routing policy', target: "current tenant routing policy", risk: 'high', consequence: `Replace tenant routing policy? Providers: ${providersText}; models: ${modelsText}; residency: ${payload.required_residency_tags.join(", ") || "none"}; compliance: ${payload.required_compliance_tags.join(", ") || "none"}; max attempts: ${payload.max_attempts}. Empty allowlists mean unrestricted within the registered tenant catalog.`, recovery: 'Restore prior settings through a new authorized update; dispatched invocations are not undone.' })) return;
     try {
       await apiRequest("/api/model-gateway/policy", { method: "PUT", body: JSON.stringify(payload) });
       setStatus("Tenant routing policy saved.");

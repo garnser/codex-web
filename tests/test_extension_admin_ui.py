@@ -31,7 +31,7 @@ class ExtensionAdminUiTests(unittest.TestCase):
         self.assertIn('data-extension-action="', javascript)
         self.assertIn('["installed", "configured", "disabled"]', javascript)
         self.assertIn('["disable", "quarantine", "clear-quarantine", "remove"]', javascript)
-        self.assertIn("window.confirm", javascript)
+        self.assertIn("confirmExtensionLifecycle", javascript)
         self.assertIn("window.prompt", javascript)
         self.assertIn('/api/extensions/${encodeURIComponent(installationId)}/${action}', javascript)
 
@@ -44,7 +44,7 @@ class ExtensionAdminUiTests(unittest.TestCase):
         self.assertIn("data-extension-config-host", javascript)
         self.assertIn("codex:extension-state-rendered", javascript)
         self.assertIn("preserve_tombstone", javascript)
-        self.assertIn("hard deletion is not supported", javascript)
+        self.assertIn("hard deletion is not supported", (ROOT / "static" / "extension_confirmation.js").read_text())
         self.assertIn("data-extension-details-host", javascript)
         self.assertIn("MFA/step-up or extensions:admin service authority required", javascript)
         self.assertIn("canMutateMutation", javascript)

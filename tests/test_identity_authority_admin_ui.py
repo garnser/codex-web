@@ -30,7 +30,7 @@ class IdentityAuthorityAdminUiTests(unittest.TestCase):
         self.assertIn("token.textContent = credentials.token", javascript)
         self.assertIn("token.textContent = \"\"", javascript)
         self.assertIn("will not appear in list APIs", javascript)
-        self.assertIn("window.confirm", javascript)
+        self.assertIn("confirmAction", javascript)
         self.assertNotIn("localStorage", javascript)
         self.assertNotIn("console.log", javascript)
 

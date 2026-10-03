@@ -1,3 +1,4 @@
+const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require('@playwright/test');
 const fs = require('node:fs'); const path = require('node:path');
 const schemas = require('./provider_binding_schemas.json');
@@ -38,7 +39,7 @@ test('provider disable previews consumers and uses the scoped revision-checked b
   await page.locator('[name=lifecycle]').selectOption('disabled'); await review(page);
   await expect(page.locator('[data-binding-impact]')).toContainText('session-one');
   await expect(page.locator('[data-binding-impact]')).toContainText('active → disabled');
-  page.once('dialog', dialog => dialog.accept()); await page.locator('[data-binding-save]').click();
+  await page.locator('[data-binding-save]').click(); await resolveAction(page);
   await expect.poll(() => state.writes.length).toBe(1);
   expect(state.writes[0]).toMatchObject({ path: '/api/agent-providers/runner', project: 'home', expected: '1', payload: { lifecycle: 'disabled', credential_refs: ['credential-one'] } });
   expect(state.writes[0].payload).not.toHaveProperty('revision');
@@ -47,7 +48,7 @@ test('provider disable previews consumers and uses the scoped revision-checked b
 test('ModelGateway lifecycle uses its own owner endpoint and preserves credential references', async ({ page }) => {
   const state = await mount(page, { query: 'model_provider_id=model-one' });
   await page.locator('[name=status]').selectOption('disabled'); await review(page);
-  page.once('dialog', dialog => dialog.accept()); await page.locator('[data-binding-save]').click();
+  await page.locator('[data-binding-save]').click(); await resolveAction(page);
   await expect.poll(() => state.writes.length).toBe(1);
   expect(state.writes[0]).toMatchObject({ path: '/api/model-gateway/providers/model-one', expected: 'model-fingerprint', payload: { status: 'disabled', credential_required: true, credential_ref: 'credential-one', base_url: null } });
 });
@@ -80,7 +81,7 @@ test('capability grants cannot exceed declarations and stale preview cannot repl
 test('conflicted updates preserve edits and prevent a blind retry', async ({ page }) => {
   const state = await mount(page); state.fail = true;
   await page.locator('[name=display_name]').fill('Changed Runner'); await review(page);
-  page.once('dialog', dialog => dialog.accept()); await page.locator('[data-binding-save]').click();
+  await page.locator('[data-binding-save]').click(); await resolveAction(page);
   await expect(page.locator('[data-validation-summary]')).toContainText('Binding changed');
   await expect(page.locator('[name=display_name]')).toHaveValue('Changed Runner');
   await expect(page.locator('[data-binding-save]')).toBeDisabled();

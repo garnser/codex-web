@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const { canMutateExtensions, extensionMutationAuthorityText } = await import(`${BASE}/static/extension_authority.js`);
 
@@ -92,7 +93,7 @@
     if (!packageRef || button.disabled) return;
 
     const confirmation = `Install ${extensionId}@${version} from ${publisher}? Digest verified: ${digestVerified ? "yes" : "no"}; signature: ${signature}. Installation does not authorize capabilities and does not enable the extension.`;
-    if (!window.confirm(confirmation)) return;
+    if (!await confirmAction({ action: 'Install extension package', target: `${extensionId}@${version} (${packageRef})`, risk: 'bounded', consequence: confirmation, recovery: 'Installation remains separate from enablement and capability grants.', current: () => button.isConnected })) return;
 
     const status = document.getElementById("extension-package-status");
     button.disabled = true;

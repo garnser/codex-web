@@ -1,3 +1,4 @@
+import { confirmAction } from './action_confirmation.js';
 import { editorShell, esc, requiredProfiles, profilePath, recordPath } from './execution_profile_editor.js';
 import { currentProjectId, projectViewOperation } from './project_view_scope.js';
 import { confirmDiscard } from './dirty_editor.js';
@@ -110,7 +111,7 @@ function bind() {
     try {
       if (selected) {
         const preview = await usage(selected, op);
-        if (remove && !window.confirm(`Remove ${selected} from the next Project catalog? ${preview.count} consumer reference(s) may require reassignment; pinned executions keep their revision. Saving creates an inactive draft.`)) return;
+        if (remove && !await confirmAction({ action: 'Remove Execution Profile from draft', target: `${selected} in Project ${project}`, risk: 'bounded', consequence: `Remove ${selected} from the next Project catalog? ${preview.count} consumer reference(s) may require reassignment; pinned executions keep their revision. Saving creates an inactive draft.`, recovery: 'The published catalog stays effective until a validated draft is published.', current: op.current })) return;
       }
       const response = await op.request('/api/definitions/drafts', { method: 'POST', body: JSON.stringify({
         definition_id: source.definition_id, kind: source.kind,

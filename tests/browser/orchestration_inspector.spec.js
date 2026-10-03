@@ -1,3 +1,4 @@
+const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require('@playwright/test');
 
 test('orchestration inspector explains canonical cycle and dependency-backed state without triggering work', async ({ page }) => {
@@ -68,4 +69,45 @@ test('orchestration inspector stays usable at phone width', async ({ page }) => 
 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   expect(overflow).toBeFalsy();
+});
+
+
+test('schedule resume and cancellation require deliberate review; pause remains immediate', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/orchestration_inspector_fixture.html');
+  const card = page.locator('#orchestration-inspector-card');
+  await card.locator('summary', { hasText: 'Durable schedules' }).click();
+  await card.locator('[data-schedule-action="cancel"]').click();
+  const message = await resolveAction(page, false);
+  expect(message).toContain('schedule-a');
+  expect(message).toContain('review.due');
+  expect(await page.evaluate(() => window.__orchRequests.some(item => item.path.endsWith('/cancel')))).toBeFalsy();
+  await card.locator('[data-schedule-action="pause"]').click();
+  await expect(card.locator('[data-schedule-action="resume"]')).toBeVisible();
+  await card.locator('[data-schedule-action="resume"]').click();
+  await resolveAction(page);
+  await expect.poll(() => page.evaluate(() => window.__orchRequests.some(item => item.path === '/api/schedules/schedule-a/resume' && item.method === 'POST'))).toBeTruthy();
+  await card.locator('[data-schedule-action="cancel"]').click();
+  await resolveAction(page);
+  await expect.poll(() => page.evaluate(() => window.__orchRequests.some(item => item.path === '/api/schedules/schedule-a/cancel' && item.method === 'POST'))).toBeTruthy();
+});
+
+test('inspector reviews live autonomy changes and leaves emergency controls immediate', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/orchestration_inspector_fixture.html');
+  await page.locator('[data-orch-resume]').click();
+  await resolveAction(page, false);
+  expect(await page.evaluate(() => window.__orchRequests.some(item => item.path === '/api/autonomy/resume'))).toBeFalsy();
+  await page.locator('[data-orch-resume]').click();
+  await resolveAction(page);
+  await expect.poll(() => page.evaluate(() => window.__orchRequests.some(item => item.path === '/api/autonomy/resume'))).toBeTruthy();
+  await page.locator('[data-orch-dry-run]').check();
+  await expect.poll(() => page.evaluate(() => window.__orchRequests.some(item => item.path === '/api/autonomy/control' && JSON.parse(item.body).dry_run === true))).toBeTruthy();
+  await page.locator('[data-orch-dry-run]').uncheck();
+  await resolveAction(page, false);
+  await expect(page.locator('[data-orch-dry-run]')).toBeChecked();
+  await page.locator('[data-orch-dry-run]').uncheck();
+  await resolveAction(page);
+  await expect.poll(() => page.evaluate(() => window.__orchRequests.some(item => item.path === '/api/autonomy/control' && JSON.parse(item.body).dry_run === false))).toBeTruthy();
+  await page.locator('[data-orch-kill]').click();
+  await expect.poll(() => page.evaluate(() => window.__orchRequests.some(item => item.path === '/api/autonomy/kill'))).toBeTruthy();
+  await expect(page.locator('[data-action-confirmation]')).toHaveCount(0);
 });

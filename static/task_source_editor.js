@@ -1,3 +1,4 @@
+import { confirmAction } from './action_confirmation.js';
 import { request } from './api_client.js';
 import { captureProjectView } from './project_view_scope.js';
 import { trackDirtyEditor, confirmDiscard } from './dirty_editor.js';
@@ -157,7 +158,7 @@ async function saveSource() {
 async function clearSource() {
   if (!state.projectId || busy || !confirmDiscard(dirty)) return;
   const op = capture();
-  if (!window.confirm(`Clear the authoritative TaskSource binding for Project ${op.projectId}? Provider issues and shared credentials remain. Readiness will be reevaluated; no new source is inferred by this editor.`)) return;
+  if (!await confirmAction({ action: 'Clear TaskSource binding', target: `Project ${op.projectId}`, consequence: 'Readiness will be reevaluated; this editor will not infer a new source. Provider issues and shared credentials remain.', recovery: 'Rebind the Project through its TaskSource settings when ready.', current: op.current, trigger: field('clear') })) return;
   setBusy(true); setStatus('Clearing source…');
   try {
     await request(`/api/projects/${encodeURIComponent(op.projectId)}/task-source`, { method: 'DELETE' });

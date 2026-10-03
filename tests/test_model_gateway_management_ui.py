@@ -34,7 +34,7 @@ class ModelGatewayManagementUiTests(unittest.TestCase):
         self.assertIn("Empty allowlists mean unrestricted", javascript)
         self.assertIn("change where model data is routed", javascript)
         self.assertIn("changes deterministic routing eligibility", javascript)
-        self.assertIn("window.confirm", javascript)
+        self.assertIn("confirmAction", javascript)
         self.assertNotIn("/invoke", javascript)
         self.assertNotIn("secret.value", javascript)
         self.assertNotIn("localStorage", javascript)

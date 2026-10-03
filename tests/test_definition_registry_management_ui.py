@@ -51,7 +51,7 @@ class DefinitionRegistryManagementUiTests(unittest.TestCase):
         self.assertIn("Rollback prepared draft", javascript)
         self.assertIn('actor.assurance === "local_trusted"', javascript)
         self.assertIn("JSON.parse(rawPayload)", javascript)
-        self.assertIn("window.confirm", javascript)
+        self.assertIn("confirmAction", javascript)
         self.assertIn("window.prompt", javascript)
         self.assertIn('id="definition-transfer-panel"', html)
         self.assertIn('id="definition-transfer-document"', html)

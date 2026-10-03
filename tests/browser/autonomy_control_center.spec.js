@@ -1,3 +1,4 @@
+const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require("@playwright/test");
 
 test("Autonomy Control Center renders canonical M11 readiness without triggering work", async ({ page }) => {
@@ -50,7 +51,7 @@ test("Control Center mutations use canonical autonomy and approval APIs", async 
   await card.locator("[data-acc-pause]").click();
   await expect(card.locator("[data-acc-mode]")).toHaveText("paused");
 
-  await card.locator("[data-acc-approval='approval-1'][data-acc-outcome='approve']").click();
+  await card.locator("[data-acc-approval='approval-1'][data-acc-outcome='approve']").click(); await resolveAction(page);
   await expect(card).toContainText("No pending canonical ApprovalRequests.");
 
   const requests = await page.evaluate(() => window.__accRequests);
@@ -74,7 +75,7 @@ test("Control Center can create and remove canonical scoped pauses", async ({ pa
   await expect(card).toContainText("project · project-alpha");
   await expect(card).toContainText("migration window");
 
-  await card.locator("[data-acc-unpause='pause-1']").click();
+  await card.locator("[data-acc-unpause='pause-1']").click(); await resolveAction(page);
   await expect(card).toContainText("No active scoped pauses.");
 
   const requests = await page.evaluate(() => window.__accRequests);

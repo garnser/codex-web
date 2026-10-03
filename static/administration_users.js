@@ -1,3 +1,4 @@
+import { confirmAction } from './action_confirmation.js';
 const ROLE_PRESENTATION = Object.freeze({
   owner: "Full organization/workspace administration and authority.",
   admin: "Administrative management within the assigned scope.",
@@ -212,7 +213,7 @@ export function renderAdministrationUsers(container, {
   api,
   page = "users",
   query = "",
-  confirm = (message) => window.confirm(message),
+  confirm = (target) => confirmAction({ action: 'Revoke membership', target, risk: 'high', consequence: 'This membership and its direct roles stop granting authority. Other memberships remain independent.', recovery: 'An authorized administrator can grant a new membership; this does not restore the revoked record.' }),
   onChanged = null,
 } = {}) {
   if (!container) return;
@@ -339,7 +340,7 @@ export function renderAdministrationUsers(container, {
       const row = button.closest("[data-membership-id]");
       const membershipId = row?.dataset.membershipId;
       if (!membershipId) return;
-      if (!confirm("Revoke this canonical membership and its direct roles?")) return;
+      if (!await confirm(membershipId)) return;
       button.disabled = true;
       setMessage("Revoking membership…");
       try {

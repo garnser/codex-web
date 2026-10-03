@@ -40,7 +40,7 @@ class OperationsObservabilityUiTests(unittest.TestCase):
         self.assertIn("averageSeconds", javascript)
         self.assertIn("runtime:admin", javascript)
         self.assertIn('["mfa", "local_trusted"]', javascript)
-        self.assertIn("does not mark Work Items successful", javascript)
+        self.assertIn("Work Items are not marked successful", javascript)
         self.assertIn("Telemetry is explanatory, not canonical state", javascript)
         self.assertIn("Bounded/low-cardinality telemetry", javascript)
         self.assertNotIn("OPENAI_API_KEY", javascript)

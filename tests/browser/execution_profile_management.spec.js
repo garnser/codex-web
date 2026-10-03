@@ -1,3 +1,4 @@
+const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require('@playwright/test');
 
 const profile = (id, name = id) => ({ id, name, description: `${name} description`, workspace_mode: 'scratch', repository_access: 'none', required_worker_capabilities: ['command_execution'], control_plane_operations: [], network_enabled: false, host_mutation: false });
@@ -41,6 +42,7 @@ test('edits inherited catalog as a Project draft, validates and publishes with e
   expect(writes[0].body.payload.profiles).toHaveLength(3);
   expect(writes[0].body.payload.profiles.find(p => p.id === 'custom').name).toBe('Edited profile');
   await page.getByRole('button', { name: 'Validate and publish draft' }).click();
+  await resolveAction(page);
   await expect(page.getByRole('button', { name: 'Edited profile', exact: true })).toBeVisible();
   expect(writes.find(w => w.path.endsWith('/publish')).body.expected_active_revision).toBe(0);
   expect(writes.every(w => w.project === 'a')).toBe(true);
@@ -141,6 +143,7 @@ test('custom entry removal creates a reviewed inactive catalog without removing 
   const writes = await mount(page); dialogs(page);
   await page.getByLabel('Change reason').fill('Retire unused profile');
   await page.getByRole('button', { name: 'Remove from next catalog' }).click();
+  await resolveAction(page);
   await expect(page.locator('[data-profile-draft]')).toBeVisible();
   expect(writes[0].body.payload.profiles.map(p => p.id)).toEqual(['repository-write', 'orchestration-only']);
   await page.getByRole('button', { name: 'repository-write', exact: true }).click();

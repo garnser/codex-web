@@ -1,3 +1,4 @@
+const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require('@playwright/test');
 const fs = require('node:fs'); const path = require('node:path');
 const quota_schema = require('./entitlement_quota_schema.json');
@@ -41,7 +42,7 @@ test('quota reduction previews workspace impact and publishes scoped CAS without
   await expect(page.locator('[data-entitlement-save]')).toBeDisabled();
   await review(page);
   await expect(page.locator('[data-entitlement-impact]')).toContainText('Current usage in proposed window: 4');
-  page.once('dialog', dialog => dialog.accept()); await page.locator('[data-entitlement-save]').click();
+  await page.locator('[data-entitlement-save]').click(); await resolveAction(page);
   await expect.poll(() => state.writes.length).toBe(1);
   expect(state.writes[0]).toMatchObject({ project: 'home', expected: 'current-revision', payload: { limit: 2 } });
   await expect(page.locator('#entitlement-usage')).toContainText('event-one');
@@ -63,7 +64,7 @@ test('local provenance labels remain editable and typed capability values are pr
   await expect(page.locator('[name=source]')).toHaveValue('hosted-label-is-only-provenance');
   await page.locator('[name=enabled]').selectOption('disabled');
   await page.locator('[name=expires_at]').fill('2000000000');
-  await review(page); page.once('dialog', dialog => dialog.accept()); await page.locator('[data-entitlement-save]').click();
+  await review(page); await page.locator('[data-entitlement-save]').click(); await resolveAction(page);
   await expect.poll(() => state.writes.length).toBe(1);
   expect(state.writes[0].payload).toMatchObject({ enabled: false, expires_at: 2000000000 });
 });
@@ -72,7 +73,7 @@ test('retiring a quota reviews removal and calls the guarded retirement API', as
   const state = await mount(page);
   await page.getByRole('button', { name: 'Retire quota attempts', exact: true }).click();
   await review(page); await expect(page.locator('[data-entitlement-impact]')).toContainText('Removes quota enforcement');
-  page.once('dialog', dialog => dialog.accept()); await page.locator('[data-entitlement-save]').click();
+  await page.locator('[data-entitlement-save]').click(); await resolveAction(page);
   await expect.poll(() => state.writes.length).toBe(1);
   expect(state.writes[0]).toMatchObject({ method: 'DELETE', path: '/api/entitlements/quotas/attempts', expected: 'current-revision' });
 });
@@ -83,7 +84,7 @@ test('invalid and conflicted edits are retained; preview cannot overwrite a chan
   await page.locator('[name=limit]').fill('-1'); await page.locator('[data-entitlement-preview]').click();
   await expect(page.locator('[data-validation-summary]')).toBeVisible(); expect(state.previews).toEqual([]);
   await page.locator('[name=limit]').fill('2'); await review(page);
-  state.fail = true; page.once('dialog', dialog => dialog.accept()); await page.locator('[data-entitlement-save]').click();
+  state.fail = true; await page.locator('[data-entitlement-save]').click(); await resolveAction(page);
   await expect(page.locator('[data-validation-summary]')).toContainText('configuration changed');
   await expect(page.locator('[name=limit]')).toHaveValue('2'); await expect(page.locator('[data-entitlement-save]')).toBeDisabled();
   state.revision = 'new-revision'; await page.locator('[data-entitlement-preview]').click();

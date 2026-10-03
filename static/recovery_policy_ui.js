@@ -1,3 +1,4 @@
+import { confirmAction } from './action_confirmation.js';
 import './page_editor.js';
 import { request } from './api_client.js';
 import { captureProjectView, currentProjectId } from './project_view_scope.js';
@@ -68,7 +69,9 @@ async function load(force = false) {
       event.preventDefault();
       if (busy || !reviewed || !validation.validate()) return;
       if (JSON.stringify(readPolicyForm(form, snapshot)) !== reviewed.submitted) { save.disabled = true; return; }
-      if (!confirm(`Publish recovery policy ${snapshot.policy?.id || 'recovery-policy-default'} for ${snapshot.policy_control.organization_id}/${snapshot.policy_control.workspace_id}? This changes subsequent backup, retention and verification behavior. Existing backup bytes are not restored by policy rollback.`)) return;
+      if (!await confirmAction({ action: 'Publish recovery policy', target: `${snapshot.policy?.id || 'recovery-policy-default'} · ${snapshot.policy_control.organization_id}/${snapshot.policy_control.workspace_id}`, risk: 'high',
+        consequence: 'Subsequent backup, retention and verification behavior changes.', impact: preview.textContent,
+        recovery: 'Policy history supports rollback after a fresh impact preview. Rollback cannot restore deleted backup bytes or revoked keys.', current: () => op.current() && reviewed && JSON.stringify(readPolicyForm(form, snapshot)) === reviewed.submitted, trigger: save })) return;
       busy = true; save.disabled = true; const submitted = ownedEditor.snapshot();
       try {
         await op.request('/api/recovery/policy?expected_fingerprint=' + encodeURIComponent(reviewed.impact.expected_fingerprint), { method: 'PUT', body: reviewed.submitted });
@@ -94,7 +97,8 @@ async function load(force = false) {
             preview.innerHTML = impactText(impact);
             button.textContent = 'Confirm policy rollback'; button.disabled = false;
             button.onclick = async () => {
-              if (busy || !op.current() || !confirmDiscard(ownedEditor) || !confirm(`Restore policy revision ${revision.id}? This cannot recover deleted backups, undo completed operations or restore revoked keys.`)) return;
+              if (busy || !op.current() || !confirmDiscard(ownedEditor)) return;
+              if (!await confirmAction({ action: 'Restore policy revision', target: revision.id, risk: 'high', consequence: 'A new policy revision is published from this historical policy.', impact: preview.textContent, recovery: 'This cannot recover deleted backups, undo completed operations or restore revoked keys.', current: op.current, trigger: button })) return;
               busy = true; button.disabled = true;
               try { await op.request('/api/recovery/policy/rollback/' + encodeURIComponent(revision.id), { method: 'POST', body: JSON.stringify({ expected_fingerprint: impact.expected_fingerprint }) }); if (op.current()) await load(true); }
               catch (error) { if (op.current()) { validation.server(error); status('Rollback blocked or conflicted. Refresh current policy and dependencies.'); } }

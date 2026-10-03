@@ -1,3 +1,4 @@
+const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require('@playwright/test');
 const fixture = 'http://127.0.0.1:18766/tests/browser/product_workspaces_fixture.html';
 
@@ -24,7 +25,7 @@ async function automationEditor(page, { rejectSave = false } = {}) {
 test('failed Automation save preserves edits, announces error and stays dirty', async ({ page }) => {
   const { form, writes } = await automationEditor(page, { rejectSave: true });
   await form.locator('[name=name]').fill('Unsaved revised name');
-  await form.locator('button[type=submit]').click();
+  await form.locator('button[type=submit]').click(); await resolveAction(page);
   await expect(form.getByRole('alert')).toContainText('Target is unavailable');
   await expect(form.locator('[name=name]')).toHaveValue('Unsaved revised name');
   await expect(form.locator('[data-dirty-editor-status]')).toHaveText('Unsaved changes');
@@ -35,6 +36,17 @@ test('failed Automation save preserves edits, announces error and stays dirty', 
   page.once('dialog', dialog => dialog.accept());
   await form.locator('[data-automation-edit-cancel]').click();
   await expect(form).toHaveCount(0);
+});
+
+test('cancelling Automation publication preserves the draft and makes no mutation', async ({ page }) => {
+  const { form, writes } = await automationEditor(page);
+  await form.locator('[name=name]').fill('Review before publishing');
+  await form.locator('button[type=submit]').click();
+  const review = await resolveAction(page, false);
+  expect(review).toContain('Project home');
+  expect(writes).toHaveLength(0);
+  await expect(form.locator('[name=name]')).toHaveValue('Review before publishing');
+  await expect(form.locator('[data-dirty-editor-status]')).toHaveText('Unsaved changes');
 });
 
 test('workspace and Project navigation require discard and cancelled history restores the editor URL', async ({ page }) => {
@@ -65,7 +77,7 @@ test('successful save clears protection and unchanged editors close without warn
   await expect(form).toHaveCount(0);
   await page.locator('[data-automation-edit]').click();
   await form.locator('[name=name]').fill('Saved revision');
-  await form.locator('button[type=submit]').click();
+  await form.locator('button[type=submit]').click(); await resolveAction(page);
   await expect(form).toHaveCount(0);
   expect(writes).toHaveLength(2);
   await page.evaluate(() => window.CodexProductUI.openWorkspace('resources'));
@@ -88,7 +100,7 @@ test('discarding an Automation during draft creation fences the later publish', 
     await route.fulfill({ json: { record: { record_id: 'late-draft' } } });
   });
   await form.locator('[name=name]').fill('Discard pending edit');
-  await form.locator('button[type=submit]').click();
+  await form.locator('button[type=submit]').click(); await resolveAction(page);
   await expect.poll(() => pending).toBe(true);
   await expect(form.locator('[name=name]')).toBeDisabled();
   page.once('dialog', dialog => dialog.accept());

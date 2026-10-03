@@ -1,3 +1,4 @@
+const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require('@playwright/test');
 const fs = require('node:fs'); const path = require('node:path');
 const index = fs.readFileSync(path.join(__dirname, '../../static/index.html'), 'utf8');
@@ -54,6 +55,7 @@ test('creation sends one write-only value, clears it and offers canonical bindin
   await page.getByLabel('Secret reference name', { exact: true }).fill('New credential');
   await page.getByLabel('Secret value (never rendered back)', { exact: true }).fill('test-only-create-material');
   await page.getByRole('button', { name: 'Create secret', exact: true }).click();
+  await resolveAction(page);
   await expect(page.locator('#secret-admin-list')).toContainText('New credential');
   await expect(page.locator('#secret-create-value')).toHaveValue('');
   expect(writes).toHaveLength(1); expect(writes[0].project).toBe('home'); expect(writes[0].body.value).toBe('test-only-create-material');
@@ -64,12 +66,14 @@ test('creation sends one write-only value, clears it and offers canonical bindin
 
 test('rotation and revocation require consumer review and leave only metadata', async ({ page }) => {
   const writes = await mount(page); const messages = [];
-  page.on('dialog', dialog => { messages.push(dialog.message()); return dialog.accept(); });
+
   await page.getByLabel('Replacement value for Shared credential').fill('test-only-replacement');
   await page.getByRole('button', { name: 'Rotate', exact: true }).click();
+  messages.push(await resolveAction(page));
   await expect(page.locator('#secret-admin-list')).toContainText('Rotation: 1');
   await expect(page.getByLabel('Replacement value for Shared credential')).toHaveValue('');
   await page.getByRole('button', { name: 'Revoke', exact: true }).click();
+  messages.push(await resolveAction(page));
   await expect(page.locator('#secret-admin-list')).toContainText('revoked');
   await expect(page.getByRole('button', { name: 'Rotate', exact: true })).toHaveCount(0);
   expect(writes.map(item => item.project)).toEqual(['home', 'home']);
@@ -123,6 +127,7 @@ test('rejected creation clears material and preserves non-secret metadata', asyn
   await page.getByLabel('Secret reference name', { exact: true }).fill('Retained metadata');
   await page.getByLabel('Secret value (never rendered back)', { exact: true }).fill('test-only-rejected-material');
   await page.getByRole('button', { name: 'Create secret', exact: true }).click();
+  await resolveAction(page);
   await expect(page.getByRole('alert')).toContainText('secret value was cleared');
   await expect(page.locator('#secret-create-value')).toHaveValue('');
   await expect(page.getByLabel('Secret reference name', { exact: true })).toHaveValue('Retained metadata');

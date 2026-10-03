@@ -291,7 +291,13 @@ test("Administration Access stages and removes canonical direct assignments with
     const calls = [];
     let effectiveCalls = 0;
     let directPresent = false;
-    window.confirm = () => true;
+    const acceptConfirmation = async () => {
+      const dialog = document.querySelector('[data-action-confirmation]');
+      if (!dialog) throw new Error('Expected a consequence confirmation');
+      const closed = new Promise(resolve => dialog.addEventListener('close', resolve, { once: true }));
+      dialog.querySelector('[data-action-ack]')?.click(); dialog.querySelector('[data-action-apply]').click();
+      await closed;
+    };
     const context = {
       allowed: true,
       organizationId: "org-a",
@@ -358,6 +364,7 @@ test("Administration Access stages and removes canonical direct assignments with
     const remove = host.querySelector("[data-access-remove-binding]");
     const assignmentVisible = Boolean(remove);
     remove?.click();
+    await acceptConfirmation();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     return {

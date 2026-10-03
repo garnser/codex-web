@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { projectViewOperation, currentProjectId } = await import(`${BASE}/static/project_view_scope.js`);
   const { layout } = await import(`${BASE}/static/work_graph_layout.js`);
   let sequence = 0;
@@ -341,9 +342,7 @@
     if (!sourceRef || !targetRef) return setManagementStatus("Choose both source and target Work Items.");
     if (sourceRef === targetRef) return setManagementStatus("A relationship cannot target the same Work Item.");
     const failureBehavior = relation === "parent" ? "pause" : failure;
-    if (!window.confirm(
-      `Add ${relation} relationship ${sourceRef} → ${targetRef}? The server will reject cycles, scope conflicts and duplicate-policy conflicts before saving.`,
-    )) return;
+    if (!await confirmAction({ action: 'Add Work Item relationship', target: `${sourceRef} ${relation} ${targetRef}`, risk: 'bounded', consequence: `Add ${relation} relationship ${sourceRef} → ${targetRef}? The server will reject cycles, scope conflicts and duplicate-policy conflicts before saving.`, recovery: 'An authorized operator can remove this relationship; readiness will be recomputed.', current: operation.current })) return;
     try {
       await operation.request(`/api/work-graph/edges?project_id=${encodeURIComponent(currentProjectId())}`, {
         method: "POST",
@@ -368,9 +367,7 @@
     const edge = graph?.edges?.find((item) => item.id === edgeId);
     if (!edge) return;
     if (!canMutate()) return setManagementStatus("Graph mutation requires elevated authority.");
-    if (!window.confirm(
-      `Remove ${edge.source_ref} ${edge.relation} ${edge.target_ref}? Readiness will be recomputed from the remaining canonical graph and Work Item state.`,
-    )) return;
+    if (!await confirmAction({ action: 'Remove Work Item relationship', target: `${edge.source_ref} ${edge.relation} ${edge.target_ref} (${edgeId})`, risk: 'high', consequence: `Remove ${edge.source_ref} ${edge.relation} ${edge.target_ref}? Readiness will be recomputed from the remaining canonical graph and Work Item state.`, recovery: 'Recreating the relationship requires canonical validation; work already dispatched is not undone.', current: operation.current })) return;
     try {
       await operation.request(`/api/work-graph/edges/${encodeURIComponent(edgeId)}?project_id=${encodeURIComponent(currentProjectId())}`, {
         method: "DELETE",

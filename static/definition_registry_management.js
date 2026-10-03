@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const approvalUi = await import(`${BASE}/static/definition_registry_approvals.js`);
   const transferUi = await import(`${BASE}/static/definition_registry_transfer.js`);
@@ -198,9 +199,7 @@
       min_engine_version: document.getElementById("definition-draft-min-engine")?.value.trim() || null,
       max_engine_version: document.getElementById("definition-draft-max-engine")?.value.trim() || null,
     };
-    if (!window.confirm(
-      `Create a new ${selected.kind} draft for ${definitionId} at ${scope.scopeType}${scope.scopeId ? `:${scope.scopeId}` : ""}? The server will validate the payload against the code-owned schema; this does not publish or activate it.`,
-    )) return;
+
     try {
       const response = await request("/api/definitions/drafts", {
         method: "POST",
@@ -218,15 +217,13 @@
     const operation = projectViewOperation(setStatus);
     const report = operation.status;
     const request = operation.request;
-    if (!window.confirm(
-      `Validate ${record.kind}:${record.definition_id} r${record.revision} against code-owned schema ${record.definition_schema_version}? Validation does not activate the revision.`,
-    )) return;
+
     try {
       await request(
         `/api/definitions/${encodeURIComponent(record.record_id)}/validate`,
         { method: "POST", body: JSON.stringify({}) },
       );
-      report(`Validated ${record.definition_id} r${record.revision}.`);
+      report(`Validated ${record.definition_id} r${record.revision} against code-owned schema ${record.definition_schema_version}.`);
       operation.refresh();
     } catch (error) {
       report(`Definition validation failed: ${error.message}`);
@@ -250,9 +247,7 @@
       "",
     );
     if (reason === null || !reason.trim()) return;
-    if (!window.confirm(
-      `Quarantine ${record.definition_id} r${record.revision}? If it is currently effective, canonical resolution will fail closed or fall back only according to remaining valid scoped definitions.${impact}`,
-    )) return;
+    if (!await confirmAction({ action: 'Quarantine definition', target: `${record.definition_id} r${record.revision} (${record.record_id})`, risk: 'high', consequence: `Quarantine ${record.definition_id} r${record.revision}? If it is currently effective, canonical resolution will fail closed or fall back only according to remaining valid scoped definitions.${impact}`, recovery: 'Publish a validated replacement; no automatic Undo.', current: operation.current })) return;
     try {
       await request(
         `/api/definitions/${encodeURIComponent(record.record_id)}/quarantine`,
@@ -280,9 +275,7 @@
       "",
     );
     if (reason === null) return;
-    if (!window.confirm(
-      `Rollback ${record.kind}:${record.definition_id} from active r${active.revision} to the payload of r${record.revision}? The server creates a new immutable revision and publishes it with optimistic active-revision protection; historical records are preserved.${impact}`,
-    )) return;
+    if (!await confirmAction({ action: 'Roll back definition', target: `${record.definition_id} r${record.revision} (${record.record_id})`, risk: 'high', consequence: `Rollback ${record.kind}:${record.definition_id} from active r${active.revision} to the payload of r${record.revision}? The server creates a new immutable revision and publishes it with optimistic active-revision protection; historical records are preserved.${impact}`, recovery: 'History stays immutable; the new revision may need independent approval.', current: operation.current })) return;
     try {
       const response = await request("/api/definitions/rollback", {
         method: "POST",

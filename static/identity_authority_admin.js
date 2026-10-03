@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   let actor = null;
   let state = null;
@@ -153,7 +154,7 @@
     const name = document.getElementById("identity-create-org-name")?.value.trim() || "";
     const id = document.getElementById("identity-create-org-id")?.value.trim() || null;
     if (!name) return setStatus("Organization name is required.");
-    if (!window.confirm(`Create organization "${name}"? This is sensitive tenant administration and the server requires admin+MFA assurance.`)) return;
+    if (!await confirmAction({ action: 'Create organization', target: name, risk: 'bounded', consequence: `Create organization "${name}"? This is sensitive tenant administration and the server requires admin+MFA assurance.`, recovery: 'Creation alone does not grant membership or authority.' })) return;
     await post("/api/identity/organizations", { id, name }, `Created organization ${name}.`);
   }
 
@@ -162,7 +163,7 @@
     const name = document.getElementById("identity-create-workspace-name")?.value.trim() || "";
     const id = document.getElementById("identity-create-workspace-id")?.value.trim() || null;
     if (!organizationId || !name) return setStatus("Organization and workspace name are required.");
-    if (!window.confirm(`Create workspace "${name}" in organization ${organizationId}? Server-side admin+MFA is required.`)) return;
+    if (!await confirmAction({ action: 'Create workspace', target: `${name} in ${organizationId}`, risk: 'bounded', consequence: `Create workspace "${name}" in organization ${organizationId}? Server-side admin+MFA is required.`, recovery: 'Creation alone does not grant membership or authority.' })) return;
     await post("/api/identity/workspaces", {
       id,
       organization_id: organizationId,
@@ -175,7 +176,7 @@
     const email = document.getElementById("identity-create-human-email")?.value.trim() || null;
     const id = document.getElementById("identity-create-human-id")?.value.trim() || null;
     if (!displayName) return setStatus("Human display name is required.");
-    if (!window.confirm(`Create human identity "${displayName}"? Creation does not grant membership or authority.`)) return;
+    if (!await confirmAction({ action: 'Create human identity', target: displayName, risk: 'bounded', consequence: `Create human identity "${displayName}"? Creation does not grant membership or authority.`, recovery: 'Membership and authority require separate authorized actions.' })) return;
     await post("/api/identity/humans", { id, display_name: displayName, email }, `Created human identity ${displayName}.`);
   }
 
@@ -183,7 +184,7 @@
     const name = document.getElementById("identity-create-service-name")?.value.trim() || "";
     const description = document.getElementById("identity-create-service-description")?.value.trim() || null;
     if (!name) return setStatus("Service identity name is required.");
-    if (!window.confirm(`Create service identity "${name}"? Creation does not grant tenant membership, scopes, or a token.`)) return;
+    if (!await confirmAction({ action: 'Create service identity', target: name, risk: 'bounded', consequence: `Create service identity "${name}"? Creation does not grant tenant membership, scopes, or a token.`, recovery: 'Membership, authority and token creation are separate actions.' })) return;
     await post("/api/identity/services", { name, description }, `Created service identity ${name}.`);
   }
 
@@ -199,7 +200,7 @@
       return setStatus("Identity, tenant and at least one role are required.");
     }
     const target = workspaceId ? `${organizationId}/${workspaceId}` : organizationId;
-    if (!window.confirm(`Grant ${roles.join(", ")} membership to ${identityId} in ${target}? This expands canonical human/service authority and requires admin+MFA.`)) return;
+    if (!await confirmAction({ action: 'Grant tenant membership', target: `${identityId} in ${target}`, risk: 'high', consequence: `Grant ${roles.join(", ")} membership to ${identityId} in ${target}? This expands canonical human/service authority and requires admin+MFA.`, recovery: 'An authorized administrator can revoke membership; prior actions are not undone.' })) return;
     await post("/api/identity/memberships", {
       identity_id: identityId,
       principal_kind: principalKind,
@@ -234,7 +235,7 @@
     if (!serviceIdentityId || !organizationId || !workspaceId) {
       return setStatus("Service identity, organization and workspace are required.");
     }
-    if (!window.confirm(`Create a service token for ${serviceIdentityId} in ${organizationId}/${workspaceId} with scopes [${scopes.join(", ") || "none"}]? The raw token will be shown once and is not persisted by this UI.`)) return;
+    if (!await confirmAction({ action: 'Create service token', target: `${serviceIdentityId} in ${organizationId}/${workspaceId}`, risk: 'high', consequence: `Create a service token for ${serviceIdentityId} in ${organizationId}/${workspaceId} with scopes [${scopes.join(", ") || "none"}]? The raw token will be shown once and is not persisted by this UI.`, recovery: 'The token can be revoked through canonical identity management; raw material is shown once.' })) return;
     try {
       const credentials = await apiRequest("/api/identity/service-tokens", {
         method: "POST",

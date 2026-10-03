@@ -29,7 +29,7 @@ class ExtensionUpgradeAdminUiTests(unittest.TestCase):
         self.assertIn("MFA/local-trusted assurance or extensions:admin service authority", javascript)
         self.assertIn("button.disabled", javascript)
         self.assertIn("server-verified package", javascript)
-        self.assertIn("window.confirm", javascript)
+        self.assertIn("confirmAction", javascript)
         self.assertIn("canMutateMutation", javascript)
         self.assertIn("requires tenant admin/owner plus MFA/local-trusted assurance", javascript)
 

@@ -1,5 +1,7 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
+  const { confirmResourceChange } = await import(`${BASE}/static/resource_lifecycle_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const { resourceEditor } = await import(`${BASE}/static/resource_editor_state.js`);
   let resources = [];
@@ -166,7 +168,6 @@
       risk: document.getElementById("resource-create-risk")?.value,
       aliases: [],
     };
-    if (!window.confirm(`Create canonical ${payload.resource_type} resource "${name}" with ${payload.risk} risk and ${payload.sensitivity} sensitivity?`)) return;
     const editor = draftEditor('create');
     const submitted = editor?.snapshot();
     const button = document.getElementById('create-resource');
@@ -205,10 +206,7 @@
     };
     const owner = root.querySelector("[data-resource-edit-owner]");
     if (owner && !owner.disabled) payload.owner_identity_id = owner.value || null;
-    const impact = lifecycle !== originalLifecycle && ["disabled", "deleted"].includes(lifecycle)
-      ? " This lifecycle makes the resource unavailable for privileged resolution."
-      : "";
-    if (!window.confirm(`Update canonical resource ${resourceId}? Target lifecycle: ${lifecycle}; risk: ${payload.risk}; sensitivity: ${payload.sensitivity}.${impact}`)) return;
+    if (!await confirmResourceChange(resourceId, payload, originalLifecycle, root, button, setStatus)) return;
     const editor = resourceEditor(root);
     const submitted = editor.snapshot();
     button.disabled = true;
@@ -237,7 +235,7 @@
       setStatus("A resource cannot relate to itself.");
       return;
     }
-    if (!window.confirm(`Create canonical relationship ${fromResourceId} —${relationshipType}→ ${toResourceId}?`)) return;
+    if (!await confirmAction({ action: 'Create resource relationship', target: `${fromResourceId} ${relationshipType} ${toResourceId}`, risk: 'bounded', consequence: `Create canonical relationship ${fromResourceId} —${relationshipType}→ ${toResourceId}?`, recovery: 'Subsequent relationship changes require canonical authority.' })) return;
     const editor = draftEditor('relationship');
     const submitted = editor?.snapshot();
     const button = document.getElementById('create-resource-relationship');

@@ -1,3 +1,4 @@
+const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require('@playwright/test');
 const fs = require('node:fs'); const path = require('node:path');
 const index = fs.readFileSync(path.join(__dirname, '../../static/index.html'), 'utf8');
@@ -54,8 +55,9 @@ test('positive dependencies and unavailable impact block destructive confirmatio
 
 test('rotation displays dependencies before confirmation and preserves scoped mutation', async ({ page }) => {
   const state = await mount(page);
-  page.once('dialog', async dialog => { state.events.push('confirm'); await dialog.accept(); });
   await page.locator('[data-crypto-rotate]').click();
+  await expect(page.locator('[data-action-impact]')).toContainText('backup-1');
+  state.events.push('confirm'); await resolveAction(page);
   await expect.poll(() => state.writes.length).toBe(1);
   expect(state.writes[0]).toEqual({ path: '/api/crypto/keys/key-backup/rotate', project: 'home' });
   expect(state.events).toEqual(['impact', 'confirm']);
@@ -64,7 +66,7 @@ test('rotation displays dependencies before confirmation and preserves scoped mu
 test('unreferenced version retirement uses a fresh impact read before confirmation', async ({ page }) => {
   const state = await mount(page); state.count = 0;
   page.on('dialog', async dialog => dialog.accept(dialog.type() === 'prompt' ? 'retained copies migrated' : undefined));
-  await page.locator('[data-crypto-revoke-version]').click();
+  await page.locator('[data-crypto-revoke-version]').click(); await resolveAction(page);
   await expect.poll(() => state.writes.length).toBe(1);
   expect(state.writes[0].path).toContain('/versions/1/revoke');
 });

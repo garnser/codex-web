@@ -1,3 +1,4 @@
+import { confirmAction } from './action_confirmation.js';
 import './page_editor.js';
 import { esc } from './secret_reference_ui.js';
 import { trackDirtyEditor, confirmDiscard } from './dirty_editor.js';
@@ -64,7 +65,7 @@ export function renderManagement(host, snapshot, op, refresh) {
     };
     form.onsubmit = async event => {
       event.preventDefault(); if (busy || !reviewed || !validation.validate() || JSON.stringify(payload()) !== reviewed.text) return;
-      if (!confirm(`Apply ${kind} ${reviewed.proposed.key || 'mode'} to every Project in ${snapshot.organization_id}/${snapshot.workspace_id}? ${reviewed.impact.effect}`)) return;
+      if (!await confirmAction({ action: 'Apply entitlement change', target: `${kind} ${reviewed.proposed.key || 'mode'} · ${snapshot.organization_id}/${snapshot.workspace_id}`, risk: 'high', consequence: reviewed.impact.effect, impact: form.querySelector('[data-entitlement-impact]').textContent, recovery: 'Usage history is retained. To change local controls again, reload and preview a new edit; external control remains with its owner.', current: () => current() && reviewed && JSON.stringify(payload()) === reviewed.text, trigger: save })) return;
       busy = true; save.disabled = true; const submitted = owned.snapshot(); const proposed = reviewed.proposed;
       const path = kind === 'mode' ? '/mode' : `/${kind === 'capability' ? 'capabilities' : 'quotas'}/${encodeURIComponent(proposed.key)}`;
       try {

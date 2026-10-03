@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   let actor = null;
   let artifacts = [];
@@ -241,7 +242,7 @@
     const consequence = kind === "artifact"
       ? "Dependent evidence and verifications will be invalidated transitively."
       : "Dependent verifications will be invalidated transitively.";
-    if (!window.confirm(`Invalidate ${kind} ${id}? ${consequence}`)) return;
+    if (!await confirmAction({ action: `Invalidate ${kind}`, target: id, risk: 'high', consequence, recovery: 'Existing evidence is not restored by Undo. Produce and verify replacement evidence through canonical APIs.' })) return;
     try {
       await apiRequest(`/api/${kind === "artifact" ? "artifacts" : "evidence"}/${encodeURIComponent(id)}/invalidate`, {
         method: "POST",
@@ -256,7 +257,7 @@
 
   async function syncGovernance() {
     if (!canAdmin()) return setAdminStatus("Governance sync requires admin + MFA/step-up or artifact-evidence:admin.");
-    if (!window.confirm("Backfill missing canonical governance metadata for tenant-visible artifacts and evidence? Existing linked governance records are preserved.")) return;
+    if (!await confirmAction({ action: 'Backfill artifact governance', target: "tenant-visible artifacts and evidence with missing governance metadata", risk: 'high', consequence: "Backfill missing canonical governance metadata for tenant-visible artifacts and evidence? Existing linked governance records are preserved.", recovery: 'Existing linked records are preserved; this is a canonical metadata repair, with no automatic Undo.' })) return;
     try {
       const result = await apiRequest("/api/artifact-evidence/governance/sync", { method: "POST" });
       setAdminStatus(`Governance sync complete · artifacts ${result.artifacts || 0} · evidence ${result.evidence || 0}.`);
@@ -268,7 +269,7 @@
 
   async function expireRetention() {
     if (!canAdmin()) return setAdminStatus("Retention expiry requires admin + MFA/step-up or artifact-evidence:admin.");
-    if (!window.confirm("Expire artifact/evidence rows whose canonical retention deadline has passed? Dependent evidence/verifications are invalidated as required.")) return;
+    if (!await confirmAction({ action: 'Expire retained evidence', target: 'Tenant-visible artifacts/evidence past their canonical retention deadline', risk: 'high', consequence: 'The server expires eligible rows and invalidates dependent evidence and verifications.', recovery: 'Expiration does not provide Undo or recover deleted bytes. Retention/legal-hold enforcement remains canonical.' })) return;
     try {
       const result = await apiRequest("/api/artifact-evidence/expire-retention", { method: "POST" });
       setAdminStatus(`Retention expiry complete · artifacts ${result.artifacts?.length || 0} · evidence ${result.evidence?.length || 0}.`);

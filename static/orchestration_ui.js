@@ -1,3 +1,5 @@
+import { confirmAction } from './action_confirmation.js';
+
 const esc = (value) => String(value ?? "")
   .replaceAll("&", "&amp;")
   .replaceAll("<", "&lt;")
@@ -415,12 +417,18 @@ function render(panel, data) {
     : '<div class="orch-empty">No canonical ApprovalRequests.</div>';
 
   panel.querySelectorAll("[data-schedule-action]").forEach((button) => {
-    button.addEventListener("click", () => mutate(
-      panel,
-      `/api/schedules/${encodeURIComponent(button.dataset.scheduleId)}/${button.dataset.scheduleAction}`,
-      { method: "POST" },
-      "Applying canonical schedule transition…",
-    ));
+    button.addEventListener("click", async () => {
+      const action = button.dataset.scheduleAction;
+      const schedule = (data.schedules || []).find(item => item.id === button.dataset.scheduleId);
+      if (action !== "pause" && !await confirmAction({
+        action: action === "cancel" ? "Cancel schedule" : "Resume schedule",
+        target: button.dataset.scheduleId, risk: "high", current: () => button.isConnected,
+        consequence: action === "cancel" ? "Cancel future firings of this schedule. Already emitted events and accepted work remain." : "Resume scheduled event delivery, which may activate governed work.",
+        impact: `Scope: ${schedule?.tenant_id || 'not reported'} / ${schedule?.workspace_id || 'not reported'}. Created by: ${schedule?.created_by || 'not reported'}. Event: ${schedule?.trigger_type || 'not reported'}.`,
+        recovery: action === "cancel" ? "A cancelled schedule cannot be resumed. Create a replacement only after checking prior firings." : "Pause remains available to stop future firings.",
+      })) return;
+      await mutate(panel, `/api/schedules/${encodeURIComponent(button.dataset.scheduleId)}/${action}`, { method: "POST" }, "Applying canonical schedule transition…");
+    });
   });
 }
 
@@ -518,16 +526,23 @@ function buildPanel() {
   panel.querySelector("[data-orch-refresh]").addEventListener("click", () => load(panel));
   panel.querySelector("[data-orch-apply-filter]").addEventListener("click", () => load(panel));
   panel.querySelector("[data-orch-pause]").addEventListener("click", () => mutate(panel, "/api/autonomy/pause", { method: "POST" }));
-  panel.querySelector("[data-orch-resume]").addEventListener("click", () => mutate(panel, "/api/autonomy/resume", { method: "POST" }));
+  panel.querySelector("[data-orch-resume]").addEventListener("click", async () => {
+    if (await confirmAction({ action: "Resume autonomy", target: "Global autonomy control", risk: "high", current: () => panel.isConnected,
+      consequence: "Resume eligible autonomous work across the canonical control scope. Existing authority, approvals and budgets still apply.",
+      recovery: "Pause and Kill remain available; already accepted provider actions may require reconciliation." })) {
+      await mutate(panel, "/api/autonomy/resume", { method: "POST" });
+    }
+  });
   panel.querySelector("[data-orch-kill]").addEventListener("click", () => mutate(panel, "/api/autonomy/kill", { method: "POST" }));
-  panel.querySelector("[data-orch-dry-run]").addEventListener("change", (event) => mutate(panel, "/api/autonomy/control", {
-    method: "PATCH",
-    body: JSON.stringify({ dry_run: event.target.checked }),
-  }));
-  panel.querySelector("[data-orch-simulation]").addEventListener("change", (event) => mutate(panel, "/api/autonomy/control", {
-    method: "PATCH",
-    body: JSON.stringify({ simulation: event.target.checked }),
-  }));
+  for (const [selector, field, label] of [["dry-run", "dry_run", "dry-run"], ["simulation", "simulation", "simulation"]]) {
+    panel.querySelector(`[data-orch-${selector}]`).addEventListener("change", async (event) => {
+      const input = event.target, enabled = input.checked;
+      if (!enabled && !await confirmAction({ action: `Leave ${label}`, target: "Global autonomy control", risk: "high", current: () => input.isConnected,
+        consequence: `Disable ${label}. Eligible autonomous work may produce real provider effects subject to canonical controls.`,
+        recovery: `Enable ${label} or Pause to prevent further live work; this cannot undo accepted provider effects.` })) { input.checked = true; return; }
+      await mutate(panel, "/api/autonomy/control", { method: "PATCH", body: JSON.stringify({ [field]: enabled }) });
+    });
+  }
   return panel;
 }
 

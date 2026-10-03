@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith('/codex') ? '/codex' : '';
+  const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
 
   function installStyles() {
@@ -145,6 +146,7 @@
       const remove = document.createElement('button');
       remove.type = 'button'; remove.className = 'ghost-button'; remove.textContent = 'Delete';
       remove.addEventListener('click', async () => {
+        if (!await confirmAction({ action: 'Delete knowledge entry', target: `${item.title} (${item.id}) · ${item.scope} ${item.project_id || ''}`, risk: 'high', consequence: 'The entry is removed from future knowledge retrieval. Previous executions are not rewritten.', recovery: 'This interface has no Undo. Save a permitted copy before deletion if it is needed.', current: () => remove.isConnected, trigger: remove })) return;
         remove.disabled = true;
         try {
           await apiRequest(`/api/executive/knowledge/${encodeURIComponent(item.id)}`, { method: 'DELETE' });

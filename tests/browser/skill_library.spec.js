@@ -1,3 +1,4 @@
+const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require('@playwright/test');
 
 const skill = {
@@ -100,4 +101,30 @@ test('missing deep-linked Skill reports failure without selecting an unrelated o
   await page.goto('http://127.0.0.1:18766/tests/browser/skill_library_fixture.html?skill_id=missing');
   await expect(page.locator('[data-skill-detail]')).toContainText('Referenced Skill unavailable');
   await expect(page.locator('[data-skill-detail]')).not.toContainText('Release Check');
+});
+
+
+test('Skill archive reviews canonical exact-revision pins and blocks unavailable impact', async ({ page }) => {
+  let unavailable = true; const writes = [];
+  await page.route('**/api/skills/release-check/usage**', route => route.fulfill(unavailable
+    ? { status: 503, json: { detail: 'Usage unavailable' } }
+    : { json: { items: [{ object_id: 'release-agent', revision: 4 }] } }));
+  // Select with usable initial impact, then make the action-time refresh fail.
+  unavailable = false;
+  await page.getByRole('button', { name: /Release Check/ }).click();
+  await expect(page.locator('[data-skill-archive]')).toBeVisible();
+  unavailable = true;
+  await page.route('**/api/skills/release-check/archive', route => {
+    writes.push(route.request().postDataJSON()); return route.fulfill({ json: { item: skill } });
+  });
+  await page.locator('[data-skill-archive]').click();
+  await expect(page.locator('[data-skill-action-result]')).toContainText('Skill action blocked');
+  expect(writes).toHaveLength(0);
+  unavailable = false;
+  await page.locator('[data-skill-archive]').click();
+  const review = await resolveAction(page, false);
+  expect(review).toContain('release-check r2'); expect(review).toContain('release-agent r4');
+  expect(review).toContain('Restore is available'); expect(writes).toHaveLength(0);
+  await page.locator('[data-skill-archive]').click(); await resolveAction(page);
+  await expect.poll(() => writes.length).toBe(1);
 });
