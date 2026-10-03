@@ -467,6 +467,8 @@
                           <option value="degraded">Degraded</option>
                           <option value="disabled">Disabled</option>
                         </select>
+                        <label><input id="model-provider-catalog-discovery" type="checkbox" /> Discover provider model catalog</label>
+                        <input aria-label="Model catalog TTL seconds" id="model-provider-catalog-ttl" type="number" min="30" max="86400" value="300" />
                         <button id="save-model-provider" type="button" class="ghost-button">Save provider</button>
                       </div>
                     </details>
@@ -478,6 +480,9 @@
                         <select aria-label="Model provider" id="model-definition-provider"></select>
                         <input aria-label="Concrete provider model" id="model-definition-concrete" placeholder="Concrete provider model" />
                         <input aria-label="Model version (optional)" id="model-definition-version" placeholder="Model version (optional)" />
+                        <select aria-label="Model availability source" id="model-definition-availability"><option value="static">Static definition</option><option value="discovered">Provider catalog discovery</option></select>
+                        <input aria-label="Upstream provider identity" id="model-definition-upstream-provider" placeholder="Upstream provider (optional)" />
+                        <input aria-label="Upstream model identity" id="model-definition-upstream-model" placeholder="Upstream model (optional)" />
                         <input aria-label="Model classes, comma separated" id="model-definition-classes" placeholder="Model classes, comma separated" />
                         <input aria-label="Suitable workloads, comma separated" id="model-definition-workloads" placeholder="Suitable workloads, comma separated" />
                         <input aria-label="Capabilities" id="model-definition-capabilities" value="text" placeholder="Capabilities" />
@@ -554,6 +559,8 @@
                   </details>
                   <div class="section-title"><span>Providers</span></div>
                   <div id="model-provider-list" class="comm-log"></div>
+                  <div class="section-title"><span>Provider model catalogs</span></div>
+                  <div id="model-catalog-list" class="comm-log"></div>
                   <div class="section-title"><span>Models & classes</span></div>
                   <div id="model-definition-list" class="comm-log"></div>
                   <div class="section-title"><span>Prompt/template versions</span></div>

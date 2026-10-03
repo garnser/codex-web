@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from codex_web.identity import (
 from codex_web.model_gateway import (
     MODEL_CLASS_STRATEGIC,
     MODEL_GATEWAY_CONTRACT,
+    ModelCatalogEntry,
     ModelDefinitionUpsert,
     ModelInvocationRequest,
     ModelLatencyClass,
@@ -70,6 +72,13 @@ class _FakeAdapter:
         self.requests: list[ModelInvocationRequest] = []
         self.transient_models: set[str] = set()
         self.capacity_models: set[str] = set()
+        self.catalogs: dict[str, tuple[ModelCatalogEntry, ...]] = {}
+        self.catalog_error: set[str] = set()
+
+    async def discover_models(self, provider, *, credential):
+        if provider.id in self.catalog_error:
+            raise ModelProviderTransientError("catalog temporarily unavailable")
+        return self.catalogs.get(provider.id, ())
 
     async def invoke(self, provider, model, request, *, credential):
         self.calls.append((model.id, credential))
@@ -131,10 +140,12 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
             ProviderCapacityStore(self.sqlite),
             clock=lambda: 1_900_000_000.0,
         )
+        self.now = 1_900_000_000.0
         self.service = ModelGatewayService(
             ModelGatewayStore(self.sqlite),
             secret_broker=self.secret_broker,
             provider_capacity=self.capacity,
+            clock=lambda: self.now,
         )
         self.adapter = _FakeAdapter()
         self.service.register_adapter(self.adapter)
@@ -216,10 +227,66 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(migrated.schema_version, MODEL_GATEWAY_CONTRACT.current)
-        self.assertEqual(MODEL_GATEWAY_CONTRACT.current, "1.3")
+        self.assertEqual(MODEL_GATEWAY_CONTRACT.current, "1.4")
         self.assertIn("1.0", MODEL_GATEWAY_CONTRACT.supported)
         self.assertIn("1.1", MODEL_GATEWAY_CONTRACT.supported)
         self.assertIn("1.2", MODEL_GATEWAY_CONTRACT.supported)
+
+    async def test_discovered_catalog_fences_routing_and_records_upstream_revision(self) -> None:
+        self._provider("aggregate", catalog_discovery_enabled=True, catalog_ttl_seconds=60)
+        self.adapter.catalogs["aggregate"] = (
+            ModelCatalogEntry(
+                concrete_model="openai/gpt-coding",
+                upstream_provider_id="openai",
+                upstream_model_id="gpt-coding",
+                model_version="2026-10",
+            ),
+        )
+        catalog = await self.service.refresh_catalog("aggregate", actor=self.actor)
+        self._model(
+            "aggregate-coding", "aggregate",
+            concrete_model="openai/gpt-coding",
+            availability_source="discovered",
+        )
+
+        route = self.service.route(self._request(), actor=self.actor)
+        candidate = route.candidates[0]
+        self.assertEqual(candidate.upstream_provider_id, "openai")
+        self.assertEqual(candidate.upstream_model_id, "gpt-coding")
+        self.assertEqual(candidate.catalog_revision, catalog.revision)
+        result = await self.service.invoke(self._request(), actor=self.actor)
+        self.assertEqual(result.invocation.selected_catalog_revision, catalog.revision)
+        self.assertEqual(result.invocation.selected_upstream_provider_id, "openai")
+
+        self.adapter.catalogs["aggregate"] = (
+            ModelCatalogEntry(concrete_model="anthropic/claude"),
+        )
+        await self.service.refresh_catalog("aggregate", actor=self.actor)
+        with self.assertRaisesRegex(ModelRoutingError, "not_in_provider_catalog"):
+            self.service.route(self._request(), actor=self.actor)
+
+    async def test_catalog_ttl_and_error_fail_closed_while_static_fallback_stays_explicit(self) -> None:
+        self._provider("p1", catalog_discovery_enabled=True, catalog_ttl_seconds=30)
+        self.adapter.catalogs["p1"] = (
+            ModelCatalogEntry(concrete_model="concrete-discovered"),
+        )
+        await self.service.refresh_catalog("p1", actor=self.actor)
+        self._model("discovered", concrete_model="concrete-discovered", availability_source="discovered")
+        self._model("static", route_priority=200)
+        self.now += 31
+
+        route = self.service.route(self._request(), actor=self.actor)
+        self.assertEqual([item.model_id for item in route.candidates], ["static"])
+        self.assertEqual(self.service.list_catalogs(self.actor)[0].status.value, "stale")
+
+        self.adapter.catalog_error.add("p1")
+        failed = await self.service.refresh_catalog("p1", actor=self.actor)
+        self.assertEqual(failed.status.value, "error")
+        self.assertIn("catalog temporarily unavailable", failed.error)
+        self.assertEqual(
+            [item.model_id for item in self.service.route(self._request(), actor=self.actor).candidates],
+            ["static"],
+        )
 
     async def test_v1_2_state_migrates_task_routing_provenance(self) -> None:
         migrated = self.service.store._decode(
@@ -240,7 +307,7 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        self.assertEqual(migrated.schema_version, "1.3")
+        self.assertEqual(migrated.schema_version, "1.4")
         self.assertEqual(migrated.models[0].workload_classes, ())
 
     @staticmethod
@@ -819,6 +886,27 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         classified = adapter._classify(_RateLimit("too many requests"))
         self.assertIsInstance(classified, ModelProviderTransientError)
 
+    async def test_openai_catalog_discovery_normalizes_and_deduplicates_sdk_models(self) -> None:
+        adapter = OpenAIModelProviderAdapter()
+
+        class _Models:
+            async def list(self):
+                return types.SimpleNamespace(data=(
+                    types.SimpleNamespace(id="gpt-z", owned_by="openai"),
+                    types.SimpleNamespace(id="gpt-a", owned_by="partner"),
+                    types.SimpleNamespace(id="gpt-z", owned_by="replacement"),
+                    types.SimpleNamespace(id="", owned_by="ignored"),
+                ))
+
+        adapter._client = lambda provider, credential: types.SimpleNamespace(models=_Models())
+        provider = self._provider("openai", adapter_type="openai")
+
+        entries = await adapter.discover_models(provider, credential=None)
+
+        self.assertEqual([item.concrete_model for item in entries], ["gpt-a", "gpt-z"])
+        self.assertEqual(entries[1].upstream_provider_id, "replacement")
+        self.assertEqual(entries[1].upstream_model_id, "gpt-z")
+
 
 class ModelGatewayApiAssuranceTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -942,6 +1030,41 @@ class ModelGatewayApiAssuranceTests(unittest.TestCase):
         )
         self.assertTrue(route.json()["prefer_lower_cost"])
         self.assertEqual(route.json()["candidates"][0]["model_id"], "m1")
+
+    def test_mfa_human_can_refresh_and_inspect_provider_scoped_catalog(self) -> None:
+        self.actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.MFA}
+        )
+        adapter = _FakeAdapter()
+        adapter.catalogs["aggregate"] = (
+            ModelCatalogEntry(
+                concrete_model="openai/gpt-coding",
+                upstream_provider_id="openai",
+                upstream_model_id="gpt-coding",
+            ),
+        )
+        self.service.register_adapter(adapter)
+        provider = self.client.put(
+            "/api/model-gateway/providers/aggregate",
+            json={
+                "id": "aggregate", "adapter_type": "fake",
+                "display_name": "Aggregate", "credential_required": False,
+                "catalog_discovery_enabled": True, "catalog_ttl_seconds": 60,
+            },
+        )
+        refreshed = self.client.post(
+            "/api/model-gateway/providers/aggregate/catalog/refresh"
+        )
+        catalogs = self.client.get("/api/model-gateway/catalogs")
+
+        self.assertEqual(provider.status_code, 200)
+        self.assertEqual(refreshed.status_code, 200)
+        self.assertEqual(refreshed.json()["item"]["status"], "ready")
+        self.assertEqual(catalogs.json()["items"][0]["provider_id"], "aggregate")
+        self.assertEqual(
+            catalogs.json()["items"][0]["entries"][0]["upstream_provider_id"],
+            "openai",
+        )
 
     def test_model_gateway_admin_service_scope_remains_supported(self) -> None:
         self.actor = AuthenticationActor(

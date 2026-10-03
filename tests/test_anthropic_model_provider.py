@@ -120,6 +120,50 @@ class AnthropicModelProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.provider_request_id, "req_123")
         self.assertEqual(result.stop_reason, "end_turn")
 
+    async def test_model_catalog_discovery_normalizes_only_provider_identity(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/v1/models")
+            return httpx.Response(200, json={"data": [
+                {"id": "claude-sonnet-5", "display_name": "Sonnet", "untrusted": "ignored"},
+                {"id": "claude-opus-5"},
+            ]})
+
+        entries = await AnthropicModelProviderAdapter(
+            transport=httpx.MockTransport(handler)
+        ).discover_models(self._provider(), credential="secret-value")
+
+        self.assertEqual([item.concrete_model for item in entries], [
+            "claude-opus-5", "claude-sonnet-5",
+        ])
+        self.assertTrue(all(item.upstream_provider_id == "anthropic" for item in entries))
+        self.assertNotIn("untrusted", entries[1].model_dump_json())
+
+    async def test_model_catalog_discovery_follows_bounded_provider_pagination(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            after_id = request.url.params.get("after_id")
+            if after_id is None:
+                return httpx.Response(200, json={
+                    "data": [{"id": "claude-a"}], "has_more": True,
+                    "last_id": "claude-a",
+                })
+            self.assertEqual(after_id, "claude-a")
+            return httpx.Response(200, json={
+                "data": [{"id": "claude-b"}], "has_more": False,
+                "last_id": "claude-b",
+            })
+
+        entries = await AnthropicModelProviderAdapter(
+            transport=httpx.MockTransport(handler)
+        ).discover_models(self._provider(), credential="secret-value")
+
+        self.assertEqual([item.concrete_model for item in entries], [
+            "claude-a", "claude-b",
+        ])
+        self.assertEqual(len(requests), 2)
+
     async def test_rate_limit_is_transient(self) -> None:
         adapter = AnthropicModelProviderAdapter(
             transport=httpx.MockTransport(

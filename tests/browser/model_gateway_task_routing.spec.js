@@ -52,3 +52,15 @@ test('catalog refresh preserves strict pins including unavailable models', async
   await pin.selectOption('');
   expect(await page.evaluate(() => window.controls.readTaskRoutePreferences().pinned_model_id)).toBeNull();
 });
+
+test('provider selection scopes available pins without silently clearing an existing pin', async ({ page }) => {
+  const pin = page.locator('#model-route-pinned-model');
+  await pin.selectOption('review-b');
+  await page.evaluate(items => window.controls.populateTaskRouteControls(items, ['provider-a']), models);
+  await expect(pin).toHaveValue('review-b');
+  await expect(pin.locator('option')).toHaveText([
+    'Automatic selection', 'provider-a / review-a', 'Unavailable / review-b',
+  ]);
+  await pin.selectOption('review-a');
+  expect(await page.evaluate(() => window.controls.readTaskRoutePreferences().pinned_model_id)).toBe('review-a');
+});

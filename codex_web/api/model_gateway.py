@@ -90,6 +90,23 @@ def build_model_gateway_router(service: ModelGatewayService, projects=None, admi
         items = service.list_models(request_actor(request))
         return {"items": [item.model_dump(mode="json") for item in items]}
 
+    @router.get("/catalogs")
+    async def catalogs(request: Request) -> dict[str, Any]:
+        items = service.list_catalogs(request_actor(request))
+        return {"items": [item.model_dump(mode="json") for item in items]}
+
+    @router.post("/providers/{provider_id}/catalog/refresh")
+    async def refresh_catalog(provider_id: str, request: Request) -> dict[str, Any]:
+        try:
+            item = await service.refresh_catalog(
+                provider_id, actor=mutation_actor(request)
+            )
+            return {"item": item.model_dump(mode="json")}
+        except Exception as exc:
+            if isinstance(exc, (ModelGatewayError, AuthorizationError, ValueError)):
+                raise _error(exc) from exc
+            raise
+
     @router.put("/models/{model_id}")
     async def put_model(
         model_id: str,

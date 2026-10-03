@@ -7,8 +7,9 @@
     `${BASE}/static/model_gateway_route_controls.js`
   );
   const { providerCards } = await import(`${BASE}/static/model_provider_cards.js`);
+  const { renderModelCatalogs, renderModelDefinitions, bindModelCatalogRefresh } = await import(`${BASE}/static/model_catalog_ui.js`);
   const MAX_INVOCATIONS = 50;
-  let snapshot = { providers: [], models: [], prompts: [], policy: null, invocations: [], capacity: [], capacityWaits: [] };
+  let snapshot = { providers: [], models: [], catalogs: [], prompts: [], policy: null, invocations: [], capacity: [], capacityWaits: [] };
 
 
   function timeText(value) {
@@ -53,20 +54,6 @@
     host.innerHTML = providerCards(items, snapshot.capacity, timeText, listText); focusReference(host);
   }
 
-  function renderModels(items) {
-    const host = document.getElementById("model-definition-list");
-    if (!host) return;
-    host.innerHTML = items.map((item) => `<div class="comm-entry" ${referenceAttributes("model", item.id)}>
-      <strong>${escapeHtml(item.id)} · ${escapeHtml(item.lifecycle)}</strong>
-      <small>Provider: ${referenceLink("model_provider", item.provider_id)} · Concrete model: ${escapeHtml(item.concrete_model)}${item.model_version ? ` · version ${escapeHtml(item.model_version)}` : ""}</small>
-      <small>Classes: ${listText(item.model_classes)} · Workloads: ${listText(item.workload_classes)} · Capabilities: ${listText(item.capabilities)} · Modalities: ${listText(item.modalities)} · Tools: ${item.supports_tools ? "yes" : "no"}</small>
-      <small>Context: ${escapeHtml(item.context_window_tokens)} · Max output: ${escapeHtml(item.max_output_tokens)} · Latency: ${escapeHtml(item.latency_class)} · Route priority: ${escapeHtml(item.route_priority)}</small>
-      <small>Pricing / 1M tokens: input ${item.input_price_per_million_usd == null ? "unknown" : `$${escapeHtml(item.input_price_per_million_usd)}`} · output ${item.output_price_per_million_usd == null ? "unknown" : `$${escapeHtml(item.output_price_per_million_usd)}`}</small>
-      <small>Residency: ${listText(item.residency_tags)} · Compliance: ${listText(item.compliance_tags)} · Updated by: ${escapeHtml(item.updated_by)}</small>
-    </div>`).join("") || '<div class="comm-entry"><strong>No model definitions registered.</strong></div>';
-    focusReference(host);
-  }
-
   function renderPrompts(items) {
     const host = document.getElementById("model-prompt-list");
     if (!host) return;
@@ -99,6 +86,7 @@
         <small>Selected: ${referenceLink("model_provider", item.selected_provider_id)} / ${referenceLink("model", item.selected_model_id)} · ${escapeHtml(item.selected_concrete_model || "none")}${item.selected_model_version ? ` @ ${escapeHtml(item.selected_model_version)}` : ""}</small>
         <small>Template: ${escapeHtml(item.prompt_template_id)} @ ${escapeHtml(item.prompt_template_version)} · checksum ${escapeHtml(item.prompt_template_checksum_sha256)}</small>
         <small>Route reason: ${escapeHtml(item.route_reason)} · Policy fingerprint: ${escapeHtml(item.policy_fingerprint_sha256)}</small>
+        <small>Catalog: ${escapeHtml(item.selected_catalog_revision || "static")} · discovered ${timeText(item.selected_catalog_discovered_at)} · upstream ${escapeHtml(item.selected_upstream_provider_id || "unknown")} / ${escapeHtml(item.selected_upstream_model_id || "unknown")}</small>
         <small>Override: ${escapeHtml(item.pinned_model_id || "automatic")} · Preferred latency: ${listText(item.preferred_latency_classes)} · Prefer lower cost: ${item.prefer_lower_cost ? "yes" : "no"}</small>
         <small>Capabilities: ${listText(item.required_capabilities)} · Residency: ${listText(item.required_residency_tags)} · Compliance: ${listText(item.required_compliance_tags)} · Max cost: ${item.max_cost_usd == null ? "none" : `$${escapeHtml(item.max_cost_usd)}`}</small>
         ${refs ? `<small>References: ${escapeHtml(refs)}</small>` : ""}
@@ -148,6 +136,7 @@
       ${(result.candidates || []).map((candidate, index) => `<div class="comm-entry">
         <strong>#${index + 1} ${escapeHtml(candidate.provider_id)} / ${escapeHtml(candidate.model_id)}</strong>
         <small>${escapeHtml(candidate.concrete_model)}${candidate.model_version ? ` @ ${escapeHtml(candidate.model_version)}` : ""} · ${escapeHtml(candidate.routing_reason)}</small>
+        <small>Catalog: ${escapeHtml(candidate.catalog_revision || "static")} · upstream ${escapeHtml(candidate.upstream_provider_id || "unknown")} / ${escapeHtml(candidate.upstream_model_id || "unknown")}</small>
         <small>Estimated input: ${escapeHtml(candidate.estimated_input_tokens)} · max output: ${escapeHtml(candidate.max_output_tokens)} · upper cost: ${candidate.estimated_upper_cost_usd == null ? "unknown" : `$${escapeHtml(candidate.estimated_upper_cost_usd)}`}</small>
       </div>`).join("")}
     </div>`;
@@ -197,9 +186,10 @@
   async function refresh() {
     setStatus("Loading canonical model-gateway state...");
     try {
-      const [providers, models, prompts, policy, invocations, capacity] = await Promise.all([
+      const [providers, models, catalogs, prompts, policy, invocations, capacity] = await Promise.all([
         apiRequest("/api/model-gateway/providers"),
         apiRequest("/api/model-gateway/models"),
+        apiRequest("/api/model-gateway/catalogs"),
         apiRequest("/api/model-gateway/prompts"),
         apiRequest("/api/model-gateway/policy"),
         apiRequest(`/api/model-gateway/invocations?limit=${MAX_INVOCATIONS}`),
@@ -208,6 +198,7 @@
       snapshot = {
         providers: providers.items || [],
         models: models.items || [],
+        catalogs: catalogs.items || [],
         prompts: prompts.items || [],
         policy: policy.item,
         invocations: invocations.items || [],
@@ -216,7 +207,8 @@
       };
       renderPolicy(snapshot.policy);
       renderProviders(snapshot.providers);
-      renderModels(snapshot.models);
+      renderModelCatalogs({ host: document.getElementById("model-catalog-list"), providers: snapshot.providers, catalogs: snapshot.catalogs, escapeHtml, timeText, listText });
+      renderModelDefinitions({ host: document.getElementById("model-definition-list"), items: snapshot.models, escapeHtml, listText, referenceLink, referenceAttributes, focusReference });
       renderPrompts(snapshot.prompts);
       renderInvocations(snapshot.invocations);
       populatePreviewControls();
@@ -224,7 +216,7 @@
         detail: snapshot,
       }));
       const waiting = snapshot.capacityWaits.filter((item) => item.status === "waiting").length;
-      setStatus(`${snapshot.providers.length} provider(s) · ${snapshot.models.length} model(s) · ${snapshot.prompts.length} prompt version(s) · ${snapshot.invocations.length} invocation record(s) · ${waiting} capacity wait(s). Credentials remain secret references.`);
+      setStatus(`${snapshot.providers.length} provider(s) · ${snapshot.models.length} model(s) · ${snapshot.catalogs.length} catalog state(s) · ${snapshot.prompts.length} prompt version(s) · ${snapshot.invocations.length} invocation record(s) · ${waiting} capacity wait(s). Credentials remain secret references.`);
     } catch (error) {
       setStatus(`Model Gateway unavailable: ${error.message}`);
     }
@@ -235,6 +227,10 @@
     document.getElementById("refresh-model-gateway")?.addEventListener("click", refresh);
     document.getElementById("refresh-developer")?.addEventListener("click", refresh);
     document.getElementById("preview-model-route")?.addEventListener("click", () => previewRoute().catch(console.error));
+    document.getElementById("model-route-preferred-providers")?.addEventListener("change", event => {
+      populateTaskRouteControls(snapshot.models, Array.from(event.currentTarget.selectedOptions).map(item => item.value));
+    });
+    bindModelCatalogRefresh({ host: document.getElementById("model-catalog-list"), api: apiRequest, setStatus, refresh });
     panel?.addEventListener("toggle", () => {
       if (panel.open) refresh().catch(console.error);
     });
