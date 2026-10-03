@@ -64,7 +64,11 @@ class UiFieldDispositionParityTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("## Declared API-only exceptions", matrix)
-        self.assertIn("Authentication policy and session-policy create/update", matrix)
+        self.assertNotIn("Authentication policy and session-policy create/update", matrix)
+        self.assertIn(
+            "Administration → Authentication manages workspace session idle/absolute lifetimes",
+            matrix,
+        )
         self.assertIn("Provider/runtime registration, immutable-history rollback and archive/delete", matrix)
         self.assertIn("External entitlement control registration", matrix)
         self.assertIn(

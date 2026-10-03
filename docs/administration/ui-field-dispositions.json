@@ -9,6 +9,47 @@
     "provenance_read_only": "Actor/time/reason or revision-link provenance is read-only in product UI."
   },
   "models": {
+    "AuthenticationPolicyRecord": {
+      "module": "codex_web.identity",
+      "groups": {
+        "immutable_identity": [
+          "organization_id",
+          "workspace_id",
+          "revision"
+        ],
+        "managed_revision": [
+          "session_idle_seconds",
+          "session_absolute_seconds",
+          "step_up_seconds"
+        ],
+        "provenance_read_only": [
+          "updated_by",
+          "updated_at",
+          "change_reason"
+        ]
+      }
+    },
+    "AuthenticationPolicyAuditEvent": {
+      "module": "codex_web.identity",
+      "groups": {
+        "immutable_identity": [
+          "id",
+          "organization_id",
+          "workspace_id",
+          "revision"
+        ],
+        "provenance_read_only": [
+          "action",
+          "changed_fields",
+          "previous_values",
+          "proposed_values",
+          "invalidated_session_count",
+          "actor_id",
+          "reason",
+          "created_at"
+        ]
+      }
+    },
     "ConfigurationSpec": {
       "module": "codex_web.configuration",
       "groups": {

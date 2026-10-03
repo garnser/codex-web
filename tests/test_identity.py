@@ -61,6 +61,13 @@ class IdentityServiceTests(unittest.TestCase):
         self.assertEqual(actor.organization_id, "local")
         self.assertEqual(actor.workspace_id, "default")
 
+    def test_identity_state_13_migrates_authentication_policy_collections(self) -> None:
+        self.state_store.store.put("identity_state", {"schema_version": "1.3"})
+        migrated = self.state_store.load()
+        self.assertEqual(migrated.schema_version, "1.4")
+        self.assertEqual(migrated.authentication_policies, [])
+        self.assertEqual(migrated.authentication_policy_events, [])
+
     def test_session_tokens_are_hashed_rotated_revocable_and_csrf_bound(self) -> None:
         credentials = self.service.create_session(
             identity_id="local-admin",
@@ -541,6 +548,141 @@ class IdentityMiddlewareTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["identity_mode"], "enforced")
         self.assertNotIn("super-secret-custom-mode", response.text)
+
+    def test_authentication_policy_preview_update_audit_and_session_invalidation(self) -> None:
+        current = self.service.create_session(
+            identity_id="local-admin",
+            scope=TenantScope(),
+            assurance=AuthenticationAssurance.MFA,
+        )
+        other = self.service.create_session(
+            identity_id="local-admin",
+            scope=TenantScope(),
+            assurance=AuthenticationAssurance.PRIMARY,
+        )
+        change = {
+            "session_idle_seconds": 120,
+            "session_absolute_seconds": 600,
+            "step_up_seconds": 300,
+            "invalidate_existing_sessions": True,
+            "reason": "Tighten Workspace authentication policy",
+        }
+        headers = {"Authorization": f"Bearer {current.session_token}"}
+
+        with patch.dict(os.environ, {"CODEX_WEB_IDENTITY_MODE": "enforced"}):
+            with TestClient(self._app()) as client:
+                snapshot = client.get(
+                    "/api/identity/authentication-policy",
+                    headers=headers,
+                )
+                self.assertEqual(snapshot.status_code, 200)
+                self.assertEqual(snapshot.json()["revision"], 0)
+                self.assertEqual(snapshot.json()["source"], "code_default")
+
+                preview = client.post(
+                    "/api/identity/authentication-policy/preview",
+                    headers=headers,
+                    json=change,
+                )
+                self.assertEqual(preview.status_code, 200)
+                self.assertEqual(preview.json()["expected_revision"], 0)
+                self.assertEqual(preview.json()["invalidated_session_count"], 1)
+                self.assertIn("current session remains active", preview.json()["consequence"])
+
+                updated = client.put(
+                    "/api/identity/authentication-policy?expected_revision=0",
+                    headers=headers,
+                    json=change,
+                )
+                self.assertEqual(updated.status_code, 200)
+                self.assertEqual(updated.json()["item"]["revision"], 1)
+                self.assertEqual(updated.json()["invalidated_session_count"], 1)
+
+                stale = client.put(
+                    "/api/identity/authentication-policy?expected_revision=0",
+                    headers=headers,
+                    json={**change, "reason": "Stale write"},
+                )
+                self.assertEqual(stale.status_code, 409)
+
+                after = client.get(
+                    "/api/identity/authentication-policy",
+                    headers=headers,
+                ).json()
+
+        self.assertEqual(after["revision"], 1)
+        self.assertEqual(after["source"], "workspace_policy")
+        self.assertEqual(after["values"]["session_idle_seconds"], 120)
+        self.assertEqual(after["audit_events"][-1]["actor_id"], "local-admin")
+        self.assertEqual(after["audit_events"][-1]["invalidated_session_count"], 1)
+        self.assertEqual(
+            after["audit_events"][-1]["previous_values"]["session_idle_seconds"],
+            3600,
+        )
+        self.assertEqual(
+            after["audit_events"][-1]["proposed_values"]["session_idle_seconds"],
+            120,
+        )
+        invalidated = next(
+            item for item in self.service.state().sessions if item.id == other.session_id
+        )
+        self.assertIsNotNone(invalidated.revoked_at)
+        self.assertEqual(invalidated.revoke_reason, "authentication-policy-revision:1")
+        replacement = self.service.create_session(
+            identity_id="local-admin",
+            scope=TenantScope(),
+            assurance=AuthenticationAssurance.PRIMARY,
+        )
+        self.assertAlmostEqual(
+            replacement.idle_expires_at - time.time(),
+            120,
+            delta=2,
+        )
+        self.assertAlmostEqual(
+            replacement.absolute_expires_at - time.time(),
+            600,
+            delta=2,
+        )
+
+    def test_authentication_policy_mutation_requires_admin_step_up(self) -> None:
+        credentials = self.service.create_session(
+            identity_id="local-admin",
+            scope=TenantScope(),
+            assurance=AuthenticationAssurance.PRIMARY,
+        )
+        change = {
+            "session_idle_seconds": 1800,
+            "session_absolute_seconds": 21600,
+            "step_up_seconds": 600,
+            "invalidate_existing_sessions": False,
+            "reason": "Attempt without step-up",
+        }
+        with patch.dict(os.environ, {"CODEX_WEB_IDENTITY_MODE": "enforced"}):
+            with TestClient(self._app()) as client:
+                headers = {"Authorization": f"Bearer {credentials.session_token}"}
+                self.assertEqual(
+                    client.get(
+                        "/api/identity/authentication-policy",
+                        headers=headers,
+                    ).status_code,
+                    403,
+                )
+                self.assertEqual(
+                    client.post(
+                        "/api/identity/authentication-policy/preview",
+                        headers=headers,
+                        json=change,
+                    ).status_code,
+                    403,
+                )
+                self.assertEqual(
+                    client.put(
+                        "/api/identity/authentication-policy?expected_revision=0",
+                        headers=headers,
+                        json=change,
+                    ).status_code,
+                    403,
+                )
 
     def test_admin_can_update_and_revoke_membership_through_canonical_api(self) -> None:
         human = self.service.create_human_identity(

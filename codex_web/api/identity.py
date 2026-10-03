@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from codex_web.identity import (
     AuthenticationAssurance,
+    AuthenticationPolicyChange,
     HumanIdentityCreate,
     HumanUserCreate,
     Membership,
@@ -284,6 +285,156 @@ def build_identity_router(service: IdentityService) -> APIRouter:
                 },
                 "active_session_count": active_sessions,
                 "active_service_token_count": active_service_tokens,
+                "field_ownership": [
+                    {
+                        "field": "identity_mode",
+                        "disposition": "external",
+                        "owner": "deployment environment",
+                        "change_path": "Set CODEX_WEB_IDENTITY_MODE in the deployment and restart codex-web.",
+                    },
+                    {
+                        "field": "external_identity_provider_configuration",
+                        "disposition": "external",
+                        "owner": "identity provider and authentication adapter",
+                        "change_path": "Change sign-in and MFA mechanisms in the IdP/adapter administration system.",
+                    },
+                    {
+                        "field": "claims_grant_authority",
+                        "disposition": "read_only",
+                        "owner": "codex-web security invariant",
+                        "change_path": "Authority is managed separately through canonical memberships and Access policy.",
+                    },
+                    {
+                        "field": "current_assurance",
+                        "disposition": "computed",
+                        "owner": "canonical authenticated session",
+                        "change_path": "Complete the configured external step-up flow.",
+                    },
+                    {
+                        "field": "step_up_active",
+                        "disposition": "computed",
+                        "owner": "canonical authenticated session",
+                        "change_path": "Complete the configured external step-up flow.",
+                    },
+                    {
+                        "field": "session_authentication_supported",
+                        "disposition": "read_only",
+                        "owner": "codex-web identity capability",
+                        "change_path": "This capability is code-owned.",
+                    },
+                    {
+                        "field": "service_token_authentication_supported",
+                        "disposition": "read_only",
+                        "owner": "codex-web identity capability",
+                        "change_path": "This capability is code-owned.",
+                    },
+                    {
+                        "field": "external_identity",
+                        "disposition": "computed",
+                        "owner": "canonical external identity links",
+                        "change_path": "Manage provider subjects through the configured authentication adapter.",
+                    },
+                    {
+                        "field": "recovery",
+                        "disposition": "external",
+                        "owner": "identity provider and recovery adapter",
+                        "change_path": "Manage recovery factors in the owning IdP/adapter system.",
+                    },
+                    {
+                        "field": "active_session_count",
+                        "disposition": "computed",
+                        "owner": "canonical identity state",
+                        "change_path": "Use session revocation controls below.",
+                    },
+                    {
+                        "field": "active_service_token_count",
+                        "disposition": "computed",
+                        "owner": "canonical identity state",
+                        "change_path": "Create, rotate, or revoke service tokens below.",
+                    },
+                ],
+            }
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    @router.get("/api/identity/authentication-policy")
+    async def authentication_policy(request: Request) -> dict[str, Any]:
+        try:
+            actor = require_sensitive_admin(request)
+            state = service.state()
+            policy = service.authentication_policy(actor.tenant)
+            idle, absolute, step_up = service._effective_policy_values(policy)
+            events = [
+                item
+                for item in state.authentication_policy_events
+                if item.organization_id == actor.organization_id
+                and item.workspace_id == actor.workspace_id
+            ]
+            return {
+                "organization_id": actor.organization_id,
+                "workspace_id": actor.workspace_id,
+                "revision": policy.revision if policy else 0,
+                "source": "workspace_policy" if policy else "code_default",
+                "values": {
+                    "session_idle_seconds": idle,
+                    "session_absolute_seconds": absolute,
+                    "step_up_seconds": step_up,
+                },
+                "field_ownership": [
+                    {
+                        "field": "session_idle_seconds",
+                        "disposition": "local",
+                        "owner": "codex-web workspace authentication policy",
+                    },
+                    {
+                        "field": "session_absolute_seconds",
+                        "disposition": "local",
+                        "owner": "codex-web workspace authentication policy",
+                    },
+                    {
+                        "field": "step_up_seconds",
+                        "disposition": "local",
+                        "owner": "codex-web workspace authentication policy",
+                    },
+                ],
+                "updated_by": policy.updated_by if policy else None,
+                "updated_at": policy.updated_at if policy else None,
+                "change_reason": policy.change_reason if policy else None,
+                "audit_events": [
+                    item.model_dump(mode="json") for item in events[-20:]
+                ],
+            }
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    @router.post("/api/identity/authentication-policy/preview")
+    async def preview_authentication_policy(
+        payload: AuthenticationPolicyChange,
+        request: Request,
+    ) -> dict[str, object]:
+        try:
+            return service.authentication_policy_preview(
+                payload,
+                actor=require_sensitive_admin(request),
+            )
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+
+    @router.put("/api/identity/authentication-policy")
+    async def update_authentication_policy(
+        payload: AuthenticationPolicyChange,
+        request: Request,
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        try:
+            policy, invalidated = service.update_authentication_policy(
+                payload,
+                actor=require_sensitive_admin(request),
+                expected_revision=expected_revision,
+            )
+            return {
+                "item": policy.model_dump(mode="json"),
+                "invalidated_session_count": invalidated,
             }
         except IdentityError as exc:
             raise identity_http_error(exc) from exc

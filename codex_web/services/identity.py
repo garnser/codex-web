@@ -18,6 +18,9 @@ from codex_web.identity import (
     DEFAULT_WORKSPACE_ID,
     AuthenticationActor,
     AuthenticationAssurance,
+    AuthenticationPolicyAuditEvent,
+    AuthenticationPolicyChange,
+    AuthenticationPolicyRecord,
     ExternalAuthenticationResult,
     ExternalIdentityLink,
     HumanIdentity,
@@ -56,6 +59,10 @@ class TenantIsolationError(AuthorizationError):
 
 
 class TokenReplayError(AuthenticationError):
+    pass
+
+
+class IdentityConflictError(IdentityError):
     pass
 
 
@@ -170,6 +177,184 @@ class IdentityService:
 
     def state(self) -> IdentityState:
         return self.store.load()
+
+    @staticmethod
+    def _policy_from_state(
+        state: IdentityState,
+        scope: TenantScope,
+    ) -> AuthenticationPolicyRecord | None:
+        return next(
+            (
+                item
+                for item in state.authentication_policies
+                if item.organization_id == scope.organization_id
+                and item.workspace_id == scope.workspace_id
+            ),
+            None,
+        )
+
+    def authentication_policy(
+        self,
+        scope: TenantScope,
+    ) -> AuthenticationPolicyRecord | None:
+        return self._policy_from_state(self.store.load(), scope)
+
+    @staticmethod
+    def _effective_policy_values(
+        policy: AuthenticationPolicyRecord | None,
+    ) -> tuple[int, int, int]:
+        if policy is None:
+            return 3600, 43200, 900
+        return (
+            policy.session_idle_seconds,
+            policy.session_absolute_seconds,
+            policy.step_up_seconds,
+        )
+
+    def authentication_policy_preview(
+        self,
+        change: AuthenticationPolicyChange,
+        *,
+        actor: AuthenticationActor,
+    ) -> dict[str, object]:
+        self.require_admin(actor)
+        self.require_assurance(actor, AuthenticationAssurance.MFA)
+        state = self.store.load()
+        current = self._policy_from_state(state, actor.tenant)
+        idle, absolute, step_up = self._effective_policy_values(current)
+        previous = {
+            "session_idle_seconds": idle,
+            "session_absolute_seconds": absolute,
+            "step_up_seconds": step_up,
+        }
+        proposed = change.model_dump(
+            mode="json",
+            exclude={"invalidate_existing_sessions", "reason"},
+        )
+        changed_fields = [
+            name for name, value in proposed.items() if previous[name] != value
+        ]
+        active_sessions = [
+            item
+            for item in state.sessions
+            if item.organization_id == actor.organization_id
+            and item.workspace_id == actor.workspace_id
+            and item.revoked_at is None
+            and item.id != actor.session_id
+        ]
+        invalidated = len(active_sessions) if change.invalidate_existing_sessions else 0
+        return {
+            "available": True,
+            "expected_revision": current.revision if current else 0,
+            "organization_id": actor.organization_id,
+            "workspace_id": actor.workspace_id,
+            "previous": previous,
+            "proposed": proposed,
+            "changed_fields": changed_fields,
+            "active_other_session_count": len(active_sessions),
+            "invalidated_session_count": invalidated,
+            "consequence": (
+                "New sessions use the proposed idle and absolute lifetimes; active sessions adopt the idle limit when next used but retain their absolute expiry. "
+                + (
+                    f"{invalidated} other active Workspace session(s) will be revoked; the current session remains active."
+                    if change.invalidate_existing_sessions
+                    else "Existing sessions remain active."
+                )
+            ),
+            "assurance_consequence": (
+                "The step-up window controls how long verified MFA-equivalent assurance remains elevated."
+            ),
+        }
+
+    def update_authentication_policy(
+        self,
+        change: AuthenticationPolicyChange,
+        *,
+        actor: AuthenticationActor,
+        expected_revision: int,
+    ) -> tuple[AuthenticationPolicyRecord, int]:
+        self.require_admin(actor)
+        self.require_assurance(actor, AuthenticationAssurance.MFA)
+        updated: list[AuthenticationPolicyRecord] = []
+        invalidated: list[int] = []
+        now = time.time()
+
+        def apply(state: IdentityState) -> IdentityState:
+            current = self._policy_from_state(state, actor.tenant)
+            revision = current.revision if current else 0
+            if revision != expected_revision:
+                raise IdentityConflictError(
+                    "authentication policy changed; reload and preview again"
+                )
+            idle, absolute, step_up = self._effective_policy_values(current)
+            previous = {
+                "session_idle_seconds": idle,
+                "session_absolute_seconds": absolute,
+                "step_up_seconds": step_up,
+            }
+            proposed = change.model_dump(
+                mode="json",
+                exclude={"invalidate_existing_sessions", "reason"},
+            )
+            changed_fields = [
+                name for name, value in proposed.items() if previous[name] != value
+            ]
+            if not changed_fields and not change.invalidate_existing_sessions:
+                raise IdentityError("authentication policy change has no effect")
+            record = AuthenticationPolicyRecord(
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                revision=revision + 1,
+                updated_by=actor.identity_id,
+                change_reason=change.reason,
+                **proposed,
+            )
+            state.authentication_policies = [
+                item
+                for item in state.authentication_policies
+                if not (
+                    item.organization_id == actor.organization_id
+                    and item.workspace_id == actor.workspace_id
+                )
+            ]
+            state.authentication_policies.append(record)
+            revoked = 0
+            if change.invalidate_existing_sessions:
+                for index, item in enumerate(state.sessions):
+                    if (
+                        item.organization_id == actor.organization_id
+                        and item.workspace_id == actor.workspace_id
+                        and item.revoked_at is None
+                        and item.id != actor.session_id
+                    ):
+                        state.sessions[index] = item.model_copy(
+                            update={
+                                "revoked_at": now,
+                                "revoke_reason": f"authentication-policy-revision:{record.revision}",
+                            }
+                        )
+                        revoked += 1
+            state.authentication_policy_events.append(
+                AuthenticationPolicyAuditEvent(
+                    organization_id=actor.organization_id,
+                    workspace_id=actor.workspace_id,
+                    revision=record.revision,
+                    action="create" if current is None else "update",
+                    changed_fields=changed_fields,
+                    previous_values=previous,
+                    proposed_values=proposed,
+                    invalidated_session_count=revoked,
+                    actor_id=actor.identity_id,
+                    reason=change.reason,
+                    created_at=now,
+                )
+            )
+            updated.append(record)
+            invalidated.append(revoked)
+            return state
+
+        self.store.update(apply)
+        return updated[0], invalidated[0]
 
     @staticmethod
     def _active_memberships(
@@ -293,10 +478,15 @@ class IdentityService:
         identity_id: str,
         scope: TenantScope,
         assurance: AuthenticationAssurance,
-        idle_seconds: int = 3600,
-        absolute_seconds: int = 43200,
+        idle_seconds: int | None = None,
+        absolute_seconds: int | None = None,
     ) -> SessionCredentials:
         state = self.store.load()
+        policy_idle, policy_absolute, _ = self._effective_policy_values(
+            self._policy_from_state(state, scope)
+        )
+        idle_seconds = min(idle_seconds or policy_idle, policy_idle)
+        absolute_seconds = min(absolute_seconds or policy_absolute, policy_absolute)
         human = next(
             (item for item in state.humans if item.id == identity_id and item.disabled_at is None),
             None,
@@ -384,13 +574,16 @@ class IdentityService:
             session_id=matched.id,
         )
         if touch:
+            policy_idle, _, _ = self._effective_policy_values(
+                self._policy_from_state(state, scope)
+            )
             def apply(current: IdentityState) -> IdentityState:
                 for index, item in enumerate(current.sessions):
                     if item.id == matched.id and item.revoked_at is None:
                         current.sessions[index] = item.model_copy(
                             update={
                                 "last_seen_at": now,
-                                "idle_expires_at": min(now + 3600, item.absolute_expires_at),
+                                "idle_expires_at": min(now + policy_idle, item.absolute_expires_at),
                             }
                         )
                         break
@@ -412,6 +605,15 @@ class IdentityService:
                     continue
                 if item.revoked_at is not None or now >= item.absolute_expires_at:
                     raise AuthenticationError("session is revoked or expired")
+                policy_idle, _, _ = self._effective_policy_values(
+                    self._policy_from_state(
+                        state,
+                        TenantScope(
+                            organization_id=item.organization_id,
+                            workspace_id=item.workspace_id,
+                        ),
+                    )
+                )
                 incoming_hash = _hash(refresh_token)
                 if incoming_hash in item.used_refresh_hashes:
                     state.sessions[index] = item.model_copy(
@@ -428,7 +630,7 @@ class IdentityService:
                         "used_refresh_hashes": [*item.used_refresh_hashes[-15:], incoming_hash],
                         "csrf_token_hash": _hash(csrf),
                         "last_seen_at": now,
-                        "idle_expires_at": min(now + 3600, item.absolute_expires_at),
+                        "idle_expires_at": min(now + policy_idle, item.absolute_expires_at),
                         "rotation": item.rotation + 1,
                     }
                 )
@@ -487,10 +689,14 @@ class IdentityService:
         self.store.update(apply)
         return count
 
-    def step_up(self, actor: AuthenticationActor, *, duration_seconds: int = 900) -> None:
+    def step_up(self, actor: AuthenticationActor, *, duration_seconds: int | None = None) -> None:
         if actor.principal_kind != PrincipalKind.HUMAN or not actor.session_id:
             raise AuthorizationError("human session required for step-up")
         now = time.time()
+        _, _, policy_step_up = self._effective_policy_values(
+            self._policy_from_state(self.store.load(), actor.tenant)
+        )
+        duration_seconds = min(duration_seconds or policy_step_up, policy_step_up)
 
         def apply(state: IdentityState) -> IdentityState:
             for index, item in enumerate(state.sessions):
@@ -1078,4 +1284,6 @@ def identity_http_error(exc: IdentityError) -> HTTPException:
         return HTTPException(status_code=401, detail=str(exc))
     if isinstance(exc, AuthorizationError):
         return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, IdentityConflictError):
+        return HTTPException(status_code=409, detail=str(exc))
     return HTTPException(status_code=400, detail=str(exc))

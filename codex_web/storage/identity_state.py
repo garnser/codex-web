@@ -7,7 +7,7 @@ from codex_web.identity import IdentityState
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
-IDENTITY_STATE_CONTRACT = ContractSpec("identity-state", "1.3", ("1.0", "1.1", "1.2", "1.3"))
+IDENTITY_STATE_CONTRACT = ContractSpec("identity-state", "1.4", ("1.0", "1.1", "1.2", "1.3", "1.4"))
 IDENTITY_STATE_MIGRATIONS = MigrationRegistry("identity-state")
 IDENTITY_STATE_MIGRATIONS.register(
     "0.0",
@@ -15,6 +15,17 @@ IDENTITY_STATE_MIGRATIONS.register(
     lambda payload: {
         "schema_version": "1.0",
         **{key: value for key, value in payload.items() if key != "schema_version"},
+    },
+)
+
+IDENTITY_STATE_MIGRATIONS.register(
+    "1.3",
+    "1.4",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.4",
+        "authentication_policies": payload.get("authentication_policies", []),
+        "authentication_policy_events": payload.get("authentication_policy_events", []),
     },
 )
 IDENTITY_STATE_MIGRATIONS.register(
