@@ -1,4 +1,5 @@
 import { confirmAction } from './action_confirmation.js';
+import { administrationEditsPending, clearAdministrationEditors, trackAdministrationEditor } from './administration_editor_state.js';
 const ROLE_PRESENTATION = Object.freeze({
   owner: "Full organization/workspace administration and authority.",
   admin: "Administrative management within the assigned scope.",
@@ -218,10 +219,13 @@ export function renderAdministrationUsers(container, {
 } = {}) {
   if (!container) return;
   if (!context?.allowed) {
+    clearAdministrationEditors(container);
     container.innerHTML = '<div class="workspace-state workspace-state-error">Administration access is required.</div>';
     return;
   }
-  const entries = administrationUserView(context, query);
+  if (administrationEditsPending(container)) return;
+  clearAdministrationEditors(container);
+  const entries = administrationUserView(context);
   container.className = "administration-users-surface";
   container.innerHTML = `
     <section class="administration-users-toolbar">
@@ -233,8 +237,10 @@ export function renderAdministrationUsers(container, {
         <span>Search users</span>
         <input type="search" value="${esc(query)}" data-administration-user-search placeholder="Name, email or identity ID" />
       </label>
+      <button type="button" data-administration-users-refresh>Refresh</button>
     </section>
-    <div class="administration-users-message" data-administration-users-message hidden></div>
+    <div class="workspace-state" data-administration-no-matches hidden>No human users match this active Organization/Workspace scope.</div>
+    <div class="administration-users-message" data-administration-users-message role="status" hidden></div>
     ${page === "users" ? createUserSection(context) : ""}
     <section class="administration-user-list" data-administration-user-list>
       ${entries.length
@@ -252,21 +258,30 @@ export function renderAdministrationUsers(container, {
     message.textContent = value || "";
   };
 
-  container.querySelector("[data-administration-user-search]")?.addEventListener("input", (event) => {
-    renderAdministrationUsers(container, {
-      context,
-      api,
-      page,
-      query: event.target.value,
-      confirm,
-      onChanged,
-    });
-    container.querySelector("[data-administration-user-search]")?.focus();
-  });
+  const editors = new Map();
+  for (const root of container.querySelectorAll('[data-create-user], [data-membership-status="active"]')) {
+    editors.set(root, trackAdministrationEditor(root, root.matches('[data-create-user]') ? 'Create user' : `Membership ${root.dataset.membershipId}`));
+  }
+  const refresh = async () => {
+    if (administrationEditsPending(container)) {
+      setMessage('Refresh deferred. Save or discard unsaved Administration edits first.'); return;
+    }
+    await onChanged?.();
+  };
+  const filter = (value) => {
+    const matching = new Set(administrationUserView(context, value).map(entry => entry.human.id));
+    for (const card of container.querySelectorAll('[data-human-id]')) card.hidden = !matching.has(card.dataset.humanId);
+    container.querySelector('[data-administration-no-matches]').hidden = matching.size > 0 || entries.length === 0;
+  };
+  filter(query);
+  container.querySelector('[data-administration-user-search]')?.addEventListener('input', event => filter(event.target.value));
+  container.querySelector('[data-administration-users-refresh]').addEventListener('click', refresh);
 
   container.querySelector("[data-create-user]")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
+    if (form.dataset.saving) return;
+    const editor = editors.get(form), ticket = editor.submission();
     const displayName = String(form.elements.display_name?.value || "").trim();
     const email = String(form.elements.email?.value || "").trim();
     const roles = [...(form.elements.roles?.selectedOptions || [])].map((option) => option.value);
@@ -283,6 +298,7 @@ export function renderAdministrationUsers(container, {
       return;
     }
     submit.disabled = true;
+    form.dataset.saving = 'true';
     setMessage("Creating canonical user and membership…");
     try {
       await api("/api/identity/users", {
@@ -295,22 +311,30 @@ export function renderAdministrationUsers(container, {
           organization_wide: organizationWide,
         }),
       });
+      if (!ticket.current()) return;
+      ticket.saved();
       setMessage("User created with its initial membership.", "success");
-      form.reset();
-      for (const option of form.elements.roles?.options || []) {
-        option.selected = option.value === "member";
+      if (!editor.dirty()) {
+        form.reset();
+        for (const option of form.elements.roles?.options || []) option.selected = option.value === "member";
+        editor.reset();
       }
-      await onChanged?.();
+      if (administrationEditsPending(container)) setMessage('User created. Unsaved edits remain; refresh is deferred.', 'success');
+      else await onChanged?.();
     } catch (error) {
-      setMessage(errorMessage(error), "error");
+      if (ticket.current()) setMessage(errorMessage(error), "error");
     } finally {
       submit.disabled = false;
+      delete form.dataset.saving;
     }
   });
 
   container.querySelectorAll("[data-save-membership]").forEach((button) => {
     button.addEventListener("click", async () => {
+      if (button.disabled) return;
       const row = button.closest("[data-membership-id]");
+      if (row.dataset.saving) return;
+      const ticket = editors.get(row).submission();
       const membershipId = row?.dataset.membershipId;
       const roles = [...(row?.querySelector("[data-membership-roles]")?.selectedOptions || [])]
         .map((option) => option.value);
@@ -319,40 +343,57 @@ export function renderAdministrationUsers(container, {
         return;
       }
       button.disabled = true;
+      row.dataset.saving = 'true';
       setMessage("Saving canonical roles…");
       try {
         await api(`/api/identity/memberships/${encodeURIComponent(membershipId)}`, {
           method: "PATCH",
           body: JSON.stringify({ roles }),
         });
+        if (!ticket.current()) return;
+        ticket.saved();
         setMessage("Membership roles updated.", "success");
-        await onChanged?.();
+        if (administrationEditsPending(container)) setMessage('Membership roles updated. Unsaved edits remain; refresh is deferred.', 'success');
+        else await onChanged?.();
       } catch (error) {
-        setMessage(errorMessage(error), "error");
+        if (ticket.current()) setMessage(errorMessage(error), "error");
       } finally {
         button.disabled = false;
+        delete row.dataset.saving;
       }
     });
   });
 
   container.querySelectorAll("[data-revoke-membership]").forEach((button) => {
     button.addEventListener("click", async () => {
+      if (button.disabled) return;
       const row = button.closest("[data-membership-id]");
+      if (row.dataset.saving) return;
+      const editor = editors.get(row), ticket = editor.submission();
       const membershipId = row?.dataset.membershipId;
       if (!membershipId) return;
+      if (editor.dirty()) { setMessage('Save or discard this membership’s role edits before revoking.'); return; }
       if (!await confirm(membershipId)) return;
+      if (!ticket.current() || row.dataset.saving) return;
       button.disabled = true;
+      row.dataset.saving = 'true';
       setMessage("Revoking membership…");
       try {
         await api(`/api/identity/memberships/${encodeURIComponent(membershipId)}`, {
           method: "DELETE",
         });
+        if (!ticket.current()) return;
+        row.dataset.membershipStatus = 'revoked';
+        const badge = row.querySelector('.product-status-badge');
+        badge.textContent = 'revoked'; badge.className = 'product-status-badge status-neutral';
+        for (const control of row.querySelectorAll('button:not([data-administration-discard]),select')) control.disabled = true;
         setMessage("Membership revoked. Its direct authority is no longer active.", "success");
-        await onChanged?.();
+        if (!administrationEditsPending(container)) await onChanged?.();
       } catch (error) {
-        setMessage(errorMessage(error), "error");
+        if (ticket.current()) setMessage(errorMessage(error), "error");
       } finally {
-        button.disabled = false;
+        delete row.dataset.saving;
+        if (row.dataset.membershipStatus !== 'revoked') button.disabled = false;
       }
     });
   });

@@ -1,4 +1,5 @@
 import { confirmAction } from './action_confirmation.js';
+import { administrationEditsPending, clearAdministrationEditors, trackAdministrationEditor } from './administration_editor_state.js';
 function esc(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -123,9 +124,12 @@ export function renderAdministrationAuthentication(container, {
 } = {}) {
   if (!container) return;
   if (!context?.allowed) {
+    clearAdministrationEditors(container);
     container.innerHTML = '<div class="workspace-state workspace-state-error">Administration access is required.</div>';
     return;
   }
+  if (administrationEditsPending(container)) return;
+  clearAdministrationEditors(container);
 
   const services = (context.identity?.services || [])
     .filter((item) => item.disabled_at == null)
@@ -142,7 +146,7 @@ export function renderAdministrationAuthentication(container, {
         <button type="button" data-auth-revoke-others>Revoke my other sessions</button>
       </div>
     </section>
-    <div class="administration-users-message" data-auth-message hidden></div>
+    <div class="administration-users-message" data-auth-message role="status" hidden></div>
 
     <section>
       <h3>Active sessions</h3>
@@ -197,6 +201,9 @@ export function renderAdministrationAuthentication(container, {
   const revokeOthers = container.querySelector("[data-auth-revoke-others]");
   const createdSecret = container.querySelector("[data-auth-created-secret]");
   const authStatus = container.querySelector("[data-auth-status]");
+  // Snapshot request metadata only; the one-time credential output is outside this root.
+  const editor = trackAdministrationEditor(container.querySelector('.administration-user-create-fields'), 'Service token request');
+  let tokenMutationPending = false;
 
   const loadAuthenticationStatus = async () => {
     try {
@@ -263,6 +270,8 @@ export function renderAdministrationAuthentication(container, {
   });
 
   createButton.addEventListener("click", async () => {
+    if (tokenMutationPending || createButton.disabled) return;
+    const ticket = editor.submission(), serviceId = service.value;
     if (!service.value) {
       setMessage("Select a service identity before creating a token.", "error");
       return;
@@ -277,19 +286,22 @@ export function renderAdministrationAuthentication(container, {
       return;
     }
     createButton.disabled = true;
+    tokenMutationPending = true;
     createdSecret.hidden = true;
     createdSecret.textContent = "";
     try {
       const result = await api("/api/identity/service-tokens", {
         method: "POST",
         body: JSON.stringify({
-          service_identity_id: service.value,
+          service_identity_id: serviceId,
           organization_id: context.organizationId,
           workspace_id: context.workspaceId,
           scopes: scopeValues,
           expires_at: expiresAt,
         }),
       });
+      if (!ticket.current()) return;
+      ticket.saved();
       createdSecret.hidden = false;
       createdSecret.innerHTML = `
         <div class="workspace-state workspace-state-warning" role="status">
@@ -301,7 +313,7 @@ export function renderAdministrationAuthentication(container, {
       context.identity.service_tokens = [
         {
           id: result.token_id,
-          service_identity_id: service.value,
+          service_identity_id: serviceId,
           organization_id: context.organizationId,
           workspace_id: context.workspaceId,
           scopes: scopeValues,
@@ -313,10 +325,11 @@ export function renderAdministrationAuthentication(container, {
         ...(context.identity.service_tokens || []),
       ];
       tokens.innerHTML = tokenRows(context);
-      setMessage("Service token created.");
-      createButton.disabled = false;
+      setMessage(editor.dirty() ? 'Service token created. Newer request edits remain unsaved.' : 'Service token created.');
     } catch (error) {
-      setMessage(error?.message || "Unable to create service token.", "error");
+      if (ticket.current()) setMessage(error?.message || "Unable to create service token.", "error");
+    } finally {
+      tokenMutationPending = false;
       createButton.disabled = false;
     }
   });
@@ -324,13 +337,18 @@ export function renderAdministrationAuthentication(container, {
   tokens.addEventListener("click", async (event) => {
     const rotateButton = event.target.closest("[data-auth-rotate-token]");
     if (rotateButton) {
+      if (tokenMutationPending || rotateButton.disabled) return;
+      const ticket = editor.submission();
       const tokenId = rotateButton.dataset.authRotateToken;
       if (!await confirmAction({ action: 'Rotate service token', target: tokenId, risk: 'high', consequence: 'The previous credential stops working immediately. Update every consumer with the replacement.', recovery: 'The replacement is shown once; rotation does not recover the previous credential.', trigger: rotateButton })) return;
+      if (!ticket.current() || tokenMutationPending) return;
+      tokenMutationPending = true;
       rotateButton.disabled = true;
       createdSecret.hidden = true;
       createdSecret.textContent = "";
       try {
         const result = await api(`/api/identity/service-tokens/${encodeURIComponent(tokenId)}/rotate`, { method: "POST" });
+        if (!ticket.current()) return;
         const rotatedAt = Date.now() / 1000;
         context.identity.service_tokens = (context.identity.service_tokens || []).map((item) => (
           item.id === tokenId
@@ -354,7 +372,9 @@ export function renderAdministrationAuthentication(container, {
         `;
         setMessage("Service token rotated.");
       } catch (error) {
-        setMessage(error?.message || "Unable to rotate service token.", "error");
+        if (ticket.current()) setMessage(error?.message || "Unable to rotate service token.", "error");
+      } finally {
+        tokenMutationPending = false;
         rotateButton.disabled = false;
       }
       return;
