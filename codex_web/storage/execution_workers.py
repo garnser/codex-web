@@ -3,7 +3,12 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from codex_web.compatibility import MigrationRegistry
-from codex_web.execution_workers import EXECUTION_WORKER_CONTRACT, ExecutionWorkerState
+from codex_web.execution_workers import (
+    EXECUTION_WORKER_CONTRACT,
+    ExecutionAssignment,
+    ExecutionWorker,
+    ExecutionWorkerState,
+)
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
@@ -178,6 +183,30 @@ class ExecutionWorkerStore:
 
     def load(self) -> ExecutionWorkerState:
         return self._decode(self.store.get(self.namespace))
+
+    def assignment(self, assignment_id: str) -> ExecutionAssignment | None:
+        payload = self.store.document_array_item(
+            self.namespace,
+            "assignments",
+            assignment_id,
+        )
+        return (
+            ExecutionAssignment.model_validate(payload)
+            if payload is not None
+            else None
+        )
+
+    def worker(self, worker_id: str) -> ExecutionWorker | None:
+        payload = self.store.document_array_item(
+            self.namespace,
+            "workers",
+            worker_id,
+        )
+        return (
+            ExecutionWorker.model_validate(payload)
+            if payload is not None
+            else None
+        )
 
     def update(
         self,

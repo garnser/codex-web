@@ -100,16 +100,12 @@ class LocalExecutionWorkerRuntime:
         return tuple(mounts)
 
     def _pending_assignment(self, assignment_id: str) -> ExecutionAssignment:
-        item = next(
-            (
-                assignment
-                for assignment in self.worker_service.store.load().assignments
-                if assignment.id == assignment_id
-                and assignment.organization_id == self.control_actor.organization_id
-                and assignment.workspace_id == self.control_actor.workspace_id
-            ),
-            None,
-        )
+        item = self.worker_service.store.assignment(assignment_id)
+        if item is not None and (
+            item.organization_id != self.control_actor.organization_id
+            or item.workspace_id != self.control_actor.workspace_id
+        ):
+            item = None
         if item is None:
             raise LocalExecutionWorkerRuntimeError("execution assignment not found")
         return item

@@ -502,6 +502,35 @@ class SQLiteStateStore:
                 )
             return None
 
+    def document_array_item(
+        self,
+        namespace: str,
+        array_name: str,
+        item_id: str,
+    ) -> Any | None:
+        """Read one identified object from a JSON document array.
+
+        SQLite performs the document scan in native code and Python decodes
+        only the matching item. This avoids holding the interpreter lock while
+        decoding a large catalog for point lookups.
+        """
+
+        if not array_name or not array_name.replace("_", "").isalnum():
+            raise ValueError("array_name must be an identifier")
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT item.value
+                FROM state_documents AS document,
+                     json_each(document.payload, ?) AS item
+                WHERE document.namespace = ?
+                  AND json_extract(item.value, '$.id') = ?
+                LIMIT 1
+                """,
+                (f"$.{array_name}", namespace, str(item_id)),
+            ).fetchone()
+        return self._decode(row)
+
     def put(self, namespace: str, payload: Any) -> None:
         if (
             isinstance(payload, dict)

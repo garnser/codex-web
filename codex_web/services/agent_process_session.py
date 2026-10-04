@@ -177,16 +177,13 @@ class AssignmentBoundAgentProcessSession:
         )
 
     def _current_worker(self):
-        worker = next(
-            (
-                item
-                for item in self.local_worker.worker_service.store.load().workers
-                if item.id == self.worker_id
-                and item.organization_id == self.local_worker.worker_actor.organization_id
-                and item.workspace_id == self.local_worker.worker_actor.workspace_id
-            ),
-            None,
-        )
+        worker = self.local_worker.worker_service.store.worker(self.worker_id)
+        if worker is not None and (
+            worker.organization_id
+            != self.local_worker.worker_actor.organization_id
+            or worker.workspace_id != self.local_worker.worker_actor.workspace_id
+        ):
+            worker = None
         if worker is None:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime worker no longer exists"
