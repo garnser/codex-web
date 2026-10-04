@@ -20,8 +20,8 @@ from codex_web.resources import RepositoryExecutionScope, RepositoryExecutionTar
 
 EXECUTION_WORKER_CONTRACT = ContractSpec(
     "execution-worker-state",
-    "1.8",
-    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8"),
+    "1.9",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9"),
 )
 
 DEFAULT_SUPPORTED_SANDBOX_PROFILES: tuple[SandboxMode, ...] = (
@@ -275,6 +275,8 @@ class ExecutionAssignmentCreate(BaseModel):
     execution_profile_id: str | None = None
     execution_profile_definition: DefinitionReference | None = None
     agent_profile: AgentProfileExecutionBinding | None = None
+    skill_refs: tuple[DefinitionReference, ...] = ()
+    skill_assignment_sources: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def normalize(self) -> "ExecutionAssignmentCreate":
@@ -287,6 +289,9 @@ class ExecutionAssignmentCreate(BaseModel):
             sorted(set(self.required_capabilities), key=lambda value: value.value)
         )
         self.secret_refs = tuple(dict.fromkeys(item for item in self.secret_refs if item))
+        self.skill_refs = tuple(dict.fromkeys(self.skill_refs))
+        if set(self.skill_assignment_sources) - {ref.record_id for ref in self.skill_refs}:
+            raise ValueError("Skill assignment sources must reference pinned Skill records")
         if not self.resource_ids and not self.execution_profile_id:
             raise ValueError(
                 "resource-free assignment requires an explicit execution profile"
@@ -403,6 +408,8 @@ class ExecutionAssignment(BaseModel):
     execution_profile_id: str | None = None
     execution_profile_definition: DefinitionReference | None = None
     agent_profile: AgentProfileExecutionBinding | None = None
+    skill_refs: tuple[DefinitionReference, ...] = ()
+    skill_assignment_sources: dict[str, str] = Field(default_factory=dict)
     status: AssignmentStatus = AssignmentStatus.PENDING
     fence: int = Field(default=0, ge=0)
     lease: AssignmentLease | None = None

@@ -593,6 +593,37 @@ class TurnExecutionBindingTests(unittest.TestCase):
         self.assertEqual(self.workspaces.list(self.actor), [])
         self.assertEqual(self.workers.list_assignments(self.actor), [])
 
+    def test_thread_skill_reference_is_pinned_on_assignment_with_origin(self) -> None:
+        self._publish_secret()
+        self.service.skill_worker_requirements = lambda _refs, _project: ()
+        reference = DefinitionReference(
+            definition_id="review",
+            kind="agent.skill",
+            revision=2,
+            record_id="skill-review-r2",
+            checksum="b" * 64,
+            definition_schema_version="1.0",
+        )
+
+        binding = self.service.prepare(
+            thread_id="thread-explicit-skill",
+            execution_id="turn-explicit-skill",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            skill_refs=(reference,),
+        )
+
+        assignment = next(
+            item for item in self.workers.list_assignments(self.actor)
+            if item.id == binding.assignment_id
+        )
+        self.assertEqual(assignment.skill_refs, (reference,))
+        self.assertEqual(
+            assignment.skill_assignment_sources,
+            {reference.record_id: "thread_explicit"},
+        )
+
     def test_missing_command_execution_blocks_before_workspace_creation(self) -> None:
         self._publish_secret()
         self.workers.ensure_local_worker(

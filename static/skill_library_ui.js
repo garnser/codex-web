@@ -6,6 +6,7 @@ import { request } from "./api_client.js";
 const state = {
   items: [],
   profiles: [],
+  sources: [],
   selected: null,
   revisions: [],
   usage: [],
@@ -62,6 +63,8 @@ function cardMarkup() {
           <option value="active">Active</option>
           <option value="archived">Archived</option>
         </select>
+        <input data-skill-category aria-label="Filter category" placeholder="Category">
+        <select data-skill-source aria-label="Filter source"><option value="">All sources</option></select>
         <button class="ghost-button" type="button" data-skill-refresh>Refresh</button>
         <button class="primary-button" type="button" data-skill-new>New Skill</button>
       </div>
@@ -95,6 +98,28 @@ function cardMarkup() {
           </section>
         </div>
       </details>
+      <details class="skill-import" data-skill-sources>
+        <summary>Skill sources</summary>
+        <div class="skill-import-grid">
+          <section>
+            <h3>Add catalog source</h3>
+            <label>Source ID <input data-source-id placeholder="engineering-catalog"></label>
+            <label>Name <input data-source-name></label>
+            <label>Location <input data-source-location placeholder="https://github.com/owner/repository"></label>
+            <label>Trust <select data-source-trust><option value="pending">Pending review</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select></label>
+            <button class="primary-button" type="button" data-source-create>Add source</button>
+            <div class="form-result" data-source-result hidden></div>
+          </section>
+          <section>
+            <h3>Synchronize bounded catalog</h3>
+            <label>Source <select data-sync-source><option value="">Select source…</option></select></label>
+            <label>Source revision <input data-sync-revision placeholder="immutable commit or version"></label>
+            <label>Catalog entries <textarea data-sync-catalog rows="8" spellcheck="false" placeholder='[{"upstream_id":"skills/review","manifest":{...}}]'></textarea></label>
+            <button class="primary-button" type="button" data-source-sync>Synchronize to drafts</button>
+            <pre data-sync-result>Synchronization never publishes imported instructions automatically.</pre>
+          </section>
+        </div>
+      </details>
     </div>`;
 }
 
@@ -115,9 +140,13 @@ async function loadSkills(root) {
   try {
     const search = query(root, "[data-skill-search]")?.value.trim() || "";
     const lifecycle = query(root, "[data-skill-lifecycle]")?.value || "";
+    const category = query(root, "[data-skill-category]")?.value.trim() || "";
+    const source = query(root, "[data-skill-source]")?.value || "";
     const params = new URLSearchParams({ include_drafts: "true" });
     if (search) params.set("search", search);
     if (lifecycle) params.set("lifecycle", lifecycle);
+    if (category) params.set("category", category);
+    if (source) params.set("source_id", source);
     const result = await request(`/api/skills?${params.toString()}`);
     state.items = result?.items || [];
     if (state.selected && !skillEditorOpen()) {
@@ -131,6 +160,16 @@ async function loadSkills(root) {
     state.loading = false;
   }
   renderList(root);
+}
+
+async function loadSources(root) {
+  try {
+    const result = await request("/api/skill-sources");
+    state.sources = result?.items || [];
+  } catch { state.sources = []; }
+  const options = state.sources.map((item)=>`<option value="${esc(item.source_id)}">${esc(item.name)} · ${esc(item.trust)}</option>`).join("");
+  query(root, "[data-skill-source]").innerHTML = `<option value="">All sources</option>${options}`;
+  query(root, "[data-sync-source]").innerHTML = `<option value="">Select source…</option>${options}`;
 }
 
 async function loadProfiles() {
@@ -239,6 +278,7 @@ function editorMarkup(item) {
         <label>Name <input data-field="name" value="${esc(skill.name || "")}" required></label>
         <label class="skill-wide">Description <textarea data-field="description" rows="2">${esc(skill.description || "")}</textarea></label>
         <label class="skill-wide">Instructions <textarea data-field="instructions" rows="7" required>${esc(skill.instructions || "")}</textarea></label>
+        <label>Categories <input data-field="categories" value="${esc((skill.categories || []).join(", "))}"></label>
         <label>Applicability tags <input data-field="applicability" value="${esc((skill.applicability_tags || []).join(", "))}"></label>
         <label>Capability tags <input data-field="capability" value="${esc((skill.capability_tags || []).join(", "))}"></label>
         <label>Provider capabilities <input data-field="providerCaps" value="${esc((skill.required_provider_capabilities || []).join(", "))}"></label>
@@ -292,6 +332,10 @@ function renderDetail(root) {
           <dt>Created by</dt><dd>${esc(item.createdBy || "—")}</dd>
           <dt>Published by</dt><dd>${esc(item.publishedBy || "—")}</dd>
           <dt>Source</dt><dd>${esc(item.skill?.provenance?.source_type || "manual")} · ${esc(item.skill?.provenance?.source_ref || "—")}</dd>
+          <dt>Source revision</dt><dd>${esc(item.skill?.provenance?.source_revision || "—")}</dd>
+          <dt>Upstream</dt><dd>${esc(item.skill?.provenance?.upstream_id || "—")}</dd>
+          <dt>Origin</dt><dd>${esc(item.skill?.provenance?.origin || "local")}</dd>
+          <dt>Categories</dt><dd>${esc((item.skill?.categories || []).join(", ") || "—")}</dd>
         </dl>
       </section>
       <section class="skill-wide"><h4>Assets & security classification</h4>${assetRows(item)}</section>
@@ -341,6 +385,7 @@ function editorPayload(form, isNew) {
     name: formValue(form, "name").trim(),
     description: formValue(form, "description"),
     instructions: formValue(form, "instructions"),
+    categories: csv(formValue(form, "categories")),
     applicability_tags: csv(formValue(form, "applicability")),
     capability_tags: csv(formValue(form, "capability")),
     assets,
@@ -353,6 +398,11 @@ function editorPayload(form, isNew) {
       source_ref: formValue(form, "sourceRef").trim() || null,
       evidence_ids: state.selected?.skill?.provenance?.evidence_ids || [],
       imported_at: state.selected?.skill?.provenance?.imported_at || null,
+      source_id: state.selected?.skill?.provenance?.source_id || null,
+      upstream_id: state.selected?.skill?.provenance?.upstream_id || null,
+      source_revision: state.selected?.skill?.provenance?.source_revision || null,
+      upstream_digest: state.selected?.skill?.provenance?.upstream_digest || null,
+      origin: state.selected?.skill?.provenance?.origin || "local",
     },
   };
   if (isNew) {
@@ -544,6 +594,36 @@ function bindImport(root) {
   });
 }
 
+function bindSources(root) {
+  query(root, "[data-source-create]").addEventListener("click", async () => {
+    const result = query(root, "[data-source-result]");
+    try {
+      await request("/api/skill-sources", { method: "POST", body: JSON.stringify({
+        source_id: query(root, "[data-source-id]").value.trim(),
+        name: query(root, "[data-source-name]").value.trim(),
+        source_type: "catalog_bundle",
+        location: query(root, "[data-source-location]").value.trim(),
+        trust: query(root, "[data-source-trust]").value,
+      }) });
+      result.hidden = false;
+      result.textContent = "Source saved. Imported content still requires review and publication.";
+      await loadSources(root);
+    } catch (error) { result.hidden = false; result.textContent = errorText(error); }
+  });
+  query(root, "[data-source-sync]").addEventListener("click", async () => {
+    const result = query(root, "[data-sync-result]");
+    try {
+      const sourceId = query(root, "[data-sync-source]").value;
+      const entries = JSON.parse(query(root, "[data-sync-catalog]").value || "[]");
+      const response = await request(`/api/skill-sources/${encodeURIComponent(sourceId)}/sync`, { method: "POST", body: JSON.stringify({
+        source_revision: query(root, "[data-sync-revision]").value.trim(), entries,
+      }) });
+      result.textContent = `${response.count} catalog entries reconciled as drafts. Publication remains separate.`;
+      await Promise.all([loadSources(root), loadSkills(root)]);
+    } catch (error) { result.textContent = errorText(error); }
+  });
+}
+
 async function install() {
   const root = installCard();
   if (!root) return;
@@ -555,8 +635,13 @@ async function install() {
     timer = setTimeout(() => loadSkills(root), 220);
   });
   query(root, "[data-skill-lifecycle]").addEventListener("change", () => loadSkills(root));
+  query(root, "[data-skill-category]").addEventListener("input", () => {
+    clearTimeout(timer); timer = setTimeout(() => loadSkills(root), 220);
+  });
+  query(root, "[data-skill-source]").addEventListener("change", () => loadSkills(root));
   bindImport(root);
-  await Promise.all([loadProfiles(), loadSkills(root)]);
+  bindSources(root);
+  await Promise.all([loadProfiles(), loadSources(root), loadSkills(root)]);
   const params = new URLSearchParams(location.search);
   const selected = params.get("skill_id");
   if (selected) {

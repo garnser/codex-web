@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from codex_web.api.identity import request_actor
 from codex_web.services.definitions import (
@@ -29,6 +29,9 @@ from codex_web.skills import (
     SkillUpdate,
     SkillCreate,
 )
+from codex_web.skill_catalog import ThreadSkillAssignmentsUpdate
+from codex_web.api.thread_scope import thread_scope_dependency
+from codex_web.services.thread_scope import ThreadScopeService
 
 
 def _error(exc: Exception) -> HTTPException:
@@ -74,20 +77,33 @@ def build_skills_router(service: SkillService) -> APIRouter:
         request: Request,
         search: str | None = None,
         tag: str | None = None,
+        category: str | None = None,
+        source_id: str | None = None,
         owner_identity_id: str | None = None,
         lifecycle: SkillLifecycle | None = None,
         include_drafts: bool = True,
+        limit: int = 100,
+        cursor: int = 0,
     ) -> dict[str, Any]:
         try:
-            return {
-                "items": service.list(
+            limit = max(1, min(limit, 200))
+            cursor = max(0, cursor)
+            items = service.list(
                     actor=request_actor(request),
                     search=search,
                     tag=tag,
+                    category=category,
+                    source_id=source_id,
                     owner_identity_id=owner_identity_id,
                     lifecycle=lifecycle,
                     include_drafts=include_drafts,
                 )
+            page = items[cursor:cursor + limit]
+            return {
+                "items": page,
+                "count": len(items),
+                "nextCursor": cursor + limit if cursor + limit < len(items) else None,
+                "categories": sorted({category for item in items for category in item["skill"].get("categories", [])}),
             }
         except Exception as exc:
             raise _error(exc) from exc
@@ -323,6 +339,32 @@ def build_skills_router(service: SkillService) -> APIRouter:
                     actor=request_actor(request),
                 )
             }
+        except Exception as exc:
+            raise _error(exc) from exc
+
+    return router
+
+
+def build_thread_skills_router(service: SkillService, scope: ThreadScopeService) -> APIRouter:
+    router = APIRouter(tags=["skills"], dependencies=[Depends(thread_scope_dependency(scope))])
+
+    @router.get("/api/threads/{thread_id}/skills")
+    async def get_thread_skills(thread_id: str, request: Request) -> dict[str, Any]:
+        try:
+            return service.thread_assignments(thread_id, actor=request_actor(request))
+        except Exception as exc:
+            raise _error(exc) from exc
+
+    @router.put("/api/threads/{thread_id}/skills")
+    async def update_thread_skills(
+        thread_id: str,
+        payload: ThreadSkillAssignmentsUpdate,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            return service.set_thread_assignments(
+                thread_id, payload.skill_refs, actor=request_actor(request)
+            )
         except Exception as exc:
             raise _error(exc) from exc
 

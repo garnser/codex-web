@@ -17,6 +17,7 @@ import{createThreadRoute}from"./thread_route.js";
 import{reconcileSteeringFailure}from"./queue_steering.js";
 import*as rtui from"./repository_target_ui.js";
 import*as tsui from"./thread_settings_ui.js";
+import*as tskills from"./thread_skills_ui.js";
 import{normalizeUsageResources,renderUsageResources}from"./usage_resources.js";
 
 const state={
@@ -2178,6 +2179,7 @@ $("theme-toggle").addEventListener("click", () => {
   applyTheme(currentTheme() === "dark" ? "light" : "dark");
 });
 tsui.install({byId:$,activeThreadId:()=>state.threadId,updateThread:updateThreadRunSettings,persistDefaults:persistRunSettings,defaultProfileId:ep.defaultId,renderProfile:(id)=>ep.render(id,escapeHtml),renderRepositories:renderRepositoryTargets});
+tskills.install({byId:$,activeThreadId:()=>state.threadId});
 $("developer-panel").addEventListener("toggle", () => {
   if (!developerPanelOpen()) return;
   renderCommunicationLog();

@@ -171,6 +171,14 @@ API_DOMAINS: dict[str, ApiDomainPolicy] = {
         read_access=ApiAccessMode.ADMIN,
         write_access=ApiAccessMode.ADMIN,
     ),
+    "skill-sources": ApiDomainPolicy(
+        write_access=ApiAccessMode.ADMIN,
+        write_assurance=AuthenticationAssurance.MFA,
+    ),
+    "skills": ApiDomainPolicy(
+        write_access=ApiAccessMode.ADMIN,
+        write_assurance=AuthenticationAssurance.MFA,
+    ),
     "status": ApiDomainPolicy(),
     "task-sources": ApiDomainPolicy(),
     "thread-settings": ApiDomainPolicy(),

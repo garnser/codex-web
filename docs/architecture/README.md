@@ -99,6 +99,7 @@ If architecture changes materially while implementing an issue, update the relev
 - [GitLab task-source adapter](gitlab-task-source-adapter.md) — GitLab issue identity, discovery/read/event normalization, label-based canonical mapping, and declared write capabilities.
 - [Runtime supervision](runtime-supervision.md)
 - [Definition Registry](definition-registry.md) — versioned database-backed mutable definitions, lifecycle, compatibility, exact runtime attribution, bootstrap and recovery.
+- [Skill Catalog and assignment](skill-catalog.md) — external source normalization, review-only imports, extensible taxonomy, exact Thread assignment and execution provenance.
 - [Typed configuration and feature rollout](configuration.md) — deterministic scope precedence, versioned publication/rollback, feature targeting, reference values, and configuration-vs-policy/definition boundaries.
 - [Input plugin composition pipeline](input-plugin-pipeline.md) — deterministic pluggable request composition, field security classes, bounded provenance, and model-gateway integration.
 - [Observability, correlation, and service health](observability.md) — correlation/causation propagation, secret-safe telemetry, bounded metrics, tracing seams, and deterministic readiness/autonomy health.
