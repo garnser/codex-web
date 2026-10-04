@@ -36,6 +36,15 @@ On shutdown it:
 
 Recovery scheduling is idempotent inside the configured cooldown window. Continuity checks capture the expected owner/handoff identity when scheduled and abort if the canonical work item changes before the check runs.
 
+Owner-work supervision also treats canonical actionable ownership as a durable
+wake condition. For each configured agent owner, an idle lane with no active or
+queued turn receives at most one exact canonical Work Item per bounded dispatch
+window. Active, queued, recently active, pending-handoff, closed, and
+non-actionable lanes are skipped deterministically. Runtime readiness fails when
+autonomy is disabled or a required autonomy task has stopped, so an idle
+autonomous deployment cannot report healthy while its supervision plane is
+inactive.
+
 ### Active-turn restart recovery
 
 An `ActiveThreadTurn` is durable evidence that a turn was in progress, not

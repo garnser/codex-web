@@ -157,6 +157,77 @@ class RuntimeHealthServiceTests(unittest.TestCase):
         self.assertEqual(snapshot["recentDeliveryFailures"], 0)
         self.assertEqual(snapshot["gitlabSyncConsecutiveFailures"], 0)
 
+    def test_disabled_autonomy_fails_runtime_readiness(self) -> None:
+        ready = asyncio.Event()
+        ready.set()
+        codex = SimpleNamespace(
+            proc=SimpleNamespace(pid=42, poll=lambda: None),
+            ready=ready,
+        )
+        bot_runtime = SimpleNamespace(fingerprints={}, tasks={})
+
+        with tempfile.TemporaryDirectory() as directory:
+            service = RuntimeHealthService(
+                codex=codex,
+                bot_runtime=bot_runtime,
+                telemetry=BotRuntimeTelemetry(
+                    events_file=Path(directory) / "events.jsonl",
+                ),
+                load_bindings=lambda: [],
+                terminal_failures={},
+                terminal_recovery_tasks={},
+                terminal_failure_window_seconds=lambda: 300.0,
+                load_queues=lambda: {},
+                slack_provider_health=lambda: {},
+                gitlab_sync_status=lambda: {},
+                autonomy_health=lambda: {
+                    "enabled": False,
+                    "stoppedTasks": ["owner-work"],
+                },
+            )
+
+            snapshot = service.refresh_sync()
+
+        self.assertFalse(snapshot["ok"])
+        self.assertIn("autonomy is disabled", snapshot["problems"])
+
+    def test_stopped_autonomy_task_fails_runtime_readiness(self) -> None:
+        ready = asyncio.Event()
+        ready.set()
+        codex = SimpleNamespace(
+            proc=SimpleNamespace(pid=42, poll=lambda: None),
+            ready=ready,
+        )
+        bot_runtime = SimpleNamespace(fingerprints={}, tasks={})
+
+        with tempfile.TemporaryDirectory() as directory:
+            service = RuntimeHealthService(
+                codex=codex,
+                bot_runtime=bot_runtime,
+                telemetry=BotRuntimeTelemetry(
+                    events_file=Path(directory) / "events.jsonl",
+                ),
+                load_bindings=lambda: [],
+                terminal_failures={},
+                terminal_recovery_tasks={},
+                terminal_failure_window_seconds=lambda: 300.0,
+                load_queues=lambda: {},
+                slack_provider_health=lambda: {},
+                gitlab_sync_status=lambda: {},
+                autonomy_health=lambda: {
+                    "enabled": True,
+                    "stoppedTasks": ["work-item-sla"],
+                },
+            )
+
+            snapshot = service.refresh_sync()
+
+        self.assertFalse(snapshot["ok"])
+        self.assertIn(
+            "autonomy task stopped: work-item-sla",
+            snapshot["problems"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

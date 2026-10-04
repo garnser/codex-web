@@ -75,6 +75,7 @@ class RuntimeHealthService:
         execution_readiness: Callable[[], dict[str, Any]] | None = None,
         count_active_turns: Callable[[], int] | None = None,
         state_store_status: Callable[[], dict[str, Any]] | None = None,
+        autonomy_health: Callable[[], dict[str, Any]] | None = None,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.codex = codex
@@ -92,6 +93,7 @@ class RuntimeHealthService:
         self.execution_readiness = execution_readiness or (lambda: {})
         self.count_active_turns = count_active_turns or (lambda: 0)
         self.state_store_status = state_store_status or (lambda: {})
+        self.autonomy_health = autonomy_health or (lambda: {})
         self.event_sink = event_sink
 
         self._snapshot_lock = threading.Lock()
@@ -421,6 +423,20 @@ class RuntimeHealthService:
                 f"GitLab sync failed {failures} consecutive times"
             )
 
+        autonomy = self._profile(
+            "autonomy.health",
+            self.autonomy_health,
+            refresh_id=refresh_id,
+        )
+        if autonomy:
+            if not autonomy.get("enabled", False):
+                problems.append("autonomy is disabled")
+            stopped = list(autonomy.get("stoppedTasks") or [])
+            if autonomy.get("enabled", False) and stopped:
+                problems.append(
+                    "autonomy task stopped: " + ", ".join(stopped)
+                )
+
         active_turn_count = int(
             self._profile(
                 "active_turns.count",
@@ -462,6 +478,7 @@ class RuntimeHealthService:
             "gitlabSyncLastSuccessAt": (
                 gitlab.get("last_success_at") or None
             ),
+            "autonomy": autonomy,
             "executionReadiness": execution_readiness,
             "activeTurns": active_turn_count,
             "queuedTurns": queued_turn_count,

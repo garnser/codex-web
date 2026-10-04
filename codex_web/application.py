@@ -4013,6 +4013,33 @@ def _execution_readiness_health():
     return payload
 
 
+def _autonomy_health():
+    enabled = runtime_policy.autonomy_enabled()
+    supervisor = getattr(app.state, "runtime_supervisor", None)
+    task_status = (
+        supervisor.task_status()
+        if supervisor is not None
+        else {}
+    )
+    required_tasks = (
+        "owner-work",
+        "release-gate",
+        "work-item-sla",
+        "orchestrator",
+        "split-brain",
+    )
+    stopped = [
+        name
+        for name in required_tasks
+        if name in task_status
+        and not task_status[name].get("running", False)
+    ]
+    return {
+        "enabled": enabled,
+        "stoppedTasks": stopped,
+    }
+
+
 runtime_health_service = RuntimeHealthService(
     codex=codex_runtime,
     bot_runtime=bot_runtime,
@@ -4029,6 +4056,7 @@ runtime_health_service = RuntimeHealthService(
     execution_readiness=_execution_readiness_health,
     count_active_turns=runtime_state.active_turns.count,
     state_store_status=state_store.status,
+    autonomy_health=_autonomy_health,
     event_sink=bot_runtime_telemetry.append,
 )
 app.state.static_asset_version_service = static_asset_version_service
