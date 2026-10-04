@@ -496,26 +496,7 @@ class BotTargetService:
             current = selected.get(binding.provider)
             if current is None or score(binding) > score(current):
                 selected[binding.provider] = binding
-
-        ordered = list(selected.values())
-        seen = {
-            (binding.provider, binding.external_conversation_id, binding.thread_id)
-            for binding in ordered
-        }
-        for binding in bindings:
-            key = (binding.provider, binding.external_conversation_id, binding.thread_id)
-            if key in seen or selected.get(binding.provider) is None:
-                continue
-            if (
-                active_for(binding, context)
-                or reply_for(binding, context)
-            ):
-                continue
-            if binding.post_in_thread:
-                continue
-            ordered.append(binding)
-            seen.add(key)
-        return ordered
+        return list(selected.values())
 
     def forget_reply_target(self, thread_id: str) -> None:
         for loader, saver in (

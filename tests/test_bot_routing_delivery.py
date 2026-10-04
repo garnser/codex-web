@@ -61,6 +61,10 @@ class _DeliveryHost:
         return self.connections[connection_id]
 
     @staticmethod
+    def _thread_project_id(_thread_id: str):
+        return "home"
+
+    @staticmethod
     def _thread_target_for_outbound(binding, reply_in_thread):
         return (
             BotReplyTarget(
@@ -128,6 +132,36 @@ class BotDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["sent"])
         self.assertEqual(telegram.messages, [("tg-test", "42", "hello telegram")])
+
+    async def test_delivery_fails_closed_when_binding_or_connection_crosses_project(self) -> None:
+        host = _DeliveryHost()
+        slack = _FakeSlackClient()
+        service = BotDeliveryService(
+            host,
+            slack_client=slack,
+            telegram_client=_FakeTelegramClient(),
+        )
+        foreign_binding = BotBinding(
+            id="binding-foreign",
+            connection_id="slack-conn",
+            provider="slack",
+            external_conversation_id="C2",
+            thread_id="thread-1",
+            project_id="foreign",
+            created_at=time.time(),
+            updated_at=time.time(),
+        )
+
+        result = await service.send_outbound(foreign_binding, "secret")
+
+        self.assertEqual(result, {"sent": False, "reason": "binding_project_mismatch"})
+        self.assertEqual(slack.posts, [])
+
+        host.connections["slack-conn"].project_id = "foreign"
+        foreign_binding.project_id = "home"
+        result = await service.send_outbound(foreign_binding, "secret")
+        self.assertEqual(result, {"sent": False, "reason": "connection_project_mismatch"})
+        self.assertEqual(slack.posts, [])
 
 
 class _RoutingHost:
