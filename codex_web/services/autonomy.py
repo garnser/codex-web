@@ -270,10 +270,17 @@ class AutonomyService:
                     continue
                 binding = await d.replace_nonperforming_thread(binding, "owner-work-watchdog")
                 dispatch_key = f"owner-work:{project_id}:{binding.thread_id}:{owner}"
-                if not d.watchdog_dispatch_allowed(dispatch_key):
-                    continue
                 d.release_stale_active_turn(binding.thread_id, "owner-work-watchdog")
                 if d.thread_is_active(binding.thread_id) or d.thread_queue_depth(binding.thread_id):
+                    continue
+                # A cooldown may suppress duplicate discovery-only prompts,
+                # but it must never leave canonical assigned work without a
+                # live turn. Failed dispatches are retried on the next bounded
+                # cycle until the owner becomes active or queued.
+                if (
+                    not canonical_items
+                    and not d.watchdog_dispatch_allowed(dispatch_key)
+                ):
                     continue
                 # Canonical actionable work requires a live lane. Historical
                 # activity is not evidence that the owner is still pursuing
