@@ -3072,28 +3072,32 @@ class TurnExecutionService:
             }
         )
         token = __import__("uuid").uuid4().hex
-        binding = self.binding_service.prepare_bootstrap(
-            bootstrap_id=f"bootstrap-{token}",
-            execution_id=f"thread-bootstrap-{token}",
-            project_id=project.id,
-            sandbox=sandbox,
-            approval_policy=approval_policy,
-            runtime_binding=runtime_binding,
-            explicit_repository_id=explicit_repository_id,
-            writable_repository_ids=writable_repository_ids,
-            read_only_repository_ids=read_only_repository_ids,
-            execution_profile_id=execution_profile_id,
-            agent_profile=agent_profile,
-        )
-        self.bootstrap_bindings.rebind(
-            bootstrap_id=f"bootstrap-{token}",
-            thread_id=thread_id,
-            execution_id=binding.execution_id,
-            assignment_id=binding.assignment_id,
-            execution_workspace_id=binding.workspace_id,
-            actor=self.control_actor,
-        )
-        return self._bootstrap_binding_for_thread(thread_id)
+
+        def prepare_and_rebind():
+            binding = self.binding_service.prepare_bootstrap(
+                bootstrap_id=f"bootstrap-{token}",
+                execution_id=f"thread-bootstrap-{token}",
+                project_id=project.id,
+                sandbox=sandbox,
+                approval_policy=approval_policy,
+                runtime_binding=runtime_binding,
+                explicit_repository_id=explicit_repository_id,
+                writable_repository_ids=writable_repository_ids,
+                read_only_repository_ids=read_only_repository_ids,
+                execution_profile_id=execution_profile_id,
+                agent_profile=agent_profile,
+            )
+            self.bootstrap_bindings.rebind(
+                bootstrap_id=f"bootstrap-{token}",
+                thread_id=thread_id,
+                execution_id=binding.execution_id,
+                assignment_id=binding.assignment_id,
+                execution_workspace_id=binding.workspace_id,
+                actor=self.control_actor,
+            )
+            return self._bootstrap_binding_for_thread(thread_id)
+
+        return await asyncio.to_thread(prepare_and_rebind)
 
     async def _convert_legacy_thread_to_bootstrap(
         self,
