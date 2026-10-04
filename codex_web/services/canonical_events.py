@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -183,7 +184,8 @@ class CanonicalEventBus:
         idempotency_key: str,
     ) -> CanonicalEventDelivery:
         CANONICAL_EVENT_CONTRACT.require(event.schema_version)
-        persisted, inserted = self.store.record_if_new(
+        persisted, inserted = await asyncio.to_thread(
+            self.store.record_if_new,
             event,
             idempotency_key=idempotency_key,
             enqueue_transport=self.transport is not None,
@@ -204,12 +206,17 @@ class CanonicalEventBus:
         if self.transport is None:
             return {"attempted": 0, "published": 0, "pending": 0}
         current = time.time() if now is None else float(now)
-        rows = self.store.pending_outbox(now=current, limit=limit)
+        rows = await asyncio.to_thread(
+            self.store.pending_outbox,
+            now=current,
+            limit=limit,
+        )
         published = 0
         for row in rows:
-            event = self.store.event(row.event_id)
+            event = await asyncio.to_thread(self.store.event, row.event_id)
             if event is None:
-                self.store.mark_outbox_failed(
+                await asyncio.to_thread(
+                    self.store.mark_outbox_failed,
                     row.event_id,
                     error_code="canonical_event_missing",
                     now=current,
@@ -226,7 +233,9 @@ class CanonicalEventBus:
         return {
             "attempted": len(rows),
             "published": published,
-            "pending": self.store.outbox_status().get("pending", 0),
+            "pending": (
+                await asyncio.to_thread(self.store.outbox_status)
+            ).get("pending", 0),
         }
 
     async def consume_transport_once(
@@ -253,7 +262,10 @@ class CanonicalEventBus:
         dispatched = 0
         acknowledged = 0
         for delivery in deliveries:
-            canonical = self.store.event(delivery.canonical_event_id)
+            canonical = await asyncio.to_thread(
+                self.store.event,
+                delivery.canonical_event_id,
+            )
             if canonical is None:
                 await self.transport.negative_acknowledge(
                     delivery,
@@ -262,7 +274,8 @@ class CanonicalEventBus:
                     retry=False,
                 )
                 continue
-            if self.store.inbox_seen(
+            if await asyncio.to_thread(
+                self.store.inbox_seen,
                 event_id=canonical.event_id,
                 backend_id=delivery.backend_id,
             ):
@@ -287,7 +300,8 @@ class CanonicalEventBus:
                 delivery,
                 consumer_id=consumer_id,
             )
-            self.store.record_inbox_receipt(
+            await asyncio.to_thread(
+                self.store.record_inbox_receipt,
                 CanonicalEventInboxReceipt(
                     event_id=canonical.event_id,
                     transport_backend_id=delivery.backend_id,
@@ -297,7 +311,7 @@ class CanonicalEventBus:
                         or delivery.id
                     ),
                     consumer_id=consumer_id,
-                )
+                ),
             )
             acknowledged += 1
         return {
