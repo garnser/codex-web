@@ -270,18 +270,26 @@ class AssignmentBoundAgentModelEgressBroker:
                     ),
                     timeout=self.upstream_connect_timeout_seconds,
                 )
-                tasks: list[
-                    asyncio.Task[
-                        tuple[asyncio.StreamReader, asyncio.StreamWriter]
-                    ]
-                ] = []
                 seen: set[tuple[int, str, int]] = set()
+                candidates: list[tuple[int, int, tuple]] = []
                 for family, _kind, protocol, _canonical, address in addresses:
                     key = (family, str(address[0]), int(address[1]))
                     if key in seen:
                         continue
                     seen.add(key)
-                    tasks.append(
+                    candidates.append((family, protocol, address))
+                if not candidates:
+                    raise OSError("model egress DNS returned no addresses")
+                families = (socket.AF_INET, socket.AF_INET6)
+                for selected_family in families:
+                    selected = [
+                        candidate
+                        for candidate in candidates
+                        if candidate[0] == selected_family
+                    ]
+                    if not selected:
+                        continue
+                    tasks = [
                         asyncio.create_task(
                             asyncio.open_connection(
                                 address[0],
@@ -290,25 +298,26 @@ class AssignmentBoundAgentModelEgressBroker:
                                 proto=protocol,
                             )
                         )
-                    )
-                if not tasks:
-                    raise OSError("model egress DNS returned no addresses")
-                try:
-                    for completed in asyncio.as_completed(
-                        tasks,
-                        timeout=self.upstream_connect_timeout_seconds,
-                    ):
-                        try:
-                            connection = await completed
-                        except OSError as exc:
-                            last_error = exc
-                            continue
-                        return connection
-                finally:
-                    for task in tasks:
-                        if not task.done():
-                            task.cancel()
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                        for family, protocol, address in selected
+                    ]
+                    try:
+                        for completed in asyncio.as_completed(
+                            tasks,
+                            timeout=self.upstream_connect_timeout_seconds,
+                        ):
+                            try:
+                                connection = await completed
+                            except OSError as exc:
+                                last_error = exc
+                                continue
+                            return connection
+                    except asyncio.TimeoutError as exc:
+                        last_error = exc
+                    finally:
+                        for task in tasks:
+                            if not task.done():
+                                task.cancel()
+                        await asyncio.gather(*tasks, return_exceptions=True)
                 if last_error is not None:
                     raise last_error
                 raise asyncio.TimeoutError
