@@ -17,11 +17,12 @@ const skill = {
     lifecycle: 'active',
     applicability_tags: ['release'],
     capability_tags: ['git'],
+    categories: ['software engineering'],
     required_provider_capabilities: ['git_operations'],
     required_worker_capabilities: ['git', 'command_execution'],
     input_expectations: ['candidate revision'],
     output_expectations: ['evidence summary'],
-    provenance: { source_type: 'manual', source_ref: null, evidence_ids: [] },
+    provenance: { source_type: 'catalog_bundle', source_ref: 'https://github.com/example/skills', source_id: 'engineering', upstream_id: 'review/SKILL.md', source_revision: 'abc123', origin: 'imported', evidence_ids: [] },
     assets: [
       { path: 'references/release.md', kind: 'reference', security_class: 'untrusted_reference', context_mode: 'relevant', content: 'evidence' },
       { path: 'helpers/check.sh', kind: 'helper_script', security_class: 'executable_untrusted', context_mode: 'never', content: 'echo check' },
@@ -30,6 +31,9 @@ const skill = {
 };
 
 test.beforeEach(async ({ page }) => {
+  await page.route('**/api/skill-sources', route => route.fulfill({ json: { items: [
+    { source_id: 'engineering', name: 'Engineering catalog', trust: 'approved' },
+  ] } }));
   await page.route('**/api/skills?**', route => route.fulfill({ json: { items: [skill] } }));
   await page.route('**/api/agent-profiles?**', route => route.fulfill({ json: { items: [
     { profile_id: 'release-agent', revision: 4, name: 'Release Agent', lifecycle: 'active' },
@@ -59,6 +63,21 @@ test('lists and inspects exact Skill revision and untrusted helper classificatio
   await expect(page.locator('[data-skill-detail]')).toContainText('executable_untrusted');
   await expect(page.locator('[data-skill-detail]')).toContainText('never auto-runs');
   await expect(page.locator('[data-skill-detail]')).toContainText('Release Agent');
+  await expect(page.locator('[data-skill-detail]')).toContainText('abc123');
+  await expect(page.locator('[data-skill-detail]')).toContainText('software engineering');
+});
+
+test('catalog filters send category and source without flattening source identity', async ({ page }) => {
+  const queries = [];
+  await page.unroute('**/api/skills?**');
+  await page.route('**/api/skills?**', route => {
+    queries.push(new URL(route.request().url()).searchParams.toString());
+    return route.fulfill({ json: { items: [skill] } });
+  });
+  await page.reload();
+  await page.locator('[data-skill-category]').fill('software engineering');
+  await page.locator('[data-skill-source]').selectOption('engineering');
+  await expect.poll(() => queries.some((value) => value.includes('category=software+engineering') && value.includes('source_id=engineering'))).toBe(true);
 });
 
 test('revision selector keeps explicit historical pin visible', async ({ page }) => {

@@ -6,6 +6,7 @@ import time
 from typing import Any, Callable
 
 from codex_web.models import BotBinding, ThreadRunSettings
+from codex_web.definitions import DefinitionReference
 from codex_web.security import security_boundary_instructions
 from codex_web.services.bot_binding_selection import BotBindingSelectionService
 
@@ -53,6 +54,7 @@ class ThreadExecutionSettingsService:
         writable_repository_resource_ids: tuple[str, ...] | None = None,
         read_only_repository_resource_ids: tuple[str, ...] | None = None,
         execution_profile_id: str | None = None,
+        skill_refs: tuple[DefinitionReference, ...] | None = None,
     ) -> ThreadRunSettings:
         all_settings = None
         current = (
@@ -93,6 +95,8 @@ class ThreadExecutionSettingsService:
             )
         if execution_profile_id is not None:
             current.execution_profile_id = execution_profile_id or None
+        if skill_refs is not None:
+            current.skill_refs = tuple(dict.fromkeys(skill_refs))
         if self.put_setting is not None:
             self.put_setting(thread_id, current)
         else:

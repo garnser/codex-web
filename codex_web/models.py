@@ -5,6 +5,7 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.agent_profiles import AgentProfileExecutionBinding
+from codex_web.definitions import DefinitionReference
 from codex_web.work_item_execution_models import WorkItemExecutionLifecycle
 
 
@@ -215,6 +216,7 @@ class ThreadRunSettings(BaseModel):
     writable_repository_resource_ids: tuple[str, ...] = ()
     read_only_repository_resource_ids: tuple[str, ...] = ()
     execution_profile_id: str | None = None
+    skill_refs: tuple[DefinitionReference, ...] | None = None
 
 
 class WorkItemHandoff(BaseModel):

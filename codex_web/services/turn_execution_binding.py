@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Mapping
 
 from codex_web.agent_profiles import AgentProfileExecutionBinding
@@ -111,6 +111,8 @@ class TurnExecutionBinding:
     execution_profile_id: str | None = None
     execution_profile_definition: DefinitionReference | None = None
     agent_profile: AgentProfileExecutionBinding | None = None
+    skill_refs: tuple[DefinitionReference, ...] = ()
+    skill_assignment_sources: dict[str, str] = field(default_factory=dict)
 
     def public(self) -> dict[str, object]:
         return {
@@ -145,6 +147,8 @@ class TurnExecutionBinding:
                 if self.agent_profile is not None
                 else None
             ),
+            "skill_refs": [item.model_dump(mode="json") for item in self.skill_refs],
+            "skill_assignment_sources": dict(self.skill_assignment_sources or {}),
         }
 
 
@@ -893,6 +897,7 @@ class TurnExecutionBindingService:
         orchestration_only: bool = False,
         execution_profile_id: str | None = None,
         agent_profile: AgentProfileExecutionBinding | None = None,
+        skill_refs: tuple[DefinitionReference, ...] = (),
     ) -> TurnExecutionBinding:
         normalized_execution_id = str(execution_id or "").strip()
         if not normalized_execution_id:
@@ -1137,27 +1142,28 @@ class TurnExecutionBindingService:
                 WorkerCapability.COMMAND_EXECUTION,
             )
         )
-        if agent_profile is not None and agent_profile.skill_refs:
+        effective_skill_refs = tuple(dict.fromkeys((agent_profile.skill_refs if agent_profile is not None else ()) + skill_refs))
+        if effective_skill_refs:
             if self.skill_worker_requirements is None:
                 raise TurnExecutionBindingError(
-                    "Agent Profile references Skills but Skill execution "
+                    "Execution references Skills but Skill execution "
                     "requirements are unavailable",
                     code="skill_definition_unavailable",
                     blocker={
                         "code": "skill_definition_unavailable",
                         "message": (
-                            "Agent Profile references Skills but Skill "
+                            "Execution references Skills but Skill "
                             "execution requirements are unavailable"
                         ),
                         "retryable": False,
-                        "target_type": "agent_profile",
-                        "target_id": agent_profile.profile_id,
+                        "target_type": "agent_profile" if agent_profile is not None else "thread",
+                        "target_id": agent_profile.profile_id if agent_profile is not None else thread_id,
                         "remediation_route": "/api/skills",
                     },
                 )
             try:
                 skill_worker_capabilities = self.skill_worker_requirements(
-                    agent_profile.skill_refs,
+                    effective_skill_refs,
                     project,
                 )
             except Exception as exc:
@@ -1168,8 +1174,8 @@ class TurnExecutionBindingService:
                         "code": "skill_definition_unavailable",
                         "message": str(exc),
                         "retryable": False,
-                        "target_type": "agent_profile",
-                        "target_id": agent_profile.profile_id,
+                        "target_type": "agent_profile" if agent_profile is not None else "thread",
+                        "target_id": agent_profile.profile_id if agent_profile is not None else thread_id,
                         "remediation_route": "/api/skills",
                     },
                 ) from exc
@@ -1404,6 +1410,15 @@ class TurnExecutionBindingService:
                     execution_profile_id=effective_profile_id,
                     execution_profile_definition=execution_profile_definition,
                     agent_profile=agent_profile,
+                    skill_refs=effective_skill_refs,
+                    skill_assignment_sources={
+                        ref.record_id: (
+                            f"agent_profile:{agent_profile.profile_id}"
+                            if agent_profile is not None and ref in agent_profile.skill_refs
+                            else "thread_explicit"
+                        )
+                        for ref in effective_skill_refs
+                    },
                 ),
                 actor=self.control_actor,
             )
@@ -1453,6 +1468,8 @@ class TurnExecutionBindingService:
             execution_profile_id=assignment.execution_profile_id,
             execution_profile_definition=assignment.execution_profile_definition,
             agent_profile=assignment.agent_profile,
+            skill_refs=assignment.skill_refs,
+            skill_assignment_sources=assignment.skill_assignment_sources,
         )
 
     def prepare(
@@ -1477,6 +1494,7 @@ class TurnExecutionBindingService:
         orchestration_only: bool = False,
         execution_profile_id: str | None = None,
         agent_profile: AgentProfileExecutionBinding | None = None,
+        skill_refs: tuple[DefinitionReference, ...] = (),
     ) -> TurnExecutionBinding:
         subject = self._subject(thread_id)
         return self._prepare_subject(
@@ -1502,6 +1520,7 @@ class TurnExecutionBindingService:
             orchestration_only=orchestration_only,
             execution_profile_id=execution_profile_id,
             agent_profile=agent_profile,
+            skill_refs=skill_refs,
         )
 
     def prepare_bootstrap(

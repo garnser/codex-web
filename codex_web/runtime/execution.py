@@ -1975,6 +1975,7 @@ class TurnExecutionService:
                             work_item_ref=work_item_ref,
                             execution_profile_id=effective_execution_profile_id,
                             agent_profile=agent_profile_binding,
+                            skill_refs=tuple(settings.skill_refs or ()),
                         )
                     except TurnExecutionBindingError as exc:
                         raise HTTPException(
@@ -1998,17 +1999,21 @@ class TurnExecutionService:
                     workspace_id = binding.workspace_id
 
             skill_context_selection = None
-            if (
-                agent_profile_binding is not None
-                and agent_profile_binding.skill_refs
-            ):
+            effective_skill_refs = tuple(dict.fromkeys(
+                tuple(getattr(assignment, "skill_refs", ()) or ())
+                or (
+                    tuple(agent_profile_binding.skill_refs if agent_profile_binding is not None else ())
+                    + tuple(settings.skill_refs or ())
+                )
+            ))
+            if effective_skill_refs:
                 if self.skill_context_resolver is None:
                     raise HTTPException(
                         status_code=503,
                         detail={
                             "code": "execution_preflight_blocked",
                             "message": (
-                                "Agent Profile references Skills but Skill "
+                                "Execution references Skills but Skill "
                                 "context resolution is unavailable"
                             ),
                             "blockers": [
@@ -2018,8 +2023,8 @@ class TurnExecutionService:
                                         "Skill context resolution is unavailable"
                                     ),
                                     "retryable": False,
-                                    "target_type": "agent_profile",
-                                    "target_id": agent_profile_binding.profile_id,
+                                    "target_type": "agent_profile" if agent_profile_binding is not None else "thread",
+                                    "target_id": agent_profile_binding.profile_id if agent_profile_binding is not None else thread_id,
                                     "remediation_route": "/api/skills",
                                 }
                             ],
@@ -2028,7 +2033,7 @@ class TurnExecutionService:
                     )
                 try:
                     skill_context_selection = self.skill_context_resolver(
-                        agent_profile_binding.skill_refs,
+                        effective_skill_refs,
                         project,
                         message,
                     )
@@ -2043,8 +2048,8 @@ class TurnExecutionService:
                                     "code": "skill_definition_unavailable",
                                     "message": str(exc),
                                     "retryable": False,
-                                    "target_type": "agent_profile",
-                                    "target_id": agent_profile_binding.profile_id,
+                                    "target_type": "agent_profile" if agent_profile_binding is not None else "thread",
+                                    "target_id": agent_profile_binding.profile_id if agent_profile_binding is not None else thread_id,
                                     "remediation_route": "/api/skills",
                                 }
                             ],
@@ -2317,7 +2322,7 @@ class TurnExecutionService:
                             None,
                         ),
                         getattr(profile, "instructions_ref", None),
-                        *(getattr(profile, "skill_refs", ()) or ()),
+                        *(getattr(assignment, "skill_refs", ()) or getattr(profile, "skill_refs", ()) or ()),
                         getattr(profile, "role_definition_ref", None),
                         getattr(profile, "authority_definition_ref", None),
                     ):

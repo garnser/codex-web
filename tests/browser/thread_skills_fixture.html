@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="../../static/skill_library_ui.css"></head>
+<body>
+  <details id="thread-skills-manager">
+    <summary>Skills</summary>
+    <p id="thread-skills-status"></p><div id="thread-skills-effective"></div>
+    <input id="thread-skills-search"><input id="thread-skills-category">
+    <select id="thread-skills-source"><option value="">All sources</option></select>
+    <div id="thread-skills-list"></div><button id="thread-skills-save">Save explicit Skills</button>
+  </details>
+  <script type="module">
+    import { install } from '../../static/thread_skills_ui.js';
+    window.__ui = install({ byId: id => document.getElementById(id), activeThreadId: () => 'thread-a' });
+    window.__ready = true;
+  </script>
+</body></html>

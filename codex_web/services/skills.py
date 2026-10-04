@@ -94,11 +94,76 @@ class SkillService:
     ) -> None:
         self.definitions = definitions
         self.profiles = profiles
+        self.thread_settings: Any | None = None
+        self.thread_inherited_skill_refs: Callable[[str, AuthenticationActor], tuple[DefinitionReference, ...]] | None = None
         self.clock = clock
         install_skill_definition_schema(definitions)
 
     def bind_profiles(self, profiles: Any) -> None:
         self.profiles = profiles
+
+    def bind_thread_settings(
+        self,
+        settings: Any,
+        *,
+        inherited_refs: Callable[[str, AuthenticationActor], tuple[DefinitionReference, ...]] | None = None,
+    ) -> None:
+        self.thread_settings = settings
+        self.thread_inherited_skill_refs = inherited_refs
+
+    def thread_assignments(
+        self,
+        thread_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> dict[str, Any]:
+        if self.thread_settings is None:
+            raise SkillError("Thread Skill assignment service is unavailable")
+        refs = tuple(self.thread_settings.get(thread_id).skill_refs or ())
+        explicit = []
+        for reference in refs:
+            valid = self.validate_reference(reference, actor=actor)
+            item = self._view(self.definitions.get_record(valid.record_id))
+            explicit.append({**item, "assignmentOrigin": "thread_explicit", "inheritedFrom": None})
+        explicit_ids = {item["recordId"] for item in explicit}
+        inherited = []
+        inherited_refs = (
+            self.thread_inherited_skill_refs(thread_id, actor)
+            if self.thread_inherited_skill_refs is not None
+            else ()
+        )
+        for reference in inherited_refs:
+            valid = self.validate_reference(reference, actor=actor)
+            if valid.record_id in explicit_ids:
+                continue
+            item = self._view(self.definitions.get_record(valid.record_id))
+            inherited.append({**item, "assignmentOrigin": "inherited", "inheritedFrom": "agent_profile"})
+        return {
+            "threadId": thread_id,
+            "explicit": explicit,
+            "inherited": inherited,
+            "effective": [*explicit, *inherited],
+            "definitionReferences": [ref.model_dump(mode="json") for ref in refs],
+        }
+
+    def set_thread_assignments(
+        self,
+        thread_id: str,
+        references: tuple[DefinitionReference, ...],
+        *,
+        actor: AuthenticationActor,
+    ) -> dict[str, Any]:
+        if self.thread_settings is None:
+            raise SkillError("Thread Skill assignment service is unavailable")
+        self._require_mutation(actor)
+        validated = tuple(
+            dict.fromkeys(
+                self.validate_reference(reference, actor=actor)
+                for reference in references
+            )
+        )
+        self.thread_settings.remember(thread_id, skill_refs=validated)
+        return self.thread_assignments(thread_id, actor=actor)
 
     @staticmethod
     def _is_admin(actor: AuthenticationActor) -> bool:
@@ -219,6 +284,8 @@ class SkillService:
         actor: AuthenticationActor,
         search: str | None = None,
         tag: str | None = None,
+        category: str | None = None,
+        source_id: str | None = None,
         owner_identity_id: str | None = None,
         lifecycle: SkillLifecycle | None = None,
         include_drafts: bool = True,
@@ -231,6 +298,7 @@ class SkillService:
 
         needle = str(search or "").strip().casefold()
         tag_value = str(tag or "").strip().casefold()
+        category_value = str(category or "").strip().casefold()
         result: list[dict[str, Any]] = []
         for record in latest.values():
             if not include_drafts and record.lifecycle != DefinitionLifecycle.PUBLISHED:
@@ -240,6 +308,10 @@ class SkillService:
                 continue
             if lifecycle is not None and skill.lifecycle != lifecycle:
                 continue
+            if category_value and category_value not in skill.categories:
+                continue
+            if source_id and skill.provenance.source_id != source_id:
+                continue
             tags = set((*skill.applicability_tags, *skill.capability_tags))
             if tag_value and tag_value not in tags:
                 continue
@@ -248,6 +320,7 @@ class SkillService:
                     record.definition_id,
                     skill.name,
                     skill.description,
+                    *skill.categories,
                     *skill.applicability_tags,
                     *skill.capability_tags,
                 )
@@ -301,6 +374,7 @@ class SkillService:
             name=payload.name,
             description=payload.description,
             instructions=payload.instructions,
+            categories=payload.categories,
             applicability_tags=payload.applicability_tags,
             capability_tags=payload.capability_tags,
             assets=payload.assets,
@@ -865,6 +939,7 @@ class SkillService:
             name=skill.name,
             description=skill.description,
             instructions=skill.instructions,
+            categories=skill.categories,
             applicability_tags=skill.applicability_tags,
             capability_tags=skill.capability_tags,
             assets=skill.assets,

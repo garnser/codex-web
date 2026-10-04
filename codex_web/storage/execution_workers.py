@@ -135,6 +135,24 @@ def _migrate_1_7_to_1_8(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 EXECUTION_WORKER_MIGRATIONS.register("1.7", "1.8", _migrate_1_7_to_1_8)
+EXECUTION_WORKER_MIGRATIONS.register(
+    "1.8",
+    "1.9",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.9",
+        "assignments": [
+            {
+                **dict(item),
+                "skill_refs": list(dict(item).get("skill_refs") or []),
+                "skill_assignment_sources": dict(
+                    dict(item).get("skill_assignment_sources") or {}
+                ),
+            }
+            for item in payload.get("assignments", [])
+        ],
+    },
+)
 
 
 class ExecutionWorkerStore:

@@ -25,6 +25,13 @@ class SkillLifecycle(StrEnum):
     ARCHIVED = "archived"
 
 
+class SkillOrigin(StrEnum):
+    LOCAL = "local"
+    IMPORTED = "imported"
+    LOCAL_OVERRIDE = "local_override"
+    FORKED = "forked"
+
+
 class SkillAssetKind(StrEnum):
     REFERENCE = "reference"
     TEMPLATE = "template"
@@ -119,6 +126,11 @@ class SkillProvenance(BaseModel):
 
     source_type: str = Field(default="manual", min_length=1, max_length=80)
     source_ref: str | None = Field(default=None, max_length=500)
+    source_id: str | None = Field(default=None, max_length=160)
+    upstream_id: str | None = Field(default=None, max_length=500)
+    source_revision: str | None = Field(default=None, max_length=200)
+    upstream_digest: str | None = Field(default=None, max_length=128)
+    origin: SkillOrigin = SkillOrigin.LOCAL
     evidence_ids: tuple[str, ...] = Field(default=(), max_length=50)
     imported_at: float | None = None
 
@@ -148,6 +160,7 @@ class SkillDefinition(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     description: str = Field(default="", max_length=4000)
     instructions: str = Field(min_length=1, max_length=SKILL_MAX_INSTRUCTIONS_CHARS)
+    categories: tuple[str, ...] = Field(default=(), max_length=24)
     applicability_tags: tuple[str, ...] = Field(default=(), max_length=50)
     capability_tags: tuple[str, ...] = Field(default=(), max_length=50)
     assets: tuple[SkillAsset, ...] = Field(default=(), max_length=SKILL_MAX_ASSETS)
@@ -168,6 +181,11 @@ class SkillDefinition(BaseModel):
         paths = [asset.path for asset in self.assets]
         if len(paths) != len(set(paths)):
             raise ValueError("skill asset paths must be unique")
+        object.__setattr__(
+            self,
+            "categories",
+            _normalized_words(self.categories),
+        )
         object.__setattr__(
             self,
             "applicability_tags",
@@ -223,6 +241,7 @@ class SkillCreate(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     description: str = Field(default="", max_length=4000)
     instructions: str = Field(min_length=1, max_length=SKILL_MAX_INSTRUCTIONS_CHARS)
+    categories: tuple[str, ...] = ()
     applicability_tags: tuple[str, ...] = ()
     capability_tags: tuple[str, ...] = ()
     assets: tuple[SkillAsset, ...] = ()
@@ -257,6 +276,7 @@ class SkillUpdate(BaseModel):
         min_length=1,
         max_length=SKILL_MAX_INSTRUCTIONS_CHARS,
     )
+    categories: tuple[str, ...] | None = None
     applicability_tags: tuple[str, ...] | None = None
     capability_tags: tuple[str, ...] | None = None
     assets: tuple[SkillAsset, ...] | None = None

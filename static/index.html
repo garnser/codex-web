@@ -1246,6 +1246,18 @@
                 <summary>Profile details</summary>
                 <span id="execution-profile-summary" class="execution-profile-summary" role="status"></span>
               </details>
+              <details id="thread-skills-manager" class="thread-profile-details">
+                <summary>Skills</summary>
+                <p id="thread-skills-status" role="status" aria-live="polite">Open to inspect effective Skills.</p>
+                <div id="thread-skills-effective" class="thread-skills-effective"></div>
+                <div class="thread-settings-grid">
+                  <label><span>Search Skills</span><input id="thread-skills-search" type="search"></label>
+                  <label><span>Category</span><input id="thread-skills-category"></label>
+                  <label><span>Source</span><select id="thread-skills-source"><option value="">All sources</option></select></label>
+                </div>
+                <div id="thread-skills-list" class="thread-skills-list"></div>
+                <button id="thread-skills-save" class="primary-button" type="button">Save explicit Skills</button>
+              </details>
               <div class="thread-settings-actions" role="group" aria-label="Thread actions">
                 <button id="rename-thread" class="ghost-button" type="button">Rename thread</button>
                 <button id="archive-thread" class="ghost-button danger-button" type="button">Archive thread</button>

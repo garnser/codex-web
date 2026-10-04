@@ -191,7 +191,7 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
 
         state = self.service.store.load()
         migrated = next(item for item in state.assignments if item.id == assignment.id)
-        self.assertEqual(state.schema_version, "1.8")
+        self.assertEqual(state.schema_version, "1.9")
         migrated_worker = next(
             item for item in state.workers if item.id == self.worker.id
         )

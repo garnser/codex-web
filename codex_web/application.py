@@ -14,7 +14,8 @@ from codex_web.api.action_intents import build_action_intents_router
 from codex_web.api.agent_profiles import build_agent_profiles_router
 from codex_web.api.agent_teams import build_agent_teams_router
 from codex_web.api.agent_team_execution import build_agent_team_execution_router
-from codex_web.api.skills import build_skills_router
+from codex_web.api.skills import build_skills_router, build_thread_skills_router
+from codex_web.api.skill_catalog import build_skill_catalog_router
 from codex_web.api.agent_providers import build_agent_providers_router
 from codex_web.services.agent_provider_administration import AgentProviderAdministration
 from codex_web.services.model_provider_administration import ModelProviderAdministration
@@ -164,6 +165,7 @@ from codex_web.services.agent_profiles import AgentProfileService
 from codex_web.services.agent_teams import AgentTeamService
 from codex_web.services.agent_team_execution import AgentTeamExecutionService
 from codex_web.services.skills import SkillService
+from codex_web.services.skill_catalog import SkillCatalogService
 from codex_web.services.agent_providers import AgentProviderService
 from codex_web.agent_providers import AgentProviderHealth, AgentProviderUpsert
 from codex_web.services.agent_routing import AgentRoutingService
@@ -495,6 +497,7 @@ from codex_web.storage.configuration_state import (
 )
 from codex_web.storage.conversation_channels import ConversationChannelStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
+from codex_web.storage.skill_catalog import SkillSourceStore
 from codex_web.storage.decisions import DecisionStore
 from codex_web.storage.data_governance import DataGovernanceStore
 from codex_web.storage.business_context import BusinessContextStore
@@ -756,6 +759,11 @@ definition_registry_service = DefinitionRegistryService(
 )
 skill_service = SkillService(definition_registry_service)
 app.state.skill_service = skill_service
+skill_source_store = SkillSourceStore(state_store)
+skill_catalog_service = SkillCatalogService(skill_source_store, skill_service)
+app.state.skill_source_store = skill_source_store
+app.state.skill_catalog_service = skill_catalog_service
+app.include_router(build_skill_catalog_router(skill_catalog_service))
 
 automation_definition_service = install_automation_definitions(
     definition_registry_service
@@ -1665,6 +1673,22 @@ def _agent_profile_definition_usage(reference):
                 "lifecycle": profile.lifecycle.value,
                 "organization_id": profile.organization_id,
                 "workspace_id": profile.workspace_id,
+            }
+        )
+    for thread_id, settings in runtime_state.thread_settings.load().items():
+        if not any(
+            item.record_id == reference.record_id
+            for item in (settings.skill_refs or ())
+        ):
+            continue
+        items.append(
+            {
+                "object_type": "thread",
+                "object_id": thread_id,
+                "revision": reference.revision,
+                "lifecycle": "active",
+                "organization_id": "local",
+                "workspace_id": "default",
             }
         )
     return items
@@ -2933,6 +2957,25 @@ thread_execution_settings_service = install_thread_execution_settings_service(
     binding_report_name=bot_presentation_service.binding_report_name,
     binding_prefix=bot_presentation_service.binding_prefix,
 )
+def _thread_inherited_skill_refs(thread_id, actor):
+    try:
+        binding = thread_bootstrap_binding_service.get_by_thread(thread_id, actor)
+        assignment = next(
+            item
+            for item in execution_worker_service.list_assignments(actor)
+            if item.id == binding.assignment_id
+        )
+        profile = assignment.agent_profile
+        return tuple(profile.skill_refs) if profile is not None else ()
+    except Exception:
+        return ()
+
+
+skill_service.bind_thread_settings(
+    thread_execution_settings_service,
+    inherited_refs=_thread_inherited_skill_refs,
+)
+app.include_router(build_thread_skills_router(skill_service, thread_scope_service))
 
 canonical_materialization_store = CanonicalMaterializationStore(
     state_store

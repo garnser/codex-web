@@ -191,6 +191,7 @@
           "name",
           "description",
           "instructions",
+          "categories",
           "applicability_tags",
           "capability_tags",
           "assets",
