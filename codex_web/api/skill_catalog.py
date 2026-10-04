@@ -11,7 +11,14 @@ from codex_web.services.skill_catalog import (
     SkillSourceConflict,
     SkillSourceNotFound,
 )
-from codex_web.skill_catalog import SkillSourceCreate, SkillSourceSyncRequest, SkillSourceUpdate
+from codex_web.skill_catalog import (
+    SkillSourceCreate,
+    SkillSourceHealthReport,
+    SkillSourceSyncRequest,
+    SkillSourceUpdate,
+    UiSkillsDiscoveryRequest,
+    UiSkillsImportRequest,
+)
 
 
 def _error(exc: Exception) -> HTTPException:
@@ -33,7 +40,9 @@ def build_skill_catalog_router(service: SkillCatalogService) -> APIRouter:
         return {"items": items, "count": len(items)}
 
     @router.post("")
-    async def create_source(payload: SkillSourceCreate, request: Request) -> dict[str, Any]:
+    async def create_source(
+        payload: SkillSourceCreate, request: Request
+    ) -> dict[str, Any]:
         try:
             return {"item": service.create(payload, actor=request_actor(request))}
         except Exception as exc:
@@ -42,21 +51,77 @@ def build_skill_catalog_router(service: SkillCatalogService) -> APIRouter:
     @router.get("/{source_id}")
     async def get_source(source_id: str, request: Request) -> dict[str, Any]:
         try:
-            return {"item": service.get(source_id, actor=request_actor(request)).model_dump(mode="json")}
+            return {
+                "item": service.get(source_id, actor=request_actor(request)).model_dump(
+                    mode="json"
+                )
+            }
         except Exception as exc:
             raise _error(exc) from exc
 
     @router.patch("/{source_id}")
-    async def update_source(source_id: str, payload: SkillSourceUpdate, request: Request) -> dict[str, Any]:
+    async def update_source(
+        source_id: str, payload: SkillSourceUpdate, request: Request
+    ) -> dict[str, Any]:
         try:
-            return {"item": service.update(source_id, payload, actor=request_actor(request))}
+            return {
+                "item": service.update(source_id, payload, actor=request_actor(request))
+            }
         except Exception as exc:
             raise _error(exc) from exc
 
     @router.post("/{source_id}/sync")
-    async def sync_source(source_id: str, payload: SkillSourceSyncRequest, request: Request) -> dict[str, Any]:
+    async def sync_source(
+        source_id: str, payload: SkillSourceSyncRequest, request: Request
+    ) -> dict[str, Any]:
         try:
             return service.sync(source_id, payload, actor=request_actor(request))
+        except Exception as exc:
+            raise _error(exc) from exc
+
+    @router.get("/{source_id}/discovery")
+    async def source_discovery(source_id: str, request: Request) -> dict[str, Any]:
+        try:
+            return service.discovery(source_id, actor=request_actor(request))
+        except Exception as exc:
+            raise _error(exc) from exc
+
+    @router.post("/{source_id}/discover")
+    async def discover_ui_skills(
+        source_id: str,
+        payload: UiSkillsDiscoveryRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            return service.discover_ui_skills(
+                source_id, payload, actor=request_actor(request)
+            )
+        except Exception as exc:
+            raise _error(exc) from exc
+
+    @router.post("/{source_id}/health")
+    async def record_source_health(
+        source_id: str,
+        payload: SkillSourceHealthReport,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            return service.record_health(
+                source_id, payload, actor=request_actor(request)
+            )
+        except Exception as exc:
+            raise _error(exc) from exc
+
+    @router.post("/{source_id}/import")
+    async def import_ui_skills(
+        source_id: str,
+        payload: UiSkillsImportRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            return service.import_ui_skills(
+                source_id, payload, actor=request_actor(request)
+            )
         except Exception as exc:
             raise _error(exc) from exc
 

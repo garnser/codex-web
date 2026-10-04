@@ -65,6 +65,7 @@ function cardMarkup() {
           <option value="archived">Archived</option>
         </select>
         <input data-skill-category aria-label="Filter category" placeholder="Category">
+        <input data-skill-upstream-category aria-label="Filter upstream category" placeholder="Upstream category">
         <select data-skill-source aria-label="Filter source"><option value="">All sources</option></select>
         <select data-skill-security aria-label="Filter security status"><option value="">All security states</option><option value="passed">Passed</option><option value="warning">Warning</option><option value="quarantined">Quarantined</option><option value="not_scanned">Not scanned</option><option value="stale">Stale</option><option value="scan_error">Scan error</option></select>
         <select data-skill-severity aria-label="Filter finding severity"><option value="">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option><option value="info">Info</option></select>
@@ -112,10 +113,27 @@ function cardMarkup() {
             <h3>Add catalog source</h3>
             <label>Source ID <input data-source-id placeholder="engineering-catalog"></label>
             <label>Name <input data-source-name></label>
+            <label>Adapter <select data-source-type><option value="catalog_bundle">Catalog bundle</option><option value="ui_skills">ui-skills</option></select></label>
+            <label>Transport <select data-source-transport><option value="bundle">Bundle</option><option value="mcp">MCP</option><option value="cli">CLI worker</option><option value="repository">Repository snapshot</option></select></label>
             <label>Location <input data-source-location placeholder="https://github.com/owner/repository"></label>
+            <label><input type="checkbox" data-source-auto-sync> Auto-import approved categories</label>
+            <label>Auto-import categories <input data-source-auto-categories placeholder="animation, typography"></label>
             <label>Trust <select data-source-trust><option value="pending">Pending review</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select></label>
             <button class="primary-button" type="button" data-source-create>Add source</button>
             <div class="form-result" data-source-result hidden></div>
+            <div data-source-health class="skill-provenance-results"></div>
+          </section>
+          <section data-ui-skills-management>
+            <h3>Discover and import ui-skills</h3>
+            <label>Governed provider evidence ID <input data-discovery-evidence placeholder="action-receipt or worker evidence"></label>
+            <label>Source revision <input data-discovery-revision placeholder="immutable upstream revision"></label>
+            <label>Normalized provider result <textarea data-discovery-catalog rows="8" spellcheck="false" placeholder='[{"upstream_id":"animation","name":"Animation","instructions":"...","categories":["motion"]}]'></textarea></label>
+            <button class="ghost-button" type="button" data-source-discover>Record discovery</button>
+            <label>Import mode <select data-ui-import-mode><option value="single">Single</option><option value="selected">Selected</option><option value="category">Category</option><option value="all">Complete source</option></select></label>
+            <label>Skill IDs <input data-ui-import-ids placeholder="animation, typography"></label>
+            <label>Upstream category <input data-ui-import-category placeholder="motion"></label>
+            <button class="primary-button" type="button" data-ui-import>Import selected drafts</button>
+            <pre data-ui-discovery-result>No governed discovery snapshot loaded.</pre>
           </section>
           <section>
             <h3>Synchronize bounded catalog</h3>
@@ -164,6 +182,7 @@ async function loadSkills(root) {
     const search = query(root, "[data-skill-search]")?.value.trim() || "";
     const lifecycle = query(root, "[data-skill-lifecycle]")?.value || "";
     const category = query(root, "[data-skill-category]")?.value.trim() || "";
+    const upstreamCategory = query(root, "[data-skill-upstream-category]")?.value.trim() || "";
     const source = query(root, "[data-skill-source]")?.value || "";
     const security = query(root, "[data-skill-security]")?.value || "";
     const severity = query(root, "[data-skill-severity]")?.value || "";
@@ -175,6 +194,7 @@ async function loadSkills(root) {
     if (search) params.set("search", search);
     if (lifecycle) params.set("lifecycle", lifecycle);
     if (category) params.set("category", category);
+    if (upstreamCategory) params.set("upstream_category", upstreamCategory);
     if (source) params.set("source_id", source);
     if (security) params.set("security_status", security);
     if (severity) params.set("security_severity", severity);
@@ -205,6 +225,8 @@ async function loadSources(root) {
   const options = state.sources.map((item)=>`<option value="${esc(item.source_id)}">${esc(item.name)} · ${esc(item.trust)}</option>`).join("");
   query(root, "[data-skill-source]").innerHTML = `<option value="">All sources</option>${options}`;
   query(root, "[data-sync-source]").innerHTML = `<option value="">Select source…</option>${options}`;
+  const health = query(root, "[data-source-health]");
+  if (health) health.innerHTML = state.sources.map((item) => `<article class="skill-run"><header><strong>${esc(item.name)}</strong><span class="skill-status ${statusClass(item.health_status === "healthy" ? "passed" : item.health_status)}">${esc(item.health_status || "unknown")}</span></header><p>${esc(item.source_type)} · ${esc(item.transport || "bundle")} · ${esc(item.discovered_count || 0)} discovered / ${esc((item.imports || []).length)} imported</p><small>Categories: ${esc((item.discovered_categories || []).join(", ") || "none")} · last sync ${esc(item.last_sync_status || "never")}${item.last_sync_error ? ` · ${esc(item.last_sync_error)}` : ""}</small></article>`).join("") || '<div class="skill-state">No Skill sources configured.</div>';
 }
 
 async function loadProfiles() {
@@ -372,6 +394,9 @@ function renderDetail(root) {
           <dt>Source</dt><dd>${esc(item.skill?.provenance?.source_type || "manual")} · ${esc(item.skill?.provenance?.source_ref || "—")}</dd>
           <dt>Source revision</dt><dd>${esc(item.skill?.provenance?.source_revision || "—")}</dd>
           <dt>Upstream</dt><dd>${esc(item.skill?.provenance?.upstream_id || "—")}</dd>
+          <dt>Upstream categories</dt><dd>${esc((item.skill?.provenance?.upstream_categories || []).join(", ") || "—")}</dd>
+          <dt>Upstream location</dt><dd>${item.skill?.provenance?.upstream_location ? `<a href="${esc(item.skill.provenance.upstream_location)}" rel="noreferrer">${esc(item.skill.provenance.upstream_location)}</a>` : "—"}</dd>
+          <dt>Source transport</dt><dd>${esc(item.skill?.provenance?.source_transport || "—")}</dd>
           <dt>Origin</dt><dd>${esc(item.skill?.provenance?.origin || "local")}</dd>
           <dt>Categories</dt><dd>${esc((item.skill?.categories || []).join(", ") || "—")}</dd>
         </dl>
@@ -644,15 +669,27 @@ function bindImport(root) {
 }
 
 function bindSources(root) {
+  const type = query(root, "[data-source-type]");
+  const transport = query(root, "[data-source-transport]");
+  type.addEventListener("change", () => {
+    const uiSkills = type.value === "ui_skills";
+    if (uiSkills) {
+      query(root, "[data-source-location]").value = "https://github.com/ibelick/ui-skills";
+      if (transport.value === "bundle") transport.value = "mcp";
+    }
+  });
   query(root, "[data-source-create]").addEventListener("click", async () => {
     const result = query(root, "[data-source-result]");
     try {
       await request("/api/skill-sources", { method: "POST", body: JSON.stringify({
         source_id: query(root, "[data-source-id]").value.trim(),
         name: query(root, "[data-source-name]").value.trim(),
-        source_type: "catalog_bundle",
+        source_type: type.value,
+        transport: transport.value,
         location: query(root, "[data-source-location]").value.trim(),
         trust: query(root, "[data-source-trust]").value,
+        automatic_sync: query(root, "[data-source-auto-sync]").checked,
+        auto_import_categories: csv(query(root, "[data-source-auto-categories]").value),
       }) });
       result.hidden = false;
       result.textContent = "Source saved. Imported content still requires review and publication.";
@@ -668,6 +705,35 @@ function bindSources(root) {
         source_revision: query(root, "[data-sync-revision]").value.trim(), entries,
       }) });
       result.textContent = `${response.count} catalog entries reconciled as drafts. Publication remains separate.`;
+      await Promise.all([loadSources(root), loadSkills(root)]);
+    } catch (error) { result.textContent = errorText(error); }
+  });
+  query(root, "[data-source-discover]").addEventListener("click", async () => {
+    const result = query(root, "[data-ui-discovery-result]");
+    try {
+      const sourceId = query(root, "[data-sync-source]").value;
+      const sourceItem = state.sources.find((item) => item.source_id === sourceId);
+      const entries = JSON.parse(query(root, "[data-discovery-catalog]").value || "[]");
+      const response = await request(`/api/skill-sources/${encodeURIComponent(sourceId)}/discover`, { method: "POST", body: JSON.stringify({
+        source_revision: query(root, "[data-discovery-revision]").value.trim(),
+        transport: sourceItem?.transport || "mcp",
+        provider_evidence_id: query(root, "[data-discovery-evidence]").value.trim(),
+        entries,
+      }) });
+      result.textContent = `${response.count} ui-skills discovered across ${(response.categories || []).length} categories. Imported content remains draft-only.`;
+      await loadSources(root);
+    } catch (error) { result.textContent = errorText(error); }
+  });
+  query(root, "[data-ui-import]").addEventListener("click", async () => {
+    const result = query(root, "[data-ui-discovery-result]");
+    try {
+      const sourceId = query(root, "[data-sync-source]").value;
+      const response = await request(`/api/skill-sources/${encodeURIComponent(sourceId)}/import`, { method: "POST", body: JSON.stringify({
+        mode: query(root, "[data-ui-import-mode]").value,
+        upstream_ids: csv(query(root, "[data-ui-import-ids]").value),
+        category: query(root, "[data-ui-import-category]").value.trim() || null,
+      }) });
+      result.textContent = `${response.count} ui-skills reconciled as inactive drafts. Security scan and publication policy still apply.`;
       await Promise.all([loadSources(root), loadSkills(root)]);
     } catch (error) { result.textContent = errorText(error); }
   });
@@ -718,6 +784,9 @@ async function install() {
   });
   query(root, "[data-skill-lifecycle]").addEventListener("change", () => loadSkills(root));
   query(root, "[data-skill-category]").addEventListener("input", () => {
+    clearTimeout(timer); timer = setTimeout(() => loadSkills(root), 220);
+  });
+  query(root, "[data-skill-upstream-category]").addEventListener("input", () => {
     clearTimeout(timer); timer = setTimeout(() => loadSkills(root), 220);
   });
   query(root, "[data-skill-source]").addEventListener("change", () => loadSkills(root));

@@ -55,7 +55,10 @@ def _security_matches(
         and (not provider or str(scan.get("provider_id", "")).casefold() == provider)
         and (
             not category
-            or any(str(finding.get("category", "")).casefold() == category for finding in findings)
+            or any(
+                str(finding.get("category", "")).casefold() == category
+                for finding in findings
+            )
         )
         and (risk_min is None or (score is not None and float(score) >= risk_min))
         and (risk_max is None or (score is not None and float(score) <= risk_max))
@@ -107,6 +110,7 @@ def build_skills_router(service: SkillService) -> APIRouter:
         search: str | None = None,
         tag: str | None = None,
         category: str | None = None,
+        upstream_category: str | None = None,
         source_id: str | None = None,
         security_status: str | None = None,
         security_severity: str | None = None,
@@ -133,6 +137,18 @@ def build_skills_router(service: SkillService) -> APIRouter:
                 lifecycle=lifecycle,
                 include_drafts=include_drafts,
             )
+            if upstream_category:
+                wanted_upstream_category = upstream_category.strip().casefold()
+                items = [
+                    item
+                    for item in items
+                    if any(
+                        str(value).casefold() == wanted_upstream_category
+                        for value in item["skill"]
+                        .get("provenance", {})
+                        .get("upstream_categories", ())
+                    )
+                ]
             if any(
                 value is not None
                 for value in (
@@ -161,12 +177,18 @@ def build_skills_router(service: SkillService) -> APIRouter:
                         risk_max=risk_max,
                     )
                 ]
-            page = items[cursor:cursor + limit]
+            page = items[cursor : cursor + limit]
             return {
                 "items": page,
                 "count": len(items),
                 "nextCursor": cursor + limit if cursor + limit < len(items) else None,
-                "categories": sorted({category for item in items for category in item["skill"].get("categories", [])}),
+                "categories": sorted(
+                    {
+                        category
+                        for item in items
+                        for category in item["skill"].get("categories", [])
+                    }
+                ),
             }
         except Exception as exc:
             raise _error(exc) from exc
@@ -408,8 +430,12 @@ def build_skills_router(service: SkillService) -> APIRouter:
     return router
 
 
-def build_thread_skills_router(service: SkillService, scope: ThreadScopeService) -> APIRouter:
-    router = APIRouter(tags=["skills"], dependencies=[Depends(thread_scope_dependency(scope))])
+def build_thread_skills_router(
+    service: SkillService, scope: ThreadScopeService
+) -> APIRouter:
+    router = APIRouter(
+        tags=["skills"], dependencies=[Depends(thread_scope_dependency(scope))]
+    )
 
     @router.get("/api/threads/{thread_id}/skills")
     async def get_thread_skills(thread_id: str, request: Request) -> dict[str, Any]:
