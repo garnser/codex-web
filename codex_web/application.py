@@ -190,7 +190,10 @@ from codex_web.services.artifact_content_configuration import (
 )
 from codex_web.services.authority_policy_explorer import AuthorityPolicyExplorerService
 from codex_web.services.authority_roles import install_authority_roles
-from codex_web.services.autonomy import install_autonomy_service
+from codex_web.services.autonomy import (
+    AutonomyService,
+    install_autonomy_service,
+)
 from codex_web.services.autonomy_dependencies import AutonomyRuntimeDependencies
 from codex_web.services.autonomy_controller import AutonomyController
 from codex_web.services.autonomy_control_center import AutonomyControlCenterService
