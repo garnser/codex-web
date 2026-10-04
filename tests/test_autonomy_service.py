@@ -163,6 +163,7 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
         states: dict[str, WorkItemState],
         *,
         active: bool = False,
+        recently_active: bool = False,
     ) -> SimpleNamespace:
         binding = SimpleNamespace(
             thread_id="thread-james",
@@ -196,7 +197,7 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
             release_stale_active_turn=lambda *_args: None,
             thread_is_active=lambda _thread_id: active,
             thread_queue_depth=lambda _thread_id: 0,
-            thread_recently_active=lambda _thread_id: False,
+            thread_recently_active=lambda _thread_id: recently_active,
             binding_prefix=lambda _binding: "James",
             record_watchdog_dispatch=lambda _key: None,
             dispatch_event=dispatch,
@@ -260,6 +261,22 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
         await AutonomyService(runtime=runtime).run_owner_work_cycle()
 
         runtime.dispatch_event.assert_not_awaited()
+
+    async def test_recent_activity_does_not_mask_idle_actionable_owner(self) -> None:
+        state = WorkItemState(
+            ref="example/project#1",
+            project_id="project-a",
+            current_owner="james",
+            current_stage="implementation_active",
+            last_meaningful_update_at=10.0,
+            created_at=1.0,
+            updated_at=10.0,
+        )
+        runtime = self._runtime({state.ref: state}, recently_active=True)
+
+        await AutonomyService(runtime=runtime).run_owner_work_cycle()
+
+        runtime.dispatch_event.assert_awaited_once()
 
 
 if __name__ == "__main__":

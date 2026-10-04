@@ -263,7 +263,14 @@ class AutonomyService:
                 d.release_stale_active_turn(binding.thread_id, "owner-work-watchdog")
                 if d.thread_is_active(binding.thread_id) or d.thread_queue_depth(binding.thread_id):
                     continue
-                if d.thread_recently_active(binding.thread_id):
+                # Canonical actionable work requires a live lane. Historical
+                # activity is not evidence that the owner is still pursuing
+                # the item; active/queued state and the dispatch cooldown are
+                # the duplicate-dispatch guards for this path.
+                if (
+                    not canonical_items
+                    and d.thread_recently_active(binding.thread_id)
+                ):
                     continue
                 selected = canonical_items[0] if canonical_items else None
                 if missing_state_refs:
