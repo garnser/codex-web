@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 from fastapi import FastAPI
 
 from codex_web.action_providers import ActionRequest
+from codex_web.autonomy import AutonomyCycleOutcome
 from codex_web.models import WorkItemHandoff, WorkItemState
 from codex_web.services.autonomy import AutonomyService, install_autonomy_service
 
@@ -117,6 +118,78 @@ class AutonomyActionDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(intents.calls[0][1], actor)
 
 
+class AutonomyBoundedDispatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_canonical_event_uses_project_scope(self) -> None:
+        runtime = SimpleNamespace(
+            project_scope=lambda project_id: (
+                ("org-a", "workspace-a")
+                if project_id == "project-a"
+                else (None, None)
+            ),
+            dispatch_event=AsyncMock(return_value={"ok": True}),
+        )
+        canonical_events = SimpleNamespace(
+            ingest=AsyncMock(
+                return_value=SimpleNamespace(
+                    inserted=True,
+                    event=SimpleNamespace(event_id="event-1"),
+                )
+            )
+        )
+
+        async def process(_event, _observation, *, reasoner, **_kwargs):
+            await reasoner()
+            return SimpleNamespace(
+                outcome=AutonomyCycleOutcome.COMPLETED,
+                id="cycle-1",
+                reason="completed",
+            )
+
+        service = AutonomyService(
+            runtime=runtime,
+            controller=SimpleNamespace(process=process),
+            canonical_events=canonical_events,
+        )
+
+        result = await service._bounded_reasoning_dispatch(
+            SimpleNamespace(thread_id="thread-james"),
+            "pursue the issue",
+            "owner-work-watchdog",
+            cycle_key="owner-work:project-a:thread-james:james",
+            payload={"project_id": "project-a", "agent": "james"},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            canonical_events.ingest.await_args.kwargs["tenant_id"],
+            "org-a",
+        )
+        self.assertEqual(
+            canonical_events.ingest.await_args.kwargs["workspace_id"],
+            "workspace-a",
+        )
+        first_key = canonical_events.ingest.await_args.kwargs[
+            "idempotency_key"
+        ]
+
+        runtime.project_scope = lambda _project_id: (
+            "org-b",
+            "workspace-b",
+        )
+        await service._bounded_reasoning_dispatch(
+            SimpleNamespace(thread_id="thread-james"),
+            "pursue the issue",
+            "owner-work-watchdog",
+            cycle_key="owner-work:project-a:thread-james:james",
+            payload={"project_id": "project-a", "agent": "james"},
+        )
+
+        self.assertNotEqual(
+            first_key,
+            canonical_events.ingest.await_args.kwargs["idempotency_key"],
+        )
+
+
 class AutonomyStateTests(unittest.IsolatedAsyncioTestCase):
     async def test_expired_pending_handoff_is_archived_with_typed_status(self) -> None:
         host = _Host()
@@ -163,6 +236,7 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
         states: dict[str, WorkItemState],
         *,
         active: bool = False,
+        recently_active: bool = False,
     ) -> SimpleNamespace:
         binding = SimpleNamespace(
             thread_id="thread-james",
@@ -173,6 +247,7 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
         async def replace(current, _reason):
             return current
 
+        gitlab_group_issues = AsyncMock(return_value=[])
         return SimpleNamespace(
             load_gitlab_routing_settings=lambda: SimpleNamespace(
                 enabled=True,
@@ -183,7 +258,7 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
             load_work_item_states=lambda: states,
             gitlab_token_for_project=lambda _project_id: "token",
             gitlab_group_path=lambda _settings: "example",
-            gitlab_group_issues=lambda *_args, **_kwargs: [],
+            gitlab_group_issues=gitlab_group_issues,
             append_bot_event=lambda event: None,
             coerce_owner=lambda value: (
                 str(value).strip().lower() if value else None
@@ -196,7 +271,7 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
             release_stale_active_turn=lambda *_args: None,
             thread_is_active=lambda _thread_id: active,
             thread_queue_depth=lambda _thread_id: 0,
-            thread_recently_active=lambda _thread_id: False,
+            thread_recently_active=lambda _thread_id: recently_active,
             binding_prefix=lambda _binding: "James",
             record_watchdog_dispatch=lambda _key: None,
             dispatch_event=dispatch,
@@ -244,6 +319,7 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
             "dispatch:example/project#2",
             "owner-work-watchdog",
         )
+        runtime.gitlab_group_issues.assert_not_awaited()
 
     async def test_active_owner_is_not_dispatched_duplicate_work(self) -> None:
         state = WorkItemState(
@@ -260,6 +336,22 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
         await AutonomyService(runtime=runtime).run_owner_work_cycle()
 
         runtime.dispatch_event.assert_not_awaited()
+
+    async def test_recent_activity_does_not_mask_idle_actionable_owner(self) -> None:
+        state = WorkItemState(
+            ref="example/project#1",
+            project_id="project-a",
+            current_owner="james",
+            current_stage="implementation_active",
+            last_meaningful_update_at=10.0,
+            created_at=1.0,
+            updated_at=10.0,
+        )
+        runtime = self._runtime({state.ref: state}, recently_active=True)
+
+        await AutonomyService(runtime=runtime).run_owner_work_cycle()
+
+        runtime.dispatch_event.assert_awaited_once()
 
 
 if __name__ == "__main__":

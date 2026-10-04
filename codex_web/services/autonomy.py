@@ -92,8 +92,15 @@ class AutonomyService:
         if self.controller is None or self.canonical_events is None:
             return await self.runtime.dispatch_event(binding, text, source)
 
+        organization_id, workspace_id = self.runtime.project_scope(
+            str(payload.get("project_id") or "")
+        )
         normalized = json.dumps(
-            payload,
+            {
+                "payload": payload,
+                "tenant_id": organization_id,
+                "workspace_id": workspace_id,
+            },
             sort_keys=True,
             separators=(",", ":"),
             default=str,
@@ -104,6 +111,8 @@ class AutonomyService:
             source=f"autonomy-watchdog:{source}",
             idempotency_key=f"{cycle_key}:{digest}",
             payload=payload,
+            tenant_id=organization_id,
+            workspace_id=workspace_id,
         )
         if not delivery.inserted:
             return {
@@ -240,20 +249,23 @@ class AutonomyService:
                 )
                 if not binding:
                     continue
-                issues = d.gitlab_group_issues(
-                    project_id,
-                    project_settings,
-                    labels=[f"owner::{owner}"],
-                )
-                if inspect.isawaitable(issues):
-                    issues = await issues
-                missing_state_refs = [
-                    issue.get("references", {}).get("full", "")
-                    for issue in issues
-                    if issue.get("references", {}).get("full")
-                    and issue.get("state") == "opened"
-                    and issue.get("references", {}).get("full") not in states
-                ]
+                missing_state_refs: list[str] = []
+                if not canonical_items:
+                    issues = d.gitlab_group_issues(
+                        project_id,
+                        project_settings,
+                        labels=[f"owner::{owner}"],
+                    )
+                    if inspect.isawaitable(issues):
+                        issues = await issues
+                    missing_state_refs = [
+                        issue.get("references", {}).get("full", "")
+                        for issue in issues
+                        if issue.get("references", {}).get("full")
+                        and issue.get("state") == "opened"
+                        and issue.get("references", {}).get("full")
+                        not in states
+                    ]
                 if not missing_state_refs and not canonical_items:
                     continue
                 binding = await d.replace_nonperforming_thread(binding, "owner-work-watchdog")
@@ -263,7 +275,14 @@ class AutonomyService:
                 d.release_stale_active_turn(binding.thread_id, "owner-work-watchdog")
                 if d.thread_is_active(binding.thread_id) or d.thread_queue_depth(binding.thread_id):
                     continue
-                if d.thread_recently_active(binding.thread_id):
+                # Canonical actionable work requires a live lane. Historical
+                # activity is not evidence that the owner is still pursuing
+                # the item; active/queued state and the dispatch cooldown are
+                # the duplicate-dispatch guards for this path.
+                if (
+                    not canonical_items
+                    and d.thread_recently_active(binding.thread_id)
+                ):
                     continue
                 selected = canonical_items[0] if canonical_items else None
                 if missing_state_refs:

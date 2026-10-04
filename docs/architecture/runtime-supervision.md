@@ -39,11 +39,12 @@ Recovery scheduling is idempotent inside the configured cooldown window. Continu
 Owner-work supervision also treats canonical actionable ownership as a durable
 wake condition. For each configured agent owner, an idle lane with no active or
 queued turn receives at most one exact canonical Work Item per bounded dispatch
-window. Active, queued, recently active, pending-handoff, closed, and
-non-actionable lanes are skipped deterministically. Runtime readiness fails when
-autonomy is disabled or a required autonomy task has stopped, so an idle
-autonomous deployment cannot report healthy while its supervision plane is
-inactive.
+window. Active, queued, pending-handoff, closed, and non-actionable lanes are
+skipped deterministically. Recent historical activity does not satisfy the
+invariant because it does not prove that pursuit is ongoing. Runtime readiness
+fails when autonomy is disabled or a required autonomy task has stopped, so an
+idle autonomous deployment cannot report healthy while its supervision plane
+is inactive.
 
 ### Active-turn restart recovery
 

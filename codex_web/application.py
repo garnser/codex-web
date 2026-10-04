@@ -190,7 +190,10 @@ from codex_web.services.artifact_content_configuration import (
 )
 from codex_web.services.authority_policy_explorer import AuthorityPolicyExplorerService
 from codex_web.services.authority_roles import install_authority_roles
-from codex_web.services.autonomy import install_autonomy_service
+from codex_web.services.autonomy import (
+    AutonomyService,
+    install_autonomy_service,
+)
 from codex_web.services.autonomy_dependencies import AutonomyRuntimeDependencies
 from codex_web.services.autonomy_controller import AutonomyController
 from codex_web.services.autonomy_control_center import AutonomyControlCenterService
@@ -3671,6 +3674,22 @@ async def _autonomy_gitlab_group_issues(
     )
 
 
+def _autonomy_project_scope(
+    project_id: str,
+) -> tuple[str | None, str | None]:
+    project = next(
+        (
+            item
+            for item in project_repository.load()
+            if item.id == project_id
+        ),
+        None,
+    )
+    if project is None:
+        return None, None
+    return project.organization_id, project.workspace_id
+
+
 autonomy_runtime_dependencies = AutonomyRuntimeDependencies(
     load_gitlab_routing_settings=configuration_state.gitlab_routing.load,
     load_work_item_states=runtime_state.work_item_states.load,
@@ -3727,6 +3746,7 @@ autonomy_runtime_dependencies = AutonomyRuntimeDependencies(
         work_item_watchdog_prompt_policy.format_split_brain_prompt
     ),
     work_item_dispatch_text=work_item_dispatch_prompt_policy.render,
+    project_scope=_autonomy_project_scope,
 )
 app.state.autonomy_runtime_dependencies = autonomy_runtime_dependencies
 
@@ -4034,9 +4054,49 @@ def _autonomy_health():
         if name in task_status
         and not task_status[name].get("running", False)
     ]
+    states = runtime_state.work_item_states.load().values()
+    idle_actionable_owners = []
+    for owner in OWNER_QUEUE_AGENTS:
+        actionable_project = next(
+            (
+                state.project_id
+                for state in states
+                if work_item_state_machine._coerce_owner(
+                    state.current_owner or state.next_owner
+                )
+                == owner
+                and state.current_stage
+                in AutonomyService.ACTIONABLE_OWNER_STAGES
+                and not state.closed_at
+                and not (
+                    state.handoff
+                    and state.handoff.status == "pending"
+                )
+            ),
+            None,
+        )
+        if actionable_project is None:
+            continue
+        binding = agent_channel_preference_service.binding_for_agent(
+            owner,
+            actionable_project,
+            preferred_conversation_id=HANDOFF_COORDINATION_CHANNEL,
+        )
+        if (
+            binding is None
+            or not binding.thread_id
+            or (
+                not turn_execution_service.thread_is_active(
+                    binding.thread_id
+                )
+                and not turn_queue_policy.depth(binding.thread_id)
+            )
+        ):
+            idle_actionable_owners.append(owner)
     return {
         "enabled": enabled,
         "stoppedTasks": stopped,
+        "idleActionableOwners": idle_actionable_owners,
     }
 
 

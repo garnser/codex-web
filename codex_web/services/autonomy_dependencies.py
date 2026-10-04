@@ -50,6 +50,7 @@ class AutonomyRuntimeDependencies:
     format_orchestrator_watchdog_prompt: Callable[..., str]
     format_split_brain_watchdog_prompt: Callable[..., str]
     work_item_dispatch_text: Callable[[Any], str]
+    project_scope: Callable[[str], tuple[str | None, str | None]]
 
     @classmethod
     def from_host(cls, host: Any) -> "AutonomyRuntimeDependencies":
@@ -230,5 +231,10 @@ class AutonomyRuntimeDependencies:
                 host,
                 "_work_item_dispatch_text",
                 lambda state: str(getattr(state, "ref", "")),
+            ),
+            project_scope=getattr(
+                host,
+                "_project_scope",
+                lambda _project_id: (None, None),
             ),
         )

@@ -894,6 +894,20 @@ class TurnExecutionService:
             return ("degraded", None, None)
         return manager, session, assignment
 
+    def thread_has_live_agent_runtime_session(
+        self,
+        thread_id: str,
+    ) -> bool:
+        """Report whether a bootstrap-bound thread has its required session."""
+
+        if self._bootstrap_binding_for_thread(thread_id) is None:
+            return True
+        resolved = self._assignment_session_for_thread(thread_id)
+        return bool(
+            resolved is not None
+            and resolved[0] != "degraded"
+        )
+
     async def request_for_thread(
         self,
         thread_id: str,
