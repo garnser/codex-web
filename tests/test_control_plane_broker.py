@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -461,6 +462,24 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             payload["_broker"]["operation"],
             "control_plane.operations.list",
         )
+
+    async def test_assignment_validation_runs_off_event_loop(self) -> None:
+        event_loop_thread = threading.get_ident()
+        validation_threads: list[int] = []
+
+        def validate():
+            validation_threads.append(threading.get_ident())
+            return self.current_assignment
+
+        self.broker.validator = validate
+        status, _, payload = await self._request(
+            "GET",
+            "/api/control-plane-broker/operations",
+        )
+
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(len(validation_threads), 1)
+        self.assertNotEqual(validation_threads[0], event_loop_thread)
 
     def test_ci_diagnostic_routes_resolve_only_bounded_allowlisted_shapes(self) -> None:
         cases = {

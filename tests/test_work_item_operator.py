@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -172,6 +173,22 @@ class WorkItemOperatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("servicenow", by_type)
         self.assertIn("discovery", by_type["jira"]["capabilities"])
         self.assertIn("create", by_type["servicenow"]["capabilities"])
+
+    async def test_source_detail_resolves_source_off_event_loop(self) -> None:
+        event_loop_thread = threading.get_ident()
+        resolution_threads: list[int] = []
+        resolve = self.service._source_for_state
+
+        def tracked_resolve(*args, **kwargs):
+            resolution_threads.append(threading.get_ident())
+            return resolve(*args, **kwargs)
+
+        self.service._source_for_state = tracked_resolve
+        detail = await self.service.source_detail("TASK-42")
+
+        self.assertEqual(detail["snapshot"]["title"], "External title")
+        self.assertEqual(len(resolution_threads), 1)
+        self.assertNotEqual(resolution_threads[0], event_loop_thread)
 
     async def test_retry_uses_canonical_execution_state_and_dispatch_seam(self) -> None:
         result = await self.service.retry("TASK-42", actor="operator", reason="try again")

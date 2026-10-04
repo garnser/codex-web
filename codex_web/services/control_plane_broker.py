@@ -1614,7 +1614,7 @@ class AssignmentBoundControlPlaneBroker:
             self._active_requests += 1
             counted = True
             self._rate_limit()
-            assignment = self._validate_current()
+            assignment = await asyncio.to_thread(self._validate_current)
             if content_length > self.limits.max_request_bytes:
                 status = 413
                 raise ControlPlaneBrokerDeniedError(

@@ -1521,17 +1521,16 @@ app.include_router(build_evaluations_router(evaluation_service))
 agent_runtime_usage_store = AgentRuntimeUsageStore(state_store)
 
 def _runtime_usage_attribution(session):
-    assignment = next(
-        (
-            item
-            for item in execution_worker_store.load().assignments
-            if session.assignment_id
-            and item.id == session.assignment_id
-            and item.organization_id == session.organization_id
-            and item.workspace_id == session.workspace_id
-        ),
-        None,
+    assignment = (
+        execution_worker_store.assignment(session.assignment_id)
+        if session.assignment_id
+        else None
     )
+    if assignment is not None and (
+        assignment.organization_id != session.organization_id
+        or assignment.workspace_id != session.workspace_id
+    ):
+        assignment = None
     work_item_ref = assignment.work_item_ref if assignment is not None else None
     work_state = None
     if work_item_ref:

@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
@@ -152,6 +153,7 @@ class CodexRuntime:
         self.reader_task: asyncio.Task[None] | None = None
         self.stderr_task: asyncio.Task[None] | None = None
         self.lifecycle_lock = asyncio.Lock()
+        self._pipe_executor: ThreadPoolExecutor | None = None
 
     async def start(self) -> None:
         async with self.lifecycle_lock:
@@ -163,6 +165,7 @@ class CodexRuntime:
             self.ready.clear()
             self.last_error = None
             self._fail_pending(RuntimeError("Codex app-server restarted"))
+            self._pipe_reader_executor()
             self.proc = self._popen(
                 list(self.command),
                 cwd=str(self.cwd),
@@ -255,8 +258,22 @@ class CodexRuntime:
                     await task
         self.reader_task = None
         self.stderr_task = None
+        pipe_executor = self._pipe_executor
+        self._pipe_executor = None
+        if pipe_executor is not None:
+            pipe_executor.shutdown(wait=False, cancel_futures=True)
         self.pending_approvals.clear()
         self.pending_approval_rpc_ids.clear()
+
+    def _pipe_reader_executor(self) -> ThreadPoolExecutor:
+        executor = self._pipe_executor
+        if executor is None:
+            executor = ThreadPoolExecutor(
+                max_workers=2,
+                thread_name_prefix="codex-app-server-pipe",
+            )
+            self._pipe_executor = executor
+        return executor
 
     def _approval_public_id(self, request_id: int | str) -> int | str:
         if not self.approval_namespace:
@@ -276,8 +293,10 @@ class CodexRuntime:
     async def _stderr_loop(self) -> None:
         proc = self.proc
         assert proc and proc.stderr
+        executor = self._pipe_reader_executor()
+        loop = asyncio.get_running_loop()
         while True:
-            line = await asyncio.to_thread(proc.stderr.readline)
+            line = await loop.run_in_executor(executor, proc.stderr.readline)
             if not line:
                 return
             text = redact_codex_diagnostic(line.rstrip("\n"))
@@ -296,8 +315,10 @@ class CodexRuntime:
     async def _read_loop(self) -> None:
         proc = self.proc
         assert proc and proc.stdout
+        executor = self._pipe_reader_executor()
+        loop = asyncio.get_running_loop()
         while True:
-            line = await asyncio.to_thread(proc.stdout.readline)
+            line = await loop.run_in_executor(executor, proc.stdout.readline)
             if not line:
                 self.ready.clear()
                 self.last_error = "Codex app-server stopped"
