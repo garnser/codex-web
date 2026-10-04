@@ -8,6 +8,7 @@ import logging
 import os
 import secrets
 import shutil
+import socket
 import tempfile
 import time
 from dataclasses import dataclass
@@ -261,15 +262,56 @@ class AssignmentBoundAgentModelEgressBroker:
         last_error: BaseException | None = None
         for attempt in range(self.upstream_connect_attempts):
             try:
-                return await asyncio.wait_for(
-                    asyncio.open_connection(
+                addresses = await asyncio.wait_for(
+                    asyncio.get_running_loop().getaddrinfo(
                         endpoint.host,
                         endpoint.port,
-                        happy_eyeballs_delay=0.25,
-                        interleave=1,
+                        type=socket.SOCK_STREAM,
                     ),
                     timeout=self.upstream_connect_timeout_seconds,
                 )
+                tasks: list[
+                    asyncio.Task[
+                        tuple[asyncio.StreamReader, asyncio.StreamWriter]
+                    ]
+                ] = []
+                seen: set[tuple[int, str, int]] = set()
+                for family, _kind, protocol, _canonical, address in addresses:
+                    key = (family, str(address[0]), int(address[1]))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    tasks.append(
+                        asyncio.create_task(
+                            asyncio.open_connection(
+                                address[0],
+                                address[1],
+                                family=family,
+                                proto=protocol,
+                            )
+                        )
+                    )
+                if not tasks:
+                    raise OSError("model egress DNS returned no addresses")
+                try:
+                    for completed in asyncio.as_completed(
+                        tasks,
+                        timeout=self.upstream_connect_timeout_seconds,
+                    ):
+                        try:
+                            connection = await completed
+                        except OSError as exc:
+                            last_error = exc
+                            continue
+                        return connection
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                if last_error is not None:
+                    raise last_error
+                raise asyncio.TimeoutError
             except (OSError, asyncio.TimeoutError) as exc:
                 last_error = exc
                 if attempt + 1 >= self.upstream_connect_attempts:
