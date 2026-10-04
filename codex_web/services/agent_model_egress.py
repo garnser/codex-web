@@ -4,6 +4,7 @@ import asyncio
 import base64
 import contextlib
 import hmac
+import logging
 import os
 import secrets
 import shutil
@@ -12,6 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 from urllib.parse import urlparse
+
+
+logger = logging.getLogger(__name__)
 
 
 class AgentRuntimeModelEgressError(RuntimeError):
@@ -188,6 +192,12 @@ class AssignmentBoundAgentModelEgressBroker:
         if self.validator is not None:
             self.validator()
 
+    async def _validate_current_async(self) -> None:
+        # Validators may decode persistent worker state or inspect a workspace.
+        # Keep synchronous validation off the ASGI loop so opening a model
+        # connection cannot stall unrelated HTTP traffic.
+        await asyncio.to_thread(self._validate_current)
+
     @staticmethod
     async def _pipe(
         reader: asyncio.StreamReader,
@@ -252,7 +262,7 @@ class AssignmentBoundAgentModelEgressBroker:
         upstream_writer: asyncio.StreamWriter | None = None
         try:
             try:
-                self._validate_current()
+                await self._validate_current_async()
             except Exception as exc:
                 raise AgentRuntimeModelEgressDeniedError(
                     "assignment model egress authority is stale"
@@ -279,7 +289,7 @@ class AssignmentBoundAgentModelEgressBroker:
                 return
             endpoint = self._destination(target)
             try:
-                self._validate_current()
+                await self._validate_current_async()
             except Exception as exc:
                 raise AgentRuntimeModelEgressDeniedError(
                     "assignment model egress authority is stale"
@@ -303,10 +313,20 @@ class AssignmentBoundAgentModelEgressBroker:
             asyncio.TimeoutError,
             ValueError,
             AgentRuntimeModelEgressDeniedError,
-        ):
+        ) as exc:
+            logger.warning(
+                "Assignment-bound model egress denied or timed out: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
             if not writer.is_closing():
                 await self._deny(writer, "403 Forbidden")
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "Assignment-bound model egress failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
             if not writer.is_closing():
                 await self._deny(writer, "502 Bad Gateway")
         finally:

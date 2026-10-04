@@ -318,6 +318,8 @@ separate assignment-bound broker:
 - the broker owns each accepted CONNECT handler for its complete lifetime and,
   on session shutdown, stops accepting, cancels and awaits every active handler
   before removing the private socket;
+- assignment and fence validation runs outside the control-plane event loop so
+  connection admission cannot block unrelated health, routing, or API work;
 - a tiny loopback relay inside the private network namespace bridges only the
   trusted Codex parent process to that Unix socket; the broker directory is
   mounted read-only and outside the repository workspace;

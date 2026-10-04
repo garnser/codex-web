@@ -4,6 +4,7 @@ import asyncio
 import base64
 import gc
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -84,6 +85,7 @@ class CodexModelEgressBrokerTests(unittest.IsolatedAsyncioTestCase):
         socket = self.echo_server.sockets[0]
         self.echo_port = int(socket.getsockname()[1])
         self.validation_calls = 0
+        self.validation_thread_ids: list[int] = []
         self.stale = False
         self.broker = AssignmentBoundModelEgressBroker(
             (CodexModelEgressEndpoint("127.0.0.1", self.echo_port),),
@@ -114,6 +116,7 @@ class CodexModelEgressBrokerTests(unittest.IsolatedAsyncioTestCase):
 
     def _validate(self) -> None:
         self.validation_calls += 1
+        self.validation_thread_ids.append(threading.get_ident())
         if self.stale:
             raise RuntimeError("stale fence")
 
@@ -159,6 +162,7 @@ class CodexModelEgressBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(echoed, b"stream-through-broker")
         self.assertEqual(self.broker.connections, 1)
         self.assertGreaterEqual(self.validation_calls, 2)
+        self.assertNotIn(threading.get_ident(), self.validation_thread_ids)
         writer.close()
         await writer.wait_closed()
 
