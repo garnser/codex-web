@@ -76,6 +76,8 @@ class AssignmentBoundAgentModelEgressBroker:
         endpoints: Iterable[AgentRuntimeModelEgressEndpoint],
         *,
         validator: Callable[[], object] | None = None,
+        upstream_connect_attempts: int = 3,
+        upstream_retry_seconds: float = 0.25,
     ) -> None:
         normalized = tuple(
             sorted(
@@ -89,6 +91,12 @@ class AssignmentBoundAgentModelEgressBroker:
             )
         self.endpoints = normalized
         self.validator = validator
+        self.upstream_connect_attempts = max(
+            1, int(upstream_connect_attempts)
+        )
+        self.upstream_retry_seconds = max(
+            0.0, float(upstream_retry_seconds)
+        )
         self.capability = secrets.token_urlsafe(32)
         self._username = "agent-runtime"
         self._root = Path(tempfile.mkdtemp(prefix="agent-model-egress-"))
@@ -197,6 +205,27 @@ class AssignmentBoundAgentModelEgressBroker:
         with contextlib.suppress(Exception):
             await writer.wait_closed()
 
+    async def _open_upstream(
+        self,
+        endpoint: AgentRuntimeModelEgressEndpoint,
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        last_error: OSError | None = None
+        for attempt in range(self.upstream_connect_attempts):
+            try:
+                return await asyncio.open_connection(
+                    endpoint.host,
+                    endpoint.port,
+                )
+            except OSError as exc:
+                last_error = exc
+                if attempt + 1 >= self.upstream_connect_attempts:
+                    raise
+                await asyncio.sleep(
+                    self.upstream_retry_seconds * (attempt + 1)
+                )
+        assert last_error is not None
+        raise last_error
+
     async def _handle(
         self,
         reader: asyncio.StreamReader,
@@ -237,9 +266,8 @@ class AssignmentBoundAgentModelEgressBroker:
                 raise AgentRuntimeModelEgressDeniedError(
                     "assignment model egress authority is stale"
                 ) from exc
-            upstream_reader, upstream_writer = await asyncio.open_connection(
-                endpoint.host,
-                endpoint.port,
+            upstream_reader, upstream_writer = await self._open_upstream(
+                endpoint
             )
             self.connections += 1
             writer.write(
