@@ -83,7 +83,7 @@ class AssignmentBoundAgentModelEgressBroker:
         validator: Callable[[], object] | None = None,
         upstream_connect_attempts: int = 3,
         upstream_retry_seconds: float = 0.25,
-        validation_cache_seconds: float = 0.5,
+        validation_cache_seconds: float = 5.0,
     ) -> None:
         normalized = tuple(
             sorted(

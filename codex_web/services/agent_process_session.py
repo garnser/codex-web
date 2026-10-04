@@ -462,32 +462,10 @@ class AssignmentBoundAgentProcessSession:
         )
 
     def _validate_egress_state(self) -> ExecutionAssignment:
-        self._current_worker()
-        assignment = self._current_assignment()
-        if assignment.status != AssignmentStatus.RUNNING:
-            raise AssignmentBoundAgentProcessSessionStaleError(
-                f"assignment-bound agent runtime assignment is {assignment.status.value}"
-            )
-        if (
-            assignment.deadline_at is not None
-            and assignment.deadline_at <= self._clock()
-        ):
-            raise AssignmentBoundAgentProcessSessionStaleError(
-                "assignment-bound agent runtime assignment deadline expired"
-            )
-        assignment = self._heartbeat_and_renew(assignment)
-        if self.delegation is not None:
-            delegation_service = self.credential_provider
-            if delegation_service is None:
-                raise AssignmentBoundAgentProcessSessionStaleError(
-                    "runtime credential provider is unavailable"
-                )
-            delegation_service.validate_current(
-                self.delegation,
-                assignment,
-                actor=self.local_worker.worker_actor,
-            )
-        return assignment
+        # CONNECT admission verifies authority but must not mutate the worker
+        # catalog. The independent session watchdog owns heartbeats and lease
+        # renewal, so model connection bursts cannot amplify durable writes.
+        return self.validate_current()
 
     async def _start_egress_broker(
         self,

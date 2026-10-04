@@ -319,9 +319,10 @@ separate assignment-bound broker:
   on session shutdown, stops accepting, cancels and awaits every active handler
   before removing the private socket;
 - assignment and fence validation runs outside the control-plane event loop;
-  authenticated CONNECT bursts share a sub-second validation result while the
-  independent one-second session watchdog bounds revocation latency, preventing
-  connection admission from starving unrelated health, routing, or API work;
+  authenticated CONNECT bursts share a short validation result while the
+  independent one-second session watchdog bounds revocation latency and owns
+  worker heartbeat/lease renewal, preventing connection admission from
+  amplifying durable writes or starving unrelated health, routing, and API work;
 - a tiny loopback relay inside the private network namespace bridges only the
   trusted Codex parent process to that Unix socket; the broker directory is
   mounted read-only and outside the repository workspace;
