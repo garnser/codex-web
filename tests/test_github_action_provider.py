@@ -31,6 +31,7 @@ from codex_web.services.github_action_provider import (
     CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
     CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+    CODE_HOST_JOB_RERUN_ACTION_ID,
     GitHubActionProvider,
 )
 from codex_web.services.identity import IdentityService
@@ -56,6 +57,17 @@ class _GitHubClient:
         self.pull_request_merges = 0
         self.branches: dict[str, str] = {}
         self.credentials: list[str] = []
+        self.jobs = {
+            91: {
+                "id": 91,
+                "run_id": 81,
+                "status": "completed",
+                "conclusion": "failure",
+                "html_url": "https://github.com/garnser/codex-web/actions/runs/81/job/91",
+            }
+        }
+        self.job_reruns = 0
+        self.runs = {81: {"id": 81, "run_attempt": 1, "status": "completed"}}
 
     async def list_issue_comments(self, api_base, repo, number, *, token):
         self.credentials.append(token)
@@ -157,6 +169,23 @@ class _GitHubClient:
     async def branch(self, api_base, repo, branch, *, token):
         self.credentials.append(token)
         return {"name": branch, "commit": {"sha": self.branches.get(branch)}}
+
+    async def actions_job(self, api_base, repo, job_id, *, token):
+        self.credentials.append(token)
+        return dict(self.jobs[job_id])
+
+    async def rerun_actions_job(self, api_base, repo, job_id, *, token):
+        self.credentials.append(token)
+        self.job_reruns += 1
+        self.jobs[job_id]["status"] = "queued"
+        self.jobs[job_id]["conclusion"] = None
+        self.runs[self.jobs[job_id]["run_id"]].update(
+            {"run_attempt": 2, "status": "queued"}
+        )
+
+    async def actions_run(self, api_base, repo, run_id, *, token):
+        self.credentials.append(token)
+        return dict(self.runs[run_id])
 
 
 class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
@@ -497,6 +526,23 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.client.pull_request_merges, 1)
         self.assertEqual(result.output["merge_commit_sha"], "a" * 40)
+        self.assertTrue(
+            (await self.execution.verify(self.binding.id, result, actor=self.actor)).verified
+        )
+
+    async def test_failed_job_rerun_is_governed_and_verified(self) -> None:
+        request = self._request(CODE_HOST_JOB_RERUN_ACTION_ID, {"job_id": 91})
+
+        preparation = await self.execution.prepare(
+            self.binding.id, request, actor=self.actor
+        )
+        result = await self.execution.execute(
+            self.binding.id, request, actor=self.actor
+        )
+
+        self.assertEqual(preparation.provider_plan["job_id"], 91)
+        self.assertEqual(self.client.job_reruns, 1)
+        self.assertEqual(result.output["workflow_run_id"], 81)
         self.assertTrue(
             (await self.execution.verify(self.binding.id, result, actor=self.actor)).verified
         )

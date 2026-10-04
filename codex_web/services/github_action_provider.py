@@ -31,6 +31,8 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_ISSUE_COMMENT_EVIDENCE,
     CODE_HOST_ISSUE_STATE_EVIDENCE,
     CODE_HOST_ISSUE_UPDATE_ACTION_ID,
+    CODE_HOST_JOB_RERUN_ACTION_ID,
+    CODE_HOST_JOB_RERUN_EVIDENCE,
     CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE,
@@ -237,6 +239,12 @@ class GitHubActionProvider:
                 "repository": repository,
                 "pull_request_number": payload["number"],
                 "merge_method": payload["merge_method"],
+            }
+        if request.action_id == CODE_HOST_JOB_RERUN_ACTION_ID:
+            return {
+                "operation": "job-rerun",
+                "repository": repository,
+                "job_id": self.contract.job_rerun(request),
             }
         raise ValueError("unsupported GitHub action")
 
@@ -486,6 +494,38 @@ class GitHubActionProvider:
             url = str(current.get("html_url") or "") or None
             output.update({"pull_request_number": number, "merge_commit_sha": merge_sha})
             summary = "GitHub pull request is merged after clean mergeability validation."
+        elif request.action_id == CODE_HOST_JOB_RERUN_ACTION_ID:
+            job_id = self.contract.job_rerun(request)
+            current = await self.client.actions_job(
+                self.api_base, repository, job_id, token=credential
+            )
+            if str(current.get("status") or "").casefold() != "completed":
+                raise ValueError("GitHub job must be completed before it can be rerun")
+            if str(current.get("conclusion") or "").casefold() not in {
+                "failure", "cancelled", "timed_out", "action_required", "stale"
+            }:
+                raise ValueError("GitHub job conclusion is not rerunnable")
+            run_id = int(current.get("run_id") or 0)
+            if run_id < 1:
+                raise ValueError("GitHub job response omitted its workflow run")
+            run = await self.client.actions_run(
+                self.api_base, repository, run_id, token=credential
+            )
+            previous_attempt = int(run.get("run_attempt") or 0)
+            if previous_attempt < 1:
+                raise ValueError("GitHub workflow run omitted its attempt number")
+            await self.client.rerun_actions_job(
+                self.api_base, repository, job_id, token=credential
+            )
+            evidence_type = CODE_HOST_JOB_RERUN_EVIDENCE
+            external_id = str(job_id)
+            url = str(current.get("html_url") or "") or None
+            output.update({
+                "job_id": job_id,
+                "workflow_run_id": run_id,
+                "previous_run_attempt": previous_attempt,
+            })
+            summary = "GitHub accepted the governed CI job rerun request."
         else:
             raise ValueError("unsupported GitHub action")
         return ActionResult(
@@ -605,6 +645,16 @@ class GitHubActionProvider:
                 not result.output.get("merge_commit_sha")
                 or str(item.get("merge_commit_sha") or "")
                 == str(result.output["merge_commit_sha"])
+            )
+        elif result.action_id == CODE_HOST_JOB_RERUN_ACTION_ID:
+            item = await self.client.actions_run(
+                self.api_base, repository, int(result.output["workflow_run_id"]), token=credential
+            )
+            verified = (
+                int(item.get("run_attempt") or 0)
+                > int(result.output["previous_run_attempt"])
+                and str(item.get("status") or "").casefold()
+                in {"queued", "in_progress", "completed"}
             )
         else:
             raise ValueError("unsupported GitHub action result")

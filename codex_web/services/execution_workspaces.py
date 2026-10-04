@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import re
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -412,6 +414,111 @@ class ExecutionWorkspaceService:
         if item is None:
             raise ExecutionWorkspaceNotFoundError("execution workspace not found")
         return item
+
+    def refresh_revision(
+        self,
+        workspace_id: str,
+        revision: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutionWorkspace:
+        """Move a clean, actively leased single-repository workspace to one commit."""
+        requested = str(revision or "").strip().casefold()
+        if not re.fullmatch(r"[0-9a-f]{7,40}", requested):
+            raise ExecutionWorkspaceBackendError(
+                "revision must be a 7 to 40 character hexadecimal Git revision"
+            )
+        workspace = self.get(workspace_id, actor)
+        if workspace.status != ExecutionWorkspaceStatus.ACTIVE:
+            raise ExecutionWorkspaceConflictError("execution workspace is not active")
+        state = self.store.load()
+        lease = next((item for item in state.leases if item.id == workspace.lease_id), None)
+        if lease is None or lease.released_at is not None or lease.expires_at <= time.time():
+            raise ExecutionWorkspaceConflictError("execution workspace lease is stale")
+        writable = [
+            item for item in workspace.repository_members
+            if item.access_mode == LeaseMode.WRITE
+        ]
+        if len(writable) != 1:
+            raise ExecutionWorkspaceConflictError(
+                "exact revision refresh requires one writable repository member"
+            )
+        member = writable[0]
+        checkout = Path(member.workspace_path)
+        if not checkout.is_dir():
+            raise ExecutionWorkspaceBackendError("execution workspace checkout is unavailable")
+
+        def git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+            try:
+                return subprocess.run(
+                    ["git", "-C", str(checkout), *args], check=check,
+                    capture_output=True, text=True, timeout=30,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise ExecutionWorkspaceBackendError(
+                    "execution workspace Git operation failed"
+                ) from exc
+
+        if git("status", "--porcelain").stdout.strip():
+            raise ExecutionWorkspaceConflictError(
+                "execution workspace has uncommitted changes"
+            )
+        if len(requested) < 40:
+            candidates = []
+            for candidate in git("rev-parse", f"--disambiguate={requested}").stdout.splitlines():
+                if git("cat-file", "-e", f"{candidate}^{{commit}}", check=False).returncode == 0:
+                    candidates.append(candidate)
+            candidates = list(dict.fromkeys(candidates))
+            if not candidates:
+                raise ExecutionWorkspaceNotFoundError("revision does not resolve to a commit")
+            if len(candidates) != 1:
+                raise ExecutionWorkspaceConflictError("abbreviated revision is ambiguous")
+            resolved = candidates[0]
+        else:
+            result = git("rev-parse", "--verify", f"{requested}^{{commit}}", check=False)
+            if result.returncode != 0:
+                raise ExecutionWorkspaceNotFoundError("revision does not resolve to a commit")
+            resolved = result.stdout.strip()
+        git("reset", "--hard", resolved)
+        observed = git("rev-parse", "HEAD").stdout.strip()
+        if observed != resolved:
+            raise ExecutionWorkspaceBackendError("workspace refresh verification failed")
+        updated_at = time.time()
+
+        def update(current_state):
+            for index, item in enumerate(current_state.workspaces):
+                if item.id != workspace_id:
+                    continue
+                members = tuple(
+                    current.model_copy(update={"base_revision": resolved, "head_revision": resolved})
+                    if current.resource_id == member.resource_id else current
+                    for current in item.repository_members
+                )
+                current_state.workspaces[index] = item.model_copy(
+                    update={
+                        "base_revision": resolved,
+                        "head_revision": resolved,
+                        "repository_members": members,
+                        "actual_disk_bytes": self.backend.disk_usage(checkout),
+                        "updated_at": updated_at,
+                    }
+                )
+                self._append_event(
+                    current_state,
+                    ExecutionWorkspaceEvent(
+                        workspace_id=workspace_id,
+                        event_type="workspace_revision_refreshed",
+                        actor_identity_id=actor.identity_id,
+                        details={"requested_revision": requested, "resolved_revision": resolved},
+                    ),
+                )
+                return current_state
+            raise ExecutionWorkspaceNotFoundError("execution workspace not found")
+
+        self.store.update(update)
+        refreshed = self.get(workspace_id, actor)
+        self._sync_work_item(refreshed)
+        return refreshed
 
     def _recover_state(self, state, now: float, scope: TenantScope | None):
         abandoned: list[str] = []

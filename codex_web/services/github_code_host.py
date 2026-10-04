@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime
+import re
 from urllib.parse import quote, urlparse
 
 import httpx
 
 from codex_web.canonical_events import CanonicalEventType
 from codex_web.code_hosts import (
+    CodeHostArtifactDownloadFact,
+    CodeHostArtifactFact,
     CodeHostCapability,
     CodeHostCheckFact,
+    CodeHostJobLogFact,
     CodeHostCommitFact,
     CodeHostCompareFact,
     CodeHostError,
@@ -69,6 +74,8 @@ class GitHubCodeHostProvider:
                 CodeHostCapability.PULL_REQUEST_READ,
                 CodeHostCapability.REVIEW_READ,
                 CodeHostCapability.CHECKS_READ,
+                CodeHostCapability.JOB_LOGS_READ,
+                CodeHostCapability.ARTIFACTS_READ,
                 CodeHostCapability.RELEASE_READ,
                 CodeHostCapability.COMPARE_READ,
                 CodeHostCapability.WEBHOOK_NORMALIZE,
@@ -334,6 +341,87 @@ class GitHubCodeHostProvider:
             )
             for item in rows
             if isinstance(item, dict) and item.get("id") is not None
+        )
+
+    async def job_logs(
+        self, binding: CodeHostProviderBinding, resource: Resource, job_id: int,
+        *, credential: str | None, max_bytes: int,
+    ) -> CodeHostJobLogFact:
+        if not credential:
+            raise CodeHostError("GitHub credential is required for job logs")
+        repository = _repository_name(resource)
+        try:
+            raw, truncated, _ = await self.client.request_bytes(
+                "GET", binding.base_url,
+                f"repos/{quote(repository, safe='/')}/actions/jobs/{job_id}/logs",
+                token=credential, max_bytes=max_bytes,
+            )
+        except Exception as exc:
+            raise self._classify(exc) from exc
+        content = raw.decode("utf-8", errors="replace")
+        patterns = (
+            re.compile(r"(?i)(authorization\s*:\s*(?:bearer|token)\s+)[^\s]+"),
+            re.compile(r"(?i)((?:token|secret|password|api[_-]?key)\s*[=:]\s*)[^\s]+"),
+            re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
+        )
+        redacted = False
+        for pattern in patterns:
+            replacement = r"\1[REDACTED]" if pattern.groups else "[REDACTED]"
+            content, count = pattern.subn(replacement, content)
+            redacted = redacted or count > 0
+        return CodeHostJobLogFact(
+            job_id=job_id, content=content, byte_count=len(raw),
+            truncated=truncated, redacted=redacted,
+        )
+
+    async def artifacts(
+        self, binding: CodeHostProviderBinding, resource: Resource, run_id: int,
+        *, credential: str | None,
+    ) -> tuple[CodeHostArtifactFact, ...]:
+        repository = _repository_name(resource)
+        try:
+            data = await self.client.get_json(
+                binding.base_url,
+                f"repos/{quote(repository, safe='/')}/actions/runs/{run_id}/artifacts",
+                token=credential, params={"per_page": 100},
+            )
+        except Exception as exc:
+            raise self._classify(exc) from exc
+        rows = data.get("artifacts", []) if isinstance(data, dict) else []
+        if not isinstance(rows, list):
+            raise CodeHostError("GitHub artifacts response is invalid")
+        return tuple(
+            CodeHostArtifactFact(
+                external_id=str(item.get("id")), name=str(item.get("name")),
+                size_bytes=int(item.get("size_in_bytes") or 0),
+                expired=bool(item.get("expired")),
+                created_at=_timestamp(item.get("created_at")),
+                expires_at=_timestamp(item.get("expires_at")),
+                web_url=item.get("archive_download_url"),
+            )
+            for item in rows
+            if isinstance(item, dict) and item.get("id") and item.get("name")
+        )
+
+    async def artifact_download(
+        self, binding: CodeHostProviderBinding, resource: Resource, artifact_id: int,
+        *, credential: str | None, max_bytes: int,
+    ) -> CodeHostArtifactDownloadFact:
+        if not credential:
+            raise CodeHostError("GitHub credential is required for artifact download")
+        repository = _repository_name(resource)
+        try:
+            raw, truncated, media_type = await self.client.request_bytes(
+                "GET", binding.base_url,
+                f"repos/{quote(repository, safe='/')}/actions/artifacts/{artifact_id}/zip",
+                token=credential, max_bytes=max_bytes,
+            )
+        except Exception as exc:
+            raise self._classify(exc) from exc
+        return CodeHostArtifactDownloadFact(
+            external_id=str(artifact_id),
+            content_base64=base64.b64encode(raw).decode("ascii"),
+            byte_count=len(raw), truncated=truncated, media_type=media_type,
         )
 
     async def releases(

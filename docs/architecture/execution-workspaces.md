@@ -112,6 +112,16 @@ The backend never uses shell interpolation.
 
 Cleanup removes the worktree. Normal/expired cleanup keeps the branch so crash recovery does not destroy unmerged work; an explicit discard may delete the branch.
 
+An active repository-write assignment may request an exact-revision refresh
+through its assignment-bound broker. The broker requires the assignment's exact
+workspace ID and singular writable Resource; the workspace service separately
+requires an active lease, active workspace, clean checkout, and a 7–40 character
+hex revision. Abbreviations must resolve to exactly one commit. Missing and
+ambiguous revisions fail visibly. A successful hard reset records the resolved
+full revision on the workspace/member plus a canonical workspace event. This is
+the controlled reproduction path for local-green/CI-red diagnosis; it does not
+grant generic checkout or arbitrary filesystem mutation.
+
 ## Non-Git resources
 
 Canonical resources that are not repository checkouts use `resource_lease` workspaces. They receive the same ownership, expiry, concurrency and audit semantics without inventing a filesystem checkout.

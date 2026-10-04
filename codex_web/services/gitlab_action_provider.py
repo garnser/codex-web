@@ -29,6 +29,7 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_ISSUE_COMMENT_EVIDENCE,
     CODE_HOST_ISSUE_STATE_EVIDENCE,
     CODE_HOST_ISSUE_UPDATE_ACTION_ID,
+    CODE_HOST_JOB_RERUN_ACTION_ID,
     CodeHostActionContract,
     result_resource_output,
 )
@@ -101,7 +102,11 @@ class GitLabActionProvider:
         return str(value).rstrip("/")
 
     def actions(self):
-        return self.contract.actions()
+        return tuple(
+            action
+            for action in self.contract.actions()
+            if action.action_id != CODE_HOST_JOB_RERUN_ACTION_ID
+        )
 
     @staticmethod
     def _owned_body(body: str, marker: str) -> str:

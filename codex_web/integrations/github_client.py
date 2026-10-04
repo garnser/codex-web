@@ -49,6 +49,88 @@ class GitHubClient:
         except ValueError as exc:
             raise RuntimeError(f"GitHub API returned invalid JSON for {path}") from exc
 
+    async def request_bytes(
+        self, method: str, api_base: str, path: str, *, token: str,
+        max_bytes: int, json_body: dict[str, Any] | None = None,
+    ) -> tuple[bytes, bool, str]:
+        if max_bytes < 1 or max_bytes > 512 * 1024:
+            raise ValueError("GitHub response byte limit must be between 1 and 524288")
+        url = f"{api_base.rstrip('/')}/{path.lstrip('/')}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        async with httpx.AsyncClient(
+            transport=self.transport, timeout=self.timeout, follow_redirects=True
+        ) as client:
+            async with client.stream(
+                method.upper(), url, headers=headers, json=json_body
+            ) as response:
+                if response.status_code >= 400:
+                    error = RuntimeError(
+                        f"GitHub API returned HTTP {response.status_code} for {path}"
+                    )
+                    setattr(error, "status_code", response.status_code)
+                    raise error
+                chunks: list[bytes] = []
+                observed = 0
+                truncated = False
+                async for chunk in response.aiter_bytes():
+                    remaining = max_bytes - observed
+                    if remaining <= 0:
+                        truncated = True
+                        break
+                    chunks.append(chunk[:remaining])
+                    observed += min(len(chunk), remaining)
+                    if len(chunk) > remaining:
+                        truncated = True
+                        break
+                length = response.headers.get("content-length")
+                if length:
+                    try:
+                        truncated = truncated or int(length) > observed
+                    except ValueError:
+                        truncated = True
+                return b"".join(chunks), truncated, response.headers.get(
+                    "content-type", "application/octet-stream"
+                ).split(";", 1)[0]
+
+    async def request_empty(
+        self, method: str, api_base: str, path: str, *, token: str,
+    ) -> None:
+        url = f"{api_base.rstrip('/')}/{path.lstrip('/')}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        async with httpx.AsyncClient(transport=self.transport, timeout=self.timeout) as client:
+            response = await client.request(method.upper(), url, headers=headers)
+        if response.status_code >= 400:
+            error = RuntimeError(
+                f"GitHub API returned HTTP {response.status_code} for {path}"
+            )
+            setattr(error, "status_code", response.status_code)
+            raise error
+
+    async def actions_job(self, api_base: str, repo: str, job_id: int, *, token: str) -> dict[str, Any]:
+        result = await self.request_json(
+            "GET", api_base, f"repos/{quote(repo, safe='/')}/actions/jobs/{job_id}", token=token
+        )
+        return result if isinstance(result, dict) else {}
+
+    async def rerun_actions_job(self, api_base: str, repo: str, job_id: int, *, token: str) -> None:
+        await self.request_empty(
+            "POST", api_base, f"repos/{quote(repo, safe='/')}/actions/jobs/{job_id}/rerun", token=token
+        )
+
+    async def actions_run(self, api_base: str, repo: str, run_id: int, *, token: str) -> dict[str, Any]:
+        result = await self.request_json(
+            "GET", api_base, f"repos/{quote(repo, safe='/')}/actions/runs/{run_id}", token=token
+        )
+        return result if isinstance(result, dict) else {}
+
     async def list_issues(self, api_base: str, repo: str, *, token: str, state: str = "open") -> list[dict[str, Any]]:
         payload = await self.request_json("GET", api_base, f"repos/{quote(repo, safe='/')}/issues",
                                           token=token, params={"state": state, "per_page": 100})

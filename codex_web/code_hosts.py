@@ -15,6 +15,8 @@ class CodeHostCapability(StrEnum):
     PULL_REQUEST_READ = "pull_request.read"
     REVIEW_READ = "review.read"
     CHECKS_READ = "checks.read"
+    JOB_LOGS_READ = "job_logs.read"
+    ARTIFACTS_READ = "artifacts.read"
     RELEASE_READ = "release.read"
     COMPARE_READ = "compare.read"
     WEBHOOK_NORMALIZE = "webhook.normalize"
@@ -112,6 +114,38 @@ class CodeHostCheckFact(BaseModel):
     conclusion: str | None = None
     revision: str | None = None
     web_url: str | None = None
+
+
+class CodeHostJobLogFact(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    job_id: int = Field(ge=1)
+    content: str
+    byte_count: int = Field(ge=0)
+    truncated: bool = False
+    redacted: bool = False
+
+
+class CodeHostArtifactFact(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    external_id: str
+    name: str
+    size_bytes: int = Field(default=0, ge=0)
+    expired: bool = False
+    created_at: float | None = None
+    expires_at: float | None = None
+    web_url: str | None = None
+
+
+class CodeHostArtifactDownloadFact(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    external_id: str
+    content_base64: str
+    byte_count: int = Field(ge=0)
+    truncated: bool = False
+    media_type: str = "application/zip"
 
 
 class CodeHostReleaseFact(BaseModel):

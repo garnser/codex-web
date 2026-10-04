@@ -4,8 +4,11 @@ from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
 from codex_web.code_hosts import (
+    CodeHostArtifactDownloadFact,
+    CodeHostArtifactFact,
     CodeHostCapability,
     CodeHostCheckFact,
+    CodeHostJobLogFact,
     CodeHostCommitFact,
     CodeHostCompareFact,
     CodeHostError,
@@ -326,6 +329,51 @@ class CodeHostService:
                 resource,
                 revision,
                 credential=credential,
+            ),
+        )
+
+    async def job_logs(
+        self, binding_id: str, resource_id: str, job_id: int, *,
+        actor: AuthenticationActor, max_bytes: int,
+    ) -> CodeHostJobLogFact:
+        binding, provider = self.registry.resolve(binding_id, actor=actor)
+        self._require_capability(binding, provider, CodeHostCapability.JOB_LOGS_READ)
+        resource = self._resource(resource_id, actor=actor, binding=binding)
+        return await self._with_credential(
+            binding, actor=actor, resource=resource,
+            operation="code-host.job-logs.read",
+            callback=lambda credential: provider.job_logs(
+                binding, resource, job_id, credential=credential, max_bytes=max_bytes
+            ),
+        )
+
+    async def artifacts(
+        self, binding_id: str, resource_id: str, run_id: int, *, actor: AuthenticationActor,
+    ) -> tuple[CodeHostArtifactFact, ...]:
+        binding, provider = self.registry.resolve(binding_id, actor=actor)
+        self._require_capability(binding, provider, CodeHostCapability.ARTIFACTS_READ)
+        resource = self._resource(resource_id, actor=actor, binding=binding)
+        return await self._with_credential(
+            binding, actor=actor, resource=resource,
+            operation="code-host.artifacts.read",
+            callback=lambda credential: provider.artifacts(
+                binding, resource, run_id, credential=credential
+            ),
+        )
+
+    async def artifact_download(
+        self, binding_id: str, resource_id: str, artifact_id: int, *,
+        actor: AuthenticationActor, max_bytes: int,
+    ) -> CodeHostArtifactDownloadFact:
+        binding, provider = self.registry.resolve(binding_id, actor=actor)
+        self._require_capability(binding, provider, CodeHostCapability.ARTIFACTS_READ)
+        resource = self._resource(resource_id, actor=actor, binding=binding)
+        return await self._with_credential(
+            binding, actor=actor, resource=resource,
+            operation="code-host.artifact.download",
+            callback=lambda credential: provider.artifact_download(
+                binding, resource, artifact_id,
+                credential=credential, max_bytes=max_bytes,
             ),
         )
 

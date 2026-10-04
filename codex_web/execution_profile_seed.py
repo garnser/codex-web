@@ -37,6 +37,8 @@ def execution_profile_catalog_seed_payload() -> dict[str, object]:
                     "repository.issue.create",
                     "repository.issue.update",
                     "repository.pull-request.merge",
+                    "repository.check.rerun",
+                    "repository.workspace.refresh",
                 ),
             ),
             ExecutionProfileContract(
