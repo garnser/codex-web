@@ -327,6 +327,8 @@ separate assignment-bound broker:
   process launch, watchdog validation, and runtime request admission run
   blocking catalog/filesystem work outside the control-plane event loop,
   including assignment-session resolution and thread-list session adoption;
+- stale-thread replacement is serialized and coalesced per recovery service so
+  concurrent watchdogs cannot amplify workspace/assignment catalog mutations;
 - a tiny loopback relay inside the private network namespace bridges only the
   trusted Codex parent process to that Unix socket; the broker directory is
   mounted read-only and outside the repository workspace;

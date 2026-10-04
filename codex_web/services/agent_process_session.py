@@ -244,11 +244,6 @@ class AssignmentBoundAgentProcessSession:
                 "draining worker cannot claim a new agent runtime assignment"
             )
 
-        self.local_worker.worker_service.heartbeat(
-            self.worker_id,
-            WorkerHeartbeatRequest(version=worker.version),
-            actor=self.local_worker.worker_actor,
-        )
         assignment = self.local_worker._claim_or_resume(assignment)
         lease = assignment.lease
         if lease is None:
