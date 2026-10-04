@@ -436,7 +436,10 @@ class CodexRuntime:
             )
             return
 
-        self.host._record_thread_activity(message)
+        # Activity projection reads and updates durable runtime state. Keep
+        # that work off the app-server reader's event loop so a large state
+        # catalog cannot stall RPC responses and HTTP readiness together.
+        await asyncio.to_thread(self.host._record_thread_activity, message)
         method = message.get("method")
         params = message.get("params") or {}
         thread_id = params.get("threadId") or (params.get("turn") or {}).get("threadId")
