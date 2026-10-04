@@ -26,6 +26,17 @@ from codex_web.services.canonical_events import CanonicalEventIngestionService
 class AutonomyService:
     """Own autonomous work-item/watchdog cycle decisions outside core.py."""
 
+    ACTIONABLE_OWNER_STAGES = frozenset(
+        {
+            "implementation_active",
+            "failed_with_action_owner",
+            "ready_for_validation",
+            "validation_running",
+            "ready_to_close",
+        }
+    )
+    OWNER_DISPATCH_WINDOW_SECONDS = 300
+
     def __init__(
         self,
         host: Any | None = None,
@@ -196,6 +207,32 @@ class AutonomyService:
                 )
                 continue
             for owner in d.owner_queue_agents:
+                canonical_items = [
+                    state
+                    for state in states.values()
+                    if state.project_id == project_id
+                    and state.current_stage
+                    in self.ACTIONABLE_OWNER_STAGES
+                    and not state.closed_at
+                    and not (
+                        state.handoff
+                        and state.handoff.status == "pending"
+                    )
+                    and d.coerce_owner(
+                        state.current_owner or state.next_owner
+                    )
+                    == owner
+                ]
+                canonical_items.sort(
+                    key=lambda state: (
+                        0
+                        if state.current_stage
+                        == "failed_with_action_owner"
+                        else 1,
+                        d.owner_activity_timestamp(state),
+                        state.ref,
+                    )
+                )
                 binding = d.binding_for_agent(
                     owner,
                     project_id,
@@ -210,8 +247,6 @@ class AutonomyService:
                 )
                 if inspect.isawaitable(issues):
                     issues = await issues
-                if not issues:
-                    continue
                 missing_state_refs = [
                     issue.get("references", {}).get("full", "")
                     for issue in issues
@@ -219,7 +254,7 @@ class AutonomyService:
                     and issue.get("state") == "opened"
                     and issue.get("references", {}).get("full") not in states
                 ]
-                if not missing_state_refs:
+                if not missing_state_refs and not canonical_items:
                     continue
                 binding = await d.replace_nonperforming_thread(binding, "owner-work-watchdog")
                 dispatch_key = f"owner-work:{project_id}:{binding.thread_id}:{owner}"
@@ -230,14 +265,36 @@ class AutonomyService:
                     continue
                 if d.thread_recently_active(binding.thread_id):
                     continue
-                refs = ", ".join(missing_state_refs[:8])
-                extra = f", plus {len(missing_state_refs) - 8} more" if len(missing_state_refs) > 8 else ""
-                agent_name = d.binding_prefix(binding) or binding.thread_name or owner
-                text = (
-                    f"{agent_name}: bounded event-path fallback triggered. "
-                    f"GitLab shows owned open items with no canonical codex-web state yet: {refs}{extra}. "
-                    "Reconcile those items through codex-web now, post the exact item and next action in the "
-                    "configured handoff coordination channel, and keep working until completion or one concrete escalation."
+                selected = canonical_items[0] if canonical_items else None
+                if missing_state_refs:
+                    refs = ", ".join(missing_state_refs[:8])
+                    extra_count = len(missing_state_refs) - 8
+                    extra = (
+                        f", plus {extra_count} more"
+                        if extra_count > 0
+                        else ""
+                    )
+                    agent_name = (
+                        d.binding_prefix(binding)
+                        or binding.thread_name
+                        or owner
+                    )
+                    text = (
+                        f"{agent_name}: bounded event-path fallback "
+                        "triggered. GitLab shows owned open items with "
+                        "no canonical codex-web state yet: "
+                        f"{refs}{extra}. Reconcile those items through "
+                        "codex-web now, post the exact item and next "
+                        "action in the configured handoff coordination "
+                        "channel, and keep working until completion or "
+                        "one concrete escalation."
+                    )
+                    dispatch_mode = "missing_canonical_state"
+                else:
+                    text = d.work_item_dispatch_text(selected)
+                    dispatch_mode = "idle_actionable_owner"
+                dispatch_window = int(
+                    time.time() // self.OWNER_DISPATCH_WINDOW_SECONDS
                 )
                 d.record_watchdog_dispatch(dispatch_key)
                 result = await self._bounded_reasoning_dispatch(
@@ -249,6 +306,16 @@ class AutonomyService:
                         "project_id": project_id,
                         "agent": owner,
                         "missing_state_refs": missing_state_refs[:8],
+                        "work_item_ref": (
+                            selected.ref if selected is not None else None
+                        ),
+                        "work_item_stage": (
+                            selected.current_stage
+                            if selected is not None
+                            else None
+                        ),
+                        "dispatch_mode": dispatch_mode,
+                        "dispatch_window": dispatch_window,
                     },
                 )
                 d.append_bot_event(
@@ -257,7 +324,14 @@ class AutonomyService:
                         "project_id": project_id,
                         "agent": owner,
                         "thread_id": binding.thread_id,
-                        "issue_count": len(missing_state_refs),
+                        "issue_count": (
+                            len(missing_state_refs)
+                            or len(canonical_items)
+                        ),
+                        "work_item_ref": (
+                            selected.ref if selected is not None else None
+                        ),
+                        "dispatch_mode": dispatch_mode,
                         "result": result,
                     }
                 )

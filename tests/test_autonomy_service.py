@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
 
@@ -153,6 +155,111 @@ class AutonomyStateTests(unittest.IsolatedAsyncioTestCase):
         # rejected by the typed state-machine model on the next read.
         WorkItemState.model_validate(current.model_dump())
         self.assertEqual(host.events[-1]["event_type"], "handoff_expired")
+
+
+class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _runtime(
+        states: dict[str, WorkItemState],
+        *,
+        active: bool = False,
+    ) -> SimpleNamespace:
+        binding = SimpleNamespace(
+            thread_id="thread-james",
+            thread_name="James",
+        )
+        dispatch = AsyncMock(return_value={"ok": True})
+
+        async def replace(current, _reason):
+            return current
+
+        return SimpleNamespace(
+            load_gitlab_routing_settings=lambda: SimpleNamespace(
+                enabled=True,
+                projects={
+                    "project-a": SimpleNamespace(enabled=True),
+                },
+            ),
+            load_work_item_states=lambda: states,
+            gitlab_token_for_project=lambda _project_id: "token",
+            gitlab_group_path=lambda _settings: "example",
+            gitlab_group_issues=lambda *_args, **_kwargs: [],
+            append_bot_event=lambda event: None,
+            coerce_owner=lambda value: (
+                str(value).strip().lower() if value else None
+            ),
+            owner_queue_agents=("james",),
+            handoff_coordination_channel=None,
+            binding_for_agent=lambda *_args, **_kwargs: binding,
+            replace_nonperforming_thread=replace,
+            watchdog_dispatch_allowed=lambda _key: True,
+            release_stale_active_turn=lambda *_args: None,
+            thread_is_active=lambda _thread_id: active,
+            thread_queue_depth=lambda _thread_id: 0,
+            thread_recently_active=lambda _thread_id: False,
+            binding_prefix=lambda _binding: "James",
+            record_watchdog_dispatch=lambda _key: None,
+            dispatch_event=dispatch,
+            work_item_dispatch_text=(
+                lambda state: f"dispatch:{state.ref}"
+            ),
+            owner_activity_timestamp=lambda state: (
+                state.last_meaningful_update_at
+            ),
+        )
+
+    async def test_idle_owner_with_canonical_actionable_work_is_woken(self) -> None:
+        implementation = WorkItemState(
+            ref="example/project#1",
+            project_id="project-a",
+            current_owner="james",
+            current_stage="implementation_active",
+            last_meaningful_update_at=10.0,
+            created_at=1.0,
+            updated_at=10.0,
+        )
+        failed = WorkItemState(
+            ref="example/project#2",
+            project_id="project-a",
+            current_owner="james",
+            current_stage="failed_with_action_owner",
+            last_meaningful_update_at=20.0,
+            created_at=1.0,
+            updated_at=20.0,
+        )
+        runtime = self._runtime(
+            {
+                implementation.ref: implementation,
+                failed.ref: failed,
+            }
+        )
+
+        await AutonomyService(runtime=runtime).run_owner_work_cycle()
+
+        runtime.dispatch_event.assert_awaited_once_with(
+            SimpleNamespace(
+                thread_id="thread-james",
+                thread_name="James",
+            ),
+            "dispatch:example/project#2",
+            "owner-work-watchdog",
+        )
+
+    async def test_active_owner_is_not_dispatched_duplicate_work(self) -> None:
+        state = WorkItemState(
+            ref="example/project#1",
+            project_id="project-a",
+            current_owner="james",
+            current_stage="implementation_active",
+            last_meaningful_update_at=10.0,
+            created_at=1.0,
+            updated_at=10.0,
+        )
+        runtime = self._runtime({state.ref: state}, active=True)
+
+        await AutonomyService(runtime=runtime).run_owner_work_cycle()
+
+        runtime.dispatch_event.assert_not_awaited()
 
 
 if __name__ == "__main__":
