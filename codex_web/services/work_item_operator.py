@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import asdict
 from typing import Any
@@ -366,10 +367,14 @@ class WorkItemOperatorService:
 
     async def source_detail(self, ref: str) -> dict[str, Any]:
         """Read authoritative issue content without exposing provider credentials."""
-        state = self.state_machine._work_item_state(ref)
-        source = self._source_for_state(state, required=True)
-        assert source is not None and state.source_identity is not None
-        source.capabilities.require(TaskSourceCapability.READ)
+        def resolve_source():
+            state = self.state_machine._work_item_state(ref)
+            source = self._source_for_state(state, required=True)
+            assert source is not None and state.source_identity is not None
+            source.capabilities.require(TaskSourceCapability.READ)
+            return state, source
+
+        state, source = await asyncio.to_thread(resolve_source)
         snapshot = await source.read(state.source_identity)
         discussion: list[dict[str, Any]] = []
         discussion_reader = getattr(source, "discussion", None)
