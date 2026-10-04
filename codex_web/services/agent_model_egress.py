@@ -9,6 +9,7 @@ import os
 import secrets
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
@@ -82,6 +83,7 @@ class AssignmentBoundAgentModelEgressBroker:
         validator: Callable[[], object] | None = None,
         upstream_connect_attempts: int = 3,
         upstream_retry_seconds: float = 0.25,
+        validation_cache_seconds: float = 0.5,
     ) -> None:
         normalized = tuple(
             sorted(
@@ -101,6 +103,9 @@ class AssignmentBoundAgentModelEgressBroker:
         self.upstream_retry_seconds = max(
             0.0, float(upstream_retry_seconds)
         )
+        self.validation_cache_seconds = max(
+            0.0, float(validation_cache_seconds)
+        )
         self.capability = secrets.token_urlsafe(32)
         self._username = "agent-runtime"
         self._root = Path(tempfile.mkdtemp(prefix="agent-model-egress-"))
@@ -109,6 +114,8 @@ class AssignmentBoundAgentModelEgressBroker:
         self.server: asyncio.AbstractServer | None = None
         self._handler_tasks: set[asyncio.Task[None]] = set()
         self._stopping = False
+        self._validation_lock = asyncio.Lock()
+        self._last_validation_at: float | None = None
         self.connections = 0
         self.denied_connections = 0
 
@@ -194,9 +201,19 @@ class AssignmentBoundAgentModelEgressBroker:
 
     async def _validate_current_async(self) -> None:
         # Validators may decode persistent worker state or inspect a workspace.
-        # Keep synchronous validation off the ASGI loop so opening a model
-        # connection cannot stall unrelated HTTP traffic.
-        await asyncio.to_thread(self._validate_current)
+        # Keep synchronous validation off the ASGI loop and coalesce bursts of
+        # authenticated CONNECTs. The session watchdog independently enforces
+        # the same authority at one-second cadence.
+        async with self._validation_lock:
+            now = time.monotonic()
+            if (
+                self._last_validation_at is not None
+                and now - self._last_validation_at
+                < self.validation_cache_seconds
+            ):
+                return
+            await asyncio.to_thread(self._validate_current)
+            self._last_validation_at = time.monotonic()
 
     @staticmethod
     async def _pipe(
@@ -261,12 +278,6 @@ class AssignmentBoundAgentModelEgressBroker:
     ) -> None:
         upstream_writer: asyncio.StreamWriter | None = None
         try:
-            try:
-                await self._validate_current_async()
-            except Exception as exc:
-                raise AgentRuntimeModelEgressDeniedError(
-                    "assignment model egress authority is stale"
-                ) from exc
             raw = await asyncio.wait_for(
                 reader.readuntil(b"\r\n\r\n"),
                 timeout=10,
@@ -336,8 +347,8 @@ class AssignmentBoundAgentModelEgressBroker:
                     await upstream_writer.wait_closed()
             if not writer.is_closing():
                 writer.close()
-                with contextlib.suppress(Exception):
-                    await writer.wait_closed()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
 
     async def stop(self) -> None:
         self._stopping = True
@@ -352,6 +363,7 @@ class AssignmentBoundAgentModelEgressBroker:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._handler_tasks.clear()
         if server is not None:
+            server.close_clients()
             await server.wait_closed()
         with contextlib.suppress(FileNotFoundError):
             self.socket_path.unlink()
