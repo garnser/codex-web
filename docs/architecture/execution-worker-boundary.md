@@ -323,6 +323,9 @@ separate assignment-bound broker:
   independent one-second session watchdog bounds revocation latency and owns
   worker heartbeat/lease renewal, preventing connection admission from
   amplifying durable writes or starving unrelated health, routing, and API work;
+- assignment preparation, credential-bound process launch, watchdog validation,
+  and runtime request admission run blocking catalog/filesystem work outside the
+  control-plane event loop;
 - a tiny loopback relay inside the private network namespace bridges only the
   trusted Codex parent process to that Unix socket; the broker directory is
   mounted read-only and outside the repository workspace;

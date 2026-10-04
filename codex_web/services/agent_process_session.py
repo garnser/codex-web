@@ -511,7 +511,9 @@ class AssignmentBoundAgentProcessSession:
                     "assignment-bound agent runtime session cannot restart in place"
                 )
 
-            assignment, workspace_path = self._prepare_assignment()
+            assignment, workspace_path = await asyncio.to_thread(
+                self._prepare_assignment
+            )
             lease = assignment.lease
             if lease is None:
                 raise AssignmentBoundAgentProcessSessionStaleError(
@@ -528,7 +530,8 @@ class AssignmentBoundAgentProcessSession:
                     assignment
                 )
                 self.control_plane_broker = control_broker
-                process, delegation, command = self._spawn_delegated_process(
+                process, delegation, command = await asyncio.to_thread(
+                    self._spawn_delegated_process,
                     assignment,
                     workspace_path,
                     broker,
@@ -691,8 +694,11 @@ class AssignmentBoundAgentProcessSession:
                 self.last_error = self.last_error or "agent runtime process exited"
                 return
             try:
-                assignment = self.validate_current()
-                self._heartbeat_and_renew(assignment)
+                assignment = await asyncio.to_thread(self.validate_current)
+                await asyncio.to_thread(
+                    self._heartbeat_and_renew,
+                    assignment,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -709,7 +715,7 @@ class AssignmentBoundAgentProcessSession:
             self._stopping = False
 
     async def request(self, method: str, params: Any = None) -> dict[str, Any]:
-        self.validate_current()
+        await asyncio.to_thread(self.validate_current)
         if self.runtime is None:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session is not started"
@@ -717,7 +723,7 @@ class AssignmentBoundAgentProcessSession:
         return await self.runtime.request(method, params)
 
     async def notify(self, method: str, params: Any = None) -> None:
-        self.validate_current()
+        await asyncio.to_thread(self.validate_current)
         if self.runtime is None:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session is not started"
@@ -729,7 +735,7 @@ class AssignmentBoundAgentProcessSession:
         request_id: int | str,
         result: dict[str, Any],
     ) -> None:
-        self.validate_current()
+        await asyncio.to_thread(self.validate_current)
         if self.runtime is None:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session is not started"
