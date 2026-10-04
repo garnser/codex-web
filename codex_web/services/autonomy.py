@@ -280,11 +280,6 @@ class AutonomyService:
                 # activity is not evidence that the owner is still pursuing
                 # the item; active/queued state and the dispatch cooldown are
                 # the duplicate-dispatch guards for this path.
-                if (
-                    not canonical_items
-                    and d.thread_recently_active(binding.thread_id)
-                ):
-                    continue
                 selected = canonical_items[0] if canonical_items else None
                 if missing_state_refs:
                     refs = ", ".join(missing_state_refs[:8])
