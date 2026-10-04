@@ -83,6 +83,7 @@ class AssignmentBoundAgentModelEgressBroker:
         validator: Callable[[], object] | None = None,
         upstream_connect_attempts: int = 3,
         upstream_retry_seconds: float = 0.25,
+        upstream_connect_timeout_seconds: float = 5.0,
         validation_cache_seconds: float = 5.0,
     ) -> None:
         normalized = tuple(
@@ -102,6 +103,9 @@ class AssignmentBoundAgentModelEgressBroker:
         )
         self.upstream_retry_seconds = max(
             0.0, float(upstream_retry_seconds)
+        )
+        self.upstream_connect_timeout_seconds = max(
+            0.1, float(upstream_connect_timeout_seconds)
         )
         self.validation_cache_seconds = max(
             0.0, float(validation_cache_seconds)
@@ -254,22 +258,30 @@ class AssignmentBoundAgentModelEgressBroker:
         self,
         endpoint: AgentRuntimeModelEgressEndpoint,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-        last_error: OSError | None = None
+        last_error: BaseException | None = None
         for attempt in range(self.upstream_connect_attempts):
             try:
-                return await asyncio.open_connection(
-                    endpoint.host,
-                    endpoint.port,
+                return await asyncio.wait_for(
+                    asyncio.open_connection(
+                        endpoint.host,
+                        endpoint.port,
+                        happy_eyeballs_delay=0.25,
+                        interleave=1,
+                    ),
+                    timeout=self.upstream_connect_timeout_seconds,
                 )
-            except OSError as exc:
+            except (OSError, asyncio.TimeoutError) as exc:
                 last_error = exc
                 if attempt + 1 >= self.upstream_connect_attempts:
-                    raise
+                    break
                 await asyncio.sleep(
                     self.upstream_retry_seconds * (attempt + 1)
                 )
         assert last_error is not None
-        raise last_error
+        raise AgentRuntimeModelEgressError(
+            f"model egress connection failed after "
+            f"{self.upstream_connect_attempts} attempts"
+        ) from last_error
 
     async def _handle(
         self,
