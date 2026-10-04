@@ -92,12 +92,22 @@ class BotEventDispatchService:
     ) -> BotBinding:
         if not binding.thread_id:
             return binding
-        if (
-            self.execution.thread_is_active(binding.thread_id)
-            or self.queue_policy.depth(binding.thread_id)
-            or self.thread_recently_active(binding.thread_id)
-        ):
-            return binding
+        live_session_check = getattr(
+            self.execution,
+            "thread_has_live_agent_runtime_session",
+            None,
+        )
+        missing_live_session = bool(
+            callable(live_session_check)
+            and not live_session_check(binding.thread_id)
+        )
+        if not missing_live_session:
+            if (
+                self.execution.thread_is_active(binding.thread_id)
+                or self.queue_policy.depth(binding.thread_id)
+                or self.thread_recently_active(binding.thread_id)
+            ):
+                return binding
         dispatch_count = self.telemetry.thread_recent_event_count(
             binding.thread_id,
             {
@@ -107,7 +117,10 @@ class BotEventDispatchService:
                 "work_item_handoff_watchdog_dispatched",
             },
         )
-        if dispatch_count < self.replacement_threshold():
+        if (
+            not missing_live_session
+            and dispatch_count < self.replacement_threshold()
+        ):
             return binding
         replacement = await self.recovery.replace_stale_bot_thread(
             binding,
