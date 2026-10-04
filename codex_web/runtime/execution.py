@@ -914,7 +914,10 @@ class TurnExecutionService:
         method: str,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        resolved = self._assignment_session_for_thread(thread_id)
+        resolved = await asyncio.to_thread(
+            self._assignment_session_for_thread,
+            thread_id,
+        )
         if resolved is None:
             return await self.host.codex.request(method, params)
         _manager, session, assignment = resolved
