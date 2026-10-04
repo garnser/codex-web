@@ -3010,57 +3010,60 @@ class TurnExecutionService:
                     None,
                 )
                 if local_worker is not None:
-                    with contextlib.suppress(Exception):
-                        local_worker.worker_service.recover_expired(
-                            actor=self.control_actor
-                        )
-                    with contextlib.suppress(Exception):
-                        local_worker.workspace_service.recover_expired()
-                    with contextlib.suppress(Exception):
-                        superseded_assignment = (
-                            local_worker._pending_assignment(
+                    def release_superseded() -> None:
+                        with contextlib.suppress(Exception):
+                            local_worker.worker_service.recover_expired(
+                                actor=self.control_actor
+                            )
+                        with contextlib.suppress(Exception):
+                            local_worker.workspace_service.recover_expired()
+                        with contextlib.suppress(Exception):
+                            superseded_assignment = (
+                                local_worker._pending_assignment(
+                                    previous_assignment_id
+                                )
+                            )
+                            superseded_workspace_id = (
+                                superseded_assignment.execution_workspace_id
+                            )
+                            if superseded_workspace_id:
+                                local_worker.workspace_service.release(
+                                    superseded_workspace_id,
+                                    ExecutionWorkspaceRelease(
+                                        discard=True,
+                                        reason=(
+                                            "thread superseded onto a different "
+                                            "agent runtime"
+                                        ),
+                                    ),
+                                    actor=self.control_actor,
+                                )
+                        with contextlib.suppress(Exception):
+                            assignment = local_worker._pending_assignment(
                                 previous_assignment_id
                             )
-                        )
-                        superseded_workspace_id = (
-                            superseded_assignment.execution_workspace_id
-                        )
-                        if superseded_workspace_id:
-                            local_worker.workspace_service.release(
-                                superseded_workspace_id,
-                                ExecutionWorkspaceRelease(
-                                    discard=True,
-                                    reason=(
-                                        "thread superseded onto a different "
-                                        "agent runtime"
+                            lease = assignment.lease
+                            if lease is not None and assignment.status in (
+                                AssignmentStatus.CLAIMED,
+                                AssignmentStatus.RUNNING,
+                            ):
+                                local_worker.worker_service.complete(
+                                    assignment.assigned_worker_id,
+                                    assignment.id,
+                                    AssignmentCompleteRequest(
+                                        lease_token=lease.lease_token,
+                                        fence=assignment.fence,
+                                        succeeded=False,
+                                        failure_code="thread_runtime_switched",
+                                        failure_message=(
+                                            "thread superseded onto a different "
+                                            "agent runtime"
+                                        ),
                                     ),
-                                ),
-                                actor=self.control_actor,
-                            )
-                    with contextlib.suppress(Exception):
-                        assignment = local_worker._pending_assignment(
-                            previous_assignment_id
-                        )
-                        lease = assignment.lease
-                        if lease is not None and assignment.status in (
-                            AssignmentStatus.CLAIMED,
-                            AssignmentStatus.RUNNING,
-                        ):
-                            local_worker.worker_service.complete(
-                                assignment.assigned_worker_id,
-                                assignment.id,
-                                AssignmentCompleteRequest(
-                                    lease_token=lease.lease_token,
-                                    fence=assignment.fence,
-                                    succeeded=False,
-                                    failure_code="thread_runtime_switched",
-                                    failure_message=(
-                                        "thread superseded onto a different "
-                                        "agent runtime"
-                                    ),
-                                ),
-                                actor=local_worker.worker_actor,
-                            )
+                                    actor=local_worker.worker_actor,
+                                )
+
+                    await asyncio.to_thread(release_superseded)
         h._append_bot_event(
             {
                 "type": "thread_runtime_switched",
