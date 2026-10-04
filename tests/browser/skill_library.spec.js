@@ -7,6 +7,7 @@ const skill = {
   recordId: 'skill-record-2',
   definitionLifecycle: 'published',
   checksum: 'abcdef1234567890',
+  security: { status: 'warning', currentRevision: true, assignmentDecision: { allowed: true, reason: 'allowed_with_findings' }, scan: { provider_id: 'nvidia-skillspector', scanner_version: '1.2.3', mode: 'static', risk_score: 12, severity: 'medium', scanned_at: 1700000000, report_artifact_id: 'artifact-scan-1', findings: [{ rule_id: 'tool-use', severity: 'medium', category: 'tool-misuse', message: 'Review broad tool use.', path: 'SKILL.md', line: 4 }] } },
   createdBy: 'admin',
   publishedBy: 'admin',
   skill: {
@@ -31,6 +32,7 @@ const skill = {
 };
 
 test.beforeEach(async ({ page }) => {
+  await page.route('**/api/skill-security/policy', route => route.fulfill({ json: { policy: { scan_imported_on_ingest: true, require_scan_before_publish: true, require_scan_before_assignment: true, max_risk_score: 49, blocked_severities: ['high', 'critical'], blocked_categories: [], allow_audited_override: false, semantic_for_untrusted_sources: false, scan_locally_authored: false, fail_closed_on_scanner_error: true, provider_id: 'nvidia-skillspector' } } }));
   await page.route('**/api/skill-sources', route => route.fulfill({ json: { items: [
     { source_id: 'engineering', name: 'Engineering catalog', trust: 'approved' },
   ] } }));
@@ -65,9 +67,23 @@ test('lists and inspects exact Skill revision and untrusted helper classificatio
   await expect(page.locator('[data-skill-detail]')).toContainText('Release Agent');
   await expect(page.locator('[data-skill-detail]')).toContainText('abc123');
   await expect(page.locator('[data-skill-detail]')).toContainText('software engineering');
+  await expect(page.locator('[data-skill-detail]')).toContainText('nvidia-skillspector 1.2.3');
+  await expect(page.locator('[data-skill-detail]')).toContainText('Review broad tool use.');
 });
 
-test('catalog filters send category and source without flattening source identity', async ({ page }) => {
+test('manual static scan uses the exact Skill record', async ({ page }) => {
+  const scans = [];
+  await page.route('**/api/skills/release-check/revisions/skill-record-2/scan', route => {
+    scans.push(route.request().postDataJSON());
+    return route.fulfill({ json: { status: 'passed' } });
+  });
+  await page.getByRole('button', { name: /Release Check/ }).click();
+  await page.getByRole('button', { name: 'Scan now' }).click();
+  await expect.poll(() => scans.length).toBe(1);
+  expect(scans[0]).toEqual({ mode: 'static' });
+});
+
+test('catalog filters preserve source identity and expose security facets', async ({ page }) => {
   const queries = [];
   await page.unroute('**/api/skills?**');
   await page.route('**/api/skills?**', route => {
@@ -77,7 +93,17 @@ test('catalog filters send category and source without flattening source identit
   await page.reload();
   await page.locator('[data-skill-category]').fill('software engineering');
   await page.locator('[data-skill-source]').selectOption('engineering');
-  await expect.poll(() => queries.some((value) => value.includes('category=software+engineering') && value.includes('source_id=engineering'))).toBe(true);
+  await page.locator('[data-skill-security]').selectOption('warning');
+  await page.locator('[data-skill-severity]').selectOption('medium');
+  await page.locator('[data-skill-risk-min]').fill('10');
+  await page.locator('[data-skill-risk-max]').fill('50');
+  await page.locator('[data-skill-finding-category]').fill('tool-misuse');
+  await page.locator('[data-skill-scanner]').fill('nvidia-skillspector');
+  await expect.poll(() => queries.some((value) => [
+    'category=software+engineering', 'source_id=engineering', 'security_status=warning',
+    'security_severity=medium', 'risk_min=10', 'risk_max=50',
+    'security_category=tool-misuse', 'security_provider=nvidia-skillspector',
+  ].every((part) => value.includes(part)))).toBe(true);
 });
 
 test('revision selector keeps explicit historical pin visible', async ({ page }) => {

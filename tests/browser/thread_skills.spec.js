@@ -6,11 +6,12 @@ const explicit = {
   skill: { name: 'Review', categories: ['software engineering'], provenance: { source_id: 'engineering' } },
 };
 const inherited = { ...explicit, skillId: 'security', recordId: 'security-r1', revision: 1, skill: { name: 'Security', categories: ['security'], provenance: { source_id: 'local' } }, inheritedFrom: 'agent_profile:secure' };
+const blocked = { ...explicit, skillId: 'unsafe', recordId: 'unsafe-r1', revision: 1, skill: { name: 'Unsafe helper', categories: ['security'], provenance: { source_id: 'external' } }, security: { status: 'quarantined', assignmentDecision: { allowed: false, reason: 'security_quarantined' } } };
 
 test('Thread Skill picker distinguishes origins and persists exact explicit revisions', async ({ page }) => {
   const writes = [];
   await page.route('**/api/skill-sources', route => route.fulfill({ json: { items: [{ source_id: 'engineering', name: 'Engineering', trust: 'approved' }] } }));
-  await page.route('**/api/skills?**', route => route.fulfill({ json: { items: [explicit] } }));
+  await page.route('**/api/skills?**', route => route.fulfill({ json: { items: [explicit, blocked] } }));
   await page.route('**/api/threads/thread-a/skills', route => {
     if (route.request().method() === 'PUT') {
       writes.push(route.request().postDataJSON());
@@ -22,6 +23,8 @@ test('Thread Skill picker distinguishes origins and persists exact explicit revi
   await page.locator('#thread-skills-manager > summary').click();
   await expect(page.locator('#thread-skills-effective')).toContainText('explicit r2');
   await expect(page.locator('#thread-skills-effective')).toContainText('inherited');
+  await expect(page.locator('[data-skill-record="unsafe-r1"]')).toBeDisabled();
+  await expect(page.locator('#thread-skills-list')).toContainText('blocked: security_quarantined');
   await page.locator('#thread-skills-save').click();
   await expect.poll(() => writes.length).toBe(1);
   expect(writes[0].skill_refs).toEqual([explicit.definitionReference]);

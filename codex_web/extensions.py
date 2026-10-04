@@ -24,6 +24,7 @@ class ExtensionType(StrEnum):
     SECRET_BACKEND = "secret_backend"
     CONFIG_BACKEND = "config_backend"
     WORKER = "worker"
+    SKILL_SCANNER = "skill_scanner"
 
 
 class ExtensionLifecycleState(StrEnum):
@@ -144,6 +145,7 @@ class ExtensionEntrypoints(BaseModel):
     secret_backend: str | None = None
     config_backend: str | None = None
     worker: str | None = None
+    skill_scanner: str | None = None
 
 
 class ExtensionManifest(BaseModel):

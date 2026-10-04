@@ -94,6 +94,7 @@ class SkillService:
     ) -> None:
         self.definitions = definitions
         self.profiles = profiles
+        self.security: Any | None = None
         self.thread_settings: Any | None = None
         self.thread_inherited_skill_refs: Callable[[str, AuthenticationActor], tuple[DefinitionReference, ...]] | None = None
         self.clock = clock
@@ -101,6 +102,9 @@ class SkillService:
 
     def bind_profiles(self, profiles: Any) -> None:
         self.profiles = profiles
+
+    def bind_security(self, security: Any) -> None:
+        self.security = security
 
     def bind_thread_settings(
         self,
@@ -123,7 +127,7 @@ class SkillService:
         explicit = []
         for reference in refs:
             valid = self.validate_reference(reference, actor=actor)
-            item = self._view(self.definitions.get_record(valid.record_id))
+            item = self._view(self.definitions.get_record(valid.record_id), actor=actor)
             explicit.append({**item, "assignmentOrigin": "thread_explicit", "inheritedFrom": None})
         explicit_ids = {item["recordId"] for item in explicit}
         inherited = []
@@ -136,7 +140,7 @@ class SkillService:
             valid = self.validate_reference(reference, actor=actor)
             if valid.record_id in explicit_ids:
                 continue
-            item = self._view(self.definitions.get_record(valid.record_id))
+            item = self._view(self.definitions.get_record(valid.record_id), actor=actor)
             inherited.append({**item, "assignmentOrigin": "inherited", "inheritedFrom": "agent_profile"})
         return {
             "threadId": thread_id,
@@ -256,10 +260,14 @@ class SkillService:
             raise SkillNotFound("skill revision not found")
         return item
 
-    @staticmethod
-    def _view(record: DefinitionRecord) -> dict[str, Any]:
+    def _view(
+        self,
+        record: DefinitionRecord,
+        *,
+        actor: AuthenticationActor | None = None,
+    ) -> dict[str, Any]:
         skill = SkillDefinition.model_validate(record.payload)
-        return {
+        result = {
             "skillId": record.definition_id,
             "revision": record.revision,
             "recordId": record.record_id,
@@ -277,6 +285,9 @@ class SkillService:
             "supersededByRecordId": record.superseded_by_record_id,
             "skill": skill.model_dump(mode="json"),
         }
+        if self.security is not None and actor is not None:
+            result["security"] = self.security.summary(result, actor=actor)
+        return result
 
     def list(
         self,
@@ -327,7 +338,7 @@ class SkillService:
             ).casefold()
             if needle and needle not in searchable:
                 continue
-            result.append(self._view(record))
+            result.append(self._view(record, actor=actor))
         return sorted(
             result,
             key=lambda item: (
@@ -348,7 +359,7 @@ class SkillService:
             if revision is not None
             else self._latest_record(skill_id, actor=actor)
         )
-        return self._view(record)
+        return self._view(record, actor=actor)
 
     def revisions(
         self,
@@ -357,7 +368,7 @@ class SkillService:
         actor: AuthenticationActor,
     ) -> list[dict[str, Any]]:
         return [
-            self._view(record)
+            self._view(record, actor=actor)
             for record in self._records(skill_id, actor=actor)
         ]
 
@@ -397,7 +408,7 @@ class SkillService:
                 reason=payload.reason,
             )
         )
-        return self._view(record)
+        return self._view(record, actor=actor)
 
     def update(
         self,
@@ -437,7 +448,7 @@ class SkillService:
                 derived_from_record_id=current.record_id,
             )
         )
-        return self._view(record)
+        return self._view(record, actor=actor)
 
     def publish(
         self,
@@ -453,6 +464,12 @@ class SkillService:
         skill = SkillDefinition.model_validate(record.payload)
         self._require_mutation(actor, owner_identity_id=skill.owner_identity_id)
         self._assert_visible_record(record, actor)
+        if self.security is not None:
+            self.security.assert_allowed(
+                self._view(record, actor=actor),
+                actor=actor,
+                phase="publish",
+            )
         published = self.definitions.publish(
             record_id,
             DefinitionPublishRequest(
@@ -461,7 +478,7 @@ class SkillService:
                 expected_active_revision=payload.expected_active_revision,
             ),
         )
-        return self._view(published)
+        return self._view(published, actor=actor)
 
     def lifecycle(
         self,
@@ -478,7 +495,7 @@ class SkillService:
             skill.lifecycle == lifecycle
             and current.lifecycle == DefinitionLifecycle.PUBLISHED
         ):
-            return self._view(current)
+            return self._view(current, actor=actor)
         next_skill = SkillDefinition.model_validate(
             skill.model_copy(
                 update={"lifecycle": lifecycle}
@@ -509,7 +526,7 @@ class SkillService:
                 ),
             ),
         )
-        return self._view(published)
+        return self._view(published, actor=actor)
 
     def rollback(
         self,
@@ -533,7 +550,7 @@ class SkillService:
                 expected_active_revision=payload.expected_active_revision,
             )
         )
-        return self._view(record)
+        return self._view(record, actor=actor)
 
     @staticmethod
     def _assert_visible_scope(
@@ -607,6 +624,12 @@ class SkillService:
         current_skill = SkillDefinition.model_validate(current.payload)
         if current_skill.lifecycle != SkillLifecycle.ACTIVE:
             raise SkillConflict("archived skill cannot be used for new execution")
+        if self.security is not None:
+            self.security.assert_allowed(
+                self._view(record, actor=actor),
+                actor=actor,
+                phase="assignment",
+            )
         return actual
 
     def validate_reference_for_scope(
@@ -660,6 +683,19 @@ class SkillService:
         current_skill = SkillDefinition.model_validate(current.payload)
         if current_skill.lifecycle != SkillLifecycle.ACTIVE:
             raise SkillConflict("archived skill cannot be used for new execution")
+        if self.security is not None:
+            security_actor = AuthenticationActor(
+                identity_id="service-skill-security-runtime",
+                principal_kind=PrincipalKind.SERVICE,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                service_scopes=(),
+            )
+            self.security.assert_allowed(
+                self._view(record, actor=security_actor),
+                actor=security_actor,
+                phase="assignment",
+            )
         return actual
 
     def requirements_for_refs_scoped(

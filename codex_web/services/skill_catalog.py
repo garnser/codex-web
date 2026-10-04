@@ -16,6 +16,7 @@ from codex_web.skill_catalog import (
     SkillSourceUpdate,
 )
 from codex_web.skills import SkillOrigin, SkillProvenance, SkillUpdate
+from codex_web.skill_security import SkillScanMode, SkillScanRequest
 from codex_web.storage.skill_catalog import SkillSourceStore
 
 
@@ -185,7 +186,34 @@ class SkillCatalogService:
                 imported_at=now,
             )
             imports[entry.upstream_id] = imported
-            results.append({"upstreamId": entry.upstream_id, "skillId": saved["skillId"], "status": status, "revision": saved["revision"], "recordId": saved["recordId"]})
+            security = None
+            if (
+                self.skills.security is not None
+                and self.skills.security.policy(actor).scan_imported_on_ingest
+            ):
+                policy = self.skills.security.policy(actor)
+                security = self.skills.security.scan(
+                    saved,
+                    SkillScanRequest(
+                        mode=(
+                            SkillScanMode.SEMANTIC
+                            if policy.semantic_for_untrusted_sources
+                            and source.trust.value != "approved"
+                            else SkillScanMode.STATIC
+                        )
+                    ),
+                    actor=actor,
+                )
+            results.append(
+                {
+                    "upstreamId": entry.upstream_id,
+                    "skillId": saved["skillId"],
+                    "status": status,
+                    "revision": saved["revision"],
+                    "recordId": saved["recordId"],
+                    "security": security,
+                }
+            )
 
         updated = SkillSource.model_validate(
             source.model_copy(

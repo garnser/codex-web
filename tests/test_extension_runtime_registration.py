@@ -23,11 +23,12 @@ from codex_web.services.action_providers import (
 )
 from codex_web.services.extension_conformance import ExtensionRuntimeDescriptor
 from codex_web.services.extension_runtime import ExtensionRuntimeRegistry
-from codex_web.services.extensions import ExtensionService
+from codex_web.services.extensions import ExtensionAuthorizationError, ExtensionService
 from codex_web.services.identity import IdentityService
 from codex_web.services.reference_action_provider import ReferenceActionProvider
 from codex_web.services.reference_task_source import ReferenceTaskSource
 from codex_web.services.resources import ResourceCatalogService
+from codex_web.services.skill_scanners import SkillScannerError, SkillScannerRegistry
 from codex_web.services.task_source_runtime import (
     TaskSourceRegistry,
     TaskSourceResolutionError,
@@ -37,6 +38,17 @@ from codex_web.storage.extensions import ExtensionStateStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.resource_catalog import ResourceCatalogStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.skill_security import SkillScanMode, SkillScanProviderResult
+
+
+class _Scanner:
+    provider_id = "tenant-scanner"
+
+    def metadata(self):
+        return {"providerId": self.provider_id}
+
+    def scan(self, *, content, mode):
+        return SkillScanProviderResult(scanner_version="1.0", risk_score=0)
 
 
 def _manifest(
@@ -85,10 +97,12 @@ class ExtensionRuntimeRegistrationTests(unittest.IsolatedAsyncioTestCase):
         self.action_providers = ActionProviderRegistry(
             ActionProviderStateStore(self.sqlite)
         )
+        self.skill_scanners = SkillScannerRegistry()
         self.runtime = ExtensionRuntimeRegistry(
             self.extensions,
             self.task_sources,
             self.action_providers,
+            self.skill_scanners,
         )
         self.action_execution = ActionExecutionService(
             self.action_providers,
@@ -371,6 +385,36 @@ class ExtensionRuntimeRegistrationTests(unittest.IsolatedAsyncioTestCase):
                 provider.provider_instance,
                 actor=foreign_actor,
             )
+
+    async def test_skill_scanner_registration_is_tenant_scoped_and_revocable(self) -> None:
+        installation, grants, descriptor = self._install_enabled(
+            ExtensionType.SKILL_SCANNER,
+            extension_id="com.example.tenant-skill-scanner",
+        )
+        provider = _Scanner()
+        wrapped = self.runtime.register_skill_scanner(
+            installation.id,
+            provider=provider,
+            descriptor=descriptor,
+            actor=self.actor,
+        )
+        self.assertIs(self.skill_scanners.get(provider.provider_id, tenant_scope=self.actor.tenant), wrapped)
+        foreign_actor = self.actor.model_copy(update={"organization_id": "other", "workspace_id": "other"})
+        with self.assertRaises(SkillScannerError):
+            self.skill_scanners.get(provider.provider_id, tenant_scope=foreign_actor.tenant)
+
+        self.extensions.revoke_grant(
+            installation.id,
+            grants[0].id,
+            actor=self.actor,
+            reason="runtime authority revoked",
+        )
+        with self.assertRaises(ExtensionAuthorizationError):
+            wrapped.scan(content="# skill", mode=SkillScanMode.STATIC)
+
+        self.extensions.disable(installation.id, actor=self.actor, reason="maintenance")
+        with self.assertRaises(SkillScannerError):
+            self.skill_scanners.get(provider.provider_id, tenant_scope=self.actor.tenant)
 
     async def test_disable_automatically_unregisters_task_source_runtime(self) -> None:
         installation, _, descriptor = self._install_enabled(
