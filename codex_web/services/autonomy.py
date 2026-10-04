@@ -92,16 +92,20 @@ class AutonomyService:
         if self.controller is None or self.canonical_events is None:
             return await self.runtime.dispatch_event(binding, text, source)
 
+        organization_id, workspace_id = self.runtime.project_scope(
+            str(payload.get("project_id") or "")
+        )
         normalized = json.dumps(
-            payload,
+            {
+                "payload": payload,
+                "tenant_id": organization_id,
+                "workspace_id": workspace_id,
+            },
             sort_keys=True,
             separators=(",", ":"),
             default=str,
         )
         digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-        organization_id, workspace_id = self.runtime.project_scope(
-            str(payload.get("project_id") or "")
-        )
         delivery = await self.canonical_events.ingest(
             event_type=CanonicalEventType.WORK_TRANSITION,
             source=f"autonomy-watchdog:{source}",

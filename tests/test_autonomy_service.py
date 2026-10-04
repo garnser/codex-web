@@ -168,6 +168,26 @@ class AutonomyBoundedDispatchTests(unittest.IsolatedAsyncioTestCase):
             canonical_events.ingest.await_args.kwargs["workspace_id"],
             "workspace-a",
         )
+        first_key = canonical_events.ingest.await_args.kwargs[
+            "idempotency_key"
+        ]
+
+        runtime.project_scope = lambda _project_id: (
+            "org-b",
+            "workspace-b",
+        )
+        await service._bounded_reasoning_dispatch(
+            SimpleNamespace(thread_id="thread-james"),
+            "pursue the issue",
+            "owner-work-watchdog",
+            cycle_key="owner-work:project-a:thread-james:james",
+            payload={"project_id": "project-a", "agent": "james"},
+        )
+
+        self.assertNotEqual(
+            first_key,
+            canonical_events.ingest.await_args.kwargs["idempotency_key"],
+        )
 
 
 class AutonomyStateTests(unittest.IsolatedAsyncioTestCase):
