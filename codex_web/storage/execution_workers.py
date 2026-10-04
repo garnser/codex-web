@@ -5,6 +5,7 @@ from typing import Any, Callable
 from codex_web.compatibility import MigrationRegistry
 from codex_web.execution_workers import (
     EXECUTION_WORKER_CONTRACT,
+    AssignmentStatus,
     ExecutionAssignment,
     ExecutionWorker,
     ExecutionWorkerState,
@@ -162,6 +163,8 @@ EXECUTION_WORKER_MIGRATIONS.register(
 
 class ExecutionWorkerStore:
     namespace = "execution_workers"
+    max_retained_terminal_assignments = 128
+    max_retained_events = 1000
 
     def __init__(self, store: SQLiteStateStore) -> None:
         self.store = store
@@ -213,7 +216,31 @@ class ExecutionWorkerStore:
         updater: Callable[[ExecutionWorkerState], ExecutionWorkerState],
     ) -> ExecutionWorkerState:
         def apply(raw: Any) -> dict[str, Any]:
-            return updater(self._decode(raw)).model_dump(mode="json")
+            state = updater(self._decode(raw))
+            active_statuses = {
+                AssignmentStatus.PENDING,
+                AssignmentStatus.CLAIMED,
+                AssignmentStatus.RUNNING,
+            }
+            terminal = [
+                item
+                for item in state.assignments
+                if item.status not in active_statuses
+            ]
+            retained_terminal_ids = {
+                item.id
+                for item in terminal[
+                    -self.max_retained_terminal_assignments:
+                ]
+            }
+            state.assignments = [
+                item
+                for item in state.assignments
+                if item.status in active_statuses
+                or item.id in retained_terminal_ids
+            ]
+            state.events = state.events[-self.max_retained_events :]
+            return state.model_dump(mode="json")
 
         payload = self.store.update(
             self.namespace,
