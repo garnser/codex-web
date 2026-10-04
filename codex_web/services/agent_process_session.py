@@ -475,6 +475,7 @@ class AssignmentBoundAgentProcessSession:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime assignment deadline expired"
             )
+        assignment = self._heartbeat_and_renew(assignment)
         if self.delegation is not None:
             delegation_service = self.credential_provider
             if delegation_service is None:

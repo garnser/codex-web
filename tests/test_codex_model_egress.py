@@ -5,6 +5,7 @@ import base64
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from codex_web.services.agent_model_egress import (
     AgentRuntimeModelEgressEndpoint,
@@ -193,6 +194,24 @@ class CodexModelEgressBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.broker.connections, 0)
         writer.close()
         await writer.wait_closed()
+
+    async def test_transient_upstream_resolution_failure_is_retried(self) -> None:
+        expected = (AsyncMock(), AsyncMock())
+        with patch(
+            "codex_web.services.agent_model_egress.asyncio.open_connection",
+            new=AsyncMock(
+                side_effect=[OSError("temporary DNS failure"), expected]
+            ),
+        ) as open_connection:
+            result = await self.broker._open_upstream(
+                AgentRuntimeModelEgressEndpoint(
+                    "127.0.0.1",
+                    self.echo_port,
+                )
+            )
+
+        self.assertIs(result, expected)
+        self.assertEqual(open_connection.await_count, 2)
 
     async def test_stop_removes_private_socket_directory(self) -> None:
         root = self.broker.mount_source
