@@ -34,6 +34,25 @@ class ThreadScopeService:
                     (item.organization_id, item.workspace_id, item.project_id))
         return owners
 
+    def project_id_for_thread(self, thread_id: str) -> str | None:
+        """Resolve one canonical Project owner without widening actor scope."""
+        owners = self.ownership_snapshot().get(thread_id, set())
+        if owners:
+            if len(owners) != 1:
+                return None
+            return next(iter(owners))[2]
+        row = self.index.get(thread_id)
+        if row is None:
+            return None
+        if row.project_id:
+            return row.project_id
+        matches = [
+            item.id
+            for item in self.projects.list()
+            if row.cwd and item.path == row.cwd
+        ]
+        return matches[0] if len(matches) == 1 else None
+
     def for_thread(self, thread_id: str, actor: AuthenticationActor,
                    project_id: str | None = None, *,
                    ownership: dict[str, set[tuple[str, str, str]]] | None = None) -> Project:

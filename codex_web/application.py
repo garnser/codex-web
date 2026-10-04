@@ -3710,6 +3710,7 @@ bot_delivery_service = install_bot_delivery_service(
     publish_event=event_hub.publish,
     workflow_claim_findings=workflow_claim_policy.findings,
     workflow_correction=workflow_claim_policy.correction,
+    thread_project_id=thread_scope_service.project_id_for_thread,
     slack_client=slack_client,
     telegram_client=telegram_client,
 )

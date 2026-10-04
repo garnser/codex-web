@@ -143,6 +143,13 @@ No direct provider send/update/delete API exists on ConversationChannel.
 
 ## Outbound actions
 
+Outbound provider delivery is project-bound and single-target. The canonical
+thread owner, binding project, and connection project must agree; unresolved or
+mismatched ownership fails closed and is recorded in runtime telemetry. For
+each provider, delivery selects exactly one binding using active reply, reply,
+primary, and recency precedence. A completed turn must never fan out merely
+because the thread has additional non-threaded bindings.
+
 Consequential external mutations—messages, replies, reactions, subscription
 changes or other provider writes—must use the existing ActionIntent /
 ActionProvider authority/evidence path.

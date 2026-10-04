@@ -42,6 +42,7 @@ class BotDeliveryService:
         publish_event: Callable[[dict[str, Any]], Awaitable[object]] | None = None,
         workflow_claim_findings: Callable[[str], tuple[list[str], list[Any]]] | None = None,
         workflow_correction: Callable[[str, list[Any], list[str]], str] | None = None,
+        thread_project_id: Callable[[str], str | None] | None = None,
         slack_client: SlackClient | None = None,
         telegram_client: TelegramClient | None = None,
         secret_broker: SecretBroker | None = None,
@@ -50,6 +51,11 @@ class BotDeliveryService:
             return None
 
         if host is not None:
+            thread_project_id = thread_project_id or getattr(
+                host,
+                "_thread_project_id",
+                None,
+            )
             connections = connections or SimpleNamespace(
                 get=getattr(host, "_bot_connection", lambda _connection_id: None),
                 runtime_actor=getattr(host, "_bot_runtime_actor", lambda _project_id: None),
@@ -97,9 +103,24 @@ class BotDeliveryService:
         self.workflow_correction = workflow_correction or (
             lambda text, _states, _findings: text
         )
+        self.thread_project_id = thread_project_id or (lambda _thread_id: None)
         self.slack = slack_client or SlackClient()
         self.telegram = telegram_client or TelegramClient()
         self.secret_broker = secret_broker
+
+    def _scope_rejection(
+        self,
+        binding: BotBinding,
+        connection: BotConnection | None = None,
+    ) -> tuple[str | None, str | None]:
+        project_id = self.thread_project_id(binding.thread_id)
+        if project_id is None:
+            return None, "thread_project_unresolved"
+        if binding.project_id != project_id:
+            return project_id, "binding_project_mismatch"
+        if connection is not None and connection.project_id != project_id:
+            return project_id, "connection_project_mismatch"
+        return project_id, None
 
     @staticmethod
     def _credential_identity(
@@ -150,6 +171,9 @@ class BotDeliveryService:
             if binding.connection_id
             else None
         )
+        _project_id, rejection = self._scope_rejection(binding, connection)
+        if rejection:
+            return {"sent": False, "reason": rejection}
         if (
             connection is None
             or not self._credential_identity(connection, "bot_token")
@@ -242,13 +266,47 @@ class BotDeliveryService:
         if item.get("type") != "agentMessage":
             return
         bindings = self.bindings.for_thread(thread_id)
-        if not bindings:
-            bindings = await self.collaboration.project_scoped_bindings_for_thread(
+        project_id = self.thread_project_id(thread_id)
+        if project_id is None:
+            self.telemetry.append(
+                {
+                    "type": "outbound_scope_rejected",
+                    "thread_id": thread_id,
+                    "reason": "thread_project_unresolved",
+                }
+            )
+            return
+        scoped_bindings = [
+            binding for binding in bindings if binding.project_id == project_id
+        ]
+        rejected = [
+            binding for binding in bindings if binding.project_id != project_id
+        ]
+        if rejected:
+            self.telemetry.append(
+                {
+                    "type": "outbound_scope_rejected",
+                    "thread_id": thread_id,
+                    "project_id": project_id,
+                    "reason": "binding_project_mismatch",
+                    "binding_ids": [binding.id for binding in rejected],
+                    "binding_project_ids": sorted(
+                        {binding.project_id for binding in rejected}
+                    ),
+                }
+            )
+        if not scoped_bindings:
+            discovered = await self.collaboration.project_scoped_bindings_for_thread(
                 thread_id
             )
+            scoped_bindings = [
+                binding
+                for binding in discovered
+                if binding.project_id == project_id
+            ]
         for binding in self.targets.outbound_bindings_for_thread(
             thread_id,
-            bindings,
+            scoped_bindings,
         ):
             route_prefix = self.presentation.binding_prefix(binding)
             report_name = self.presentation.binding_report_name(binding)
@@ -282,6 +340,7 @@ class BotDeliveryService:
                 "provider": binding.provider,
                 "external_conversation_id": binding.external_conversation_id,
                 "thread_id": thread_id,
+                "project_id": project_id,
                 "thread_name": binding.thread_name,
                 "route_prefix": route_prefix,
                 "report_name": report_name,
@@ -303,13 +362,56 @@ class BotDeliveryService:
         thread_id = self.approvals.thread_id(request)
         if not thread_id:
             return
+        project_id = self.thread_project_id(thread_id)
+        if project_id is None:
+            self.telemetry.append(
+                {
+                    "type": "outbound_scope_rejected",
+                    "thread_id": thread_id,
+                    "reason": "thread_project_unresolved",
+                    "operation": "approval_request",
+                }
+            )
+            return
+        bindings = self.bindings.for_thread(thread_id)
+        foreign_bindings = [
+            binding for binding in bindings if binding.project_id != project_id
+        ]
+        if foreign_bindings:
+            self.telemetry.append(
+                {
+                    "type": "outbound_scope_rejected",
+                    "thread_id": thread_id,
+                    "project_id": project_id,
+                    "binding_ids": [binding.id for binding in foreign_bindings],
+                    "reason": "binding_project_mismatch",
+                    "operation": "approval_request",
+                }
+            )
         for binding in self.targets.outbound_bindings_for_thread(
             thread_id,
-            self.bindings.for_thread(thread_id),
+            [
+                candidate
+                for candidate in bindings
+                if candidate.project_id == project_id
+            ],
         ):
             if binding.provider != "slack" or not binding.connection_id:
                 continue
             connection = self.connections.get(binding.connection_id)
+            _project_id, rejection = self._scope_rejection(binding, connection)
+            if rejection:
+                self.telemetry.append(
+                    {
+                        "type": "outbound_scope_rejected",
+                        "thread_id": thread_id,
+                        "project_id": project_id,
+                        "binding_id": binding.id,
+                        "reason": rejection,
+                        "operation": "approval_request",
+                    }
+                )
+                continue
             if not self._credential_identity(connection, "bot_token"):
                 continue
             text = (
@@ -391,6 +493,27 @@ class BotDeliveryService:
         for message in messages:
             with contextlib.suppress(Exception):
                 connection = self.connections.get(message.connection_id)
+                project_id = self.thread_project_id(message.thread_id)
+                if (
+                    project_id is None
+                    or connection is None
+                    or connection.project_id != project_id
+                ):
+                    self.telemetry.append(
+                        {
+                            "type": "outbound_scope_rejected",
+                            "thread_id": message.thread_id,
+                            "project_id": project_id,
+                            "connection_id": message.connection_id,
+                            "reason": (
+                                "thread_project_unresolved"
+                                if project_id is None
+                                else "connection_project_mismatch"
+                            ),
+                            "operation": "approval_update",
+                        }
+                    )
+                    continue
                 if not self._credential_identity(connection, "bot_token"):
                     continue
 
@@ -556,6 +679,7 @@ def install_bot_delivery_service(
     publish_event=None,
     workflow_claim_findings=None,
     workflow_correction=None,
+    thread_project_id=None,
     slack_client: SlackClient | None = None,
     telegram_client: TelegramClient | None = None,
 ) -> BotDeliveryService:
@@ -565,6 +689,7 @@ def install_bot_delivery_service(
     ):
         service = BotDeliveryService(
             host,
+            thread_project_id=thread_project_id,
             slack_client=slack_client,
             telegram_client=telegram_client,
             secret_broker=getattr(app.state, "secret_broker", None),
@@ -590,6 +715,10 @@ def install_bot_delivery_service(
                 workflow_correction
                 or host._canonical_workflow_correction
             ),
+            thread_project_id=(
+                thread_project_id
+                or app.state.thread_scope_service.project_id_for_thread
+            ),
             slack_client=slack_client,
             telegram_client=telegram_client,
             secret_broker=getattr(app.state, "secret_broker", None),
@@ -607,6 +736,7 @@ def install_bot_delivery_service(
     ) -> dict[str, Any]:
         compatibility = BotDeliveryService(
             host,
+            thread_project_id=service.thread_project_id,
             slack_client=service.slack,
             telegram_client=service.telegram,
             secret_broker=service.secret_broker,

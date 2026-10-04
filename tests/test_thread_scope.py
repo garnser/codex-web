@@ -132,6 +132,14 @@ class ThreadScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.get('/api/threads/legacy-a?project_id=b').status_code, 404)
         self.assertEqual(self.client.get('/api/threads/ambiguous?project_id=a').status_code, 404)
 
+    def test_project_id_for_thread_fails_closed_for_ambiguous_or_missing_ownership(self):
+        self.assertEqual(self.scope.project_id_for_thread('thread-a'), 'a')
+        self.index.upsert(IndexedThread(id='legacy-a', name='legacy', cwd='/a', project_id='a'))
+        self.index.upsert(IndexedThread(id='ambiguous', name='legacy', cwd='/shared'))
+        self.assertEqual(self.scope.project_id_for_thread('legacy-a'), 'a')
+        self.assertIsNone(self.scope.project_id_for_thread('ambiguous'))
+        self.assertIsNone(self.scope.project_id_for_thread('missing'))
+
     async def test_shared_path_pagination_filters_before_limit_and_runtime_cannot_relabel_ownership(self):
         runtime = SimpleNamespace(request=AsyncMock(return_value={'data': [
             {'id': 'thread-b', 'name': 'foreign row'}, {'id': 'unknown-native', 'name': 'unclaimed', 'cwd': '/shared'},

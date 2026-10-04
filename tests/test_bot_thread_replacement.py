@@ -125,10 +125,7 @@ class BotThreadReplacementTests(unittest.TestCase):
 
         self.assertEqual(
             [(binding.provider, binding.external_conversation_id) for binding in selected],
-            [
-                ("slack", "C0B9M89AHCY"),
-                ("slack", "C0B9591ESTB"),
-            ],
+            [("slack", "C0B9M89AHCY")],
         )
 
     def test_thread_target_for_outbound_uses_master_delivery_target_for_passive_binding(self) -> None:
@@ -216,7 +213,19 @@ class BotThreadReplacementTests(unittest.TestCase):
             patch.object(
                 server,
                 "_bot_connection",
-                return_value=type("Conn", (), {"bot_token": "xoxb-token"})(),
+                return_value=type(
+                    "Conn",
+                    (),
+                    {
+                        "bot_token": "xoxb-token",
+                        "project_id": "a956644fc336",
+                    },
+                )(),
+            ),
+            patch.object(
+                delivery_service,
+                "thread_project_id",
+                return_value="a956644fc336",
             ),
             patch.object(server, "_thread_target_for_outbound", return_value=(target, True)),
             patch.object(server, "_slack_reply_username", return_value="Codex · Release Manager"),
