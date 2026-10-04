@@ -436,6 +436,14 @@ class RuntimeHealthService:
                 problems.append(
                     "autonomy task stopped: " + ", ".join(stopped)
                 )
+            idle_owners = list(
+                autonomy.get("idleActionableOwners") or []
+            )
+            if autonomy.get("enabled", False) and idle_owners:
+                problems.append(
+                    "actionable owners are not active or queued: "
+                    + ", ".join(idle_owners)
+                )
 
         active_turn_count = int(
             self._profile(

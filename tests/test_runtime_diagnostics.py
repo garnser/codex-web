@@ -228,6 +228,42 @@ class RuntimeHealthServiceTests(unittest.TestCase):
             snapshot["problems"],
         )
 
+    def test_idle_actionable_owner_fails_runtime_readiness(self) -> None:
+        ready = asyncio.Event()
+        ready.set()
+        codex = SimpleNamespace(
+            proc=SimpleNamespace(pid=42, poll=lambda: None),
+            ready=ready,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            service = RuntimeHealthService(
+                codex=codex,
+                bot_runtime=SimpleNamespace(fingerprints={}, tasks={}),
+                telemetry=BotRuntimeTelemetry(
+                    events_file=Path(directory) / "events.jsonl",
+                ),
+                load_bindings=lambda: [],
+                terminal_failures={},
+                terminal_recovery_tasks={},
+                terminal_failure_window_seconds=lambda: 300.0,
+                load_queues=lambda: {},
+                slack_provider_health=lambda: {},
+                gitlab_sync_status=lambda: {},
+                autonomy_health=lambda: {
+                    "enabled": True,
+                    "stoppedTasks": [],
+                    "idleActionableOwners": ["james", "quinn"],
+                },
+            )
+
+            snapshot = service.refresh_sync()
+
+        self.assertFalse(snapshot["ok"])
+        self.assertIn(
+            "actionable owners are not active or queued: james, quinn",
+            snapshot["problems"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
