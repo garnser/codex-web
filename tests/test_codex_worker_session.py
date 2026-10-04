@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from codex_web.execution_workers import (
     AssignmentClaimRequest,
@@ -884,6 +885,10 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(broker)
         broker_root = broker.mount_source
         try:
+            with patch.object(session, "_heartbeat_and_renew") as renew:
+                validated = session._validate_egress_state()
+            self.assertEqual(validated.id, assignment.id)
+            renew.assert_not_called()
             launch = self.backend.spawned[0]
             self.assertEqual(launch["argv"][:3], ("/usr/bin/python3", "-u", "-c"))
             self.assertEqual(launch["argv"][-1], "app-server")

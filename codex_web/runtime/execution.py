@@ -885,14 +885,23 @@ class TurnExecutionService:
             # the next turn re-acquires or supersedes the binding. The
             # ambient runtime must never be used for a bound thread.
             return ("degraded", None, None)
-        try:
-            assignment = session.validate_current()
-        except AssignmentBoundAgentSessionStaleError:
-            # A live provider process can outlast its canonical worker lease.
-            # Treat that cache entry exactly like a missing session: reads
-            # degrade safely and the next turn supersedes the stale binding.
+        status = session.status()
+        if not hasattr(status, "running") or not hasattr(status, "ready"):
+            try:
+                assignment = session.validate_current()
+            except AssignmentBoundAgentSessionStaleError:
+                return ("degraded", None, None)
+            return manager, session, getattr(
+                assignment,
+                "runtime_binding",
+                getattr(session, "runtime_binding", None),
+            )
+        if not status.running or not status.ready:
             return ("degraded", None, None)
-        return manager, session, assignment
+        # Canonical authority is revalidated by the async request path and the
+        # one-second session watchdog. Status projections must not repeatedly
+        # decode the monolithic worker catalog merely to report liveness.
+        return manager, session, session.runtime_binding
 
     def thread_has_live_agent_runtime_session(
         self,
@@ -914,10 +923,13 @@ class TurnExecutionService:
         method: str,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        resolved = self._assignment_session_for_thread(thread_id)
+        resolved = await asyncio.to_thread(
+            self._assignment_session_for_thread,
+            thread_id,
+        )
         if resolved is None:
             return await self.host.codex.request(method, params)
-        _manager, session, assignment = resolved
+        _manager, session, binding = resolved
         if _manager == "degraded":
             if method != "thread/read":
                 raise HTTPException(
@@ -942,12 +954,12 @@ class TurnExecutionService:
                     "readTimedOut": True,
                 },
             }
-        binding = getattr(assignment, "runtime_binding", None)
         if binding is None or (
             binding.provider_id == "openai" and binding.runtime_id == "codex"
         ):
             return await session.request(method, params)
 
+        await asyncio.to_thread(session.validate_current)
         adapter = self._adapter_for_binding(binding, session)
         native_session_id = getattr(
             getattr(session, "runtime", None),

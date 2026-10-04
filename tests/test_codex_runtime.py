@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -435,6 +436,23 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.host.queue_drains, ["thread-7"])
         self.assertEqual(self.host.outbound, [message])
         self.assertEqual(self.host.hub.events[-1], {"type": "codex.event", "message": message})
+
+    async def test_thread_activity_projection_runs_off_event_loop(self) -> None:
+        event_loop_thread = threading.get_ident()
+        projection_threads: list[int] = []
+
+        def record_activity(message: dict) -> None:
+            projection_threads.append(threading.get_ident())
+            self.host.activity.append(message)
+
+        self.host._record_thread_activity = record_activity
+        message = {"method": "thread/status/changed", "params": {}}
+
+        await self.runtime._handle_message(message)
+
+        self.assertEqual(self.host.activity, [message])
+        self.assertEqual(len(projection_threads), 1)
+        self.assertNotEqual(projection_threads[0], event_loop_thread)
 
 
 if __name__ == "__main__":

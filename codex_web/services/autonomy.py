@@ -270,20 +270,16 @@ class AutonomyService:
                     continue
                 binding = await d.replace_nonperforming_thread(binding, "owner-work-watchdog")
                 dispatch_key = f"owner-work:{project_id}:{binding.thread_id}:{owner}"
-                if not d.watchdog_dispatch_allowed(dispatch_key):
-                    continue
                 d.release_stale_active_turn(binding.thread_id, "owner-work-watchdog")
                 if d.thread_is_active(binding.thread_id) or d.thread_queue_depth(binding.thread_id):
                     continue
+                # Active/queued state is the duplicate guard. An earlier
+                # failed dispatch must not leave either canonical work or a
+                # GitLab-only owned issue without a live owner turn.
                 # Canonical actionable work requires a live lane. Historical
                 # activity is not evidence that the owner is still pursuing
                 # the item; active/queued state and the dispatch cooldown are
                 # the duplicate-dispatch guards for this path.
-                if (
-                    not canonical_items
-                    and d.thread_recently_active(binding.thread_id)
-                ):
-                    continue
                 selected = canonical_items[0] if canonical_items else None
                 if missing_state_refs:
                     refs = ", ".join(missing_state_refs[:8])

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gc
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -83,6 +85,7 @@ class CodexModelEgressBrokerTests(unittest.IsolatedAsyncioTestCase):
         socket = self.echo_server.sockets[0]
         self.echo_port = int(socket.getsockname()[1])
         self.validation_calls = 0
+        self.validation_thread_ids: list[int] = []
         self.stale = False
         self.broker = AssignmentBoundModelEgressBroker(
             (CodexModelEgressEndpoint("127.0.0.1", self.echo_port),),
@@ -113,6 +116,7 @@ class CodexModelEgressBrokerTests(unittest.IsolatedAsyncioTestCase):
 
     def _validate(self) -> None:
         self.validation_calls += 1
+        self.validation_thread_ids.append(threading.get_ident())
         if self.stale:
             raise RuntimeError("stale fence")
 
@@ -157,7 +161,8 @@ class CodexModelEgressBrokerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(echoed, b"stream-through-broker")
         self.assertEqual(self.broker.connections, 1)
-        self.assertGreaterEqual(self.validation_calls, 2)
+        self.assertEqual(self.validation_calls, 1)
+        self.assertNotIn(threading.get_ident(), self.validation_thread_ids)
         writer.close()
         await writer.wait_closed()
 
@@ -212,6 +217,59 @@ class CodexModelEgressBrokerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(result, expected)
         self.assertEqual(open_connection.await_count, 2)
+
+    async def test_authenticated_connection_burst_coalesces_validation(self) -> None:
+        connections = await asyncio.gather(
+            *(
+                self._connect(
+                    f"127.0.0.1:{self.echo_port}",
+                    self._auth(),
+                )
+                for _ in range(8)
+            )
+        )
+
+        self.assertEqual(self.validation_calls, 1)
+        for _reader, writer, response in connections:
+            self.assertIn(b"200 Connection Established", response)
+            writer.close()
+            await writer.wait_closed()
+
+    async def test_active_connection_task_is_owned_until_disconnect(self) -> None:
+        reader, writer, response = await self._connect(
+            f"127.0.0.1:{self.echo_port}",
+            self._auth(),
+        )
+        self.assertIn(b"200 Connection Established", response)
+        self.assertEqual(len(self.broker._handler_tasks), 1)
+
+        gc.collect()
+        writer.write(b"still-connected")
+        await writer.drain()
+        echoed = await asyncio.wait_for(
+            reader.readexactly(len(b"still-connected")),
+            timeout=1,
+        )
+
+        self.assertEqual(echoed, b"still-connected")
+        self.assertEqual(len(self.broker._handler_tasks), 1)
+        writer.close()
+        await writer.wait_closed()
+
+    async def test_stop_cancels_and_drains_active_connection_tasks(self) -> None:
+        reader, writer, response = await self._connect(
+            f"127.0.0.1:{self.echo_port}",
+            self._auth(),
+        )
+        self.assertIn(b"200 Connection Established", response)
+        self.assertEqual(len(self.broker._handler_tasks), 1)
+
+        await self.broker.stop()
+
+        self.assertEqual(self.broker._handler_tasks, set())
+        self.assertEqual(await asyncio.wait_for(reader.read(), timeout=1), b"")
+        writer.close()
+        await writer.wait_closed()
 
     async def test_stop_removes_private_socket_directory(self) -> None:
         root = self.broker.mount_source

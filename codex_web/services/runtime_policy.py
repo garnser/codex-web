@@ -39,8 +39,8 @@ class RuntimePolicy:
             return 0.0
         return self._seconds(
             "CODEX_WEB_OWNER_WORK_WATCHDOG_SECONDS",
-            600.0,
-            minimum=60.0,
+            30.0,
+            minimum=10.0,
             disabled_below_or_equal_zero=True,
         )
 

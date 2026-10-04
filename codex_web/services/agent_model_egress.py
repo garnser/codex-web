@@ -4,14 +4,20 @@ import asyncio
 import base64
 import contextlib
 import hmac
+import logging
 import os
 import secrets
 import shutil
+import socket
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 from urllib.parse import urlparse
+
+
+logger = logging.getLogger(__name__)
 
 
 class AgentRuntimeModelEgressError(RuntimeError):
@@ -78,6 +84,8 @@ class AssignmentBoundAgentModelEgressBroker:
         validator: Callable[[], object] | None = None,
         upstream_connect_attempts: int = 3,
         upstream_retry_seconds: float = 0.25,
+        upstream_connect_timeout_seconds: float = 5.0,
+        validation_cache_seconds: float = 5.0,
     ) -> None:
         normalized = tuple(
             sorted(
@@ -97,12 +105,22 @@ class AssignmentBoundAgentModelEgressBroker:
         self.upstream_retry_seconds = max(
             0.0, float(upstream_retry_seconds)
         )
+        self.upstream_connect_timeout_seconds = max(
+            0.1, float(upstream_connect_timeout_seconds)
+        )
+        self.validation_cache_seconds = max(
+            0.0, float(validation_cache_seconds)
+        )
         self.capability = secrets.token_urlsafe(32)
         self._username = "agent-runtime"
         self._root = Path(tempfile.mkdtemp(prefix="agent-model-egress-"))
         os.chmod(self._root, 0o700)
         self.socket_path = self._root / "proxy.sock"
         self.server: asyncio.AbstractServer | None = None
+        self._handler_tasks: set[asyncio.Task[None]] = set()
+        self._stopping = False
+        self._validation_lock = asyncio.Lock()
+        self._last_validation_at: float | None = None
         self.connections = 0
         self.denied_connections = 0
 
@@ -129,12 +147,28 @@ class AssignmentBoundAgentModelEgressBroker:
     async def start(self) -> "AssignmentBoundAgentModelEgressBroker":
         if self.server is not None:
             return self
+        self._stopping = False
         self.server = await asyncio.start_unix_server(
-            self._handle,
+            self._accept,
             path=str(self.socket_path),
         )
         os.chmod(self.socket_path, 0o600)
         return self
+
+    def _accept(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        if self._stopping:
+            writer.close()
+            return
+        task = asyncio.create_task(
+            self._handle(reader, writer),
+            name="assignment-model-egress",
+        )
+        self._handler_tasks.add(task)
+        task.add_done_callback(self._handler_tasks.discard)
 
     def _authorized(self, headers: dict[str, str]) -> bool:
         raw = headers.get("proxy-authorization", "")
@@ -169,6 +203,22 @@ class AssignmentBoundAgentModelEgressBroker:
     def _validate_current(self) -> None:
         if self.validator is not None:
             self.validator()
+
+    async def _validate_current_async(self) -> None:
+        # Validators may decode persistent worker state or inspect a workspace.
+        # Keep synchronous validation off the ASGI loop and coalesce bursts of
+        # authenticated CONNECTs. The session watchdog independently enforces
+        # the same authority at one-second cadence.
+        async with self._validation_lock:
+            now = time.monotonic()
+            if (
+                self._last_validation_at is not None
+                and now - self._last_validation_at
+                < self.validation_cache_seconds
+            ):
+                return
+            await asyncio.to_thread(self._validate_current)
+            self._last_validation_at = time.monotonic()
 
     @staticmethod
     async def _pipe(
@@ -209,22 +259,80 @@ class AssignmentBoundAgentModelEgressBroker:
         self,
         endpoint: AgentRuntimeModelEgressEndpoint,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-        last_error: OSError | None = None
+        last_error: BaseException | None = None
         for attempt in range(self.upstream_connect_attempts):
             try:
-                return await asyncio.open_connection(
-                    endpoint.host,
-                    endpoint.port,
+                addresses = await asyncio.wait_for(
+                    asyncio.get_running_loop().getaddrinfo(
+                        endpoint.host,
+                        endpoint.port,
+                        type=socket.SOCK_STREAM,
+                    ),
+                    timeout=self.upstream_connect_timeout_seconds,
                 )
-            except OSError as exc:
+                seen: set[tuple[int, str, int]] = set()
+                candidates: list[tuple[int, int, tuple]] = []
+                for family, _kind, protocol, _canonical, address in addresses:
+                    key = (family, str(address[0]), int(address[1]))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    candidates.append((family, protocol, address))
+                if not candidates:
+                    raise OSError("model egress DNS returned no addresses")
+                families = (socket.AF_INET, socket.AF_INET6)
+                for selected_family in families:
+                    selected = [
+                        candidate
+                        for candidate in candidates
+                        if candidate[0] == selected_family
+                    ]
+                    if not selected:
+                        continue
+                    tasks = [
+                        asyncio.create_task(
+                            asyncio.open_connection(
+                                address[0],
+                                address[1],
+                                family=family,
+                                proto=protocol,
+                            )
+                        )
+                        for family, protocol, address in selected
+                    ]
+                    try:
+                        for completed in asyncio.as_completed(
+                            tasks,
+                            timeout=self.upstream_connect_timeout_seconds,
+                        ):
+                            try:
+                                connection = await completed
+                            except OSError as exc:
+                                last_error = exc
+                                continue
+                            return connection
+                    except asyncio.TimeoutError as exc:
+                        last_error = exc
+                    finally:
+                        for task in tasks:
+                            if not task.done():
+                                task.cancel()
+                        await asyncio.gather(*tasks, return_exceptions=True)
+                if last_error is not None:
+                    raise last_error
+                raise asyncio.TimeoutError
+            except (OSError, asyncio.TimeoutError) as exc:
                 last_error = exc
                 if attempt + 1 >= self.upstream_connect_attempts:
-                    raise
+                    break
                 await asyncio.sleep(
                     self.upstream_retry_seconds * (attempt + 1)
                 )
         assert last_error is not None
-        raise last_error
+        raise AgentRuntimeModelEgressError(
+            f"model egress connection failed after "
+            f"{self.upstream_connect_attempts} attempts"
+        ) from last_error
 
     async def _handle(
         self,
@@ -233,12 +341,6 @@ class AssignmentBoundAgentModelEgressBroker:
     ) -> None:
         upstream_writer: asyncio.StreamWriter | None = None
         try:
-            try:
-                self._validate_current()
-            except Exception as exc:
-                raise AgentRuntimeModelEgressDeniedError(
-                    "assignment model egress authority is stale"
-                ) from exc
             raw = await asyncio.wait_for(
                 reader.readuntil(b"\r\n\r\n"),
                 timeout=10,
@@ -261,7 +363,7 @@ class AssignmentBoundAgentModelEgressBroker:
                 return
             endpoint = self._destination(target)
             try:
-                self._validate_current()
+                await self._validate_current_async()
             except Exception as exc:
                 raise AgentRuntimeModelEgressDeniedError(
                     "assignment model egress authority is stale"
@@ -285,10 +387,20 @@ class AssignmentBoundAgentModelEgressBroker:
             asyncio.TimeoutError,
             ValueError,
             AgentRuntimeModelEgressDeniedError,
-        ):
+        ) as exc:
+            logger.warning(
+                "Assignment-bound model egress denied or timed out: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
             if not writer.is_closing():
                 await self._deny(writer, "403 Forbidden")
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "Assignment-bound model egress failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
             if not writer.is_closing():
                 await self._deny(writer, "502 Bad Gateway")
         finally:
@@ -298,14 +410,23 @@ class AssignmentBoundAgentModelEgressBroker:
                     await upstream_writer.wait_closed()
             if not writer.is_closing():
                 writer.close()
-                with contextlib.suppress(Exception):
-                    await writer.wait_closed()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
 
     async def stop(self) -> None:
+        self._stopping = True
         server = self.server
         self.server = None
         if server is not None:
             server.close()
+        tasks = tuple(self._handler_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._handler_tasks.clear()
+        if server is not None:
+            server.close_clients()
             await server.wait_closed()
         with contextlib.suppress(FileNotFoundError):
             self.socket_path.unlink()

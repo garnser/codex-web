@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import json
@@ -532,12 +533,12 @@ class ThreadService:
         project = self._projects().get(project_id) if project_id else None
         project_path = project.path if project is not None else None
         ownership = self.thread_scope.ownership_snapshot() if self.thread_scope else None
+        effective_actor = actor or self.control_actor
 
         def belongs(thread_id: str) -> bool:
             if self.thread_scope is None:
                 indexed = self._index().get(thread_id)
                 return not (project_id and indexed and indexed.project_id and indexed.project_id != project_id)
-            effective_actor = actor or self.control_actor
             if effective_actor is None:
                 return False
             try:
@@ -547,6 +548,28 @@ class ThreadService:
                 if exc.status_code != 404:
                     raise
                 return False
+
+        def indexed_belongs(indexed: IndexedThread) -> bool:
+            if self.thread_scope is None:
+                return not (
+                    project_id
+                    and indexed.project_id
+                    and indexed.project_id != project_id
+                )
+            if effective_actor is None or project is None:
+                return False
+            owners = (ownership or {}).get(indexed.id, set())
+            if owners:
+                return owners == {
+                    (
+                        effective_actor.organization_id,
+                        effective_actor.workspace_id,
+                        project.id,
+                    )
+                }
+            if indexed.project_id:
+                return indexed.project_id == project.id
+            return bool(indexed.cwd and indexed.cwd == project.path)
         cursor_payload = (
             self._decode_list_cursor(
                 cursor,
@@ -645,7 +668,7 @@ class ThreadService:
             search=search,
             after=after,
             limit=page_size,
-            include=lambda item: belongs(item.id),
+            include=indexed_belongs,
         )
 
         fallback_active_turns = (
@@ -657,10 +680,17 @@ class ThreadService:
         rows: list[dict[str, Any]] = []
         for indexed in indexed_page:
             runtime_item = runtime_rows.get(indexed.id)
-            active = self._active_turn_for_list(
-                indexed.id,
-                fallback_active_turns,
-            )
+            if self.active_turn_getter is not None:
+                active = await asyncio.to_thread(
+                    self._active_turn_for_list,
+                    indexed.id,
+                    fallback_active_turns,
+                )
+            else:
+                active = self._active_turn_for_list(
+                    indexed.id,
+                    fallback_active_turns,
+                )
             runtime_status = (
                 runtime_item.get("status")
                 if isinstance(runtime_item, dict)
@@ -699,7 +729,11 @@ class ThreadService:
                 "staleIndex": runtime_item is None,
             }
             rows.append(row)
-            self._adopt_legacy_thread(row, project_id=project_id)
+            await asyncio.to_thread(
+                self._adopt_legacy_thread,
+                row,
+                project_id=project_id,
+            )
 
         next_cursor = (
             self._encode_list_cursor(
@@ -856,7 +890,8 @@ class ThreadService:
         execution_id = f"thread-bootstrap-{token}"
 
         try:
-            binding = binding_service.prepare_bootstrap(
+            binding = await asyncio.to_thread(
+                binding_service.prepare_bootstrap,
                 bootstrap_id=bootstrap_id,
                 execution_id=execution_id,
                 project_id=project.id,

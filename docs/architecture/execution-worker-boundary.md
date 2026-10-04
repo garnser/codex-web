@@ -315,6 +315,20 @@ separate assignment-bound broker:
 - every CONNECT requires a random per-session proxy capability and revalidates
   the current assignment, worker, fence, deadline and delegated credential
   authority before opening provider transport;
+- the broker owns each accepted CONNECT handler for its complete lifetime and,
+  on session shutdown, stops accepting, cancels and awaits every active handler
+  before removing the private socket;
+- assignment and fence validation runs outside the control-plane event loop;
+  authenticated CONNECT bursts share a short validation result while the
+  independent one-second session watchdog bounds revocation latency and owns
+  worker heartbeat/lease renewal, preventing connection admission from
+  amplifying durable writes or starving unrelated health, routing, and API work;
+- workspace/bootstrap preparation, assignment preparation, credential-bound
+  process launch, watchdog validation, and runtime request admission run
+  blocking catalog/filesystem work outside the control-plane event loop,
+  including assignment-session resolution and thread-list session adoption;
+- stale-thread replacement is serialized and coalesced per recovery service so
+  concurrent watchdogs cannot amplify workspace/assignment catalog mutations;
 - a tiny loopback relay inside the private network namespace bridges only the
   trusted Codex parent process to that Unix socket; the broker directory is
   mounted read-only and outside the repository workspace;

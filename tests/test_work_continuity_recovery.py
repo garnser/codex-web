@@ -29,7 +29,7 @@ class RuntimePolicyTests(unittest.TestCase):
                 self.assertTrue(policy.autonomy_enabled())
                 self.assertEqual(
                     policy.owner_work_watchdog_interval(),
-                    60.0,
+                    10.0,
                 )
                 self.assertEqual(
                     policy.actionable_owner_continuity_delay(),

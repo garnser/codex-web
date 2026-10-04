@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
 import time
@@ -62,6 +63,7 @@ class ThreadRecoveryService:
         )
         self.thread_creator = thread_creator
         self.stale_active_turn_reconciler = None
+        self._replacement_lock = asyncio.Lock()
 
     def bind_thread_creator(
         self,
@@ -239,7 +241,32 @@ class ThreadRecoveryService:
         self.thread_replacements[old_thread_id] = new_thread_id
         self.terminal_failures.pop(old_thread_id, None)
 
-    async def replace_stale_bot_thread(self, binding: BotBinding, error: str) -> BotBinding:
+    async def replace_stale_bot_thread(
+        self,
+        binding: BotBinding,
+        error: str,
+    ) -> BotBinding:
+        async with self._replacement_lock:
+            replacement_id = self.thread_replacements.get(binding.thread_id)
+            if replacement_id:
+                matches = [
+                    item
+                    for item in self.host._load_bot_bindings()
+                    if item.thread_id == replacement_id
+                    and self.same_logical_binding(item, binding)
+                ]
+                if matches:
+                    return self.preferred_binding_for_replacement(
+                        binding,
+                        matches,
+                    )
+            return await self._replace_stale_bot_thread(binding, error)
+
+    async def _replace_stale_bot_thread(
+        self,
+        binding: BotBinding,
+        error: str,
+    ) -> BotBinding:
         h = self.host
         old_thread_id = binding.thread_id
         project = self.projects.get(binding.project_id)

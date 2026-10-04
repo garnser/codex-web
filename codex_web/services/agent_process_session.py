@@ -177,16 +177,13 @@ class AssignmentBoundAgentProcessSession:
         )
 
     def _current_worker(self):
-        worker = next(
-            (
-                item
-                for item in self.local_worker.worker_service.store.load().workers
-                if item.id == self.worker_id
-                and item.organization_id == self.local_worker.worker_actor.organization_id
-                and item.workspace_id == self.local_worker.worker_actor.workspace_id
-            ),
-            None,
-        )
+        worker = self.local_worker.worker_service.store.worker(self.worker_id)
+        if worker is not None and (
+            worker.organization_id
+            != self.local_worker.worker_actor.organization_id
+            or worker.workspace_id != self.local_worker.worker_actor.workspace_id
+        ):
+            worker = None
         if worker is None:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime worker no longer exists"
@@ -244,11 +241,6 @@ class AssignmentBoundAgentProcessSession:
                 "draining worker cannot claim a new agent runtime assignment"
             )
 
-        self.local_worker.worker_service.heartbeat(
-            self.worker_id,
-            WorkerHeartbeatRequest(version=worker.version),
-            actor=self.local_worker.worker_actor,
-        )
         assignment = self.local_worker._claim_or_resume(assignment)
         lease = assignment.lease
         if lease is None:
@@ -462,32 +454,10 @@ class AssignmentBoundAgentProcessSession:
         )
 
     def _validate_egress_state(self) -> ExecutionAssignment:
-        self._current_worker()
-        assignment = self._current_assignment()
-        if assignment.status != AssignmentStatus.RUNNING:
-            raise AssignmentBoundAgentProcessSessionStaleError(
-                f"assignment-bound agent runtime assignment is {assignment.status.value}"
-            )
-        if (
-            assignment.deadline_at is not None
-            and assignment.deadline_at <= self._clock()
-        ):
-            raise AssignmentBoundAgentProcessSessionStaleError(
-                "assignment-bound agent runtime assignment deadline expired"
-            )
-        assignment = self._heartbeat_and_renew(assignment)
-        if self.delegation is not None:
-            delegation_service = self.credential_provider
-            if delegation_service is None:
-                raise AssignmentBoundAgentProcessSessionStaleError(
-                    "runtime credential provider is unavailable"
-                )
-            delegation_service.validate_current(
-                self.delegation,
-                assignment,
-                actor=self.local_worker.worker_actor,
-            )
-        return assignment
+        # CONNECT admission verifies authority but must not mutate the worker
+        # catalog. The independent session watchdog owns heartbeats and lease
+        # renewal, so model connection bursts cannot amplify durable writes.
+        return self.validate_current()
 
     async def _start_egress_broker(
         self,
@@ -511,7 +481,7 @@ class AssignmentBoundAgentProcessSession:
         lease = assignment.lease
         if factory is None or lease is None:
             return None
-        worker = self._current_worker()
+        worker = await asyncio.to_thread(self._current_worker)
         return await factory.start(
             assignment=assignment,
             worker_id=worker.id,
@@ -533,7 +503,9 @@ class AssignmentBoundAgentProcessSession:
                     "assignment-bound agent runtime session cannot restart in place"
                 )
 
-            assignment, workspace_path = self._prepare_assignment()
+            assignment, workspace_path = await asyncio.to_thread(
+                self._prepare_assignment
+            )
             lease = assignment.lease
             if lease is None:
                 raise AssignmentBoundAgentProcessSessionStaleError(
@@ -550,7 +522,8 @@ class AssignmentBoundAgentProcessSession:
                     assignment
                 )
                 self.control_plane_broker = control_broker
-                process, delegation, command = self._spawn_delegated_process(
+                process, delegation, command = await asyncio.to_thread(
+                    self._spawn_delegated_process,
                     assignment,
                     workspace_path,
                     broker,
@@ -713,8 +686,11 @@ class AssignmentBoundAgentProcessSession:
                 self.last_error = self.last_error or "agent runtime process exited"
                 return
             try:
-                assignment = self.validate_current()
-                self._heartbeat_and_renew(assignment)
+                assignment = await asyncio.to_thread(self.validate_current)
+                await asyncio.to_thread(
+                    self._heartbeat_and_renew,
+                    assignment,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -731,7 +707,7 @@ class AssignmentBoundAgentProcessSession:
             self._stopping = False
 
     async def request(self, method: str, params: Any = None) -> dict[str, Any]:
-        self.validate_current()
+        await asyncio.to_thread(self.validate_current)
         if self.runtime is None:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session is not started"
@@ -739,7 +715,7 @@ class AssignmentBoundAgentProcessSession:
         return await self.runtime.request(method, params)
 
     async def notify(self, method: str, params: Any = None) -> None:
-        self.validate_current()
+        await asyncio.to_thread(self.validate_current)
         if self.runtime is None:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session is not started"
@@ -751,7 +727,7 @@ class AssignmentBoundAgentProcessSession:
         request_id: int | str,
         result: dict[str, Any],
     ) -> None:
-        self.validate_current()
+        await asyncio.to_thread(self.validate_current)
         if self.runtime is None:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session is not started"
