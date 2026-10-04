@@ -9,6 +9,16 @@ STATIC = ROOT / "static"
 
 
 class FrontendBoundaryTests(unittest.TestCase):
+    def test_usage_refresh_is_not_nested_in_interactive_summary(self) -> None:
+        html = (STATIC / "index.html").read_text()
+        footer = html.split('<details class="token-footer">', 1)[1].split(
+            "</details>", 1
+        )[0]
+        summary = footer.split("<summary", 1)[1].split("</summary>", 1)[0]
+
+        self.assertNotIn('id="refresh-token-usage"', summary)
+        self.assertIn('id="refresh-token-usage"', footer)
+
     def test_action_review_modules_remain_bounded(self) -> None:
         budgets = {"skill_action_confirmation.js": 3_000, "collaboration_lifecycle_dialog.js": 4_000, "action_confirmation.js": 6_000, "action_confirmation.css": 2_500,
                    "extension_confirmation.js": 3_000, "key_lifecycle_confirmation.js": 3_000,
