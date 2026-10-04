@@ -489,7 +489,7 @@ class AssignmentBoundAgentProcessSession:
         lease = assignment.lease
         if factory is None or lease is None:
             return None
-        worker = self._current_worker()
+        worker = await asyncio.to_thread(self._current_worker)
         return await factory.start(
             assignment=assignment,
             worker_id=worker.id,
