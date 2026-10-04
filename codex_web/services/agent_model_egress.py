@@ -103,6 +103,8 @@ class AssignmentBoundAgentModelEgressBroker:
         os.chmod(self._root, 0o700)
         self.socket_path = self._root / "proxy.sock"
         self.server: asyncio.AbstractServer | None = None
+        self._handler_tasks: set[asyncio.Task[None]] = set()
+        self._stopping = False
         self.connections = 0
         self.denied_connections = 0
 
@@ -129,12 +131,28 @@ class AssignmentBoundAgentModelEgressBroker:
     async def start(self) -> "AssignmentBoundAgentModelEgressBroker":
         if self.server is not None:
             return self
+        self._stopping = False
         self.server = await asyncio.start_unix_server(
-            self._handle,
+            self._accept,
             path=str(self.socket_path),
         )
         os.chmod(self.socket_path, 0o600)
         return self
+
+    def _accept(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        if self._stopping:
+            writer.close()
+            return
+        task = asyncio.create_task(
+            self._handle(reader, writer),
+            name="assignment-model-egress",
+        )
+        self._handler_tasks.add(task)
+        task.add_done_callback(self._handler_tasks.discard)
 
     def _authorized(self, headers: dict[str, str]) -> bool:
         raw = headers.get("proxy-authorization", "")
@@ -302,10 +320,18 @@ class AssignmentBoundAgentModelEgressBroker:
                     await writer.wait_closed()
 
     async def stop(self) -> None:
+        self._stopping = True
         server = self.server
         self.server = None
         if server is not None:
             server.close()
+        tasks = tuple(self._handler_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._handler_tasks.clear()
+        if server is not None:
             await server.wait_closed()
         with contextlib.suppress(FileNotFoundError):
             self.socket_path.unlink()

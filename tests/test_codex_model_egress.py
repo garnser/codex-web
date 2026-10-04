@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gc
 import tempfile
 import unittest
 from pathlib import Path
@@ -212,6 +213,42 @@ class CodexModelEgressBrokerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(result, expected)
         self.assertEqual(open_connection.await_count, 2)
+
+    async def test_active_connection_task_is_owned_until_disconnect(self) -> None:
+        reader, writer, response = await self._connect(
+            f"127.0.0.1:{self.echo_port}",
+            self._auth(),
+        )
+        self.assertIn(b"200 Connection Established", response)
+        self.assertEqual(len(self.broker._handler_tasks), 1)
+
+        gc.collect()
+        writer.write(b"still-connected")
+        await writer.drain()
+        echoed = await asyncio.wait_for(
+            reader.readexactly(len(b"still-connected")),
+            timeout=1,
+        )
+
+        self.assertEqual(echoed, b"still-connected")
+        self.assertEqual(len(self.broker._handler_tasks), 1)
+        writer.close()
+        await writer.wait_closed()
+
+    async def test_stop_cancels_and_drains_active_connection_tasks(self) -> None:
+        reader, writer, response = await self._connect(
+            f"127.0.0.1:{self.echo_port}",
+            self._auth(),
+        )
+        self.assertIn(b"200 Connection Established", response)
+        self.assertEqual(len(self.broker._handler_tasks), 1)
+
+        await self.broker.stop()
+
+        self.assertEqual(self.broker._handler_tasks, set())
+        self.assertEqual(await asyncio.wait_for(reader.read(), timeout=1), b"")
+        writer.close()
+        await writer.wait_closed()
 
     async def test_stop_removes_private_socket_directory(self) -> None:
         root = self.broker.mount_source

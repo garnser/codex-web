@@ -315,6 +315,9 @@ separate assignment-bound broker:
 - every CONNECT requires a random per-session proxy capability and revalidates
   the current assignment, worker, fence, deadline and delegated credential
   authority before opening provider transport;
+- the broker owns each accepted CONNECT handler for its complete lifetime and,
+  on session shutdown, stops accepting, cancels and awaits every active handler
+  before removing the private socket;
 - a tiny loopback relay inside the private network namespace bridges only the
   trusted Codex parent process to that Unix socket; the broker directory is
   mounted read-only and outside the repository workspace;
