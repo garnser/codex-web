@@ -700,7 +700,11 @@ class ThreadService:
                 "staleIndex": runtime_item is None,
             }
             rows.append(row)
-            self._adopt_legacy_thread(row, project_id=project_id)
+            await asyncio.to_thread(
+                self._adopt_legacy_thread,
+                row,
+                project_id=project_id,
+            )
 
         next_cursor = (
             self._encode_list_cursor(
