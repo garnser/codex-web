@@ -128,7 +128,7 @@ class ReplicatedOwnershipService:
         operation is cancelled before it can continue making unfenced progress.
         """
 
-        lease = self.acquire(name)
+        lease = await asyncio.to_thread(self.acquire, name)
         if lease is None:
             return False, None
         task = asyncio.create_task(operation())
@@ -141,7 +141,7 @@ class ReplicatedOwnershipService:
                 )
                 if task in done:
                     return True, await task
-                renewed = self.acquire(name)
+                renewed = await asyncio.to_thread(self.acquire, name)
                 if renewed is None or renewed.fencing_token != lease.fencing_token:
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
@@ -154,7 +154,7 @@ class ReplicatedOwnershipService:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
             with contextlib.suppress(Exception):
-                self.release(name)
+                await asyncio.to_thread(self.release, name)
 
     async def run_if_owner(
         self,
