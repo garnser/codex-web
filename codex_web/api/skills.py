@@ -19,6 +19,7 @@ from codex_web.services.skills import (
     SkillNotFound,
     SkillService,
 )
+from codex_web.services.skill_security import SkillSecurityBlocked
 from codex_web.skills import (
     SkillBundleImport,
     SkillLifecycle,
@@ -34,6 +35,33 @@ from codex_web.api.thread_scope import thread_scope_dependency
 from codex_web.services.thread_scope import ThreadScopeService
 
 
+def _security_matches(
+    item: dict[str, Any],
+    *,
+    status: str,
+    severity: str,
+    category: str,
+    provider: str,
+    risk_min: float | None,
+    risk_max: float | None,
+) -> bool:
+    security = item.get("security", {})
+    scan = security.get("scan") or {}
+    score = scan.get("risk_score")
+    findings = scan.get("findings") or []
+    return (
+        (not status or security.get("status") == status)
+        and (not severity or scan.get("severity") == severity)
+        and (not provider or str(scan.get("provider_id", "")).casefold() == provider)
+        and (
+            not category
+            or any(str(finding.get("category", "")).casefold() == category for finding in findings)
+        )
+        and (risk_min is None or (score is not None and float(score) >= risk_min))
+        and (risk_max is None or (score is not None and float(score) <= risk_max))
+    )
+
+
 def _error(exc: Exception) -> HTTPException:
     if isinstance(exc, AuthorizationError):
         return HTTPException(status_code=403, detail=str(exc))
@@ -45,6 +73,7 @@ def _error(exc: Exception) -> HTTPException:
             SkillConflict,
             DefinitionConflictError,
             DefinitionApprovalRequiredError,
+            SkillSecurityBlocked,
         ),
     ):
         detail: Any = str(exc)
@@ -79,6 +108,12 @@ def build_skills_router(service: SkillService) -> APIRouter:
         tag: str | None = None,
         category: str | None = None,
         source_id: str | None = None,
+        security_status: str | None = None,
+        security_severity: str | None = None,
+        security_category: str | None = None,
+        security_provider: str | None = None,
+        risk_min: float | None = None,
+        risk_max: float | None = None,
         owner_identity_id: str | None = None,
         lifecycle: SkillLifecycle | None = None,
         include_drafts: bool = True,
@@ -89,15 +124,43 @@ def build_skills_router(service: SkillService) -> APIRouter:
             limit = max(1, min(limit, 200))
             cursor = max(0, cursor)
             items = service.list(
-                    actor=request_actor(request),
-                    search=search,
-                    tag=tag,
-                    category=category,
-                    source_id=source_id,
-                    owner_identity_id=owner_identity_id,
-                    lifecycle=lifecycle,
-                    include_drafts=include_drafts,
+                actor=request_actor(request),
+                search=search,
+                tag=tag,
+                category=category,
+                source_id=source_id,
+                owner_identity_id=owner_identity_id,
+                lifecycle=lifecycle,
+                include_drafts=include_drafts,
+            )
+            if any(
+                value is not None
+                for value in (
+                    security_status,
+                    security_severity,
+                    security_category,
+                    security_provider,
+                    risk_min,
+                    risk_max,
                 )
+            ):
+                status = (security_status or "").strip().casefold()
+                severity = (security_severity or "").strip().casefold()
+                security_category_value = (security_category or "").strip().casefold()
+                provider = (security_provider or "").strip().casefold()
+                items = [
+                    item
+                    for item in items
+                    if _security_matches(
+                        item,
+                        status=status,
+                        severity=severity,
+                        category=security_category_value,
+                        provider=provider,
+                        risk_min=risk_min,
+                        risk_max=risk_max,
+                    )
+                ]
             page = items[cursor:cursor + limit]
             return {
                 "items": page,

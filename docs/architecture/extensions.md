@@ -21,7 +21,7 @@ extension code executes. It declares:
 - publisher and source provenance;
 - SHA-256 package digest and optional signature metadata;
 - supported codex-web extension-host version range;
-- extension categories such as TaskSource, ActionProvider and model provider;
+- extension categories such as TaskSource, ActionProvider, model provider and Skill scanner;
 - requested and mandatory capabilities;
 - subscribed/published event names;
 - typed-configuration schema reference and logical secret slots;
@@ -152,7 +152,7 @@ dispatch table. The bridge validates exact extension ID, package version,
 declared extension category and declared runtime capabilities before
 registration.
 
-TaskSource and ActionProvider registries support tenant-specific adapters while
+TaskSource, ActionProvider and Skill scanner registries support tenant-specific adapters while
 retaining the existing global built-in fallback. This prevents one tenant's
 extension from overwriting an identically named provider in another tenant.
 
@@ -165,6 +165,9 @@ Every actual dispatch re-checks current lifecycle and grants. A grant revoked
 after registration therefore takes effect without restarting the process.
 TaskSource dispatch uses the Work Item tenant/resource scope; ActionProvider
 dispatch uses the authenticated binding/request tenant and target resources.
+Skill scanner dispatch uses the authenticated workspace tenant, re-checks
+extension authority on every scan, and keeps executable scanning behind the
+isolated worker boundary described in [skill-security.md](skill-security.md).
 
 ## Runtime authorization
 

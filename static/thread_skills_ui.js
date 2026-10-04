@@ -13,6 +13,7 @@ export function install({ byId, activeThreadId }) {
   const search = byId("thread-skills-search");
   const category = byId("thread-skills-category");
   const source = byId("thread-skills-source");
+  const security = byId("thread-skills-security");
   let assignment = null;
   let catalog = [];
   let sources = [];
@@ -24,10 +25,14 @@ export function install({ byId, activeThreadId }) {
       ...(assignment?.explicit || []).map((item) => `<span class="skill-status positive">${esc(item.skill?.name || item.skillId)} · explicit r${esc(item.revision)}</span>`),
       ...(assignment?.inherited || []).map((item) => `<span class="skill-status neutral" title="${esc(item.inheritedFrom || "parent scope")}">${esc(item.skill?.name || item.skillId)} · inherited</span>`),
     ].join("") || "<small>No effective Skills.</small>";
-    list.innerHTML = catalog.map((item) => `<label class="thread-skill-option">
-      <input type="checkbox" data-skill-record="${esc(item.recordId)}" ${selected.has(item.recordId) ? "checked" : ""}>
-      <span><strong>${esc(item.skill?.name || item.skillId)}</strong><small>${esc((item.skill?.categories || []).join(", ") || "Uncategorized")} · ${esc(item.skill?.provenance?.source_id || "local")} · r${esc(item.revision)}</small></span>
-    </label>`).join("") || '<div class="skill-state">No published Skills match these filters.</div>';
+    list.innerHTML = catalog.map((item) => {
+      const assigned = selected.has(item.recordId);
+      const allowed = item.security?.assignmentDecision?.allowed !== false;
+      return `<label class="thread-skill-option">
+      <input type="checkbox" data-skill-record="${esc(item.recordId)}" ${assigned ? "checked" : ""} ${!allowed && !assigned ? "disabled" : ""}>
+      <span><strong>${esc(item.skill?.name || item.skillId)}</strong><small>${esc((item.skill?.categories || []).join(", ") || "Uncategorized")} · ${esc(item.skill?.provenance?.source_id || "local")} · r${esc(item.revision)} · security ${esc(item.security?.status || "not_scanned")}${allowed ? "" : ` · blocked: ${esc(item.security?.assignmentDecision?.reason)}`}</small></span>
+    </label>`;
+    }).join("") || '<div class="skill-state">No published Skills match these filters.</div>';
   }
 
   async function load() {
@@ -39,6 +44,7 @@ export function install({ byId, activeThreadId }) {
       if (search.value.trim()) params.set("search", search.value.trim());
       if (category.value.trim()) params.set("category", category.value.trim());
       if (source.value) params.set("source_id", source.value);
+      if (security?.value) params.set("security_status", security.value);
       const [assigned, available, sourceResult] = await Promise.all([
         request(`/api/threads/${encodeURIComponent(threadId)}/skills`),
         request(`/api/skills?${params}`),
@@ -70,5 +76,6 @@ export function install({ byId, activeThreadId }) {
   search.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(load, 220); });
   category.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(load, 220); });
   source.addEventListener("change", load);
+  security?.addEventListener("change", load);
   return { load };
 }

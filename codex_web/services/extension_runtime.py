@@ -33,10 +33,33 @@ from codex_web.services.task_source_runtime import (
     TaskSourceResolutionError,
 )
 from codex_web.services.task_sources import TaskSource
+from codex_web.services.skill_scanners import SkillScannerProvider, SkillScannerRegistry
 
 
 class ExtensionRuntimeRegistrationError(ExtensionConflictError):
     pass
+
+
+class AuthorizedExtensionSkillScanner:
+    def __init__(self, provider: SkillScannerProvider, *, extensions, installation_id, descriptor, actor) -> None:
+        self._provider = provider
+        self._extensions = extensions
+        self._installation_id = installation_id
+        self._descriptor = descriptor
+        self._actor = actor
+        self.provider_id = provider.provider_id
+
+    def metadata(self):
+        return self._provider.metadata()
+
+    def scan(self, *, content, mode):
+        ExtensionConformanceSuite().authorize_runtime(
+            self._extensions,
+            self._installation_id,
+            self._descriptor,
+            actor=self._actor,
+        )
+        return self._provider.scan(content=content, mode=mode)
 
 
 class AuthorizedExtensionActionProvider:
@@ -202,10 +225,12 @@ class ExtensionRuntimeRegistry:
         extensions: ExtensionService,
         task_sources: TaskSourceRegistry,
         action_providers: ActionProviderRegistry,
+        skill_scanners: SkillScannerRegistry | None = None,
     ) -> None:
         self.extensions = extensions
         self.task_sources = task_sources
         self.action_providers = action_providers
+        self.skill_scanners = skill_scanners
         self.conformance = ExtensionConformanceSuite()
         self.task_source_conformance = TaskSourceConformanceSuite()
         self.action_provider_conformance = ActionProviderConformanceSuite()
@@ -217,6 +242,7 @@ class ExtensionRuntimeRegistry:
             tuple[str, str, str, str],
             str,
         ] = {}
+        self._skill_scanner_registrations: dict[tuple[str, str, str], str] = {}
         self.extensions.add_lifecycle_listener(self._on_extension_lifecycle)
 
     def _on_extension_lifecycle(
@@ -365,6 +391,42 @@ class ExtensionRuntimeRegistry:
         self._action_provider_registrations[key] = installation_id
         return wrapped
 
+    def register_skill_scanner(
+        self,
+        installation_id: str,
+        *,
+        provider: SkillScannerProvider,
+        descriptor: ExtensionRuntimeDescriptor,
+        actor: AuthenticationActor,
+    ) -> SkillScannerProvider:
+        if descriptor.extension_type != ExtensionType.SKILL_SCANNER:
+            raise ExtensionRuntimeRegistrationError(
+                "skill scanner registration requires skill_scanner extension type"
+            )
+        if self.skill_scanners is None:
+            raise ExtensionRuntimeRegistrationError("skill scanner registry is unavailable")
+        self._assert_registration_ready(installation_id, descriptor, actor=actor)
+        key = (
+            actor.organization_id,
+            actor.workspace_id,
+            provider.provider_id.strip().casefold(),
+        )
+        owner = self._skill_scanner_registrations.get(key)
+        if owner is not None and owner != installation_id:
+            raise ExtensionRuntimeRegistrationError(
+                "skill scanner provider is already owned by another extension in this tenant"
+            )
+        wrapped = AuthorizedExtensionSkillScanner(
+            provider,
+            extensions=self.extensions,
+            installation_id=installation_id,
+            descriptor=descriptor,
+            actor=actor,
+        )
+        self.skill_scanners.register(wrapped, tenant_scope=actor.tenant)
+        self._skill_scanner_registrations[key] = installation_id
+        return wrapped
+
     def unregister_installation(
         self,
         installation_id: str,
@@ -393,3 +455,15 @@ class ExtensionRuntimeRegistry:
                     tenant_scope=scope,
                 )
                 self._action_provider_registrations.pop(key, None)
+
+        for key, owner in list(self._skill_scanner_registrations.items()):
+            if owner == installation_id:
+                if self.skill_scanners is not None:
+                    self.skill_scanners.unregister(
+                        key[2],
+                        tenant_scope=TenantScope(
+                            organization_id=key[0],
+                            workspace_id=key[1],
+                        ),
+                    )
+                self._skill_scanner_registrations.pop(key, None)

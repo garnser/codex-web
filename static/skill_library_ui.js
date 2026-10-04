@@ -7,6 +7,7 @@ const state = {
   items: [],
   profiles: [],
   sources: [],
+  securityPolicy: null,
   selected: null,
   revisions: [],
   usage: [],
@@ -41,9 +42,9 @@ function lifecycleLabel(item) {
 }
 
 function statusClass(value) {
-  if (["published", "active"].includes(value)) return "positive";
-  if (["draft", "superseded"].includes(value)) return "warning";
-  if (["archived", "incompatible"].includes(value)) return "negative";
+  if (["published", "active", "passed"].includes(value)) return "positive";
+  if (["draft", "superseded", "warning", "stale", "not_scanned"].includes(value)) return "warning";
+  if (["archived", "incompatible", "failed", "quarantined", "scan_error"].includes(value)) return "negative";
   return "neutral";
 }
 
@@ -65,6 +66,12 @@ function cardMarkup() {
         </select>
         <input data-skill-category aria-label="Filter category" placeholder="Category">
         <select data-skill-source aria-label="Filter source"><option value="">All sources</option></select>
+        <select data-skill-security aria-label="Filter security status"><option value="">All security states</option><option value="passed">Passed</option><option value="warning">Warning</option><option value="quarantined">Quarantined</option><option value="not_scanned">Not scanned</option><option value="stale">Stale</option><option value="scan_error">Scan error</option></select>
+        <select data-skill-severity aria-label="Filter finding severity"><option value="">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option><option value="info">Info</option></select>
+        <input data-skill-risk-min type="number" min="0" max="100" aria-label="Minimum security risk score" placeholder="Min risk">
+        <input data-skill-risk-max type="number" min="0" max="100" aria-label="Maximum security risk score" placeholder="Max risk">
+        <input data-skill-finding-category aria-label="Filter finding category" placeholder="Finding category">
+        <input data-skill-scanner aria-label="Filter scanner provider" placeholder="Scanner provider">
         <button class="ghost-button" type="button" data-skill-refresh>Refresh</button>
         <button class="primary-button" type="button" data-skill-new>New Skill</button>
       </div>
@@ -120,6 +127,22 @@ function cardMarkup() {
           </section>
         </div>
       </details>
+      <details class="skill-import" data-skill-security-policy>
+        <summary>Skill security policy</summary>
+        <div class="skill-import-grid"><section>
+          <h3>Assignment and publication gates</h3>
+          <label><input type="checkbox" data-policy-ingest> Scan imported Skills on ingestion</label>
+          <label><input type="checkbox" data-policy-publish> Require current scan before publication</label>
+          <label><input type="checkbox" data-policy-assignment> Require current scan before assignment</label>
+          <label>Maximum risk score <input type="number" min="0" max="100" data-policy-score></label>
+          <label>Blocked severities <input data-policy-severities placeholder="high, critical"></label>
+          <label>Change reason <input data-policy-reason placeholder="Why this policy changed"></label>
+          <button class="primary-button" type="button" data-policy-save>Save policy revision</button>
+          <div class="form-result" data-policy-result hidden></div>
+        </section><section>
+          <h3>Execution boundary</h3><p>Static scanning does not require an LLM. SkillSpector CLI calls run only through an isolated worker transport. Semantic scanning is optional and provider credentials remain behind canonical secret references.</p>
+        </section></div>
+      </details>
     </div>`;
 }
 
@@ -142,11 +165,23 @@ async function loadSkills(root) {
     const lifecycle = query(root, "[data-skill-lifecycle]")?.value || "";
     const category = query(root, "[data-skill-category]")?.value.trim() || "";
     const source = query(root, "[data-skill-source]")?.value || "";
+    const security = query(root, "[data-skill-security]")?.value || "";
+    const severity = query(root, "[data-skill-severity]")?.value || "";
+    const riskMin = query(root, "[data-skill-risk-min]")?.value || "";
+    const riskMax = query(root, "[data-skill-risk-max]")?.value || "";
+    const findingCategory = query(root, "[data-skill-finding-category]")?.value.trim() || "";
+    const scanner = query(root, "[data-skill-scanner]")?.value.trim() || "";
     const params = new URLSearchParams({ include_drafts: "true" });
     if (search) params.set("search", search);
     if (lifecycle) params.set("lifecycle", lifecycle);
     if (category) params.set("category", category);
     if (source) params.set("source_id", source);
+    if (security) params.set("security_status", security);
+    if (severity) params.set("security_severity", severity);
+    if (riskMin) params.set("risk_min", riskMin);
+    if (riskMax) params.set("risk_max", riskMax);
+    if (findingCategory) params.set("security_category", findingCategory);
+    if (scanner) params.set("security_provider", scanner);
     const result = await request(`/api/skills?${params.toString()}`);
     state.items = result?.items || [];
     if (state.selected && !skillEditorOpen()) {
@@ -201,6 +236,7 @@ function renderList(root) {
         <span><strong>${esc(item.skill?.name || item.skillId)}</strong><small>${esc(item.skillId)}</small></span>
         <span class="skill-list-meta">
           <span class="skill-status ${statusClass(status)}">${esc(status)}</span>
+          <span class="skill-status ${statusClass(item.security?.status)}">${esc(item.security?.status || "not_scanned")}</span>
           <small>r${esc(item.revision)} · ${esc(item.checksum?.slice(0, 10) || "no checksum")}</small>
           ${assetKinds.length ? `<small>${esc(assetKinds.join(", "))}</small>` : ""}
         </span>
@@ -307,6 +343,8 @@ function renderDetail(root) {
   if (!host || !item) return;
   const status = lifecycleLabel(item);
   const usage = usageRows();
+  const security = item.security || { status: "not_scanned", scan: null, assignmentDecision: { allowed: true, reason: "unavailable" } };
+  const findings = security.scan?.findings || [];
   host.innerHTML = `
     <header class="skill-detail-header">
       <div>
@@ -339,6 +377,12 @@ function renderDetail(root) {
         </dl>
       </section>
       <section class="skill-wide"><h4>Assets & security classification</h4>${assetRows(item)}</section>
+      <section class="skill-wide"><h4>Skill security</h4>
+        <p><span class="skill-status ${statusClass(security.status)}">${esc(security.status)}</span> · revision ${security.currentRevision ? "current" : "not currently scanned"} · assignment ${security.assignmentDecision?.allowed ? "allowed" : `blocked: ${esc(security.assignmentDecision?.reason)}`}</p>
+        ${security.scan ? `<dl class="skill-meta"><dt>Scanner</dt><dd>${esc(security.scan.provider_id)} ${esc(security.scan.scanner_version)}</dd><dt>Mode</dt><dd>${esc(security.scan.mode)}</dd><dt>Risk</dt><dd>${esc(security.scan.risk_score)} · ${esc(security.scan.severity)}</dd><dt>Scanned</dt><dd>${new Date(security.scan.scanned_at * 1000).toLocaleString()}</dd><dt>Report artifact</dt><dd>${esc(security.scan.report_artifact_id || "—")}</dd></dl>` : "<p>No scan exists for this exact revision.</p>"}
+        ${findings.length ? `<div class="skill-provenance-results">${findings.map((finding)=>`<article class="skill-run"><header><strong>${esc(finding.rule_id)}</strong><span class="skill-status ${statusClass(["high","critical"].includes(finding.severity)?"quarantined":"warning")}">${esc(finding.severity)}</span></header><p>${esc(finding.message)}</p><small>${esc(finding.category)}${finding.path ? ` · ${esc(finding.path)}${finding.line ? `:${esc(finding.line)}` : ""}` : ""}</small></article>`).join("")}</div>` : ""}
+        <div class="skill-actions"><button class="ghost-button" type="button" data-skill-scan="static">Scan now</button><button class="ghost-button" type="button" data-skill-scan="semantic">Semantic scan</button></div>
+      </section>
       <section><h4>Routing requirements</h4>
         <p><strong>Provider:</strong> ${esc((item.skill?.required_provider_capabilities || []).join(", ") || "none")}</p>
         <p><strong>Worker:</strong> ${esc((item.skill?.required_worker_capabilities || []).join(", ") || "none")}</p>
@@ -515,6 +559,11 @@ function bindDetail(root) {
     anchor.click();
     URL.revokeObjectURL(anchor.href);
   });
+  root.querySelectorAll("[data-skill-scan]").forEach((button) => button.addEventListener("click", () => mutation(
+    root,
+    `/api/skills/${encodeURIComponent(item.skillId)}/revisions/${encodeURIComponent(item.recordId)}/scan`,
+    { mode: button.dataset.skillScan }
+  )));
   query(root, "[data-skill-attach]")?.addEventListener("click", async () => {
     const profileId = query(root, "[data-skill-profile]")?.value;
     if (!profileId || !await confirmSkillAction("Attach", item, root, () => state.selected === item, profileId)) return;
@@ -624,6 +673,39 @@ function bindSources(root) {
   });
 }
 
+async function loadSecurityPolicy(root) {
+  try {
+    const response = await request("/api/skill-security/policy");
+    const policy = response.policy || {};
+    state.securityPolicy = policy;
+    query(root, "[data-policy-ingest]").checked = Boolean(policy.scan_imported_on_ingest);
+    query(root, "[data-policy-publish]").checked = Boolean(policy.require_scan_before_publish);
+    query(root, "[data-policy-assignment]").checked = Boolean(policy.require_scan_before_assignment);
+    query(root, "[data-policy-score]").value = policy.max_risk_score ?? 49;
+    query(root, "[data-policy-severities]").value = (policy.blocked_severities || []).join(", ");
+  } catch { state.securityPolicy = null; }
+}
+
+function bindSecurityPolicy(root) {
+  query(root, "[data-policy-save]").addEventListener("click", async () => {
+    const result = query(root, "[data-policy-result]");
+    try {
+      const current = state.securityPolicy || {};
+      await request("/api/skill-security/policy", { method: "PUT", body: JSON.stringify({
+        ...current,
+        scan_imported_on_ingest: query(root, "[data-policy-ingest]").checked,
+        require_scan_before_publish: query(root, "[data-policy-publish]").checked,
+        require_scan_before_assignment: query(root, "[data-policy-assignment]").checked,
+        max_risk_score: Number(query(root, "[data-policy-score]").value),
+        blocked_severities: csv(query(root, "[data-policy-severities]").value),
+        reason: query(root, "[data-policy-reason]").value.trim(),
+      }) });
+      result.hidden = false; result.textContent = "Security policy revision published.";
+      await Promise.all([loadSecurityPolicy(root), loadSkills(root)]);
+    } catch (error) { result.hidden = false; result.textContent = errorText(error); }
+  });
+}
+
 async function install() {
   const root = installCard();
   if (!root) return;
@@ -639,9 +721,17 @@ async function install() {
     clearTimeout(timer); timer = setTimeout(() => loadSkills(root), 220);
   });
   query(root, "[data-skill-source]").addEventListener("change", () => loadSkills(root));
+  query(root, "[data-skill-security]").addEventListener("change", () => loadSkills(root));
+  query(root, "[data-skill-severity]").addEventListener("change", () => loadSkills(root));
+  ["[data-skill-risk-min]", "[data-skill-risk-max]", "[data-skill-finding-category]", "[data-skill-scanner]"].forEach((selector) => {
+    query(root, selector).addEventListener("input", () => {
+      clearTimeout(timer); timer = setTimeout(() => loadSkills(root), 220);
+    });
+  });
   bindImport(root);
   bindSources(root);
-  await Promise.all([loadProfiles(), loadSources(root), loadSkills(root)]);
+  bindSecurityPolicy(root);
+  await Promise.all([loadProfiles(), loadSources(root), loadSecurityPolicy(root), loadSkills(root)]);
   const params = new URLSearchParams(location.search);
   const selected = params.get("skill_id");
   if (selected) {

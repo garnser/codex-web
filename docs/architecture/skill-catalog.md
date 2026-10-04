@@ -16,6 +16,8 @@ Synchronization is deterministic and does not call a model. Repeating the same u
 
 Source trust and Skill publication are distinct. Approved source metadata does not make imported instructions executable. A human with canonical Skill authority must review and publish the exact draft before it can be assigned.
 
+Imported drafts pass through the revision-bound security scanning and policy gate described in [skill-security.md](skill-security.md). A changed upstream revision cannot reuse an earlier scan decision.
+
 ## Thread assignment and execution
 
 Thread assignments are persisted in canonical Thread execution settings as exact `DefinitionReference` values. The Thread Skills API validates tenant visibility, published history, active lifecycle, effective window, checksum, and schema before saving. The API projects explicit and inherited assignments separately and returns the effective set with origin.

@@ -16,6 +16,7 @@ from codex_web.api.agent_teams import build_agent_teams_router
 from codex_web.api.agent_team_execution import build_agent_team_execution_router
 from codex_web.api.skills import build_skills_router, build_thread_skills_router
 from codex_web.api.skill_catalog import build_skill_catalog_router
+from codex_web.api.skill_security import build_skill_security_router
 from codex_web.api.agent_providers import build_agent_providers_router
 from codex_web.services.agent_provider_administration import AgentProviderAdministration
 from codex_web.services.model_provider_administration import ModelProviderAdministration
@@ -166,6 +167,8 @@ from codex_web.services.agent_teams import AgentTeamService
 from codex_web.services.agent_team_execution import AgentTeamExecutionService
 from codex_web.services.skills import SkillService
 from codex_web.services.skill_catalog import SkillCatalogService
+from codex_web.services.skill_scanners import SkillScannerRegistry, SkillSpectorCliProvider
+from codex_web.services.skill_security import SkillSecurityService
 from codex_web.services.agent_providers import AgentProviderService
 from codex_web.agent_providers import AgentProviderHealth, AgentProviderUpsert
 from codex_web.services.agent_routing import AgentRoutingService
@@ -498,6 +501,7 @@ from codex_web.storage.configuration_state import (
 from codex_web.storage.conversation_channels import ConversationChannelStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.skill_catalog import SkillSourceStore
+from codex_web.storage.skill_security import SkillSecurityStore
 from codex_web.storage.decisions import DecisionStore
 from codex_web.storage.data_governance import DataGovernanceStore
 from codex_web.storage.business_context import BusinessContextStore
@@ -759,6 +763,23 @@ definition_registry_service = DefinitionRegistryService(
 )
 skill_service = SkillService(definition_registry_service)
 app.state.skill_service = skill_service
+skill_scanner_registry = SkillScannerRegistry()
+
+def _skillspector_worker_required(*_args, **_kwargs):
+    raise RuntimeError("SkillSpector CLI execution requires an isolated worker transport")
+
+skill_scanner_registry.register(SkillSpectorCliProvider(run=_skillspector_worker_required))
+skill_security_store = SkillSecurityStore(state_store)
+skill_security_service = SkillSecurityService(
+    skill_security_store,
+    definition_registry_service,
+    skill_scanner_registry,
+)
+skill_service.bind_security(skill_security_service)
+app.state.skill_scanner_registry = skill_scanner_registry
+app.state.skill_security_store = skill_security_store
+app.state.skill_security_service = skill_security_service
+app.include_router(build_skill_security_router(skill_security_service, skill_service))
 skill_source_store = SkillSourceStore(state_store)
 skill_catalog_service = SkillCatalogService(skill_source_store, skill_service)
 app.state.skill_source_store = skill_source_store
@@ -2608,6 +2629,7 @@ extension_runtime_registry = ExtensionRuntimeRegistry(
     extension_service,
     work_item_service.task_source_registry,
     action_provider_registry,
+    skill_scanner_registry,
 )
 app.state.extension_runtime_registry = extension_runtime_registry
 # Legacy code still needing project/runtime state consumes the extracted
