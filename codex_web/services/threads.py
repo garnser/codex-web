@@ -680,10 +680,17 @@ class ThreadService:
         rows: list[dict[str, Any]] = []
         for indexed in indexed_page:
             runtime_item = runtime_rows.get(indexed.id)
-            active = self._active_turn_for_list(
-                indexed.id,
-                fallback_active_turns,
-            )
+            if self.active_turn_getter is not None:
+                active = await asyncio.to_thread(
+                    self._active_turn_for_list,
+                    indexed.id,
+                    fallback_active_turns,
+                )
+            else:
+                active = self._active_turn_for_list(
+                    indexed.id,
+                    fallback_active_turns,
+                )
             runtime_status = (
                 runtime_item.get("status")
                 if isinstance(runtime_item, dict)
