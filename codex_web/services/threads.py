@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import json
@@ -856,7 +857,8 @@ class ThreadService:
         execution_id = f"thread-bootstrap-{token}"
 
         try:
-            binding = binding_service.prepare_bootstrap(
+            binding = await asyncio.to_thread(
+                binding_service.prepare_bootstrap,
                 bootstrap_id=bootstrap_id,
                 execution_id=execution_id,
                 project_id=project.id,
