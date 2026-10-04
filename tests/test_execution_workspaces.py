@@ -3,7 +3,9 @@ from __future__ import annotations
 import tempfile
 import time
 import unittest
+import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 from codex_web.execution_contract_schema import execution_contract_for_work_item
 from codex_web.execution_subjects import ExecutionSubject, ExecutionSubjectKind
@@ -208,6 +210,47 @@ class ExecutionWorkspaceTests(unittest.TestCase):
             ),
             actor=self.actor,
         )
+
+    def test_exact_revision_refresh_requires_clean_active_workspace(self) -> None:
+        workspace = self._acquire("refresh-exec", self.repo.id)
+        checkout = Path(workspace.path)
+        subprocess.run(["git", "init", "-b", workspace.branch_name], cwd=checkout, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=checkout, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=checkout, check=True)
+        (checkout / "value.txt").write_text("first\n", encoding="utf-8")
+        subprocess.run(["git", "add", "value.txt"], cwd=checkout, check=True)
+        subprocess.run(["git", "commit", "-m", "first"], cwd=checkout, check=True, capture_output=True)
+        first = subprocess.run(["git", "rev-parse", "HEAD"], cwd=checkout, check=True, capture_output=True, text=True).stdout.strip()
+        (checkout / "value.txt").write_text("second\n", encoding="utf-8")
+        subprocess.run(["git", "commit", "-am", "second"], cwd=checkout, check=True, capture_output=True)
+
+        refreshed = self.service.refresh_revision(
+            workspace.id, first[:12], actor=self.actor
+        )
+
+        self.assertEqual(refreshed.head_revision, first)
+        self.assertEqual((checkout / "value.txt").read_text(), "first\n")
+        self.assertEqual(refreshed.repository_members[0].head_revision, first)
+        (checkout / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+        with self.assertRaisesRegex(ExecutionWorkspaceConflictError, "uncommitted"):
+            self.service.refresh_revision(workspace.id, first, actor=self.actor)
+
+    def test_exact_revision_refresh_rejects_ambiguous_abbreviation(self) -> None:
+        workspace = self._acquire("ambiguous-refresh", self.repo.id)
+        checkout = Path(workspace.path)
+        subprocess.run(["git", "init", "-b", workspace.branch_name], cwd=checkout, check=True, capture_output=True)
+        original = subprocess.run
+
+        def run(command, *args, **kwargs):
+            if any(str(item).startswith("--disambiguate=") for item in command):
+                return subprocess.CompletedProcess(command, 0, "a" * 40 + "\n" + "b" * 40 + "\n", "")
+            if "cat-file" in command:
+                return subprocess.CompletedProcess(command, 0, "", "")
+            return original(command, *args, **kwargs)
+
+        with patch("codex_web.services.execution_workspaces.subprocess.run", side_effect=run):
+            with self.assertRaisesRegex(ExecutionWorkspaceConflictError, "ambiguous"):
+                self.service.refresh_revision(workspace.id, "abcdef0", actor=self.actor)
 
     def test_thread_subject_workspace_is_canonical_without_fake_work_item_sync(self) -> None:
         workspace = self.service.acquire(

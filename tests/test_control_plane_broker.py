@@ -448,6 +448,11 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         operation_ids = {item["id"] for item in payload["operations"]}
         self.assertIn("control_plane.operations.list", operation_ids)
         self.assertIn("repository.branch.publish", operation_ids)
+        self.assertIn("repository.read.job-logs", operation_ids)
+        self.assertIn("repository.read.artifacts", operation_ids)
+        self.assertIn("repository.read.artifact-download", operation_ids)
+        self.assertIn("repository.check.rerun", operation_ids)
+        self.assertIn("repository.workspace.refresh", operation_ids)
         self.assertIn("action_intent.reconcile", operation_ids)
         self.assertIn("deployment.local.status", operation_ids)
         self.assertIn("deployment.local.install", operation_ids)
@@ -456,6 +461,37 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             payload["_broker"]["operation"],
             "control_plane.operations.list",
         )
+
+    def test_ci_diagnostic_routes_resolve_only_bounded_allowlisted_shapes(self) -> None:
+        cases = {
+            "/api/repository-facts/jobs/91/logs?max_bytes=4096": "repository.read.job-logs",
+            "/api/repository-facts/runs/81/artifacts": "repository.read.artifacts",
+            "/api/repository-facts/artifacts/71/download?max_bytes=4096": "repository.read.artifact-download",
+        }
+        for target, expected in cases.items():
+            with self.subTest(target=target):
+                resolved = self.service._resolve_operation("GET", target)
+                self.assertEqual(resolved.operation.id, expected)
+        self.assertEqual(
+            self.service._resolve_operation(
+                "POST", "/api/repository-actions/check/rerun"
+            ).operation.id,
+            "repository.check.rerun",
+        )
+        self.assertEqual(
+            self.service._resolve_operation(
+                "POST", "/api/repository-workspace/refresh"
+            ).operation.id,
+            "repository.workspace.refresh",
+        )
+        for target in (
+            "/api/repository-facts/jobs/91",
+            "/api/repository-facts/runs/81",
+            "/api/repository-facts/artifacts/71",
+        ):
+            with self.subTest(target=target):
+                with self.assertRaises(ControlPlaneBrokerDeniedError):
+                    self.service._resolve_operation("GET", target)
 
     async def test_bound_worker_scopes_survive_canonical_revalidation(self) -> None:
         actor = self.service._actor(self.assignment, self.worker_actor)

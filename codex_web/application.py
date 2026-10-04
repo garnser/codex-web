@@ -2297,6 +2297,7 @@ control_plane_broker_service = ControlPlaneBrokerService(
     audit=control_plane_broker_audit_store,
     action_intents=action_intent_service,
     code_hosts=code_host_service,
+    execution_workspaces=execution_workspace_service,
 )
 control_plane_broker_factory.configure(control_plane_broker_service)
 app.state.control_plane_broker_audit_store = control_plane_broker_audit_store

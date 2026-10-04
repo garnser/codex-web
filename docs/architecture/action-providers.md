@@ -120,6 +120,7 @@ GitHub and GitLab implement one provider-neutral delivery catalog:
   GitLab merge request;
 - `code-host.branch.publish`.
 - `code-host.pull-request.merge` (GitHub).
+- `code-host.job.rerun` (GitHub).
 
 Every request targets exactly one active canonical repository Resource. The
 provider locator is resolved from that Resource's GitHub or GitLab alias, while
@@ -150,6 +151,21 @@ fresh brokered credential to read the comment, issue, change request, or branch
 back from the provider and compare it with the durable ActionResult. ActionIntent
 receipts and verification receipts remain the authoritative reconciliation
 history, including unknown outcomes and bounded idempotent retries.
+
+CI job reruns are medium-risk external mutations. The assignment broker creates
+an ActionIntent for one exact GitHub job ID, the provider accepts only a
+completed failure-like conclusion, and the action is single-attempt so an
+unknown outcome cannot silently start a second run. Verification reads the job
+back and accepts only queued, running, or completed provider state.
+
+The same broker exposes read-only CI diagnostics without giving the execution
+worker a provider credential. Failed-job logs are UTF-8 decoded, capped at a
+caller-selected maximum of 320 KiB, and redact common authorization, token,
+secret, password, API-key, and GitHub-token forms. Workflow-run artifact lists
+are capped to one provider page, and artifact downloads return bounded base64
+content with an explicit truncation flag. All operations retain canonical
+tenant, Project, repository, assignment-fence, authority, rate-limit, and audit
+checks.
 
 The shared ActionProvider administration surface exposes both provider catalogs
 and binding state, so this slice requires no provider-specific UI. Operators see

@@ -30,6 +30,7 @@ CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID = "code-host.pull-request.upsert"
 CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID = CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID
 CODE_HOST_BRANCH_PUBLISH_ACTION_ID = "code-host.branch.publish"
 CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID = "code-host.pull-request.merge"
+CODE_HOST_JOB_RERUN_ACTION_ID = "code-host.job.rerun"
 
 CODE_HOST_ISSUE_COMMENT_EVIDENCE = "code-host-issue-comment"
 CODE_HOST_ISSUE_CREATE_EVIDENCE = "code-host-issue"
@@ -37,6 +38,7 @@ CODE_HOST_ISSUE_STATE_EVIDENCE = "code-host-issue-state"
 CODE_HOST_CHANGE_REQUEST_EVIDENCE = "code-host-change-request"
 CODE_HOST_BRANCH_EVIDENCE = "code-host-branch"
 CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE = "code-host-pull-request-merge"
+CODE_HOST_JOB_RERUN_EVIDENCE = "code-host-job-rerun"
 
 _LOCATOR_SEGMENT = re.compile(r"^[A-Za-z0-9_.-]+$")
 _REVISION = re.compile(r"^[0-9a-f]{40,64}$")
@@ -163,6 +165,21 @@ class CodeHostActionContract:
                 retry_max_attempts=1,
                 network_access=True,
             ),
+            ActionDefinition(
+                action_id=CODE_HOST_JOB_RERUN_ACTION_ID,
+                title="Rerun CI job",
+                description="Request one idempotently tracked rerun of a failed CI job.",
+                capabilities=capabilities,
+                risk_class=ActionRiskClass.MEDIUM,
+                required_resource_types=(ResourceType.REPOSITORY,),
+                required_authority=("repository.checks.rerun",),
+                credential_required=True,
+                credential_purpose=self.credential_purpose,
+                expected_evidence=(CODE_HOST_JOB_RERUN_EVIDENCE,),
+                timeout_seconds=30.0,
+                retry_max_attempts=1,
+                network_access=True,
+            ),
         )
 
     @staticmethod
@@ -178,6 +195,7 @@ class CodeHostActionContract:
             CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID: (
                 CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE
             ),
+            CODE_HOST_JOB_RERUN_ACTION_ID: CODE_HOST_JOB_RERUN_EVIDENCE,
         }
         try:
             return evidence_types[action_id]
@@ -392,6 +410,21 @@ class CodeHostActionContract:
         if method not in {"merge", "squash", "rebase"}:
             raise ValueError("merge_method must be merge, squash, or rebase")
         return {"number": number, "merge_method": method}
+
+    @staticmethod
+    def job_rerun(request: ActionRequest) -> int:
+        if set(request.parameters) - {"job_id"}:
+            raise ValueError("unsupported job rerun parameters")
+        value = request.parameters.get("job_id")
+        if isinstance(value, bool):
+            raise ValueError("job_id must be a positive integer")
+        try:
+            job_id = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("job_id must be a positive integer") from exc
+        if job_id < 1 or str(job_id) != str(value).strip():
+            raise ValueError("job_id must be a positive integer")
+        return job_id
 
     def attest_branch(self, request: ActionRequest) -> AttestedBranch:
         if set(request.parameters) - {

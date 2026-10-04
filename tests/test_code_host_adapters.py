@@ -165,6 +165,51 @@ class CodeHostAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(event.repository_external_id, "42")
 
+    async def test_github_ci_diagnostics_are_bounded_redacted_and_attributed(self) -> None:
+        secret = "ghp_abcdefghijklmnopqrstuvwxyz123456"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.raw_path.decode().split("?", 1)[0]
+            if path.endswith("/actions/jobs/91/logs"):
+                return httpx.Response(200, text=f"token={secret}\n" + "x" * 200)
+            if path.endswith("/actions/runs/81/artifacts"):
+                return httpx.Response(
+                    200,
+                    json={"artifacts": [{
+                        "id": 71, "name": "chromium-report", "size_in_bytes": 4,
+                        "expired": False, "created_at": "2026-10-04T10:00:00Z",
+                        "expires_at": "2026-10-05T10:00:00Z",
+                        "archive_download_url": "https://api.github.example/artifacts/71",
+                    }]},
+                )
+            if path.endswith("/actions/artifacts/71/zip"):
+                return httpx.Response(200, content=b"report-data")
+            return httpx.Response(404)
+
+        provider = GitHubCodeHostProvider(
+            GitHubClient(transport=httpx.MockTransport(handler))
+        )
+        binding = self._binding("github")
+        resource = self._resource("github")
+
+        logs = await provider.job_logs(
+            binding, resource, 91, credential="token", max_bytes=80
+        )
+        artifacts = await provider.artifacts(
+            binding, resource, 81, credential="token"
+        )
+        download = await provider.artifact_download(
+            binding, resource, 71, credential="token", max_bytes=6
+        )
+
+        self.assertTrue(logs.redacted)
+        self.assertTrue(logs.truncated)
+        self.assertNotIn(secret, logs.content)
+        self.assertEqual(artifacts[0].external_id, "71")
+        self.assertEqual(artifacts[0].name, "chromium-report")
+        self.assertTrue(download.truncated)
+        self.assertEqual(download.byte_count, 6)
+
     async def test_gitlab_normalizes_equivalent_repository_pr_checks_and_webhook(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             path = request.url.raw_path.decode().split("?", 1)[0]

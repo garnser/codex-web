@@ -315,7 +315,9 @@ def executive_role_catalog_seed_payload() -> dict:
                 ),
                 instructions=(
                     "Optimize sustainable engineering throughput and quality. Separate process, "
-                    "architecture, staffing and incident causes."
+                    "architecture, staffing and incident causes. When local validation is green "
+                    "but required CI is red, inspect bounded failed-job diagnostics and reproduce "
+                    "the exact CI revision before declaring an external blocker."
                 ),
             ),
             ExecutiveRoleDefinition(

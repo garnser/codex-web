@@ -55,6 +55,7 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_ISSUE_COMMENT_ACTION_ID,
     CODE_HOST_ISSUE_CREATE_ACTION_ID,
     CODE_HOST_ISSUE_UPDATE_ACTION_ID,
+    CODE_HOST_JOB_RERUN_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
     CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
 )
@@ -64,6 +65,12 @@ from codex_web.services.identity import (
     AuthorizationError,
     IdentityService,
     TenantIsolationError,
+)
+from codex_web.services.execution_workspaces import (
+    ExecutionWorkspaceBackendError,
+    ExecutionWorkspaceConflictError,
+    ExecutionWorkspaceNotFoundError,
+    ExecutionWorkspaceService,
 )
 from codex_web.services.work_item_operator import WorkItemOperatorService
 from codex_web.services.work_items import WorkItemService
@@ -216,6 +223,27 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
         authority_level=AuthorityLevel.READ,
     ),
     ControlPlaneBrokerOperation(
+        id="repository.read.job-logs",
+        method="GET",
+        path_template="/api/repository-facts/jobs/{job_id}/logs?max_bytes={max_bytes}",
+        capability="repository.checks.read",
+        authority_level=AuthorityLevel.READ,
+    ),
+    ControlPlaneBrokerOperation(
+        id="repository.read.artifacts",
+        method="GET",
+        path_template="/api/repository-facts/runs/{run_id}/artifacts",
+        capability="repository.checks.read",
+        authority_level=AuthorityLevel.READ,
+    ),
+    ControlPlaneBrokerOperation(
+        id="repository.read.artifact-download",
+        method="GET",
+        path_template="/api/repository-facts/artifacts/{artifact_id}/download?max_bytes={max_bytes}",
+        capability="repository.checks.read",
+        authority_level=AuthorityLevel.READ,
+    ),
+    ControlPlaneBrokerOperation(
         id="repository.read.releases",
         method="GET",
         path_template="/api/repository-facts/releases",
@@ -262,6 +290,20 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
         method="POST",
         path_template="/api/repository-actions/pull-request/merge",
         capability="repository.pull-request.merge",
+        authority_level=AuthorityLevel.EXECUTE,
+    ),
+    ControlPlaneBrokerOperation(
+        id="repository.check.rerun",
+        method="POST",
+        path_template="/api/repository-actions/check/rerun",
+        capability="repository.checks.rerun",
+        authority_level=AuthorityLevel.EXECUTE,
+    ),
+    ControlPlaneBrokerOperation(
+        id="repository.workspace.refresh",
+        method="POST",
+        path_template="/api/repository-workspace/refresh",
+        capability="repository.workspace.refresh",
         authority_level=AuthorityLevel.EXECUTE,
     ),
     ControlPlaneBrokerOperation(
@@ -321,6 +363,10 @@ _REPOSITORY_ACTIONS = {
         "repository.pull-request.merge",
         CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
     ),
+    "/api/repository-actions/check/rerun": (
+        "repository.check.rerun",
+        CODE_HOST_JOB_RERUN_ACTION_ID,
+    ),
 }
 
 # These profiles execute different workloads but share the same narrow broker
@@ -344,6 +390,7 @@ class ControlPlaneBrokerService:
         audit: ControlPlaneBrokerAuditStore,
         action_intents: ActionIntentService | None = None,
         code_hosts: CodeHostService | None = None,
+        execution_workspaces: ExecutionWorkspaceService | None = None,
         operator: WorkItemOperatorService | None = None,
         limits: ControlPlaneBrokerLimits | None = None,
         clock: Callable[[], float] = time.time,
@@ -356,6 +403,7 @@ class ControlPlaneBrokerService:
         self.audit = audit
         self.action_intents = action_intents
         self.code_hosts = code_hosts
+        self.execution_workspaces = execution_workspaces
         self.limits = limits or ControlPlaneBrokerLimits()
         self._clock = clock
         self._monotonic = monotonic
@@ -471,6 +519,13 @@ class ControlPlaneBrokerService:
                 target_ref=None,
                 query=query,
             )
+        if path == "/api/repository-workspace/refresh":
+            operation = _OPERATION_BY_ID["repository.workspace.refresh"]
+            if method != operation.method:
+                raise ControlPlaneBrokerDeniedError(
+                    f"method {method} is not allowed for {operation.id}"
+                )
+            return _ResolvedOperation(operation=operation, target_ref=None, query=query)
         repository_read_exact = {
             "/api/repository-facts": "repository.read.metadata",
             "/api/repository-facts/refs": "repository.read.refs",
@@ -482,6 +537,18 @@ class ControlPlaneBrokerService:
         target_ref = None
         if operation_id is None:
             repository_read_prefixes = (
+                (
+                    "/api/repository-facts/jobs/",
+                    "repository.read.job-logs",
+                ),
+                (
+                    "/api/repository-facts/runs/",
+                    "repository.read.artifacts",
+                ),
+                (
+                    "/api/repository-facts/artifacts/",
+                    "repository.read.artifact-download",
+                ),
                 (
                     "/api/repository-facts/pull-requests/",
                     "repository.read.pull-request",
@@ -499,6 +566,15 @@ class ControlPlaneBrokerService:
                 if not path.startswith(prefix):
                     continue
                 encoded_target = path[len(prefix):]
+                required_suffix = {
+                    "repository.read.job-logs": "/logs",
+                    "repository.read.artifacts": "/artifacts",
+                    "repository.read.artifact-download": "/download",
+                }.get(candidate)
+                if required_suffix is not None:
+                    if not encoded_target.endswith(required_suffix):
+                        continue
+                    encoded_target = encoded_target.removesuffix(required_suffix)
                 if candidate == "repository.read.pull-request" and encoded_target.endswith(
                     "/reviews"
                 ):
@@ -886,6 +962,42 @@ class ControlPlaneBrokerService:
                 binding_id, repository_id, target_ref, actor=actor
             )
             return {"items": [item.model_dump(mode="json") for item in items]}
+        if operation.id in {
+            "repository.read.job-logs",
+            "repository.read.artifacts",
+            "repository.read.artifact-download",
+        }:
+            assert target_ref is not None
+            if not target_ref.isdigit() or int(target_ref) < 1:
+                raise ControlPlaneBrokerRequestError(
+                    "GitHub job, run, and artifact identifiers must be positive integers"
+                )
+            external_id = int(target_ref)
+            max_bytes_raw = (query.get("max_bytes") or [str(128 * 1024)])[0]
+            try:
+                max_bytes = int(max_bytes_raw)
+            except ValueError as exc:
+                raise ControlPlaneBrokerRequestError("max_bytes must be an integer") from exc
+            if max_bytes < 1 or max_bytes > 320 * 1024:
+                raise ControlPlaneBrokerRequestError(
+                    "max_bytes must be between 1 and 327680"
+                )
+            if operation.id == "repository.read.job-logs":
+                item = await self.code_hosts.job_logs(
+                    binding_id, repository_id, external_id,
+                    actor=actor, max_bytes=max_bytes,
+                )
+                return {"item": item.model_dump(mode="json")}
+            if operation.id == "repository.read.artifacts":
+                items = await self.code_hosts.artifacts(
+                    binding_id, repository_id, external_id, actor=actor
+                )
+                return {"items": [item.model_dump(mode="json") for item in items]}
+            item = await self.code_hosts.artifact_download(
+                binding_id, repository_id, external_id,
+                actor=actor, max_bytes=max_bytes,
+            )
+            return {"item": item.model_dump(mode="json")}
         if operation.id == "repository.read.releases":
             items = await self.code_hosts.releases(
                 binding_id, repository_id, actor=actor
@@ -1011,6 +1123,49 @@ class ControlPlaneBrokerService:
                 target_ref=resolved.target_ref,
                 query=resolved.query,
             )
+        elif operation.id == "repository.workspace.refresh":
+            if self.execution_workspaces is None or not assignment.execution_workspace_id:
+                raise ControlPlaneBrokerDeniedError(
+                    "assignment execution workspace refresh is unavailable"
+                )
+            if set(payload) - {"revision"}:
+                raise ControlPlaneBrokerRequestError(
+                    "workspace refresh accepts only revision"
+                )
+            try:
+                current_workspace = self.execution_workspaces.get(
+                    assignment.execution_workspace_id, requester_actor
+                )
+            except ExecutionWorkspaceNotFoundError as exc:
+                raise ControlPlaneBrokerRequestError(
+                    str(exc), status_code=404
+                ) from exc
+            if (
+                current_workspace.execution_id != assignment.execution_id
+                or current_workspace.project_id != assignment.project_id
+                or tuple(current_workspace.writable_repository_ids)
+                != (self._writable_repository_id(assignment),)
+            ):
+                raise ControlPlaneBrokerDeniedError(
+                    "execution workspace is outside assignment scope"
+                )
+            try:
+                refreshed = self.execution_workspaces.refresh_revision(
+                    assignment.execution_workspace_id,
+                    str(payload.get("revision") or ""),
+                    actor=requester_actor,
+                )
+            except ExecutionWorkspaceNotFoundError as exc:
+                raise ControlPlaneBrokerRequestError(
+                    str(exc), status_code=404
+                ) from exc
+            except ExecutionWorkspaceConflictError as exc:
+                raise ControlPlaneBrokerRequestError(
+                    str(exc), status_code=409
+                ) from exc
+            except ExecutionWorkspaceBackendError as exc:
+                raise ControlPlaneBrokerRequestError(str(exc)) from exc
+            result = {"item": refreshed.model_dump(mode="json")}
         elif operation.id.startswith("repository."):
             result = await self._execute_repository_action(
                 assignment=assignment,
