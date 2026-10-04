@@ -51,6 +51,14 @@ lease, or claim that uncommitted filesystem state survived. Replicated
 deployments retain shared lease ownership rules and do not perform this local
 live-assignment inference.
 
+Stale-thread replacement uses that same assignment-bound bootstrap path before
+retargeting bot bindings, queued work, or other logical thread state. Recovery
+must not call the ambient control-plane `thread/start`: a thread identifier
+without its provider rollout in the owning isolated session is not resumable.
+If assignment-bound bootstrap is unavailable or returns no canonical thread
+identity, replacement fails visibly and leaves the existing logical binding in
+place.
+
 ## Repository target provenance and multi-repository members
 
 The execution binding resolves a canonical repository target before workspace

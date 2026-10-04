@@ -9,7 +9,7 @@ from codex_web.models import ActiveThreadTurn, BotBinding, BotReplyTarget, Proje
 
 
 class BotThreadReplacementTests(unittest.TestCase):
-    def test_replace_stale_bot_thread_falls_back_to_startup_when_variant_is_unsupported(self) -> None:
+    def test_replace_stale_bot_thread_uses_assignment_bound_bootstrap(self) -> None:
         binding = BotBinding(
             id="binding-1",
             provider="slack",
@@ -24,48 +24,45 @@ class BotThreadReplacementTests(unittest.TestCase):
             updated_at=1.0,
         )
 
-        calls: list[dict[str, object]] = []
-
-        async def _request(method: str, params: dict[str, object]) -> dict[str, object]:
-            self.assertEqual(method, "thread/start")
-            calls.append(params)
-            source = params.get("sessionStartSource")
-            if source == "bot-thread-replacement":
-                raise RuntimeError(
-                    "{'code': -32600, 'message': 'Invalid request: unknown variant `bot-thread-replacement`, expected `startup` or `clear`'}"
-                )
-            self.assertEqual(source, "startup")
-            return {"thread": {"id": "new-thread"}}
+        creator = AsyncMock(return_value={"thread": {"id": "new-thread"}})
+        recovery = server._replace_stale_bot_thread.__self__
+        project = Project(
+            id="a956644fc336",
+            name="veridataops",
+            path="/home/nbingester/veridataops",
+            sandbox="danger-full-access",
+            approval_policy="never",
+        )
 
         with (
+            patch.object(recovery.projects, "get", return_value=project),
             patch.object(
-                server,
-                "_project",
-                return_value=Project(
-                    id="a956644fc336",
-                    name="veridataops",
-                    path="/home/nbingester/veridataops",
-                    sandbox="danger-full-access",
-                    approval_policy="never",
-                ),
+                recovery.settings,
+                "get",
+                return_value=ThreadRunSettings(),
             ),
-            patch.object(server, "_thread_run_settings", return_value=ThreadRunSettings()),
-            patch.object(server, "_remember_thread_run_settings"),
-            patch.object(server, "_set_thread_name", new=AsyncMock()),
-            patch.object(server, "_upsert_indexed_thread"),
+            patch.object(recovery.settings, "remember"),
+            patch.object(recovery.naming, "set_name", new=AsyncMock()),
+            patch.object(recovery.thread_index, "upsert"),
             patch.object(
                 server,
                 "_retarget_logical_bot_bindings",
                 return_value=binding.model_copy(update={"thread_id": "new-thread"}),
             ) as retarget_bindings,
             patch.object(server, "_retarget_bot_thread_state") as retarget_state,
-            patch.object(server, "_append_bot_event"),
-            patch.object(server.codex, "request", side_effect=_request),
+            patch.object(
+                server,
+                "_archive_replaced_bot_thread",
+                new=AsyncMock(return_value=True),
+            ),
+            patch.object(recovery, "event_sink"),
+            patch.object(server.hub, "publish", new=AsyncMock()),
+            patch.object(recovery, "thread_creator", creator),
         ):
             replacement = asyncio.run(server._replace_stale_bot_thread(binding, "thread not found"))
 
         self.assertEqual(replacement.thread_id, "new-thread")
-        self.assertEqual([call["sessionStartSource"] for call in calls], ["bot-thread-replacement", "startup"])
+        creator.assert_awaited_once()
         retarget_bindings.assert_called_once()
         retarget_state.assert_called_once_with("old-thread", "new-thread")
 

@@ -22,6 +22,7 @@ def recovery_service(
     settings=None,
     naming=None,
     thread_index=None,
+    thread_creator=None,
 ):
     project = project or Project(
         id="home",
@@ -54,6 +55,7 @@ def recovery_service(
         naming=naming,
         thread_index=thread_index,
         runtime_request=runtime_request,
+        thread_creator=thread_creator,
         event_sink=getattr(host, "_append_bot_event", lambda _event: None),
         truncate_text=getattr(
             host,
@@ -180,7 +182,7 @@ class ThreadRecoveryServiceTests(unittest.TestCase):
 
 
 class ThreadRecoveryReplacementTests(unittest.IsolatedAsyncioTestCase):
-    async def test_bot_replacement_preserves_variant_fallback_and_compat_seams(self) -> None:
+    async def test_bot_replacement_uses_assignment_bound_creator_and_compat_seams(self) -> None:
         binding = BotBinding(
             id="binding-1",
             provider="slack",
@@ -201,14 +203,8 @@ class ThreadRecoveryReplacementTests(unittest.IsolatedAsyncioTestCase):
             sandbox="danger-full-access",
             approval_policy="never",
         )
-        calls: list[dict] = []
-
-        async def request(method: str, params: dict):
-            self.assertEqual(method, "thread/start")
-            calls.append(params)
-            if params.get("sessionStartSource") == "bot-thread-replacement":
-                raise RuntimeError("unknown variant `bot-thread-replacement`")
-            return {"thread": {"id": "new-thread"}}
+        creator = AsyncMock(return_value={"thread": {"id": "new-thread"}})
+        request = AsyncMock()
 
         replacement = binding.model_copy(update={"thread_id": "new-thread"})
         retarget_bindings = Mock(return_value=replacement)
@@ -252,19 +248,56 @@ class ThreadRecoveryReplacementTests(unittest.IsolatedAsyncioTestCase):
             settings=settings,
             naming=naming,
             thread_index=thread_index,
+            thread_creator=creator,
         )
 
         result = await service.replace_stale_bot_thread(binding, "thread not found")
 
         self.assertEqual(result.thread_id, "new-thread")
-        self.assertEqual(
-            [call["sessionStartSource"] for call in calls],
-            ["bot-thread-replacement", "startup"],
+        creator.assert_awaited_once_with(
+            project_id="home",
+            sandbox="danger-full-access",
+            approval_policy="never",
+            model=None,
+            reasoning_effort=None,
+            repository_resource_id=None,
+            read_only_repository_resource_ids=(),
+            execution_profile_id=None,
         )
+        request.assert_not_awaited()
         retarget_bindings.assert_called_once()
         retarget_state.assert_called_once_with("old-thread", "new-thread")
         archive.assert_awaited_once_with("old-thread", "new-thread")
         self.assertEqual(host.THREAD_REPLACEMENTS["old-thread"], "new-thread")
+
+    async def test_replacement_fails_closed_without_assignment_bound_creator(self) -> None:
+        binding = BotBinding(
+            id="binding-1",
+            provider="slack",
+            external_conversation_id="C1",
+            thread_id="old-thread",
+            project_id="home",
+            route_prefix="James",
+            sandbox="danger-full-access",
+            approval_policy="never",
+            created_at=1.0,
+            updated_at=1.0,
+        )
+        host = SimpleNamespace(
+            THREAD_REPLACEMENTS={},
+            THREAD_TERMINAL_FAILURES={},
+            _binding_prefix=lambda item: item.route_prefix,
+        )
+        service = recovery_service(host)
+
+        with self.assertRaises(HTTPException) as caught:
+            await service.replace_stale_bot_thread(binding, "thread not found")
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(
+            caught.exception.detail["code"],
+            "replacement_thread_bootstrap_unavailable",
+        )
 
 
 if __name__ == "__main__":

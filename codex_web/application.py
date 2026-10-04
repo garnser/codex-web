@@ -3357,6 +3357,7 @@ thread_service = ThreadService(
     active_turn_loader=runtime_state.active_turns.load,
     active_turn_getter=runtime_state.active_turns.get,
 )
+thread_recovery_service.bind_thread_creator(thread_service.create)
 execution_preflight_service = ExecutionPreflightService(
     execution_preflight_store,
 )
