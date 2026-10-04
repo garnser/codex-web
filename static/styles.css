@@ -306,6 +306,7 @@ section {
 }
 
 .token-footer {
+  position: relative;
   border-top: 1px solid var(--line);
   padding: 13px 14px 14px;
   background: var(--sidebar-bg);
@@ -313,6 +314,7 @@ section {
 
 .token-footer summary.section-title {
   margin-bottom: 8px;
+  padding-right: 36px;
   cursor: pointer;
   list-style: none;
 }
@@ -347,6 +349,12 @@ section {
   height: 28px;
   min-height: 28px;
   font-size: 12px;
+}
+
+.token-footer > .token-refresh-button {
+  position: absolute;
+  top: 9px;
+  right: 14px;
 }
 
 .token-panel {
