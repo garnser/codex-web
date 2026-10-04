@@ -131,7 +131,11 @@ class GitHubTaskSource:
 
     @staticmethod
     def _stage(snapshot: TaskSourceSnapshot, current: WorkItemStage | None) -> WorkItemStage:
-        return "closed" if snapshot.source_state == "closed" else (current or "implementation_active")
+        if snapshot.source_state == "closed":
+            return "closed"
+        if snapshot.source_state == "open" and current == "closed":
+            return "implementation_active"
+        return current or "implementation_active"
 
     def project(self, snapshot: TaskSourceSnapshot, *, current_stage: WorkItemStage | None = None) -> TaskSourceCanonicalProjection:
         stage = self._stage(snapshot, current_stage)

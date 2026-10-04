@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from codex_web.models import TaskSourceIdentity, WorkItemState
+from codex_web.services.github_task_source import GitHubTaskSource
 from codex_web.services.gitlab_task_source import GitLabTaskSource
 from codex_web.services.task_source_work_items import TaskSourceWorkItemProjector
 from codex_web.services.task_sources import TaskSourceSnapshot
@@ -155,6 +156,50 @@ class TaskSourceWorkItemProjectionTests(unittest.TestCase):
         self.assertIn("canonical-work-123", self.host.states)
         self.assertNotIn("group/project#42", self.host.states)
         self.assertEqual(state.source_identity.external_id, "group/project#42")
+
+    def test_github_reopen_restores_closed_item_and_preserves_source_revision(self) -> None:
+        identity = TaskSourceIdentity(
+            source_type="github",
+            source_instance="https://api.github.com",
+            external_id="garnser/codex-web#893",
+            external_url="https://github.com/garnser/codex-web/issues/893",
+            revision="2026-09-29T09:00:00Z",
+        )
+        self.host.states[identity.external_id] = WorkItemState(
+            ref=identity.external_id,
+            project_id="home",
+            source_identity=identity,
+            current_stage="closed",
+            terminal_outcome="completed",
+            closed_at=1.0,
+            last_meaningful_update_at=1.0,
+            last_gitlab_event_at=1.0,
+            updated_at=1.0,
+            created_at=1.0,
+        )
+        reopened = TaskSourceSnapshot(
+            identity=identity.model_copy(
+                update={"revision": "2026-09-29T09:26:40Z"}
+            ),
+            title="Reopened issue",
+            source_state="open",
+            owners=("james",),
+        )
+
+        state = self.projector.upsert(
+            GitHubTaskSource("https://api.github.com", "token", client=_Client()),
+            reopened,
+            project_id="home",
+        )
+
+        self.assertEqual(state.current_stage, "implementation_active")
+        self.assertEqual(state.current_owner, "james")
+        self.assertIsNone(state.closed_at)
+        self.assertIsNone(state.terminal_outcome)
+        self.assertEqual(
+            state.source_identity.revision,
+            "2026-09-29T09:26:40Z",
+        )
 
     def test_older_snapshot_cannot_overwrite_newer_canonical_projection(self) -> None:
         newer = self.snapshot(revision="2026-09-17T20:00:00Z")

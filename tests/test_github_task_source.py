@@ -33,5 +33,18 @@ class GitHubTaskSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.identity, TaskSourceIdentity(source_type="github", source_instance="https://api.github.com", external_id="acme/app#4"))
         self.assertEqual(source.project(event.snapshot).stage, "implementation_active")
 
+    async def test_open_snapshot_reopens_closed_canonical_item(self):
+        source = GitHubTaskSource("https://api.github.com", "token", client=Client())
+        event = await source.normalize_event({
+            "action": "reopened",
+            "repository": {"full_name": "acme/app"},
+            "issue": {"number": 4, "title": "Fix", "state": "open"},
+        })
+
+        projection = source.project(event.snapshot, current_stage="closed")
+
+        self.assertEqual(projection.source_state, "open")
+        self.assertEqual(projection.stage, "implementation_active")
+
 
 if __name__ == "__main__": unittest.main()
