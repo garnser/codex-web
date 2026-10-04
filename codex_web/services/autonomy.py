@@ -245,20 +245,23 @@ class AutonomyService:
                 )
                 if not binding:
                     continue
-                issues = d.gitlab_group_issues(
-                    project_id,
-                    project_settings,
-                    labels=[f"owner::{owner}"],
-                )
-                if inspect.isawaitable(issues):
-                    issues = await issues
-                missing_state_refs = [
-                    issue.get("references", {}).get("full", "")
-                    for issue in issues
-                    if issue.get("references", {}).get("full")
-                    and issue.get("state") == "opened"
-                    and issue.get("references", {}).get("full") not in states
-                ]
+                missing_state_refs: list[str] = []
+                if not canonical_items:
+                    issues = d.gitlab_group_issues(
+                        project_id,
+                        project_settings,
+                        labels=[f"owner::{owner}"],
+                    )
+                    if inspect.isawaitable(issues):
+                        issues = await issues
+                    missing_state_refs = [
+                        issue.get("references", {}).get("full", "")
+                        for issue in issues
+                        if issue.get("references", {}).get("full")
+                        and issue.get("state") == "opened"
+                        and issue.get("references", {}).get("full")
+                        not in states
+                    ]
                 if not missing_state_refs and not canonical_items:
                     continue
                 binding = await d.replace_nonperforming_thread(binding, "owner-work-watchdog")

@@ -227,6 +227,7 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
         async def replace(current, _reason):
             return current
 
+        gitlab_group_issues = AsyncMock(return_value=[])
         return SimpleNamespace(
             load_gitlab_routing_settings=lambda: SimpleNamespace(
                 enabled=True,
@@ -237,7 +238,7 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
             load_work_item_states=lambda: states,
             gitlab_token_for_project=lambda _project_id: "token",
             gitlab_group_path=lambda _settings: "example",
-            gitlab_group_issues=lambda *_args, **_kwargs: [],
+            gitlab_group_issues=gitlab_group_issues,
             append_bot_event=lambda event: None,
             coerce_owner=lambda value: (
                 str(value).strip().lower() if value else None
@@ -298,6 +299,7 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
             "dispatch:example/project#2",
             "owner-work-watchdog",
         )
+        runtime.gitlab_group_issues.assert_not_awaited()
 
     async def test_active_owner_is_not_dispatched_duplicate_work(self) -> None:
         state = WorkItemState(
