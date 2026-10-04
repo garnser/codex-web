@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from codex_web.models import BotBinding, IndexedThread, Project
+from codex_web.models import BotBinding, IndexedThread, Project, ThreadRunSettings
 from codex_web.services.project_runtime import ProjectRuntimeService
 from codex_web.services.thread_execution_settings import ThreadExecutionSettingsService
 from codex_web.services.thread_naming import ThreadNamingService
@@ -40,6 +40,7 @@ class ThreadRecoveryService:
         truncate_text: Callable[[str, int], str],
         thread_replacements: dict[str, str] | None = None,
         terminal_failures: dict[str, Any] | None = None,
+        thread_creator: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     ) -> None:
         self.host = host
         self.projects = projects
@@ -59,7 +60,61 @@ class ThreadRecoveryService:
             if terminal_failures is not None
             else getattr(host, "THREAD_TERMINAL_FAILURES", {})
         )
+        self.thread_creator = thread_creator
         self.stale_active_turn_reconciler = None
+
+    def bind_thread_creator(
+        self,
+        thread_creator: Callable[..., Awaitable[dict[str, Any]]],
+    ) -> None:
+        """Bind the assignment-scoped thread bootstrap after service composition."""
+        self.thread_creator = thread_creator
+
+    async def _create_replacement_thread(
+        self,
+        *,
+        project: Project,
+        settings: ThreadRunSettings,
+        sandbox: str,
+        approval_policy: str,
+    ) -> str:
+        if self.thread_creator is None:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "replacement_thread_bootstrap_unavailable",
+                    "message": (
+                        "stale-thread replacement requires the assignment-bound "
+                        "thread bootstrap service"
+                    ),
+                },
+            )
+        response = await self.thread_creator(
+            project_id=project.id,
+            sandbox=sandbox,
+            approval_policy=approval_policy,
+            model=settings.model,
+            reasoning_effort=settings.reasoning_effort,
+            repository_resource_id=settings.repository_resource_id,
+            read_only_repository_resource_ids=(
+                settings.read_only_repository_resource_ids
+            ),
+            execution_profile_id=settings.execution_profile_id,
+        )
+        thread = response.get("thread") if isinstance(response, dict) else None
+        thread_id = thread.get("id") if isinstance(thread, dict) else None
+        if not thread_id:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "code": "replacement_thread_id_missing",
+                    "message": (
+                        "assignment-bound replacement bootstrap returned no "
+                        "canonical thread id"
+                    ),
+                },
+            )
+        return str(thread_id)
 
     def logical_binding_name(self, binding: BotBinding) -> str:
         h = self.host
@@ -193,31 +248,12 @@ class ThreadRecoveryService:
         approval_policy = binding.approval_policy or settings.approval_policy or project.approval_policy
         thread_name = binding.thread_name or binding.route_prefix or h._binding_prefix(binding)
 
-        replacement_params = self.projects.params(
-            project,
-            {
-                "sandbox": sandbox,
-                "approvalPolicy": approval_policy,
-                "sessionStartSource": "bot-thread-replacement",
-            },
+        new_thread_id = await self._create_replacement_thread(
+            project=project,
+            settings=settings,
+            sandbox=sandbox,
+            approval_policy=approval_policy,
         )
-        try:
-            response = await self.runtime_request("thread/start", replacement_params)
-        except Exception as exc:
-            text = str(exc).lower()
-            if "unknown variant `bot-thread-replacement`" not in text and "sessionstartsource" not in text:
-                raise
-            replacement_params = self.projects.params(
-                project,
-                {
-                    "sandbox": sandbox,
-                    "approvalPolicy": approval_policy,
-                    "sessionStartSource": "startup",
-                },
-            )
-            response = await self.runtime_request("thread/start", replacement_params)
-
-        new_thread_id = response["thread"]["id"]
         self.settings.remember(
             new_thread_id,
             sandbox=sandbox,
@@ -225,6 +261,15 @@ class ThreadRecoveryService:
             model=settings.model,
             reasoning_effort=settings.reasoning_effort,
             developer_instructions=settings.developer_instructions,
+            repository_resource_id=settings.repository_resource_id,
+            writable_repository_resource_ids=(
+                settings.writable_repository_resource_ids
+            ),
+            read_only_repository_resource_ids=(
+                settings.read_only_repository_resource_ids
+            ),
+            execution_profile_id=settings.execution_profile_id,
+            skill_refs=settings.skill_refs,
         )
         if thread_name:
             with contextlib.suppress(Exception):
@@ -275,25 +320,30 @@ class ThreadRecoveryService:
     async def replace_stale_web_thread(self, thread_id: str, project: Project, error: str) -> str:
         h = self.host
         settings = self.settings.get(thread_id)
-        response = await self.runtime_request(
-            "thread/start",
-            self.projects.params(
-                project,
-                {
-                    "sandbox": settings.sandbox or project.sandbox,
-                    "approvalPolicy": settings.approval_policy or project.approval_policy,
-                    "sessionStartSource": "startup",
-                },
-            ),
+        sandbox = settings.sandbox or project.sandbox
+        approval_policy = settings.approval_policy or project.approval_policy
+        new_thread_id = await self._create_replacement_thread(
+            project=project,
+            settings=settings,
+            sandbox=sandbox,
+            approval_policy=approval_policy,
         )
-        new_thread_id = response["thread"]["id"]
         self.settings.remember(
             new_thread_id,
-            sandbox=settings.sandbox or project.sandbox,
-            approval_policy=settings.approval_policy or project.approval_policy,
+            sandbox=sandbox,
+            approval_policy=approval_policy,
             model=settings.model,
             reasoning_effort=settings.reasoning_effort,
             developer_instructions=settings.developer_instructions,
+            repository_resource_id=settings.repository_resource_id,
+            writable_repository_resource_ids=(
+                settings.writable_repository_resource_ids
+            ),
+            read_only_repository_resource_ids=(
+                settings.read_only_repository_resource_ids
+            ),
+            execution_profile_id=settings.execution_profile_id,
+            skill_refs=settings.skill_refs,
         )
         indexed = next((item for item in self.thread_index.load() if item.id == thread_id), None)
         thread_name = indexed.name if indexed else None
