@@ -104,8 +104,10 @@ class EventHub:
         if self._metrics:
             self._metrics.increment("eventhub.events_published")
 
-        # Runtime observers must never be able to break browser fan-out. They are
-        # intentionally synchronous and should only update state/schedule work.
+        # Runtime observers must never be able to break browser fan-out or
+        # monopolize the ASGI loop. Some observers persist usage projections,
+        # so execute synchronous listeners in the worker pool while preserving
+        # publication order.
         event_context = (
             correlated(
                 correlation_id=event.get("correlation_id"),
@@ -121,7 +123,7 @@ class EventHub:
         with event_context:
             for listener in list(self._listeners):
                 try:
-                    listener(event)
+                    await asyncio.to_thread(listener, event)
                 except Exception as exc:
                     if self._metrics:
                         self._metrics.increment("eventhub.listener_failures")
