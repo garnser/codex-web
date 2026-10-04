@@ -260,8 +260,11 @@ jobs:
               tests/browser/routed_project_visual.spec.js \
               --workers=1 --retries=1 --reporter=line
           elif [[ "${{ matrix.suite }}" == "functional" ]]; then
+            npx playwright test \
+              tests/browser/accessibility_axe.spec.js \
+              --workers=1 --retries=1 --reporter=line
             npx playwright test tests/browser \
-              --grep-invert "visual baseline" \
+              --grep-invert "visual baseline|axe accessibility gate" \
               --workers=1 --retries=1 --reporter=line
           else
             npm run docs:screenshots

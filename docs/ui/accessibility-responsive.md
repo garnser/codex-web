@@ -6,6 +6,10 @@ The redesigned codex-web workspace treats accessibility and responsive behavior 
 
 Primary workflow browser coverage runs at representative phone (390 px), tablet / narrow desktop (768 px), and desktop (1280 px) widths. The qualification suite verifies:
 
+- an axe-core scan of the production application shell and representative
+  Overview, Goals, Resources, and Operations workspace states; serious and
+  critical findings fail CI with the surface, state, DOM target, rule help,
+  and failure summary in the test diagnostic
 - named dialogs and labelled primary controls
 - keyboard entry into workspace navigation and predictable focus order
 - visible focus treatment for operator actions
@@ -34,7 +38,10 @@ Motion is non-essential. When `prefers-reduced-motion: reduce` is active, shared
 
 ## Manual release checks
 
-Automated checks do not prove WCAG conformance. Before a major UI release, manually verify the primary workflows with:
+Automated checks, including a clean axe result, do not prove WCAG conformance.
+The axe gate catches only automatically detectable serious and critical
+violations on its qualified states. Before a major UI release, manually verify
+the primary workflows with:
 
 1. keyboard-only navigation, including open/close/focus restoration for dialogs and drawers;
 2. a screen reader pass over the workspace shell, Work Item operator, Inbox/Attention, and Operations surfaces;
