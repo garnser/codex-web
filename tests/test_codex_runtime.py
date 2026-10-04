@@ -311,6 +311,38 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(runtime.proc)
         self.assertEqual(runtime.last_error, "Codex app-server stopped")
 
+    async def test_pipe_readers_do_not_starve_default_executor(self) -> None:
+        runtime = CodexRuntime(self.host)
+        release = threading.Event()
+
+        class BlockingPipe:
+            def readline(self) -> str:
+                release.wait(timeout=2)
+                return ""
+
+        runtime.proc = SimpleNamespace(
+            stdout=BlockingPipe(),
+            stderr=BlockingPipe(),
+            pid=4321,
+            poll=lambda: None,
+        )
+        stdout_task = asyncio.create_task(runtime._read_loop())
+        stderr_task = asyncio.create_task(runtime._stderr_loop())
+        try:
+            await asyncio.sleep(0)
+            worker_thread = await asyncio.wait_for(
+                asyncio.to_thread(threading.get_ident),
+                timeout=0.5,
+            )
+            self.assertNotEqual(worker_thread, threading.get_ident())
+        finally:
+            release.set()
+            await asyncio.gather(stdout_task, stderr_task)
+            executor = runtime._pipe_executor
+            runtime._pipe_executor = None
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
+
     async def test_thread_read_timeout_preserves_generation_during_steering_handoff(self) -> None:
         process = SimpleNamespace(poll=lambda: None)
         self.runtime.proc = process
