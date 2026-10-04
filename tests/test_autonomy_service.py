@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 from fastapi import FastAPI
 
 from codex_web.action_providers import ActionRequest
+from codex_web.autonomy import AutonomyCycleOutcome
 from codex_web.models import WorkItemHandoff, WorkItemState
 from codex_web.services.autonomy import AutonomyService, install_autonomy_service
 
@@ -115,6 +116,58 @@ class AutonomyActionDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(intents.calls[0][0].binding_id, "binding-1")
         self.assertEqual(intents.calls[0][0].request, request)
         self.assertIs(intents.calls[0][1], actor)
+
+
+class AutonomyBoundedDispatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_canonical_event_uses_project_scope(self) -> None:
+        runtime = SimpleNamespace(
+            project_scope=lambda project_id: (
+                ("org-a", "workspace-a")
+                if project_id == "project-a"
+                else (None, None)
+            ),
+            dispatch_event=AsyncMock(return_value={"ok": True}),
+        )
+        canonical_events = SimpleNamespace(
+            ingest=AsyncMock(
+                return_value=SimpleNamespace(
+                    inserted=True,
+                    event=SimpleNamespace(event_id="event-1"),
+                )
+            )
+        )
+
+        async def process(_event, _observation, *, reasoner, **_kwargs):
+            await reasoner()
+            return SimpleNamespace(
+                outcome=AutonomyCycleOutcome.COMPLETED,
+                id="cycle-1",
+                reason="completed",
+            )
+
+        service = AutonomyService(
+            runtime=runtime,
+            controller=SimpleNamespace(process=process),
+            canonical_events=canonical_events,
+        )
+
+        result = await service._bounded_reasoning_dispatch(
+            SimpleNamespace(thread_id="thread-james"),
+            "pursue the issue",
+            "owner-work-watchdog",
+            cycle_key="owner-work:project-a:thread-james:james",
+            payload={"project_id": "project-a", "agent": "james"},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            canonical_events.ingest.await_args.kwargs["tenant_id"],
+            "org-a",
+        )
+        self.assertEqual(
+            canonical_events.ingest.await_args.kwargs["workspace_id"],
+            "workspace-a",
+        )
 
 
 class AutonomyStateTests(unittest.IsolatedAsyncioTestCase):

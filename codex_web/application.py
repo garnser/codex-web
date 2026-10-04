@@ -3671,6 +3671,22 @@ async def _autonomy_gitlab_group_issues(
     )
 
 
+def _autonomy_project_scope(
+    project_id: str,
+) -> tuple[str | None, str | None]:
+    project = next(
+        (
+            item
+            for item in project_repository.load()
+            if item.id == project_id
+        ),
+        None,
+    )
+    if project is None:
+        return None, None
+    return project.organization_id, project.workspace_id
+
+
 autonomy_runtime_dependencies = AutonomyRuntimeDependencies(
     load_gitlab_routing_settings=configuration_state.gitlab_routing.load,
     load_work_item_states=runtime_state.work_item_states.load,
@@ -3727,6 +3743,7 @@ autonomy_runtime_dependencies = AutonomyRuntimeDependencies(
         work_item_watchdog_prompt_policy.format_split_brain_prompt
     ),
     work_item_dispatch_text=work_item_dispatch_prompt_policy.render,
+    project_scope=_autonomy_project_scope,
 )
 app.state.autonomy_runtime_dependencies = autonomy_runtime_dependencies
 

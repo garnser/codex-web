@@ -99,11 +99,16 @@ class AutonomyService:
             default=str,
         )
         digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        organization_id, workspace_id = self.runtime.project_scope(
+            str(payload.get("project_id") or "")
+        )
         delivery = await self.canonical_events.ingest(
             event_type=CanonicalEventType.WORK_TRANSITION,
             source=f"autonomy-watchdog:{source}",
             idempotency_key=f"{cycle_key}:{digest}",
             payload=payload,
+            tenant_id=organization_id,
+            workspace_id=workspace_id,
         )
         if not delivery.inserted:
             return {
