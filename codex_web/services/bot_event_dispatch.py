@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from collections.abc import Awaitable, Callable
@@ -199,7 +200,7 @@ class BotEventDispatchService:
                 reply_target=reply_target,
             )
             binding.updated_at = time.time()
-            self.bindings.upsert(binding)
+            await asyncio.to_thread(self.bindings.upsert, binding)
             payload: dict[str, Any] = {
                 "type": event_type,
                 "source": source,
@@ -292,7 +293,7 @@ class BotEventDispatchService:
             )
 
         binding.updated_at = time.time()
-        self.bindings.upsert(binding)
+        await asyncio.to_thread(self.bindings.upsert, binding)
         await self.publish_event(
             {
                 "type": "bot.inbound",
