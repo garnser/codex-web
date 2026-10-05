@@ -483,6 +483,8 @@ The turn orchestrator now:
   ActiveThreadTurn state;
 - routes active thread reads/lifecycle requests to the same isolated session;
 - completes the exact fenced assignment on terminal turn completion/failure;
+- checkpoints every writable Git member before terminal completion and retains
+  the canonical branch unless an explicit discard was authorized;
 - namespaces interactive approval request IDs by assignment and routes approval
   responses to the runtime that owns them, so concurrent isolated sessions
   cannot collide on raw app-server request IDs;

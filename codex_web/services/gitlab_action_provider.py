@@ -174,6 +174,20 @@ class GitLabActionProvider:
                     text=True,
                     timeout=120,
                 )
+                subprocess.run(
+                    [
+                        "git",
+                        "update-ref",
+                        f"refs/remotes/codex-web-published/{branch}",
+                        revision,
+                    ],
+                    cwd=workspace_path,
+                    env=environment,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
             except (OSError, subprocess.SubprocessError) as exc:
                 raise RuntimeError("GitLab branch publication failed") from exc
 

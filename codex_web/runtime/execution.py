@@ -6,7 +6,6 @@ import json
 import os
 import time
 from collections import deque
-from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from fastapi import HTTPException
@@ -1140,30 +1139,65 @@ class TurnExecutionService:
             )
         bootstrap = self._bootstrap_binding_for_thread(active.thread_id)
         if bootstrap is not None and bootstrap.assignment_id == assignment_id:
-            self.host._append_bot_event(
-                {
-                    "type": "thread_bootstrap_turn_completed",
-                    "thread_id": active.thread_id,
-                    "turn_id": active.turn_id,
-                    "execution_id": bootstrap.execution_id,
-                    "assignment_id": bootstrap.assignment_id,
-                    "execution_workspace_id": bootstrap.execution_workspace_id,
-                    "worker_id": active.worker_id,
-                    "fence": active.fence,
-                    "succeeded": succeeded,
-                    "session_retained": True,
-                }
-            )
-            if (
-                completion_work_item_ref
-                and self.work_item_outcome_recorder is not None
-            ):
-                with contextlib.suppress(Exception):
-                    self.work_item_outcome_recorder(
-                        completion_work_item_ref,
-                        bootstrap.execution_id,
-                        "succeeded" if succeeded else "failed",
-                    )
+            checkpoint = getattr(manager, "checkpoint", None)
+
+            def record_bootstrap_result(
+                *,
+                checkpoint_count: int = 0,
+                checkpoint_error: str | None = None,
+            ) -> None:
+                checkpoint_succeeded = checkpoint_error is None
+                self.host._append_bot_event(
+                    {
+                        "type": "thread_bootstrap_turn_completed",
+                        "thread_id": active.thread_id,
+                        "turn_id": active.turn_id,
+                        "execution_id": bootstrap.execution_id,
+                        "assignment_id": bootstrap.assignment_id,
+                        "execution_workspace_id": bootstrap.execution_workspace_id,
+                        "worker_id": active.worker_id,
+                        "fence": active.fence,
+                        "succeeded": succeeded and checkpoint_succeeded,
+                        "session_retained": True,
+                        "repository_checkpoint_count": checkpoint_count,
+                        "repository_checkpoint_error": checkpoint_error,
+                    }
+                )
+                if (
+                    completion_work_item_ref
+                    and self.work_item_outcome_recorder is not None
+                ):
+                    with contextlib.suppress(Exception):
+                        self.work_item_outcome_recorder(
+                            completion_work_item_ref,
+                            bootstrap.execution_id,
+                            (
+                                "succeeded"
+                                if succeeded and checkpoint_succeeded
+                                else "failed"
+                            ),
+                        )
+
+            if callable(checkpoint):
+                existing = self.assignment_completion_tasks.get(assignment_id)
+                if existing is not None and not existing.done():
+                    return
+
+                async def checkpoint_retained_session() -> None:
+                    try:
+                        values = await checkpoint(assignment_id)
+                        record_bootstrap_result(checkpoint_count=len(values))
+                    except Exception as exc:
+                        record_bootstrap_result(checkpoint_error=str(exc)[:500])
+                    finally:
+                        self.assignment_completion_tasks.pop(assignment_id, None)
+
+                self.assignment_completion_tasks[assignment_id] = asyncio.create_task(
+                    checkpoint_retained_session(),
+                    name=f"repository-checkpoint-{assignment_id}",
+                )
+            else:
+                record_bootstrap_result()
             return
         existing = self.assignment_completion_tasks.get(assignment_id)
         if existing is not None and not existing.done():

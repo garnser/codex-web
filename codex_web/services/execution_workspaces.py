@@ -25,6 +25,8 @@ from codex_web.execution_workspaces import (
     ExecutionWorkspaceStatus,
     IntegrationOutcome,
     LeaseMode,
+    RepositoryCheckpoint,
+    RepositoryCheckpointPushStatus,
     RepositoryOutcomeStatus,
     WorkspaceIntegrationRecord,
     WorkspaceIntegrationState,
@@ -35,7 +37,7 @@ from codex_web.execution_workspaces import (
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind, TenantScope
 from codex_web.models import Project
 from codex_web.resources import Resource, ResourceType
-from codex_web.services.identity import AuthorizationError, TenantIsolationError
+from codex_web.services.identity import AuthorizationError
 from codex_web.services.resources import ResourceCatalogService, ResourceNotFoundError
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 
@@ -520,6 +522,133 @@ class ExecutionWorkspaceService:
         self._sync_work_item(refreshed)
         return refreshed
 
+    def record_repository_checkpoint(
+        self,
+        workspace_id: str,
+        checkpoint: RepositoryCheckpoint,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutionWorkspace:
+        """Persist worker-observed Git evidence for one writable member."""
+
+        workspace = self.get(workspace_id, actor)
+        self._authorized(workspace, actor)
+        if workspace.status != ExecutionWorkspaceStatus.ACTIVE:
+            raise ExecutionWorkspaceConflictError("execution workspace is not active")
+        member = next(
+            (
+                item
+                for item in workspace.repository_members
+                if item.resource_id == checkpoint.resource_id
+                and item.access_mode == LeaseMode.WRITE
+            ),
+            None,
+        )
+        if member is None:
+            raise ExecutionWorkspaceConflictError(
+                "repository checkpoint is outside writable workspace authority"
+            )
+        if member.branch_name != checkpoint.branch_name:
+            raise ExecutionWorkspaceConflictError(
+                "repository checkpoint branch does not match canonical workspace"
+            )
+        observed_head = self.backend.head_revision(Path(member.workspace_path))
+        if observed_head != checkpoint.head_revision:
+            raise ExecutionWorkspaceConflictError(
+                "repository checkpoint head does not match execution workspace"
+            )
+        now = time.time()
+
+        def update(state):
+            for index, item in enumerate(state.workspaces):
+                if item.id != workspace_id:
+                    continue
+                checkpoints = dict(item.repository_checkpoints)
+                checkpoints[checkpoint.resource_id] = checkpoint
+                members = tuple(
+                    current.model_copy(update={"head_revision": checkpoint.head_revision})
+                    if current.resource_id == checkpoint.resource_id
+                    else current
+                    for current in item.repository_members
+                )
+                values: dict[str, Any] = {
+                    "repository_checkpoints": checkpoints,
+                    "repository_members": members,
+                    "updated_at": now,
+                }
+                if item.repository_resource_id == checkpoint.resource_id:
+                    values["head_revision"] = checkpoint.head_revision
+                state.workspaces[index] = item.model_copy(update=values)
+                self._append_event(
+                    state,
+                    ExecutionWorkspaceEvent(
+                        workspace_id=workspace_id,
+                        event_type="repository_checkpoint_recorded",
+                        actor_identity_id=actor.identity_id,
+                        details={
+                            "resource_id": checkpoint.resource_id,
+                            "branch_name": checkpoint.branch_name,
+                            "head_revision": checkpoint.head_revision,
+                            "dirty_file_count": checkpoint.dirty_file_count,
+                            "changed_file_count": checkpoint.changed_file_count,
+                            "local_commit_created": checkpoint.local_commit_created,
+                            "push_status": checkpoint.push_status.value,
+                            "blocker_code": checkpoint.blocker_code,
+                        },
+                    ),
+                )
+                return state
+            raise ExecutionWorkspaceNotFoundError("execution workspace not found")
+
+        self.store.update(update)
+        updated = self.get(workspace_id, actor)
+        self._sync_work_item(updated)
+        return updated
+
+    def record_repository_publication(
+        self,
+        workspace_id: str,
+        *,
+        resource_id: str,
+        branch_name: str,
+        head_revision: str,
+        change_request_url: str | None = None,
+        actor: AuthenticationActor,
+    ) -> ExecutionWorkspace:
+        """Attach successful governed publish evidence to a Git checkpoint."""
+
+        workspace = self.get(workspace_id, actor)
+        self._authorized(workspace, actor)
+        existing = workspace.repository_checkpoints.get(resource_id)
+        if existing is None:
+            raise ExecutionWorkspaceConflictError(
+                "repository publication requires a recorded local checkpoint"
+            )
+        if (
+            existing.branch_name != branch_name
+            or existing.head_revision != head_revision
+        ):
+            raise ExecutionWorkspaceConflictError(
+                "repository publication does not match the recorded checkpoint"
+            )
+        return self.record_repository_checkpoint(
+            workspace_id,
+            existing.model_copy(
+                update={
+                    "push_status": RepositoryCheckpointPushStatus.VERIFIED,
+                    "remote_branch": branch_name,
+                    "remote_revision": head_revision,
+                    "change_request_url": (
+                        change_request_url or existing.change_request_url
+                    ),
+                    "blocker_code": None,
+                    "blocker_message": None,
+                    "recorded_at": time.time(),
+                }
+            ),
+            actor=actor,
+        )
+
     def _recover_state(self, state, now: float, scope: TenantScope | None):
         abandoned: list[str] = []
         for index, lease in enumerate(state.leases):
@@ -633,6 +762,62 @@ class ExecutionWorkspaceService:
                     if workspace.kind == ExecutionWorkspaceKind.SCRATCH:
                         self._cleanup_scratch_workspace(workspace)
                     else:
+                        checkpoints = workspace.repository_checkpoints
+                        safe_to_clean = all(
+                            (
+                                checkpoint := checkpoints.get(resource_id)
+                            ) is not None
+                            and (
+                                checkpoint.dirty_file_count == 0
+                                or checkpoint.local_commit_created
+                            )
+                            and checkpoint.blocker_code
+                            in {None, "checkpoint_push_unverified"}
+                            for resource_id in workspace.writable_repository_ids
+                        )
+                        if not safe_to_clean:
+                            retained_at = time.time()
+
+                            def mark_retained(current_state):
+                                for index, item in enumerate(current_state.workspaces):
+                                    if item.id != workspace_id:
+                                        continue
+                                    current_state.workspaces[index] = item.model_copy(
+                                        update={
+                                            "error": (
+                                                "expired repository workspace retained: "
+                                                "durable Git checkpoint is incomplete"
+                                            ),
+                                            "updated_at": retained_at,
+                                        }
+                                    )
+                                    self._append_event(
+                                        current_state,
+                                        ExecutionWorkspaceEvent(
+                                            workspace_id=workspace_id,
+                                            event_type=(
+                                                "workspace_recovery_retained_uncheckpointed"
+                                            ),
+                                            details={
+                                                "writable_repository_count": len(
+                                                    workspace.writable_repository_ids
+                                                ),
+                                                "checkpoint_count": len(checkpoints),
+                                            },
+                                        ),
+                                    )
+                                    return current_state
+                                return current_state
+
+                            self.store.update(mark_retained)
+                            workspace = next(
+                                item
+                                for item in self.store.load().workspaces
+                                if item.id == workspace_id
+                            )
+                            self._sync_work_item(workspace)
+                            recovered.append(workspace)
+                            continue
                         self._cleanup_git_workspace(
                             workspace,
                             discard_mutable_branch=False,

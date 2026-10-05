@@ -33,7 +33,7 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_ISSUE_UPDATE_ACTION_ID,
     CODE_HOST_JOB_RERUN_ACTION_ID,
     CODE_HOST_JOB_RERUN_EVIDENCE,
-    CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,  # noqa: F401 - compatibility export
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE,
     CodeHostActionContract,
@@ -176,6 +176,20 @@ class GitHubActionProvider:
                     capture_output=True,
                     text=True,
                     timeout=120,
+                )
+                subprocess.run(
+                    [
+                        "git",
+                        "update-ref",
+                        f"refs/remotes/codex-web-published/{branch}",
+                        revision,
+                    ],
+                    cwd=workspace_path,
+                    env=environment,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
             except (OSError, subprocess.SubprocessError) as exc:
                 raise RuntimeError("GitHub branch publication failed") from exc

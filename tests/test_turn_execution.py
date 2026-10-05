@@ -1463,6 +1463,34 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(host.events[-1]["session_retained"])
 
+    async def test_terminal_bootstrap_turn_checkpoints_before_success_evidence(self) -> None:
+        host, _binding, sessions, service = self._service(
+            bootstrap_thread_id="t1"
+        )
+        sessions.checkpoint = AsyncMock(return_value=(SimpleNamespace(),))
+        service.mark_thread_active(
+            "t1",
+            turn_id="turn-1",
+            project_id="p1",
+            execution_id="bootstrap-exec",
+            assignment_id="assignment-1",
+            execution_workspace_id="workspace-1",
+            worker_id="worker-1",
+            fence=7,
+        )
+
+        service.record_thread_activity(
+            {
+                "method": "turn/completed",
+                "params": {"threadId": "t1", "turn": {"id": "turn-1"}},
+            }
+        )
+        await asyncio.gather(*list(service.assignment_completion_tasks.values()))
+
+        sessions.checkpoint.assert_awaited_once_with("assignment-1")
+        self.assertEqual(host.events[-1]["repository_checkpoint_count"], 1)
+        self.assertTrue(host.events[-1]["succeeded"])
+
     async def test_start_rechecks_active_state_under_shared_start_lock(self) -> None:
         host, binding, sessions, service = self._service()
         project = Project(
