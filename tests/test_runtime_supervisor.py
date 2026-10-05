@@ -35,6 +35,20 @@ class RuntimeSupervisorInstallTests(unittest.TestCase):
         with patch.dict(os.environ, {"CODEX_WEB_QUEUE_RECOVERY_SECONDS": "45"}, clear=False):
             self.assertEqual(service.queue_recovery_interval_seconds(), 45.0)
 
+        heartbeat_key = "CODEX_WEB_LOCAL_WORKER_HEARTBEAT_SECONDS"
+        with patch.dict(os.environ, {heartbeat_key: ""}, clear=False):
+            self.assertEqual(
+                service.local_worker_heartbeat_interval_seconds(), 30.0
+            )
+        with patch.dict(os.environ, {heartbeat_key: "bad"}, clear=False):
+            self.assertEqual(
+                service.local_worker_heartbeat_interval_seconds(), 30.0
+            )
+        with patch.dict(os.environ, {heartbeat_key: "2"}, clear=False):
+            self.assertEqual(
+                service.local_worker_heartbeat_interval_seconds(), 5.0
+            )
+
     def test_installer_replaces_legacy_lifecycle_handlers(self) -> None:
         async def legacy_startup() -> None:
             return None
@@ -103,6 +117,104 @@ class RuntimeSupervisorInstallTests(unittest.TestCase):
 
 
 class RuntimeSupervisorAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_local_worker_heartbeat_failure_is_observable_and_retryable(self) -> None:
+        events: list[dict[str, object]] = []
+        calls = 0
+
+        def heartbeat() -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("worker store unavailable")
+
+        service = RuntimeSupervisor(
+            SimpleNamespace(state=SimpleNamespace()),
+            SimpleNamespace(),
+            local_worker_heartbeat=heartbeat,
+            event_sink=events.append,
+        )
+
+        await service._heartbeat_local_worker_once()
+        await service._heartbeat_local_worker_once()
+
+        self.assertEqual(calls, 2)
+        self.assertEqual(events[0]["type"], "local_worker_heartbeat_failed")
+        self.assertIn("worker store unavailable", str(events[0]["error"]))
+
+    async def test_start_heartbeats_local_worker_before_startup_recovery(self) -> None:
+        order: list[str] = []
+
+        class NativeRecovery:
+            def set_shutting_down(self, value: bool) -> None:
+                order.append(f"shutting-down:{value}")
+
+            def schedule(self, *, reason: str = "manual") -> bool:
+                order.append(f"native-recovery:{reason}")
+                return True
+
+            async def stop(self) -> None:
+                return None
+
+        class StaleTurnRecovery:
+            def schedule(self, *, reason: str) -> None:
+                order.append(f"stale-recovery:{reason}")
+
+            async def stop(self) -> None:
+                return None
+
+        class Policy:
+            def autonomy_enabled(self) -> bool:
+                return False
+
+            def owner_work_watchdog_interval(self) -> float:
+                return 0.0
+
+            def release_gate_watchdog_interval(self) -> float:
+                return 0.0
+
+            def work_item_sla_watchdog_interval(self) -> float:
+                return 0.0
+
+            def orchestrator_watchdog_interval(self) -> float:
+                return 0.0
+
+            def split_brain_watchdog_interval(self) -> float:
+                return 0.0
+
+        class Codex:
+            def __init__(self) -> None:
+                self.ready = asyncio.Event()
+
+            async def start(self) -> None:
+                order.append("codex-start")
+
+            async def stop(self) -> None:
+                return None
+
+        host = SimpleNamespace(
+            IS_SHUTTING_DOWN=False,
+            ACTIONABLE_OWNER_CONTINUITY_TASKS={},
+            HANDOFF_CONTINUITY_TASKS={},
+        )
+        service = RuntimeSupervisor(
+            SimpleNamespace(state=SimpleNamespace()),
+            host,
+            policy=Policy(),
+            native_recovery=NativeRecovery(),
+            stale_turn_recovery=StaleTurnRecovery(),
+            codex=Codex(),
+            local_worker_heartbeat=lambda: order.append("worker-heartbeat"),
+        )
+
+        await service.start()
+        self.assertLess(
+            order.index("worker-heartbeat"),
+            order.index("stale-recovery:startup"),
+        )
+        self.assertIn("local-worker-heartbeat", service.tasks)
+        self.assertFalse(service.tasks["local-worker-heartbeat"].done())
+        await service.stop()
+
     async def test_cycle_loop_records_failure_and_keeps_running_until_cancelled(self) -> None:
         events: list[dict[str, object]] = []
         calls = 0

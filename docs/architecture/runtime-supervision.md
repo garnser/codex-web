@@ -21,9 +21,18 @@ On startup the supervisor:
 
 1. performs persisted-state housekeeping,
 2. starts the Codex runtime,
-3. runs startup recovery when autonomy policy allows it,
-4. starts provider/runtime owners and periodic cycles,
-5. schedules one cooldown-protected native recovery pass.
+3. authenticates one heartbeat for the process-owned local execution worker,
+4. runs startup recovery when autonomy policy allows it,
+5. starts provider/runtime owners and periodic cycles, including the local-worker heartbeat,
+6. schedules one cooldown-protected native recovery pass.
+
+Persisted stale-worker and expired-lease reconciliation runs before the
+process-owned local worker is ensured. This ordering prevents slow application
+composition from aging a newly written heartbeat and offlining the worker
+during its own startup. The supervisor then heartbeats the idle local worker
+without invoking a model, so a later stale-worker sweep cannot strand queued
+work. Heartbeat failures are observable runtime events and do not terminate
+unrelated supervised tasks.
 
 On shutdown it:
 
