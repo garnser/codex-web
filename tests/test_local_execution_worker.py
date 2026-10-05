@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import resource
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +10,8 @@ from unittest.mock import patch
 
 from codex_web.artifact_evidence import EvidenceType
 from codex_web.execution_workers import (
+    AssignmentClaimRequest,
+    AssignmentStartRequest,
     AssignmentStatus,
     ExecutionAssignment,
     ExecutionAssignmentCreate,
@@ -20,7 +21,11 @@ from codex_web.execution_workers import (
     WorkerLifecycle,
     WorkerResourceLimits,
 )
-from codex_web.execution_workspaces import ExecutionWorkspaceStatus, LeaseMode
+from codex_web.execution_workspaces import (
+    ExecutionWorkspaceStatus,
+    LeaseMode,
+    RepositoryCheckpointPushStatus,
+)
 from codex_web.resources import (
     RepositoryExecutionScope,
     RepositoryExecutionTarget,
@@ -35,7 +40,10 @@ from codex_web.local_execution_backend import (
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
 from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.services.identity import IdentityService
-from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
+from codex_web.services.local_execution_worker import (
+    LocalExecutionWorkerRuntime,
+    RepositoryCheckpointBlockedError,
+)
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
 from codex_web.storage.execution_workers import ExecutionWorkerStore
 from codex_web.storage.identity_state import IdentityStateStore
@@ -63,13 +71,24 @@ class _FakeWorkspaceService:
             status=ExecutionWorkspaceStatus.ACTIVE,
             path=str(path),
             repository_resource_id="repo-1",
+            writable_repository_ids=(),
             repository_members=(),
+            repository_checkpoints={},
             actual_disk_bytes=0,
         )
+        self.checkpoints = []
 
     def get(self, workspace_id, actor):
         if workspace_id != self.workspace.id:
             raise RuntimeError("workspace not found")
+        return self.workspace
+
+    def record_repository_checkpoint(self, workspace_id, checkpoint, *, actor):
+        self.checkpoints.append(checkpoint)
+        self.workspace.repository_checkpoints[checkpoint.resource_id] = checkpoint
+        for member in self.workspace.repository_members:
+            if member.resource_id == checkpoint.resource_id:
+                member.head_revision = checkpoint.head_revision
         return self.workspace
 
 
@@ -82,6 +101,10 @@ class _FakeExecutionBackend:
     def validate_assignment(self, assignment):
         self.validated.append(assignment.id)
 
+    @staticmethod
+    def discover_git_metadata(workspace_path):
+        return None
+
     def run(
         self,
         assignment,
@@ -93,6 +116,7 @@ class _FakeExecutionBackend:
         trusted_readonly_mounts=(),
         trusted_writable_mounts=(),
         additional_disk_bytes=0,
+        git_metadata_path=None,
     ):
         self.calls.append(
             (
@@ -107,6 +131,42 @@ class _FakeExecutionBackend:
         if poll_hook is not None:
             poll_hook()
         return self.result
+
+
+class _CheckpointBackend(_FakeExecutionBackend):
+    def __init__(self, *, status: str) -> None:
+        super().__init__(LocalExecutionResult("git", "sha256:" + "c" * 64, 0, "", "", 0.01))
+        self.status = status
+        self.committed = False
+
+    def run(self, assignment, *, argv, workspace_path, **kwargs):
+        command = tuple(argv)
+        self.calls.append((assignment.id, command, Path(workspace_path), (), (), 0))
+        if "status" in command:
+            stdout = "" if self.committed else self.status
+        elif "symbolic-ref" in command:
+            stdout = "codex/group-app-42/abc123\n"
+        elif "rev-parse" in command:
+            stdout = (("b" if self.committed else "a") * 40) + "\n"
+        elif "diff" in command:
+            stdout = (
+                "code.py\0"
+                if self.committed and not any(("b" * 40) in value for value in command)
+                else ""
+            )
+        elif "commit" in command:
+            self.committed = True
+            stdout = "checkpointed\n"
+        else:
+            stdout = ""
+        return LocalExecutionResult(
+            executable="git",
+            command_digest="sha256:" + "c" * 64,
+            exit_code=0,
+            stdout=stdout,
+            stderr="",
+            duration_seconds=0.01,
+        )
 
 
 def _assignment(**overrides) -> ExecutionAssignment:
@@ -632,6 +692,97 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
             renew_margin_seconds=200,
         )
         return runtime, backend
+
+    def _checkpoint_runtime(self, *, status: str):
+        assignment = self._create_assignment()
+        claimed = self.worker_service.claim(
+            self.worker.id,
+            AssignmentClaimRequest(lease_seconds=120),
+            actor=self.worker_actor,
+            assignment_id=assignment.id,
+        )
+        self.worker_service.start(
+            self.worker.id,
+            assignment.id,
+            AssignmentStartRequest(
+                lease_token=claimed.lease.lease_token,
+                fence=claimed.lease.fence,
+            ),
+            actor=self.worker_actor,
+        )
+        self.workspaces.workspace.writable_repository_ids = ("repo-1",)
+        self.workspaces.workspace.repository_members = (
+            SimpleNamespace(
+                resource_id="repo-1",
+                access_mode=LeaseMode.WRITE,
+                workspace_path=str(self.workspace_path),
+                sandbox_path=str(self.workspace_path),
+                branch_name="codex/group-app-42/abc123",
+                head_revision="a" * 40,
+                disk_bytes=0,
+            ),
+        )
+        backend = _CheckpointBackend(status=status)
+        runtime = LocalExecutionWorkerRuntime(
+            self.worker_service,
+            self.workspaces,
+            backend,
+            worker=self.worker,
+            worker_actor=self.worker_actor,
+            control_actor=self.admin,
+        )
+        return assignment, runtime, backend
+
+    def test_checkpoint_assignment_commits_dirty_work_and_records_push_blocker(self) -> None:
+        assignment, runtime, backend = self._checkpoint_runtime(
+            status=" M code.py\0?? new.py\0"
+        )
+
+        checkpoints = runtime.checkpoint_assignment(assignment.id)
+
+        self.assertTrue(backend.committed)
+        self.assertEqual(len(checkpoints), 1)
+        checkpoint = checkpoints[0]
+        self.assertEqual(checkpoint.head_revision, "b" * 40)
+        self.assertEqual(checkpoint.dirty_file_count, 2)
+        self.assertTrue(checkpoint.local_commit_created)
+        self.assertEqual(
+            checkpoint.push_status,
+            RepositoryCheckpointPushStatus.BLOCKED,
+        )
+        self.assertEqual(checkpoint.blocker_code, "checkpoint_push_unverified")
+        self.assertEqual(self.workspaces.checkpoints, [checkpoint])
+
+        repeated = runtime.checkpoint_assignment(assignment.id)[0]
+        self.assertEqual(repeated.push_status, RepositoryCheckpointPushStatus.BLOCKED)
+        self.assertEqual(repeated.blocker_code, "checkpoint_push_unverified")
+
+    def test_checkpoint_assignment_refuses_sensitive_untracked_path(self) -> None:
+        assignment, runtime, backend = self._checkpoint_runtime(status="?? .env\0")
+
+        with self.assertRaisesRegex(
+            RepositoryCheckpointBlockedError,
+            "sensitive or policy-excluded",
+        ):
+            runtime.checkpoint_assignment(assignment.id)
+
+        self.assertFalse(backend.committed)
+        self.assertEqual(
+            self.workspaces.checkpoints[0].blocker_code,
+            "checkpoint_excluded_paths",
+        )
+
+    def test_checkpoint_assignment_is_git_zero_write_when_clean(self) -> None:
+        assignment, runtime, backend = self._checkpoint_runtime(status="")
+
+        checkpoint = runtime.checkpoint_assignment(assignment.id)[0]
+
+        commands = [call[1] for call in backend.calls]
+        self.assertFalse(any("add" in command for command in commands))
+        self.assertFalse(any("commit" in command for command in commands))
+        self.assertFalse(checkpoint.local_commit_created)
+        self.assertEqual(checkpoint.dirty_file_count, 0)
+        self.assertEqual(checkpoint.changed_file_count, 0)
 
     def test_runtime_tool_mounts_expose_playwright_read_only_roots(self) -> None:
         python_root = Path(self.temp.name) / "python-tool"

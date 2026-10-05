@@ -140,7 +140,9 @@ Owners or tenant administrators can renew or release a workspace. Expired leases
 
 1. marked released with reason `lease-expired`;
 2. associated workspace marked `abandoned`;
-3. abandoned Git worktree cleaned while preserving its branch;
+3. checkpointed abandoned Git worktrees cleaned while preserving their branches;
+   uncheckpointed repository worktrees remain on disk with an explicit recovery
+   blocker so worker loss cannot erase dirty filesystem state;
 4. canonical Work Item execution reference updated.
 
 Startup invokes expiry recovery, and operators can invoke the tenant-scoped recovery endpoint explicitly.
@@ -150,6 +152,32 @@ Startup invokes expiry recovery, and operators can invoke the tenant-scoped reco
 Merge/rebase results are structured state rather than agent prose. `WorkspaceIntegrationState` records strategy, outcome, target/result revision, explicit conflicts, actor and timestamp.
 
 A conflict requires explicit conflict paths/details and moves the workspace to `conflicted`. Successful merge/rebase/fast-forward requires a resulting revision and moves it to `integrated`. Cleanup/release remains a separate explicit action.
+
+## Terminal Git checkpoints
+
+Every assignment-bound turn that can write a repository crosses a deterministic
+Git checkpoint gate before the assignment completes, is superseded, or hands
+off. The worker inspects each writable member inside the assignment sandbox.
+Dirty tracked or untracked material is committed to the workspace's canonical
+named branch with a bounded safety-commit identity; clean members cause no Git
+write. Ignored files remain excluded by Git. Sensitive path classes such as
+private keys and environment-secret files fail closed and leave the active
+workspace available for operator action rather than being staged automatically.
+
+The canonical workspace stores one `RepositoryCheckpoint` per writable Resource:
+branch, exact head revision, dirty/changed counts, whether the gate created a
+local commit, push status and remote revision, change-request link, and any
+blocker. A successful governed branch-publication action leaves a matching
+remote evidence ref in the worktree, allowing the next checkpoint to attest the
+exact published SHA without network access. Missing publication evidence is an
+explicit `checkpoint_push_unverified` blocker; it never erases the local ref.
+
+Normal assignment completion releases and removes the worktree but preserves
+its named branch. Explicit discard remains the only completion path that may
+delete that branch. Retained thread-bootstrap sessions run the same checkpoint
+gate after every terminal turn without ending the session, so app-server or
+worker replacement begins from a reachable Git commit rather than transcript
+prose.
 
 ## Execution contract
 

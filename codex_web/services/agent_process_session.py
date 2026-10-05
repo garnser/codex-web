@@ -39,7 +39,6 @@ from codex_web.services.agent_model_egress import (
 )
 from codex_web.services.local_execution_worker import (
     LocalExecutionWorkerRuntime,
-    LocalExecutionWorkerRuntimeError,
 )
 
 
@@ -815,6 +814,18 @@ class AssignmentBoundAgentProcessSessionManager:
     def get(self, assignment_id: str) -> AssignmentBoundAgentProcessSession | None:
         return self.sessions.get(assignment_id)
 
+    async def checkpoint(self, assignment_id: str):
+        session = self.sessions.get(assignment_id)
+        if session is None:
+            raise AssignmentBoundAgentProcessSessionStaleError(
+                "assignment-bound agent runtime session is not registered"
+            )
+        session.validate_current()
+        return await asyncio.to_thread(
+            self.local_worker.checkpoint_assignment,
+            assignment_id,
+        )
+
     async def complete(
         self,
         assignment_id: str,
@@ -836,6 +847,7 @@ class AssignmentBoundAgentProcessSessionManager:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session has no completable fenced lease"
             )
+        await self.checkpoint(assignment_id)
         completed = self.local_worker.worker_service.complete(
             session.worker_id,
             assignment.id,
@@ -856,7 +868,7 @@ class AssignmentBoundAgentProcessSessionManager:
                 self.local_worker.workspace_service.release(
                     assignment.execution_workspace_id,
                     ExecutionWorkspaceRelease(
-                        discard=True,
+                        discard=False,
                         reason="assignment completed",
                     ),
                     actor=self.local_worker.worker_actor,

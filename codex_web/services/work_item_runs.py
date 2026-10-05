@@ -260,11 +260,13 @@ class WorkItemRunProjectionService:
             member.resource_id: member
             for member in workspace.repository_members
         }
+        checkpoints = dict(getattr(workspace, "repository_checkpoints", {}) or {})
         successful = {"merged", "rebased", "fast_forwarded"}
         rows = []
         for repository_id in workspace.writable_repository_ids:
             integration = integrations.get(repository_id)
             member = members.get(repository_id)
+            checkpoint = checkpoints.get(repository_id)
             outcome = cls._value(integration.outcome) if integration is not None else None
             if outcome == "conflict":
                 status = "conflict"
@@ -281,6 +283,24 @@ class WorkItemRunProjectionService:
                     "baseRevision": member.base_revision if member is not None else None,
                     "headRevision": member.head_revision if member is not None else None,
                     "branchName": member.branch_name if member is not None else None,
+                    "checkpoint": (
+                        {
+                            "branchName": checkpoint.branch_name,
+                            "headRevision": checkpoint.head_revision,
+                            "dirtyFileCount": checkpoint.dirty_file_count,
+                            "changedFileCount": checkpoint.changed_file_count,
+                            "localCommitCreated": checkpoint.local_commit_created,
+                            "pushStatus": cls._value(checkpoint.push_status),
+                            "remoteBranch": checkpoint.remote_branch,
+                            "remoteRevision": checkpoint.remote_revision,
+                            "changeRequestUrl": checkpoint.change_request_url,
+                            "blockerCode": checkpoint.blocker_code,
+                            "blockerMessage": checkpoint.blocker_message,
+                            "recordedAt": checkpoint.recorded_at,
+                        }
+                        if checkpoint is not None
+                        else None
+                    ),
                     "integration": (
                         {
                             "strategy": cls._value(integration.strategy),

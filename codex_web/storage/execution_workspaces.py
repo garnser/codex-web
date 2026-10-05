@@ -9,8 +9,8 @@ from codex_web.storage.sqlite_state import SQLiteStateStore
 
 EXECUTION_WORKSPACE_STATE_CONTRACT = ContractSpec(
     "execution-workspace-state",
-    "1.4",
-    ("1.0", "1.1", "1.2", "1.3", "1.4"),
+    "1.5",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5"),
 )
 EXECUTION_WORKSPACE_STATE_MIGRATIONS = MigrationRegistry("execution-workspace-state")
 EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
@@ -152,6 +152,23 @@ EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
     "1.3",
     "1.4",
     _migrate_1_3_to_1_4,
+)
+EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
+    "1.4",
+    "1.5",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.5",
+        "workspaces": [
+            {
+                **dict(item),
+                "repository_checkpoints": (
+                    dict(item).get("repository_checkpoints") or {}
+                ),
+            }
+            for item in payload.get("workspaces", [])
+        ],
+    },
 )
 
 

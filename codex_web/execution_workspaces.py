@@ -4,8 +4,6 @@ import hashlib
 import re
 import time
 from enum import StrEnum
-from typing import Literal
-
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.execution_subjects import ExecutionSubject, normalize_execution_subject
@@ -55,6 +53,34 @@ class RepositoryOutcomeStatus(StrEnum):
     COMPLETE = "complete"
     BLOCKED = "blocked"
     DISCARDED = "discarded"
+
+
+class RepositoryCheckpointPushStatus(StrEnum):
+    NOT_REQUESTED = "not_requested"
+    VERIFIED = "verified"
+    BLOCKED = "blocked"
+
+
+class RepositoryCheckpoint(BaseModel):
+    """Durable Git state captured at a repository-writing turn boundary."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    resource_id: str = Field(min_length=1)
+    branch_name: str = Field(min_length=1)
+    head_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    dirty_file_count: int = Field(default=0, ge=0)
+    changed_file_count: int = Field(default=0, ge=0)
+    local_commit_created: bool = False
+    push_status: RepositoryCheckpointPushStatus = (
+        RepositoryCheckpointPushStatus.NOT_REQUESTED
+    )
+    remote_branch: str | None = None
+    remote_revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    change_request_url: str | None = None
+    blocker_code: str | None = None
+    blocker_message: str | None = None
+    recorded_at: float = Field(default_factory=time.time)
 
 
 class WorkspaceQuota(BaseModel):
@@ -163,6 +189,9 @@ class ExecutionWorkspace(BaseModel):
     repository_integrations: dict[str, WorkspaceIntegrationState] = Field(default_factory=dict)
     repository_outcome_status: RepositoryOutcomeStatus = RepositoryOutcomeStatus.PENDING
     repository_members: tuple[ExecutionWorkspaceMember, ...] = ()
+    repository_checkpoints: dict[str, RepositoryCheckpoint] = Field(
+        default_factory=dict
+    )
 
     @model_validator(mode="after")
     def normalize_subject(self) -> "ExecutionWorkspace":
@@ -215,6 +244,11 @@ class ExecutionWorkspace(BaseModel):
                 raise ValueError("mutable repository member is missing")
             if mutable[0].access_mode not in {LeaseMode.READ, LeaseMode.WRITE}:
                 raise ValueError("invalid mutable repository member access")
+        for resource_id, checkpoint in self.repository_checkpoints.items():
+            if resource_id != checkpoint.resource_id:
+                raise ValueError("repository checkpoint key must match its resource id")
+            if resource_id not in writable:
+                raise ValueError("repository checkpoint must belong to a writable repository")
         return self
 
 
@@ -231,7 +265,7 @@ class ExecutionWorkspaceEvent(BaseModel):
 class ExecutionWorkspaceState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.4"
+    schema_version: str = "1.5"
     workspaces: list[ExecutionWorkspace] = Field(default_factory=list)
     leases: list[ExecutionWorkspaceLease] = Field(default_factory=list)
     events: list[ExecutionWorkspaceEvent] = Field(default_factory=list)

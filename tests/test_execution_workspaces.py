@@ -20,6 +20,8 @@ from codex_web.execution_workspaces import (
     IntegrationOutcome,
     IntegrationStrategy,
     LeaseMode,
+    RepositoryCheckpoint,
+    RepositoryCheckpointPushStatus,
     RepositoryOutcomeStatus,
     WorkspaceIntegrationRecord,
     WorkspaceQuota,
@@ -50,6 +52,7 @@ class _FakeBackend:
         self.fail_provision = fail_provision
         self.provisioned: list[tuple[str, str, str | None]] = []
         self.cleaned: list[tuple[str, str, bool]] = []
+        self.observed_head = "head-revision"
 
     def provision_git(self, repository_path, workspace_id, branch_name, base_revision):
         if self.fail_provision:
@@ -95,7 +98,7 @@ class _FakeBackend:
         self.cleaned.append((str(workspace_path), branch_name, discard_branch))
 
     def head_revision(self, workspace_path):
-        return "head-revision"
+        return self.observed_head
 
     def disk_usage(self, workspace_path):
         return 128
@@ -235,6 +238,41 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         with self.assertRaisesRegex(ExecutionWorkspaceConflictError, "uncommitted"):
             self.service.refresh_revision(workspace.id, first, actor=self.actor)
 
+    def test_repository_checkpoint_is_canonical_and_release_preserves_branch(self) -> None:
+        workspace = self._acquire("checkpoint-exec", self.repo.id)
+        self.backend.observed_head = "b" * 40
+
+        updated = self.service.record_repository_checkpoint(
+            workspace.id,
+            RepositoryCheckpoint(
+                resource_id=self.repo.id,
+                branch_name=workspace.branch_name,
+                head_revision="b" * 40,
+                dirty_file_count=2,
+                changed_file_count=2,
+                local_commit_created=True,
+                push_status=RepositoryCheckpointPushStatus.BLOCKED,
+                blocker_code="checkpoint_push_unverified",
+                blocker_message="remote unavailable",
+            ),
+            actor=self.actor,
+        )
+
+        checkpoint = updated.repository_checkpoints[self.repo.id]
+        self.assertEqual(checkpoint.head_revision, "b" * 40)
+        self.assertEqual(updated.head_revision, "b" * 40)
+        self.assertEqual(updated.repository_members[0].head_revision, "b" * 40)
+        self.service.release(
+            workspace.id,
+            ExecutionWorkspaceRelease(reason="assignment completed"),
+            actor=self.actor,
+        )
+        self.assertFalse(self.backend.cleaned[-1][2])
+        events = self.service.events(workspace.id, actor=self.actor)
+        self.assertTrue(
+            any(item.event_type == "repository_checkpoint_recorded" for item in events)
+        )
+
     def test_exact_revision_refresh_rejects_ambiguous_abbreviation(self) -> None:
         workspace = self._acquire("ambiguous-refresh", self.repo.id)
         checkout = Path(workspace.path)
@@ -316,7 +354,7 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         migrated_lease = next(
             item for item in state.leases if item.execution_workspace_id == workspace.id
         )
-        self.assertEqual(state.schema_version, "1.4")
+        self.assertEqual(state.schema_version, "1.5")
         self.assertEqual(migrated_workspace.subject.kind, ExecutionSubjectKind.WORK_ITEM)
         self.assertEqual(migrated_workspace.subject.ref, self.work_item.ref)
         self.assertEqual(migrated_lease.subject, migrated_workspace.subject)
@@ -365,7 +403,7 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         state = self.service.store.load()
         migrated = next(item for item in state.workspaces if item.id == workspace.id)
 
-        self.assertEqual(state.schema_version, "1.4")
+        self.assertEqual(state.schema_version, "1.5")
         self.assertEqual(
             migrated.repository_outcome_status,
             RepositoryOutcomeStatus.BLOCKED,
@@ -768,6 +806,16 @@ class ExecutionWorkspaceTests(unittest.TestCase):
             ),
             actor=self.actor,
         )
+        self.backend.observed_head = "c" * 40
+        self.service.record_repository_checkpoint(
+            workspace.id,
+            RepositoryCheckpoint(
+                resource_id=self.repo.id,
+                branch_name=workspace.branch_name,
+                head_revision="c" * 40,
+            ),
+            actor=self.actor,
+        )
 
         recovered = self.service.recover_expired(
             now=time.time() + 31,
@@ -984,6 +1032,16 @@ class ExecutionWorkspaceTests(unittest.TestCase):
 
     def test_expired_lease_is_abandoned_and_worktree_cleaned_without_deleting_branch(self) -> None:
         workspace = self._acquire("exec-expire", self.repo.id)
+        self.backend.observed_head = "d" * 40
+        self.service.record_repository_checkpoint(
+            workspace.id,
+            RepositoryCheckpoint(
+                resource_id=self.repo.id,
+                branch_name=workspace.branch_name,
+                head_revision="d" * 40,
+            ),
+            actor=self.actor,
+        )
         recovered = self.service.recover_expired(
             now=time.time() + 31,
             scope=self.actor.tenant,
@@ -995,6 +1053,27 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         self.assertIsNotNone(current.cleaned_at)
         self.assertEqual(len(self.backend.cleaned), 1)
         self.assertFalse(self.backend.cleaned[0][2])
+
+    def test_expired_uncheckpointed_git_workspace_is_retained_for_recovery(self) -> None:
+        workspace = self._acquire("exec-retain-uncheckpointed", self.repo.id)
+
+        recovered = self.service.recover_expired(
+            now=time.time() + 31,
+            scope=self.actor.tenant,
+        )
+
+        current = recovered[0]
+        self.assertEqual(current.id, workspace.id)
+        self.assertEqual(current.status, ExecutionWorkspaceStatus.ABANDONED)
+        self.assertIsNone(current.cleaned_at)
+        self.assertIn("retained", current.error)
+        self.assertEqual(self.backend.cleaned, [])
+        self.assertTrue(
+            any(
+                item.event_type == "workspace_recovery_retained_uncheckpointed"
+                for item in self.service.events(workspace.id, actor=self.actor)
+            )
+        )
 
     def test_release_cleanup_and_discard_are_explicit(self) -> None:
         workspace = self._acquire("exec-discard", self.repo.id)

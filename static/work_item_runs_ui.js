@@ -36,18 +36,24 @@ function repositoryOutcomesHtml(outcomes) {
   }
   return outcomes.map((entry) => {
     const integration = entry.integration || {};
+    const checkpoint = entry.checkpoint || {};
     const conflicts = Array.isArray(integration.conflicts) ? integration.conflicts : [];
     const detail = [
       integration.outcome || entry.status,
       integration.strategy,
       entry.headRevision ? `head ${entry.headRevision}` : null,
+      checkpoint.branchName ? `checkpoint ${checkpoint.branchName}@${checkpoint.headRevision}` : null,
+      checkpoint.pushStatus ? `push ${checkpoint.pushStatus}` : null,
+      Number.isFinite(checkpoint.dirtyFileCount) ? `dirty files ${checkpoint.dirtyFileCount}` : null,
+      checkpoint.changeRequestUrl ? `change request ${checkpoint.changeRequestUrl}` : null,
+      checkpoint.blockerMessage ? `blocker: ${checkpoint.blockerMessage}` : null,
       conflicts.length ? `conflicts: ${conflicts.join(', ')}` : null,
     ].filter(Boolean).join(' · ');
     return `
       <div class="work-run-activity-row">
         <strong>${referenceLink('resource', entry.repositoryId || 'repository')} · ${esc(entry.status || 'pending')}</strong>
         <span>${esc(detail || 'No integration result recorded')}</span>
-        <small>${esc(fmtTime(integration.recordedAt))}</small>
+        <small>${esc(fmtTime(checkpoint.recordedAt || integration.recordedAt))}</small>
       </div>`;
   }).join('');
 }

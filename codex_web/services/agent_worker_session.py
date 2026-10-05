@@ -113,6 +113,8 @@ class AssignmentBoundAgentSessionManager(Protocol):
 
     def get(self, assignment_id: str) -> AssignmentBoundAgentSession | None: ...
 
+    async def checkpoint(self, assignment_id: str) -> tuple[Any, ...]: ...
+
     async def complete(
         self,
         assignment_id: str,

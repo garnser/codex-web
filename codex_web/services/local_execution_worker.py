@@ -17,6 +17,11 @@ from codex_web.execution_workers import (
     WorkerHeartbeatRequest,
 )
 from codex_web.execution_workspaces import ExecutionWorkspaceStatus
+from codex_web.execution_workspaces import (
+    LeaseMode,
+    RepositoryCheckpoint,
+    RepositoryCheckpointPushStatus,
+)
 from codex_web.identity import AuthenticationActor
 from codex_web.local_execution_backend import (
     BubblewrapExecutionBackend,
@@ -30,12 +35,15 @@ from codex_web.services.codex_auth_delegation import (
 )
 from codex_web.services.execution_workers import (
     ExecutionWorkerService,
-    WorkerConflictError,
 )
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 
 
 class LocalExecutionWorkerRuntimeError(RuntimeError):
+    pass
+
+
+class RepositoryCheckpointBlockedError(LocalExecutionWorkerRuntimeError):
     pass
 
 
@@ -283,6 +291,244 @@ class LocalExecutionWorkerRuntime:
             for member in getattr(workspace, "repository_members", ())
             if member.resource_id != workspace.repository_resource_id
         )
+
+    @staticmethod
+    def _checkpoint_paths(status: str) -> tuple[str, ...]:
+        parts = status.split("\0")
+        paths: list[str] = []
+        index = 0
+        while index < len(parts):
+            entry = parts[index]
+            index += 1
+            if not entry:
+                continue
+            if len(entry) < 4:
+                raise RepositoryCheckpointBlockedError(
+                    "execution workspace returned malformed Git status"
+                )
+            code = entry[:2]
+            paths.append(entry[3:])
+            if "R" in code or "C" in code:
+                if index >= len(parts) or not parts[index]:
+                    raise RepositoryCheckpointBlockedError(
+                        "execution workspace returned malformed rename status"
+                    )
+                paths.append(parts[index])
+                index += 1
+        return tuple(dict.fromkeys(paths))
+
+    @staticmethod
+    def _checkpoint_excluded_path(path: str) -> bool:
+        normalized = path.replace("\\", "/").casefold().strip("/")
+        parts = normalized.split("/")
+        name = parts[-1] if parts else normalized
+        if name == ".env" or (name.startswith(".env.") and not name.endswith((".example", ".sample", ".template"))):
+            return True
+        if name in {".npmrc", ".pypirc", ".netrc", "id_rsa", "id_ed25519"}:
+            return True
+        if name.endswith((".pem", ".p12", ".pfx", ".jks", ".keystore")):
+            return True
+        return any(part in {".secrets", "private-keys"} for part in parts)
+
+    def _checkpoint_command(
+        self,
+        assignment: ExecutionAssignment,
+        argv: Sequence[str],
+    ) -> LocalExecutionResult:
+        workspace_path = self._workspace_path(assignment)
+        readonly_mounts, writable_mounts = self.repository_mounts(assignment)
+        result = self.backend.run(
+            assignment,
+            argv=argv,
+            workspace_path=workspace_path,
+            git_metadata_path=self.backend.discover_git_metadata(workspace_path),
+            trusted_readonly_mounts=readonly_mounts,
+            trusted_writable_mounts=writable_mounts,
+            additional_disk_bytes=self.readonly_disk_bytes(assignment),
+        )
+        if not result.succeeded:
+            detail = (result.stderr or result.stdout or "Git checkpoint command failed").strip()
+            raise RepositoryCheckpointBlockedError(detail[:500])
+        return result
+
+    def checkpoint_assignment(
+        self,
+        assignment_id: str,
+    ) -> tuple[RepositoryCheckpoint, ...]:
+        """Create and persist a local Git safety commit before terminal state."""
+
+        assignment = self._pending_assignment(assignment_id)
+        if assignment.status != AssignmentStatus.RUNNING:
+            raise RepositoryCheckpointBlockedError(
+                "repository checkpoint requires a running assignment"
+            )
+        workspace = self._workspace(assignment)
+        writable_repository_ids = tuple(
+            getattr(workspace, "writable_repository_ids", ()) or ()
+        )
+        if not writable_repository_ids:
+            return ()
+        members = {
+            member.resource_id: member
+            for member in workspace.repository_members
+            if member.access_mode == LeaseMode.WRITE
+        }
+        checkpoints: list[RepositoryCheckpoint] = []
+        blockers: list[str] = []
+        for resource_id in writable_repository_ids:
+            member = members.get(resource_id)
+            if member is None or not member.branch_name:
+                blockers.append(f"{resource_id}: canonical writable branch is missing")
+                continue
+            git_path = (
+                member.workspace_path
+                if resource_id == workspace.repository_resource_id
+                else member.sandbox_path
+            )
+            status = self._checkpoint_command(
+                assignment,
+                ("git", "-C", git_path, "status", "--porcelain=v1", "-z", "--untracked-files=all"),
+            ).stdout
+            paths = self._checkpoint_paths(status)
+            head = self._checkpoint_command(
+                assignment,
+                ("git", "-C", git_path, "rev-parse", "HEAD"),
+            ).stdout.strip()
+            committed_paths = tuple(
+                path
+                for path in self._checkpoint_command(
+                    assignment,
+                    (
+                        "git", "-C", git_path, "diff", "--name-only", "-z",
+                        f"{member.head_revision}..HEAD",
+                    ),
+                ).stdout.split("\0")
+                if path
+            )
+            branch = self._checkpoint_command(
+                assignment,
+                ("git", "-C", git_path, "symbolic-ref", "--short", "HEAD"),
+            ).stdout.strip()
+            blocker_code = None
+            blocker_message = None
+            committed = False
+            if branch != member.branch_name:
+                blocker_code = "checkpoint_branch_mismatch"
+                blocker_message = "workspace branch does not match canonical branch"
+            excluded = tuple(path for path in paths if self._checkpoint_excluded_path(path))
+            if blocker_code is None and excluded:
+                blocker_code = "checkpoint_excluded_paths"
+                blocker_message = (
+                    f"checkpoint refused {len(excluded)} sensitive or policy-excluded path(s)"
+                )
+            if blocker_code is None and paths:
+                try:
+                    self._checkpoint_command(
+                        assignment,
+                        ("git", "-C", git_path, "add", "--all", "--", "."),
+                    )
+                    self._checkpoint_command(
+                        assignment,
+                        (
+                            "git", "-C", git_path,
+                            "-c", "user.name=Codex Checkpoint",
+                            "-c", "user.email=checkpoint@codex.invalid",
+                            "-c", "core.hooksPath=/dev/null",
+                            "commit", "-m", f"chore: checkpoint assignment {assignment.id}",
+                        ),
+                    )
+                    head = self._checkpoint_command(
+                        assignment,
+                        ("git", "-C", git_path, "rev-parse", "HEAD"),
+                    ).stdout.strip()
+                    remaining = self._checkpoint_command(
+                        assignment,
+                        ("git", "-C", git_path, "status", "--porcelain=v1", "-z", "--untracked-files=all"),
+                    ).stdout
+                    if remaining:
+                        blocker_code = "checkpoint_workspace_still_dirty"
+                        blocker_message = "workspace remained dirty after safety commit"
+                    else:
+                        committed = True
+                        committed_paths = tuple(
+                            path
+                            for path in self._checkpoint_command(
+                                assignment,
+                                (
+                                    "git", "-C", git_path, "diff", "--name-only", "-z",
+                                    f"{member.head_revision}..HEAD",
+                                ),
+                            ).stdout.split("\0")
+                            if path
+                        )
+                except RepositoryCheckpointBlockedError as exc:
+                    blocker_code = "checkpoint_commit_failed"
+                    blocker_message = str(exc)[:500]
+
+            push_status = RepositoryCheckpointPushStatus.NOT_REQUESTED
+            remote_branch = None
+            remote_revision = None
+            change_request_url = None
+            if blocker_code is None:
+                refs = self._checkpoint_command(
+                    assignment,
+                    (
+                        "git", "-C", git_path, "for-each-ref",
+                        "--format=%(refname:short)%00%(objectname)%00", "refs/remotes",
+                    ),
+                ).stdout.split("\0")
+                for ref, revision in zip(refs[0::2], refs[1::2]):
+                    if revision.strip() == head and ref and not ref.endswith("/HEAD"):
+                        push_status = RepositoryCheckpointPushStatus.VERIFIED
+                        remote_branch = ref.strip()
+                        remote_revision = head
+                        break
+                if committed_paths and push_status != RepositoryCheckpointPushStatus.VERIFIED:
+                    push_status = RepositoryCheckpointPushStatus.BLOCKED
+                    blocker_code = "checkpoint_push_unverified"
+                    blocker_message = (
+                        "local checkpoint is durable, but no matching remote branch was observed"
+                    )
+            changed_paths = tuple(dict.fromkeys((*committed_paths, *paths)))
+            previous = dict(
+                getattr(workspace, "repository_checkpoints", {}) or {}
+            ).get(resource_id)
+            if (
+                not changed_paths
+                and previous is not None
+                and previous.head_revision == head
+            ):
+                push_status = previous.push_status
+                remote_branch = previous.remote_branch
+                remote_revision = previous.remote_revision
+                change_request_url = previous.change_request_url
+                blocker_code = previous.blocker_code
+                blocker_message = previous.blocker_message
+            checkpoint = RepositoryCheckpoint(
+                resource_id=resource_id,
+                branch_name=member.branch_name,
+                head_revision=head,
+                dirty_file_count=len(paths),
+                changed_file_count=len(changed_paths),
+                local_commit_created=committed,
+                push_status=push_status,
+                remote_branch=remote_branch,
+                remote_revision=remote_revision,
+                change_request_url=change_request_url,
+                blocker_code=blocker_code,
+                blocker_message=blocker_message,
+            )
+            self.workspace_service.record_repository_checkpoint(
+                workspace.id,
+                checkpoint,
+                actor=self.control_actor,
+            )
+            checkpoints.append(checkpoint)
+            if blocker_code and blocker_code != "checkpoint_push_unverified":
+                blockers.append(f"{resource_id}: {blocker_message}")
+        if blockers:
+            raise RepositoryCheckpointBlockedError("; ".join(blockers))
+        return tuple(checkpoints)
 
     def _claim_or_resume(self, assignment: ExecutionAssignment) -> ExecutionAssignment:
         if assignment.status == AssignmentStatus.PENDING:

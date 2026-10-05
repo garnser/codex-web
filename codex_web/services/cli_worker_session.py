@@ -6,7 +6,10 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from codex_web.execution_workspaces import ExecutionWorkspaceStatus
+from codex_web.execution_workspaces import (
+    ExecutionWorkspaceRelease,
+    ExecutionWorkspaceStatus,
+)
 from codex_web.execution_workers import (
     AssignmentCompleteRequest,
     AssignmentRenewRequest,
@@ -453,6 +456,18 @@ class AssignmentBoundCliSessionManager:
     def get(self, assignment_id: str) -> AssignmentBoundCliSession | None:
         return self.sessions.get(assignment_id)
 
+    async def checkpoint(self, assignment_id: str):
+        session = self.sessions.get(assignment_id)
+        if session is None:
+            raise AssignmentBoundCliSessionStaleError(
+                "CLI assignment session is not registered"
+            )
+        session.validate_current()
+        return await asyncio.to_thread(
+            self.local_worker.checkpoint_assignment,
+            assignment_id,
+        )
+
     async def complete(
         self,
         assignment_id: str,
@@ -474,6 +489,7 @@ class AssignmentBoundCliSessionManager:
             raise AssignmentBoundCliSessionStaleError(
                 "CLI assignment has no completable fenced lease"
             )
+        await self.checkpoint(assignment_id)
         completed = self.local_worker.worker_service.complete(
             session.worker_id,
             assignment.id,
@@ -494,7 +510,7 @@ class AssignmentBoundCliSessionManager:
                 self.local_worker.workspace_service.release(
                     assignment.execution_workspace_id,
                     ExecutionWorkspaceRelease(
-                        discard=True,
+                        discard=False,
                         reason="assignment completed",
                     ),
                     actor=self.local_worker.worker_actor,

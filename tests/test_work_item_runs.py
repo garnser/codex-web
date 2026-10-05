@@ -25,6 +25,8 @@ from codex_web.execution_workspaces import (
     IntegrationOutcome,
     IntegrationStrategy,
     LeaseMode,
+    RepositoryCheckpoint,
+    RepositoryCheckpointPushStatus,
     RepositoryOutcomeStatus,
     WorkspaceIntegrationState,
 )
@@ -270,6 +272,20 @@ class WorkItemRunProjectionTests(unittest.TestCase):
                     head_revision="api-base",
                 ),
             ),
+            repository_checkpoints={
+                "repo-app": RepositoryCheckpoint(
+                    resource_id="repo-app",
+                    branch_name="codex/app",
+                    head_revision="a" * 40,
+                    dirty_file_count=2,
+                    changed_file_count=2,
+                    local_commit_created=True,
+                    push_status=RepositoryCheckpointPushStatus.BLOCKED,
+                    blocker_code="checkpoint_push_unverified",
+                    blocker_message="remote unavailable",
+                    recorded_at=36.25,
+                )
+            },
             repository_integrations={
                 "repo-app": WorkspaceIntegrationState(
                     strategy=IntegrationStrategy.MERGE,
@@ -311,6 +327,14 @@ class WorkItemRunProjectionTests(unittest.TestCase):
         self.assertEqual(run["repositoryOutcomeStatus"], "blocked")
         self.assertEqual(outcomes["repo-app"]["status"], "integrated")
         self.assertEqual(outcomes["repo-app"]["headRevision"], "app-result")
+        self.assertEqual(
+            outcomes["repo-app"]["checkpoint"]["pushStatus"],
+            "blocked",
+        )
+        self.assertEqual(
+            outcomes["repo-app"]["checkpoint"]["dirtyFileCount"],
+            2,
+        )
         self.assertEqual(
             outcomes["repo-app"]["integration"]["outcome"],
             "merged",
