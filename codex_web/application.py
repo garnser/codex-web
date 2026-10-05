@@ -130,7 +130,11 @@ from codex_web.model_providers import AnthropicModelProviderAdapter, OpenAIModel
 from codex_web.key_backends import LocalFileKeyBackend
 from codex_web.execution_workspace_backend import LocalGitWorkspaceBackend
 from codex_web.local_execution_backend import BubblewrapExecutionBackend
-from codex_web.execution_workers import ExecutionRuntimeBinding, WorkerCapability
+from codex_web.execution_workers import (
+    ExecutionRuntimeBinding,
+    WorkerCapability,
+    WorkerHeartbeatRequest,
+)
 from codex_web.paths import (
     ACTIVE_TURNS_FILE,
     ARTIFACT_CONTENT_DIR,
@@ -1225,6 +1229,16 @@ execution_worker_service = ExecutionWorkerService(
     identity=identity_service,
     workspaces=execution_workspace_service,
     assignment_notifier=_execution_assignment_notifier,
+)
+# Reconcile persisted worker/lease state before ensuring the process-owned
+# worker. On a slow application import, doing this after ensure_local_worker()
+# can age its fresh heartbeat past the stale threshold and offline the worker
+# that this same process is about to supervise.
+execution_worker_service.mark_stale_workers_offline(
+    actor=identity_service.local_trusted_actor(),
+)
+execution_worker_service.recover_expired(
+    actor=identity_service.local_trusted_actor(),
 )
 local_execution_backend = BubblewrapExecutionBackend()
 local_execution_backend_status = local_execution_backend.probe()
@@ -2738,12 +2752,6 @@ bot_detail_service = install_bot_detail_service(
 )
 # Release expired resource locks and clean abandoned worktrees on startup.
 execution_workspace_service.recover_expired()
-execution_worker_service.mark_stale_workers_offline(
-    actor=identity_service.local_trusted_actor(),
-)
-execution_worker_service.recover_expired(
-    actor=identity_service.local_trusted_actor(),
-)
 artifact_evidence_service.expire_retention()
 action_intent_service.recover_stale_claims()
 
@@ -4152,6 +4160,16 @@ def _flush_compatibility_state() -> None:
 
 core._flush_compatibility_state = _flush_compatibility_state
 
+
+def _heartbeat_local_execution_worker() -> None:
+    refreshed = execution_worker_service.heartbeat(
+        local_execution_worker.id,
+        WorkerHeartbeatRequest(version=local_execution_worker.version),
+        actor=local_worker_actor,
+    )
+    app.state.local_execution_worker = refreshed
+
+
 runtime_supervisor = install_runtime_supervisor(
     app,
     core,
@@ -4177,6 +4195,7 @@ runtime_supervisor = install_runtime_supervisor(
     thread_is_active=turn_execution_service.thread_is_active,
     release_stale_active_turn=thread_recovery_service.release_stale_active_turn,
     schedule_queue_drain=turn_execution_service.schedule_queue_drain,
+    local_worker_heartbeat=_heartbeat_local_execution_worker,
     flush_compatibility_state=_flush_compatibility_state,
 )
 

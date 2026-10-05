@@ -178,6 +178,7 @@ class RuntimeSupervisor:
         thread_is_active: Callable[[str], bool] | None = None,
         release_stale_active_turn: Callable[[str, str], Any] | None = None,
         schedule_queue_drain: Callable[[str], Any] | None = None,
+        local_worker_heartbeat: Callable[[], Any] | None = None,
         flush_compatibility_state: Callable[[], Any] | None = None,
     ) -> None:
         self.app = app
@@ -251,6 +252,7 @@ class RuntimeSupervisor:
             "_schedule_queue_drain",
             _noop,
         )
+        self.local_worker_heartbeat = local_worker_heartbeat
         self.flush_compatibility_state = (
             flush_compatibility_state
             or getattr(host, "_flush_compatibility_state", _noop)
@@ -289,6 +291,18 @@ class RuntimeSupervisor:
         if seconds <= 0:
             return 0.0
         return max(10.0, seconds)
+
+    def local_worker_heartbeat_interval_seconds(self) -> float:
+        try:
+            seconds = float(
+                os.environ.get("CODEX_WEB_LOCAL_WORKER_HEARTBEAT_SECONDS")
+                or "30"
+            )
+        except ValueError:
+            return 30.0
+        if seconds <= 0:
+            return 0.0
+        return max(5.0, seconds)
 
     def _spawn(
         self,
@@ -432,6 +446,29 @@ class RuntimeSupervisor:
                 )
             await asyncio.sleep(interval)
 
+    async def _heartbeat_local_worker_once(self) -> None:
+        if self.local_worker_heartbeat is None:
+            return
+        try:
+            await asyncio.to_thread(self.local_worker_heartbeat)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.event_sink(
+                {
+                    "type": "local_worker_heartbeat_failed",
+                    "error": self.truncate_text(str(exc), 500),
+                }
+            )
+
+    async def _local_worker_heartbeat_loop(self) -> None:
+        interval = self.local_worker_heartbeat_interval_seconds()
+        if self.local_worker_heartbeat is None or interval <= 0:
+            return
+        while True:
+            await asyncio.sleep(interval)
+            await self._heartbeat_local_worker_once()
+
     async def _singleton_service_loop(
         self,
         responsibility: str,
@@ -485,6 +522,10 @@ class RuntimeSupervisor:
                 await self.codex.start()
             except Exception:
                 pass
+        # Restore the process-owned worker before scheduling startup or queue
+        # recovery. The authenticated heartbeat only reactivates its canonical
+        # offline worker record.
+        await self._heartbeat_local_worker_once()
         if (
             self.codex is not None
             and self.codex.ready.is_set()
@@ -505,6 +546,11 @@ class RuntimeSupervisor:
             self._spawn(
                 "runtime-health-refresh",
                 self.runtime_health.run_forever(),
+            )
+        if self.local_worker_heartbeat is not None:
+            self._spawn(
+                "local-worker-heartbeat",
+                self._local_worker_heartbeat_loop(),
             )
 
         telemetry = getattr(

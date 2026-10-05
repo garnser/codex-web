@@ -113,6 +113,13 @@ simply a worker with pool=local and the same capability, lease, fencing and
 result rules. This keeps the development path simple without creating a
 trusted bypass that would differ from future remote/ephemeral workers.
 
+The built-in process-owned local worker is reconciled after persisted stale
+workers and expired leases during application composition. Runtime supervision
+then emits authenticated heartbeats while the worker is idle as well as during
+assignments. One heartbeat completes before startup recovery is scheduled, so
+slow startup cannot mark the newly ensured worker offline and queued recovery
+does not require manual worker activation.
+
 ## Isolation expectations
 
 The worker contract is provider-neutral. Local process/container/VM backends
