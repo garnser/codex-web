@@ -1234,6 +1234,68 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             "bootstrap-1",
         )
 
+    async def test_repository_scoped_turn_supersedes_bootstrap_with_requested_target(self) -> None:
+        host, _binding, sessions, service = self._service(
+            bootstrap_thread_id="t1"
+        )
+        runtime_binding = ExecutionRuntimeBinding(
+            provider_id="openai",
+            runtime_id="codex",
+            capability_revision=1,
+        )
+        original_validate = sessions.session.validate_current
+        validation_calls = 0
+
+        def validate_current():
+            nonlocal validation_calls
+            validation_calls += 1
+            assignment = original_validate()
+            assignment.runtime_binding = runtime_binding
+            assignment.repository_target = SimpleNamespace(
+                mutable_repository_id=(
+                    "repo-old" if validation_calls == 1 else "repo-new"
+                )
+            )
+            assignment.repository_scope = SimpleNamespace(
+                writable_repository_ids=(
+                    ("repo-old",)
+                    if validation_calls == 1
+                    else ("repo-new",)
+                )
+            )
+            return assignment
+
+        sessions.session.validate_current = validate_current
+        service._supersede_thread_bootstrap = AsyncMock(
+            return_value=SimpleNamespace(
+                bootstrap_id="bootstrap-2",
+                assignment_id="assignment-1",
+                execution_id="bootstrap-exec",
+                execution_workspace_id="workspace-1",
+            )
+        )
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        await service.start_thread_turn_now(
+            "t1",
+            project=project,
+            message="switch repository",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            repository_resource_id="repo-new",
+            writable_repository_resource_ids=("repo-new",),
+        )
+
+        switch = service._supersede_thread_bootstrap.await_args.kwargs
+        self.assertEqual(switch["explicit_repository_id"], "repo-new")
+        self.assertEqual(switch["writable_repository_ids"], ("repo-new",))
+
 
     async def test_bootstrap_turn_completion_finalizes_work_item_checkpoint_outcome(self) -> None:
         outcomes = []

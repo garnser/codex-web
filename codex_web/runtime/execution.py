@@ -1651,17 +1651,29 @@ class TurnExecutionService:
                             "agent_profile",
                             None,
                         ),
-                        explicit_repository_id=getattr(
-                            getattr(
-                                assignment,
-                                "repository_target",
+                        # A repository-scoped turn is allowed to supersede a
+                        # thread's previous bootstrap repository. Prefer the
+                        # requested target here; using the old assignment
+                        # first pairs its repository with the new writable
+                        # scope and fails closed as a false scope conflict.
+                        explicit_repository_id=(
+                            repository_resource_id
+                            or (
+                                effective_writable_repositories[0]
+                                if len(effective_writable_repositories) == 1
+                                else None
+                            )
+                            or settings.repository_resource_id
+                            or getattr(
+                                getattr(
+                                    assignment,
+                                    "repository_target",
+                                    None,
+                                ),
+                                "mutable_repository_id",
                                 None,
-                            ),
-                            "mutable_repository_id",
-                            None,
-                        )
-                        or repository_resource_id
-                        or settings.repository_resource_id,
+                            )
+                        ),
                         writable_repository_ids=tuple(
                             effective_writable_repositories
                         ),
