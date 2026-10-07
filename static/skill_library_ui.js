@@ -218,13 +218,19 @@ async function loadSkills(root) {
 }
 
 async function loadSources(root) {
+  const sourceFilter = query(root, "[data-skill-source]");
+  const syncSource = query(root, "[data-sync-source]");
+  const selectedFilter = sourceFilter?.value || "";
+  const selectedSyncSource = syncSource?.value || "";
   try {
     const result = await request("/api/skill-sources");
     state.sources = result?.items || [];
   } catch { state.sources = []; }
   const options = state.sources.map((item)=>`<option value="${esc(item.source_id)}">${esc(item.name)} · ${esc(item.trust)}</option>`).join("");
-  query(root, "[data-skill-source]").innerHTML = `<option value="">All sources</option>${options}`;
-  query(root, "[data-sync-source]").innerHTML = `<option value="">Select source…</option>${options}`;
+  sourceFilter.innerHTML = `<option value="">All sources</option>${options}`;
+  syncSource.innerHTML = `<option value="">Select source…</option>${options}`;
+  if (state.sources.some((item) => item.source_id === selectedFilter)) sourceFilter.value = selectedFilter;
+  if (state.sources.some((item) => item.source_id === selectedSyncSource)) syncSource.value = selectedSyncSource;
   const health = query(root, "[data-source-health]");
   if (health) health.innerHTML = state.sources.map((item) => `<article class="skill-run"><header><strong>${esc(item.name)}</strong><span class="skill-status ${statusClass(item.health_status === "healthy" ? "passed" : item.health_status)}">${esc(item.health_status || "unknown")}</span></header><p>${esc(item.source_type)} · ${esc(item.transport || "bundle")} · ${esc(item.discovered_count || 0)} discovered / ${esc((item.imports || []).length)} imported</p><small>Categories: ${esc((item.discovered_categories || []).join(", ") || "none")} · last sync ${esc(item.last_sync_status || "never")}${item.last_sync_error ? ` · ${esc(item.last_sync_error)}` : ""}</small></article>`).join("") || '<div class="skill-state">No Skill sources configured.</div>';
 }
