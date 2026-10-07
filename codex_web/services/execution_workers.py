@@ -1466,13 +1466,6 @@ class ExecutionWorkerService:
                         }
                     )
                     lost.append(assignment.id)
-                    if (
-                        self.workspaces is not None
-                        and assignment.execution_workspace_id
-                    ):
-                        expired_workspace_ids.append(
-                            assignment.execution_workspace_id
-                        )
                     self._event(
                         state,
                         actor=actor,
