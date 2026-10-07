@@ -1130,16 +1130,35 @@ class GitLabService:
         async def dispatch_reasoning(
             *_args: Any,
         ) -> AutonomyReasoningResult:
+            resource_ids = tuple(projected_state.resource_ids)
+            repository_resource_id = (
+                resource_ids[0] if len(resource_ids) == 1 else None
+            )
             for agent, binding in bindings:
                 prompt = self.operations.format_event_prompt(
                     payload,
                     agent,
                 )
-                result = await self.operations.dispatch_event(
-                    binding,
-                    prompt,
-                    "gitlab",
-                )
+                if (
+                    self.operations.dispatch_scoped_event is not None
+                    and repository_resource_id is not None
+                ):
+                    result = await self.operations.dispatch_scoped_event(
+                        binding,
+                        prompt,
+                        "gitlab",
+                        work_item_ref=projected_state.ref,
+                        repository_resource_id=repository_resource_id,
+                        writable_repository_resource_ids=(
+                            repository_resource_id,
+                        ),
+                    )
+                else:
+                    result = await self.operations.dispatch_event(
+                        binding,
+                        prompt,
+                        "gitlab",
+                    )
                 notice = await self.operations.send_event_notice(
                     binding,
                     payload,

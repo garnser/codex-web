@@ -3877,6 +3877,7 @@ gitlab_operational_dependencies = GitLabOperationalDependencies(
     publish_event=event_hub.publish,
     truncate_text=lambda value, limit: str(value)[:limit],
     dispatch_event=bot_event_dispatch_service.dispatch,
+    dispatch_scoped_event=bot_event_dispatch_service.dispatch,
     format_event_prompt=gitlab_event_presentation.format_prompt,
     send_event_notice=gitlab_event_presentation.send_notice,
     schedule_recovery=native_recovery_service.schedule,

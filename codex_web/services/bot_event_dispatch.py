@@ -146,6 +146,11 @@ class BotEventDispatchService:
         binding: BotBinding,
         text: str,
         source: str,
+        *,
+        work_item_ref: str | None = None,
+        repository_resource_id: str | None = None,
+        writable_repository_resource_ids: tuple[str, ...] = (),
+        read_only_repository_resource_ids: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         project = self.projects.get(binding.project_id)
         settings = self.settings.get(binding.thread_id)
@@ -196,6 +201,10 @@ class BotEventDispatchService:
                 approval_policy=binding.approval_policy,
                 model=effective_model,
                 reasoning_effort=effective_reasoning_effort,
+                work_item_ref=work_item_ref,
+                repository_resource_id=repository_resource_id,
+                writable_repository_resource_ids=writable_repository_resource_ids,
+                read_only_repository_resource_ids=read_only_repository_resource_ids,
                 source=source,
                 reply_target=reply_target,
             )
@@ -262,6 +271,10 @@ class BotEventDispatchService:
                 reasoning_effort=effective_reasoning_effort,
                 source=source,
                 reply_target=reply_target,
+                work_item_ref=work_item_ref,
+                repository_resource_id=repository_resource_id,
+                writable_repository_resource_ids=writable_repository_resource_ids,
+                read_only_repository_resource_ids=read_only_repository_resource_ids,
             )
         except Exception as exc:
             if self.resume.is_timeout_error(exc):
@@ -290,6 +303,10 @@ class BotEventDispatchService:
                 reasoning_effort=effective_reasoning_effort,
                 source=source,
                 reply_target=reply_target,
+                work_item_ref=work_item_ref,
+                repository_resource_id=repository_resource_id,
+                writable_repository_resource_ids=writable_repository_resource_ids,
+                read_only_repository_resource_ids=read_only_repository_resource_ids,
             )
 
         binding.updated_at = time.time()
@@ -323,6 +340,11 @@ class BotEventDispatchCompatibilityFacade:
         binding: BotBinding,
         text: str,
         source: str,
+        *,
+        work_item_ref: str | None = None,
+        repository_resource_id: str | None = None,
+        writable_repository_resource_ids: tuple[str, ...] = (),
+        read_only_repository_resource_ids: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         host = self.host
         project = host._project(binding.project_id)
@@ -372,6 +394,10 @@ class BotEventDispatchCompatibilityFacade:
                 approval_policy=binding.approval_policy,
                 model=effective_model,
                 reasoning_effort=effective_reasoning_effort,
+                work_item_ref=work_item_ref,
+                repository_resource_id=repository_resource_id,
+                writable_repository_resource_ids=writable_repository_resource_ids,
+                read_only_repository_resource_ids=read_only_repository_resource_ids,
                 source=source,
                 reply_target=reply_target,
             )
@@ -439,6 +465,10 @@ class BotEventDispatchCompatibilityFacade:
                 reasoning_effort=effective_reasoning_effort,
                 source=source,
                 reply_target=reply_target,
+                work_item_ref=work_item_ref,
+                repository_resource_id=repository_resource_id,
+                writable_repository_resource_ids=writable_repository_resource_ids,
+                read_only_repository_resource_ids=read_only_repository_resource_ids,
             )
         except Exception as exc:
             if host._is_codex_timeout_error(exc):
@@ -467,6 +497,10 @@ class BotEventDispatchCompatibilityFacade:
                 reasoning_effort=effective_reasoning_effort,
                 source=source,
                 reply_target=reply_target,
+                work_item_ref=work_item_ref,
+                repository_resource_id=repository_resource_id,
+                writable_repository_resource_ids=writable_repository_resource_ids,
+                read_only_repository_resource_ids=read_only_repository_resource_ids,
             )
 
         binding.updated_at = time.time()

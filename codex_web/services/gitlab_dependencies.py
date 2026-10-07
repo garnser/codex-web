@@ -46,3 +46,4 @@ class GitLabOperationalDependencies:
         Awaitable[dict[str, Any]],
     ]
     schedule_recovery: Callable[..., Any]
+    dispatch_scoped_event: Callable[..., Awaitable[dict[str, Any]]] | None = None
