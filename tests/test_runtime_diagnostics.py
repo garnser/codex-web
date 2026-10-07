@@ -106,6 +106,71 @@ class BotRuntimeTelemetryDiagnosticsTests(unittest.TestCase):
 
 
 class RuntimeHealthServiceTests(unittest.TestCase):
+    def test_old_queue_on_active_thread_does_not_fail_health(self) -> None:
+        ready = asyncio.Event()
+        ready.set()
+        codex = SimpleNamespace(
+            proc=SimpleNamespace(pid=42, poll=lambda: None),
+            ready=ready,
+        )
+        queued = SimpleNamespace(created_at=1.0)
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "codex_web.services.runtime_diagnostics.time.time",
+            return_value=1000.0,
+        ):
+            service = RuntimeHealthService(
+                codex=codex,
+                bot_runtime=SimpleNamespace(fingerprints={}, tasks={}),
+                telemetry=BotRuntimeTelemetry(
+                    events_file=Path(directory) / "events.jsonl",
+                ),
+                load_bindings=lambda: [],
+                terminal_failures={},
+                terminal_recovery_tasks={},
+                terminal_failure_window_seconds=lambda: 300.0,
+                load_queues=lambda: {"thread-1": [queued]},
+                slack_provider_health=lambda: {},
+                gitlab_sync_status=lambda: {},
+                thread_is_active=lambda thread_id: thread_id == "thread-1",
+            )
+
+            snapshot = service.refresh_sync()
+
+        self.assertTrue(snapshot["ok"])
+        self.assertEqual(snapshot["staleQueueThreads"], {})
+
+    def test_old_queue_on_idle_thread_still_fails_health(self) -> None:
+        ready = asyncio.Event()
+        ready.set()
+        codex = SimpleNamespace(
+            proc=SimpleNamespace(pid=42, poll=lambda: None),
+            ready=ready,
+        )
+        queued = SimpleNamespace(created_at=1.0)
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "codex_web.services.runtime_diagnostics.time.time",
+            return_value=1000.0,
+        ):
+            service = RuntimeHealthService(
+                codex=codex,
+                bot_runtime=SimpleNamespace(fingerprints={}, tasks={}),
+                telemetry=BotRuntimeTelemetry(
+                    events_file=Path(directory) / "events.jsonl",
+                ),
+                load_bindings=lambda: [],
+                terminal_failures={},
+                terminal_recovery_tasks={},
+                terminal_failure_window_seconds=lambda: 300.0,
+                load_queues=lambda: {"thread-1": [queued]},
+                slack_provider_health=lambda: {},
+                gitlab_sync_status=lambda: {},
+            )
+
+            snapshot = service.refresh_sync()
+
+        self.assertFalse(snapshot["ok"])
+        self.assertEqual(snapshot["staleQueueThreads"], {"thread-1": 1})
+
     def test_healthy_snapshot_preserves_public_schema(self) -> None:
         ready = asyncio.Event()
         ready.set()

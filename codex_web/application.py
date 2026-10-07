@@ -4127,6 +4127,7 @@ runtime_health_service = RuntimeHealthService(
     gitlab_sync_status=gitlab_sync_health.snapshot,
     execution_readiness=_execution_readiness_health,
     count_active_turns=runtime_state.active_turns.count,
+    thread_is_active=turn_execution_service.thread_is_active,
     state_store_status=state_store.status,
     autonomy_health=_autonomy_health,
     event_sink=bot_runtime_telemetry.append,
@@ -4393,6 +4394,7 @@ def _compat_daemon_health():
         load_queues=turn_queue_repository.load,
         slack_provider_health=slack_provider_service.health,
         gitlab_sync_status=gitlab_sync_health.snapshot,
+        thread_is_active=turn_execution_service.thread_is_active,
     )
     # Historical tests may replace the public runtime-status dictionary.
     compatibility_health.telemetry.status = getattr(

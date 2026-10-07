@@ -74,6 +74,7 @@ class RuntimeHealthService:
         gitlab_sync_status: Callable[[], dict[str, Any]],
         execution_readiness: Callable[[], dict[str, Any]] | None = None,
         count_active_turns: Callable[[], int] | None = None,
+        thread_is_active: Callable[[str], bool] | None = None,
         state_store_status: Callable[[], dict[str, Any]] | None = None,
         autonomy_health: Callable[[], dict[str, Any]] | None = None,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
@@ -92,6 +93,7 @@ class RuntimeHealthService:
         self.gitlab_sync_status = gitlab_sync_status
         self.execution_readiness = execution_readiness or (lambda: {})
         self.count_active_turns = count_active_turns or (lambda: 0)
+        self.thread_is_active = thread_is_active or (lambda _thread_id: False)
         self.state_store_status = state_store_status or (lambda: {})
         self.autonomy_health = autonomy_health or (lambda: {})
         self.event_sink = event_sink
@@ -344,6 +346,7 @@ class RuntimeHealthService:
             for thread_id, items in queues.items()
             if items
             and now - min(item.created_at for item in items) > 900
+            and not self.thread_is_active(thread_id)
         }
         if stale_queues:
             problems.append(
