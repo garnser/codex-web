@@ -395,7 +395,11 @@ class CodeHostActionContract:
 
     @classmethod
     def pull_request_merge(cls, request: ActionRequest) -> dict[str, Any]:
-        if set(request.parameters) - {"pull_request_number", "merge_method"}:
+        if set(request.parameters) - {
+            "pull_request_number",
+            "merge_method",
+            "expected_head_sha",
+        }:
             raise ValueError("unsupported pull request merge parameters")
         value = request.parameters.get("pull_request_number")
         if isinstance(value, bool):
@@ -409,7 +413,21 @@ class CodeHostActionContract:
         method = str(request.parameters.get("merge_method") or "squash").strip()
         if method not in {"merge", "squash", "rebase"}:
             raise ValueError("merge_method must be merge, squash, or rebase")
-        return {"number": number, "merge_method": method}
+        expected_head_sha = request.parameters.get("expected_head_sha")
+        if expected_head_sha is not None:
+            expected_head_sha = str(expected_head_sha).strip().lower()
+            if len(expected_head_sha) != 40 or any(
+                character not in "0123456789abcdef"
+                for character in expected_head_sha
+            ):
+                raise ValueError(
+                    "expected_head_sha must be a 40-character commit SHA"
+                )
+        return {
+            "number": number,
+            "merge_method": method,
+            "expected_head_sha": expected_head_sha,
+        }
 
     @staticmethod
     def job_rerun(request: ActionRequest) -> int:

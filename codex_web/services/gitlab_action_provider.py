@@ -30,6 +30,8 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_ISSUE_STATE_EVIDENCE,
     CODE_HOST_ISSUE_UPDATE_ACTION_ID,
     CODE_HOST_JOB_RERUN_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE,
     CodeHostActionContract,
     result_resource_output,
 )
@@ -235,6 +237,15 @@ class GitLabActionProvider:
                 "head_revision": attested.revision,
                 "workspace_attested": attested.workspace_path.is_dir(),
             }
+        if request.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
+            payload = self.contract.pull_request_merge(request)
+            return {
+                "operation": "pull-request-merge",
+                "repository": project,
+                "pull_request_number": payload["number"],
+                "merge_method": payload["merge_method"],
+                "expected_head_sha": payload["expected_head_sha"],
+            }
         raise ValueError("unsupported GitLab action")
 
     async def execute(
@@ -431,6 +442,76 @@ class GitLabActionProvider:
                 }
             )
             summary = "GitLab branch matches the committed execution workspace head."
+        elif request.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
+            payload = self.contract.pull_request_merge(request)
+            if payload["merge_method"] == "rebase":
+                raise ValueError(
+                    "GitLab rebase-and-merge is not supported atomically"
+                )
+            iid = payload["number"]
+            current = await self.client.merge_request(
+                self.api_base, project, iid, token=credential
+            )
+            current_sha = str(current.get("sha") or "").casefold()
+            expected_head_sha = payload["expected_head_sha"]
+            if expected_head_sha and current_sha != expected_head_sha:
+                raise ValueError(
+                    "GitLab merge request head no longer matches expected_head_sha"
+                )
+            if str(current.get("state") or "").casefold() != "merged":
+                if bool(current.get("draft")) or bool(
+                    current.get("work_in_progress")
+                ):
+                    raise ValueError("GitLab merge request is still a draft")
+                detailed_status = str(
+                    current.get("detailed_merge_status") or ""
+                ).casefold()
+                merge_status = str(
+                    current.get("merge_status") or ""
+                ).casefold()
+                if detailed_status and detailed_status != "mergeable":
+                    raise ValueError(
+                        "GitLab merge request is not clean and mergeable"
+                    )
+                if merge_status and merge_status != "can_be_merged":
+                    raise ValueError(
+                        "GitLab merge request is not clean and mergeable"
+                    )
+                pipeline = current.get("head_pipeline")
+                if not isinstance(pipeline, dict) or str(
+                    pipeline.get("status") or ""
+                ).casefold() != "success":
+                    raise ValueError(
+                        "GitLab merge request head pipeline is not successful"
+                    )
+                merged = await self.client.accept_merge_request(
+                    self.api_base,
+                    project,
+                    iid,
+                    token=credential,
+                    payload={
+                        "sha": current_sha,
+                        "squash": payload["merge_method"] == "squash",
+                    },
+                )
+                if str(merged.get("state") or "").casefold() != "merged":
+                    raise ValueError("GitLab declined the merge request merge")
+                merge_sha = str(merged.get("merge_commit_sha") or "")
+            else:
+                merge_sha = str(current.get("merge_commit_sha") or "")
+            evidence_type = CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE
+            external_id = str(iid)
+            url = str(current.get("web_url") or "") or None
+            output.update(
+                {
+                    "pull_request_number": iid,
+                    "head_sha": current_sha,
+                    "merge_commit_sha": merge_sha,
+                }
+            )
+            summary = (
+                "GitLab merge request is merged after clean pipeline validation."
+            )
         else:
             raise ValueError("unsupported GitLab action")
         return ActionResult(
@@ -526,6 +607,18 @@ class GitLabActionProvider:
             commit = item.get("commit") if isinstance(item.get("commit"), dict) else {}
             verified = str(commit.get("id") or "") == str(
                 result.output["head_revision"]
+            )
+        elif result.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
+            item = await self.client.merge_request(
+                self.api_base,
+                project,
+                int(result.output["pull_request_number"]),
+                token=credential,
+            )
+            verified = str(item.get("state") or "").casefold() == "merged" and (
+                not result.output.get("merge_commit_sha")
+                or str(item.get("merge_commit_sha") or "")
+                == str(result.output["merge_commit_sha"])
             )
         else:
             raise ValueError("unsupported GitLab action result")

@@ -276,6 +276,24 @@ class GitLabClient:
         )
         return response if isinstance(response, dict) else {}
 
+    async def accept_merge_request(
+        self,
+        api_base: str,
+        project: str,
+        iid: int,
+        *,
+        token: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = await self.request_json(
+            "PUT",
+            api_base,
+            f"projects/{quote(project, safe='')}/merge_requests/{iid}/merge",
+            token=token,
+            json_body=payload,
+        )
+        return response if isinstance(response, dict) else {}
+
     async def branch(
         self,
         api_base: str,

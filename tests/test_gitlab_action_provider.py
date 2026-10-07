@@ -25,6 +25,7 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID,
     CODE_HOST_ISSUE_COMMENT_ACTION_ID,
     CODE_HOST_ISSUE_UPDATE_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
 )
 from codex_web.services.gitlab_action_provider import GitLabActionProvider
 from codex_web.services.identity import IdentityService
@@ -47,6 +48,7 @@ class _GitLabClient:
         self.merge_request_rows: list[dict] = []
         self.merge_request_creates = 0
         self.merge_request_updates = 0
+        self.merge_request_merges = 0
         self.branches: dict[str, str] = {}
 
     async def project_issue_notes(self, api_base, project, iid, *, token):
@@ -136,6 +138,23 @@ class _GitLabClient:
     async def merge_request(self, api_base, project, iid, *, token):
         self.credentials.append(token)
         return next(row for row in self.merge_request_rows if row["iid"] == iid)
+
+    async def accept_merge_request(
+        self, api_base, project, iid, *, token, payload
+    ):
+        self.credentials.append(token)
+        self.merge_request_merges += 1
+        item = next(row for row in self.merge_request_rows if row["iid"] == iid)
+        if payload["sha"] != item["sha"]:
+            raise RuntimeError("stale merge request head")
+        item.update(
+            {
+                "state": "merged",
+                "merge_commit_sha": "b" * 40,
+                "squash": payload["squash"],
+            }
+        )
+        return item
 
     async def branch(self, api_base, project, branch, *, token):
         self.credentials.append(token)
@@ -407,6 +426,75 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(ValueError, "not owned"):
             await self.execution.execute(self.binding.id, request, actor=self.actor)
+
+    async def test_merge_request_requires_exact_head_and_green_pipeline(self) -> None:
+        head_sha = "a" * 40
+        self.client.merge_request_rows.append(
+            {
+                "id": 42,
+                "iid": 33,
+                "state": "opened",
+                "sha": head_sha,
+                "source_branch": "docs-fix",
+                "target_branch": "main",
+                "draft": False,
+                "merge_status": "can_be_merged",
+                "detailed_merge_status": "mergeable",
+                "head_pipeline": {"id": 3323, "status": "success"},
+                "web_url": "https://gitlab.example/group/platform/codex-web/-/merge_requests/33",
+            }
+        )
+        request = self._request(
+            CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+            {
+                "pull_request_number": 33,
+                "merge_method": "merge",
+                "expected_head_sha": head_sha,
+            },
+        )
+
+        result = await self.execution.execute(
+            self.binding.id, request, actor=self.actor
+        )
+
+        self.assertEqual(self.client.merge_request_merges, 1)
+        self.assertEqual(result.output["head_sha"], head_sha)
+        self.assertTrue(
+            (
+                await self.execution.verify(
+                    self.binding.id, result, actor=self.actor
+                )
+            ).verified
+        )
+
+    async def test_merge_request_rejects_changed_head(self) -> None:
+        self.client.merge_request_rows.append(
+            {
+                "id": 42,
+                "iid": 33,
+                "state": "opened",
+                "sha": "a" * 40,
+                "source_branch": "docs-fix",
+                "target_branch": "main",
+                "draft": False,
+                "merge_status": "can_be_merged",
+                "detailed_merge_status": "mergeable",
+                "head_pipeline": {"id": 3323, "status": "success"},
+            }
+        )
+        request = self._request(
+            CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+            {
+                "pull_request_number": 33,
+                "merge_method": "merge",
+                "expected_head_sha": "c" * 40,
+            },
+        )
+
+        with self.assertRaisesRegex(ValueError, "no longer matches"):
+            await self.execution.execute(
+                self.binding.id, request, actor=self.actor
+            )
 
     async def test_branch_publication_attests_and_verifies_exact_revision(self) -> None:
         request = self._request(

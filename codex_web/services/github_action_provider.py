@@ -484,6 +484,18 @@ class GitHubActionProvider:
             current = await self.client.pull_request(
                 self.api_base, repository, number, token=credential
             )
+            expected_head_sha = payload["expected_head_sha"]
+            current_head = (
+                current.get("head")
+                if isinstance(current.get("head"), dict)
+                else {}
+            )
+            if expected_head_sha and str(
+                current_head.get("sha") or ""
+            ).casefold() != expected_head_sha:
+                raise ValueError(
+                    "GitHub pull request head no longer matches expected_head_sha"
+                )
             if not bool(current.get("merged")):
                 if current.get("mergeable") is not True or str(
                     current.get("mergeable_state") or ""
