@@ -10,7 +10,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from codex_web.agent_providers import AgentProviderCapability
 from codex_web.execution_workers import WorkerCapability
 
-
 SKILL_DEFINITION_KIND = "agent.skill"
 SKILL_DEFINITION_SCHEMA_VERSION = "1.0"
 SKILL_MAX_INSTRUCTIONS_CHARS = 32_000
@@ -130,12 +129,17 @@ class SkillProvenance(BaseModel):
     upstream_id: str | None = Field(default=None, max_length=500)
     source_revision: str | None = Field(default=None, max_length=200)
     upstream_digest: str | None = Field(default=None, max_length=128)
+    upstream_categories: tuple[str, ...] = Field(default=(), max_length=50)
+    upstream_location: str | None = Field(default=None, max_length=1000)
+    source_transport: str | None = Field(default=None, max_length=80)
     origin: SkillOrigin = SkillOrigin.LOCAL
     evidence_ids: tuple[str, ...] = Field(default=(), max_length=50)
     imported_at: float | None = None
 
     @model_validator(mode="after")
     def normalize(self) -> "SkillProvenance":
+        if self.upstream_location and not self.upstream_location.startswith("https://"):
+            raise ValueError("Skill upstream location must use HTTPS")
         object.__setattr__(
             self,
             "evidence_ids",
@@ -146,6 +150,11 @@ class SkillProvenance(BaseModel):
                     if str(value).strip()
                 )
             ),
+        )
+        object.__setattr__(
+            self,
+            "upstream_categories",
+            _normalized_words(self.upstream_categories),
         )
         return self
 
@@ -176,7 +185,10 @@ class SkillDefinition(BaseModel):
     def normalize(self) -> "SkillDefinition":
         if _contains_secret_material(self.instructions):
             raise ValueError("skill instructions appear to contain raw secret material")
-        if sum(len(asset.content) for asset in self.assets) > SKILL_MAX_TOTAL_ASSET_CHARS:
+        if (
+            sum(len(asset.content) for asset in self.assets)
+            > SKILL_MAX_TOTAL_ASSET_CHARS
+        ):
             raise ValueError("skill assets exceed the total content size limit")
         paths = [asset.path for asset in self.assets]
         if len(paths) != len(set(paths)):
@@ -258,7 +270,10 @@ class SkillCreate(BaseModel):
             raise ValueError("skill instructions appear to contain raw secret material")
         if len(self.assets) > SKILL_MAX_ASSETS:
             raise ValueError("skill contains too many assets")
-        if sum(len(asset.content) for asset in self.assets) > SKILL_MAX_TOTAL_ASSET_CHARS:
+        if (
+            sum(len(asset.content) for asset in self.assets)
+            > SKILL_MAX_TOTAL_ASSET_CHARS
+        ):
             raise ValueError("skill assets exceed the total content size limit")
         paths = [asset.path for asset in self.assets]
         if len(paths) != len(set(paths)):

@@ -106,6 +106,67 @@ test('catalog filters preserve source identity and expose security facets', asyn
   ].every((part) => value.includes(part)))).toBe(true);
 });
 
+test('ui-skills source exposes health, governed discovery, and selective import', async ({ page }) => {
+  const writes = [];
+  const uiSource = {
+    source_id: 'ui-skills', name: 'ui-skills', source_type: 'ui_skills',
+    location: 'https://github.com/ibelick/ui-skills', transport: 'mcp', trust: 'approved',
+    health_status: 'healthy', discovered_count: 2, discovered_categories: ['Motion', 'Visual Design'],
+    imports: [{ upstream_id: 'animation' }], last_sync_status: 'discovered',
+  };
+  await page.unroute('**/api/skill-sources');
+  await page.route('**/api/skill-sources', route => {
+    if (route.request().method() === 'POST') {
+      writes.push(['create', route.request().postDataJSON()]);
+      return route.fulfill({ json: { item: uiSource } });
+    }
+    return route.fulfill({ json: { items: [uiSource] } });
+  });
+  await page.route('**/api/skill-sources/ui-skills/discover', route => {
+    writes.push(['discover', route.request().postDataJSON()]);
+    return route.fulfill({ json: { count: 2, categories: ['Motion', 'Visual Design'] } });
+  });
+  await page.route('**/api/skill-sources/ui-skills/import', route => {
+    writes.push(['import', route.request().postDataJSON()]);
+    return route.fulfill({ json: { count: 1, publicationRequired: true } });
+  });
+  await page.reload();
+  await page.getByText('Skill sources').click();
+  await expect(page.locator('[data-source-health]')).toContainText('2 discovered / 1 imported');
+  await expect(page.locator('[data-source-health]')).toContainText('Motion, Visual Design');
+
+  await page.locator('[data-source-id]').fill('ui-skills-copy');
+  await page.locator('[data-source-name]').fill('ui-skills');
+  await page.locator('[data-source-type]').selectOption('ui_skills');
+  await expect(page.locator('[data-source-location]')).toHaveValue('https://github.com/ibelick/ui-skills');
+  await page.locator('[data-source-transport]').selectOption('mcp');
+  await page.locator('[data-source-auto-sync]').check();
+  await page.locator('[data-source-auto-categories]').fill('Motion');
+  await page.locator('[data-source-create]').click();
+
+  await page.locator('[data-sync-source]').selectOption('ui-skills');
+  await page.locator('[data-discovery-evidence]').fill('worker-evidence-1');
+  await page.locator('[data-discovery-revision]').fill('upstream-abc');
+  await page.locator('[data-discovery-catalog]').fill(JSON.stringify([{ upstream_id: 'animation', name: 'Animation', instructions: 'Use deliberate motion.', categories: ['Motion'] }]));
+  await page.locator('[data-source-discover]').click();
+  await expect(page.locator('[data-ui-discovery-result]')).toContainText('2 ui-skills discovered');
+  await page.locator('[data-ui-import-mode]').selectOption('single');
+  await page.locator('[data-ui-import-ids]').fill('animation');
+  await page.locator('[data-ui-import]').click();
+  await expect(page.locator('[data-ui-discovery-result]')).toContainText('inactive drafts');
+
+  expect(writes.find(([kind]) => kind === 'create')[1]).toMatchObject({
+    source_type: 'ui_skills', transport: 'mcp', automatic_sync: true,
+    auto_import_categories: ['Motion'],
+  });
+  expect(writes.find(([kind]) => kind === 'discover')[1]).toMatchObject({
+    source_revision: 'upstream-abc', transport: 'mcp', provider_evidence_id: 'worker-evidence-1',
+  });
+  expect(writes.find(([kind]) => kind === 'import')[1]).toEqual({
+    mode: 'single', upstream_ids: ['animation'], category: null,
+  });
+});
+
 test('revision selector keeps explicit historical pin visible', async ({ page }) => {
   await page.getByRole('button', { name: /Release Check/ }).click();
   await page.locator('[data-skill-revision]').selectOption('1');
