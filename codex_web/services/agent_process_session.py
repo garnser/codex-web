@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -119,6 +120,7 @@ class AssignmentBoundAgentProcessSession:
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Any] = asyncio.sleep,
+        disk_validation_interval_seconds: float = 30.0,
     ) -> None:
         self.local_worker = local_worker
         self.host = host
@@ -139,6 +141,10 @@ class AssignmentBoundAgentProcessSession:
         self._clock = clock
         self._monotonic = monotonic
         self._sleep = sleep
+        self.disk_validation_interval_seconds = max(
+            1.0,
+            disk_validation_interval_seconds,
+        )
 
         self.runtime: Any | None = None
         self.delegation: AssignmentRuntimeCredentialGrant | None = None
@@ -149,6 +155,9 @@ class AssignmentBoundAgentProcessSession:
         self.started_monotonic: float | None = None
         self.last_heartbeat_monotonic: float | None = None
         self.last_error: str | None = None
+        self.last_disk_validation_monotonic: float | None = None
+        self.last_disk_bytes: int | None = None
+        self._disk_validation_lock = threading.Lock()
         self.watchdog_task: asyncio.Task[None] | None = None
         self.egress_broker: AssignmentBoundAgentModelEgressBroker | None = None
         self.control_plane_broker: AssignmentBoundControlPlaneBroker | None = None
@@ -595,16 +604,29 @@ class AssignmentBoundAgentProcessSession:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session exceeded wall_seconds"
             )
-        disk_bytes = self.local_worker.backend.execution_disk_usage(
-            self.workspace_path,
-            self.git_metadata_path,
-        )
-        readonly_disk_bytes = getattr(
-            self.local_worker,
-            "readonly_disk_bytes",
-            lambda _assignment: 0,
-        )(assignment)
-        disk_bytes += readonly_disk_bytes
+        now_monotonic = self._monotonic()
+        with self._disk_validation_lock:
+            if (
+                self.last_disk_validation_monotonic is None
+                or now_monotonic - self.last_disk_validation_monotonic
+                >= self.disk_validation_interval_seconds
+            ):
+                disk_bytes = self.local_worker.backend.execution_disk_usage(
+                    self.workspace_path,
+                    self.git_metadata_path,
+                )
+                readonly_disk_bytes = getattr(
+                    self.local_worker,
+                    "readonly_disk_bytes",
+                    lambda _assignment: 0,
+                )(assignment)
+                self.last_disk_bytes = disk_bytes + readonly_disk_bytes
+                self.last_disk_validation_monotonic = now_monotonic
+            disk_bytes = self.last_disk_bytes
+        if disk_bytes is None:
+            raise AssignmentBoundAgentProcessSessionStaleError(
+                "assignment-bound agent runtime disk usage is unavailable"
+            )
         if disk_bytes > assignment.limits.disk_bytes:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session exceeded disk_bytes"

@@ -102,6 +102,7 @@ class _FakeBackend:
         self.validated = []
         self.spawned = []
         self.disk_bytes = 0
+        self.disk_usage_calls = 0
         self.processes: list[_FakeProcess] = []
         self.git_metadata: Path | None = None
         self.git_worktree_metadata: Path | None = None
@@ -116,6 +117,7 @@ class _FakeBackend:
         return self.git_worktree_metadata
 
     def execution_disk_usage(self, workspace_path, git_metadata_path=None):
+        self.disk_usage_calls += 1
         return self.disk_bytes
 
     def terminate_process(self, process) -> None:
@@ -858,6 +860,21 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreaterEqual(injected.validate_calls, 1)
             self.assertEqual(self.delegation.validate_calls, 0)
             self.assertNotIn(injected.secret, repr(session.status().public()))
+        finally:
+            await session.stop()
+
+    async def test_disk_validation_is_cached_between_broker_checks(self) -> None:
+        assignment = self._create_assignment()
+        session = await self._session(assignment)
+        try:
+            session.validate_current()
+            session.validate_current()
+            session._validate_egress_state()
+            self.assertEqual(self.backend.disk_usage_calls, 1)
+
+            self.delegation.now += session.disk_validation_interval_seconds
+            session.validate_current()
+            self.assertEqual(self.backend.disk_usage_calls, 2)
         finally:
             await session.stop()
 
