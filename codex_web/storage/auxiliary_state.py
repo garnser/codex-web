@@ -52,12 +52,47 @@ class NestedModelListMapRepository(Generic[T]):
             return {}
         return payload if isinstance(payload, dict) else {}
 
-    def _raw(self) -> dict[str, Any]:
+    def _ensure_records(self) -> None:
+        if self.store.record_collection_exists(self.namespace):
+            return
         payload = self.store.get(self.namespace)
         if payload is None:
             payload = self._legacy_payload()
-            self.store.put(self.namespace, payload)
-        return payload if isinstance(payload, dict) else {}
+        if not isinstance(payload, dict):
+            payload = {}
+        self.store.record_replace(self.namespace, payload)
+
+    def _raw(self) -> dict[str, Any]:
+        self._ensure_records()
+        return self.store.record_items(self.namespace)
+
+    def get(self, key: str) -> list[T]:
+        self._ensure_records()
+        raw = self.store.record_get(self.namespace, str(key))
+        if not isinstance(raw, list):
+            return []
+        return [self.model.model_validate(item) for item in raw]
+
+    def put(self, key: str, items: list[T]) -> None:
+        key = str(key)
+        payload = [item.model_dump() for item in items]
+        self._ensure_records()
+        self.store.record_apply(self.namespace, upserts={key: payload})
+        snapshot = self._snapshot.get()
+        if snapshot is not None:
+            updated = dict(snapshot)
+            updated[key] = copy.deepcopy(payload)
+            self._snapshot.set(updated)
+
+    def delete(self, key: str) -> None:
+        key = str(key)
+        self._ensure_records()
+        self.store.record_apply(self.namespace, upserts={}, deletes=(key,))
+        snapshot = self._snapshot.get()
+        if snapshot is not None:
+            updated = dict(snapshot)
+            updated.pop(key, None)
+            self._snapshot.set(updated)
 
     def load(self) -> dict[str, list[T]]:
         raw = self._raw()
@@ -86,14 +121,15 @@ class NestedModelListMapRepository(Generic[T]):
             }
             deleted = set(base) - set(payload)
 
-            def merge(current: Any) -> dict[str, Any]:
-                latest = dict(current) if isinstance(current, dict) else {}
-                for key in deleted:
-                    latest.pop(key, None)
-                latest.update(changed)
-                return latest
-
-            merged = self.store.update(self.namespace, merge, default={})
+            self._ensure_records()
+            self.store.record_apply(
+                self.namespace,
+                upserts=changed,
+                deletes=tuple(deleted),
+            )
+            # The compatibility mirror must include concurrent changes that
+            # landed after this context's snapshot.
+            merged = self.store.record_items(self.namespace)
 
         self._snapshot.set(copy.deepcopy(merged))
         atomic_write_text(

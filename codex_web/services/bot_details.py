@@ -16,6 +16,7 @@ class BotDetailService:
         *,
         load_details: Callable[[], dict[str, list[BotThreadDetail]]] | None = None,
         save_details: Callable[[dict[str, list[BotThreadDetail]]], None] | None = None,
+        detail_repository: Any | None = None,
     ) -> None:
         if host is not None:
             load_details = load_details or getattr(
@@ -28,10 +29,11 @@ class BotDetailService:
                 "_save_bot_details",
                 None,
             )
-        if load_details is None or save_details is None:
+        if detail_repository is None and (load_details is None or save_details is None):
             raise TypeError("BotDetailService requires detail state dependencies")
         self.load_details = load_details
         self.save_details = save_details
+        self.detail_repository = detail_repository
         if host is not None:
             host._record_bot_detail = self.record
             host._latest_bot_detail = self.latest
@@ -46,8 +48,11 @@ class BotDetailService:
     ) -> None:
         if not text.strip():
             return
-        details = self.load_details()
-        items = details.setdefault(thread_id, [])
+        if self.detail_repository is not None:
+            items = self.detail_repository.get(thread_id)
+        else:
+            details = self.load_details()
+            items = details.setdefault(thread_id, [])
         items.append(
             BotThreadDetail(
                 thread_id=thread_id,
@@ -57,14 +62,36 @@ class BotDetailService:
                 created_at=time.time(),
             )
         )
-        details[thread_id] = items[-20:]
-        self.save_details(details)
+        items = items[-20:]
+        if self.detail_repository is not None:
+            self.detail_repository.put(thread_id, items)
+        else:
+            details[thread_id] = items
+            self.save_details(details)
 
     def latest(self, thread_id: str) -> BotThreadDetail | None:
-        items = self.load_details().get(thread_id) or []
+        items = (
+            self.detail_repository.get(thread_id)
+            if self.detail_repository is not None
+            else self.load_details().get(thread_id) or []
+        )
         return items[-1] if items else None
 
     def retarget(self, old_thread_id: str, new_thread_id: str) -> None:
+        if self.detail_repository is not None:
+            old_items = self.detail_repository.get(old_thread_id)
+            if not old_items:
+                return
+            moved = [
+                item.model_copy(update={"thread_id": new_thread_id})
+                if item.thread_id == old_thread_id
+                else item
+                for item in old_items
+            ]
+            current = self.detail_repository.get(new_thread_id)
+            self.detail_repository.put(new_thread_id, (current + moved)[-20:])
+            self.detail_repository.delete(old_thread_id)
+            return
         details = self.load_details()
         old_items = details.pop(old_thread_id, [])
         if not old_items:
@@ -86,6 +113,7 @@ def install_bot_detail_service(
     *,
     load_details=None,
     save_details=None,
+    detail_repository=None,
 ) -> BotDetailService:
     existing = getattr(app.state, "bot_detail_service", None)
     if isinstance(existing, BotDetailService):
@@ -97,6 +125,10 @@ def install_bot_detail_service(
             None,
         )
         service = BotDetailService(
+            detail_repository=(
+                detail_repository
+                or (repositories.bot_details if repositories is not None else None)
+            ),
             load_details=(
                 load_details
                 or (

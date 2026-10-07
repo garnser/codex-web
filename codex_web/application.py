@@ -2747,6 +2747,7 @@ bot_presentation_service = install_bot_presentation_service(app, core)
 bot_detail_service = install_bot_detail_service(
     app,
     core,
+    detail_repository=auxiliary_state.bot_details,
     load_details=auxiliary_state.bot_details.load,
     save_details=auxiliary_state.bot_details.save,
 )

@@ -56,6 +56,28 @@ class ApprovalMessageStateTests(unittest.TestCase):
 
 
 class BotDetailStateTests(unittest.TestCase):
+    def test_repository_hot_path_mutates_only_the_target_thread(self) -> None:
+        class Repository:
+            def __init__(self):
+                self.values = {}
+
+            def get(self, key):
+                return list(self.values.get(key, []))
+
+            def put(self, key, values):
+                self.values[key] = list(values)
+
+            def delete(self, key):
+                self.values.pop(key, None)
+
+        repository = Repository()
+        service = BotDetailService(detail_repository=repository)
+
+        service.record("thread-1", "command", "item", "output")
+
+        self.assertEqual(service.latest("thread-1").text, "output")
+        self.assertEqual(set(repository.values), {"thread-1"})
+
     def test_details_are_bounded_and_latest_is_returned(self) -> None:
         host = _StateHost()
         service = BotDetailService(host)

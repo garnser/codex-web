@@ -65,6 +65,22 @@ class AuxiliaryStateRepositoryTests(unittest.TestCase):
         self.assertEqual(set(loaded), {"thread-a", "thread-b"})
         self.assertEqual(set(json.loads(legacy.read_text())), {"thread-a", "thread-b"})
 
+    def test_model_list_map_single_key_put_uses_keyed_storage_without_mirror_rewrite(self) -> None:
+        legacy = self.root / "bot_details.json"
+        repository = NestedModelListMapRepository(
+            self.store,
+            namespace="bot_details",
+            legacy_path=legacy,
+            model=BotThreadDetail,
+        )
+
+        repository.put("thread-a", [self.detail("thread-a", "a")])
+
+        self.assertEqual(repository.get("thread-a")[0].text, "a")
+        self.assertTrue(self.store.record_collection_exists("bot_details"))
+        self.assertEqual(self.store.record_count("bot_details"), 1)
+        self.assertFalse(legacy.exists())
+
     def test_servicedesk_merges_tickets_by_ticket_id(self) -> None:
         legacy = self.root / "servicedesk.json"
         first = ServiceDeskStateRepository(self.store, legacy)
