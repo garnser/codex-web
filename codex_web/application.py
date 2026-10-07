@@ -4065,41 +4065,44 @@ def _autonomy_health():
     states = runtime_state.work_item_states.load().values()
     idle_actionable_owners = []
     for owner in OWNER_QUEUE_AGENTS:
-        actionable_project = next(
-            (
-                state.project_id
-                for state in states
-                if work_item_state_machine._coerce_owner(
-                    state.current_owner or state.next_owner
-                )
-                == owner
-                and state.current_stage
-                in AutonomyService.ACTIONABLE_OWNER_STAGES
-                and not state.closed_at
-                and not (
-                    state.handoff
-                    and state.handoff.status == "pending"
-                )
-            ),
-            None,
-        )
-        if actionable_project is None:
-            continue
-        binding = agent_channel_preference_service.binding_for_agent(
-            owner,
-            actionable_project,
-            preferred_conversation_id=HANDOFF_COORDINATION_CHANNEL,
-        )
-        if (
-            binding is None
-            or not binding.thread_id
-            or (
-                not turn_execution_service.thread_is_active(
-                    binding.thread_id
-                )
-                and not turn_queue_policy.depth(binding.thread_id)
+        actionable_projects = {
+            state.project_id
+            for state in states
+            if state.project_id
+            and work_item_state_machine._coerce_owner(
+                state.current_owner or state.next_owner
             )
-        ):
+            == owner
+            and state.current_stage
+            in AutonomyService.ACTIONABLE_OWNER_STAGES
+            and not state.closed_at
+            and not (
+                state.handoff
+                and state.handoff.status == "pending"
+            )
+        }
+        if not actionable_projects:
+            continue
+        owner_is_active_or_queued = False
+        for actionable_project in actionable_projects:
+            binding = agent_channel_preference_service.binding_for_agent(
+                owner,
+                actionable_project,
+                preferred_conversation_id=HANDOFF_COORDINATION_CHANNEL,
+            )
+            if (
+                binding is not None
+                and binding.thread_id
+                and (
+                    turn_execution_service.thread_is_active(
+                        binding.thread_id
+                    )
+                    or turn_queue_policy.depth(binding.thread_id)
+                )
+            ):
+                owner_is_active_or_queued = True
+                break
+        if not owner_is_active_or_queued:
             idle_actionable_owners.append(owner)
     return {
         "enabled": enabled,
