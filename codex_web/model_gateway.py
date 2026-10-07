@@ -12,6 +12,7 @@ from codex_web.compatibility import ContractSpec
 from codex_web.failures import FailureRecord
 from codex_web.input_plugins import InputGatedProposal, InputPluginProvenance
 from codex_web.model_qualification import (
+    CriticIndependenceLevel,
     ModelQualificationRevision,
     ModelRoutingDefinitionRevision,
     ModelRoutingRole,
@@ -21,9 +22,9 @@ from codex_web.model_qualification import (
 
 MODEL_GATEWAY_CONTRACT = ContractSpec(
     "model-gateway-state",
-    "1.6",
-    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6"),
-    deprecated=("1.0", "1.1", "1.2", "1.3", "1.4", "1.5"),
+    "1.7",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7"),
+    deprecated=("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6"),
 )
 
 MODEL_CLASS_LIGHTWEIGHT = "lightweight"
@@ -36,6 +37,35 @@ class ModelProviderStatus(StrEnum):
     ACTIVE = "active"
     DEGRADED = "degraded"
     DISABLED = "disabled"
+
+
+class ModelProviderHealth(StrEnum):
+    UNKNOWN = "unknown"
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    UNAVAILABLE = "unavailable"
+
+
+class ModelAccessSource(StrEnum):
+    API_KEY = "api_key"
+    CHATGPT_SUBSCRIPTION = "chatgpt_subscription"
+    MANAGED_ENTITLEMENT = "managed_entitlement"
+    LOCAL = "local"
+    OTHER = "other"
+
+
+class ModelUsageSemantics(StrEnum):
+    METERED_API = "metered_api"
+    ENTITLEMENT = "entitlement"
+    UNMETERED = "unmetered"
+    UNKNOWN = "unknown"
+
+
+class ModelAuthenticationStatus(StrEnum):
+    NOT_REQUIRED = "not_required"
+    READY = "ready"
+    MISSING = "missing"
+    UNAVAILABLE = "unavailable"
 
 
 class ModelLifecycle(StrEnum):
@@ -77,9 +107,15 @@ class ModelProviderUpsert(BaseModel):
     base_url: str | None = None
     credential_ref: str | None = None
     credential_required: bool = True
+    provider_family: str | None = None
+    runtime_provider: str | None = None
+    access_source: ModelAccessSource = ModelAccessSource.API_KEY
+    usage_semantics: ModelUsageSemantics = ModelUsageSemantics.METERED_API
+    health: ModelProviderHealth = ModelProviderHealth.UNKNOWN
     residency_tags: tuple[str, ...] = ()
     compliance_tags: tuple[str, ...] = ()
     catalog_discovery_enabled: bool = False
+    catalog_required: bool = False
     catalog_ttl_seconds: int = Field(default=300, ge=30, le=86400)
     status: ModelProviderStatus = ModelProviderStatus.ACTIVE
 
@@ -106,6 +142,7 @@ class ModelDefinitionUpsert(BaseModel):
     id: str = Field(min_length=1)
     provider_id: str = Field(min_length=1)
     concrete_model: str = Field(min_length=1)
+    model_family: str | None = None
     model_version: str | None = None
     upstream_provider_id: str | None = None
     upstream_model_id: str | None = None
@@ -169,6 +206,10 @@ class ModelCatalogEntry(BaseModel):
     upstream_provider_id: str | None = Field(default=None, max_length=512)
     upstream_model_id: str | None = Field(default=None, max_length=512)
     model_version: str | None = Field(default=None, max_length=512)
+    runtime_provider: str | None = Field(default=None, max_length=200)
+    access_source: ModelAccessSource | None = None
+    executable: bool = True
+    exclusion_reason: str | None = Field(default=None, max_length=1000)
 
 
 class ModelCatalogSnapshot(BaseModel):
@@ -255,6 +296,7 @@ class ModelInvocationRequest(BaseModel):
     required_residency_tags: tuple[str, ...] = ()
     required_compliance_tags: tuple[str, ...] = ()
     preferred_provider_ids: tuple[str, ...] = ()
+    allowed_provider_ids: tuple[str, ...] = ()
     max_input_tokens: int | None = Field(default=None, ge=1)
     max_output_tokens: int = Field(default=2048, ge=1)
     timeout_seconds: float = Field(default=120.0, gt=0.0, le=600.0)
@@ -280,13 +322,45 @@ class ModelInvocationRequest(BaseModel):
         self.preferred_latency_classes = tuple(
             dict.fromkeys(self.preferred_latency_classes)
         )
+        self.allowed_provider_ids = tuple(sorted(set(self.allowed_provider_ids)))
         return self
+
+
+class ModelRouteExclusion(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider_id: str | None = None
+    model_id: str
+    stage: str
+    reason: str
+
+
+class ModelProviderEligibility(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider_id: str
+    provider_family: str
+    runtime_provider: str
+    access_source: ModelAccessSource
+    usage_semantics: ModelUsageSemantics
+    authentication_status: ModelAuthenticationStatus
+    provider_status: ModelProviderStatus
+    provider_health: ModelProviderHealth
+    catalog_status: str
+    catalog_revision: str | None = None
+    eligible: bool
+    executable_model_ids: tuple[str, ...] = ()
+    exclusion_reasons: tuple[str, ...] = ()
 
 
 class ModelRouteCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     provider_id: str
+    provider_family: str = "unknown"
+    runtime_provider: str = "unknown"
+    access_source: ModelAccessSource = ModelAccessSource.OTHER
+    usage_semantics: ModelUsageSemantics = ModelUsageSemantics.UNKNOWN
     model_id: str
     concrete_model: str
     model_version: str | None = None
@@ -299,6 +373,7 @@ class ModelRouteCandidate(BaseModel):
     estimated_upper_cost_usd: float | None = None
     routing_reason: str
     qualification_revision_id: str | None = None
+    critic_independence: CriticIndependenceLevel | None = None
 
 
 class ModelRouteResult(BaseModel):
@@ -322,6 +397,11 @@ class ModelRouteResult(BaseModel):
     routing_definition_id: str | None = None
     routing_definition_revision: int | None = None
     qualification_revision: str | None = None
+    active_candidate_set_revision: str = "legacy"
+    provider_eligibility: tuple[ModelProviderEligibility, ...] = ()
+    excluded_candidates: tuple[ModelRouteExclusion, ...] = ()
+    requested_critic_independence: CriticIndependenceLevel | None = None
+    achieved_critic_independence: CriticIndependenceLevel | None = None
 
 
 class ModelProviderUsage(BaseModel):
@@ -408,6 +488,10 @@ class ModelInvocationRecord(BaseModel):
     routing_definition_id: str | None = None
     routing_definition_revision: int | None = None
     qualification_revision: str | None = None
+    active_candidate_set_revision: str | None = None
+    excluded_candidates: tuple[ModelRouteExclusion, ...] = ()
+    requested_critic_independence: CriticIndependenceLevel | None = None
+    achieved_critic_independence: CriticIndependenceLevel | None = None
     work_item_ref: str | None = None
     goal_id: str | None = None
     decision_id: str | None = None
@@ -416,6 +500,10 @@ class ModelInvocationRecord(BaseModel):
     input_gated_proposals: tuple[InputGatedProposal, ...] = ()
     attempts: tuple[ModelInvocationAttempt, ...] = ()
     selected_provider_id: str | None = None
+    selected_provider_family: str | None = None
+    selected_runtime_provider: str | None = None
+    selected_access_source: ModelAccessSource | None = None
+    selected_usage_semantics: ModelUsageSemantics | None = None
     selected_model_id: str | None = None
     selected_concrete_model: str | None = None
     selected_model_version: str | None = None

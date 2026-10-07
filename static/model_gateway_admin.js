@@ -8,8 +8,10 @@
   );
   const { providerCards } = await import(`${BASE}/static/model_provider_cards.js`);
   const { renderModelCatalogs, renderModelDefinitions, bindModelCatalogRefresh } = await import(`${BASE}/static/model_catalog_ui.js`);
+  const { mergeProviderEligibility, routeEligibilityHtml, candidateExecutionPathHtml } = await import(`${BASE}/static/model_gateway_eligibility_ui.js`);
+  const { renderModelInvocations } = await import(`${BASE}/static/model_gateway_invocation_ui.js`);
   const MAX_INVOCATIONS = 50;
-  let snapshot = { providers: [], models: [], catalogs: [], prompts: [], policy: null, invocations: [], capacity: [], capacityWaits: [] };
+  let snapshot = { providers: [], providerEligibility: [], models: [], catalogs: [], prompts: [], policy: null, invocations: [], capacity: [], capacityWaits: [] };
 
 
   function timeText(value) {
@@ -64,39 +66,6 @@
     </details>`).join("") || '<div class="comm-entry"><strong>No prompt templates registered.</strong></div>';
   }
 
-  function renderInvocations(items) {
-    const host = document.getElementById("model-invocation-list");
-    if (!host) return;
-    host.innerHTML = items.slice(0, MAX_INVOCATIONS).map((item) => {
-      const attempts = (item.attempts || []).map((attempt, index) => `<small>
-        Attempt ${index + 1}: ${escapeHtml(attempt.provider_id)}/${escapeHtml(attempt.model_id)} · ${escapeHtml(attempt.outcome)}
-        ${attempt.error_code ? ` · ${escapeHtml(attempt.error_code)}` : ""}
-        · input ${escapeHtml(attempt.input_tokens ?? "n/a")} · output ${escapeHtml(attempt.output_tokens ?? "n/a")}
-        · cost ${attempt.actual_cost == null && attempt.actual_cost_usd == null ? "n/a" : `${escapeHtml(attempt.actual_cost ?? attempt.actual_cost_usd)} ${escapeHtml(attempt.cost_currency || "USD")}${attempt.cost_source === "codex_calculated" ? " estimated" : ""}`}
-      </small>`).join("");
-      const refs = [
-        item.work_item_ref ? `work=${item.work_item_ref}` : null,
-        item.goal_id ? `goal=${item.goal_id}` : null,
-        item.decision_id ? `decision=${item.decision_id}` : null,
-        item.execution_id ? `execution=${item.execution_id}` : null,
-      ].filter(Boolean).join(" · ");
-      return `<details class="comm-entry" ${referenceAttributes("invocation", item.id)}>
-        <summary><strong>${escapeHtml(item.model_class)} · ${escapeHtml(item.workload_class || "unspecified workload")} · ${escapeHtml(item.status)} · ${escapeHtml(item.purpose)}</strong></summary>
-        <small>ID: ${escapeHtml(item.id)} · ${timeText(item.created_at)} · actor ${escapeHtml(item.actor_id)}</small>
-        <small>Selected: ${referenceLink("model_provider", item.selected_provider_id)} / ${referenceLink("model", item.selected_model_id)} · ${escapeHtml(item.selected_concrete_model || "none")}${item.selected_model_version ? ` @ ${escapeHtml(item.selected_model_version)}` : ""}</small>
-        <small>Template: ${escapeHtml(item.prompt_template_id)} @ ${escapeHtml(item.prompt_template_version)} · checksum ${escapeHtml(item.prompt_template_checksum_sha256)}</small>
-        <small>Route reason: ${escapeHtml(item.route_reason)} · Policy fingerprint: ${escapeHtml(item.policy_fingerprint_sha256)}</small>
-        <small>Routing definition: ${escapeHtml(item.routing_definition_id || "legacy class routing")} @ ${escapeHtml(item.routing_definition_revision ?? "n/a")} · role ${escapeHtml(item.routing_role || "primary")} · qualification ${escapeHtml(item.qualification_revision || "not mapped")}</small>
-        <small>Catalog: ${escapeHtml(item.selected_catalog_revision || "static")} · discovered ${timeText(item.selected_catalog_discovered_at)} · upstream ${escapeHtml(item.selected_upstream_provider_id || "unknown")} / ${escapeHtml(item.selected_upstream_model_id || "unknown")}</small>
-        <small>Override: ${escapeHtml(item.pinned_model_id || "automatic")} · Preferred latency: ${listText(item.preferred_latency_classes)} · Prefer lower cost: ${item.prefer_lower_cost ? "yes" : "no"}</small>
-        <small>Capabilities: ${listText(item.required_capabilities)} · Residency: ${listText(item.required_residency_tags)} · Compliance: ${listText(item.required_compliance_tags)} · Max cost: ${item.max_cost_usd == null ? "none" : `$${escapeHtml(item.max_cost_usd)}`}</small>
-        ${refs ? `<small>References: ${escapeHtml(refs)}</small>` : ""}
-        ${attempts}
-      </details>`;
-    }).join("") || '<div class="comm-entry"><strong>No model invocation metadata.</strong><small>Prompt/message content is not stored in this feed.</small></div>';
-    focusReference(host);
-  }
-
   function populatePreviewControls() {
     const classes = Array.from(new Set(
       snapshot.models.flatMap((item) => item.model_classes || []),
@@ -133,10 +102,12 @@
       <small>Template: ${escapeHtml(result.prompt_template_id)} @ ${escapeHtml(result.prompt_template_version)} · checksum ${escapeHtml(result.prompt_template_checksum_sha256)}</small>
       <small>Policy attempts: ${escapeHtml(result.policy_max_attempts)} · fingerprint ${escapeHtml(result.policy_fingerprint_sha256)}</small>
       <small>Routing definition: ${escapeHtml(result.routing_definition_id || "legacy class routing")} @ ${escapeHtml(result.routing_definition_revision ?? "n/a")} · role ${escapeHtml(result.routing_role || "primary")} · qualification ${escapeHtml(result.qualification_revision || "not mapped")}</small>
+      ${routeEligibilityHtml(result, escapeHtml)}
       <small>Effective residency: ${listText(result.effective_required_residency_tags)} · compliance: ${listText(result.effective_required_compliance_tags)} · max cost: ${result.effective_max_cost_usd == null ? "none" : `$${escapeHtml(result.effective_max_cost_usd)}`}</small>
       <small>Override: ${escapeHtml(result.pinned_model_id || "automatic")} · Preferred latency: ${listText(result.preferred_latency_classes)} · Prefer lower cost: ${result.prefer_lower_cost ? "yes" : "no"}</small>
       ${(result.candidates || []).map((candidate, index) => `<div class="comm-entry">
         <strong>#${index + 1} ${escapeHtml(candidate.provider_id)} / ${escapeHtml(candidate.model_id)}</strong>
+        ${candidateExecutionPathHtml(candidate, escapeHtml)}
         <small>${escapeHtml(candidate.concrete_model)}${candidate.model_version ? ` @ ${escapeHtml(candidate.model_version)}` : ""} · ${escapeHtml(candidate.routing_reason)}</small>
         <small>Qualification revision: ${escapeHtml(candidate.qualification_revision_id || "not mapped")}</small>
         <small>Catalog: ${escapeHtml(candidate.catalog_revision || "static")} · upstream ${escapeHtml(candidate.upstream_provider_id || "unknown")} / ${escapeHtml(candidate.upstream_model_id || "unknown")}</small>
@@ -190,8 +161,9 @@
   async function refresh() {
     setStatus("Loading canonical model-gateway state...");
     try {
-      const [providers, models, catalogs, prompts, policy, invocations, capacity] = await Promise.all([
+      const [providers, providerEligibility, models, catalogs, prompts, policy, invocations, capacity] = await Promise.all([
         apiRequest("/api/model-gateway/providers"),
+        apiRequest("/api/model-gateway/provider-eligibility"),
         apiRequest("/api/model-gateway/models"),
         apiRequest("/api/model-gateway/catalogs"),
         apiRequest("/api/model-gateway/prompts"),
@@ -200,7 +172,8 @@
         apiRequest("/api/provider-capacity"),
       ]);
       snapshot = {
-        providers: providers.items || [],
+        providers: mergeProviderEligibility(providers.items || [], providerEligibility.items || []),
+        providerEligibility: providerEligibility.items || [],
         models: models.items || [],
         catalogs: catalogs.items || [],
         prompts: prompts.items || [],
@@ -214,7 +187,7 @@
       renderModelCatalogs({ host: document.getElementById("model-catalog-list"), providers: snapshot.providers, catalogs: snapshot.catalogs, escapeHtml, timeText, listText });
       renderModelDefinitions({ host: document.getElementById("model-definition-list"), items: snapshot.models, escapeHtml, listText, referenceLink, referenceAttributes, focusReference });
       renderPrompts(snapshot.prompts);
-      renderInvocations(snapshot.invocations);
+      renderModelInvocations(snapshot.invocations, { escapeHtml, timeText, listText, referenceLink, referenceAttributes, focusReference, limit: MAX_INVOCATIONS });
       populatePreviewControls();
       window.dispatchEvent(new CustomEvent("codex:model-gateway-rendered", {
         detail: snapshot,

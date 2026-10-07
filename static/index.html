@@ -436,6 +436,11 @@
                         <input aria-label="Provider ID" id="model-provider-id" placeholder="Provider ID" />
                         <input aria-label="Display name" id="model-provider-name" placeholder="Display name" />
                         <input aria-label="Adapter type" id="model-provider-adapter" placeholder="Adapter type" />
+                        <input aria-label="Provider family" id="model-provider-family" placeholder="Provider family, for example openai" />
+                        <input aria-label="Execution runtime provider" id="model-provider-runtime" placeholder="Runtime provider, for example codex" />
+                        <select aria-label="Access source" id="model-provider-access"><option value="api_key">API key</option><option value="chatgpt_subscription">ChatGPT subscription</option><option value="managed_entitlement">Managed entitlement</option><option value="local">Local</option><option value="other">Other</option></select>
+                        <select aria-label="Usage semantics" id="model-provider-usage"><option value="metered_api">Metered API</option><option value="entitlement">Entitlement</option><option value="unmetered">Unmetered</option><option value="unknown">Unknown</option></select>
+                        <select aria-label="Provider health" id="model-provider-health"><option value="healthy">Healthy</option><option value="unknown">Unknown</option><option value="degraded">Degraded</option><option value="unavailable">Unavailable</option></select>
                         <input aria-label="Base URL (optional)" id="model-provider-base-url" placeholder="Base URL (optional)" />
                         <select aria-label="Provider credential reference" id="model-provider-credential"><option value="">No credential reference</option></select>
                         <label><input id="model-provider-credential-required" type="checkbox" checked /> Credential required</label>
@@ -447,6 +452,7 @@
                           <option value="disabled">Disabled</option>
                         </select>
                         <label><input id="model-provider-catalog-discovery" type="checkbox" /> Discover provider model catalog</label>
+                        <label><input id="model-provider-catalog-required" type="checkbox" /> Require fresh catalog for every model</label>
                         <input aria-label="Model catalog TTL seconds" id="model-provider-catalog-ttl" type="number" min="30" max="86400" value="300" />
                         <button id="save-model-provider" type="button" class="ghost-button">Save provider</button>
                       </div>
@@ -458,6 +464,7 @@
                         <input aria-label="Model definition ID" id="model-definition-id" placeholder="Model definition ID" />
                         <select aria-label="Model provider" id="model-definition-provider"></select>
                         <input aria-label="Concrete provider model" id="model-definition-concrete" placeholder="Concrete provider model" />
+                        <input aria-label="Model family" id="model-definition-family" placeholder="Model family (optional)" />
                         <input aria-label="Model version (optional)" id="model-definition-version" placeholder="Model version (optional)" />
                         <select aria-label="Model availability source" id="model-definition-availability"><option value="static">Static definition</option><option value="discovered">Provider catalog discovery</option></select>
                         <input aria-label="Upstream provider identity" id="model-definition-upstream-provider" placeholder="Upstream provider (optional)" />
@@ -543,11 +550,15 @@
                         <input aria-label="Primary model IDs" id="model-mapping-primary" placeholder="Primary model IDs" />
                         <input aria-label="Escalation model IDs" id="model-mapping-escalation" placeholder="Escalation model IDs" />
                         <input aria-label="Critic model IDs" id="model-mapping-critic" placeholder="Critic model IDs" />
+                        <label>Requested critic independence <select id="model-mapping-critic-requested"><option value="different_provider_family">Different provider family</option><option value="different_model_family_same_provider">Different model family, same provider</option><option value="different_model_same_family">Different model, same family</option><option value="same_model_independent_run">Same model, independent run</option><option value="none">None</option></select></label>
+                        <label>Minimum critic independence <select id="model-mapping-critic-minimum"><option value="different_provider_family">Different provider family</option><option value="different_model_family_same_provider">Different model family, same provider</option><option value="different_model_same_family">Different model, same family</option><option value="same_model_independent_run" selected>Same model, independent run</option><option value="none">None</option></select></label>
+                        <label><input id="model-mapping-same-model-critic" type="checkbox" checked /> Allow same-model independent critic run</label>
                         <input aria-label="Mapping required capabilities" id="model-mapping-capabilities" placeholder="Required capabilities" />
                         <input aria-label="Qualification revision label" id="model-mapping-evaluation-revision" placeholder="Evaluation revision" />
                         <input aria-label="Evaluation timestamp" id="model-mapping-evaluated-at" type="datetime-local" />
                         <input aria-label="Mapping maximum cost" id="model-mapping-max-cost" type="number" min="0" step="0.0001" placeholder="Max invocation cost USD" />
                         <label><input id="model-mapping-fallback" type="checkbox" checked /> Allow bounded fallback</label>
+                        <label><input id="model-mapping-qualified-expansion" type="checkbox" checked /> Include newly qualified provider candidates</label>
                         <button id="publish-model-mapping" type="button" class="ghost-button">Publish mapping revision</button>
                       </div>
                     </details>

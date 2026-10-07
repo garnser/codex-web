@@ -12,7 +12,9 @@ eligibility is recorded in Model Gateway evaluation profiles, qualification revi
 and effective routing-definition revisions. Every mapped route and invocation records
 the exact mapping and qualification revision. A discovered catalog model remains
 ineligible until replay evidence satisfies the workload profile, and an independent
-critic mapping must resolve to a different provider family from its primary mapping.
+critic mappings record requested, minimum, and achieved independence. They may
+degrade to a different model family, a different concrete model, or an explicitly
+independent same-model run when policy permits.
 
 ## Stable model classes
 
@@ -32,6 +34,7 @@ Explicit provider-specific model strings remain a migration/compatibility surfac
 Provider records contain metadata only:
 
 - provider ID and adapter type;
+- upstream provider family, execution runtime provider, access source, usage semantics, and health;
 - base URL where applicable;
 - secret-broker credential reference, never credential material;
 - residency/compliance tags;
@@ -82,14 +85,16 @@ Routing filters candidates before invocation in this order:
 1. exact tenant/workspace scope;
 2. an optional strict model pin and the stable model class;
 3. active model/provider lifecycle;
-4. tenant provider/model allowlists;
-5. discovered-catalog readiness, TTL and exact concrete-model membership where required;
-6. optional workload suitability;
-7. required capabilities;
-8. residency and compliance constraints;
-9. context-window capacity;
-10. cost ceiling;
-11. workload specificity, preferred provider, provider health, requested latency order, requested lower estimated cost, and route priority.
+4. registered adapter, credential readiness, and provider health;
+5. tenant provider/model and runtime-intersection allowlists;
+6. required-catalog readiness, TTL, exact concrete-model membership, and runtime/access compatibility;
+7. optional workload suitability;
+8. required capabilities;
+9. residency and compliance constraints;
+10. context-window capacity;
+11. cost ceiling;
+12. provider-scoped workload qualification;
+13. workload specificity, explicit preference, expected outcome efficiency, health, requested latency, usage semantics, and stable route priority.
 
 If no candidate survives, routing fails before provider invocation.
 
@@ -99,6 +104,10 @@ bypass tenant policy, lifecycle, capability, residency, compliance, context,
 budget, provider availability, or credential-boundary checks. Workload-specific
 models rank ahead of otherwise eligible generic models. Concrete workload
 catalogs and mappings are mutable registry data rather than orchestration code.
+By default, an active mapping includes newly qualified models for its workload
+after all provider/runtime gates pass; explicit mapped IDs retain their ordering.
+Operators may disable this expansion on a mapping revision when an exact closed
+set is required.
 
 ## Effective request precedence
 
@@ -120,6 +129,11 @@ or broadens a constraint.
 
 Scoped model defaults use the existing typed Configuration Registry keys under
 `model.routing.*`. Agent Profile defaults remain part of the versioned profile
+
+Agent routing evaluates each eligible execution runtime against its declared
+`model_provider_ids`. It selects a runtime/model pair only when Model Gateway finds
+an eligible model inside that runtime's provider intersection. A globally known or
+advertised model therefore cannot be paired with a runtime that cannot execute it.
 revision. Workflow and turn callers pass structured request fields rather than
 creating another settings store. The route result returns exact Configuration
 record scope/revision provenance and the Agent Profile execution binding so an
@@ -159,6 +173,9 @@ Every gateway invocation records metadata sufficient for audit/cost/replay attri
 - work/goal/decision/execution references;
 - ordered provider/model attempts;
 - exact selected provider, model, concrete model name and model version;
+- provider family, runtime provider, access source, and usage semantics;
+- active candidate-set revision, provider eligibility, and rejected candidates;
+- requested and achieved critic independence;
 - selected upstream provider/model and catalog revision/discovery time where applicable;
 - provider request ID and provider stop reason when available;
 - token usage and computed cost when available;
@@ -182,6 +199,7 @@ Provider errors are classified into transient vs terminal failures so fallback r
 
 ```text
 GET /api/model-gateway/providers
+GET /api/model-gateway/provider-eligibility
 PUT /api/model-gateway/providers/{provider_id}
 
 GET /api/model-gateway/models
@@ -249,6 +267,14 @@ records retain provider-reported currency and source, or the exact model version
 and pricing fingerprint used for a codex-web calculation. Migration preserves a
 legacy `actual_cost_usd` value but leaves its source and pricing revision unknown
 because `1.4` did not retain enough evidence to reconstruct them safely.
+
+Version `1.6` adds workload evaluation, provider-scoped qualification, and
+versioned routing definitions. Version `1.7` adds provider family/runtime/access
+semantics, health and required-catalog gates, explicit catalog execution
+rejections, model-family identity, candidate-set and exclusion provenance, and
+critic-independence policy. Migration gives legacy providers their existing ID
+and adapter as family/runtime defaults and preserves prior invocation history
+without inventing missing access or independence evidence.
 
 ## Provider binding administration
 

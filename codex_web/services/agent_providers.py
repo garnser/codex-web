@@ -22,7 +22,7 @@ from codex_web.identity import (
     MembershipRole,
     PrincipalKind,
 )
-from codex_web.model_gateway import ModelProviderStatus
+from codex_web.model_gateway import ModelProviderHealth, ModelProviderStatus
 from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.storage.agent_providers import AgentProviderStore
 from codex_web.storage.extensions import ExtensionStateStore
@@ -116,6 +116,8 @@ class AgentProviderService:
                 ModelProviderStatus.DEGRADED: AgentProviderHealth.DEGRADED,
                 ModelProviderStatus.DISABLED: AgentProviderHealth.UNAVAILABLE,
             }[provider.status]
+            if provider.health != ModelProviderHealth.UNKNOWN:
+                health = AgentProviderHealth(provider.health.value)
             synthesized.append(
                 AgentProviderRecord(
                     id=provider.id,
@@ -310,7 +312,7 @@ class AgentProviderService:
         provider: AgentProviderRecord,
         actor: AuthenticationActor,
     ) -> list[str]:
-        if not provider.model_provider_ids:
+        if not provider.model_provider_ids or self.model_gateway is None:
             return []
         models = {item.id: item for item in self._model_providers(actor)}
         linked = [

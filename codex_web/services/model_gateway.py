@@ -28,6 +28,8 @@ from codex_web.input_plugins import (
     InputPluginPipeline,
 )
 from codex_web.model_gateway import (
+    ModelAccessSource,
+    ModelAuthenticationStatus,
     ModelAvailabilitySource,
     ModelCatalogEntry,
     ModelCatalogSnapshot,
@@ -44,9 +46,12 @@ from codex_web.model_gateway import (
     ModelLifecycle,
     ModelMessage,
     ModelProviderRecord,
+    ModelProviderEligibility,
+    ModelProviderHealth,
     ModelProviderStatus,
     ModelProviderUpsert,
     ModelRouteCandidate,
+    ModelRouteExclusion,
     ModelRouteResult,
     PromptTemplateRecord,
     PromptTemplateUpsert,
@@ -54,6 +59,7 @@ from codex_web.model_gateway import (
     TenantModelPolicyUpdate,
 )
 from codex_web.model_qualification import (
+    CriticIndependenceLevel,
     ModelQualificationRevision,
     ModelQualificationStatus,
     ModelQualificationUpdate,
@@ -80,6 +86,7 @@ from codex_web.security import TrustZone, envelope_untrusted, render_untrusted_c
 from codex_web.services.entitlements import EntitlementService
 from codex_web.services.identity import AuthorizationError
 from codex_web.services.secrets import SecretBroker
+from codex_web.secrets import SecretStatus
 from codex_web.storage.model_gateway import ModelGatewayStore
 
 
@@ -954,6 +961,127 @@ class ModelGatewayService:
                 "qualification profile requires provider-reported cost evidence"
             )
 
+    def _authentication_status(
+        self,
+        provider: ModelProviderRecord,
+        actor: AuthenticationActor,
+    ) -> ModelAuthenticationStatus:
+        if not provider.credential_required:
+            return ModelAuthenticationStatus.NOT_REQUIRED
+        if not provider.credential_ref or self.secret_broker is None:
+            return ModelAuthenticationStatus.MISSING
+        try:
+            reference = self.secret_broker.metadata(
+                provider.credential_ref,
+                actor=actor,
+                require_use=True,
+            )
+        except Exception:
+            return ModelAuthenticationStatus.UNAVAILABLE
+        return (
+            ModelAuthenticationStatus.READY
+            if reference.status(self.clock()) == SecretStatus.ACTIVE
+            else ModelAuthenticationStatus.UNAVAILABLE
+        )
+
+    def provider_eligibility(
+        self,
+        actor: AuthenticationActor,
+    ) -> tuple[ModelProviderEligibility, ...]:
+        state = self.store.load()
+        policy = self._policy(state, actor)
+        now = self.clock()
+        results: list[ModelProviderEligibility] = []
+        for provider in sorted(
+            (item for item in state.providers if self._same_scope(item, actor)),
+            key=lambda item: item.id,
+        ):
+            reasons: list[str] = []
+            authentication = self._authentication_status(provider, actor)
+            if provider.status == ModelProviderStatus.DISABLED:
+                reasons.append("provider_disabled")
+            if provider.health == ModelProviderHealth.UNAVAILABLE:
+                reasons.append("provider_unavailable")
+            if provider.adapter_type not in self.adapters:
+                reasons.append("adapter_unavailable")
+            if authentication in {
+                ModelAuthenticationStatus.MISSING,
+                ModelAuthenticationStatus.UNAVAILABLE,
+            }:
+                reasons.append(f"authentication_{authentication.value}")
+            if policy.allowed_provider_ids and provider.id not in policy.allowed_provider_ids:
+                reasons.append("provider_not_allowed")
+            catalog = next(
+                (
+                    item for item in state.catalogs
+                    if item.provider_id == provider.id and self._same_scope(item, actor)
+                ),
+                None,
+            )
+            catalog_required = provider.catalog_required
+            if catalog_required:
+                if not provider.catalog_discovery_enabled:
+                    reasons.append("catalog_discovery_disabled")
+                elif catalog is None:
+                    reasons.append("catalog_missing")
+                elif catalog.status != ModelCatalogStatus.READY:
+                    reasons.append(f"catalog_{catalog.status.value}")
+                elif catalog.expires_at is None or catalog.expires_at <= now:
+                    reasons.append("catalog_stale")
+            executable: list[str] = []
+            catalog_models = {
+                item.concrete_model
+                for item in (catalog.entries if catalog else ())
+                if item.executable
+                and item.runtime_provider in {None, provider.runtime_provider or provider.adapter_type}
+                and item.access_source in {None, provider.access_source}
+            }
+            for model in state.models:
+                if model.provider_id != provider.id or not self._same_scope(model, actor):
+                    continue
+                if model.lifecycle != ModelLifecycle.ACTIVE:
+                    continue
+                if policy.allowed_model_ids and model.id not in policy.allowed_model_ids:
+                    continue
+                requires_catalog = (
+                    catalog_required
+                    or model.availability_source == ModelAvailabilitySource.DISCOVERED
+                )
+                if requires_catalog and model.concrete_model not in catalog_models:
+                    continue
+                executable.append(model.id)
+            results.append(
+                ModelProviderEligibility(
+                    provider_id=provider.id,
+                    provider_family=provider.provider_family or provider.id,
+                    runtime_provider=provider.runtime_provider or provider.adapter_type,
+                    access_source=provider.access_source,
+                    usage_semantics=provider.usage_semantics,
+                    authentication_status=authentication,
+                    provider_status=provider.status,
+                    provider_health=provider.health,
+                    catalog_status=(
+                        catalog.status.value if catalog is not None
+                        else "required_missing" if catalog_required
+                        else "static"
+                    ),
+                    catalog_revision=(catalog.revision if catalog else None),
+                    eligible=not reasons,
+                    executable_model_ids=tuple(sorted(executable)) if not reasons else (),
+                    exclusion_reasons=tuple(reasons),
+                )
+            )
+        return tuple(results)
+
+    @staticmethod
+    def _candidate_set_revision(
+        eligibility: tuple[ModelProviderEligibility, ...],
+    ) -> str:
+        payload = [item.model_dump(mode="json") for item in eligibility]
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
     def record_qualification(
         self,
         payload: ModelQualificationUpdate,
@@ -974,6 +1102,7 @@ class ModelGatewayService:
             raise ModelRegistryConflictError(
                 f"model definition not found: {payload.model_id}"
             )
+        provider = self._provider(state, model.provider_id, actor)
         profile = next(
             (
                 item
@@ -992,7 +1121,9 @@ class ModelGatewayService:
             item
             for item in state.qualifications
             if item.model_id == payload.model_id
+            and item.provider_id == model.provider_id
             and item.workload_class == payload.workload_class
+            and self._qualification_matches_model(item, model, provider)
             and self._same_scope(item, actor)
         ]
         previous = max(prior, key=lambda item: item.revision) if prior else None
@@ -1028,7 +1159,9 @@ class ModelGatewayService:
                 item
                 for item in current.qualifications
                 if item.model_id == payload.model_id
+                and item.provider_id == model.provider_id
                 and item.workload_class == payload.workload_class
+                and self._qualification_matches_model(item, model, provider)
                 and self._same_scope(item, actor)
             ]
             previous = max(prior, key=lambda item: item.revision) if prior else None
@@ -1038,7 +1171,10 @@ class ModelGatewayService:
                 workspace_id=actor.workspace_id,
                 revision=(previous.revision + 1 if previous else 1),
                 provider_id=model.provider_id,
+                concrete_model=model.concrete_model,
                 model_version=model.model_version,
+                runtime_provider=provider.runtime_provider or provider.adapter_type,
+                access_source=provider.access_source.value,
                 previous_revision_id=(previous.id if previous else None),
                 created_by=actor.identity_id,
                 created_at=self.clock(),
@@ -1067,12 +1203,12 @@ class ModelGatewayService:
     def _latest_qualifications(
         state: ModelGatewayState,
         actor: AuthenticationActor,
-    ) -> dict[tuple[str, str], ModelQualificationRevision]:
-        latest: dict[tuple[str, str], ModelQualificationRevision] = {}
+    ) -> dict[tuple[str, str, str], ModelQualificationRevision]:
+        latest: dict[tuple[str, str, str], ModelQualificationRevision] = {}
         for item in state.qualifications:
             if not ModelGatewayService._same_scope(item, actor):
                 continue
-            key = (item.model_id, item.workload_class)
+            key = (item.provider_id, item.model_id, item.workload_class)
             if key not in latest or item.revision > latest[key].revision:
                 latest[key] = item
         return latest
@@ -1089,6 +1225,11 @@ class ModelGatewayService:
         models = {
             item.id: item
             for item in state.models
+            if self._same_scope(item, actor)
+        }
+        providers = {
+            item.id: item
+            for item in state.providers
             if self._same_scope(item, actor)
         }
         referenced = tuple(
@@ -1123,12 +1264,17 @@ class ModelGatewayService:
         unqualified = [
             model_id
             for model_id in referenced
-            if latest.get((model_id, payload.workload_class)) is None
-            or latest[(model_id, payload.workload_class)].status not in eligible
+            if latest.get((models[model_id].provider_id, model_id, payload.workload_class)) is None
+            or latest[(models[model_id].provider_id, model_id, payload.workload_class)].status not in eligible
+            or not self._qualification_matches_model(
+                latest[(models[model_id].provider_id, model_id, payload.workload_class)],
+                models[model_id],
+                providers.get(models[model_id].provider_id),
+            )
             or (
                 profile is not None
                 and profile.require_canary
-                and latest[(model_id, payload.workload_class)].status
+                and latest[(models[model_id].provider_id, model_id, payload.workload_class)].status
                 != ModelQualificationStatus.ACTIVE
             )
         ]
@@ -1136,18 +1282,6 @@ class ModelGatewayService:
             raise ModelRegistryConflictError(
                 "routing definition requires production-qualified models: "
                 + ", ".join(unqualified)
-            )
-        primary_families = {
-            models[item].upstream_provider_id or models[item].provider_id
-            for item in payload.primary_model_ids
-        }
-        critic_families = {
-            models[item].upstream_provider_id or models[item].provider_id
-            for item in payload.critic_model_ids
-        }
-        if primary_families & critic_families:
-            raise ModelRegistryConflictError(
-                "critic models must use a different provider family from primary models"
             )
         created: list[ModelRoutingDefinitionRevision] = []
 
@@ -1186,6 +1320,22 @@ class ModelGatewayService:
 
         self.store.update(apply)
         return created[0]
+
+    @staticmethod
+    def _qualification_matches_model(
+        qualification: ModelQualificationRevision,
+        model: ModelDefinitionRecord,
+        provider: ModelProviderRecord | None,
+    ) -> bool:
+        if provider is None or qualification.provider_id != model.provider_id:
+            return False
+        return (
+            qualification.model_version == model.model_version
+            and qualification.concrete_model in {None, model.concrete_model}
+            and qualification.runtime_provider
+            in {None, provider.runtime_provider or provider.adapter_type}
+            and qualification.access_source in {None, provider.access_source.value}
+        )
 
     def rollback_routing_definition(
         self,
@@ -1250,11 +1400,30 @@ class ModelGatewayService:
         )
         mapping = matching_mappings[0] if matching_mappings else None
         mapped_model_ids: tuple[str, ...] = ()
+        other_role_model_ids: set[str] = set()
         if mapping is not None:
             mapped_model_ids = {
                 ModelRoutingRole.PRIMARY: mapping.primary_model_ids,
                 ModelRoutingRole.ESCALATION: mapping.escalation_model_ids,
-                ModelRoutingRole.CRITIC: mapping.critic_model_ids,
+                ModelRoutingRole.CRITIC: (
+                    mapping.critic_model_ids
+                    + (mapping.primary_model_ids if mapping.allow_same_model_critic else ())
+                ),
+            }[request.routing_role]
+            mapped_model_ids = tuple(dict.fromkeys(mapped_model_ids))
+            other_role_model_ids = {
+                ModelRoutingRole.PRIMARY: set(
+                    mapping.escalation_model_ids + mapping.critic_model_ids
+                ),
+                ModelRoutingRole.ESCALATION: set(
+                    mapping.primary_model_ids + mapping.critic_model_ids
+                ),
+                ModelRoutingRole.CRITIC: set(mapping.escalation_model_ids)
+                | (
+                    set()
+                    if mapping.allow_same_model_critic
+                    else set(mapping.primary_model_ids)
+                ),
             }[request.routing_role]
             if not mapped_model_ids:
                 raise ModelRoutingError(
@@ -1316,6 +1485,11 @@ class ModelGatewayService:
             latency: index
             for index, latency in enumerate(request.preferred_latency_classes)
         }
+        provider_eligibility = self.provider_eligibility(actor)
+        eligibility_by_provider = {
+            item.provider_id: item for item in provider_eligibility
+        }
+        candidate_set_revision = self._candidate_set_revision(provider_eligibility)
 
         candidates: list[tuple[Any, ...]] = []
         rejected: list[str] = []
@@ -1323,7 +1497,14 @@ class ModelGatewayService:
         for model in state.models:
             if not self._same_scope(model, actor):
                 continue
-            if mapping is not None and model.id not in mapping_order:
+            if (
+                mapping is not None
+                and model.id not in mapping_order
+                and (
+                    not mapping.include_qualified_candidates
+                    or model.id in other_role_model_ids
+                )
+            ):
                 continue
             if request.pinned_model_id and model.id != request.pinned_model_id:
                 continue
@@ -1340,24 +1521,6 @@ class ModelGatewayService:
                 rejected.append(f"{model.id}:lifecycle:{model.lifecycle.value}")
                 continue
             qualification = None
-            if mapping is not None:
-                qualification = latest_qualifications.get(
-                    (model.id, mapping.workload_class)
-                )
-                if qualification is None or qualification.status not in {
-                    ModelQualificationStatus.QUALIFIED,
-                    ModelQualificationStatus.CANARY,
-                    ModelQualificationStatus.ACTIVE,
-                }:
-                    rejected.append(f"{model.id}:qualification_not_active")
-                    continue
-                if (
-                    mapping_profile is not None
-                    and mapping_profile.require_canary
-                    and qualification.status != ModelQualificationStatus.ACTIVE
-                ):
-                    rejected.append(f"{model.id}:canary_promotion_required")
-                    continue
             if policy.allowed_model_ids and model.id not in policy.allowed_model_ids:
                 rejected.append(f"{model.id}:model_not_allowed")
                 continue
@@ -1372,15 +1535,24 @@ class ModelGatewayService:
             if provider is None:
                 rejected.append(f"{model.id}:provider_missing")
                 continue
-            if provider.status not in {
-                ModelProviderStatus.ACTIVE,
-                ModelProviderStatus.DEGRADED,
-            }:
-                rejected.append(f"{model.id}:provider_disabled")
+            eligibility = eligibility_by_provider.get(provider.id)
+            if eligibility is None or not eligibility.eligible:
+                reasons = (
+                    eligibility.exclusion_reasons
+                    if eligibility is not None
+                    else ("provider_missing",)
+                )
+                rejected.extend(f"{model.id}:{reason}" for reason in reasons)
+                continue
+            if request.allowed_provider_ids and provider.id not in request.allowed_provider_ids:
+                rejected.append(f"{model.id}:runtime_provider_incompatible")
                 continue
             catalog = None
             catalog_entry = None
-            if model.availability_source == ModelAvailabilitySource.DISCOVERED:
+            if (
+                provider.catalog_required
+                or model.availability_source == ModelAvailabilitySource.DISCOVERED
+            ):
                 if not provider.catalog_discovery_enabled:
                     rejected.append(f"{model.id}:catalog_discovery_disabled")
                     continue
@@ -1416,9 +1588,49 @@ class ModelGatewayService:
                 if catalog_entry is None:
                     rejected.append(f"{model.id}:not_in_provider_catalog")
                     continue
+                if not catalog_entry.executable:
+                    rejected.append(
+                        f"{model.id}:runtime_access_rejected:"
+                        f"{catalog_entry.exclusion_reason or 'provider runtime rejected model'}"
+                    )
+                    continue
+                if catalog_entry.runtime_provider not in {
+                    None,
+                    provider.runtime_provider or provider.adapter_type,
+                }:
+                    rejected.append(f"{model.id}:runtime_provider_incompatible")
+                    continue
+                if catalog_entry.access_source not in {None, provider.access_source}:
+                    rejected.append(f"{model.id}:access_source_incompatible")
+                    continue
             if policy.allowed_provider_ids and provider.id not in policy.allowed_provider_ids:
                 rejected.append(f"{model.id}:provider_not_allowed")
                 continue
+            if mapping is not None:
+                qualification = latest_qualifications.get(
+                    (model.provider_id, model.id, mapping.workload_class)
+                )
+                if qualification is None or qualification.status not in {
+                    ModelQualificationStatus.QUALIFIED,
+                    ModelQualificationStatus.CANARY,
+                    ModelQualificationStatus.ACTIVE,
+                }:
+                    rejected.append(f"{model.id}:qualification_not_active")
+                    continue
+                if not self._qualification_matches_model(
+                    qualification,
+                    model,
+                    provider,
+                ):
+                    rejected.append(f"{model.id}:qualification_runtime_mismatch")
+                    continue
+                if (
+                    mapping_profile is not None
+                    and mapping_profile.require_canary
+                    and qualification.status != ModelQualificationStatus.ACTIVE
+                ):
+                    rejected.append(f"{model.id}:canary_promotion_required")
+                    continue
             if not required_capabilities.issubset(set(model.capabilities)):
                 rejected.append(f"{model.id}:capability_mismatch")
                 continue
@@ -1464,7 +1676,10 @@ class ModelGatewayService:
                     capacity_blocks.append(blocked)
                     continue
             preference = preferred.get(provider.id, len(preferred))
-            degraded_penalty = 10000 if provider.status == ModelProviderStatus.DEGRADED else 0
+            degraded_penalty = 10000 if (
+                provider.status == ModelProviderStatus.DEGRADED
+                or provider.health == ModelProviderHealth.DEGRADED
+            ) else 0
             workload_preference = (
                 0
                 if (
@@ -1491,7 +1706,7 @@ class ModelGatewayService:
             )
             candidates.append(
                 (
-                    mapping_order.get(model.id, 0),
+                    mapping_order.get(model.id, len(mapping_order)),
                     workload_preference,
                     preference,
                     degraded_penalty,
@@ -1502,6 +1717,10 @@ class ModelGatewayService:
                     model.id,
                     ModelRouteCandidate(
                         provider_id=provider.id,
+                        provider_family=provider.provider_family or provider.id,
+                        runtime_provider=provider.runtime_provider or provider.adapter_type,
+                        access_source=provider.access_source,
+                        usage_semantics=provider.usage_semantics,
                         model_id=model.id,
                         concrete_model=model.concrete_model,
                         model_version=model.model_version,
@@ -1528,7 +1747,10 @@ class ModelGatewayService:
                             f"latency={model.latency_class.value};"
                             f"low_cost={str(request.prefer_lower_cost).lower()};"
                             f"priority={model.route_priority};"
-                            f"provider={provider.status.value}"
+                            f"provider={provider.status.value};"
+                            f"health={provider.health.value};"
+                            f"runtime={provider.runtime_provider or provider.adapter_type};"
+                            f"access={provider.access_source.value}"
                             + (
                                 f";mapping={mapping.mapping_id}@{mapping.revision};"
                                 f"role={request.routing_role.value};"
@@ -1546,6 +1768,63 @@ class ModelGatewayService:
 
         candidates.sort(key=lambda item: item[:-1])
         routed = tuple(item[-1] for item in candidates)
+        requested_critic = None
+        achieved_critic = None
+        if mapping is not None and request.routing_role == ModelRoutingRole.CRITIC:
+            requested_critic = mapping.requested_critic_independence
+            primary_id = next(
+                (item for item in mapping.primary_model_ids if any(model.id == item for model in state.models)),
+                None,
+            )
+            primary_model = next(
+                (item for item in state.models if item.id == primary_id),
+                None,
+            )
+
+            def independence(candidate: ModelRouteCandidate) -> CriticIndependenceLevel:
+                critic_model = next(item for item in state.models if item.id == candidate.model_id)
+                if primary_model is None:
+                    return CriticIndependenceLevel.NONE
+                primary_provider = next(
+                    item for item in state.providers if item.id == primary_model.provider_id
+                )
+                critic_provider = next(
+                    item for item in state.providers if item.id == critic_model.provider_id
+                )
+                if (
+                    (primary_provider.provider_family or primary_provider.id)
+                    != (critic_provider.provider_family or critic_provider.id)
+                ):
+                    return CriticIndependenceLevel.DIFFERENT_PROVIDER_FAMILY
+                if critic_model.id == primary_model.id:
+                    return CriticIndependenceLevel.SAME_MODEL_INDEPENDENT_RUN
+                if (critic_model.model_family or critic_model.concrete_model) != (
+                    primary_model.model_family or primary_model.concrete_model
+                ):
+                    return CriticIndependenceLevel.DIFFERENT_MODEL_FAMILY_SAME_PROVIDER
+                return CriticIndependenceLevel.DIFFERENT_MODEL_SAME_FAMILY
+
+            classified = [
+                candidate.model_copy(update={"critic_independence": independence(candidate)})
+                for candidate in routed
+            ]
+            classified.sort(
+                key=lambda candidate: candidate.critic_independence.strength,
+                reverse=True,
+            )
+            routed = tuple(
+                candidate for candidate in classified
+                if candidate.critic_independence.strength
+                >= mapping.minimum_critic_independence.strength
+            )
+            if routed:
+                achieved_critic = routed[0].critic_independence
+            elif classified:
+                rejected.append(
+                    "critic:minimum_critic_independence_not_met:"
+                    f"required={mapping.minimum_critic_independence.value}:"
+                    f"achieved={classified[0].critic_independence}"
+                )
         if not routed:
             detail = ",".join(rejected[:20]) or "no models registered for class"
             if request.pinned_model_id:
@@ -1592,6 +1871,25 @@ class ModelGatewayService:
             routing_definition_id=(mapping.mapping_id if mapping else None),
             routing_definition_revision=(mapping.revision if mapping else None),
             qualification_revision=(mapping.qualification_revision if mapping else None),
+            active_candidate_set_revision=candidate_set_revision,
+            provider_eligibility=provider_eligibility,
+            excluded_candidates=tuple(
+                ModelRouteExclusion(
+                    model_id=item.split(":", 1)[0],
+                    provider_id=next(
+                        (
+                            model.provider_id for model in state.models
+                            if model.id == item.split(":", 1)[0]
+                        ),
+                        None,
+                    ),
+                    stage=(item.split(":", 1)[1].split(":", 1)[0] if ":" in item else "eligibility"),
+                    reason=(item.split(":", 1)[1] if ":" in item else item),
+                )
+                for item in rejected
+            ),
+            requested_critic_independence=requested_critic,
+            achieved_critic_independence=achieved_critic,
         )
 
     def _append_invocation(self, record: ModelInvocationRecord) -> None:
@@ -1601,6 +1899,71 @@ class ModelGatewayService:
             return state
 
         self.store.update(apply)
+
+    def _record_runtime_access_rejection(
+        self,
+        provider: ModelProviderRecord,
+        model: ModelDefinitionRecord,
+        error: ModelProviderAdapterError,
+        *,
+        actor: AuthenticationActor,
+    ) -> bool:
+        message = str(error).strip()
+        normalized = message.lower()
+        if not any(
+            marker in normalized
+            for marker in (
+                "not supported when using",
+                "not available for",
+                "does not have access",
+                "not entitled",
+            )
+        ):
+            return False
+
+        changed = False
+
+        def apply(state: ModelGatewayState) -> ModelGatewayState:
+            nonlocal changed
+            updated_catalogs: list[ModelCatalogSnapshot] = []
+            for catalog in state.catalogs:
+                if (
+                    catalog.provider_id != provider.id
+                    or not self._same_scope(catalog, actor)
+                ):
+                    updated_catalogs.append(catalog)
+                    continue
+                entries = tuple(
+                    item.model_copy(
+                        update={
+                            "runtime_provider": (
+                                provider.runtime_provider or provider.adapter_type
+                            ),
+                            "access_source": provider.access_source,
+                            "executable": False,
+                            "exclusion_reason": message[:1000],
+                        }
+                    )
+                    if item.concrete_model == model.concrete_model
+                    else item
+                    for item in catalog.entries
+                )
+                changed = entries != catalog.entries
+                updated_catalogs.append(
+                    catalog.model_copy(
+                        update={
+                            "entries": entries,
+                            "revision": self._catalog_revision(entries),
+                            "updated_by": actor.identity_id,
+                            "updated_at": self.clock(),
+                        }
+                    )
+                )
+            state.catalogs = updated_catalogs
+            return state
+
+        self.store.update(apply)
+        return changed
 
     def _meter_invocation(
         self,
@@ -1859,6 +2222,12 @@ class ModelGatewayService:
                 continue
             except ModelProviderAdapterError as exc:
                 completed = time.time()
+                access_rejected = self._record_runtime_access_rejection(
+                    provider,
+                    model,
+                    exc,
+                    actor=actor,
+                )
                 failure = self._provider_failure(
                     exc,
                     provider=provider,
@@ -1881,6 +2250,8 @@ class ModelGatewayService:
                     )
                 )
                 final_error = exc
+                if access_rejected:
+                    continue
                 break
             except Exception as exc:
                 completed = time.time()
@@ -1926,7 +2297,10 @@ class ModelGatewayService:
             currency = result.usage.currency
             calculated_cost = None
             pricing_revision = None
-            if provider_cost is None:
+            if (
+                provider_cost is None
+                and provider.usage_semantics.value != "entitlement"
+            ):
                 calculated_cost = self._price(
                     model,
                     result.usage.input_tokens or candidate.estimated_input_tokens,
@@ -1989,6 +2363,10 @@ class ModelGatewayService:
                 routing_definition_id=route.routing_definition_id,
                 routing_definition_revision=route.routing_definition_revision,
                 qualification_revision=candidate.qualification_revision_id,
+                active_candidate_set_revision=route.active_candidate_set_revision,
+                excluded_candidates=route.excluded_candidates,
+                requested_critic_independence=route.requested_critic_independence,
+                achieved_critic_independence=route.achieved_critic_independence,
                 work_item_ref=effective_request.work_item_ref,
                 goal_id=effective_request.goal_id,
                 decision_id=effective_request.decision_id,
@@ -2001,6 +2379,10 @@ class ModelGatewayService:
                 ),
                 attempts=tuple(attempts),
                 selected_provider_id=provider.id,
+                selected_provider_family=candidate.provider_family,
+                selected_runtime_provider=candidate.runtime_provider,
+                selected_access_source=candidate.access_source,
+                selected_usage_semantics=candidate.usage_semantics,
                 selected_model_id=model.id,
                 selected_concrete_model=model.concrete_model,
                 selected_model_version=model.model_version,
@@ -2081,6 +2463,10 @@ class ModelGatewayService:
             routing_definition_id=route.routing_definition_id,
             routing_definition_revision=route.routing_definition_revision,
             qualification_revision=route.qualification_revision,
+            active_candidate_set_revision=route.active_candidate_set_revision,
+            excluded_candidates=route.excluded_candidates,
+            requested_critic_independence=route.requested_critic_independence,
+            achieved_critic_independence=route.achieved_critic_independence,
             work_item_ref=effective_request.work_item_ref,
             goal_id=effective_request.goal_id,
             decision_id=effective_request.decision_id,

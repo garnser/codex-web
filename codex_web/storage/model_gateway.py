@@ -20,6 +20,60 @@ MODEL_GATEWAY_MIGRATIONS.register(
         "invocations": list(payload.get("invocations", [])),
     },
 )
+MODEL_GATEWAY_MIGRATIONS.register(
+    "1.6",
+    "1.7",
+    lambda payload: {
+        **payload,
+        "schema_version": "1.7",
+        "providers": [
+            {
+                **dict(item),
+                "provider_family": dict(item).get("provider_family") or dict(item).get("id"),
+                "runtime_provider": dict(item).get("runtime_provider") or dict(item).get("adapter_type"),
+                "access_source": dict(item).get("access_source", "api_key"),
+                "usage_semantics": dict(item).get("usage_semantics", "metered_api"),
+                "health": dict(item).get("health", "unknown"),
+                "catalog_required": bool(dict(item).get("catalog_required", False)),
+            }
+            for item in payload.get("providers", [])
+        ],
+        "models": [
+            {**dict(item), "model_family": dict(item).get("model_family")}
+            for item in payload.get("models", [])
+        ],
+        "routing_definitions": [
+            {
+                **dict(item),
+                "requested_critic_independence": dict(item).get(
+                    "requested_critic_independence", "different_provider_family"
+                ),
+                "minimum_critic_independence": dict(item).get(
+                    "minimum_critic_independence", "same_model_independent_run"
+                ),
+                "allow_same_model_critic": bool(dict(item).get("allow_same_model_critic", True)),
+                "include_qualified_candidates": bool(
+                    dict(item).get("include_qualified_candidates", True)
+                ),
+            }
+            for item in payload.get("routing_definitions", [])
+        ],
+        "invocations": [
+            {
+                **dict(item),
+                "active_candidate_set_revision": dict(item).get("active_candidate_set_revision"),
+                "excluded_candidates": list(dict(item).get("excluded_candidates", [])),
+                "requested_critic_independence": dict(item).get("requested_critic_independence"),
+                "achieved_critic_independence": dict(item).get("achieved_critic_independence"),
+                "selected_provider_family": dict(item).get("selected_provider_family"),
+                "selected_runtime_provider": dict(item).get("selected_runtime_provider"),
+                "selected_access_source": dict(item).get("selected_access_source"),
+                "selected_usage_semantics": dict(item).get("selected_usage_semantics"),
+            }
+            for item in payload.get("invocations", [])
+        ],
+    },
+)
 
 MODEL_GATEWAY_MIGRATIONS.register(
     "1.3",

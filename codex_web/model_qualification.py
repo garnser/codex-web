@@ -41,6 +41,18 @@ class ModelRoutingRole(StrEnum):
     CRITIC = "critic"
 
 
+class CriticIndependenceLevel(StrEnum):
+    NONE = "none"
+    SAME_MODEL_INDEPENDENT_RUN = "same_model_independent_run"
+    DIFFERENT_MODEL_SAME_FAMILY = "different_model_same_family"
+    DIFFERENT_MODEL_FAMILY_SAME_PROVIDER = "different_model_family_same_provider"
+    DIFFERENT_PROVIDER_FAMILY = "different_provider_family"
+
+    @property
+    def strength(self) -> int:
+        return list(CriticIndependenceLevel).index(self)
+
+
 class WorkloadEvaluationProfileUpsert(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -113,7 +125,10 @@ class ModelQualificationRevision(ModelQualificationUpdate):
     workspace_id: str
     revision: int = Field(ge=1)
     provider_id: str
+    concrete_model: str | None = None
     model_version: str | None = None
+    runtime_provider: str | None = None
+    access_source: str | None = None
     previous_revision_id: str | None = None
     created_by: str
     created_at: float = Field(default_factory=time.time)
@@ -133,6 +148,14 @@ class ModelRoutingDefinitionCreate(BaseModel):
     max_cost_per_invocation_usd: float | None = Field(default=None, gt=0.0)
     latency_preferences: tuple[str, ...] = ()
     allow_fallback: bool = True
+    include_qualified_candidates: bool = True
+    requested_critic_independence: CriticIndependenceLevel = (
+        CriticIndependenceLevel.DIFFERENT_PROVIDER_FAMILY
+    )
+    minimum_critic_independence: CriticIndependenceLevel = (
+        CriticIndependenceLevel.SAME_MODEL_INDEPENDENT_RUN
+    )
+    allow_same_model_critic: bool = True
     qualification_revision: str = Field(min_length=1)
     evaluated_at: float
     effective_at: float = Field(default_factory=time.time)
