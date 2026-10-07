@@ -916,6 +916,32 @@ class TurnExecutionService:
             and resolved[0] != "degraded"
         )
 
+    def thread_has_inflight_agent_runtime_assignment(
+        self,
+        thread_id: str,
+    ) -> bool:
+        """Report whether a bootstrap is still acquiring its runtime session.
+
+        A freshly prepared bootstrap has a durable assignment before its
+        process session becomes ready.  Watchdogs must treat that interval as
+        in-flight work; otherwise each cycle supersedes the new bootstrap and
+        creates another workspace before the worker can finish starting.
+        """
+
+        bootstrap = self._bootstrap_binding_for_thread(thread_id)
+        if bootstrap is None:
+            return False
+        assignment = self._assignment_record(bootstrap.assignment_id)
+        return bool(
+            assignment is not None
+            and assignment.status
+            in {
+                AssignmentStatus.PENDING,
+                AssignmentStatus.CLAIMED,
+                AssignmentStatus.RUNNING,
+            }
+        )
+
     async def request_for_thread(
         self,
         thread_id: str,

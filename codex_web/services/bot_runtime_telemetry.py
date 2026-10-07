@@ -91,6 +91,7 @@ class BotRuntimeTelemetry:
             "inbound_turn_steered",
             "owner_work_watchdog_dispatched",
             "release_gate_watchdog_dispatched",
+            "autonomous_thread_replaced",
         }
         for event in reversed(self.recent(limit)):
             if event.get("thread_id") != thread_id:

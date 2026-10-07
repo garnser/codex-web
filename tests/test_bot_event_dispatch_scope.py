@@ -15,6 +15,8 @@ class BotEventDispatchScopeTests(unittest.IsolatedAsyncioTestCase):
             enqueue_turn=Mock(return_value=SimpleNamespace(id="queued-1")),
             publish_queue_status=AsyncMock(),
             thread_is_active=Mock(return_value=True),
+            thread_has_live_agent_runtime_session=Mock(return_value=True),
+            thread_has_inflight_agent_runtime_assignment=Mock(return_value=False),
         )
         self.queue_policy = SimpleNamespace(depth=Mock(return_value=1))
         self.service = BotEventDispatchService(
@@ -61,6 +63,36 @@ class BotEventDispatchScopeTests(unittest.IsolatedAsyncioTestCase):
             kwargs["writable_repository_resource_ids"],
             ("repo-saas-app",),
         )
+
+    async def test_missing_session_is_not_replaced_while_assignment_is_inflight(self) -> None:
+        self.execution.thread_is_active.return_value = False
+        self.execution.thread_has_live_agent_runtime_session.return_value = False
+        self.execution.thread_has_inflight_agent_runtime_assignment.return_value = True
+        self.queue_policy.depth.return_value = 0
+        self.service.recovery.replace_stale_bot_thread = AsyncMock()
+
+        result = await self.service.replace_nonperforming_thread(
+            self.binding,
+            "owner-work-watchdog",
+        )
+
+        self.assertIs(result, self.binding)
+        self.service.recovery.replace_stale_bot_thread.assert_not_awaited()
+
+    async def test_fresh_replacement_gets_recent_activity_grace(self) -> None:
+        self.execution.thread_is_active.return_value = False
+        self.execution.thread_has_live_agent_runtime_session.return_value = False
+        self.queue_policy.depth.return_value = 0
+        self.service.thread_recently_active = Mock(return_value=True)
+        self.service.recovery.replace_stale_bot_thread = AsyncMock()
+
+        result = await self.service.replace_nonperforming_thread(
+            self.binding,
+            "owner-work-watchdog",
+        )
+
+        self.assertIs(result, self.binding)
+        self.service.recovery.replace_stale_bot_thread.assert_not_awaited()
 
 
 if __name__ == "__main__":

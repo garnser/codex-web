@@ -102,13 +102,23 @@ class BotEventDispatchService:
             callable(live_session_check)
             and not live_session_check(binding.thread_id)
         )
-        if not missing_live_session:
-            if (
-                self.execution.thread_is_active(binding.thread_id)
-                or self.queue_policy.depth(binding.thread_id)
-                or self.thread_recently_active(binding.thread_id)
-            ):
-                return binding
+        inflight_assignment_check = getattr(
+            self.execution,
+            "thread_has_inflight_agent_runtime_assignment",
+            None,
+        )
+        if (
+            missing_live_session
+            and callable(inflight_assignment_check)
+            and inflight_assignment_check(binding.thread_id)
+        ):
+            return binding
+        if (
+            self.execution.thread_is_active(binding.thread_id)
+            or self.queue_policy.depth(binding.thread_id)
+            or self.thread_recently_active(binding.thread_id)
+        ):
+            return binding
         dispatch_count = self.telemetry.thread_recent_event_count(
             binding.thread_id,
             {
@@ -136,6 +146,7 @@ class BotEventDispatchService:
                 "reason": reason,
                 "old_thread_id": binding.thread_id,
                 "new_thread_id": replacement.thread_id,
+                "thread_id": replacement.thread_id,
                 "logical_name": self.binding_name(binding),
             }
         )
