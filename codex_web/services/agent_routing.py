@@ -36,7 +36,7 @@ from codex_web.services.agent_routing_configuration import (
 from codex_web.services.agent_routing_definitions import AgentRoutingDefinitionService
 from codex_web.services.agent_runtime import AgentRuntimeRegistry
 from codex_web.services.configuration import ConfigurationService
-from codex_web.services.model_gateway import ModelGatewayService
+from codex_web.services.model_gateway import ModelGatewayService, ModelRoutingError
 from codex_web.services.provider_capacity import ProviderCapacityService
 from codex_web.services.skills import SkillError, SkillService
 
@@ -819,16 +819,58 @@ class AgentRoutingService:
             candidates = (candidates[0],)
 
         model_route = None
+        selected_runtime = candidates[0]
         if request.model_request is not None:
             if self.model_gateway is None:
                 raise AgentRoutingError("model routing requested but ModelGateway is unavailable")
-            model_route = self.model_gateway.route(
-                request.model_request,
-                actor=actor,
-            )
+            model_rejections: list[str] = []
+            for runtime_candidate in candidates:
+                discovery = discoveries[runtime_candidate.provider_id]
+                linked = discovery.provider.model_provider_ids
+                requested_allowed = set(request.model_request.allowed_provider_ids)
+                allowed = tuple(
+                    sorted(set(linked) & requested_allowed)
+                    if linked and requested_allowed
+                    else sorted(set(linked)) if linked
+                    else sorted(requested_allowed)
+                )
+                if linked and requested_allowed and not allowed:
+                    model_rejections.append(
+                        f"{runtime_candidate.provider_id}/{runtime_candidate.runtime_id}:"
+                        "model_provider_not_allowed"
+                    )
+                    continue
+                try:
+                    model_route = self.model_gateway.route(
+                        request.model_request.model_copy(
+                            update={"allowed_provider_ids": allowed}
+                        ),
+                        actor=actor,
+                    )
+                except ModelRoutingError as exc:
+                    model_rejections.append(
+                        f"{runtime_candidate.provider_id}/{runtime_candidate.runtime_id}:"
+                        f"model_route_unavailable:{exc}"
+                    )
+                    continue
+                selected_runtime = runtime_candidate
+                candidates = (
+                    runtime_candidate,
+                    *(item for item in candidates if item != runtime_candidate),
+                )
+                break
+            if model_route is None:
+                raise AgentRoutingBlockedError(
+                    "no executable model intersects the eligible agent runtimes",
+                    code="agent_model_runtime_intersection_empty",
+                    rejected_reasons=tuple(model_rejections),
+                    target_type="agent_runtime",
+                    retryable=False,
+                    remediation_route="/api/agent-providers",
+                )
 
         return AgentRoutingResult(
-            selected_runtime=candidates[0],
+            selected_runtime=selected_runtime,
             runtime_candidates=candidates,
             model_route=model_route,
             fallback_allowed=request.allow_fallback,

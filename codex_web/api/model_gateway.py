@@ -74,6 +74,11 @@ def build_model_gateway_router(service: ModelGatewayService, projects=None, admi
         items = service.list_providers(request_actor(request))
         return {"items": [item.model_dump(mode="json") for item in items]}
 
+    @router.get("/provider-eligibility")
+    async def provider_eligibility(request: Request) -> dict[str, Any]:
+        items = service.provider_eligibility(request_actor(request))
+        return {"items": [item.model_dump(mode="json") for item in items]}
+
     @router.put("/providers/{provider_id}")
     async def put_provider(
         provider_id: str,

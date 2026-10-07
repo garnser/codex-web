@@ -12,6 +12,17 @@ The central rule is:
 
 No Executive role, business domain, Work Item type, UI page, or orchestration path should hard-code a provider-specific model name.
 
+The ordering is mandatory: **first determine what can actually execute under the
+current provider/runtime configuration; then select the best qualified model for
+the workload from that candidate set.** Catalog advertisement, benchmark presence,
+or a historical mapping does not establish executability.
+
+The active candidate universe is the intersection of enabled and healthy runtimes,
+usable authentication, tenant policy, fresh required catalogs, exact runtime/access
+catalog membership, capabilities, and provider-scoped workload qualification.
+Ranking occurs only after this intersection. Adding or disabling a provider changes
+the candidate-set revision without changing domain or orchestration code.
+
 ## Why this policy exists
 
 Codex-web spans materially different kinds of reasoning:
@@ -182,7 +193,7 @@ active
     +--> retired
 ```
 
-A provider-recommended alias may be used only where policy explicitly allows provider-managed selection. It must still satisfy capability, cost, residency, health, and evaluation requirements appropriate to that workload.
+A provider-recommended alias may be used only where policy explicitly allows provider-managed selection. It must still satisfy capability, cost, residency, health, authentication, runtime/access-source catalog, and evaluation requirements appropriate to that workload.
 
 ## Step 1: collect authoritative model metadata
 
@@ -343,6 +354,14 @@ Measure how often the critic discovers material defects that the primary model m
 
 A critic that mostly restates the primary answer is not useful even if its general benchmark score is high.
 
+Critic provenance records the requested and achieved level:
+`different_provider_family`, `different_model_family_same_provider`,
+`different_model_same_family`, `same_model_independent_run`, or `none`. Selection
+prefers the strongest qualified level that is actually executable. A workload may
+set a minimum and fail routing when it cannot be met. Same-provider and same-model
+reviews are never described as full independence, and routing does not choose an
+inferior unqualified model merely to create apparent diversity.
+
 ## Step 4: evaluate economics by outcome
 
 Token price alone is not the optimization target.
@@ -362,7 +381,7 @@ latency per successful outcome
 
 A model that costs more per token may be cheaper per completed task if it finishes reliably in fewer attempts.
 
-Record both provider-reported cost and any derived estimate according to the canonical usage-accounting contract.
+Record both provider-reported cost and any derived estimate according to the canonical usage-accounting contract. Entitlement-backed ChatGPT/Codex access retains authoritative allowance and token telemetry but never converts comparison pricing into a realized API charge.
 
 ## Step 5: build a workload scorecard
 

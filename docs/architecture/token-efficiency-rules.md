@@ -468,5 +468,9 @@ Any PR that adds or materially changes LLM/agent/autonomy behavior should answer
 - How are retries, loops, and repeated failures bounded?
 - Is usage attributable to a goal/work item/decision and measurable by outcome?
 - Can a verified recurring solution become deterministic or reusable knowledge?
+- Was the model candidate set first constrained to active, authenticated, healthy,
+  policy-allowed execution runtimes and their fresh exact catalogs?
+- For entitlement-backed access, is comparison pricing kept separate from realized
+  charged cost?
 
 If these questions cannot be answered, the feature should not be considered autonomy-ready.
