@@ -757,6 +757,34 @@ class ControlPlaneBrokerService:
             )
         return writable[0]
 
+    @staticmethod
+    def _repository_action_binding(
+        *,
+        action_registry,
+        actor: AuthenticationActor,
+        project_id: str | None,
+        repository_id: str,
+    ):
+        """Resolve the unique provider binding for an assignment repository.
+
+        Repository resources carry their provider boundary through the binding;
+        the assignment broker must not assume that every repository is hosted
+        by GitHub.  Ambiguous bindings remain a hard failure so a worker cannot
+        choose a credential/provider implicitly.
+        """
+        bindings = [
+            item
+            for item in action_registry.list_bindings(actor)
+            if item.enabled
+            and repository_id in item.resource_ids
+            and item.project_id in {None, project_id}
+        ]
+        if len(bindings) != 1:
+            raise ControlPlaneBrokerDeniedError(
+                "repository operation requires exactly one enabled provider binding"
+            )
+        return bindings[0]
+
     async def _execute_repository_action(
         self,
         *,
@@ -790,18 +818,13 @@ class ControlPlaneBrokerService:
                 **parameters,
                 "execution_workspace_id": assignment.execution_workspace_id,
             }
-        bindings = [
-            item
-            for item in self.action_intents.execution.registry.list_bindings(requester_actor)
-            if item.enabled
-            and item.provider_type == "github"
-            and repository_id in item.resource_ids
-            and item.project_id in {None, assignment.project_id}
-        ]
-        if len(bindings) != 1:
-            raise ControlPlaneBrokerDeniedError(
-                "repository action requires exactly one enabled GitHub binding"
-            )
+        action_registry = self.action_intents.execution.registry
+        binding = self._repository_action_binding(
+            action_registry=action_registry,
+            actor=requester_actor,
+            project_id=assignment.project_id,
+            repository_id=repository_id,
+        )
         request = ActionRequest(
             action_id=action_id,
             organization_id=assignment.organization_id,
@@ -818,7 +841,7 @@ class ControlPlaneBrokerService:
         )
         intent = self.action_intents.create(
             ActionIntentCreate(
-                binding_id=bindings[0].id,
+                binding_id=binding.id,
                 request=request,
                 work_item_ref=assignment.work_item_ref,
                 execution_id=assignment.execution_id,
@@ -869,19 +892,12 @@ class ControlPlaneBrokerService:
             )
         repository_id = self._writable_repository_id(assignment)
         action_registry = self.action_intents.execution.registry
-        bindings = [
-            item
-            for item in action_registry.list_bindings(actor)
-            if item.enabled
-            and item.provider_type == "github"
-            and repository_id in item.resource_ids
-            and item.project_id in {None, assignment.project_id}
-        ]
-        if len(bindings) != 1:
-            raise ControlPlaneBrokerDeniedError(
-                "repository read requires exactly one enabled GitHub binding"
-            )
-        action_binding = bindings[0]
+        action_binding = self._repository_action_binding(
+            action_registry=action_registry,
+            actor=actor,
+            project_id=assignment.project_id,
+            repository_id=repository_id,
+        )
         action_provider = action_registry.provider(
             action_binding.provider_type,
             action_binding.provider_instance,
@@ -898,7 +914,7 @@ class ControlPlaneBrokerService:
                 id=binding_id,
                 organization_id=assignment.organization_id,
                 workspace_id=assignment.workspace_id,
-                provider_type="github",
+                provider_type=action_binding.provider_type,
                 provider_instance=action_binding.provider_instance,
                 base_url=api_base,
                 credential_ref=action_binding.credential_ref,

@@ -163,23 +163,56 @@ class _CodeHosts:
 
 
 class _ActionRegistry:
+    def __init__(self, provider_type="github") -> None:
+        self.provider_type = provider_type
+
     def list_bindings(self, actor):
         del actor
         return [
             SimpleNamespace(
-                id="github-action-binding",
+                id=f"{self.provider_type}-action-binding",
                 enabled=True,
-                provider_type="github",
-                provider_instance="github.com",
+                provider_type=self.provider_type,
+                provider_instance=(
+                    "github.com"
+                    if self.provider_type == "github"
+                    else "gitlab.example"
+                ),
                 project_id="project-a",
                 resource_ids=("repository-a",),
-                credential_ref="secret-github",
+                credential_ref=f"secret-{self.provider_type}",
             )
         ]
 
     def provider(self, provider_type, provider_instance, *, actor):
-        del provider_type, provider_instance, actor
-        return SimpleNamespace(api_base="https://api.github.com")
+        del provider_instance, actor
+        return SimpleNamespace(
+            api_base=(
+                "https://api.github.com"
+                if provider_type == "github"
+                else "https://gitlab.example/api/v4"
+            )
+        )
+
+
+class _ExecutingActionIntents:
+    def __init__(self, registry) -> None:
+        self.execution = SimpleNamespace(registry=registry)
+        self.created = []
+
+    def create(self, payload, *, actor):
+        self.created.append((payload, actor))
+        return SimpleNamespace(id="action-intent-gitlab")
+
+    def claim(self, payload, *, actor, intent_id):
+        del payload, actor
+        return SimpleNamespace(id=intent_id)
+
+    async def execute_claimed(self, intent_id, worker_id, *, actor):
+        del worker_id, actor
+        return SimpleNamespace(
+            model_dump=lambda mode: {"id": intent_id, "status": "succeeded"}
+        )
 
 
 class _ActionIntents:
@@ -779,6 +812,129 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             code_hosts.registry.binding.credential_ref,
             "secret-github",
         )
+
+    async def test_gitlab_assignment_can_read_merge_request_fact(self) -> None:
+        code_hosts = _CodeHosts()
+        self.authority.resources = SimpleNamespace(
+            get=lambda resource_id, actor: SimpleNamespace(
+                id=resource_id,
+                lifecycle="active",
+                resource_type="repository",
+                risk="medium",
+                sensitivity="internal",
+            )
+        )
+        service = ControlPlaneBrokerService(
+            identity=self.identity,
+            authority=self.authority,
+            work_items=self.work_items,
+            operator=_Operator(),
+            audit=ControlPlaneBrokerAuditStore(self.sqlite),
+            action_intents=SimpleNamespace(
+                execution=SimpleNamespace(registry=_ActionRegistry("gitlab"))
+            ),
+            code_hosts=code_hosts,
+        )
+        assignment = self.assignment.model_copy(
+            update={
+                "execution_profile_id": "repository-write",
+                "resource_ids": ("repository-a",),
+                "repository_scope": RepositoryExecutionScope(
+                    organization_id="local",
+                    workspace_id="default",
+                    project_id="project-a",
+                    writable_repository_ids=("repository-a",),
+                    source=RepositoryTargetSource.SINGLE_REPOSITORY,
+                    source_ref="repository-a",
+                ),
+            }
+        )
+
+        status, payload, *_ = await service.dispatch(
+            assignment=assignment,
+            worker_actor=self.worker_actor,
+            method="GET",
+            raw_target="/api/repository-facts/pull-requests/33",
+            body=b"",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["item"]["number"], 33)
+        self.assertEqual(code_hosts.registry.binding.provider_type, "gitlab")
+        self.assertEqual(
+            code_hosts.registry.binding.credential_ref,
+            "secret-gitlab",
+        )
+
+    async def test_gitlab_assignment_uses_governed_merge_action_binding(self) -> None:
+        registry = _ActionRegistry("gitlab")
+        action_intents = _ExecutingActionIntents(registry)
+        service = ControlPlaneBrokerService(
+            identity=self.identity,
+            authority=self.authority,
+            work_items=self.work_items,
+            operator=_Operator(),
+            audit=ControlPlaneBrokerAuditStore(self.sqlite),
+            action_intents=action_intents,
+        )
+        assignment = self.assignment.model_copy(
+            update={
+                "execution_profile_id": "repository-write",
+                "resource_ids": ("repository-a",),
+                "repository_scope": RepositoryExecutionScope(
+                    organization_id="local",
+                    workspace_id="default",
+                    project_id="project-a",
+                    writable_repository_ids=("repository-a",),
+                    source=RepositoryTargetSource.SINGLE_REPOSITORY,
+                    source_ref="repository-a",
+                ),
+            }
+        )
+        operation = self.service._resolve_operation(
+            "POST", "/api/repository-actions/pull-request/merge"
+        ).operation
+
+        result = await service._execute_repository_action(
+            assignment=assignment,
+            worker_actor=self.worker_actor,
+            requester_actor=self.identity.actor_for_identity(
+                assignment.created_by,
+                scope=self.scope,
+            ),
+            operation=operation,
+            payload={
+                "parameters": {
+                    "number": 33,
+                    "expected_head_sha": "a" * 40,
+                },
+                "idempotency_key": "gitlab-mr-33-merge",
+            },
+        )
+
+        self.assertEqual(result["item"]["status"], "succeeded")
+        created, _actor = action_intents.created[0]
+        self.assertEqual(created.binding_id, "gitlab-action-binding")
+        self.assertEqual(created.request.resource_ids, ("repository-a",))
+
+    def test_repository_binding_resolution_fails_closed_when_ambiguous(self) -> None:
+        registry = _ActionRegistry()
+        original = registry.list_bindings
+        registry.list_bindings = lambda actor: [*original(actor), *original(actor)]
+
+        with self.assertRaisesRegex(
+            ControlPlaneBrokerDeniedError,
+            "exactly one enabled provider binding",
+        ):
+            self.service._repository_action_binding(
+                action_registry=registry,
+                actor=self.identity.actor_for_identity(
+                    "local-admin",
+                    scope=self.scope,
+                ),
+                project_id="project-a",
+                repository_id="repository-a",
+            )
 
     async def test_repository_write_assignment_can_discover_open_pull_requests(self) -> None:
         code_hosts = _CodeHosts()

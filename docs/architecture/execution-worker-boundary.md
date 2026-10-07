@@ -44,11 +44,13 @@ Those still flow through ActionProvider/ActionIntent. A repository-write
 assignment receives an assignment-bound repository-action surface on the same
 Unix-socket broker. It can publish only the assignment's single writable
 repository and active execution-workspace branch; create or reconcile a pull
-request; create, comment on, or close an issue; and merge a pull request only
-when GitHub reports it clean and mergeable. The broker derives tenant, Project,
-repository, execution, requester, provider binding, and credential references
-from canonical assignment state. The worker cannot override them and never
-receives the provider credential.
+request; create, comment on, or close an issue; and merge a pull or merge request
+only when the canonical code-host provider reports it clean and mergeable. The
+broker derives tenant, Project, repository, execution, requester, the unique
+enabled GitHub or GitLab provider binding, and credential references from
+canonical assignment state. The worker cannot select the provider, override
+those values, or receive the provider credential. Zero or multiple matching
+bindings fail closed.
 
 ### Execution subject and v1.1 compatibility
 
