@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from codex_web.models import ThreadRunSettings
 from codex_web.storage.runtime_state import ModelMapRepository
@@ -159,6 +160,17 @@ class SQLiteStateStoreTests(unittest.TestCase):
                     candidate = Path(f"{database}{suffix}")
                     if candidate.exists():
                         self.assertEqual(candidate.stat().st_mode & 0o777, 0o600)
+
+    def test_private_database_files_do_not_repeat_chmod_per_connection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteStateStore(Path(tmp) / "codex-web.db")
+            store.put("example", {"value": 1})
+
+            with patch("codex_web.storage.sqlite_state.os.chmod") as chmod:
+                self.assertEqual(store.get("example"), {"value": 1})
+                self.assertEqual(store.get("example"), {"value": 1})
+
+            chmod.assert_not_called()
 
     def test_private_compatibility_mirror_uses_restricted_permissions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

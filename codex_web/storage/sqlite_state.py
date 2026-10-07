@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import stat
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -36,7 +37,12 @@ class SQLiteStateStore:
             Path(f"{self.path}-shm"),
         ):
             try:
-                os.chmod(candidate, 0o600)
+                # State operations open short-lived SQLite connections. Avoid
+                # issuing chmod for every open/close when the file is already
+                # private: on journaling filesystems that needless metadata
+                # churn can serialize otherwise independent state workers.
+                if stat.S_IMODE(candidate.stat().st_mode) != 0o600:
+                    os.chmod(candidate, 0o600)
             except FileNotFoundError:
                 continue
 
