@@ -261,6 +261,34 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
         self.assertIn("--chdir", command)
         self.assertEqual(command[-3:], ["python", "-m", "pytest"])
 
+    def test_command_mounts_public_identity_maps_without_password_hashes(self) -> None:
+        backend = BubblewrapExecutionBackend(
+            executable="/usr/bin/bwrap",
+            probe_runner=_probe_success,
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = Path(raw) / "workspace"
+            workspace.mkdir()
+
+            command = backend.build_command(
+                _assignment(),
+                argv=("getent", "passwd", str(os.getuid())),
+                workspace_path=workspace,
+            )
+
+        mounts = [
+            command[index:index + 3]
+            for index in range(max(0, len(command) - 2))
+        ]
+        for identity_file in backend.SYSTEM_IDENTITY_FILES:
+            if identity_file.is_file():
+                self.assertIn(
+                    ["--ro-bind", str(identity_file), str(identity_file)],
+                    mounts,
+                )
+        self.assertNotIn("/etc/shadow", command)
+        self.assertNotIn("/etc/gshadow", command)
+
     def test_command_mounts_only_system_ca_trust_directories_read_only(self) -> None:
         backend = BubblewrapExecutionBackend(
             executable="/usr/bin/bwrap",

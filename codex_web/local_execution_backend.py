@@ -97,6 +97,11 @@ class BubblewrapExecutionBackend:
         Path("/etc/ssl"),
         Path("/etc/pki"),
     )
+    SYSTEM_IDENTITY_FILES = (
+        Path("/etc/passwd"),
+        Path("/etc/group"),
+        Path("/etc/nsswitch.conf"),
+    )
 
     def __init__(
         self,
@@ -476,6 +481,15 @@ class BubblewrapExecutionBackend:
                     str(trust_directory),
                 )
             )
+        # Keep UID/GID lookup functional without exposing the broader host
+        # /etc tree. Git and SSH resolve the current uid before transport, so
+        # an empty /etc blocks publication even when broker auth is valid.
+        # Password hashes remain private because shadow/gshadow are not bound.
+        for identity_file in self.SYSTEM_IDENTITY_FILES:
+            if identity_file.is_file():
+                command.extend(
+                    ("--ro-bind", str(identity_file), str(identity_file))
+                )
         command.extend(self._directory_creation_args(workspace))
         command.extend((mount_flag, str(workspace), str(workspace)))
 
