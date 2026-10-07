@@ -738,6 +738,47 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
         )
         self.assertEqual(assignments[future.id].status, AssignmentStatus.PENDING)
 
+    def test_expired_pending_assignment_releases_workspace_after_commit(self) -> None:
+        expired = self._assignment(
+            execution_id="exec-expired-pending-workspace",
+            deadline_at=100.0,
+        )
+
+        def attach_workspace(state):
+            for index, item in enumerate(state.assignments):
+                if item.id == expired.id:
+                    state.assignments[index] = item.model_copy(
+                        update={"execution_workspace_id": "workspace-pending"}
+                    )
+                    break
+            return state
+
+        self.service.store.update(attach_workspace)
+        observed_statuses = []
+        release_requests = []
+
+        def release(workspace_id, payload, *, actor):
+            current = next(
+                item
+                for item in self.service.store.load().assignments
+                if item.id == expired.id
+            )
+            observed_statuses.append(current.status)
+            release_requests.append((workspace_id, payload, actor))
+
+        self.service.workspaces = SimpleNamespace(release=release)
+
+        recovered = self.service.recover_expired(
+            actor=self.admin,
+            now=200.0,
+        )
+
+        self.assertEqual(recovered, [expired.id])
+        self.assertEqual(observed_statuses, [AssignmentStatus.FAILED])
+        self.assertEqual(release_requests[0][0], "workspace-pending")
+        self.assertFalse(release_requests[0][1].discard)
+        self.assertIs(release_requests[0][2], self.admin)
+
     def test_expired_lease_releases_workspace_after_assignment_commit(self) -> None:
         assignment = self._assignment()
 
