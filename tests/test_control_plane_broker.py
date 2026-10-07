@@ -23,7 +23,11 @@ from codex_web.authority import (
     AuthorityRoleCatalogDefinition,
     AuthorityRoleDefinition,
 )
-from codex_web.control_plane_broker import ControlPlaneBrokerLimits
+from codex_web.control_plane_broker import (
+    ControlPlaneBrokerAuditEvent,
+    ControlPlaneBrokerDecision,
+    ControlPlaneBrokerLimits,
+)
 from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishRequest
 from codex_web.execution_subjects import ExecutionSubject, ExecutionSubjectKind
 from codex_web.execution_workers import (
@@ -49,6 +53,31 @@ from codex_web.storage.control_plane_broker import ControlPlaneBrokerAuditStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
+
+
+class ControlPlaneBrokerAuditStoreTests(unittest.TestCase):
+    def test_append_does_not_revalidate_retained_events(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ControlPlaneBrokerAuditStore(
+                SQLiteStateStore(Path(directory) / "state.sqlite3")
+            )
+            event = ControlPlaneBrokerAuditEvent(
+                organization_id="local",
+                workspace_id="default",
+                execution_id="exec-1",
+                assignment_id="assignment-1",
+                worker_id="worker-1",
+                fence=1,
+                method="GET",
+                path="/api/work-items/item-1",
+                decision=ControlPlaneBrokerDecision.ALLOW,
+                correlation_id="correlation-1",
+            )
+
+            with patch.object(store, "_decode", side_effect=AssertionError):
+                store.append(event)
+
+            self.assertEqual(store.load().events, [event])
 
 
 class _StateMachine:
