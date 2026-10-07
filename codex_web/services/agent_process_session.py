@@ -705,6 +705,7 @@ class AssignmentBoundAgentProcessSession:
             process = runtime.proc if runtime is not None else None
             if process is None or process.poll() is not None:
                 self.last_error = self.last_error or "agent runtime process exited"
+                await asyncio.to_thread(self._record_unexpected_process_exit)
                 return
             try:
                 assignment = await asyncio.to_thread(self.validate_current)
@@ -718,6 +719,44 @@ class AssignmentBoundAgentProcessSession:
                 self.last_error = str(exc)
                 await self._stop_runtime_from_watchdog()
                 return
+
+    def _record_unexpected_process_exit(self) -> None:
+        try:
+            assignment = self._current_assignment()
+        except Exception:
+            return
+        lease = assignment.lease
+        if (
+            lease is None
+            or assignment.status
+            not in {AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING}
+        ):
+            return
+        try:
+            self.local_worker.worker_service.complete(
+                self.worker_id,
+                assignment.id,
+                AssignmentCompleteRequest(
+                    lease_token=lease.lease_token,
+                    fence=assignment.fence,
+                    succeeded=False,
+                    failure_code="agent_runtime_process_exited",
+                    failure_message="assignment-bound agent runtime process exited",
+                ),
+                actor=self.local_worker.worker_actor,
+            )
+        except Exception:
+            return
+        if assignment.execution_workspace_id:
+            with contextlib.suppress(Exception):
+                self.local_worker.workspace_service.release(
+                    assignment.execution_workspace_id,
+                    ExecutionWorkspaceRelease(
+                        discard=False,
+                        reason="agent runtime process exited",
+                    ),
+                    actor=self.local_worker.worker_actor,
+                )
 
     async def _stop_runtime_from_watchdog(self) -> None:
         self._stopping = True

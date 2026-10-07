@@ -965,6 +965,24 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.backend.processes[0].terminated)
         self.assertIn("lease/fence changed", session.last_error)
 
+    async def test_watchdog_fails_assignment_when_runtime_process_exits(self) -> None:
+        assignment = self._create_assignment()
+        gate = asyncio.Event()
+        session = await self._session(assignment, gate)
+        self.backend.processes[0].returncode = 1
+
+        gate.set()
+        await asyncio.wait_for(session.watchdog_task, timeout=1)
+
+        current = self.worker_service.store.assignment(assignment.id)
+        self.assertEqual(current.status, AssignmentStatus.FAILED)
+        self.assertIsNone(current.lease)
+        self.assertEqual(
+            current.failure_code,
+            "agent_runtime_process_exited",
+        )
+        self.assertIn("process exited", session.last_error)
+
     async def test_watchdog_terminates_when_worker_is_quarantined(self) -> None:
         assignment = self._create_assignment()
         gate = asyncio.Event()
