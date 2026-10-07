@@ -5,9 +5,11 @@ export function renderModelCatalogs({ host, providers, catalogs, escapeHtml, tim
     const item = byProvider.get(provider.id);
     const status = item?.status || (provider.catalog_discovery_enabled ? 'not refreshed' : 'static only');
     const upstreams = Array.from(new Set((item?.entries || []).map(entry => entry.upstream_provider_id).filter(Boolean)));
+    const rejected = (item?.entries || []).filter(entry => entry.executable === false);
     return `<div class="comm-entry"><strong>${escapeHtml(provider.id)} · ${escapeHtml(status)}</strong>
       <small>Mode: ${provider.catalog_discovery_enabled ? 'provider discovery' : 'static definitions'} · TTL ${escapeHtml(provider.catalog_ttl_seconds || 300)}s · Entries ${escapeHtml(item?.entries?.length || 0)}</small>
       <small>Revision: ${escapeHtml(item?.revision || 'none')} · discovered ${timeText(item?.discovered_at)} · expires ${timeText(item?.expires_at)} · upstreams ${listText(upstreams)}</small>
+      ${rejected.length ? `<small>Runtime/access exclusions: ${rejected.map(entry => `${escapeHtml(entry.concrete_model)} (${escapeHtml(entry.exclusion_reason || "runtime rejected")})`).join(", ")}</small>` : ''}
       ${item?.error ? `<small>Last error: ${escapeHtml(item.error)}</small>` : ''}
       <button type="button" class="ghost-button" data-model-catalog-refresh="${escapeHtml(provider.id)}">Refresh catalog</button></div>`;
   }).join('') || '<div class="comm-entry"><strong>No providers registered.</strong></div>';
@@ -17,7 +19,7 @@ export function renderModelDefinitions({ host, items, escapeHtml, listText, refe
   if (!host) return;
   host.innerHTML = items.map((item) => `<div class="comm-entry" ${referenceAttributes("model", item.id)}>
     <strong>${escapeHtml(item.id)} · ${escapeHtml(item.lifecycle)}</strong>
-    <small>Provider: ${referenceLink("model_provider", item.provider_id)} · Concrete model: ${escapeHtml(item.concrete_model)}${item.model_version ? ` · version ${escapeHtml(item.model_version)}` : ""}</small>
+    <small>Provider: ${referenceLink("model_provider", item.provider_id)} · Concrete model: ${escapeHtml(item.concrete_model)}${item.model_version ? ` · version ${escapeHtml(item.model_version)}` : ""} · family ${escapeHtml(item.model_family || "unspecified")}</small>
     <small>Availability: ${escapeHtml(item.availability_source || "static")} · Upstream: ${escapeHtml(item.upstream_provider_id || "unknown")} / ${escapeHtml(item.upstream_model_id || "unknown")}</small>
     <small>Classes: ${listText(item.model_classes)} · Workloads: ${listText(item.workload_classes)} · Capabilities: ${listText(item.capabilities)} · Modalities: ${listText(item.modalities)} · Tools: ${item.supports_tools ? "yes" : "no"}</small>
     <small>Context: ${escapeHtml(item.context_window_tokens)} · Max output: ${escapeHtml(item.max_output_tokens)} · Latency: ${escapeHtml(item.latency_class)} · Route priority: ${escapeHtml(item.route_priority)}</small>

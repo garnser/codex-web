@@ -16,6 +16,9 @@ class ModelGatewayManagementUiTests(unittest.TestCase):
         catalog_fields = (ROOT / "static" / "model_catalog_fields.js").read_text(
             encoding="utf-8"
         )
+        provider_catalog_fields = (
+            ROOT / "static" / "model_provider_catalog_fields.js"
+        ).read_text(encoding="utf-8")
 
         self.assertIn('id="model-gateway-management-panel"', html)
         self.assertIn('id="model-definition-workloads"', html)
@@ -35,7 +38,8 @@ class ModelGatewayManagementUiTests(unittest.TestCase):
         self.assertIn("input_price_per_million_usd", javascript)
         self.assertIn("output_price_per_million_usd", javascript)
         self.assertIn("workload_classes", javascript)
-        self.assertIn("catalog_discovery_enabled", catalog_fields)
+        self.assertIn("model_provider_catalog_fields.js", catalog_fields)
+        self.assertIn("catalog_discovery_enabled", provider_catalog_fields)
         self.assertIn("availability_source", catalog_fields)
         self.assertIn("Existing version content is immutable", javascript)
         self.assertIn("Empty allowlists mean unrestricted", javascript)

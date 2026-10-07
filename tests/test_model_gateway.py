@@ -30,6 +30,7 @@ from codex_web.model_gateway import (
     TenantModelPolicyUpdate,
 )
 from codex_web.model_qualification import (
+    CriticIndependenceLevel,
     ModelQualificationStatus,
     ModelQualificationUpdate,
     ModelRoutingDefinitionCreate,
@@ -46,6 +47,7 @@ from codex_web.input_plugins import (
 )
 from codex_web.model_providers import (
     ModelProviderAdapter,
+    ModelProviderAdapterError,
     ModelProviderCapacityError,
     ModelProviderTransientError,
     OpenAIModelProviderAdapter,
@@ -82,6 +84,7 @@ class _FakeAdapter:
         self.capacity_models: set[str] = set()
         self.catalogs: dict[str, tuple[ModelCatalogEntry, ...]] = {}
         self.catalog_error: set[str] = set()
+        self.access_rejected_models: set[str] = set()
         self.reported_cost: tuple[float, str] | None = None
 
     async def discover_models(self, provider, *, credential):
@@ -100,6 +103,10 @@ class _FakeAdapter:
             )
         if model.id in self.transient_models:
             raise ModelProviderTransientError("temporary provider outage")
+        if model.id in self.access_rejected_models:
+            raise ModelProviderAdapterError(
+                "The model is not supported when using Codex with a ChatGPT account"
+            )
         reported_cost, reported_currency = self.reported_cost or (None, None)
         return ModelProviderResult(
             text=f"reply:{model.id}",
@@ -242,7 +249,7 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(migrated.schema_version, MODEL_GATEWAY_CONTRACT.current)
-        self.assertEqual(MODEL_GATEWAY_CONTRACT.current, "1.6")
+        self.assertEqual(MODEL_GATEWAY_CONTRACT.current, "1.7")
         self.assertIn("1.0", MODEL_GATEWAY_CONTRACT.supported)
         self.assertIn("1.1", MODEL_GATEWAY_CONTRACT.supported)
         self.assertIn("1.2", MODEL_GATEWAY_CONTRACT.supported)
@@ -304,6 +311,232 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
             ["static"],
         )
 
+    async def test_active_runtime_catalog_gates_advertised_chatgpt_models(self) -> None:
+        self._provider(
+            "codex",
+            provider_family="openai",
+            runtime_provider="codex",
+            access_source="chatgpt_subscription",
+            usage_semantics="entitlement",
+            health="healthy",
+            catalog_discovery_enabled=True,
+            catalog_required=True,
+            catalog_ttl_seconds=60,
+        )
+        self.adapter.catalogs["codex"] = (
+            ModelCatalogEntry(
+                concrete_model="gpt-6.1-sol",
+                runtime_provider="codex",
+                access_source="chatgpt_subscription",
+                executable=False,
+                exclusion_reason="not supported with a ChatGPT account",
+            ),
+            ModelCatalogEntry(
+                concrete_model="gpt-6-astra",
+                runtime_provider="codex",
+                access_source="chatgpt_subscription",
+            ),
+        )
+        await self.service.refresh_catalog("codex", actor=self.actor)
+        self._model(
+            "catalog-advertised-but-rejected",
+            "codex",
+            concrete_model="gpt-6.1-sol",
+            availability_source="discovered",
+        )
+        self._model(
+            "chatgpt-executable",
+            "codex",
+            concrete_model="gpt-6-astra",
+            availability_source="discovered",
+        )
+
+        route = self.service.route(self._request(), actor=self.actor)
+
+        self.assertEqual([item.model_id for item in route.candidates], ["chatgpt-executable"])
+        self.assertEqual(route.candidates[0].runtime_provider, "codex")
+        self.assertEqual(route.candidates[0].access_source.value, "chatgpt_subscription")
+        self.assertEqual(route.candidates[0].usage_semantics.value, "entitlement")
+        self.assertTrue(route.active_candidate_set_revision)
+        self.assertIn(
+            "runtime_access_rejected",
+            next(
+                item.reason for item in route.excluded_candidates
+                if item.model_id == "catalog-advertised-but-rejected"
+            ),
+        )
+        eligibility = self.service.provider_eligibility(self.actor)[0]
+        self.assertEqual(eligibility.executable_model_ids, ("chatgpt-executable",))
+
+    async def test_unauthenticated_disabled_and_unhealthy_providers_never_expand_pool(self) -> None:
+        self._provider("ready", health="healthy")
+        self._provider(
+            "missing-auth",
+            credential_required=True,
+            credential_ref=None,
+            health="healthy",
+        )
+        self._provider("disabled", status="disabled", health="healthy")
+        self._provider("unhealthy", health="unavailable")
+        for provider_id in ("ready", "missing-auth", "disabled", "unhealthy"):
+            self._model(provider_id, provider_id)
+
+        route = self.service.route(self._request(), actor=self.actor)
+        self.assertEqual([item.model_id for item in route.candidates], ["ready"])
+        states = {item.provider_id: item for item in route.provider_eligibility}
+        self.assertTrue(states["ready"].eligible)
+        self.assertIn("authentication_missing", states["missing-auth"].exclusion_reasons)
+        self.assertIn("provider_disabled", states["disabled"].exclusion_reasons)
+        self.assertIn("provider_unavailable", states["unhealthy"].exclusion_reasons)
+
+    async def test_runtime_access_rejection_fences_future_catalog_routing(self) -> None:
+        self._provider(
+            "codex",
+            provider_family="openai",
+            runtime_provider="codex",
+            access_source="chatgpt_subscription",
+            usage_semantics="entitlement",
+            health="healthy",
+            catalog_discovery_enabled=True,
+            catalog_required=True,
+            catalog_ttl_seconds=60,
+        )
+        self.adapter.catalogs["codex"] = (
+            ModelCatalogEntry(concrete_model="gpt-6.1-sol"),
+            ModelCatalogEntry(concrete_model="gpt-6-astra"),
+        )
+        await self.service.refresh_catalog("codex", actor=self.actor)
+        self._model(
+            "sol",
+            "codex",
+            concrete_model="gpt-6.1-sol",
+            availability_source="discovered",
+            route_priority=1,
+        )
+        self._model(
+            "astra",
+            "codex",
+            concrete_model="gpt-6-astra",
+            availability_source="discovered",
+            route_priority=2,
+        )
+        self.adapter.access_rejected_models.add("sol")
+
+        result = await self.service.invoke(self._request(), actor=self.actor)
+
+        self.assertEqual(result.invocation.selected_model_id, "astra")
+        self.assertEqual([item.outcome for item in result.invocation.attempts], ["failure", "success"])
+        reroute = self.service.route(self._request(), actor=self.actor)
+        self.assertEqual([item.model_id for item in reroute.candidates], ["astra"])
+        rejected = next(
+            item for item in self.service.list_catalogs(self.actor)[0].entries
+            if item.concrete_model == "gpt-6.1-sol"
+        )
+        self.assertFalse(rejected.executable)
+        self.assertEqual(rejected.runtime_provider, "codex")
+        self.assertEqual(rejected.access_source.value, "chatgpt_subscription")
+
+    async def test_provider_add_and_disable_changes_candidate_set_without_domain_change(self) -> None:
+        self._provider("p1", health="healthy")
+        self._model("m1", "p1")
+        first = self.service.route(self._request(), actor=self.actor)
+        self._provider("p2", health="healthy")
+        self._model("m2", "p2", route_priority=1)
+        expanded = self.service.route(self._request(), actor=self.actor)
+        self.assertEqual([item.model_id for item in expanded.candidates], ["m2", "m1"])
+        self.assertNotEqual(first.active_candidate_set_revision, expanded.active_candidate_set_revision)
+        self._provider("p2", health="healthy", status="disabled")
+        contracted = self.service.route(self._request(), actor=self.actor)
+        self.assertEqual([item.model_id for item in contracted.candidates], ["m1"])
+        self.assertNotEqual(expanded.active_candidate_set_revision, contracted.active_candidate_set_revision)
+
+    async def test_entitlement_execution_does_not_fabricate_realized_api_cost(self) -> None:
+        self._provider(
+            "codex",
+            provider_family="openai",
+            runtime_provider="codex",
+            access_source="chatgpt_subscription",
+            usage_semantics="entitlement",
+            health="healthy",
+        )
+        self._model("entitled", "codex")
+
+        result = await self.service.invoke(self._request(), actor=self.actor)
+
+        attempt = result.invocation.attempts[0]
+        self.assertIsNone(attempt.actual_cost)
+        self.assertIsNone(attempt.actual_cost_usd)
+        self.assertIsNone(attempt.cost_source)
+        self.assertEqual(result.invocation.selected_usage_semantics.value, "entitlement")
+
+    async def test_newly_qualified_provider_expands_active_mapping_without_domain_change(self) -> None:
+        self._provider("p1", health="healthy")
+        self._model("m1", "p1", workload_classes=("architecture",))
+        profile = self.service.upsert_evaluation_profile(
+            WorkloadEvaluationProfileUpsert(
+                workload_class="architecture",
+                minimum_quality_score=0.5,
+            ),
+            actor=self.actor,
+        )
+
+        def resolve(run_id, *, actor):
+            del actor
+            return types.SimpleNamespace(
+                passed=True,
+                models=(types.SimpleNamespace(model_id=run_id.removeprefix("run-")),),
+                suite_ids=(),
+                trace=types.SimpleNamespace(quality_score=0.9, cost_usd=0.1),
+            )
+
+        self.service.evaluation_run_resolver = resolve
+
+        def qualify(model_id):
+            self.service.record_qualification(
+                ModelQualificationUpdate(
+                    model_id=model_id,
+                    workload_class="architecture",
+                    status="qualified",
+                    evaluation_profile_revision=profile.revision,
+                    evaluation_run_ids=(f"run-{model_id}",),
+                    reason="provider runtime qualification passed",
+                ),
+                actor=self.actor,
+            )
+
+        qualify("m1")
+        self.service.publish_routing_definition(
+            ModelRoutingDefinitionCreate(
+                mapping_id="dynamic-provider-pool",
+                function_id="executive-advice",
+                workload_class="architecture",
+                primary_model_ids=("m1",),
+                qualification_revision="dynamic-eval",
+                evaluated_at=self.now,
+            ),
+            actor=self.actor,
+        )
+        first = self.service.route(
+            self._request(workload_class="architecture"),
+            actor=self.actor,
+        )
+        self.assertEqual([item.model_id for item in first.candidates], ["m1"])
+
+        self._provider("p2", health="healthy")
+        self._model("m2", "p2", workload_classes=("architecture",))
+        qualify("m2")
+        expanded = self.service.route(
+            self._request(workload_class="architecture"),
+            actor=self.actor,
+        )
+        self.assertEqual([item.model_id for item in expanded.candidates], ["m1", "m2"])
+        self._provider("p1", health="healthy", status="disabled")
+        contracted = self.service.route(
+            self._request(workload_class="architecture"),
+            actor=self.actor,
+        )
+        self.assertEqual([item.model_id for item in contracted.candidates], ["m2"])
+
     async def test_v1_2_state_migrates_task_routing_provenance(self) -> None:
         migrated = self.service.store._decode(
             {
@@ -323,7 +556,7 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        self.assertEqual(migrated.schema_version, "1.6")
+        self.assertEqual(migrated.schema_version, "1.7")
         self.assertEqual(migrated.models[0].workload_classes, ())
 
     @staticmethod
@@ -986,6 +1219,10 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(primary.candidates[0].model_id, "architect")
         self.assertEqual(critic.candidates[0].model_id, "critic")
+        self.assertEqual(
+            critic.achieved_critic_independence,
+            CriticIndependenceLevel.DIFFERENT_PROVIDER_FAMILY.value,
+        )
         self.assertEqual(primary.routing_definition_id, mapping.mapping_id)
         self.assertEqual(primary.routing_definition_revision, 1)
         self.assertEqual(
@@ -1007,6 +1244,166 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ModelRoutingError, "qualification_not_active"):
             self.service.route(
                 self._request(workload_class="architecture"),
+                actor=self.actor,
+            )
+
+    async def test_qualification_does_not_cross_provider_runtime_identity(self) -> None:
+        self._provider("codex", runtime_provider="codex", health="healthy")
+        self._provider("api", runtime_provider="openai_api", health="healthy")
+        self._model("architect", "codex", workload_classes=("architecture",))
+        profile = self.service.upsert_evaluation_profile(
+            WorkloadEvaluationProfileUpsert(
+                workload_class="architecture",
+                minimum_quality_score=0.5,
+            ),
+            actor=self.actor,
+        )
+        self.service.evaluation_run_resolver = lambda run_id, actor: types.SimpleNamespace(
+            passed=True,
+            models=(types.SimpleNamespace(model_id="architect"),),
+            suite_ids=(),
+            trace=types.SimpleNamespace(quality_score=0.9, cost_usd=0.1),
+        )
+        self.service.record_qualification(
+            ModelQualificationUpdate(
+                model_id="architect",
+                workload_class="architecture",
+                status="qualified",
+                evaluation_profile_revision=profile.revision,
+                evaluation_run_ids=("codex-run",),
+                reason="qualified on the Codex runtime",
+            ),
+            actor=self.actor,
+        )
+        self._model("architect", "api", workload_classes=("architecture",))
+
+        with self.assertRaisesRegex(
+            ModelRegistryConflictError,
+            "production-qualified",
+        ):
+            self.service.publish_routing_definition(
+                ModelRoutingDefinitionCreate(
+                    mapping_id="runtime-scoped",
+                    function_id="executive-advice",
+                    workload_class="architecture",
+                    primary_model_ids=("architect",),
+                    qualification_revision="api-eval",
+                    evaluated_at=self.now,
+                ),
+                actor=self.actor,
+            )
+
+    async def test_critic_independence_degrades_explicitly_and_enforces_minimum(self) -> None:
+        self._provider(
+            "codex",
+            provider_family="openai",
+            runtime_provider="codex",
+            health="healthy",
+        )
+        self._model(
+            "primary",
+            "codex",
+            model_family="gpt-6",
+            workload_classes=("architecture",),
+        )
+        self._model(
+            "critic-family",
+            "codex",
+            model_family="o-series",
+            workload_classes=("architecture",),
+        )
+        profile = self.service.upsert_evaluation_profile(
+            WorkloadEvaluationProfileUpsert(
+                workload_class="architecture",
+                minimum_quality_score=0.5,
+            ),
+            actor=self.actor,
+        )
+
+        def resolve(run_id, *, actor):
+            del actor
+            return types.SimpleNamespace(
+                passed=True,
+                models=(types.SimpleNamespace(model_id=run_id.removeprefix("run-")),),
+                suite_ids=(),
+                trace=types.SimpleNamespace(quality_score=0.9, cost_usd=0.1),
+            )
+
+        self.service.evaluation_run_resolver = resolve
+        for model_id in ("primary", "critic-family"):
+            self.service.record_qualification(
+                ModelQualificationUpdate(
+                    model_id=model_id,
+                    workload_class="architecture",
+                    status="qualified",
+                    evaluation_profile_revision=profile.revision,
+                    evaluation_run_ids=(f"run-{model_id}",),
+                    reason="qualified critic evidence",
+                ),
+                actor=self.actor,
+            )
+        self.service.publish_routing_definition(
+            ModelRoutingDefinitionCreate(
+                mapping_id="critic-degraded",
+                function_id="executive-advice",
+                workload_class="architecture",
+                primary_model_ids=("primary",),
+                critic_model_ids=("critic-family",),
+                qualification_revision="critic-eval",
+                evaluated_at=self.now,
+                minimum_critic_independence="same_model_independent_run",
+            ),
+            actor=self.actor,
+        )
+        degraded = self.service.route(
+            self._request(
+                workload_class="architecture",
+                routing_role="critic",
+            ),
+            actor=self.actor,
+        )
+        self.assertEqual(degraded.candidates[0].model_id, "critic-family")
+        self.assertEqual(
+            degraded.achieved_critic_independence,
+            CriticIndependenceLevel.DIFFERENT_MODEL_FAMILY_SAME_PROVIDER.value,
+        )
+
+        self._model(
+            "critic-family",
+            "codex",
+            model_family="o-series",
+            workload_classes=("architecture",),
+            lifecycle="disabled",
+        )
+        same_model = self.service.route(
+            self._request(workload_class="architecture", routing_role="critic"),
+            actor=self.actor,
+        )
+        self.assertEqual(same_model.candidates[0].model_id, "primary")
+        self.assertEqual(
+            same_model.achieved_critic_independence,
+            CriticIndependenceLevel.SAME_MODEL_INDEPENDENT_RUN.value,
+        )
+
+        current = self.service.list_routing_definitions(self.actor)[-1]
+        stricter = current.model_dump(
+            mode="python",
+            exclude={
+                "id", "organization_id", "workspace_id", "revision",
+                "previous_revision_id", "previous_known_good_revision_id",
+                "active", "created_by", "created_at",
+            },
+        )
+        stricter["minimum_critic_independence"] = (
+            "different_model_family_same_provider"
+        )
+        self.service.publish_routing_definition(
+            ModelRoutingDefinitionCreate(**stricter),
+            actor=self.actor,
+        )
+        with self.assertRaisesRegex(ModelRoutingError, "minimum_critic_independence_not_met"):
+            self.service.route(
+                self._request(workload_class="architecture", routing_role="critic"),
                 actor=self.actor,
             )
 
@@ -1186,6 +1583,8 @@ class ModelGatewayApiAssuranceTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         self.service = ModelGatewayService(ModelGatewayStore(SQLiteStateStore(root / "state.sqlite3")))
+        self.adapter = _FakeAdapter()
+        self.service.register_adapter(self.adapter)
         self.actor = AuthenticationActor(
             identity_id="admin",
             principal_kind=PrincipalKind.HUMAN,
@@ -1303,20 +1702,25 @@ class ModelGatewayApiAssuranceTests(unittest.TestCase):
         )
         self.assertTrue(route.json()["prefer_lower_cost"])
         self.assertEqual(route.json()["candidates"][0]["model_id"], "m1")
+        eligibility = self.client.get("/api/model-gateway/provider-eligibility")
+        self.assertEqual(eligibility.status_code, 200)
+        self.assertTrue(eligibility.json()["items"][0]["eligible"])
+        self.assertEqual(
+            eligibility.json()["items"][0]["executable_model_ids"],
+            ["m1"],
+        )
 
     def test_mfa_human_can_refresh_and_inspect_provider_scoped_catalog(self) -> None:
         self.actor = self.actor.model_copy(
             update={"assurance": AuthenticationAssurance.MFA}
         )
-        adapter = _FakeAdapter()
-        adapter.catalogs["aggregate"] = (
+        self.adapter.catalogs["aggregate"] = (
             ModelCatalogEntry(
                 concrete_model="openai/gpt-coding",
                 upstream_provider_id="openai",
                 upstream_model_id="gpt-coding",
             ),
         )
-        self.service.register_adapter(adapter)
         provider = self.client.put(
             "/api/model-gateway/providers/aggregate",
             json={

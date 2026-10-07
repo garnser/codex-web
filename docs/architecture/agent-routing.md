@@ -6,14 +6,14 @@ Runtime and model selection are deterministic application logic; model reasoning
 
 ## Boundaries
 
-Codex-web keeps model inference routing and execution-agent routing separate:
+Codex-web keeps their registries separate and intersects their eligibility during planning:
 
 - ModelGatewayService owns model-provider/model selection, model allowlists, prompt/model policy, residency/compliance constraints, and model token/cost budgets.
 - AgentProviderService owns canonical provider identity, declared-versus-granted capabilities, lifecycle, compatibility, extension provenance, and provider health.
 - AgentRuntimeRegistry owns code-backed runtime adapter registrations and their capability revision plus routing metadata.
 - AgentRoutingService combines those existing boundaries into one deterministic execution plan. It does not create a second model registry, runtime lifecycle, permission system, or source of provider truth.
 
-A request may therefore select an OpenAI model and a Claude execution runtime, or the reverse, when both choices independently satisfy effective policy.
+A request may select a model only through an execution runtime whose AgentProvider binding declares that Model Gateway provider compatible. Unlinked legacy runtimes retain their existing unconstrained compatibility semantics until explicit links are configured.
 
 ## Runtime routing request
 
@@ -30,7 +30,8 @@ Candidates are resolved deterministically:
 3. Apply provider/runtime allowlists.
 4. Apply residency, compliance, sandbox, network and cost constraints.
 5. Query runtime health and reject unavailable runtimes.
-6. Rank surviving candidates by explicit provider preference, explicit runtime preference, health degradation, then stable provider/runtime identifiers.
+6. For a request containing model inference, constrain Model Gateway routing to each runtime's linked model-provider IDs and reject empty intersections.
+7. Rank and select the first executable runtime/model pair by explicit preferences, health degradation, then stable identifiers.
 
 A degraded provider/runtime can remain eligible but sorts behind an otherwise equivalent healthy candidate. An unavailable provider/runtime is ineligible.
 
@@ -46,7 +47,7 @@ If a cost ceiling is supplied but a runtime has no cost metadata, that runtime i
 
 A selected runtime records or exposes the AgentProvider ID and provider revision, AgentRuntime ID/type, runtime capability revision, effective capabilities, provider/runtime health at selection time, applicable runtime routing metadata, and deterministic routing reason.
 
-Independent model routing retains the existing model-provider/model IDs, model/prompt versions, model-policy fingerprint and routing reason from ModelGatewayService.
+The selected plan retains model-provider/model IDs, access semantics, active candidate-set and catalog revisions, exclusions, qualification, model/prompt versions, model-policy fingerprint, and routing reason from ModelGatewayService.
 
 Execution/session persistence must carry the selected runtime binding so later capability/provider changes cannot silently reinterpret an in-flight assignment. Downstream replay/evaluation work should pin the same routing provenance.
 

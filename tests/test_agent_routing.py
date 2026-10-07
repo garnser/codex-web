@@ -40,6 +40,7 @@ from codex_web.model_gateway import (
 )
 from codex_web.services.agent_providers import AgentProviderService
 from codex_web.services.agent_routing import AgentRoutingError, AgentRoutingService
+from codex_web.services.model_gateway import ModelRoutingError
 from codex_web.services.agent_routing_configuration import (
     AGENT_ROUTING_PREFERRED_PROVIDERS,
     MODEL_ROUTING_ALLOW_FALLBACK,
@@ -104,6 +105,8 @@ class _ModelGateway:
 
     def route(self, request, *, actor):
         self.calls.append((request, actor))
+        if request.allowed_provider_ids and self.provider_id not in request.allowed_provider_ids:
+            raise ModelRoutingError("runtime_provider_incompatible")
         return ModelRouteResult(
             model_class=request.model_class,
             prompt_template_id="generic.system",
@@ -155,8 +158,9 @@ class AgentRoutingServiceTests(unittest.IsolatedAsyncioTestCase):
         health: AgentProviderHealth = AgentProviderHealth.HEALTHY,
         residency_tags: tuple[str, ...] = (),
         compliance_tags: tuple[str, ...] = (),
+        model_provider_ids: tuple[str, ...] = (),
     ) -> None:
-        self.providers.upsert(
+        record = self.providers.upsert(
             AgentProviderUpsert(
                 id=provider_id,
                 display_name=provider_id,
@@ -168,6 +172,11 @@ class AgentRoutingServiceTests(unittest.IsolatedAsyncioTestCase):
             ),
             actor=self.actor,
         )
+        if model_provider_ids:
+            self.providers.store.upsert(
+                record.model_copy(update={"model_provider_ids": model_provider_ids}),
+                expected_revision=record.revision,
+            )
 
     def _runtime(
         self,
@@ -242,6 +251,49 @@ class AgentRoutingServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.model_route.candidates[0].provider_id, "openai")
         self.assertEqual(len(models.calls), 1)
+
+    async def test_model_selection_intersects_each_runtime_provider_binding(self) -> None:
+        capabilities = (AgentProviderCapability.AGENT_EXECUTION,)
+        self._provider(
+            "a-first-runtime",
+            capabilities,
+            model_provider_ids=("anthropic-api",),
+        )
+        self._provider(
+            "z-codex-runtime",
+            capabilities,
+            model_provider_ids=("openai-chatgpt",),
+        )
+        self._runtime("a-first-runtime", "first", capabilities)
+        self._runtime("z-codex-runtime", "codex", capabilities)
+        models = _ModelGateway("openai-chatgpt")
+        service = AgentRoutingService(
+            self.providers,
+            self.runtimes,
+            model_gateway=models,
+        )
+
+        result = await service.route(
+            AgentRoutingRequest(
+                project_id="project-a",
+                model_request=ModelInvocationRequest(
+                    model_class="primary-coding",
+                    messages=(),
+                ),
+            ),
+            actor=self.actor,
+        )
+
+        self.assertEqual(result.selected_runtime.provider_id, "z-codex-runtime")
+        self.assertEqual(len(models.calls), 2)
+        self.assertEqual(
+            models.calls[0][0].allowed_provider_ids,
+            ("anthropic-api",),
+        )
+        self.assertEqual(
+            models.calls[1][0].allowed_provider_ids,
+            ("openai-chatgpt",),
+        )
 
     async def test_codex_routes_every_supported_execution_sandbox_profile(self) -> None:
         capabilities = (
