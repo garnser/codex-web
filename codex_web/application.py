@@ -3464,6 +3464,7 @@ install_thread_compatibility_facade(
     app,
     core,
     canonical_settings=thread_execution_settings_service,
+    canonical_recovery=thread_recovery_service,
 )
 
 async def _resume_provider_capacity_wait(wait):

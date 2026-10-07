@@ -236,6 +236,7 @@ def install_thread_compatibility_facade(
     host: Any,
     *,
     canonical_settings: ThreadExecutionSettingsService,
+    canonical_recovery: ThreadRecoveryService | None = None,
 ) -> tuple[ThreadService, TurnService, ThreadRecoveryService]:
     """Preserve direct import-server behavior without coupling production routes.
 
@@ -283,30 +284,33 @@ def install_thread_compatibility_facade(
         event_sink=lambda payload: host._append_bot_event(payload),
         truncate_text=lambda value, limit: host._truncate_text(value, limit),
     )
+    published_recovery = canonical_recovery or compat_recovery_service
 
     # The compatibility host keeps the old names, but every implementation is
-    # the extracted recovery service.
-    host._logical_binding_name = compat_recovery_service.logical_binding_name
-    host._same_logical_binding = compat_recovery_service.same_logical_binding
+    # the extracted recovery service. Production supplies its canonical,
+    # assignment-aware instance so this facade cannot replace it with an
+    # unbound compatibility instance after application composition.
+    host._logical_binding_name = published_recovery.logical_binding_name
+    host._same_logical_binding = published_recovery.same_logical_binding
     host._preferred_binding_for_replacement = (
-        compat_recovery_service.preferred_binding_for_replacement
+        published_recovery.preferred_binding_for_replacement
     )
     host._retarget_logical_bot_bindings = (
-        compat_recovery_service.retarget_logical_bot_bindings
+        published_recovery.retarget_logical_bot_bindings
     )
-    host._retarget_thread_settings = compat_recovery_service.retarget_thread_settings
-    host._retarget_active_turn = compat_recovery_service.retarget_active_turn
-    host._retarget_turn_queue = compat_recovery_service.retarget_turn_queue
-    host._retarget_slack_thread_icon = compat_recovery_service.retarget_slack_thread_icon
-    host._retarget_bot_thread_state = compat_recovery_service.retarget_bot_thread_state
-    host._archive_replaced_bot_thread = compat_recovery_service.archive_replaced_bot_thread
-    host._replace_stale_bot_thread = compat_recovery_service.replace_stale_bot_thread
-    host._replace_stale_web_thread = compat_recovery_service.replace_stale_web_thread
-    host._active_turn_stale_seconds = compat_recovery_service.active_turn_stale_seconds
-    host._active_turn_is_stale = compat_recovery_service.active_turn_is_stale
-    host._release_stale_active_turn = compat_recovery_service.release_stale_active_turn
-    host._replacement_thread_id = compat_recovery_service.replacement_thread_id
-    host._raise_if_thread_replaced = compat_recovery_service.raise_if_thread_replaced
+    host._retarget_thread_settings = published_recovery.retarget_thread_settings
+    host._retarget_active_turn = published_recovery.retarget_active_turn
+    host._retarget_turn_queue = published_recovery.retarget_turn_queue
+    host._retarget_slack_thread_icon = published_recovery.retarget_slack_thread_icon
+    host._retarget_bot_thread_state = published_recovery.retarget_bot_thread_state
+    host._archive_replaced_bot_thread = published_recovery.archive_replaced_bot_thread
+    host._replace_stale_bot_thread = published_recovery.replace_stale_bot_thread
+    host._replace_stale_web_thread = published_recovery.replace_stale_web_thread
+    host._active_turn_stale_seconds = published_recovery.active_turn_stale_seconds
+    host._active_turn_is_stale = published_recovery.active_turn_is_stale
+    host._release_stale_active_turn = published_recovery.release_stale_active_turn
+    host._replacement_thread_id = published_recovery.replacement_thread_id
+    host._raise_if_thread_replaced = published_recovery.raise_if_thread_replaced
 
     recovery = _Recovery(host)
     compat_thread_service = ThreadService(
