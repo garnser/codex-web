@@ -25,6 +25,7 @@ from codex_web.authority import (
 )
 from codex_web.control_plane_broker import (
     ControlPlaneBrokerAuditEvent,
+    ControlPlaneBrokerAuditState,
     ControlPlaneBrokerDecision,
     ControlPlaneBrokerLimits,
 )
@@ -56,28 +57,54 @@ from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
 class ControlPlaneBrokerAuditStoreTests(unittest.TestCase):
+    @staticmethod
+    def _event(index: int) -> ControlPlaneBrokerAuditEvent:
+        return ControlPlaneBrokerAuditEvent(
+            id=f"audit-{index}",
+            occurred_at=float(index),
+            organization_id="local",
+            workspace_id="default",
+            execution_id="exec-1",
+            assignment_id="assignment-1",
+            worker_id="worker-1",
+            fence=1,
+            method="GET",
+            path="/api/work-items/item-1",
+            decision=ControlPlaneBrokerDecision.ALLOW,
+            correlation_id=f"correlation-{index}",
+        )
+
     def test_append_does_not_revalidate_retained_events(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ControlPlaneBrokerAuditStore(
                 SQLiteStateStore(Path(directory) / "state.sqlite3")
             )
-            event = ControlPlaneBrokerAuditEvent(
-                organization_id="local",
-                workspace_id="default",
-                execution_id="exec-1",
-                assignment_id="assignment-1",
-                worker_id="worker-1",
-                fence=1,
-                method="GET",
-                path="/api/work-items/item-1",
-                decision=ControlPlaneBrokerDecision.ALLOW,
-                correlation_id="correlation-1",
-            )
+            event = self._event(1)
 
             with patch.object(store, "_decode", side_effect=AssertionError):
                 store.append(event)
 
             self.assertEqual(store.load().events, [event])
+
+    def test_append_migrates_legacy_history_to_keyed_records(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sqlite = SQLiteStateStore(Path(directory) / "state.sqlite3")
+            store = ControlPlaneBrokerAuditStore(sqlite)
+            first = self._event(1)
+            second = self._event(2)
+            sqlite.update(
+                store.namespace,
+                lambda _current: ControlPlaneBrokerAuditState(
+                    events=[first]
+                ).model_dump(mode="json"),
+                default={},
+            )
+
+            store.append(second)
+
+            self.assertEqual(sqlite.get(store.namespace)["events"], [])
+            self.assertEqual(sqlite.record_count(store.records_namespace), 2)
+            self.assertEqual(store.load().events, [first, second])
 
 
 class _StateMachine:
