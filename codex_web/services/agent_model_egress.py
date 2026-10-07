@@ -95,6 +95,8 @@ class AssignmentBoundAgentModelEgressBroker:
         os.chmod(self._root, 0o700)
         self.socket_path = self._root / "proxy.sock"
         self.server: asyncio.AbstractServer | None = None
+        self._handler_tasks: set[asyncio.Task[None]] = set()
+        self._writers: set[asyncio.StreamWriter] = set()
         self.connections = 0
         self.denied_connections = 0
 
@@ -122,11 +124,23 @@ class AssignmentBoundAgentModelEgressBroker:
         if self.server is not None:
             return self
         self.server = await asyncio.start_unix_server(
-            self._handle,
+            self._accept,
             path=str(self.socket_path),
         )
         os.chmod(self.socket_path, 0o600)
         return self
+
+    def _accept(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        task = asyncio.create_task(
+            self._handle(reader, writer),
+            name="assignment-model-egress",
+        )
+        self._handler_tasks.add(task)
+        task.add_done_callback(self._handler_tasks.discard)
 
     def _authorized(self, headers: dict[str, str]) -> bool:
         raw = headers.get("proxy-authorization", "")
@@ -203,6 +217,7 @@ class AssignmentBoundAgentModelEgressBroker:
         writer: asyncio.StreamWriter,
     ) -> None:
         upstream_writer: asyncio.StreamWriter | None = None
+        self._writers.add(writer)
         try:
             try:
                 self._validate_current()
@@ -241,6 +256,7 @@ class AssignmentBoundAgentModelEgressBroker:
                 endpoint.host,
                 endpoint.port,
             )
+            self._writers.add(upstream_writer)
             self.connections += 1
             writer.write(
                 b"HTTP/1.1 200 Connection Established\r\n"
@@ -265,19 +281,29 @@ class AssignmentBoundAgentModelEgressBroker:
                 await self._deny(writer, "502 Bad Gateway")
         finally:
             if upstream_writer is not None:
-                with contextlib.suppress(Exception):
-                    upstream_writer.close()
-                    await upstream_writer.wait_closed()
+                self._writers.discard(upstream_writer)
+                upstream_writer.close()
+            self._writers.discard(writer)
             if not writer.is_closing():
                 writer.close()
-                with contextlib.suppress(Exception):
-                    await writer.wait_closed()
 
     async def stop(self) -> None:
         server = self.server
         self.server = None
         if server is not None:
             server.close()
+        for writer in tuple(self._writers):
+            writer.close()
+        tasks = tuple(self._handler_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            _done, pending = await asyncio.wait(tasks, timeout=1)
+            for task in pending:
+                task.cancel()
+        self._handler_tasks.difference_update(tasks)
+        self._writers.clear()
+        if server is not None:
             await server.wait_closed()
         with contextlib.suppress(FileNotFoundError):
             self.socket_path.unlink()

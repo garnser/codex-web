@@ -9,7 +9,10 @@ from codex_web.agent_routing import (
     AgentRoutingResult,
     AgentRuntimeRouteCandidate,
 )
-from codex_web.agent_runtime import AgentRuntimeHealth
+from codex_web.agent_runtime import (
+    AgentRuntimeAccountingMode,
+    AgentRuntimeHealth,
+)
 from codex_web.provider_capacity import ProviderCapacityStatus
 from codex_web.configuration import ConfigurationContext
 from codex_web.identity import AuthenticationActor
@@ -607,10 +610,15 @@ class AgentRoutingService:
                     continue
 
             if request.max_runtime_cost_usd is not None:
-                if registration.max_session_cost_usd is None:
+                if (
+                    registration.accounting_mode
+                    == AgentRuntimeAccountingMode.ALLOCATION
+                ):
+                    pass
+                elif registration.max_session_cost_usd is None:
                     rejected.append(f"{key}:runtime_pricing_required_for_budget")
                     continue
-                if registration.max_session_cost_usd > request.max_runtime_cost_usd:
+                elif registration.max_session_cost_usd > request.max_runtime_cost_usd:
                     rejected.append(f"{key}:runtime_budget_exceeded")
                     continue
 

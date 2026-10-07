@@ -283,6 +283,37 @@ class ThreadListPaginationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response["pageSize"], 100)
             self.assertEqual(len(response["data"]), 100)
 
+    async def test_global_runtime_refresh_preserves_canonical_project_membership(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repository = self._repository(root)
+            indexed = _thread(1)
+            indexed = indexed.model_copy(
+                update={"cwd": "/managed/execution-workspaces/worktree-a"}
+            )
+            repository.save([indexed])
+            runtime = _Runtime(
+                [
+                    {
+                        "id": indexed.id,
+                        "name": indexed.name,
+                        "cwd": indexed.cwd,
+                        "updatedAt": 50.0,
+                        "status": {"type": "idle"},
+                    }
+                ]
+            )
+            service = self._service(runtime, repository)
+
+            global_response = await service.list(None, limit=10)
+            project_response = await service.list("home", limit=10)
+
+            self.assertEqual(global_response["data"][0]["projectId"], "home")
+            self.assertEqual(
+                [item["id"] for item in project_response["data"]],
+                [indexed.id],
+            )
+
 
 class ThreadIndexMigrationTests(unittest.TestCase):
     def test_partial_keyed_migration_repairs_missing_indexes(self) -> None:
@@ -309,7 +340,7 @@ class ThreadIndexMigrationTests(unittest.TestCase):
             )
 
             page, cursor, truncated = repository.page(
-                project_path="/repo/home",
+                project_id="home",
                 archived=False,
                 search=None,
                 after=None,

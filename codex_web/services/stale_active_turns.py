@@ -271,6 +271,7 @@ class StaleActiveTurnRecoveryService:
         schedule_queue_drain,
         append_event,
         resume_active_threads=None,
+        record_terminal_recovery=None,
         backup_directory: Path | None = None,
         clock=time.time,
     ) -> None:
@@ -281,6 +282,7 @@ class StaleActiveTurnRecoveryService:
         self.schedule_queue_drain = schedule_queue_drain
         self.append_event = append_event
         self.resume_active_threads = resume_active_threads
+        self.record_terminal_recovery = record_terminal_recovery
         self.backup_directory = backup_directory
         self.clock = clock
         self._mutation_lock = threading.RLock()
@@ -829,10 +831,33 @@ class StaleActiveTurnRecoveryService:
                 thread_id,
                 resolved_at=now,
             )
+            self._record_terminal_projection(
+                record.original,
+                outcome=record.outcome,
+                reason_code=record.reason_code,
+                resolved_at=now,
+            )
             recovered += 1
             if record.outcome == "requeued":
                 drain.append(thread_id)
         return recovered, drain
+
+    def _record_terminal_projection(
+        self,
+        active: ActiveThreadTurn,
+        *,
+        outcome: RecoveryOutcome,
+        reason_code: str,
+        resolved_at: float,
+    ) -> None:
+        if self.record_terminal_recovery is None:
+            return
+        self.record_terminal_recovery(
+            active,
+            outcome,
+            reason_code,
+            resolved_at,
+        )
 
     def _apply_inspection(
         self,
@@ -884,6 +909,12 @@ class StaleActiveTurnRecoveryService:
             self.active_turns.delete(active.thread_id)
             applied = self.store.mark_applied(
                 active.thread_id,
+                resolved_at=now,
+            )
+            self._record_terminal_projection(
+                active,
+                outcome=inspection.outcome,
+                reason_code=inspection.reason_code,
                 resolved_at=now,
             )
             self.append_event(
@@ -1180,6 +1211,12 @@ class StaleActiveTurnRecoveryService:
                 self.active_turns.delete(thread_id)
                 applied = self.store.mark_applied(
                     thread_id,
+                    resolved_at=now,
+                )
+                self._record_terminal_projection(
+                    active,
+                    outcome=outcome,
+                    reason_code=reason_code,
                     resolved_at=now,
                 )
                 self.active_turns.flush_legacy_mirror()

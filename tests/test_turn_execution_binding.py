@@ -766,6 +766,32 @@ class TurnExecutionBindingTests(unittest.TestCase):
             THREAD_BOOTSTRAP_SESSION_SECONDS,
         )
 
+    def test_prepares_concurrent_bootstraps_in_isolated_worktrees(self) -> None:
+        self._publish_secret()
+
+        first = self.service.prepare_bootstrap(
+            bootstrap_id="bootstrap-concurrent-1",
+            execution_id="bootstrap-concurrent-exec-1",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+        second = self.service.prepare_bootstrap(
+            bootstrap_id="bootstrap-concurrent-2",
+            execution_id="bootstrap-concurrent-exec-2",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        first_workspace = self.workspaces.get(first.workspace_id, self.actor)
+        second_workspace = self.workspaces.get(second.workspace_id, self.actor)
+        self.assertNotEqual(first_workspace.path, second_workspace.path)
+        self.assertNotEqual(
+            first_workspace.branch_name,
+            second_workspace.branch_name,
+        )
+
     def test_bootstrap_lifetime_cannot_exceed_bounded_worker_workspace_contract(self) -> None:
         self._publish_secret()
 
@@ -1029,7 +1055,7 @@ class TurnExecutionBindingTests(unittest.TestCase):
         self.assertEqual(self.workspaces.list(self.actor), [])
         self.assertEqual(self.workers.list_assignments(self.actor), [])
 
-    def test_conflicting_write_lease_is_typed_and_creates_no_second_assignment(self) -> None:
+    def test_isolated_write_workspaces_create_distinct_assignments(self) -> None:
         self._publish_secret()
         first = self.service.prepare(
             thread_id="thread-first",
@@ -1039,22 +1065,18 @@ class TurnExecutionBindingTests(unittest.TestCase):
             approval_policy="on-request",
         )
 
-        with self.assertRaises(TurnExecutionBindingError) as caught:
-            self.service.prepare(
-                thread_id="thread-second",
-                execution_id="exec-second",
-                project_id=self.project.id,
-                sandbox="workspace-write",
-                approval_policy="on-request",
-            )
-
-        self.assertEqual(caught.exception.code, "lease_conflict")
-        self.assertEqual(len(self.workspaces.list(self.actor)), 1)
-        self.assertEqual(
-            self.workspaces.list(self.actor)[0].id,
-            first.workspace_id,
+        second = self.service.prepare(
+            thread_id="thread-second",
+            execution_id="exec-second",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
         )
-        self.assertEqual(len(self.workers.list_assignments(self.actor)), 1)
+
+        self.assertNotEqual(first.workspace_id, second.workspace_id)
+        self.assertNotEqual(first.assignment_id, second.assignment_id)
+        self.assertEqual(len(self.workspaces.list(self.actor)), 2)
+        self.assertEqual(len(self.workers.list_assignments(self.actor)), 2)
 
     def test_explicit_repository_target_is_persisted(self) -> None:
         self._publish_secret()

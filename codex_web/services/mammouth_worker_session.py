@@ -202,11 +202,28 @@ class MammouthCliSandboxTurnExecutor:
 
         def launch(launch_input):
             environment = dict(launch_input.environment)
+            python_environment_resolver = getattr(
+                self.local_worker,
+                "python_environment",
+                None,
+            )
+            python_environment = (
+                python_environment_resolver(assignment)
+                if callable(python_environment_resolver)
+                else None
+            )
+            if python_environment is not None:
+                environment.update(python_environment.environment)
             readonly_mounts, writable_mounts = (
                 self.local_worker.repository_mounts(assignment)
             )
             trusted_readonly = (
                 *readonly_mounts,
+                *(
+                    python_environment.readonly_mounts
+                    if python_environment is not None
+                    else ()
+                ),
                 *(
                     ((executable_dir, executable_dir),)
                     if executable_dir is not None
@@ -300,8 +317,10 @@ class MammouthCliSandboxTurnExecutor:
             try:
                 if stderr is None:
                     return
-                while stderr.read(8192):
-                    continue
+                for raw in iter(stderr.readline, ""):
+                    text = raw.rstrip("\r\n")
+                    if text.strip():
+                        submit(CliRuntimeOutput(stream="stderr", text=text))
             except Exception:
                 return
 

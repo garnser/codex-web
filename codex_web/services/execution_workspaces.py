@@ -33,7 +33,7 @@ from codex_web.execution_workspaces import (
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind, TenantScope
 from codex_web.models import Project
 from codex_web.resources import Resource, ResourceType
-from codex_web.services.identity import AuthorizationError, TenantIsolationError
+from codex_web.services.identity import AuthorizationError
 from codex_web.services.resources import ResourceCatalogService, ResourceNotFoundError
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 
@@ -622,6 +622,7 @@ class ExecutionWorkspaceService:
             if any(mode == LeaseMode.WRITE for mode in resource_modes.values())
             else LeaseMode.READ
         )
+        isolated_git_resource_ids = set(writable_repository_ids)
 
         source_paths: dict[str, Path] = {}
         if writable_repository_ids:
@@ -706,8 +707,12 @@ class ExecutionWorkspaceService:
                     "identity active execution workspace quota exceeded"
                 )
             requested = set(request.resource_ids)
+            workspaces_by_id = {item.id: item for item in state.workspaces}
             for active in active_leases:
                 overlap = requested.intersection(active.resource_ids)
+                active_workspace = workspaces_by_id.get(
+                    active.execution_workspace_id
+                )
                 conflicting = [
                     resource_id
                     for resource_id in overlap
@@ -716,6 +721,13 @@ class ExecutionWorkspaceService:
                         == LeaseMode.WRITE
                         or active.resource_modes.get(resource_id, active.mode)
                         == LeaseMode.WRITE
+                    )
+                    and not (
+                        resource_id in isolated_git_resource_ids
+                        and active_workspace is not None
+                        and active_workspace.kind
+                        == ExecutionWorkspaceKind.GIT_WORKTREE
+                        and resource_id in active_workspace.resource_ids
                     )
                 ]
                 if conflicting:

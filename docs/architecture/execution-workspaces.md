@@ -60,10 +60,11 @@ under `/mnt/codex-context/<resource-id>`; the Project root itself is never
 mounted as a compatibility shortcut.
 
 The workspace keeps one fenced canonical lease but records a per-resource mode.
-Conflict detection is resource-specific: read/read overlap is permitted, while
-any overlapping write lease fails closed. Existing single-repository workspaces
-retain the legacy top-level path/branch/base/head projection and gain one
-equivalent member record.
+Conflict detection is resource-specific. Read/read overlap is permitted, and
+repository writes may overlap only when every execution receives an independent
+Git worktree and branch. Writes to shared or non-Git resources fail closed.
+Existing single-repository workspaces retain the legacy top-level
+path/branch/base/head projection and gain one equivalent member record.
 
 Repository filesystem sources come from canonical Resource filesystem/path
 aliases. Relative aliases are resolved beneath the canonical Project root and
@@ -76,13 +77,16 @@ read-only sibling repositories require an explicit canonical filesystem source.
 Leases are reserved transactionally in SQLite before provisioning.
 
 - read/read leases may coexist;
-- any overlapping write lease conflicts;
+- isolated Git worktree leases may write the same repository concurrently;
+- overlapping writes to shared or non-Git resources conflict;
 - resource-scoped conflicts fail before a worktree is created;
 - tenant and identity quotas are evaluated against active leases;
 - workspace resource count and requested disk usage are bounded;
 - provisioning failure marks the workspace `error` and releases the reserved lease.
 
-This prevents two agents from accidentally receiving write authority over the same canonical Resource.
+This prevents two agents from accidentally sharing mutable state while allowing
+parallel repository work on isolated branches. Integration conflicts remain
+explicit canonical outcomes.
 
 ## Git isolation
 
@@ -94,6 +98,26 @@ Repository resources use `LocalGitWorkspaceBackend`:
 4. record the exact path/base/head revision canonically.
 
 The backend never uses shell interpolation.
+
+## Python environments
+
+Every filesystem execution workspace receives a codex-web-managed, writable
+`.venv` before its worker process starts. The worker launches with that
+environment first on `PATH`, sets `VIRTUAL_ENV`, and disables user-site package
+leakage. `pip` is configured to require an active virtual environment, so
+package installs remain scoped to one execution workspace and are removed with
+it.
+
+When the canonical repository has an operator-maintained `.venv`, that
+environment is mounted read-only as a baseline layer. Its site-packages and
+console scripts are available to the execution-local environment, while the
+worker cannot mutate the Project checkout's dependency environment. A Project
+without a baseline still receives an execution-local venv with `pip` and the
+worker image's code-owned system packages. User-site packages remain excluded.
+
+This environment contract does not grant generic network access. Dependency
+downloads remain subject to the assignment's brokered network policy; already
+installed baseline dependencies work without network access.
 
 Cleanup removes the worktree. Normal/expired cleanup keeps the branch so crash recovery does not destroy unmerged work; an explicit discard may delete the branch.
 

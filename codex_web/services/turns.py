@@ -48,6 +48,15 @@ class TurnExecutionRuntime(Protocol):
 
     def active_execution_id(self, thread_id: str | None) -> str | None: ...
 
+    def record_user_message(
+        self,
+        thread_id: str,
+        turn_id: str,
+        text: str,
+    ) -> None: ...
+
+    async def release_unviable_active_turn(self, thread_id: str) -> bool: ...
+
     async def start_thread_turn_now(
         self,
         thread_id: str,
@@ -388,7 +397,6 @@ class TurnService:
             "agent_profile_revision": agent_profile_revision,
         }
         execution_id = execution_id or f"thread-turn-{uuid.uuid4().hex}"
-
         async def queue_web_turn(
             event_type: str,
             reason: str | None = None,
@@ -468,6 +476,13 @@ class TurnService:
                 ),
             }
 
+        release_unviable = getattr(
+            self.execution,
+            "release_unviable_active_turn",
+            None,
+        )
+        if callable(release_unviable):
+            await release_unviable(thread_id)
         self.recovery.release_stale_active_turn(thread_id, "web:start")
         if (
             self.execution.thread_is_active(thread_id)
@@ -551,6 +566,7 @@ class TurnService:
                 )
                 result["providerKey"] = exc.record.key
                 result["capacityStatus"] = exc.record.status.value
+                result["error"] = str(exc)
                 return result
             if (
                 isinstance(exc, HTTPException)

@@ -99,6 +99,7 @@ class ThreadService:
         thread_history: ThreadHistoryRepository | None = None,
         active_turn_loader: Callable[[], dict[str, Any]] | None = None,
         active_turn_getter: Callable[[str], Any | None] | None = None,
+        transcript: Any | None = None,
     ) -> None:
         self.runtime_transport = runtime_transport
         self.runtime_request_for_thread = runtime_request_for_thread
@@ -124,6 +125,39 @@ class ThreadService:
         self.thread_history = thread_history
         self.active_turn_loader = active_turn_loader
         self.active_turn_getter = active_turn_getter
+        self.transcript = transcript
+
+    def _transcript_response(
+        self,
+        thread_id: str,
+        *,
+        degraded_error: str | None = None,
+    ) -> dict[str, Any] | None:
+        if self.transcript is None:
+            return None
+        transcript = self.transcript.read(thread_id)
+        turns = list(transcript.get("turns") or [])
+        if not turns:
+            return None
+        indexed = self.thread_index.get(thread_id) if self.thread_index else None
+        active = (
+            self.active_turn_getter(thread_id)
+            if self.active_turn_getter is not None
+            else None
+        )
+        return {
+            "ok": True,
+            "runtimeReadDegraded": bool(degraded_error),
+            "error": degraded_error,
+            "thread": {
+                "id": thread_id,
+                "name": indexed.name if indexed else "Untitled thread",
+                "cwd": indexed.cwd if indexed else None,
+                "path": indexed.path if indexed else None,
+                "turns": turns,
+                "status": {"type": "active" if active else "idle"},
+            },
+        }
 
     @staticmethod
     def _required(value: Any, name: str):
@@ -530,7 +564,7 @@ class ThreadService:
             else None
         )
         current_revision = self._index().revision(
-            project_path=project_path,
+            project_id=project_id,
         )
         if (
             cursor_payload is not None
@@ -587,6 +621,31 @@ class ThreadService:
                 )
                 if indexed is None:
                     continue
+                if indexed.project_id is None:
+                    existing = self._index().get(indexed.id)
+                    canonical_project_id = (
+                        existing.project_id
+                        if existing is not None
+                        else None
+                    )
+                    if (
+                        canonical_project_id is None
+                        and self.agent_sessions is not None
+                        and self.control_actor is not None
+                    ):
+                        session = self.agent_sessions.find_by_native_id(
+                            indexed.id,
+                            self.control_actor,
+                        )
+                        canonical_project_id = (
+                            session.project_id
+                            if session is not None
+                            else None
+                        )
+                    if canonical_project_id:
+                        indexed = indexed.model_copy(
+                            update={"project_id": canonical_project_id}
+                        )
                 # Runtime rows are kept only for bounded summary enrichment;
                 # full turns/items never enter the list projection.
                 runtime_rows[indexed.id] = item
@@ -594,7 +653,7 @@ class ThreadService:
             if indexed_updates:
                 self._index().upsert_many(indexed_updates)
             current_revision = self._index().revision(
-                project_path=project_path,
+                project_id=project_id,
             )
 
         after = (
@@ -603,7 +662,7 @@ class ThreadService:
             else None
         )
         indexed_page, next_after, scan_truncated = self._index().page(
-            project_path=project_path,
+            project_id=project_id,
             archived=archived,
             search=search,
             after=after,
@@ -1139,6 +1198,12 @@ class ThreadService:
                 canonical_response = self._canonical_history_response(thread_id)
                 if canonical_response is not None:
                     return self.trim_messages(canonical_response, limit)
+                transcript = self._transcript_response(
+                    thread_id,
+                    degraded_error=str(getattr(exc, "detail", exc)),
+                )
+                if transcript is not None:
+                    return self.trim_messages(transcript, limit)
             if self._resume().is_timeout_error(exc):
                 return self._resume().read_timeout_response(thread_id, limit, exc)
             raise
@@ -1173,6 +1238,31 @@ class ThreadService:
             )
         ):
             return self.trim_messages(canonical_response, limit)
+        if (
+            isinstance(response, dict)
+            and runtime_read_degraded
+        ):
+            transcript = self._transcript_response(
+                thread_id,
+                degraded_error=str(
+                    response.get("error") or "agent runtime session is not live"
+                ),
+            )
+            if transcript is not None:
+                return self.trim_messages(transcript, limit)
+            return self._resume().read_timeout_response(
+                thread_id,
+                limit,
+                str(response.get("error") or "agent runtime session is not live"),
+                event_type="web_read_degraded_for_runtime",
+            )
+        if (
+            not isinstance(runtime_thread, dict)
+            or not isinstance(runtime_thread.get("turns"), list)
+        ):
+            transcript = self._transcript_response(thread_id)
+            if transcript is not None:
+                return self.trim_messages(transcript, limit)
         return self.trim_messages(response, limit)
 
     async def rename(self, thread_id: str, name: str) -> dict[str, Any]:

@@ -17,7 +17,10 @@ const state={
   projectId: initialProjectId(),
   threads: [],
   threadId: null,
+  loadedThreadId: null,
   threadLoadGeneration: 0,
+  threadLoadController: null,
+  threadLoadTargetId: null,
   activeAgentMessage: null,
   approvals: new Map(),
   activeTurnsByThread: new Map(),
@@ -584,7 +587,11 @@ function renderThreads() {
       </div>
       ${actionMarkup}
     `;
-    item.querySelector(".item-main").addEventListener("click",()=>loadThread(thread.id, { historyMode: "push" }));
+    item.querySelector(".item-main").addEventListener("click",()=>loadThread(thread.id, { historyMode: "push" }).catch((error)=>{
+      if(error?.name==="AbortError"||state.threadId!==thread.id)return;
+      clearMessages();
+      addMessage("Thread unavailable",error.message,"tool",new Date());
+    }));
     item.querySelector('[data-action="expand"]').addEventListener("click",(event)=>{
       event.stopPropagation();
       toggleItemExpanded("thread",thread.id);
@@ -1263,24 +1270,48 @@ async function saveBotIntegration(event) {
   $("bot-dialog").close();
 }
 
-async function loadThread(threadId, { historyMode = "none" } = {}) {
+async function loadThread(threadId, { historyMode = "none", force = false } = {}) {
   if (!threadId) return clearSelectedThread({ historyMode });
   threadId = String(threadId);
-  if (state.threadId === threadId && threadRoute.idFromLocation() === threadId) return;
-  if (!await threadRoute.find(threadId)) return;
+  if (!force && !state.threadLoadTargetId && state.threadId === threadId && state.loadedThreadId === threadId && threadRoute.idFromLocation() === threadId) return;
+  state.threadLoadController?.abort();
+  const generation = ++state.threadLoadGeneration;
+  state.threadLoadTargetId = threadId;
+  let listedThread;
+  try {
+    listedThread = await threadRoute.find(threadId);
+  } catch (error) {
+    if (generation === state.threadLoadGeneration) state.threadLoadTargetId = null;
+    throw error;
+  }
+  if (!listedThread || generation !== state.threadLoadGeneration) return;
   if (historyMode !== "none") threadRoute.updateLocation(threadId, { historyMode });
   state.threadId = threadId;
-  const generation = ++state.threadLoadGeneration;
+  state.loadedThreadId = null;
+  clearMessages();
+  $("thread-title").textContent = listedThread.name || listedThread.preview || "Loading thread";
+  $("thread-meta").textContent = `${threadId} · Loading conversation…`;
   applyRunSettings();
   renderRepositoryTargets();
   updateWaitingFromState();
   renderTokenUsage();
+  renderThreads();
   const history = threadHistoryController();
   const readQs = new URLSearchParams();
   const messageLimit = history?.messageLimit?.(threadId);
   if (messageLimit) readQs.set("message_limit", String(messageLimit));
   const query = readQs.toString();
-  const [data]=await Promise.all([api(`/api/threads/${encodeURIComponent(threadId)}${query?`?${query}`:""}`),pfUi.load(threadId)]);
+  const controller = new AbortController();
+  state.threadLoadController = controller;
+  let data;
+  try {
+    [data]=await Promise.all([api(`/api/threads/${encodeURIComponent(threadId)}${query?`?${query}`:""}`,{signal:controller.signal}),pfUi.load(threadId)]);
+  } catch (error) {
+    if(generation===state.threadLoadGeneration)state.threadLoadTargetId=null;
+    throw error;
+  } finally {
+    if(state.threadLoadController===controller)state.threadLoadController=null;
+  }
   if (generation !== state.threadLoadGeneration || state.threadId !== threadId) return;
   const thread = data.thread || data;
   if (thread.projectId && thread.projectId !== state.projectId) {
@@ -1288,10 +1319,25 @@ async function loadThread(threadId, { historyMode = "none" } = {}) {
     addMessage("Thread unavailable", "This Thread belongs to a different Project.", "tool", new Date());
     return;
   }
+  if (data?.timedOut || thread.readTimedOut || thread.status?.type === "notLoaded") {
+    renderThread(thread);
+    addMessage(
+      "Conversation loading",
+      data?.error || "This conversation is still loading. It will refresh when the current response completes, or you can select the thread again to retry.",
+      "tool",
+      new Date(),
+    );
+    renderThreads();
+    updateWaitingFromState();
+    state.threadLoadTargetId = null;
+    return;
+  }
   history?.recordThread?.(threadId, thread);
   hydrateThreadActivity(thread);
   await refreshQueueStatus(threadId);
   if (generation !== state.threadLoadGeneration || state.threadId !== threadId) return;
+  state.loadedThreadId = threadId;
+  state.threadLoadTargetId = null;
   renderThread(thread);
   history?.afterThreadRendered?.(threadId, $("messages"));
   renderThreads();
@@ -1301,8 +1347,12 @@ async function loadThread(threadId, { historyMode = "none" } = {}) {
 }
 
 function clearSelectedThread({ historyMode = "none" } = {}) {
+  state.threadLoadController?.abort();
+  state.threadLoadController = null;
+  state.threadLoadTargetId = null;
   state.threadLoadGeneration += 1;
   state.threadId = null;
+  state.loadedThreadId = null;
   state.activeAgentMessage = null;
   if (historyMode === "replace") threadRoute.updateLocation(null, { historyMode });
   clearMessages();
@@ -1313,9 +1363,12 @@ function clearSelectedThread({ historyMode = "none" } = {}) {
   renderRepositoryTargetStatus();
 }
 
-threadHistoryController()?.configure?.({ reloadThread: loadThread });
+threadHistoryController()?.configure?.({ reloadThread: (threadId) => loadThread(threadId, { force: true }) });
 
 async function newThread() {
+  state.threadLoadController?.abort();
+  state.threadLoadController = null;
+  state.threadLoadTargetId = null;
   persistRunSettings();
   const settings = currentRunSettings();
   const qs = new URLSearchParams({
@@ -1331,6 +1384,7 @@ async function newThread() {
   const data = await api(`/api/threads?${qs}`, { method: "POST" });
   const thread = data.thread || data;
   state.threadId = thread.id;
+  state.loadedThreadId = thread.id;
   state.threadLoadGeneration += 1;
   threadRoute.updateLocation(thread.id, { historyMode: "push" });
   setWaiting(false);
@@ -1412,6 +1466,9 @@ async function sendPrompt() {
       attachQueuedSteer(message, targetThreadId, response.queuedId);
       setQueuedMessageId(message, response.queuedId);
       setThreadQueueDepth(targetThreadId, response.queueDepth || queuedDepth(targetThreadId) || 1);
+      if (response.waitingForCapacity && response.error) {
+        addMessage("Provider unavailable", response.error, "tool", new Date());
+      }
     }
   } catch (error) {
     if (willQueue) {
@@ -1564,9 +1621,19 @@ function handleEvent(event) {
   } else if (message.method === "turn/completed") {
     if (threadId === state.threadId) state.activeAgentMessage = null;
     updateWaitingFromState();
+    if (threadId === state.threadId && state.loadedThreadId !== threadId) {
+      loadThread(threadId, { force: true }).catch((error) => {
+        if (error?.name !== "AbortError") logEvent("thread.reload.error", { message: error.message });
+      });
+    }
   } else if (message.method === "turn/failed") {
     if (threadId === state.threadId) state.activeAgentMessage = null;
     updateWaitingFromState();
+    if (threadId === state.threadId && state.loadedThreadId !== threadId) {
+      loadThread(threadId, { force: true }).catch((error) => {
+        if (error?.name !== "AbortError") logEvent("thread.reload.error", { message: error.message });
+      });
+    }
   } else if (message.method === "thread/status/changed") {
     updateWaitingFromState();
   }

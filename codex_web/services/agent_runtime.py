@@ -4,6 +4,7 @@ import time
 
 from codex_web.agent_runtime import (
     AgentRuntimeAdapter,
+    AgentRuntimeAccountingMode,
     AgentRuntimeHealth,
     AgentRuntimeRegistration,
     AgentRuntimeSessionRequest,
@@ -44,6 +45,9 @@ class AgentRuntimeRegistry:
         network_profiles: tuple[str, ...] = (),
         residency_tags: tuple[str, ...] = (),
         compliance_tags: tuple[str, ...] = (),
+        accounting_mode: AgentRuntimeAccountingMode = (
+            AgentRuntimeAccountingMode.MONETARY
+        ),
         max_session_cost_usd: float | None = None,
     ) -> None:
         key = (adapter.provider_id, adapter.runtime_id)
@@ -57,6 +61,7 @@ class AgentRuntimeRegistry:
             network_profiles=tuple(dict.fromkeys(item for item in network_profiles if item)),
             residency_tags=tuple(dict.fromkeys(item for item in residency_tags if item)),
             compliance_tags=tuple(dict.fromkeys(item for item in compliance_tags if item)),
+            accounting_mode=accounting_mode,
             max_session_cost_usd=max_session_cost_usd,
         )
         existing = self._adapters.get(key)

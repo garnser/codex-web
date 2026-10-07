@@ -21,6 +21,8 @@ class ThreadIndexRepository:
     GLOBAL_NAMESPACE = "thread_index_rows"
     PROJECT_NAMESPACE = "thread_index_project_rows"
     LOOKUP_NAMESPACE = "thread_index_lookup"
+    PROJECT_INDEX_SCHEMA_NAMESPACE = "thread_index_project_index_schema"
+    PROJECT_INDEX_SCHEMA_VERSION = 2
     MAX_TIMESTAMP_MICROS = 9_999_999_999_999_999
     DEFAULT_SCAN_BUDGET = 5000
 
@@ -36,8 +38,8 @@ class ThreadIndexRepository:
         )
 
     @classmethod
-    def _scope(cls, cwd: str | None) -> str:
-        value = str(cwd or "__unknown__")
+    def _scope(cls, project_id: str) -> str:
+        value = str(project_id)
         return hashlib.sha256(value.encode()).hexdigest()[:24]
 
     @classmethod
@@ -57,9 +59,11 @@ class ThreadIndexRepository:
         )
 
     @classmethod
-    def _project_key(cls, thread: IndexedThread) -> str:
+    def _project_key(cls, thread: IndexedThread) -> str | None:
+        if not thread.project_id:
+            return None
         return (
-            f"p/{cls._scope(thread.cwd)}/"
+            f"p/{cls._scope(thread.project_id)}/"
             f"a/{int(bool(thread.archived))}/"
             f"{cls._inverse_timestamp(thread.updatedAt):016d}/"
             f"{thread.id}"
@@ -75,7 +79,17 @@ class ThreadIndexRepository:
         lookup_exists = self.store.record_collection_exists(
             self.LOOKUP_NAMESPACE
         )
-        if global_exists and project_exists and lookup_exists:
+        schema = self.store.get(self.PROJECT_INDEX_SCHEMA_NAMESPACE)
+        project_index_current = (
+            isinstance(schema, dict)
+            and schema.get("version") == self.PROJECT_INDEX_SCHEMA_VERSION
+        )
+        if (
+            global_exists
+            and project_exists
+            and lookup_exists
+            and project_index_current
+        ):
             return
 
         if global_exists:
@@ -97,26 +111,31 @@ class ThreadIndexRepository:
             project_key = self._project_key(thread)
             payload = thread.model_dump(mode="json")
             global_rows[global_key] = payload
-            project_rows[project_key] = payload
+            if project_key:
+                project_rows[project_key] = payload
             lookups[thread.id] = {
                 "globalKey": global_key,
-                "projectKey": project_key,
+                "projectKey": project_key or "",
             }
         if not global_exists:
             self.store.record_replace(
                 self.GLOBAL_NAMESPACE,
                 global_rows,
             )
-        if not project_exists:
+        if not project_exists or not project_index_current:
             self.store.record_replace(
                 self.PROJECT_NAMESPACE,
                 project_rows,
             )
-        if not lookup_exists:
+        if not lookup_exists or not project_index_current:
             self.store.record_replace(
                 self.LOOKUP_NAMESPACE,
                 lookups,
             )
+        self.store.put(
+            self.PROJECT_INDEX_SCHEMA_NAMESPACE,
+            {"version": self.PROJECT_INDEX_SCHEMA_VERSION},
+        )
 
     def _compatibility_upsert(self, thread: IndexedThread) -> None:
         threads = self._legacy_repository.load()
@@ -182,10 +201,11 @@ class ThreadIndexRepository:
             project_key = self._project_key(thread)
             payload = thread.model_dump(mode="json")
             global_rows[global_key] = payload
-            project_rows[project_key] = payload
+            if project_key:
+                project_rows[project_key] = payload
             lookups[thread.id] = {
                 "globalKey": global_key,
-                "projectKey": project_key,
+                "projectKey": project_key or "",
             }
         self.store.record_replace(self.GLOBAL_NAMESPACE, global_rows)
         self.store.record_replace(self.PROJECT_NAMESPACE, project_rows)
@@ -222,10 +242,11 @@ class ThreadIndexRepository:
             project_key = self._project_key(thread)
             payload = thread.model_dump(mode="json")
             global_upserts[global_key] = payload
-            project_upserts[project_key] = payload
+            if project_key:
+                project_upserts[project_key] = payload
             lookup_upserts[thread.id] = {
                 "globalKey": global_key,
-                "projectKey": project_key,
+                "projectKey": project_key or "",
             }
             if old_global and old_global != global_key:
                 global_deletes.append(old_global)
@@ -287,11 +308,11 @@ class ThreadIndexRepository:
         )
         self._compatibility_remove(thread_id)
 
-    def revision(self, *, project_path: str | None) -> float | None:
+    def revision(self, *, project_id: str | None) -> float | None:
         self._ensure_migrated()
         namespace = (
             self.PROJECT_NAMESPACE
-            if project_path
+            if project_id
             else self.GLOBAL_NAMESPACE
         )
         return self.store.namespace_revision(namespace)
@@ -299,7 +320,7 @@ class ThreadIndexRepository:
     def page(
         self,
         *,
-        project_path: str | None,
+        project_id: str | None,
         archived: bool,
         search: str | None,
         after: str | None,
@@ -317,10 +338,10 @@ class ThreadIndexRepository:
                 20_000,
             ),
         )
-        if project_path:
+        if project_id:
             namespace = self.PROJECT_NAMESPACE
             prefix = (
-                f"p/{self._scope(project_path)}/"
+                f"p/{self._scope(project_id)}/"
                 f"a/{int(bool(archived))}/"
             )
         else:

@@ -87,6 +87,9 @@ class ThreadProjectTurnExtractionTests(unittest.TestCase):
 
 
 class ThreadResumeExtractionTests(unittest.IsolatedAsyncioTestCase):
+    def test_bare_async_timeout_is_classified(self) -> None:
+        self.assertTrue(ThreadResumeService.is_timeout_error(TimeoutError()))
+
     async def test_resume_schedule_coalesces_concurrent_requests_and_cleans_task(self) -> None:
         gate = asyncio.Event()
         calls = []

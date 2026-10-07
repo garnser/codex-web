@@ -94,6 +94,11 @@ class BubblewrapExecutionBackend:
         "TZ",
     )
 
+    DEFAULT_TRUST_STORE_MOUNTS = (
+        (Path("/etc/ssl/certs"), Path("/etc/ssl/certs")),
+        (Path("/etc/pki"), Path("/etc/pki")),
+    )
+
     def __init__(
         self,
         *,
@@ -102,12 +107,23 @@ class BubblewrapExecutionBackend:
         popen=subprocess.Popen,
         poll_interval_seconds: float = 0.05,
         max_output_bytes: int = 2 * 1024 * 1024,
+        trust_store_mounts: Sequence[tuple[Path, Path]] | None = None,
     ) -> None:
         self.executable = executable or shutil.which("bwrap") or ""
         self._probe_runner = probe_runner
         self._popen = popen
         self.poll_interval_seconds = max(0.01, poll_interval_seconds)
         self.max_output_bytes = max(1024, max_output_bytes)
+        configured_trust_mounts = (
+            self.DEFAULT_TRUST_STORE_MOUNTS
+            if trust_store_mounts is None
+            else tuple(trust_store_mounts)
+        )
+        self.trust_store_mounts = tuple(
+            (source.resolve(), destination)
+            for source, destination in configured_trust_mounts
+            if source.is_dir()
+        )
         self._status: LocalIsolationStatus | None = None
 
     @staticmethod
@@ -282,14 +298,52 @@ class BubblewrapExecutionBackend:
         return total
 
     @staticmethod
-    def _limits_preexec(limits: WorkerResourceLimits):
+    def _limits_preexec(
+        limits: WorkerResourceLimits,
+        *,
+        enforce_address_space: bool = True,
+    ):
         def apply() -> None:
             resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_seconds, limits.cpu_seconds))
-            resource.setrlimit(resource.RLIMIT_AS, (limits.memory_bytes, limits.memory_bytes))
+            if enforce_address_space:
+                resource.setrlimit(
+                    resource.RLIMIT_AS,
+                    (limits.memory_bytes, limits.memory_bytes),
+                )
             resource.setrlimit(resource.RLIMIT_NPROC, (limits.process_count, limits.process_count))
             resource.setrlimit(resource.RLIMIT_FSIZE, (limits.disk_bytes, limits.disk_bytes))
 
         return apply
+
+    @staticmethod
+    def process_tree_rss_bytes(pid: int) -> int:
+        """Return resident bytes for a process and its current descendants."""
+
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        pending = [int(pid)]
+        seen: set[int] = set()
+        total = 0
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            try:
+                statm = Path(f"/proc/{current}/statm").read_text(
+                    encoding="utf-8"
+                ).split()
+                if len(statm) > 1:
+                    total += int(statm[1]) * page_size
+            except (OSError, ValueError):
+                pass
+            try:
+                children = Path(
+                    f"/proc/{current}/task/{current}/children"
+                ).read_text(encoding="utf-8")
+                pending.extend(int(value) for value in children.split())
+            except (OSError, ValueError):
+                pass
+        return total
 
     @classmethod
     def minimal_environment(
@@ -440,6 +494,17 @@ class BubblewrapExecutionBackend:
                 "/tmp/codex-worker-home",
             )
         )
+        # The minimal namespace intentionally omits host /etc. Trusted Codex
+        # model transport still needs public CA roots to authenticate the
+        # assignment-bound HTTPS endpoints reached through its CONNECT broker.
+        # Mount only code-owned trust-store directories, never the host /etc.
+        for source, destination in self.trust_store_mounts:
+            if not destination.is_absolute():
+                raise LocalExecutionPolicyError(
+                    "trust-store mount destination must be absolute"
+                )
+            command.extend(self._directory_creation_args(destination))
+            command.extend(("--ro-bind", str(source), str(destination)))
         command.extend(self._directory_creation_args(workspace))
         command.extend((mount_flag, str(workspace), str(workspace)))
 
@@ -614,7 +679,14 @@ class BubblewrapExecutionBackend:
             text=text,
             bufsize=bufsize,
             start_new_session=True,
-            preexec_fn=self._limits_preexec(assignment.limits),
+            # V8 reserves a large sparse virtual-address cage. RLIMIT_AS would
+            # terminate code-mode despite low resident usage, so interactive
+            # runtimes use the process-tree RSS watchdog for the same canonical
+            # memory budget. One-shot commands retain strict RLIMIT_AS below.
+            preexec_fn=self._limits_preexec(
+                assignment.limits,
+                enforce_address_space=False,
+            ),
         )
 
     def run(

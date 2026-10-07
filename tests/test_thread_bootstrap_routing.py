@@ -8,9 +8,12 @@ from unittest.mock import AsyncMock
 from fastapi import HTTPException
 
 from codex_web.agent_profiles import AgentProfileExecutionBinding
-from codex_web.agent_runtime import AgentRuntimeResult
+from codex_web.agent_runtime import AgentRuntimeEvent, AgentRuntimeResult
 from codex_web.execution_workers import ExecutionRuntimeBinding
-from codex_web.models import Project, ThreadRunSettings
+from codex_web.models import IndexedThread, Project, ThreadRunSettings
+from codex_web.services.thread_resume import ThreadResumeService
+from codex_web.services.thread_transcript import ThreadTranscriptService
+from codex_web.storage.sqlite_state import SQLiteStateStore
 from codex_web.resources import RepositoryExecutionTarget, RepositoryTargetSource
 from codex_web.services.threads import ThreadService
 from codex_web.services.turn_execution_binding import (
@@ -82,6 +85,12 @@ class _Settings:
     def remember(self, thread_id, **kwargs):
         self.host._remember_thread_run_settings(thread_id, **kwargs)
         return ThreadRunSettings(**kwargs)
+
+
+class _Recovery:
+    @staticmethod
+    def raise_if_thread_replaced(thread_id):
+        return None
 
 
 def _thread_service(host: _Host, **kwargs):
@@ -172,6 +181,120 @@ class _SessionManager:
         self.completed.append((assignment_id, kwargs))
         return SimpleNamespace(id=assignment_id)
 
+
+class ThreadReadDegradationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_degraded_runtime_read_preserves_indexed_thread_name(self) -> None:
+        host = _Host()
+
+        async def request_for_thread(thread_id, method, params=None):
+            return {
+                "ok": False,
+                "timedOut": True,
+                "threadId": thread_id,
+                "error": "agent runtime session is not live",
+                "thread": {
+                    "id": thread_id,
+                    "turns": [],
+                    "status": {"type": "notLoaded"},
+                    "readTimedOut": True,
+                },
+            }
+
+        resume = ThreadResumeService(
+            request_for_thread,
+            SimpleNamespace(
+                load=lambda: [
+                    IndexedThread(
+                        id="thread-quinn",
+                        name="Quinn",
+                        cwd="/workspace/quinn",
+                        path="/sessions/quinn.jsonl",
+                    )
+                ]
+            ),
+            SimpleNamespace(for_thread=lambda _thread_id: []),
+            event_sink=host._append_bot_event,
+            truncate_text=lambda value, limit: str(value)[:limit],
+        )
+        service = ThreadService(
+            runtime_transport=host.codex,
+            runtime_request_for_thread=request_for_thread,
+            event_sink=host._append_bot_event,
+            recovery=_Recovery(),
+            resume_runtime=resume,
+        )
+
+        response = await service.read("thread-quinn", message_limit=40)
+
+        self.assertEqual(response["thread"]["name"], "Quinn")
+        self.assertEqual(response["thread"]["cwd"], "/workspace/quinn")
+        self.assertTrue(response["thread"]["readTimedOut"])
+
+    async def test_degraded_runtime_read_returns_durable_cli_transcript(self) -> None:
+        host = _Host()
+
+        async def request_for_thread(thread_id, method, params=None):
+            return {
+                "ok": False,
+                "timedOut": True,
+                "threadId": thread_id,
+                "error": "agent runtime session has not started",
+                "thread": {
+                    "id": thread_id,
+                    "turns": [],
+                    "status": {"type": "notLoaded"},
+                    "readTimedOut": True,
+                },
+            }
+
+        with __import__("tempfile").TemporaryDirectory() as directory:
+            transcript = ThreadTranscriptService(
+                SQLiteStateStore(Path(directory) / "state.db")
+            )
+            transcript.record_user("thread-quinn", "execution-1", "hello")
+            transcript.record_event(
+                "thread-quinn",
+                AgentRuntimeEvent(
+                    event_type="item/agentMessage/delta",
+                    provider_native_turn_id="turn-1",
+                    payload={"itemId": "message-1", "delta": "reply"},
+                ),
+            )
+            transcript.record_event(
+                "thread-quinn",
+                AgentRuntimeEvent(
+                    event_type="turn/completed",
+                    provider_native_turn_id="turn-1",
+                ),
+            )
+            index = SimpleNamespace(
+                get=lambda _thread_id: IndexedThread(
+                    id="thread-quinn",
+                    name="Quinn",
+                    cwd="/workspace/quinn",
+                )
+            )
+            service = ThreadService(
+                runtime_transport=host.codex,
+                runtime_request_for_thread=request_for_thread,
+                event_sink=host._append_bot_event,
+                recovery=_Recovery(),
+                resume_runtime=ThreadResumeService(
+                    request_for_thread,
+                    SimpleNamespace(load=lambda: []),
+                    SimpleNamespace(for_thread=lambda _thread_id: []),
+                    event_sink=host._append_bot_event,
+                    truncate_text=lambda value, limit: str(value)[:limit],
+                ),
+                thread_index=index,
+                transcript=transcript,
+            )
+
+            response = await service.read("thread-quinn", message_limit=40)
+
+        self.assertTrue(response["runtimeReadDegraded"])
+        self.assertEqual(response["thread"]["name"], "Quinn")
+        self.assertEqual(response["thread"]["turns"][0]["items"][1]["text"], "reply")
 
 class _AgentSessions:
     def __init__(self) -> None:

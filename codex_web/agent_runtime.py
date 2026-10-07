@@ -35,6 +35,13 @@ class AgentRuntimeHealth(StrEnum):
     UNAVAILABLE = "unavailable"
 
 
+class AgentRuntimeAccountingMode(StrEnum):
+    """Authoritative resource boundary used to admit runtime sessions."""
+
+    MONETARY = "monetary"
+    ALLOCATION = "allocation"
+
+
 class AgentRuntimeRegistration(BaseModel):
     """Code-owned runtime capability metadata used for deterministic routing."""
 
@@ -49,6 +56,9 @@ class AgentRuntimeRegistration(BaseModel):
     network_profiles: tuple[str, ...] = ()
     residency_tags: tuple[str, ...] = ()
     compliance_tags: tuple[str, ...] = ()
+    accounting_mode: AgentRuntimeAccountingMode = (
+        AgentRuntimeAccountingMode.MONETARY
+    )
     max_session_cost_usd: float | None = Field(default=None, ge=0.0)
 
 

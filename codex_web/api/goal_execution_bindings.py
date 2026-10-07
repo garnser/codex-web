@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -25,6 +26,9 @@ from codex_web.services.agent_runtime import AgentSessionService
 from codex_web.services.goal_continuation import GoalContinuationService
 from codex_web.services.goals import GoalError, GoalService
 from codex_web.services.identity import AuthorizationError, IdentityService
+
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeBindingControlRequest(BaseModel):
@@ -93,6 +97,7 @@ def build_goal_execution_bindings_router(
             }
         }
         items: list[dict[str, Any]] = []
+        unavailable_sessions: list[dict[str, str]] = []
         for session in agent_sessions.list(actor):
             if session.id in bound_session_ids:
                 continue
@@ -101,7 +106,31 @@ def build_goal_execution_bindings_router(
                 not in set(session.capability_snapshot)
             ):
                 continue
-            result = await agent_sessions.read_objective(session.id, actor=actor)
+            try:
+                result = await agent_sessions.read_objective(
+                    session.id,
+                    actor=actor,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Skipping unavailable native runtime objective",
+                    extra={
+                        "event": "goals.runtime_objective_unavailable",
+                        "agent_session_id": session.id,
+                        "provider_id": session.provider_id,
+                        "runtime_id": session.runtime_id,
+                        "error_class": type(exc).__name__,
+                    },
+                )
+                unavailable_sessions.append(
+                    {
+                        "agent_session_id": session.id,
+                        "provider_id": session.provider_id,
+                        "runtime_id": session.runtime_id,
+                        "code": "runtime_objective_unavailable",
+                    }
+                )
+                continue
             payload = result.payload if isinstance(result.payload, dict) else {}
             objective = payload.get("objective")
             if objective is None and isinstance(payload.get("goal"), dict):
@@ -125,7 +154,11 @@ def build_goal_execution_bindings_router(
                     "payload": payload,
                 }
             )
-        return {"items": items, "count": len(items)}
+        response: dict[str, Any] = {"items": items, "count": len(items)}
+        if unavailable_sessions:
+            response["partial"] = True
+            response["unavailable_sessions"] = unavailable_sessions
+        return response
 
     @router.post("/runtime-objectives/{session_id}/promote")
     async def promote_runtime_objective(
