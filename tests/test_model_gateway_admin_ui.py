@@ -16,6 +16,9 @@ class ModelGatewayAdminUiTests(unittest.TestCase):
         route_controls = (ROOT / "static" / "model_gateway_route_controls.js").read_text(
             encoding="utf-8"
         )
+        invocation_ui = (ROOT / "static" / "model_gateway_invocation_ui.js").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn('id="model-gateway-policy"', html)
         self.assertIn('id="model-provider-list"', html)
@@ -33,7 +36,8 @@ class ModelGatewayAdminUiTests(unittest.TestCase):
         self.assertIn('apiRequest("/api/model-gateway/catalogs")', javascript)
         self.assertIn("catalog/refresh", catalog_ui)
         self.assertIn("availability_source", catalog_ui)
-        self.assertIn("selected_catalog_revision", javascript)
+        self.assertIn("model_gateway_invocation_ui.js", javascript)
+        self.assertIn("selected_catalog_revision", invocation_ui)
         self.assertIn('apiRequest("/api/model-gateway/prompts")', javascript)
         self.assertIn('apiRequest("/api/model-gateway/policy")', javascript)
         self.assertIn('apiRequest("/api/provider-capacity")', javascript)
@@ -43,8 +47,8 @@ class ModelGatewayAdminUiTests(unittest.TestCase):
         self.assertIn("routing_reason", javascript)
         self.assertIn("policy_fingerprint_sha256", javascript)
         self.assertIn("prompt_template_checksum_sha256", javascript)
-        self.assertIn("selected_provider_id", javascript)
-        self.assertIn("selected_model_id", javascript)
+        self.assertIn("selected_provider_id", invocation_ui)
+        self.assertIn("selected_model_id", invocation_ui)
         self.assertIn("credential_ref", provider_cards)
         self.assertIn("residency_tags", javascript)
         self.assertIn("compliance_tags", javascript)
