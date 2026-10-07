@@ -712,6 +712,32 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
                 actor=self.worker_actor,
             )
 
+    def test_expired_pending_assignment_is_failed_and_compacted(self) -> None:
+        expired = self._assignment(
+            execution_id="exec-expired-pending",
+            deadline_at=100.0,
+        )
+        future = self._assignment(
+            execution_id="exec-future-pending",
+            deadline_at=300.0,
+        )
+
+        recovered = self.service.recover_expired(
+            actor=self.admin,
+            now=200.0,
+        )
+
+        self.assertEqual(recovered, [expired.id])
+        assignments = {
+            item.id: item for item in self.service.store.load().assignments
+        }
+        self.assertEqual(assignments[expired.id].status, AssignmentStatus.FAILED)
+        self.assertEqual(
+            assignments[expired.id].failure_code,
+            "assignment_deadline_expired",
+        )
+        self.assertEqual(assignments[future.id].status, AssignmentStatus.PENDING)
+
     def test_expired_lease_releases_workspace_after_assignment_commit(self) -> None:
         assignment = self._assignment()
 

@@ -1441,6 +1441,46 @@ class ExecutionWorkerService:
             for index, assignment in enumerate(state.assignments):
                 if not self._same_scope(assignment, actor):
                     continue
+                if (
+                    assignment.status == AssignmentStatus.PENDING
+                    and assignment.deadline_at is not None
+                    and assignment.deadline_at <= current
+                ):
+                    failure = create_failure(
+                        FailureReason.EXECUTION_TIMEOUT,
+                        source_subsystem="execution_worker",
+                        assignment_id=assignment.id,
+                        execution_id=assignment.execution_id,
+                        source_native_code="assignment_deadline_expired",
+                        occurred_at=current,
+                    )
+                    state.assignments[index] = assignment.model_copy(
+                        update={
+                            "status": AssignmentStatus.FAILED,
+                            "updated_at": current,
+                            "failure_code": "assignment_deadline_expired",
+                            "failure_message": (
+                                "assignment deadline expired before worker claim"
+                            ),
+                            "failure": failure,
+                        }
+                    )
+                    lost.append(assignment.id)
+                    if (
+                        self.workspaces is not None
+                        and assignment.execution_workspace_id
+                    ):
+                        expired_workspace_ids.append(
+                            assignment.execution_workspace_id
+                        )
+                    self._event(
+                        state,
+                        actor=actor,
+                        event_type="assignment_failed",
+                        assignment_id=assignment.id,
+                        details={"reason": "assignment_deadline_expired"},
+                    )
+                    continue
                 lease = assignment.lease
                 if (
                     lease is None
