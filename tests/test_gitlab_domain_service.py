@@ -47,6 +47,24 @@ class GitLabDomainServiceTests(unittest.TestCase):
         self.assertTrue(self.service.project_path_matches("group/sub/project", "group/sub/project"))
         self.assertFalse(self.service.project_path_matches("another/project", "group"))
 
+    def test_master_routing_normalizes_configured_channels(self) -> None:
+        master = SimpleNamespace(provider="slack")
+        self.service.routing = SimpleNamespace(
+            master_binding=lambda _project_id: master,
+            normalize_strings=lambda values: list(dict.fromkeys(values)),
+            clone_binding_to_known_channel=lambda binding, channel_id: (
+                binding,
+                channel_id,
+            ),
+        )
+
+        bindings = self.service.routing_bindings_for_master(
+            "project-1",
+            GitLabProjectRoutingSettings(channel_ids=["C1", "C1", "C2"]),
+        )
+
+        self.assertEqual(bindings, [(master, "C1"), (master, "C2")])
+
     def test_servicedesk_payload_conversion_preserves_issue_identity(self) -> None:
         payload = self.service.issue_to_support_servicedesk_payload(
             {
