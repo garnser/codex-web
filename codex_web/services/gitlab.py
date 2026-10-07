@@ -350,7 +350,7 @@ class GitLabService:
         master = self.routing.master_binding(project_id)
         if not master:
             return []
-        route_channels = h._normalize_string_list(project_settings.channel_ids)
+        route_channels = self.routing.normalize_strings(project_settings.channel_ids)
         if not route_channels or master.provider != "slack":
             return [master]
         return [self.routing.clone_binding_to_known_channel(master, channel_id) for channel_id in route_channels]
@@ -1466,4 +1466,3 @@ def install_gitlab_compatibility(
     }
     for name, value in bindings.items():
         setattr(host, name, value)
-
