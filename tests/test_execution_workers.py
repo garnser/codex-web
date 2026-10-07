@@ -712,6 +712,58 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
                 actor=self.worker_actor,
             )
 
+    def test_expired_lease_releases_workspace_after_assignment_commit(self) -> None:
+        assignment = self._assignment()
+
+        def attach_workspace(state):
+            for index, item in enumerate(state.assignments):
+                if item.id == assignment.id:
+                    state.assignments[index] = item.model_copy(
+                        update={"execution_workspace_id": "workspace-1"}
+                    )
+                    break
+            return state
+
+        self.service.store.update(attach_workspace)
+        claimed = self.service.claim(
+            self.worker.id,
+            AssignmentClaimRequest(lease_seconds=10),
+            actor=self.worker_actor,
+        )
+        self.service.start(
+            self.worker.id,
+            assignment.id,
+            AssignmentStartRequest(
+                fence=claimed.fence,
+                lease_token=claimed.lease.lease_token,
+            ),
+            actor=self.worker_actor,
+        )
+        observed_statuses = []
+        release_requests = []
+
+        def release(workspace_id, payload, *, actor):
+            current = next(
+                item
+                for item in self.service.store.load().assignments
+                if item.id == assignment.id
+            )
+            observed_statuses.append(current.status)
+            release_requests.append((workspace_id, payload, actor))
+
+        self.service.workspaces = SimpleNamespace(release=release)
+
+        lost = self.service.recover_expired(
+            actor=self.admin,
+            now=claimed.lease.expires_at + 1,
+        )
+
+        self.assertEqual(lost, [assignment.id])
+        self.assertEqual(observed_statuses, [AssignmentStatus.LOST])
+        self.assertEqual(release_requests[0][0], "workspace-1")
+        self.assertFalse(release_requests[0][1].discard)
+        self.assertIs(release_requests[0][2], self.admin)
+
     def test_non_transient_worker_failure_cannot_auto_retry(self) -> None:
         assignment = self._assignment()
         claimed = self.service.claim(

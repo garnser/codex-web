@@ -1435,6 +1435,7 @@ class ExecutionWorkerService:
         self._require_admin(actor)
         current = time.time() if now is None else now
         lost: list[str] = []
+        expired_workspace_ids: list[str] = []
 
         def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
             for index, assignment in enumerate(state.assignments):
@@ -1473,15 +1474,9 @@ class ExecutionWorkerService:
                     self.workspaces is not None
                     and assignment.execution_workspace_id
                 ):
-                    with contextlib.suppress(Exception):
-                        self.workspaces.release(
-                            assignment.execution_workspace_id,
-                            ExecutionWorkspaceRelease(
-                                discard=True,
-                                reason="worker lease expired",
-                            ),
-                            actor=actor,
-                        )
+                    expired_workspace_ids.append(
+                        assignment.execution_workspace_id
+                    )
                 self._event(
                     state,
                     actor=actor,
@@ -1493,6 +1488,24 @@ class ExecutionWorkerService:
             return state
 
         self.store.update(apply)
+        # Workspace release owns a separate durable state document and starts
+        # its own write transaction. Perform it only after the assignment
+        # transition commits; nesting it inside ``store.update`` makes the
+        # second SQLite writer wait on this method's own lock. Preserve dirty
+        # workspaces for audit instead of discarding potentially uncommitted
+        # agent changes when a lease expires unexpectedly.
+        for workspace_id in dict.fromkeys(expired_workspace_ids):
+            if self.workspaces is None:  # pragma: no cover - defensive race
+                break
+            with contextlib.suppress(Exception):
+                self.workspaces.release(
+                    workspace_id,
+                    ExecutionWorkspaceRelease(
+                        discard=False,
+                        reason="worker lease expired",
+                    ),
+                    actor=actor,
+                )
         if lost:
             current = self.store.load()
             by_id = {item.id: item for item in current.assignments}
