@@ -515,7 +515,8 @@ class CodexRuntime:
             return result
         except asyncio.TimeoutError as exc:
             self.pending.pop(message_id, None)
-            self.last_error = f"{method} timed out after {timeout}s"
+            timeout_error = f"{method} timed out after {timeout}s"
+            self.last_error = timeout_error
             if self.metrics:
                 self.metrics.increment("codex.rpc_timeouts")
                 self.metrics.increment(f"codex.rpc_timeouts.{method.replace('/', '_')}")
@@ -561,14 +562,39 @@ class CodexRuntime:
                     )
             elif self.restart_on_timeout:
                 # A live process is insufficient evidence of a live JSON-RPC
-                # transport. Invalidate this generation so the next request
-                # starts a fresh app-server rather than accumulating timeouts.
+                # transport. Invalidate this generation and start its
+                # replacement immediately. Depending on a later request to do
+                # that leaves the shared runtime down when the control plane is
+                # already congested and no further RPC reaches it.
                 timed_out_proc = self.proc
                 self.ready.clear()
+                restart_generation = False
                 async with self.lifecycle_lock:
                     if self.proc is timed_out_proc:
                         await self.stop()
-            raise HTTPException(status_code=504, detail=self.last_error) from exc
+                        restart_generation = True
+                if restart_generation:
+                    try:
+                        await self.ensure_started()
+                    except Exception as restart_exc:
+                        safe_error = redact_codex_diagnostic(restart_exc)
+                        if self.metrics:
+                            self.metrics.increment("codex.timeout_restart_failures")
+                        log_event(
+                            logger,
+                            logging.ERROR,
+                            "codex.timeout_restart_failed",
+                            "Codex app-server failed to restart after an RPC timeout",
+                            method=method,
+                            error=safe_error,
+                        )
+                        await self.host.hub.publish(
+                            {
+                                "type": "codex.error",
+                                "error": f"Codex timeout recovery failed: {safe_error}",
+                            }
+                        )
+            raise HTTPException(status_code=504, detail=timeout_error) from exc
         finally:
             if self.metrics:
                 self.metrics.observe("codex.rpc_duration", time.monotonic() - started)

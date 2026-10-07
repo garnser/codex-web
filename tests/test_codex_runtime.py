@@ -253,7 +253,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
             any(event.get("type") == "codex.error" for event in self.host.hub.events)
         )
 
-    async def test_rpc_timeout_invalidates_live_process_generation(self) -> None:
+    async def test_rpc_timeout_restarts_live_process_generation_immediately(self) -> None:
         process = SimpleNamespace(poll=lambda: None)
         self.runtime.proc = process
         self.runtime.ready.set()
@@ -268,6 +268,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.status_code, 504)
         self.assertFalse(self.runtime.ready.is_set())
         self.runtime.stop.assert_awaited_once()
+        self.assertEqual(self.runtime.ensure_started.await_count, 2)
 
     async def test_rpc_timeout_preserves_nonrestartable_process_generation(self) -> None:
         runtime = CodexRuntime(self.host, restart_on_timeout=False)
