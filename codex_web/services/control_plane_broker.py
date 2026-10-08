@@ -377,6 +377,12 @@ _REPOSITORY_ACTIONS = {
         CODE_HOST_JOB_RERUN_ACTION_ID,
     ),
 }
+_RECONCILABLE_REPOSITORY_ACTION_IDS = frozenset(
+    {
+        CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
+        CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+    }
+)
 
 # These profiles execute different workloads but share the same narrow broker
 # boundary. The broker never grants generic network or localhost access: every
@@ -1249,7 +1255,9 @@ class ControlPlaneBrokerService:
                 payload
             )
             if (
-                intent.action_id != CODE_HOST_BRANCH_PUBLISH_ACTION_ID
+                intent.action_id not in _RECONCILABLE_REPOSITORY_ACTION_IDS
+                or intent.organization_id != assignment.organization_id
+                or intent.workspace_id != assignment.workspace_id
                 or intent.project_id != assignment.project_id
                 or tuple(intent.resource_ids) != (repository_id,)
                 or intent.requested_by != requester_actor.identity_id
@@ -1258,7 +1266,7 @@ class ControlPlaneBrokerService:
                     "action intent is outside the assignment delivery scope"
                 )
             # A recovered thread receives a fresh execution assignment. It must
-            # still be able to verify and settle an uncertain branch publish
+            # still be able to verify and settle an uncertain repository action
             # from its superseded assignment, otherwise a service restart
             # permanently strands the governed delivery. Historical intents
             # remain non-retryable here: only the exact originating execution

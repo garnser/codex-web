@@ -515,18 +515,32 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
                 "mergeable": True,
                 "mergeable_state": "clean",
                 "merged": False,
+                "head": {"sha": "b" * 40},
                 "html_url": "https://github.com/garnser/codex-web/pull/889",
             }
         )
         request = self._request(
             CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
-            {"pull_request_number": 889, "merge_method": "squash"},
+            {
+                "pull_request_number": 889,
+                "merge_method": "squash",
+                "expected_head_sha": "b" * 40,
+            },
+        )
+        preparation = await self.execution.prepare(
+            self.binding.id, request, actor=self.actor
         )
         result = await self.execution.execute(self.binding.id, request, actor=self.actor)
 
+        self.assertEqual(preparation.provider_plan["expected_head_sha"], "b" * 40)
         self.assertEqual(self.client.pull_request_merges, 1)
+        self.assertEqual(result.output["head_sha"], "b" * 40)
         self.assertEqual(result.output["merge_commit_sha"], "a" * 40)
         self.assertTrue(
+            (await self.execution.verify(self.binding.id, result, actor=self.actor)).verified
+        )
+        self.client.pull_requests[0]["head"]["sha"] = "c" * 40
+        self.assertFalse(
             (await self.execution.verify(self.binding.id, result, actor=self.actor)).verified
         )
 

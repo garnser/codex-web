@@ -253,6 +253,7 @@ class GitHubActionProvider:
                 "repository": repository,
                 "pull_request_number": payload["number"],
                 "merge_method": payload["merge_method"],
+                "expected_head_sha": payload["expected_head_sha"],
             }
         if request.action_id == CODE_HOST_JOB_RERUN_ACTION_ID:
             return {
@@ -518,7 +519,13 @@ class GitHubActionProvider:
             evidence_type = CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE
             external_id = str(number)
             url = str(current.get("html_url") or "") or None
-            output.update({"pull_request_number": number, "merge_commit_sha": merge_sha})
+            output.update(
+                {
+                    "pull_request_number": number,
+                    "head_sha": str(current_head.get("sha") or "").casefold(),
+                    "merge_commit_sha": merge_sha,
+                }
+            )
             summary = "GitHub pull request is merged after clean mergeability validation."
         elif request.action_id == CODE_HOST_JOB_RERUN_ACTION_ID:
             job_id = self.contract.job_rerun(request)
@@ -667,10 +674,15 @@ class GitHubActionProvider:
                 int(result.output["pull_request_number"]),
                 token=credential,
             )
+            head = item.get("head") if isinstance(item.get("head"), dict) else {}
             verified = bool(item.get("merged")) and (
                 not result.output.get("merge_commit_sha")
                 or str(item.get("merge_commit_sha") or "")
                 == str(result.output["merge_commit_sha"])
+            ) and (
+                not result.output.get("head_sha")
+                or str(head.get("sha") or "").casefold()
+                == str(result.output["head_sha"]).casefold()
             )
         elif result.action_id == CODE_HOST_JOB_RERUN_ACTION_ID:
             item = await self.client.actions_run(

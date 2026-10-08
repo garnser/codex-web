@@ -320,9 +320,13 @@ source identity already available through that credential-free boundary. Raw
 provider credentials never enter the assignment.
 
 Repository-write assignments may also reconcile only their own branch-publish
-ActionIntents. The broker requires the same execution, Project, requester and
-single writable repository and reuses `repository.branch.publish` authority;
-it does not expose a tenant-wide ActionIntent administration surface.
+and pull-request-merge ActionIntents. The broker requires the same tenant,
+Project, requester and single writable repository. An exact originating
+execution may request only retries that remain eligible under the canonical
+ActionIntent policy; a recovered assignment may perform verification-only
+reconciliation but cannot retry a historical mutation. Merge verification
+reads provider state and never replays the merge. This boundary does not expose
+a tenant-wide ActionIntent administration surface.
 
 Reachability is distinct from authority. Every request re-resolves the current
 worker service identity and evaluates the requested capability through the

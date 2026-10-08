@@ -189,4 +189,14 @@ Side-effect-free provider `prepare` remains available for previews.
 - `POST /api/action-intents/inbox`
 - `POST /api/action-intents/recover-stale`
 
+Reconciliation never treats an ambiguous mutation as permission to replay it.
+When an already-started pull-request merge is uncertain or requires
+reconciliation and has no durable provider result, a verification-only
+reconciliation reconstructs the expected result shape from the original
+canonical request, calls the provider's side-effect-free prepare contract, and
+reads provider state through verification. It records a reconciled receipt only
+when the exact pull request and mandatory expected head are confirmed merged.
+An unstarted intent or a missing, different, or unreadable provider result
+remains visibly reconcilable.
+
 #141 should display durable intent state, receipts, uncertainty, verification, and reconciliation requirements rather than inferring external success from request logs.
