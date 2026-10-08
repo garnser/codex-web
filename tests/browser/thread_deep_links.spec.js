@@ -1,6 +1,6 @@
 const { test, expect } = require('@playwright/test');
 
-async function mockChatApi(page) {
+async function mockChatApi(page, { degradeFirstThreadRead = false, simulateReply = false } = {}) {
   const fs = require('fs');
   const path = require('path');
   const html = fs.readFileSync(path.join(__dirname, '../../static/index.html'), 'utf8')
@@ -22,6 +22,7 @@ async function mockChatApi(page) {
   };
   const threadTurns = {};
   const reads = [];
+  let replyCompleted = false;
   await page.route('**/api/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -58,6 +59,7 @@ async function mockChatApi(page) {
     if (turnMatch && request.method() === 'POST') {
       const threadId = decodeURIComponent(turnMatch[1]);
       const payload = JSON.parse(request.postData() || '{}');
+      if (simulateReply) setTimeout(() => { replyCompleted = true; }, 100);
       threadTurns[threadId] = [{
         id: `turn-${threadId}`,
         status: 'inProgress',
@@ -67,7 +69,7 @@ async function mockChatApi(page) {
           content: [{ type: 'inputText', text: payload.message }],
         }],
       }];
-      await route.fulfill({ json: { queued: false } });
+      await route.fulfill({ json: { queued: false, turn: { id: `turn-${threadId}` } } });
       return;
     }
     const threadMatch = path.match(/^\/api\/threads\/([^/]+)$/);
@@ -79,11 +81,32 @@ async function mockChatApi(page) {
         await route.fulfill({ status: 404, json: { detail: 'Thread not found' } });
         return;
       }
+      if (degradeFirstThreadRead && reads.length === 1) {
+        await route.fulfill({ json: {
+          timedOut: true,
+          error: 'Thread temporarily unavailable',
+          thread: { ...thread, turns: [], status: { type: 'notLoaded' }, readTimedOut: true },
+        } });
+        return;
+      }
+      const turns = threadTurns[threadId] || [{
+        items: [{ type: 'agentMessage', text: (
+          simulateReply && threadId === 'home-thread' && replyCompleted
+            ? 'Reply completed while another thread was selected'
+            : `Loaded ${threadId}`
+        ) }],
+      }];
+      if (simulateReply && threadId === 'home-thread' && replyCompleted) {
+        turns[0].items = [{
+          type: 'agentMessage',
+          text: 'Reply completed while another thread was selected',
+        }];
+      }
       await route.fulfill({ json: {
         thread: {
           ...thread,
           historySource: 'canonical',
-          turns: threadTurns[threadId] || [],
+          turns,
         },
       } });
       return;
@@ -362,4 +385,30 @@ test('loading earlier activity performs a scoped read for the already selected T
   await expect.poll(() => readQueries.some(query => query.limit === '80' && query.project === 'home')).toBe(true);
   await expect(page.locator('#thread-history-control button')).toBeEnabled();
   await expect(page).toHaveURL(/projects\/home\/chat\?thread=home-thread/);
+test('selecting a Thread again retries a detail read that did not render', async ({ page }) => {
+  const { reads } = await mockChatApi(page, { degradeFirstThreadRead: true });
+  await page.goto('http://127.0.0.1:18766/projects/home/chat');
+
+  await page.locator('#threads .item-main').click({ force: true });
+  await expect(page.locator('#messages')).toContainText('Thread temporarily unavailable');
+
+  await page.locator('#threads .item-main').click({ force: true });
+  await expect(page.locator('#messages')).toContainText('Loaded home-thread');
+  expect(reads).toEqual(['home-thread', 'home-thread']);
+});
+
+test('a reply completed while another Thread is selected loads on return', async ({ page }) => {
+  const { reads } = await mockChatApi(page, { simulateReply: true });
+  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await expect(page.locator('#messages')).toContainText('Loaded home-thread');
+
+  await page.locator('#prompt').fill('Reply after I switch Threads');
+  await page.locator('#send').click();
+  await page.goto('http://127.0.0.1:18766/projects/alpha/chat?thread=alpha-thread');
+  await expect(page.locator('#thread-title')).toHaveText('Alpha thread');
+  await page.waitForTimeout(150);
+
+  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await expect(page.locator('#messages')).toContainText('Reply completed while another thread was selected');
+  expect(reads.filter((id) => id === 'home-thread').length).toBeGreaterThanOrEqual(2);
 });

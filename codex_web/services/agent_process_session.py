@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import subprocess
 import threading
 import time
@@ -76,6 +77,48 @@ def _merge_trusted_mounts(
             seen.add(destination)
             merged.append((source, destination))
     return tuple(merged)
+
+
+def _with_execution_python_environment(
+    command: tuple[str, ...],
+    environment: dict[str, str],
+) -> tuple[str, ...]:
+    """Project the worker venv into Codex's explicit child environment policy."""
+
+    path = environment.get("PATH")
+    virtual_env = environment.get("VIRTUAL_ENV")
+    if not path or not virtual_env:
+        return command
+    updated = list(command)
+    for index, argument in enumerate(updated):
+        prefix = "shell_environment_policy.set={"
+        if not argument.startswith(prefix) or not argument.endswith("}"):
+            continue
+        body = argument[len(prefix):-1]
+        managed = (
+            "PATH=",
+            "VIRTUAL_ENV=",
+            "PYTHONNOUSERSITE=",
+            "PIP_DISABLE_PIP_VERSION_CHECK=",
+            "PIP_REQUIRE_VIRTUALENV=",
+        )
+        entries = [
+            item
+            for item in body.split(",")
+            if not item.startswith(managed)
+        ]
+        entries.extend(
+            (
+                f"PATH={json.dumps(path)}",
+                f"VIRTUAL_ENV={json.dumps(virtual_env)}",
+                'PYTHONNOUSERSITE="1"',
+                'PIP_DISABLE_PIP_VERSION_CHECK="1"',
+                'PIP_REQUIRE_VIRTUALENV="1"',
+            )
+        )
+        updated[index] = prefix + ",".join(entries) + "}"
+        break
+    return tuple(updated)
 
 
 class _OneShotProcessFactory:
@@ -299,6 +342,22 @@ class AssignmentBoundAgentProcessSession:
         def launch(launch_input: AssignmentRuntimeLaunchInput):
             command = launch_input.command
             environment = dict(launch_input.environment)
+            python_environment_resolver = getattr(
+                self.local_worker,
+                "python_environment",
+                None,
+            )
+            python_environment = (
+                python_environment_resolver(assignment)
+                if callable(python_environment_resolver)
+                else None
+            )
+            if python_environment is not None:
+                environment.update(python_environment.environment)
+                command = _with_execution_python_environment(
+                    tuple(command),
+                    environment,
+                )
             repository_mount_resolver = getattr(
                 self.local_worker,
                 "repository_mounts",
@@ -324,6 +383,11 @@ class AssignmentBoundAgentProcessSession:
                 trusted_mounts,
                 tuple(getattr(launch_input, "trusted_mounts", ()) or ()),
             )
+            if python_environment is not None:
+                trusted_mounts = _merge_trusted_mounts(
+                    trusted_mounts,
+                    python_environment.readonly_mounts,
+                )
             trusted_writable_mounts = _merge_trusted_mounts(
                 trusted_writable_mounts,
                 tuple(
@@ -404,7 +468,7 @@ class AssignmentBoundAgentProcessSession:
                     AGENT_MODEL_EGRESS_RELAY_SCRIPT,
                     str(broker.sandbox_socket_path),
                     "8787",
-                    *launch_input.command,
+                    *command,
                 )
                 trusted_mounts = (
                     *trusted_mounts,
@@ -631,6 +695,19 @@ class AssignmentBoundAgentProcessSession:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session exceeded disk_bytes"
             )
+        runtime = self.runtime
+        process = runtime.proc if runtime is not None else None
+        if process is not None and process.poll() is None:
+            rss_reader = getattr(
+                self.local_worker.backend,
+                "process_tree_rss_bytes",
+                None,
+            )
+            rss_bytes = rss_reader(process.pid) if callable(rss_reader) else 0
+            if rss_bytes > assignment.limits.memory_bytes:
+                raise AssignmentBoundAgentProcessSessionStaleError(
+                    "assignment-bound agent runtime session exceeded memory_bytes"
+                )
 
     def validate_current(self) -> ExecutionAssignment:
         if self.delegation is None or self.fence is None:

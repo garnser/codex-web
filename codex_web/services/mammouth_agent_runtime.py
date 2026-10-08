@@ -104,6 +104,17 @@ class MammouthCliAgentRuntimeAdapter:
         "mammouth_session_secret",
         "mammouth_session_token",
     }
+    _depleted_credit_markers = (
+        "insufficient funds",
+        "insufficient credit",
+        "credits depleted",
+        "credits exhausted",
+        "credit balance",
+        "quota exhausted",
+        "quota exceeded",
+        "usage limit reached",
+        "payment required",
+    )
 
     def __init__(
         self,
@@ -414,6 +425,15 @@ class MammouthCliAgentRuntimeAdapter:
                 asyncio.shield(started),
                 timeout=self.start_timeout_seconds,
             )
+        except asyncio.TimeoutError as exc:
+            if not task.done():
+                task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+            raise MammouthCliRuntimeError(
+                "Mammouth Code start timed out after "
+                f"{self.start_timeout_seconds:g} seconds"
+            ) from exc
         except BaseException:
             if not task.done():
                 task.cancel()
@@ -445,7 +465,25 @@ class MammouthCliAgentRuntimeAdapter:
 
         async def on_output(output: CliRuntimeOutput) -> None:
             nonlocal native_id, last_turn_id, terminal_seen
-            if output.stream != "stdout" or not output.text.strip():
+            if not output.text.strip():
+                return
+            if output.stream == "stderr":
+                normalized = output.text.casefold()
+                if (
+                    not started.done()
+                    and any(
+                        marker in normalized
+                        for marker in self._depleted_credit_markers
+                    )
+                ):
+                    started.set_exception(
+                        MammouthCliRuntimeError(
+                            "Mammouth credits depleted. Add funds to the "
+                            "Mammouth account or switch this thread to another model."
+                        )
+                    )
+                return
+            if output.stream != "stdout":
                 return
             try:
                 parsed_events = stream.parse(output.text)

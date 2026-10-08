@@ -5,7 +5,9 @@ import contextlib
 import json
 import logging
 import os
+import platform
 import re
+import shutil
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -97,6 +99,63 @@ CODEX_MINIMUM_ADDRESS_SPACE_BYTES = 2 * 1024**4
 CODEX_MINIMUM_PROCESS_COUNT = 4096
 
 
+def _npm_native_codex_executable(launcher: Path) -> Path | None:
+    """Resolve an npm Codex launcher to its co-installed native executable."""
+
+    resolved = launcher.resolve()
+    scope = next(
+        (parent for parent in resolved.parents if parent.name == "@openai"),
+        None,
+    )
+    if scope is None:
+        return None
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    architecture = {
+        "x86_64": "x64",
+        "amd64": "x64",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+    }.get(machine)
+    if system not in {"linux", "darwin", "windows"} or architecture is None:
+        return None
+    package = scope / f"codex-{system}-{architecture}"
+    candidates = tuple(package.glob("vendor/*/bin/codex"))
+    if len(candidates) != 1:
+        return None
+    native = candidates[0]
+    return native if native.is_file() and os.access(native, os.X_OK) else None
+
+
+def resolve_codex_executable() -> str | None:
+    """Resolve the deployment-managed Codex binary deterministically.
+
+    The service PATH is the deployment contract. A personal standalone install
+    is only a fallback, so an unrelated desktop upgrade cannot silently change
+    the execution-worker version on the next service restart.
+    """
+
+    configured = os.environ.get("CODEX_WEB_CODEX_EXECUTABLE", "").strip()
+    if configured:
+        candidate = Path(configured).expanduser()
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            raise RuntimeError(
+                "CODEX_WEB_CODEX_EXECUTABLE must name an executable file"
+            )
+        return str(candidate.resolve())
+
+    managed = shutil.which("codex")
+    if managed:
+        managed_path = Path(managed)
+        native = _npm_native_codex_executable(managed_path)
+        return str((native or managed_path).resolve())
+
+    standalone = Path.home() / ".local" / "bin" / "codex"
+    if standalone.is_file() and os.access(standalone, os.X_OK):
+        return str(standalone.resolve())
+    return None
+
+
 def trusted_local_codex_command(
     *,
     executable: str = "codex",
@@ -186,8 +245,15 @@ class CodexRuntime:
                 pid=self.proc.pid,
                 command=" ".join(self.command),
             )
-            self.reader_task = asyncio.create_task(self._read_loop(), name="codex-app-server-stdout")
-            self.stderr_task = asyncio.create_task(self._stderr_loop(), name="codex-app-server-stderr")
+            process = self.proc
+            self.reader_task = asyncio.create_task(
+                self._read_loop(process),
+                name="codex-app-server-stdout",
+            )
+            self.stderr_task = asyncio.create_task(
+                self._stderr_loop(process),
+                name="codex-app-server-stderr",
+            )
 
             try:
                 init = await asyncio.wait_for(
@@ -229,15 +295,22 @@ class CodexRuntime:
 
     async def stop(self) -> None:
         self._fail_pending(RuntimeError("Codex app-server stopped"))
-        if self.proc and self.proc.poll() is None:
-            pid = self.proc.pid
-            self.proc.terminate()
+        process = self.proc
+        # Retire this generation before terminating it. Reader tasks retain
+        # their own process reference and can now distinguish an intentional
+        # stop from an unexpected close without racing a cleared self.proc.
+        if self.proc is process:
+            self.proc = None
+        self.ready.clear()
+        if process and process.poll() is None:
+            pid = process.pid
+            process.terminate()
             try:
-                await asyncio.wait_for(asyncio.to_thread(self.proc.wait), timeout=5)
+                await asyncio.wait_for(asyncio.to_thread(process.wait), timeout=5)
             except asyncio.TimeoutError:
-                self.proc.kill()
+                process.kill()
                 with contextlib.suppress(Exception):
-                    await asyncio.to_thread(self.proc.wait)
+                    await asyncio.to_thread(process.wait)
             log_event(
                 logger,
                 logging.INFO,
@@ -246,8 +319,6 @@ class CodexRuntime:
                 pid=pid,
             )
 
-        self.proc = None
-        self.ready.clear()
         tasks = (self.reader_task, self.stderr_task)
         for task in tasks:
             if task and not task.done():
@@ -290,8 +361,8 @@ class CodexRuntime:
         if self.metrics and failed:
             self.metrics.increment("codex.pending_requests_failed", failed)
 
-    async def _stderr_loop(self) -> None:
-        proc = self.proc
+    async def _stderr_loop(self, process: subprocess.Popen[str] | None = None) -> None:
+        proc = process or self.proc
         assert proc and proc.stderr
         executor = self._pipe_reader_executor()
         loop = asyncio.get_running_loop()
@@ -312,14 +383,16 @@ class CodexRuntime:
             )
             await self.host.hub.publish({"type": "codex.stderr", "text": text})
 
-    async def _read_loop(self) -> None:
-        proc = self.proc
+    async def _read_loop(self, process: subprocess.Popen[str] | None = None) -> None:
+        proc = process or self.proc
         assert proc and proc.stdout
         executor = self._pipe_reader_executor()
         loop = asyncio.get_running_loop()
         while True:
             line = await loop.run_in_executor(executor, proc.stdout.readline)
             if not line:
+                if self.proc is not proc:
+                    return
                 self.ready.clear()
                 self.last_error = "Codex app-server stopped"
                 self._fail_pending(RuntimeError(self.last_error))
@@ -461,6 +534,13 @@ class CodexRuntime:
         # that work off the app-server reader's event loop so a large state
         # catalog cannot stall RPC responses and HTTP readiness together.
         await asyncio.to_thread(self.host._record_thread_activity, message)
+        transcript_recorder = getattr(
+            self.host,
+            "_record_codex_runtime_transcript_event",
+            None,
+        )
+        if callable(transcript_recorder):
+            await asyncio.to_thread(transcript_recorder, message)
         method = message.get("method")
         params = message.get("params") or {}
         thread_id = params.get("threadId") or (params.get("turn") or {}).get("threadId")

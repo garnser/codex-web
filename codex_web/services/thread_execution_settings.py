@@ -93,6 +93,23 @@ class ThreadExecutionSettingsService:
                     if value and value.strip()
                 )
             )
+        # The primary target is the mutable checkout by definition. Keep this
+        # invariant canonical even when UI/profile updates arrive as separate
+        # partial settings requests.
+        if current.repository_resource_id:
+            current.writable_repository_resource_ids = (
+                current.repository_resource_id,
+                *(
+                    value
+                    for value in current.writable_repository_resource_ids
+                    if value != current.repository_resource_id
+                ),
+            )
+            current.read_only_repository_resource_ids = tuple(
+                value
+                for value in current.read_only_repository_resource_ids
+                if value != current.repository_resource_id
+            )
         if execution_profile_id is not None:
             current.execution_profile_id = execution_profile_id or None
         if skill_refs is not None:

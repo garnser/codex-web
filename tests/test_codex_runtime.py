@@ -40,6 +40,7 @@ class _Host:
         self.approval_requests: list[dict] = []
         self.handoff_threads: set[str] = set()
         self.active_threads: set[str] = set()
+        self.transcript_events: list[dict] = []
 
     def _approval_thread_id(self, message: dict) -> str:
         return "thread-1"
@@ -58,6 +59,9 @@ class _Host:
 
     def _record_thread_activity(self, message: dict) -> None:
         self.activity.append(message)
+
+    def _record_codex_runtime_transcript_event(self, message: dict) -> None:
+        self.transcript_events.append(message)
 
     def _record_terminal_turn_result(self, message: dict) -> bool:
         return False
@@ -314,7 +318,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         await runtime._read_loop()
 
         self.assertIsNone(runtime.proc)
-        self.assertEqual(runtime.last_error, "Codex app-server stopped")
+        self.assertIsNone(runtime.last_error)
 
     async def test_pipe_readers_do_not_starve_default_executor(self) -> None:
         runtime = CodexRuntime(self.host)
@@ -396,6 +400,26 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
             "thread_read_timeout_handoff_preserved",
         )
 
+    async def test_active_thread_read_timeout_preserves_process_generation(self) -> None:
+        process = SimpleNamespace(poll=lambda: None)
+        self.runtime.proc = process
+        self.runtime.ready.set()
+        self.runtime.ensure_started = AsyncMock()
+        self.runtime._send = AsyncMock()
+        self.runtime.stop = AsyncMock()
+        self.host._thread_is_active = lambda thread_id: thread_id == "thread-1"
+
+        with patch("codex_web.runtime.codex.request_timeout", return_value=0.001):
+            with self.assertRaises(HTTPException) as caught:
+                await self.runtime.request(
+                    "thread/read",
+                    {"threadId": "thread-1"},
+                )
+
+        self.assertEqual(caught.exception.status_code, 504)
+        self.assertTrue(self.runtime.ready.is_set())
+        self.runtime.stop.assert_not_awaited()
+
     async def test_dead_reader_restarts_even_if_stale_ready_flag_is_set(self) -> None:
         async def complete():
             return None
@@ -409,6 +433,28 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         await self.runtime.ensure_started()
 
         self.runtime.start.assert_awaited_once()
+
+    async def test_retired_reader_does_not_touch_replacement_process(self) -> None:
+        retired = SimpleNamespace(
+            stdout=io.StringIO(""),
+            pid=41,
+            poll=lambda: 0,
+        )
+        replacement = SimpleNamespace(
+            stdout=io.StringIO(""),
+            pid=42,
+            poll=lambda: None,
+        )
+        self.runtime.proc = replacement
+        self.runtime.ready.set()
+
+        await self.runtime._read_loop(retired)
+
+        self.assertIs(self.runtime.proc, replacement)
+        self.assertTrue(self.runtime.ready.is_set())
+        self.assertFalse(
+            any(event.get("type") == "codex.closed" for event in self.host.hub.events)
+        )
 
     async def test_approval_policy_never_auto_resolves_without_queueing(self) -> None:
         self.host.approval_policy = "never"
@@ -494,6 +540,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         await self.runtime._handle_message(message)
 
         self.assertEqual(self.host.activity, [message])
+        self.assertEqual(self.host.transcript_events, [message])
         self.assertEqual(self.host.queue_drains, ["thread-7"])
         self.assertEqual(self.host.outbound, [message])
         self.assertEqual(self.host.hub.events[-1], {"type": "codex.event", "message": message})
@@ -514,6 +561,23 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.host.activity, [message])
         self.assertEqual(len(projection_threads), 1)
         self.assertNotEqual(projection_threads[0], event_loop_thread)
+
+    async def test_rpc_timeout_invalidates_live_process_generation(self) -> None:
+        process = SimpleNamespace(poll=lambda: None)
+        self.runtime.proc = process
+        self.runtime.ready.set()
+        self.runtime.ensure_started = AsyncMock()
+        self.runtime._send = AsyncMock()
+        self.runtime.stop = AsyncMock()
+
+        with patch("codex_web.runtime.codex.request_timeout", return_value=0.001):
+            with self.assertRaises(HTTPException) as caught:
+                await self.runtime.request("thread/read", {})
+
+        self.assertEqual(caught.exception.status_code, 504)
+        self.assertFalse(self.runtime.ready.is_set())
+        self.runtime.stop.assert_awaited_once()
+
 
 
 if __name__ == "__main__":

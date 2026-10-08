@@ -103,6 +103,11 @@ class BubblewrapExecutionBackend:
         Path("/etc/nsswitch.conf"),
     )
 
+    DEFAULT_TRUST_STORE_MOUNTS = (
+        (Path("/etc/ssl/certs"), Path("/etc/ssl/certs")),
+        (Path("/etc/pki"), Path("/etc/pki")),
+    )
+
     def __init__(
         self,
         *,
@@ -111,12 +116,24 @@ class BubblewrapExecutionBackend:
         popen=subprocess.Popen,
         poll_interval_seconds: float = 0.05,
         max_output_bytes: int = 2 * 1024 * 1024,
+        trust_store_mounts: Sequence[tuple[Path, Path]] | None = None,
     ) -> None:
         self.executable = executable or shutil.which("bwrap") or ""
         self._probe_runner = probe_runner
         self._popen = popen
         self.poll_interval_seconds = max(0.01, poll_interval_seconds)
         self.max_output_bytes = max(1024, max_output_bytes)
+        self._trust_store_override = trust_store_mounts is not None
+        configured_trust_mounts = (
+            tuple((path, path) for path in self.SYSTEM_TRUST_DIRECTORIES)
+            if trust_store_mounts is None
+            else tuple(trust_store_mounts)
+        )
+        self.trust_store_mounts = tuple(
+            (source.resolve(), destination)
+            for source, destination in configured_trust_mounts
+            if source.is_dir()
+        )
         self._status: LocalIsolationStatus | None = None
 
     @staticmethod
@@ -343,6 +360,36 @@ class BubblewrapExecutionBackend:
 
         return apply
 
+    @staticmethod
+    def process_tree_rss_bytes(pid: int) -> int:
+        """Return resident bytes for a process and its current descendants."""
+
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        pending = [int(pid)]
+        seen: set[int] = set()
+        total = 0
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            try:
+                statm = Path(f"/proc/{current}/statm").read_text(
+                    encoding="utf-8"
+                ).split()
+                if len(statm) > 1:
+                    total += int(statm[1]) * page_size
+            except (OSError, ValueError):
+                pass
+            try:
+                children = Path(
+                    f"/proc/{current}/task/{current}/children"
+                ).read_text(encoding="utf-8")
+                pending.extend(int(value) for value in children.split())
+            except (OSError, ValueError):
+                pass
+        return total
+
     @classmethod
     def minimal_environment(
         cls,
@@ -503,17 +550,13 @@ class BubblewrapExecutionBackend:
         # endpoints through a fixed-destination broker. Keep the broader host
         # /etc tree private, but provide the platform CA roots required to
         # authenticate those TLS endpoints.
-        for trust_directory in self.SYSTEM_TRUST_DIRECTORIES:
-            if not trust_directory.is_dir():
-                continue
-            command.extend(self._directory_creation_args(trust_directory))
-            command.extend(
-                (
-                    "--ro-bind",
-                    str(trust_directory),
-                    str(trust_directory),
-                )
-            )
+        trust_mounts = (self.trust_store_mounts if self._trust_store_override else
+                        tuple((path, path) for path in self.SYSTEM_TRUST_DIRECTORIES if path.is_dir()))
+        for source, destination in trust_mounts:
+            if not destination.is_absolute():
+                raise LocalExecutionPolicyError("trust-store mount destination must be absolute")
+            command.extend(self._directory_creation_args(destination))
+            command.extend(("--ro-bind", str(source), str(destination)))
         # Keep UID/GID lookup functional without exposing the broader host
         # /etc tree. Git and SSH resolve the current uid before transport, so
         # an empty /etc blocks publication even when broker auth is valid.

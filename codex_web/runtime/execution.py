@@ -75,6 +75,22 @@ def _turn_failure_text(message: dict[str, Any]) -> str | None:
     return str(raw_error).strip() or None
 
 
+def _execution_preflight_blocked(
+    exc: TurnExecutionBindingError,
+) -> HTTPException:
+    """Translate deterministic binding failures at every bootstrap boundary."""
+
+    return HTTPException(
+        status_code=503,
+        detail={
+            "code": "execution_preflight_blocked",
+            "message": str(exc),
+            "blockers": [exc.public()],
+            "retryable": False,
+        },
+    )
+
+
 class _ThreadRuntimeTransport:
     def __init__(self, service: "TurnExecutionService", thread_id: str) -> None:
         self.service = service
@@ -144,6 +160,7 @@ class TurnExecutionService:
         work_item_context_recorder: Callable[..., Any] | None = None,
         work_item_outcome_recorder: Callable[..., Any] | None = None,
         thread_history: ThreadHistoryRepository | None = None,
+        transcript: Any | None = None,
     ) -> None:
         self.host = host
         self.binding_service = binding_service
@@ -167,6 +184,7 @@ class TurnExecutionService:
         self.work_item_context_recorder = work_item_context_recorder
         self.work_item_outcome_recorder = work_item_outcome_recorder
         self.thread_history = thread_history
+        self.transcript = transcript
         self.turn_start_lock = asyncio.Lock()
         self.queue_drain_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
@@ -995,6 +1013,7 @@ class TurnExecutionService:
             if method == "thread/read":
                 return {
                     "ok": False,
+                    "timedOut": True,
                     "threadId": thread_id,
                     "error": (
                         "agent runtime session has no provider-native "
@@ -1450,6 +1469,106 @@ class TurnExecutionService:
         self._publish_agent_runtime_message(
             {"method": method, "params": params}
         )
+
+    def record_codex_runtime_transcript_event(
+        self,
+        message: dict[str, Any],
+    ) -> None:
+        """Durably project native app-server events before browser delivery."""
+        if self.transcript is None:
+            return
+        method = str(message.get("method") or "").strip()
+        params = message.get("params") or {}
+        if not method or not isinstance(params, dict):
+            return
+        turn = params.get("turn") or {}
+        thread_id = str(
+            params.get("threadId")
+            or (turn.get("threadId") if isinstance(turn, dict) else "")
+            or ""
+        ).strip()
+        if not thread_id:
+            return
+        turn_id = str(
+            params.get("turnId")
+            or (turn.get("id") if isinstance(turn, dict) else "")
+            or ""
+        ).strip() or None
+        self.transcript.record_event(
+            thread_id,
+            AgentRuntimeEvent(
+                event_type=method,
+                provider_native_session_id=thread_id,
+                provider_native_turn_id=turn_id,
+                payload=dict(params),
+            ),
+        )
+
+    def record_user_message(
+        self,
+        thread_id: str,
+        turn_id: str,
+        text: str,
+    ) -> None:
+        if self.transcript is not None:
+            self.transcript.record_user(thread_id, turn_id, text)
+
+    def fail_user_message(self, thread_id: str, turn_id: str) -> None:
+        if self.transcript is not None:
+            self.transcript.fail_pending(thread_id, turn_id)
+
+    async def release_unviable_active_turn(self, thread_id: str) -> bool:
+        active = self._active_turn(thread_id)
+        if active is None or not active.assignment_id:
+            return False
+        try:
+            manager, session = self._session_for_assignment(active.assignment_id)
+            assignment = session.validate_current()
+        except Exception:
+            return False
+        binding = getattr(assignment, "runtime_binding", None)
+        if binding is None or (
+            binding.provider_id == "openai" and binding.runtime_id == "codex"
+        ):
+            return False
+        adapter = self._adapter_for_binding(binding, session)
+        native_session_id = getattr(
+            getattr(session, "runtime", None),
+            "native_session_id",
+            None,
+        )
+        try:
+            runtime_state = (
+                await adapter.read_session(native_session_id or thread_id)
+            ).payload
+        except Exception:
+            # A failed health read is not proof that the provider turn is
+            # terminal. Preserve the active marker and let normal stale-turn
+            # recovery make the bounded decision instead.
+            return False
+        if runtime_state.get("active"):
+            return False
+        if native_session_id:
+            return False
+        self.clear_thread_active(thread_id)
+        with contextlib.suppress(Exception):
+            await manager.complete(
+                active.assignment_id,
+                succeeded=False,
+                failure_code="agent_runtime_session_not_started",
+                failure_message=(
+                    "agent runtime turn did not acquire a provider-native session"
+                ),
+            )
+        self.host._append_bot_event(
+            {
+                "type": "sessionless_active_turn_released",
+                "thread_id": thread_id,
+                "assignment_id": active.assignment_id,
+                "execution_id": active.execution_id,
+            }
+        )
+        return True
 
     def record_thread_activity(self, message: dict[str, Any]) -> None:
         h = self.host
@@ -2151,15 +2270,7 @@ class TurnExecutionService:
                             skill_refs=tuple(settings.skill_refs or ()),
                         )
                     except TurnExecutionBindingError as exc:
-                        raise HTTPException(
-                            status_code=503,
-                            detail={
-                                "code": "execution_preflight_blocked",
-                                "message": str(exc),
-                                "blockers": [exc.public()],
-                                "retryable": False,
-                            },
-                        ) from exc
+                        raise _execution_preflight_blocked(exc) from exc
                     session = await session_manager.start(binding.assignment_id)
                     assignment = binding
                     runtime_binding = getattr(binding, "runtime_binding", runtime_binding)
@@ -2455,6 +2566,7 @@ class TurnExecutionService:
                 developer_instructions=effective_developer_instructions,
             )
             history_started = False
+            self.record_user_message(thread_id, requested_execution_id, message)
             try:
                 if (
                     self.thread_history is not None
@@ -2564,6 +2676,7 @@ class TurnExecutionService:
                             },
                         )
             except Exception as exc:
+                self.fail_user_message(thread_id, requested_execution_id)
                 if history_started and self.thread_history is not None:
                     with contextlib.suppress(Exception):
                         self.thread_history.project_message(
@@ -2580,6 +2693,12 @@ class TurnExecutionService:
                 if capacity_error is not None:
                     self.clear_thread_active(thread_id)
                     raise capacity_error from exc
+                timeout_error = h._is_codex_timeout_error(exc)
+                if timeout_error:
+                    # Release only timeout markers that have no viable provider
+                    # turn; live provider turns retain their recovery state.
+                    with contextlib.suppress(Exception):
+                        await self.release_unviable_active_turn(thread_id)
                 sessionless_cli_start = (
                     getattr(runtime_adapter, "runtime_type", None) == "cli"
                     and not getattr(
@@ -2588,7 +2707,7 @@ class TurnExecutionService:
                         None,
                     )
                 )
-                if sessionless_cli_start or not h._is_codex_timeout_error(exc):
+                if sessionless_cli_start or not timeout_error:
                     self.clear_thread_active(thread_id)
                     if not trusted_local_codex_session:
                         with contextlib.suppress(Exception):
@@ -3352,7 +3471,10 @@ class TurnExecutionService:
             )
             return self._bootstrap_binding_for_thread(thread_id)
 
-        return await asyncio.to_thread(prepare_and_rebind)
+        try:
+            return await asyncio.to_thread(prepare_and_rebind)
+        except TurnExecutionBindingError as exc:
+            raise _execution_preflight_blocked(exc) from exc
 
     async def _convert_legacy_thread_to_bootstrap(
         self,
@@ -3588,6 +3710,7 @@ def install_turn_execution_service(
     work_item_context_recorder: Callable[..., Any] | None = None,
     work_item_outcome_recorder: Callable[..., Any] | None = None,
     thread_history: ThreadHistoryRepository | None = None,
+    transcript: Any | None = None,
 ) -> TurnExecutionService:
     existing = getattr(app.state, "turn_execution_service", None)
     if isinstance(existing, TurnExecutionService) and existing.host is host:
@@ -3620,6 +3743,8 @@ def install_turn_execution_service(
             service.work_item_outcome_recorder = work_item_outcome_recorder
         if thread_history is not None:
             service.thread_history = thread_history
+        if transcript is not None:
+            service.transcript = transcript
     else:
         service = TurnExecutionService(
             host,
@@ -3639,6 +3764,7 @@ def install_turn_execution_service(
             work_item_context_recorder=work_item_context_recorder,
             work_item_outcome_recorder=work_item_outcome_recorder,
             thread_history=thread_history,
+            transcript=transcript,
         )
         app.state.turn_execution_service = service
 
@@ -3657,6 +3783,9 @@ def install_turn_execution_service(
     host._mark_thread_active = service.mark_thread_active
     host._clear_thread_active = service.clear_thread_active
     host._record_thread_activity = service.record_thread_activity
+    host._record_codex_runtime_transcript_event = (
+        service.record_codex_runtime_transcript_event
+    )
     host._publish_queue_status = service.publish_queue_status
     host._start_thread_turn_now = service.start_thread_turn_now
     host._drain_thread_queue = service.drain_thread_queue

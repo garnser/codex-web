@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import gc
+import contextlib
 import tempfile
 import threading
 import unittest
@@ -112,7 +113,8 @@ class CodexModelEgressBrokerTests(unittest.IsolatedAsyncioTestCase):
                 await writer.drain()
         finally:
             writer.close()
-            await writer.wait_closed()
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(writer.wait_closed(), timeout=1)
 
     def _validate(self) -> None:
         self.validation_calls += 1
@@ -304,6 +306,22 @@ class CodexModelEgressBrokerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(replacement.closed)
         self.assertTrue(replacement.waited)
+
+    async def test_stop_cancels_open_connect_handlers(self) -> None:
+        _reader, writer, response = await self._connect(
+            f"127.0.0.1:{self.echo_port}",
+            self._auth(),
+        )
+        self.assertIn(b"200 Connection Established", response)
+        self.assertEqual(len(self.broker._handler_tasks), 1)
+
+        await self.broker.stop()
+
+        self.assertEqual(self.broker._handler_tasks, set())
+        writer.close()
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(writer.wait_closed(), timeout=1)
+
 
 
 if __name__ == "__main__":

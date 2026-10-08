@@ -182,6 +182,9 @@ class _Execution:
     def active_execution_id(self, thread_id):
         return getattr(self, "active_execution", None)
 
+    async def release_unviable_active_turn(self, thread_id):
+        return False
+
     async def start_thread_turn_now(self, thread_id, **kwargs):
         self.start_calls.append((thread_id, kwargs))
         if self.start_error is not None:

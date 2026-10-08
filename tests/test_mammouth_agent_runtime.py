@@ -429,6 +429,36 @@ class MammouthCliAgentRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(adapter._active_tasks, {})
 
+    async def test_depleted_credits_fail_start_with_actionable_message(self) -> None:
+        executor = _Executor()
+
+        async def depleted(command, *, binding, on_output, timeout_seconds):
+            await on_output(
+                CliRuntimeOutput(
+                    stream="stderr",
+                    text="request failed: insufficient funds",
+                )
+            )
+            await asyncio.Event().wait()
+
+        adapter = MammouthCliAgentRuntimeAdapter(
+            probe=_Probe(),
+            run_command=depleted,
+        )
+        created = await adapter.create_session(
+            AgentRuntimeSessionRequest(project_id="project-a")
+        )
+
+        with self.assertRaisesRegex(
+            MammouthCliRuntimeError,
+            "Mammouth credits depleted.*Add funds.*switch",
+        ):
+            await adapter.start_turn(
+                created.provider_native_session_id,
+                AgentRuntimeTurnRequest(message="Do work"),
+            )
+        self.assertEqual(adapter._active_tasks, {})
+
     async def test_executor_exceptions_are_safe_failure_events(self) -> None:
         async def fail(command, *, binding, on_output, timeout_seconds):
             await on_output(

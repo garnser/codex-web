@@ -42,11 +42,12 @@ class FakeProcess:
         self,
         lines: list[str],
         *,
+        stderr_lines: list[str] | None = None,
         exit_code: int = 0,
         block_until_terminate: bool = False,
     ) -> None:
         self.stdout = FakeStdReader(lines)
-        self.stderr = FakeStdReader([])
+        self.stderr = FakeStdReader(stderr_lines or [])
         self.exit_code = exit_code
         self.block_until_terminate = block_until_terminate
         self.terminated = threading.Event()
@@ -254,6 +255,23 @@ class MammouthCliSandboxTurnExecutorTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result.exit_code, 7)
+
+    async def test_stderr_is_forwarded_to_runtime_adapter(self) -> None:
+        process = FakeProcess([], stderr_lines=["credits exhausted", ""])
+        executor, _delegation, _backend = self._executor(process=process)
+        recorder = _RecordingOutput()
+
+        await executor(
+            _command(),
+            binding=SimpleNamespace(assignment_id="assignment-a"),
+            on_output=recorder,
+            timeout_seconds=10,
+        )
+
+        self.assertEqual(
+            [(output.stream, output.text) for output in recorder.outputs],
+            [("stderr", "credits exhausted")],
+        )
 
     async def test_timeout_terminates_process_and_fails(self) -> None:
         process = FakeProcess([], block_until_terminate=True)

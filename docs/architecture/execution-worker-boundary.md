@@ -186,9 +186,13 @@ assigned execution workspace writable for `workspace-write` and
 additionally receive the canonical
 target repository's shared Git metadata directory required by that worktree;
 unrelated control-plane data, application state, key/secret directories and
-the operator's home are absent. The backend unshares process/user/IPC/UTS/network
-namespaces and starts the command in a new process session. POSIX rlimits constrain CPU time, address space,
-processes and individual file size. The parent worker monitors total workspace
+the operator's home are absent. Code-owned public system CA trust-store
+directories are mounted read-only so the trusted Codex process can authenticate
+the exact HTTPS model-provider endpoints admitted by its assignment-bound
+CONNECT broker; the host `/etc` directory remains absent. The backend unshares process/user/IPC/UTS/network
+namespaces and starts the command in a new process session. POSIX rlimits
+constrain CPU time, address space, processes and individual file size. The
+parent worker monitors total workspace
 disk usage and wall time and kills the complete process group on breach.
 
 Linux charges `RLIMIT_NPROC` to the host UID rather than the Bubblewrap PID
@@ -201,6 +205,13 @@ consume that headroom. One-shot CPU, address-space and file-size limits retain
 the assignment's exact values. Operator limits inspection reports the requested
 headroom, while execution output records launch failures at the effective
 kernel ceiling.
+
+Filesystem executions also receive a writable, workspace-local Python virtual
+environment. If the canonical Project has an operator-maintained `.venv`, only
+that exact environment is additionally mounted read-only as a baseline package
+layer. The execution-local environment remains first on `PATH`, so installs do
+not mutate a shared Project environment. This targeted mount does not expose the
+Project root and does not imply package-registry or generic network access.
 
 `danger-full-access` is deliberately scoped to the assigned worker environment.
 The sandbox value is passed through to Codex so its inner command sandbox is

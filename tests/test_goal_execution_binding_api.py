@@ -178,6 +178,7 @@ class _AgentSessionsStub:
                 "status": "active",
             }
         }
+        self.objective_errors = {}
 
     def list(self, actor):
         return list(self.sessions)
@@ -186,6 +187,8 @@ class _AgentSessionsStub:
         return next(item for item in self.sessions if item.id == session_id)
 
     async def read_objective(self, session_id, *, actor):
+        if session_id in self.objective_errors:
+            raise self.objective_errors[session_id]
         return SimpleNamespace(payload=self.objectives.get(session_id, {}))
 
     async def interrupt(self, session_id, *, actor):
@@ -260,6 +263,40 @@ class GoalExecutionBindingApiTests(unittest.TestCase):
         response = self.client.get("/api/goals/runtime-objectives/unbound")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"items": [], "count": 0})
+
+    def test_unbound_discovery_reports_unavailable_runtime_session_without_failing(self) -> None:
+        self.sessions.sessions.append(
+            SimpleNamespace(
+                id="session-stale",
+                provider_id="openai",
+                runtime_id="codex",
+                project_id="project-a",
+                provider_native_session_id="thread-missing",
+                capability_snapshot=(
+                    AgentProviderCapability.NATIVE_EXECUTION_OBJECTIVES,
+                ),
+            )
+        )
+        self.sessions.objective_errors["session-stale"] = RuntimeError(
+            "thread not found"
+        )
+
+        response = self.client.get("/api/goals/runtime-objectives/unbound")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["count"], 1)
+        self.assertTrue(response.json()["partial"])
+        self.assertEqual(
+            response.json()["unavailable_sessions"],
+            [
+                {
+                    "agent_session_id": "session-stale",
+                    "provider_id": "openai",
+                    "runtime_id": "codex",
+                    "code": "runtime_objective_unavailable",
+                }
+            ],
+        )
 
     def test_promote_creates_draft_goal_with_runtime_provenance(self) -> None:
         self.actor = self.actor.model_copy(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import resource
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -126,6 +127,7 @@ class _FakeExecutionBackend:
                 tuple(trusted_readonly_mounts),
                 tuple(trusted_writable_mounts),
                 additional_disk_bytes,
+                dict(environment or {}),
             )
         )
         if poll_hook is not None:
@@ -231,14 +233,17 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
         self.assertIn("user namespaces disabled", status.reason)
 
     def test_command_is_namespaced_and_workspace_write_is_the_only_writable_repo_mount(self) -> None:
-        backend = BubblewrapExecutionBackend(
-            executable="/usr/bin/bwrap",
-            probe_runner=_probe_success,
-        )
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             workspace = root / "workspace"
+            trust_store = root / "trust-store"
             workspace.mkdir()
+            trust_store.mkdir()
+            backend = BubblewrapExecutionBackend(
+                executable="/usr/bin/bwrap",
+                probe_runner=_probe_success,
+                trust_store_mounts=((trust_store, Path("/etc/pki")),),
+            )
 
             command = backend.build_command(
                 _assignment(),
@@ -255,6 +260,15 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
         ])
         self.assertNotIn("/app/data", command)
         self.assertIn("/tmp/codex-worker-home", command)
+        mounts = [
+            command[index:index + 3]
+            for index in range(max(0, len(command) - 2))
+        ]
+        self.assertIn(
+            ["--ro-bind", str(trust_store.resolve()), "/etc/pki"],
+            mounts,
+        )
+        self.assertNotIn(["--ro-bind", "/etc", "/etc"], mounts)
         write_index = command.index("--bind")
         self.assertEqual(command[write_index + 1], str(workspace.resolve()))
         self.assertEqual(command[write_index + 2], str(workspace.resolve()))
@@ -629,6 +643,13 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
             [call.args for call in setrlimit.call_args_list],
         )
 
+
+    def test_process_tree_rss_reports_current_process(self) -> None:
+        self.assertGreater(
+            BubblewrapExecutionBackend.process_tree_rss_bytes(os.getpid()),
+            0,
+        )
+
     def test_minimal_environment_does_not_inherit_ambient_secrets(self) -> None:
         backend = BubblewrapExecutionBackend(
             executable="/usr/bin/bwrap",
@@ -658,6 +679,13 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
         root = Path(self.temp.name)
         self.workspace_path = root / "workspace"
         self.workspace_path.mkdir()
+        execution_venv = self.workspace_path / ".venv"
+        (execution_venv / "bin").mkdir(parents=True)
+        (execution_venv / "bin" / "python").touch()
+        (execution_venv / "lib" / "python3.14" / "site-packages").mkdir(
+            parents=True
+        )
+        (execution_venv / ".codex-web-execution-venv").write_text("test\n")
         sqlite = SQLiteStateStore(root / "state.sqlite3")
         self.identity = IdentityService(IdentityStateStore(sqlite))
         self.identity.bootstrap_local()
@@ -911,6 +939,11 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
         self.assertEqual(completion.assignment.status, AssignmentStatus.SUCCEEDED)
         self.assertEqual(backend.validated, [assignment.id])
         self.assertEqual(backend.calls[0][2], self.workspace_path)
+        self.assertEqual(
+            backend.calls[0][6]["VIRTUAL_ENV"],
+            str(self.workspace_path / ".venv"),
+        )
+        self.assertTrue((self.workspace_path / ".venv" / "bin" / "python").exists())
         persisted = next(
             item
             for item in self.worker_service.store.load().assignments
@@ -925,6 +958,73 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
                 for item in events
             )
         )
+
+    def test_python_environment_layers_project_venv_read_only(self) -> None:
+        project_path = Path(self.temp.name) / "project"
+        project_site_packages = (
+            project_path / ".venv" / "lib" / "python3.14" / "site-packages"
+        )
+        project_site_packages.mkdir(parents=True)
+        (project_path / ".venv" / "bin").mkdir()
+        self.workspaces.workspace.repository_members = (
+            SimpleNamespace(
+                resource_id="repo-1",
+                source_path=str(project_path),
+            ),
+        )
+        runtime, _backend = self._runtime(
+            LocalExecutionResult(
+                executable="python",
+                command_digest="sha256:" + "b" * 64,
+                exit_code=0,
+                stdout="ok",
+                stderr="",
+                duration_seconds=0.01,
+            )
+        )
+
+        result = runtime.python_environment(_assignment())
+
+        execution_venv = self.workspace_path / ".venv"
+        self.assertEqual(result.environment["VIRTUAL_ENV"], str(execution_venv))
+        self.assertEqual(
+            result.readonly_mounts,
+            ((project_path / ".venv", project_path / ".venv"),),
+        )
+        baseline = next(
+            (execution_venv / "lib").glob(
+                "python*/site-packages/codex_web_project_baseline.pth"
+            )
+        )
+        self.assertEqual(baseline.read_text(), f"{project_site_packages}\n")
+        self.assertTrue(result.environment["PATH"].startswith(
+            f"{execution_venv}/bin:{project_path}/.venv/bin:"
+        ))
+
+    def test_python_environment_provisions_missing_venv(self) -> None:
+        shutil.rmtree(self.workspace_path / ".venv")
+        runtime, _backend = self._runtime(
+            LocalExecutionResult(
+                executable="python",
+                command_digest="sha256:" + "c" * 64,
+                exit_code=0,
+                stdout="ok",
+                stderr="",
+                duration_seconds=0.01,
+            )
+        )
+
+        result = runtime.python_environment(_assignment())
+
+        execution_venv = self.workspace_path / ".venv"
+        self.assertTrue((execution_venv / ".codex-web-execution-venv").is_file())
+        self.assertTrue((execution_venv / "bin" / "python").exists())
+        self.assertTrue((execution_venv / "bin" / "pip").exists())
+        self.assertIn(
+            "include-system-site-packages = true",
+            (execution_venv / "pyvenv.cfg").read_text(),
+        )
+        self.assertEqual(result.environment["VIRTUAL_ENV"], str(execution_venv))
 
     def test_runtime_passes_canonical_read_only_repository_mounts_to_backend(self) -> None:
         readonly_path = Path(self.temp.name) / "readonly-repo"
