@@ -428,6 +428,28 @@ class TurnExecutionQueueTests(unittest.IsolatedAsyncioTestCase):
         service.start_thread_turn_now.assert_awaited_once()
         self.assertEqual(host._thread_queue_depth("t1"), 0)
 
+    async def test_profiled_queue_drain_resolves_persisted_actor(self) -> None:
+        host = _Host()
+        project = Project(id="p1", name="Project", path="/workspace/project")
+        host._project = lambda _project_id: project
+        actor = object()
+        resolver = MagicMock(return_value=actor)
+        service = TurnExecutionService(host, actor_resolver=resolver)
+        service.start_thread_turn_now = AsyncMock(return_value={"ok": True})
+        service.enqueue_turn(
+            thread_id="t1", project_id="p1", message="profiled work",
+            agent_profile_id="reviewer", agent_profile_revision=4,
+            agent_profile_actor_id="requesting-human",
+        )
+        await service.drain_thread_queue("t1")
+        resolver.assert_called_once_with("requesting-human", project)
+        arguments = service.start_thread_turn_now.await_args.kwargs
+        self.assertIs(arguments["actor"], actor)
+        self.assertEqual(arguments["agent_profile_id"], "reviewer")
+        self.assertEqual(arguments["agent_profile_revision"], 4)
+        self.assertEqual(arguments["agent_profile_actor_id"], "requesting-human")
+        self.assertEqual(host._thread_queue_depth("t1"), 0)
+
     async def test_repeated_bot_resume_timeout_replaces_thread(self) -> None:
         host = _Host()
         project = Project(
