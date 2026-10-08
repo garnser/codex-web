@@ -60,6 +60,8 @@ class ThreadResumeService:
 
     @staticmethod
     def is_timeout_error(exc: Exception) -> bool:
+        if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+            return True
         detail = getattr(exc, "detail", None)
         text = str(detail or exc).lower()
         return (

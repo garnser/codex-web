@@ -54,6 +54,30 @@ class ThreadIndexRepositoryTests(unittest.TestCase):
         repository.remove("thread-1")
         self.assertEqual([thread.id for thread in repository.load()], ["thread-2"])
 
+    def test_project_index_uses_project_id_not_execution_workspace_path(self) -> None:
+        repository = ThreadIndexRepository(self.store, self.legacy_path)
+        repository.upsert(
+            IndexedThread(
+                id="thread-isolated",
+                name="VP Engineering",
+                cwd="/managed/execution-workspaces/worktree-a",
+                project_id="codex-web",
+                updatedAt=3.0,
+            )
+        )
+
+        threads, cursor, truncated = repository.page(
+            project_id="codex-web",
+            archived=False,
+            search=None,
+            after=None,
+            limit=10,
+        )
+
+        self.assertEqual([thread.id for thread in threads], ["thread-isolated"])
+        self.assertIsNone(cursor)
+        self.assertFalse(truncated)
+
     def test_installer_restores_all_historical_thread_index_seams(self) -> None:
         app = SimpleNamespace(state=SimpleNamespace())
         host = SimpleNamespace()

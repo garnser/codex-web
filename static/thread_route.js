@@ -34,10 +34,11 @@ export function createThreadRoute({ state, api, clearSelection, loadThread, addM
       if (state.threadId) clearSelection();
       return;
     }
-    if (state.threadId === threadId) return;
+    if (state.threadId === threadId && state.loadedThreadId === threadId) return;
     try {
       await loadThread(threadId, { historyMode: "none" });
     } catch (error) {
+      if (error?.name === "AbortError") return;
       clearSelection({ historyMode: "replace" });
       addMessage("Thread unavailable", error.message, "tool", new Date());
     }

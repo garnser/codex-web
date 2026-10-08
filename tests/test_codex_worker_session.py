@@ -202,6 +202,8 @@ class _FakeDelegationService:
                     "--config",
                     'shell_environment_policy.inherit="none"',
                     "--config",
+                    'shell_environment_policy.set={PATH="/usr/local/bin:/usr/bin:/bin",HOME="/tmp/codex-worker-home"}',
+                    "--config",
                     'shell_environment_policy.filters.CODEX_ACCESS_TOKEN="exclude"',
                     *subcommand,
                 ),
@@ -336,6 +338,12 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         root = Path(self.temp.name)
         self.workspace_path = root / "workspace"
         self.workspace_path.mkdir()
+        execution_venv = self.workspace_path / ".venv"
+        (execution_venv / "bin").mkdir(parents=True)
+        (execution_venv / "lib" / "python3.14" / "site-packages").mkdir(
+            parents=True
+        )
+        (execution_venv / ".codex-web-execution-venv").write_text("test\n")
 
         sqlite = SQLiteStateStore(root / "state.sqlite3")
         self.identity = IdentityService(IdentityStateStore(sqlite))
@@ -538,8 +546,12 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
             launch = self.backend.spawned[0]
             self.assertEqual(launch["argv"], ("alternate-agent", "serve"))
             self.assertEqual(
-                launch["environment"],
-                {"ALT_AGENT_TOKEN": provider.secret},
+                launch["environment"]["ALT_AGENT_TOKEN"],
+                provider.secret,
+            )
+            self.assertEqual(
+                launch["environment"]["VIRTUAL_ENV"],
+                str(self.workspace_path / ".venv"),
             )
             self.assertEqual(provider.use_calls, 1)
             result = await session.request("session/read")
@@ -826,7 +838,15 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 launch["environment_keys"],
-                ("CODEX_ACCESS_TOKEN", "CODEX_HOME"),
+                (
+                    "CODEX_ACCESS_TOKEN",
+                    "CODEX_HOME",
+                    "PATH",
+                    "PIP_DISABLE_PIP_VERSION_CHECK",
+                    "PIP_REQUIRE_VIRTUALENV",
+                    "PYTHONNOUSERSITE",
+                    "VIRTUAL_ENV",
+                ),
             )
             self.assertTrue(launch["access_token_present"])
             self.assertNotIn(self.delegation.secret, repr(session.status().public()))
@@ -914,6 +934,15 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
             launch = self.backend.spawned[0]
             self.assertEqual(launch["argv"][:3], ("/usr/bin/python3", "-u", "-c"))
             self.assertEqual(launch["argv"][-1], "app-server")
+            joined_argv = " ".join(launch["argv"])
+            self.assertIn(
+                f'VIRTUAL_ENV="{self.workspace_path}/.venv"',
+                joined_argv,
+            )
+            self.assertIn(
+                f'PATH="{self.workspace_path}/.venv/bin:/usr/local/bin:/usr/bin:/bin"',
+                joined_argv,
+            )
             self.assertIn("HTTPS_PROXY", launch["environment"])
             self.assertIn("HTTP_PROXY", launch["environment"])
             self.assertIn("127.0.0.1:8787", launch["environment"]["HTTPS_PROXY"])

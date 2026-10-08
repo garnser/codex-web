@@ -128,6 +128,26 @@ Repository resources use `LocalGitWorkspaceBackend`:
 
 The backend never uses shell interpolation.
 
+## Python environments
+
+Every filesystem execution workspace receives a codex-web-managed, writable
+`.venv` before its worker process starts. The worker launches with that
+environment first on `PATH`, sets `VIRTUAL_ENV`, and disables user-site package
+leakage. `pip` is configured to require an active virtual environment, so
+package installs remain scoped to one execution workspace and are removed with
+it.
+
+When the canonical repository has an operator-maintained `.venv`, that
+environment is mounted read-only as a baseline layer. Its site-packages and
+console scripts are available to the execution-local environment, while the
+worker cannot mutate the Project checkout's dependency environment. A Project
+without a baseline still receives an execution-local venv with `pip` and the
+worker image's code-owned system packages. User-site packages remain excluded.
+
+This environment contract does not grant generic network access. Dependency
+downloads remain subject to the assignment's brokered network policy; already
+installed baseline dependencies work without network access.
+
 Cleanup removes the worktree. Normal/expired cleanup keeps the branch so crash recovery does not destroy unmerged work; an explicit discard may delete the branch.
 
 An active repository-write assignment may request an exact-revision refresh

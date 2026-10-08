@@ -157,6 +157,12 @@ class _Host:
     def _append_bot_event(self, event):
         self.events.append(event)
 
+    @staticmethod
+    def _is_codex_timeout_error(exc):
+        return isinstance(exc, (TimeoutError, asyncio.TimeoutError)) or (
+            "timed out" in str(exc).casefold()
+        )
+
 
 class _RoutingFailure:
     def __init__(self, message: str) -> None:
@@ -631,6 +637,25 @@ class _CredentialMissingBindingService(_BindingService):
         )
 
 
+class _ExpiredBootstrapBindingService(_BindingService):
+    def prepare_bootstrap(self, **kwargs):
+        self.calls.append({"kind": "bootstrap", **kwargs})
+        raise TurnExecutionBindingError(
+            "Runtime authentication for mammouth-ai/mammouth-cli is expired.",
+            code="authentication_expired",
+            blocker={
+                "code": "authentication_expired",
+                "message": (
+                    "Runtime authentication for mammouth-ai/mammouth-cli "
+                    "is expired."
+                ),
+                "retryable": False,
+                "target_type": "agent_runtime",
+                "target_id": "mammouth-ai/mammouth-cli",
+            },
+        )
+
+
 class _Session:
     def __init__(self) -> None:
         self.workspace_path = Path("/isolated/workspace")
@@ -820,6 +845,44 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             control_actor=SimpleNamespace(identity_id="control"),
         )
         return host, binding, sessions, service
+
+    async def test_supersede_bootstrap_auth_failure_is_structured_preflight(self) -> None:
+        host = _Host()
+        binding = _ExpiredBootstrapBindingService()
+        service = TurnExecutionService(
+            host,
+            binding_service=binding,
+            session_manager=_SessionManager(),
+            bootstrap_bindings=_BootstrapBindings(),
+            control_actor=SimpleNamespace(identity_id="control"),
+        )
+        project = Project(id="p1", name="Project", path="/workspace/project")
+
+        with self.assertRaises(HTTPException) as caught:
+            await service._supersede_thread_bootstrap(
+                thread_id="t1",
+                project=project,
+                runtime_binding=ExecutionRuntimeBinding(
+                    provider_id="mammouth-ai",
+                    runtime_id="mammouth-cli",
+                    capability_revision=1,
+                ),
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                execution_profile_id="repository-write",
+                agent_profile=None,
+                explicit_repository_id="repo-1",
+                previous_assignment_id=None,
+            )
+
+        self.assertEqual(caught.exception.status_code, 503)
+        detail = caught.exception.detail
+        self.assertEqual(detail["code"], "execution_preflight_blocked")
+        self.assertEqual(
+            detail["blockers"][0]["code"],
+            "authentication_expired",
+        )
+        self.assertFalse(detail["retryable"])
 
     async def test_explicit_trusted_local_web_turn_uses_authenticated_app_server(self) -> None:
         host, binding, sessions, service = self._credential_missing_service()
@@ -1967,6 +2030,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(kwargs["succeeded"])
         self.assertEqual(kwargs["failure_code"], "codex_thread_resume_failed")
 
+
     async def test_active_thread_request_never_falls_back_when_session_missing(self) -> None:
         host, _binding, _sessions, service = self._service()
         service.mark_thread_active(
@@ -2037,6 +2101,157 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(kwargs["succeeded"])
         self.assertEqual(kwargs["failure_code"], "codex_turn_failed")
         self.assertIn("provider failure", kwargs["failure_message"])
+
+    async def test_cli_binding_read_without_native_session_degrades(self) -> None:
+        host, _binding, sessions, service = self._service(
+            bootstrap_thread_id="t1"
+        )
+        sessions.session.runtime = SimpleNamespace(native_session_id=None)
+        sessions.session.validate_current = lambda: SimpleNamespace(
+            runtime_binding=ExecutionRuntimeBinding(
+                provider_id="mammouth-ai",
+                runtime_id="mammouth-cli",
+                capability_revision=1,
+            )
+        )
+        adapter = SimpleNamespace(
+            read_session=AsyncMock(),
+        )
+        service.runtime_adapter_factory = lambda binding, session: adapter
+
+        response = await service.request_for_thread(
+            "t1",
+            "thread/read",
+            {"threadId": "t1"},
+        )
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["thread"]["status"]["type"], "notLoaded")
+        self.assertTrue(response["thread"]["readTimedOut"])
+        adapter.read_session.assert_not_awaited()
+
+    async def test_sessionless_inactive_runtime_releases_active_turn(self) -> None:
+        binding = ExecutionRuntimeBinding(
+            provider_id="mammouth-ai",
+            runtime_id="mammouth-cli",
+            capability_revision=1,
+        )
+        host, _binding, sessions, service = self._service(
+            bootstrap_thread_id="t1"
+        )
+        sessions.session = _AlternateSession(binding)
+        sessions.session.runtime.native_session_id = None
+        adapter = SimpleNamespace(
+            read_session=AsyncMock(
+                return_value=AgentRuntimeResult(payload={"active": False})
+            )
+        )
+        service.runtime_adapter_factory = lambda _binding, _session: adapter
+        service.mark_thread_active(
+            "t1",
+            execution_id="bootstrap-exec",
+            assignment_id="assignment-1",
+        )
+
+        released = await service.release_unviable_active_turn("t1")
+
+        self.assertTrue(released)
+        self.assertNotIn("t1", host.active)
+        self.assertEqual(len(sessions.completed), 1)
+        self.assertEqual(
+            sessions.completed[0][1]["failure_code"],
+            "agent_runtime_session_not_started",
+        )
+        self.assertEqual(host.events[-1]["type"], "sessionless_active_turn_released")
+
+    async def test_terminal_runtime_start_timeout_does_not_orphan_active_turn(self) -> None:
+        binding = ExecutionRuntimeBinding(
+            provider_id="mammouth-ai",
+            runtime_id="mammouth-cli",
+            capability_revision=1,
+        )
+        host, _binding, sessions, service = self._service(
+            bootstrap_thread_id="t1"
+        )
+        sessions.session = _AlternateSession(binding)
+        sessions.session.runtime.native_session_id = None
+        adapter = SimpleNamespace(
+            resume_session=AsyncMock(
+                return_value=AgentRuntimeResult(
+                    provider_native_session_id="t1",
+                    payload={"resumed": True},
+                )
+            ),
+            start_turn=AsyncMock(
+                side_effect=TimeoutError("Mammouth Code start timed out")
+            ),
+            read_session=AsyncMock(
+                return_value=AgentRuntimeResult(payload={"active": False})
+            ),
+        )
+        service.runtime_adapter_factory = lambda _binding, _session: adapter
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        with self.assertRaisesRegex(TimeoutError, "start timed out"):
+            await service.start_thread_turn_now(
+                "t1",
+                project=project,
+                message="continue work",
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                model="mammouth-ai/gpt-6-astra",
+                execution_id="queued-turn-exec",
+            )
+
+        self.assertNotIn("t1", host.active)
+        self.assertEqual(len(sessions.completed), 1)
+        self.assertEqual(
+            sessions.completed[0][1]["failure_code"],
+            "agent_runtime_session_not_started",
+        )
+
+    async def test_startup_resume_retires_persisted_active_marker_before_start(self) -> None:
+        host, _binding, _sessions, service = self._service()
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+        host._project = lambda project_id: project if project_id == "p1" else None
+        host._project_for_cwd = lambda _cwd: project
+        service.mark_thread_active(
+            "t1",
+            turn_id="dead-turn",
+            project_id="p1",
+            source="web",
+            execution_id="bootstrap-exec",
+            assignment_id="assignment-1",
+            execution_workspace_id="workspace-1",
+            worker_id="worker-1",
+            fence=7,
+        )
+
+        async def resumed_start(thread_id, **_kwargs):
+            self.assertEqual(thread_id, "t1")
+            self.assertNotIn("t1", host.active)
+            return {"turn": {"id": "replacement-turn"}}
+
+        service.start_thread_turn_now = AsyncMock(side_effect=resumed_start)
+
+        await service.resume_active_threads_after_startup({"t1"})
+
+        self.assertEqual(host.active["t1"].turn_id, "replacement-turn")
+        self.assertEqual(host.active["t1"].source, "restart-recovery:web")
+        self.assertEqual(host.events[-1]["type"], "active_thread_resumed")
+
 
 
 class TurnServiceConcurrentStartTests(unittest.IsolatedAsyncioTestCase):

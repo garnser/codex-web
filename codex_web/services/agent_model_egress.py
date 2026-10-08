@@ -123,6 +123,7 @@ class AssignmentBoundAgentModelEgressBroker:
         self._stopping = False
         self._validation_lock = asyncio.Lock()
         self._last_validation_at: float | None = None
+        self._writers: set[asyncio.StreamWriter] = set()
         self.connections = 0
         self.denied_connections = 0
         self._blocking_executor: ThreadPoolExecutor | None = None
@@ -354,6 +355,7 @@ class AssignmentBoundAgentModelEgressBroker:
         writer: asyncio.StreamWriter,
     ) -> None:
         upstream_writer: asyncio.StreamWriter | None = None
+        self._writers.add(writer)
         try:
             raw = await asyncio.wait_for(
                 reader.readuntil(b"\r\n\r\n"),
@@ -385,6 +387,7 @@ class AssignmentBoundAgentModelEgressBroker:
             upstream_reader, upstream_writer = await self._open_upstream(
                 endpoint
             )
+            self._writers.add(upstream_writer)
             self.connections += 1
             writer.write(
                 b"HTTP/1.1 200 Connection Established\r\n"
@@ -419,9 +422,9 @@ class AssignmentBoundAgentModelEgressBroker:
                 await self._deny(writer, "502 Bad Gateway")
         finally:
             if upstream_writer is not None:
-                with contextlib.suppress(Exception):
-                    upstream_writer.close()
-                    await upstream_writer.wait_closed()
+                self._writers.discard(upstream_writer)
+                upstream_writer.close()
+            self._writers.discard(writer)
             if not writer.is_closing():
                 writer.close()
             with contextlib.suppress(Exception):
