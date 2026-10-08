@@ -184,8 +184,8 @@ class CodexRuntime:
         if proof is None:
             return False
         observed, context, epoch = proof
-        age = time.monotonic() - observed
-        return bool(0 <= age < self.AUTHENTICATED_ACCOUNT_MAX_AGE_SECONDS
+        now = time.monotonic()
+        return bool(observed <= now < observed + self.AUTHENTICATED_ACCOUNT_MAX_AGE_SECONDS
                     and epoch == getattr(self, "_authentication_epoch", 0)
                     and context == self._authentication_context())
 
