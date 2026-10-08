@@ -2474,6 +2474,10 @@ def _subscribe_goal_continuation_events(
     runtime_id: str,
 ):
     def listener(event) -> None:
+        # Streaming events cannot continue a Goal. Reject them before the
+        # durable session lookup so token deltas do not block RPC readers.
+        if not goal_continuation_event_service.is_terminal_event(event):
+            return
         native_session_id = event.provider_native_session_id
         if not native_session_id:
             return
