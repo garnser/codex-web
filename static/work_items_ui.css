@@ -250,3 +250,7 @@
   outline: 2px solid var(--cw-focus-color, currentColor);
   outline-offset: 2px;
 }
+
+.work-source-delivery { grid-template-columns: minmax(0, 1fr); margin-top: 10px; }
+.work-source-delivery input { min-width: 0; max-width: 100%; }
+.work-source-delivery p { overflow-wrap: anywhere; }
