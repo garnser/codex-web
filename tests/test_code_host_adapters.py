@@ -311,6 +311,32 @@ class CodeHostAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(event.repository_external_id, "42")
 
+    async def test_gitlab_job_logs_are_bounded_redacted_and_attributed(self) -> None:
+        secret = "glpat-abcdefghijklmnopqrstuvwxyz123456"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.raw_path.decode().split("?", 1)[0]
+            if path == "/api/v4/projects/acme%2Fwidgets/jobs/91/trace":
+                return httpx.Response(200, text=f"token={secret}\n" + "x" * 200)
+            return httpx.Response(404)
+
+        provider = GitLabCodeHostProvider(
+            GitLabClient(transport=httpx.MockTransport(handler))
+        )
+        logs = await provider.job_logs(
+            self._binding("gitlab"),
+            self._resource("gitlab"),
+            91,
+            credential="token",
+            max_bytes=80,
+        )
+
+        self.assertTrue(logs.redacted)
+        self.assertTrue(logs.truncated)
+        self.assertNotIn(secret, logs.content)
+        self.assertEqual(logs.job_id, 91)
+        self.assertEqual(logs.byte_count, 80)
+
     async def test_provider_rate_limits_are_normalized_as_transient(self) -> None:
         github = GitHubCodeHostProvider(
             GitHubClient(

@@ -56,6 +56,54 @@ class GitLabClient:
             params=params,
         )
 
+    async def request_bytes(
+        self,
+        method: str,
+        api_base: str,
+        path: str,
+        *,
+        token: str,
+        max_bytes: int,
+    ) -> tuple[bytes, bool, str]:
+        if max_bytes < 1 or max_bytes > 512 * 1024:
+            raise ValueError("GitLab response byte limit must be between 1 and 524288")
+        url = f"{api_base.rstrip('/')}/{path.lstrip('/')}"
+        headers = {"PRIVATE-TOKEN": token, "Accept": "text/plain"}
+        async with httpx.AsyncClient(
+            transport=self.transport, timeout=self.timeout, follow_redirects=True
+        ) as client:
+            async with client.stream(method.upper(), url, headers=headers) as response:
+                if response.status_code >= 400:
+                    error = RuntimeError(
+                        f"GitLab API returned HTTP {response.status_code} for {path}"
+                    )
+                    setattr(error, "status_code", response.status_code)
+                    raise error
+                chunks: list[bytes] = []
+                observed = 0
+                truncated = False
+                async for chunk in response.aiter_bytes():
+                    remaining = max_bytes - observed
+                    if remaining <= 0:
+                        truncated = True
+                        break
+                    chunks.append(chunk[:remaining])
+                    observed += min(len(chunk), remaining)
+                    if len(chunk) > remaining:
+                        truncated = True
+                        break
+                length = response.headers.get("content-length")
+                if length:
+                    try:
+                        truncated = truncated or int(length) > observed
+                    except ValueError:
+                        truncated = True
+                return (
+                    b"".join(chunks),
+                    truncated,
+                    response.headers.get("content-type", "text/plain").split(";", 1)[0],
+                )
+
     async def group_issues(
         self,
         api_base: str,

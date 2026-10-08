@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 from urllib.parse import quote
 
 import httpx
@@ -12,6 +13,7 @@ from codex_web.code_hosts import (
     CodeHostCommitFact,
     CodeHostCompareFact,
     CodeHostError,
+    CodeHostJobLogFact,
     CodeHostProviderBinding,
     CodeHostPullRequestFact,
     CodeHostRefFact,
@@ -315,6 +317,47 @@ class GitLabCodeHostProvider:
             )
             for item in data
             if isinstance(item, dict) and item.get("id") is not None
+        )
+
+    async def job_logs(
+        self,
+        binding: CodeHostProviderBinding,
+        resource: Resource,
+        job_id: int,
+        *,
+        credential: str | None,
+        max_bytes: int,
+    ) -> CodeHostJobLogFact:
+        if not credential:
+            raise CodeHostError("GitLab code-host credential is required for job logs")
+        project = quote(_project_name(resource), safe="")
+        try:
+            raw, truncated, _ = await self.client.request_bytes(
+                "GET",
+                binding.base_url,
+                f"projects/{project}/jobs/{job_id}/trace",
+                token=credential,
+                max_bytes=max_bytes,
+            )
+        except Exception as exc:
+            raise self._classify(exc) from exc
+        content = raw.decode("utf-8", errors="replace")
+        patterns = (
+            re.compile(r"(?i)(authorization\s*:\s*(?:bearer|token)\s+)[^\s]+"),
+            re.compile(r"(?i)((?:token|secret|password|api[_-]?key)\s*[=:]\s*)[^\s]+"),
+            re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),
+        )
+        redacted = False
+        for pattern in patterns:
+            replacement = r"\1[REDACTED]" if pattern.groups else "[REDACTED]"
+            content, count = pattern.subn(replacement, content)
+            redacted = redacted or count > 0
+        return CodeHostJobLogFact(
+            job_id=job_id,
+            content=content,
+            byte_count=len(raw),
+            truncated=truncated,
+            redacted=redacted,
         )
 
     async def releases(
