@@ -793,7 +793,10 @@ class AssignmentBoundAgentProcessSession:
             # therefore makes this fenced assignment unusable even when its
             # process is still alive. Retire it immediately so recovery can
             # claim the preserved queue with a fresh process and lease.
-            if getattr(exc, "status_code", None) == 504:
+            if (
+                getattr(exc, "status_code", None) == 504
+                and method != "thread/read"
+            ):
                 self.last_error = f"agent runtime RPC timed out: {method}"
                 await asyncio.to_thread(
                     self._record_runtime_failure,

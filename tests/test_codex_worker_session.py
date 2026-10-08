@@ -1007,6 +1007,25 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.backend.processes[0].terminated)
         self.assertFalse(session.runtime.ready.is_set())
 
+    async def test_thread_read_timeout_preserves_one_shot_assignment(self) -> None:
+        assignment = self._create_assignment()
+        session = await self._session(assignment)
+        session.runtime.request_error = HTTPException(
+            status_code=504,
+            detail="thread/read timed out after 10s",
+        )
+
+        with self.assertRaises(HTTPException) as raised:
+            await session.request("thread/read", {"threadId": "thread-1"})
+
+        self.assertEqual(raised.exception.status_code, 504)
+        current = self.worker_service.store.assignment(assignment.id)
+        self.assertEqual(current.status, AssignmentStatus.RUNNING)
+        self.assertIsNotNone(current.lease)
+        self.assertFalse(self.backend.processes[0].terminated)
+        self.assertTrue(session.runtime.ready.is_set())
+        await session.stop()
+
     async def test_watchdog_terminates_when_worker_is_quarantined(self) -> None:
         assignment = self._create_assignment()
         gate = asyncio.Event()
