@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import atexit
 import json
 import time
+import threading
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
@@ -12,6 +14,41 @@ from codex_web.storage.state_store import (
     state_record_prefix,
     state_record_storage_key,
 )
+
+
+_SHARED_POOLS: dict[tuple[str, int, float], Any] = {}
+_SHARED_POOLS_LOCK = threading.Lock()
+
+
+def shared_postgres_connection_pool(dsn: str, *, max_size: int = 16, timeout: float = 5.0):
+    """Reuse transport resources only for identical DSN/TLS and pool context."""
+    key = (dsn, int(max_size), float(timeout))
+    with _SHARED_POOLS_LOCK:
+        pool = _SHARED_POOLS.get(key)
+        if pool is None or pool.closed:
+            try:
+                from psycopg_pool import ConnectionPool  # type: ignore
+            except ImportError as exc:
+                raise RuntimeError(
+                    "PostgreSQL state storage requires the optional 'psycopg_pool' package"
+                ) from exc
+            pool = ConnectionPool(
+                conninfo=dsn, min_size=1, max_size=int(max_size),
+                timeout=float(timeout), name="canonical-state", open=True,
+            )
+            _SHARED_POOLS[key] = pool
+        return pool
+
+
+def close_postgres_connection_pools() -> None:
+    with _SHARED_POOLS_LOCK:
+        pools = tuple(_SHARED_POOLS.values())
+        _SHARED_POOLS.clear()
+    for pool in pools:
+        pool.close()
+
+
+atexit.register(close_postgres_connection_pools)
 
 
 class PostgresStateStore:
@@ -29,10 +66,18 @@ class PostgresStateStore:
         dsn: str,
         *,
         connect: Callable[..., Any] | None = None,
+        connection_pool: Any | None = None,
+        pool_max_size: int = 16,
+        pool_timeout_seconds: float = 5.0,
     ) -> None:
         self.dsn = str(dsn or "").strip()
         if not self.dsn:
             raise ValueError("PostgreSQL DSN must not be empty")
+        if int(pool_max_size) < 1 or float(pool_timeout_seconds) <= 0:
+            raise ValueError("PostgreSQL pool limits must be positive")
+        self._pool = connection_pool
+        self._shared_pool = False
+        self._closed = False
         if connect is None:
             try:
                 import psycopg  # type: ignore
@@ -41,15 +86,45 @@ class PostgresStateStore:
                     "PostgreSQL state storage requires the optional 'psycopg' package"
                 ) from exc
             connect = psycopg.connect
+            if self._pool is None:
+                self._pool = shared_postgres_connection_pool(
+                    self.dsn, max_size=int(pool_max_size),
+                    timeout=float(pool_timeout_seconds),
+                )
+                self._shared_pool = True
         self._connect_factory = connect
         self._keyed_mutation_metrics = OperationTimingMetrics()
-        self._initialize()
+        try:
+            self._initialize()
+        except BaseException:
+            self.close()
+            raise
+        if self._pool is not None and not self._shared_pool:
+            atexit.register(self._pool.close)
 
     def _connect(self):
         return self._connect_factory(self.dsn)
 
+    def close(self) -> None:
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        # Short-lived stores release their lease, not the process-owned pool.
+        # Pool shutdown is coordinated once after all runtime owners stop.
+        if getattr(self, "_pool", None) is not None and not self._shared_pool:
+            atexit.unregister(self._pool.close)
+            self._pool.close()
+
     @contextmanager
     def _connection(self) -> Iterator[Any]:
+        if getattr(self, "_closed", False):
+            raise RuntimeError("PostgreSQL state store is closed")
+        if getattr(self, "_pool", None) is not None:
+            # The official pool commits/rolls back before returning this
+            # connection. Never share an in-flight transaction across callers.
+            with self._pool.connection() as connection:
+                yield connection
+            return
         connection = self._connect()
         try:
             with connection:
@@ -511,6 +586,14 @@ class PostgresStateStore:
             ),
             "shared": True,
             "keyedMutationMetrics": self._keyed_mutation_metrics.snapshot(),
+            "connectionPool": (
+                {
+                    "minSize": self._pool.min_size,
+                    "maxSize": self._pool.max_size,
+                    "stats": self._pool.get_stats(),
+                }
+                if getattr(self, "_pool", None) is not None else None
+            ),
         }
 
     def get(self, namespace: str) -> Any | None:

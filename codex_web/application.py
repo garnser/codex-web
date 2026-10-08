@@ -4648,3 +4648,12 @@ app.state.api_authorization_service = api_authorization_service
 
 def main() -> None:
     run_server()
+
+
+async def _close_postgres_state_connections() -> None:
+    from codex_web.storage.postgres_state import close_postgres_connection_pools
+
+    await asyncio.to_thread(close_postgres_connection_pools)
+
+
+app.router.add_event_handler("shutdown", _close_postgres_state_connections)
