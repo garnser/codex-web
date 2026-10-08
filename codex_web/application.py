@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 from pathlib import Path
 from urllib.parse import urlparse
@@ -3542,6 +3543,37 @@ agent_channel_preference_service = (
     )
 )
 
+def _agent_profile_for_bot_binding(binding):
+    actor = identity_service.local_trusted_actor()
+    owner = work_item_state_machine._coerce_owner(
+        bot_presentation_service.binding_prefix(binding)
+    )
+    if not owner:
+        return None
+    profiles = [
+        profile
+        for profile in agent_profile_service.list(actor=actor)
+        if work_item_state_machine._coerce_owner(profile.role_id) == owner
+    ]
+    if not profiles:
+        return None
+    project = project_runtime_service.get(binding.project_id)
+    project_prefix = "-".join(
+        part
+        for part in re.split(r"[^a-z0-9]+", project.name.casefold())
+        if part
+    )
+    profile = next(
+        (
+            item
+            for item in profiles
+            if item.profile_id.casefold().startswith(f"{project_prefix}-")
+        ),
+        profiles[0],
+    )
+    return profile, actor
+
+
 bot_event_dispatch_service = BotEventDispatchService(
     projects=project_runtime_service,
     settings=thread_execution_settings_service,
@@ -3554,6 +3586,7 @@ bot_event_dispatch_service = BotEventDispatchService(
     telemetry=bot_runtime_telemetry,
     publish_event=event_hub.publish,
     binding_name=thread_recovery_service.logical_binding_name,
+    agent_profile_resolver=_agent_profile_for_bot_binding,
 )
 bot_event_dispatch_compatibility = (
     BotEventDispatchCompatibilityFacade(core)

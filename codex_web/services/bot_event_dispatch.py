@@ -38,6 +38,8 @@ class BotEventDispatchService:
             [dict[str, Any]], Awaitable[object]
         ],
         binding_name: Callable[[BotBinding], str],
+        agent_profile_resolver: Callable[[BotBinding], tuple[Any, Any] | None]
+        | None = None,
     ) -> None:
         self.projects = projects
         self.settings = settings
@@ -50,6 +52,7 @@ class BotEventDispatchService:
         self.telemetry = telemetry
         self.publish_event = publish_event
         self.binding_name = binding_name
+        self.agent_profile_resolver = agent_profile_resolver
 
     @staticmethod
     def recent_activity_grace_seconds() -> float:
@@ -168,6 +171,24 @@ class BotEventDispatchService:
         effective_model = settings.model or project.model
         effective_reasoning_effort = settings.reasoning_effort
         reply_target = self.targets.conversation_target(binding)
+        profile_context = (
+            self.agent_profile_resolver(binding)
+            if self.agent_profile_resolver is not None
+            else None
+        )
+        agent_profile, profile_actor = (
+            profile_context if profile_context is not None else (None, None)
+        )
+        profile_kwargs = {
+            "execution_profile_id": getattr(
+                agent_profile,
+                "execution_profile_id",
+                None,
+            ),
+            "agent_profile_id": getattr(agent_profile, "profile_id", None),
+            "agent_profile_revision": getattr(agent_profile, "revision", None),
+            "agent_profile_actor_id": getattr(profile_actor, "identity_id", None),
+        }
 
         async def queue_turn(
             event_type: str,
@@ -216,6 +237,7 @@ class BotEventDispatchService:
                 repository_resource_id=repository_resource_id,
                 writable_repository_resource_ids=writable_repository_resource_ids,
                 read_only_repository_resource_ids=read_only_repository_resource_ids,
+                **profile_kwargs,
                 source=source,
                 reply_target=reply_target,
             )
@@ -286,6 +308,8 @@ class BotEventDispatchService:
                 repository_resource_id=repository_resource_id,
                 writable_repository_resource_ids=writable_repository_resource_ids,
                 read_only_repository_resource_ids=read_only_repository_resource_ids,
+                actor=profile_actor,
+                **profile_kwargs,
             )
         except Exception as exc:
             if self.resume.is_timeout_error(exc):
@@ -318,6 +342,8 @@ class BotEventDispatchService:
                 repository_resource_id=repository_resource_id,
                 writable_repository_resource_ids=writable_repository_resource_ids,
                 read_only_repository_resource_ids=read_only_repository_resource_ids,
+                actor=profile_actor,
+                **profile_kwargs,
             )
 
         binding.updated_at = time.time()

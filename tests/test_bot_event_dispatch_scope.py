@@ -64,6 +64,29 @@ class BotEventDispatchScopeTests(unittest.IsolatedAsyncioTestCase):
             ("repo-saas-app",),
         )
 
+    async def test_queued_event_preserves_recipient_agent_profile(self) -> None:
+        actor = SimpleNamespace(identity_id="local-admin")
+        profile = SimpleNamespace(
+            profile_id="veridataops-quinn",
+            revision=4,
+            execution_profile_id="repository-write",
+        )
+        self.service.agent_profile_resolver = Mock(
+            return_value=(profile, actor)
+        )
+
+        await self.service.dispatch(
+            self.binding,
+            "quinn: validate the handoff",
+            "work-item-handoff",
+        )
+
+        kwargs = self.execution.enqueue_turn.call_args.kwargs
+        self.assertEqual(kwargs["agent_profile_id"], "veridataops-quinn")
+        self.assertEqual(kwargs["agent_profile_revision"], 4)
+        self.assertEqual(kwargs["agent_profile_actor_id"], "local-admin")
+        self.assertEqual(kwargs["execution_profile_id"], "repository-write")
+
     async def test_missing_session_is_not_replaced_while_assignment_is_inflight(self) -> None:
         self.execution.thread_is_active.return_value = False
         self.execution.thread_has_live_agent_runtime_session.return_value = False
