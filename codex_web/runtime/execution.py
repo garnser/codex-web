@@ -2834,7 +2834,46 @@ class TurnExecutionService:
                     )
                     return
             if h._is_codex_timeout_error(exc):
-                queued.attempts = max(0, queued.attempts - 1)
+                bindings = h._bindings_for_thread(thread_id)
+                if bindings and queued.attempts >= 2:
+                    replacement = await h._replace_stale_bot_thread(
+                        bindings[0],
+                        (
+                            "repeated runtime resume timeout: "
+                            f"{str(getattr(exc, 'detail', exc))[:500]}"
+                        ),
+                    )
+                    queued.thread_id = replacement.thread_id
+                    if (
+                        queued.reply_target
+                        and queued.reply_target.thread_id == thread_id
+                    ):
+                        queued.reply_target = queued.reply_target.model_copy(
+                            update={"thread_id": replacement.thread_id}
+                        )
+                    queued.attempts = 0
+                    self.requeue_turn_front(queued)
+                    reschedule_queue = False
+                    h._append_bot_event(
+                        {
+                            "type": "queued_turn_retargeted_after_resume_timeout",
+                            "old_thread_id": thread_id,
+                            "new_thread_id": replacement.thread_id,
+                            "queued_id": queued.id,
+                            "error": h._truncate_text(
+                                str(getattr(exc, "detail", exc)),
+                                500,
+                            ),
+                        }
+                    )
+                    await self.publish_queue_status(thread_id)
+                    asyncio.get_running_loop().call_soon(
+                        self.schedule_queue_drain,
+                        replacement.thread_id,
+                    )
+                    return
+                if not bindings:
+                    queued.attempts = max(0, queued.attempts - 1)
                 self.requeue_turn_front(queued)
                 delay = h._thread_resume_retry_delay()
                 reschedule_queue = False

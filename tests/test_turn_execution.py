@@ -399,6 +399,62 @@ class TurnExecutionQueueTests(unittest.IsolatedAsyncioTestCase):
         service.start_thread_turn_now.assert_awaited_once()
         self.assertEqual(host._thread_queue_depth("t1"), 0)
 
+    async def test_repeated_bot_resume_timeout_replaces_thread(self) -> None:
+        host = _Host()
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+        )
+        host._project = lambda _project_id: project
+        host._remember_thread_run_settings = MagicMock()
+        host._is_stale_thread_error = lambda _exc: False
+        host._is_codex_timeout_error = lambda _exc: True
+        host._thread_resume_retry_delay = lambda: 3600.0
+        host._bindings_for_thread = lambda _thread_id: [
+            SimpleNamespace(thread_id="t1")
+        ]
+        host._replace_stale_bot_thread = AsyncMock(
+            return_value=SimpleNamespace(thread_id="t2")
+        )
+        host._truncate_text = lambda value, limit: str(value)[:limit]
+        service = TurnExecutionService(host)
+        service.start_thread_turn_now = AsyncMock(
+            side_effect=HTTPException(
+                status_code=504,
+                detail="Codex app-server request timed out after 60 seconds",
+            )
+        )
+        service.publish_queue_status = AsyncMock()
+        service.enqueue_turn(
+            thread_id="t1",
+            project_id="p1",
+            message="queued bot work",
+        )
+
+        await service.drain_thread_queue("t1")
+
+        first_retry = host._thread_queue("t1")
+        self.assertEqual(len(first_retry), 1)
+        self.assertEqual(first_retry[0].attempts, 1)
+        host._replace_stale_bot_thread.assert_not_awaited()
+
+        service.schedule_queue_drain = MagicMock()
+        await service.drain_thread_queue("t1")
+        await asyncio.sleep(0)
+
+        host._replace_stale_bot_thread.assert_awaited_once()
+        self.assertEqual(host._thread_queue_depth("t1"), 0)
+        replacement_queue = host._thread_queue("t2")
+        self.assertEqual(len(replacement_queue), 1)
+        self.assertEqual(replacement_queue[0].thread_id, "t2")
+        self.assertEqual(replacement_queue[0].attempts, 0)
+        service.schedule_queue_drain.assert_called_once_with("t2")
+        self.assertEqual(
+            host.events[-1]["type"],
+            "queued_turn_retargeted_after_resume_timeout",
+        )
+
 
 class TurnExecutionRestartRecoveryTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
