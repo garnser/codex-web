@@ -794,6 +794,13 @@ class AgentTeamService:
             )
         )
 
+    @staticmethod
+    def _attention_dedupe_key(record: AgentTeamDelegationRecord) -> str:
+        legacy = f"agent-team:{record.team_id}:{record.work_item_id}:{record.reason}"
+        if len(legacy) <= 500:
+            return legacy
+        return "agent-team:sha256:" + hashlib.sha256(legacy.encode("utf-8")).hexdigest()
+
     async def _attention_for(
         self,
         record: AgentTeamDelegationRecord,
@@ -811,7 +818,7 @@ class AgentTeamService:
                     object_id=record.id,
                 ),
                 reason=record.reason,
-                dedupe_key=f"agent-team:{record.team_id}:{record.work_item_id}:{record.reason}",
+                dedupe_key=self._attention_dedupe_key(record),
                 requesting_agent_team_id=record.team_id,
                 deep_link=f"/?work_item={record.work_item_id}",
                 escalation=EscalationPolicy(mandatory=True),
@@ -848,7 +855,7 @@ class AgentTeamService:
             ):
                 continue
             await self.attention.resolve_by_source(
-                f"agent-team:{prior.team_id}:{prior.work_item_id}:{prior.reason}",
+                self._attention_dedupe_key(prior),
                 organization_id=record.organization_id,
                 workspace_id=record.workspace_id,
                 actor_id="agent-team-orchestration",
