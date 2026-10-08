@@ -4,11 +4,24 @@ import asyncio
 import unittest
 from types import SimpleNamespace
 
+from fastapi import HTTPException
+
 from codex_web import application
 from codex_web.models import Project
 from codex_web.runtime import core
 from codex_web.services.project_runtime import ProjectRuntimeService
 from codex_web.services.thread_resume import ThreadResumeService
+
+
+class MissingProfileRecoveryTests(unittest.TestCase):
+    def test_only_explicitly_unbound_profile_conflict_is_recoverable(self):
+        detail = {"code": "thread_agent_profile_immutable", "effectiveAgentProfile": None,
+                  "requestedAgentProfileId": "veridataops-carl"}
+        self.assertTrue(ThreadResumeService.is_stale_thread_error(HTTPException(409, detail)))
+        detail["effectiveAgentProfile"] = {"profile_id": "different-profile"}
+        self.assertFalse(ThreadResumeService.is_stale_thread_error(HTTPException(409, detail)))
+        detail.pop("effectiveAgentProfile")
+        self.assertFalse(ThreadResumeService.is_stale_thread_error(HTTPException(409, detail)))
 
 
 class _Projects:
