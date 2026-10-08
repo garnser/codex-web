@@ -19,6 +19,7 @@ from codex_web.identity import AuthenticationActor
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.action_providers import ActionExecutionService
 from codex_web.services.autonomy_controller import AutonomyController
+from codex_web.services.watchdog_dispatch import WatchdogDispatchPolicy
 from codex_web.services.autonomy_dependencies import AutonomyRuntimeDependencies
 from codex_web.services.canonical_events import CanonicalEventIngestionService
 
@@ -106,10 +107,13 @@ class AutonomyService:
             default=str,
         )
         digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        # Repeated idle-owner wakeups are new scheduled observations after
+        # cooldown; unchanged issue payloads must not deduplicate forever.
+        window = int(time.time() // WatchdogDispatchPolicy.cooldown_seconds())
         delivery = await self.canonical_events.ingest(
             event_type=CanonicalEventType.WORK_TRANSITION,
             source=f"autonomy-watchdog:{source}",
-            idempotency_key=f"{cycle_key}:{digest}",
+            idempotency_key=f"{cycle_key}:{window}:{digest}",
             payload=payload,
             tenant_id=organization_id,
             workspace_id=workspace_id,
