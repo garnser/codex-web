@@ -379,6 +379,33 @@ class AgentTeamServiceTests(unittest.TestCase):
         self.assertEqual(len(history["blockers"]), 1)
         self.assertEqual(attention.payload.requesting_agent_team_id, "delivery")
 
+    def test_long_failure_attention_deduplicates_and_resolves_with_full_reason(self) -> None:
+        class Attention:
+            def __init__(self):
+                self.payloads = []
+                self.resolutions = []
+            async def upsert(self, payload, *, actor_id):
+                self.payloads.append(payload)
+                return type("Item", (), {"id": "long-failure-attention"})()
+            async def resolve_by_source(self, key, **kwargs):
+                self.resolutions.append(key)
+        attention = Attention()
+        service = AgentTeamService(AgentTeamStore(self.sqlite), profiles=self.profiles, definitions=self.definitions, attention=attention)
+        self._team()
+        asyncio.run(service.plan_and_record("delivery", TeamDelegationRequest(work_item_id="work-long-failure", handoff_count=4, required_capabilities=("python",)), actor=self.member))
+        prior = service.store.list_delegations(organization_id="org-a", workspace_id="workspace-a", work_item_id="work-long-failure", team_id="delivery")[0]
+        reason = ("execution_preflight_blocked: " + "authentication source unavailable " * 50).strip()
+        prior = service.store.update_delegation(prior.id, organization_id="org-a", workspace_id="workspace-a", updater=lambda record: record.model_copy(update={"reason": reason}))
+        asyncio.run(service._attention_for(prior))
+        asyncio.run(service._attention_for(prior))
+        first, second = attention.payloads[-2:]
+        self.assertLessEqual(len(first.dedupe_key), 500)
+        self.assertEqual(first.dedupe_key, second.dedupe_key)
+        self.assertEqual(first.reason, reason)
+        recovered = prior.model_copy(update={"id": "recovered-record", "mode": "direct", "blocked": False, "attention_required": False})
+        asyncio.run(service._resolve_recovered_attention(recovered))
+        self.assertEqual(attention.resolutions, [first.dedupe_key])
+
     def test_recovered_routing_resolves_prior_team_attention(self) -> None:
         class _Attention:
             def __init__(self) -> None:
