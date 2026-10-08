@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import threading
 from typing import Any, Callable
 
 from codex_web.compatibility import ContractSpec, MigrationRegistry
@@ -174,9 +177,13 @@ EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
 
 class ExecutionWorkspaceStateStore:
     namespace = "execution_workspaces"
+    workspace_namespace = "execution_workspaces.workspaces"
+    lease_namespace = "execution_workspaces.leases"
+    event_namespace = "execution_workspaces.events"
 
     def __init__(self, store: SQLiteStateStore) -> None:
         self.store = store
+        self._lock = threading.RLock()
 
     def _decode(self, payload: Any) -> ExecutionWorkspaceState:
         if payload is None:
@@ -193,20 +200,123 @@ class ExecutionWorkspaceStateStore:
         EXECUTION_WORKSPACE_STATE_CONTRACT.require(payload.get("schema_version", ""))
         return ExecutionWorkspaceState.model_validate(payload)
 
+    @staticmethod
+    def _event_records(events) -> dict[str, Any]:
+        records: dict[str, Any] = {}
+        occurrences: dict[str, int] = {}
+        for event in events:
+            payload = event.model_dump(mode="json")
+            encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+            digest = hashlib.sha256(encoded.encode()).hexdigest()[:16]
+            base = f"{event.occurred_at:020.6f}:{event.workspace_id}:{digest}"
+            occurrence = occurrences.get(base, 0)
+            occurrences[base] = occurrence + 1
+            records[f"{base}:{occurrence:04d}"] = payload
+        return records
+
+    def _ensure_records(self) -> None:
+        namespaces = (
+            self.workspace_namespace,
+            self.lease_namespace,
+            self.event_namespace,
+        )
+        if all(self.store.record_collection_exists(item) for item in namespaces):
+            return
+        state = self._decode(self.store.get(self.namespace))
+        self.store.record_replace(
+            self.workspace_namespace,
+            {item.id: item.model_dump(mode="json") for item in state.workspaces},
+        )
+        self.store.record_replace(
+            self.lease_namespace,
+            {item.id: item.model_dump(mode="json") for item in state.leases},
+        )
+        self.store.record_replace(
+            self.event_namespace,
+            self._event_records(state.events),
+        )
+        self.store.delete(self.namespace)
+
+    def _load_unlocked(self) -> ExecutionWorkspaceState:
+        self._ensure_records()
+        workspaces = self.store.record_items(self.workspace_namespace).values()
+        leases = self.store.record_items(self.lease_namespace).values()
+        events = self.store.record_items(self.event_namespace).values()
+        return self._decode(
+            {
+                "schema_version": EXECUTION_WORKSPACE_STATE_CONTRACT.current,
+                "workspaces": sorted(
+                    workspaces,
+                    key=lambda item: (item.get("created_at", 0), item.get("id", "")),
+                ),
+                "leases": sorted(
+                    leases,
+                    key=lambda item: (item.get("acquired_at", 0), item.get("id", "")),
+                ),
+                "events": sorted(
+                    events,
+                    key=lambda item: (
+                        item.get("occurred_at", 0),
+                        item.get("workspace_id", ""),
+                        item.get("event_type", ""),
+                    ),
+                ),
+            }
+        )
+
     def load(self) -> ExecutionWorkspaceState:
-        return self._decode(self.store.get(self.namespace))
+        with self._lock:
+            return self._load_unlocked()
+
+    def _apply_records(
+        self,
+        namespace: str,
+        before: dict[str, Any],
+        after: dict[str, Any],
+    ) -> None:
+        self.store.record_apply(
+            namespace,
+            upserts={
+                key: value
+                for key, value in after.items()
+                if before.get(key) != value
+            },
+            deletes=tuple(set(before) - set(after)),
+        )
 
     def update(
         self,
         updater: Callable[[ExecutionWorkspaceState], ExecutionWorkspaceState],
     ) -> ExecutionWorkspaceState:
-        def apply(raw: Any) -> dict[str, Any]:
-            state = self._decode(raw)
-            return updater(state).model_dump(mode="json")
-
-        payload = self.store.update(
-            self.namespace,
-            apply,
-            default=ExecutionWorkspaceState().model_dump(mode="json"),
-        )
-        return self._decode(payload)
+        with self._lock:
+            current = self._load_unlocked()
+            before_workspaces = {
+                item.id: item.model_dump(mode="json") for item in current.workspaces
+            }
+            before_leases = {
+                item.id: item.model_dump(mode="json") for item in current.leases
+            }
+            before_events = self._event_records(current.events)
+            updated = updater(current)
+            after_workspaces = {
+                item.id: item.model_dump(mode="json") for item in updated.workspaces
+            }
+            after_leases = {
+                item.id: item.model_dump(mode="json") for item in updated.leases
+            }
+            self._apply_records(
+                self.workspace_namespace,
+                before_workspaces,
+                after_workspaces,
+            )
+            self._apply_records(
+                self.lease_namespace,
+                before_leases,
+                after_leases,
+            )
+            self._apply_records(
+                self.event_namespace,
+                before_events,
+                self._event_records(updated.events),
+            )
+            return updated

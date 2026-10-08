@@ -339,7 +339,7 @@ class ExecutionWorkspaceTests(unittest.TestCase):
 
     def test_v1_workspace_state_migrates_work_item_subject_on_workspace_and_lease(self) -> None:
         workspace = self._acquire("migrate-exec", self.repo.id)
-        raw = self.service.store.store.get(self.service.store.namespace)
+        raw = self.service.store.load().model_dump(mode="json")
         raw["schema_version"] = "1.0"
         for item in raw["workspaces"]:
             if item["id"] == workspace.id:
@@ -347,9 +347,10 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         for item in raw["leases"]:
             if item["execution_workspace_id"] == workspace.id:
                 item.pop("subject", None)
-        self.service.store.store.put(self.service.store.namespace, raw)
+        legacy_sqlite = SQLiteStateStore(Path(self.temp.name) / "legacy-v1-state.db")
+        legacy_sqlite.put(self.service.store.namespace, raw)
 
-        state = self.service.store.load()
+        state = ExecutionWorkspaceStateStore(legacy_sqlite).load()
         migrated_workspace = next(item for item in state.workspaces if item.id == workspace.id)
         migrated_lease = next(
             item for item in state.leases if item.execution_workspace_id == workspace.id
@@ -394,13 +395,14 @@ class ExecutionWorkspaceTests(unittest.TestCase):
             actor=self.actor,
         )
 
-        raw = self.service.store.store.get(self.service.store.namespace)
+        raw = self.service.store.load().model_dump(mode="json")
         raw["schema_version"] = "1.3"
         for item in raw["workspaces"]:
             item.pop("repository_outcome_status", None)
-        self.service.store.store.put(self.service.store.namespace, raw)
+        legacy_sqlite = SQLiteStateStore(Path(self.temp.name) / "legacy-v1-3-state.db")
+        legacy_sqlite.put(self.service.store.namespace, raw)
 
-        state = self.service.store.load()
+        state = ExecutionWorkspaceStateStore(legacy_sqlite).load()
         migrated = next(item for item in state.workspaces if item.id == workspace.id)
 
         self.assertEqual(state.schema_version, "1.5")
@@ -419,6 +421,28 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         self.assertNotEqual(first.path, second.path)
         self.assertNotEqual(first.branch_name, second.branch_name)
         self.assertEqual(len(self.backend.provisioned), 2)
+
+    def test_workspace_state_is_persisted_as_keyed_records(self) -> None:
+        workspace = self._acquire("keyed-state", self.repo.id)
+
+        self.assertIsNone(self.sqlite.get(self.service.store.namespace))
+        self.assertTrue(
+            self.sqlite.record_collection_exists(self.service.store.workspace_namespace)
+        )
+        self.assertTrue(
+            self.sqlite.record_collection_exists(self.service.store.lease_namespace)
+        )
+        self.assertTrue(
+            self.sqlite.record_collection_exists(self.service.store.event_namespace)
+        )
+        self.assertIn(
+            workspace.id,
+            self.sqlite.record_items(self.service.store.workspace_namespace),
+        )
+        self.assertIn(
+            workspace.lease_id,
+            self.sqlite.record_items(self.service.store.lease_namespace),
+        )
 
     def test_coordinated_workspace_provisions_multiple_writable_members(self) -> None:
         workspace = self.service.acquire(

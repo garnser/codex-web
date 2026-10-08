@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -13,8 +15,12 @@ from codex_web.agent_runtime_usage import (
 )
 from codex_web.services.agent_runtime_telemetry import AgentRuntimeTelemetryService
 from codex_web.services.runtime import RuntimeService
-from codex_web.storage.agent_runtime_usage import AGENT_RUNTIME_USAGE_MIGRATIONS
+from codex_web.storage.agent_runtime_usage import (
+    AGENT_RUNTIME_USAGE_MIGRATIONS,
+    AgentRuntimeUsageStore,
+)
 from codex_web.storage.model_gateway import MODEL_GATEWAY_MIGRATIONS
+from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
 def _resource(**overrides) -> UsageResource:
@@ -52,6 +58,36 @@ def _record(resource: UsageResource, *, suffix: str) -> AgentRuntimeUsage:
 
 
 class UsageResourceTests(unittest.TestCase):
+    def test_usage_state_migrates_to_individually_keyed_records(self) -> None:
+        first = _record(_resource(consumed=10), suffix="first")
+        second = _record(_resource(consumed=20), suffix="second")
+        with tempfile.TemporaryDirectory() as temp:
+            sqlite = SQLiteStateStore(Path(temp) / "state.sqlite3")
+            sqlite.put(
+                AgentRuntimeUsageStore.namespace,
+                {
+                    "schema_version": "1.1",
+                    "records": [
+                        first.model_dump(mode="json"),
+                        second.model_dump(mode="json"),
+                    ],
+                },
+            )
+            store = AgentRuntimeUsageStore(sqlite)
+
+            self.assertEqual(len(store.load().records), 2)
+            self.assertTrue(sqlite.record_collection_exists(store.namespace))
+            self.assertEqual(
+                set(sqlite.get(store.namespace)),
+                {first.id, second.id},
+            )
+
+            store.upsert(first.model_copy(update={"observed_at": 200.0}))
+            records = sqlite.record_items(store.namespace)
+            self.assertEqual(set(records), {first.id, second.id})
+            self.assertEqual(records[first.id]["observed_at"], 200.0)
+            self.assertEqual(records[second.id], second.model_dump(mode="json"))
+
     def test_usage_state_and_legacy_cost_migrate_without_inventing_provenance(self) -> None:
         usage = AGENT_RUNTIME_USAGE_MIGRATIONS.migrate(
             {"schema_version": "1.0", "records": []},

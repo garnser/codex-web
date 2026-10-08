@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from typing import Any, Callable
 
 from codex_web.agent_runtime_usage import (
@@ -38,6 +39,7 @@ class AgentRuntimeUsageStore:
 
     def __init__(self, store: SQLiteStateStore) -> None:
         self.store = store
+        self._lock = threading.RLock()
 
     def _decode(self, payload: Any) -> AgentRuntimeUsageState:
         if payload is None:
@@ -56,19 +58,52 @@ class AgentRuntimeUsageStore:
         )
         return AgentRuntimeUsageState.model_validate(payload)
 
+    def _ensure_records(self) -> None:
+        if self.store.record_collection_exists(self.namespace):
+            return
+        state = self._decode(self.store.get(self.namespace))
+        self.store.record_replace(
+            self.namespace,
+            {item.id: item.model_dump(mode="json") for item in state.records},
+        )
+
+    def _load_unlocked(self) -> AgentRuntimeUsageState:
+        self._ensure_records()
+        records = self.store.record_items(self.namespace).values()
+        return self._decode(
+            {
+                "schema_version": AGENT_RUNTIME_USAGE_STATE_CONTRACT.current,
+                "records": list(records),
+            }
+        )
+
     def load(self) -> AgentRuntimeUsageState:
-        return self._decode(self.store.get(self.namespace))
+        with self._lock:
+            return self._load_unlocked()
 
     def update(
         self,
         updater: Callable[[AgentRuntimeUsageState], AgentRuntimeUsageState],
     ) -> AgentRuntimeUsageState:
-        payload = self.store.update(
-            self.namespace,
-            lambda raw: updater(self._decode(raw)).model_dump(mode="json"),
-            default=AgentRuntimeUsageState().model_dump(mode="json"),
-        )
-        return self._decode(payload)
+        with self._lock:
+            current = self._load_unlocked()
+            before = {
+                item.id: item.model_dump(mode="json") for item in current.records
+            }
+            updated = updater(current)
+            after = {
+                item.id: item.model_dump(mode="json") for item in updated.records
+            }
+            self.store.record_apply(
+                self.namespace,
+                upserts={
+                    key: value
+                    for key, value in after.items()
+                    if before.get(key) != value
+                },
+                deletes=tuple(set(before) - set(after)),
+            )
+            return updated
 
     def list(self) -> list[AgentRuntimeUsage]:
         return sorted(
@@ -83,34 +118,20 @@ class AgentRuntimeUsageStore:
         )
 
     def upsert(self, record: AgentRuntimeUsage) -> AgentRuntimeUsage:
-        def apply(state: AgentRuntimeUsageState) -> AgentRuntimeUsageState:
-            for existing in state.records:
+        with self._lock:
+            self._ensure_records()
+            existing_payload = self.store.record_get(self.namespace, record.id)
+            if existing_payload is not None:
+                existing = AgentRuntimeUsage.model_validate(existing_payload)
                 if (
-                    existing.id == record.id
-                    and (
-                        existing.organization_id != record.organization_id
-                        or existing.workspace_id != record.workspace_id
-                    )
+                    existing.organization_id != record.organization_id
+                    or existing.workspace_id != record.workspace_id
                 ):
                     raise RuntimeError(
                         "runtime usage id already exists in another tenant scope"
                     )
-            replaced = False
-            records: list[AgentRuntimeUsage] = []
-            for existing in state.records:
-                if (
-                    existing.id == record.id
-                    and existing.organization_id == record.organization_id
-                    and existing.workspace_id == record.workspace_id
-                ):
-                    records.append(record)
-                    replaced = True
-                else:
-                    records.append(existing)
-            if not replaced:
-                records.append(record)
-            state.records = records
-            return state
-
-        self.update(apply)
+            self.store.record_apply(
+                self.namespace,
+                upserts={record.id: record.model_dump(mode="json")},
+            )
         return record
