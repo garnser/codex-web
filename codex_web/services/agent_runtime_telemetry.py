@@ -577,6 +577,17 @@ class AgentRuntimeTelemetryService:
         runtime_id: str,
         event: AgentRuntimeEvent,
     ) -> AgentRuntimeUsage | None:
+        # Display text chunks carry no usage or tool lifecycle measurement.
+        # Resolving sessions and rewriting usage for every token backs up the
+        # app-server response reader behind unrelated accounting work.
+        if event.event_type in {
+            "item/agentMessage/delta",
+            "item/reasoning/textDelta",
+            "item/reasoning/summaryTextDelta",
+            "item/commandExecution/outputDelta",
+            "item/fileChange/outputDelta",
+        }:
+            return None
         session = self._canonical_session(
             provider_id,
             runtime_id,
@@ -588,10 +599,7 @@ class AgentRuntimeTelemetryService:
         registration = self.runtimes.registration(provider_id, runtime_id)
         fingerprint = self._fingerprint(provider_id, runtime_id, event)
         record_id = self._record_id(session, event.provider_native_turn_id)
-        existing = next(
-            (item for item in self.store.list() if item.id == record_id),
-            None,
-        )
+        existing = self.store.get(record_id)
         if existing is not None and fingerprint in existing.event_fingerprints:
             return existing
 

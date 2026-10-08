@@ -12,6 +12,8 @@ import socket
 import tempfile
 import time
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 from typing import Callable, Iterable
 from urllib.parse import urlparse
@@ -84,7 +86,7 @@ class AssignmentBoundAgentModelEgressBroker:
         validator: Callable[[], object] | None = None,
         upstream_connect_attempts: int = 3,
         upstream_retry_seconds: float = 0.25,
-        upstream_connect_timeout_seconds: float = 5.0,
+        upstream_connect_timeout_seconds: float = 15.0,
         validation_cache_seconds: float = 5.0,
     ) -> None:
         normalized = tuple(
@@ -124,6 +126,16 @@ class AssignmentBoundAgentModelEgressBroker:
         self._writers: set[asyncio.StreamWriter] = set()
         self.connections = 0
         self.denied_connections = 0
+        self._blocking_executor: ThreadPoolExecutor | None = None
+
+    def _blocking_pool(self) -> ThreadPoolExecutor:
+        # Model CONNECT admission and DNS must not queue behind unrelated
+        # control-plane state work in asyncio's default executor.
+        executor = getattr(self, "_blocking_executor", None)
+        if executor is None:
+            executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="model-egress")
+            self._blocking_executor = executor
+        return executor
 
     @property
     def mount_source(self) -> Path:
@@ -218,7 +230,9 @@ class AssignmentBoundAgentModelEgressBroker:
                 < self.validation_cache_seconds
             ):
                 return
-            await asyncio.to_thread(self._validate_current)
+            await asyncio.get_running_loop().run_in_executor(
+                self._blocking_pool(), self._validate_current
+            )
             self._last_validation_at = time.monotonic()
 
     @staticmethod
@@ -264,10 +278,10 @@ class AssignmentBoundAgentModelEgressBroker:
         for attempt in range(self.upstream_connect_attempts):
             try:
                 addresses = await asyncio.wait_for(
-                    asyncio.get_running_loop().getaddrinfo(
-                        endpoint.host,
-                        endpoint.port,
-                        type=socket.SOCK_STREAM,
+                    asyncio.get_running_loop().run_in_executor(
+                        self._blocking_pool(),
+                        partial(socket.getaddrinfo, endpoint.host, endpoint.port,
+                                type=socket.SOCK_STREAM),
                     ),
                     timeout=self.upstream_connect_timeout_seconds,
                 )
@@ -428,6 +442,10 @@ class AssignmentBoundAgentModelEgressBroker:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._handler_tasks.clear()
+        executor = getattr(self, "_blocking_executor", None)
+        self._blocking_executor = None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
         if server is not None:
             close_clients = getattr(server, "close_clients", None)
             if callable(close_clients):

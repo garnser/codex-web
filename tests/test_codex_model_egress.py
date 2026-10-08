@@ -7,6 +7,7 @@ import contextlib
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -178,6 +179,31 @@ class CodexModelEgressBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.broker.connections, 0)
         writer.close()
         await writer.wait_closed()
+
+    async def test_model_connect_survives_saturated_default_executor(self) -> None:
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        occupied = threading.Event()
+        release = threading.Event()
+        def block_state_work():
+            occupied.set()
+            release.wait()
+        blocked = loop.run_in_executor(None, block_state_work)
+        while not occupied.is_set():
+            await asyncio.sleep(0)
+        writer = None
+        try:
+            _reader, writer, response = await asyncio.wait_for(
+                self._connect(f"127.0.0.1:{self.echo_port}", self._auth()), 1
+            )
+            self.assertIn(b"200 Connection Established", response)
+            self.assertEqual(self.validation_calls, 1)
+        finally:
+            release.set()
+            await blocked
+            if writer is not None:
+                writer.close()
+                await writer.wait_closed()
 
     async def test_non_allowlisted_destination_is_denied(self) -> None:
         _reader, writer, response = await self._connect(

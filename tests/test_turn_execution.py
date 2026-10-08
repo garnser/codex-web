@@ -357,6 +357,19 @@ class TurnExecutionQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(active.assignment_id, "assignment-1")
         self.assertEqual(active.execution_workspace_id, "workspace-1")
 
+    def test_streaming_heartbeat_avoids_per_chunk_storage_work(self) -> None:
+        host = _Host()
+        service = TurnExecutionService(host)
+        with patch("codex_web.runtime.execution.time.time", return_value=200.0):
+            service.mark_thread_active("t1", turn_id="turn-1")
+        event = {"method": "item/agentMessage/delta", "params": {"threadId": "t1", "turnId": "turn-1"}}
+        with patch("codex_web.runtime.execution.time.time", return_value=201.0), patch.object(service, "_active_turn") as read:
+            service.record_thread_activity(event)
+        read.assert_not_called()
+        with patch("codex_web.runtime.execution.time.time", return_value=206.0):
+            service.record_thread_activity(event)
+        self.assertEqual(host.active["t1"].updated_at, 206.0)
+
     def test_handoff_fences_observational_active_turn_clears_until_finish(self) -> None:
         host = _Host()
         service = TurnExecutionService(host)
@@ -1022,6 +1035,18 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(host.events[-1]["assignment_id"], "assignment-1")
         self.assertEqual(host.hub.events[-1]["type"], "queue.status")
 
+    async def test_owned_steering_handoff_can_replace_active_turn(self) -> None:
+        host, _binding, sessions, service = self._service()
+        project = Project(id="p1", name="Project", path="/workspace/project",
+                          sandbox="workspace-write", approval_policy="on-request")
+        service.mark_thread_active("t1", turn_id="old-turn")
+        self.assertTrue(service.begin_thread_handoff("t1"))
+        response = await service.start_thread_turn_now(
+            "t1", project=project, message="steered work", sandbox="workspace-write",
+            approval_policy="on-request", preserve_active_handoff=True)
+        self.assertEqual(response["turn"]["id"], "turn-1")
+        self.assertEqual(host.active["t1"].turn_id, "turn-1")
+
     async def test_fresh_bootstrap_starts_first_turn_without_resume(self) -> None:
         host = _Host()
         binding = _BindingService()
@@ -1400,6 +1425,13 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                 )
             ],
         )
+
+    async def test_interrupt_includes_canonical_active_turn_id(self) -> None:
+        host, _binding, sessions, service = self._service(bootstrap_thread_id="t1")
+        service.mark_thread_active("t1", turn_id="turn-1", assignment_id="assignment-1")
+        await service.request_for_thread("t1", "turn/interrupt", {"threadId": "t1"})
+        self.assertEqual(sessions.session.requests[-1],
+                         ("turn/interrupt", {"threadId": "t1", "turnId": "turn-1"}))
 
     async def test_bootstrap_binding_without_live_session_fails_without_global_fallback(self) -> None:
         host, _binding, sessions, service = self._service(
@@ -1895,7 +1927,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(host.events[-1]["repository_checkpoint_count"], 1)
         self.assertTrue(host.events[-1]["succeeded"])
 
-    async def test_start_rechecks_active_state_under_shared_start_lock(self) -> None:
+    async def test_start_rechecks_active_state_under_thread_start_lock(self) -> None:
         host, binding, sessions, service = self._service()
         project = Project(
             id="p1",
@@ -1928,6 +1960,46 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(binding.calls, [])
         self.assertEqual(sessions.started, [])
         host.codex.request.assert_not_awaited()
+
+    async def test_slow_bootstrap_only_serializes_starts_for_the_same_thread(self) -> None:
+        for second_thread in ("t1", "t2"):
+            with self.subTest(second_thread=second_thread):
+                _host, _binding, _sessions, service = self._service()
+                project = Project(id="p1", name="Project", path="/workspace/project")
+                entered = asyncio.Event()
+                second_entered = asyncio.Event()
+                release = asyncio.Event()
+                calls = []
+
+                async def convert(**kwargs):
+                    calls.append(kwargs["thread_id"])
+                    if len(calls) == 1:
+                        entered.set()
+                        await release.wait()
+                    else:
+                        second_entered.set()
+                    raise HTTPException(status_code=503, detail="test bootstrap boundary")
+
+                service._convert_legacy_thread_to_bootstrap = convert
+                async def start(thread_id):
+                    return await service.start_thread_turn_now(
+                        thread_id, project=project, message="resume work",
+                        sandbox="workspace-write", approval_policy="on-request",
+                    )
+                first = asyncio.create_task(start("t1"))
+                await asyncio.wait_for(entered.wait(), 1)
+                second = asyncio.create_task(start(second_thread))
+                try:
+                    if second_thread == "t2":
+                        await asyncio.wait_for(second_entered.wait(), 1)
+                    else:
+                        await asyncio.sleep(0)
+                        self.assertFalse(second_entered.is_set())
+                finally:
+                    release.set()
+                    results = await asyncio.gather(first, second, return_exceptions=True)
+                self.assertTrue(all(isinstance(result, HTTPException) for result in results))
+                self.assertEqual(calls, ["t1", second_thread])
 
     async def test_thread_resume_failure_completes_assignment_before_turn_start(self) -> None:
         host, _binding, sessions, service = self._service()
