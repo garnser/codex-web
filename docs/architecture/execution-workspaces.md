@@ -206,3 +206,13 @@ This makes every executing agent able to identify its isolated mutable workspace
 - `POST /api/execution-workspaces/recover`
 
 #141 may project these lifecycle records into Operations UI. The UI must not infer workspace ownership or merge status from terminal logs.
+
+## Deployment workspace capacity
+
+`CODEX_WEB_MAX_ACTIVE_WORKSPACES_PER_IDENTITY` and
+`CODEX_WEB_MAX_ACTIVE_WORKSPACES_PER_TENANT` configure the existing workspace
+quota at service construction. Unset values retain the defaults (8 and 20).
+Values must be positive integers; invalid deployment configuration fails startup
+rather than disabling enforcement. An explicitly supplied service quota takes
+precedence. These limits bound retained isolated sessions as well as active turns;
+operators must account for all owner sessions when choosing deployment capacity.
