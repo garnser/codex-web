@@ -848,7 +848,8 @@ class ControlPlaneBrokerService:
             CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
         }
         deadline = {"timeout_seconds": 120.0} if extended_deadline else {}
-        intent = self.action_intents.create(
+        intent = await asyncio.to_thread(
+            self.action_intents.create,
             ActionIntentCreate(
                 binding_id=binding.id,
                 request=request,
@@ -875,7 +876,8 @@ class ControlPlaneBrokerService:
             actor=requester_actor,
         )
         worker_id = f"control-plane-broker:{assignment.assigned_worker_id or 'worker'}"
-        claimed = self.action_intents.claim(
+        claimed = await asyncio.to_thread(
+            self.action_intents.claim,
             ActionIntentClaimRequest(
                 worker_id=worker_id,
                 **({"lease_seconds": 180} if extended_deadline else {}),
@@ -884,7 +886,9 @@ class ControlPlaneBrokerService:
             intent_id=intent.id,
         )
         if claimed is None:
-            current = self.action_intents.get(intent.id, requester_actor)
+            current = await asyncio.to_thread(
+                self.action_intents.get, intent.id, requester_actor
+            )
             return {"item": current.model_dump(mode="json")}
         completed = await self.action_intents.execute_claimed(
             intent.id,
