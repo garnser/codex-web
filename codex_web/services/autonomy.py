@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -430,7 +431,7 @@ class AutonomyService:
             binding = d.orchestrator_binding(project_id)
             if not binding:
                 continue
-            items = d.orchestrator_watchdog_candidates(project_id)
+            items = await asyncio.to_thread(d.orchestrator_watchdog_candidates, project_id)
             if not items:
                 continue
             binding = await d.replace_nonperforming_thread(binding, "orchestrator-watchdog")
@@ -472,7 +473,7 @@ class AutonomyService:
             binding = d.orchestrator_binding(project_id)
             if not binding:
                 continue
-            items = d.split_brain_watchdog_candidates(project_id)
+            items = await asyncio.to_thread(d.split_brain_watchdog_candidates, project_id)
             if not items:
                 continue
             binding = await d.replace_nonperforming_thread(binding, "split-brain-watchdog")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 import time
 import unittest
 from types import SimpleNamespace
@@ -386,3 +388,49 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WatchdogCandidateResponsivenessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_candidate_snapshot_does_not_block_loop_and_keeps_dispatch(self):
+        for kind in ("orchestrator", "split_brain"):
+            with self.subTest(kind=kind):
+                started = threading.Event()
+                release = threading.Event()
+                binding = SimpleNamespace(thread_id="current-thread")
+                state = SimpleNamespace(ref="issue-1")
+                candidates = [("stale_lane", state, 100)] if kind == "orchestrator" else [(state, ["duplicate_owner"])]
+                calls = []
+                def load_candidates(project_id):
+                    calls.append((project_id, threading.get_ident()))
+                    started.set()
+                    if not release.wait(5):
+                        raise RuntimeError("test did not release candidate snapshot")
+                    return candidates
+                runtime = SimpleNamespace(
+                    load_gitlab_routing_settings=lambda: SimpleNamespace(enabled=True, projects={"project-a": SimpleNamespace(enabled=True)}),
+                    orchestrator_binding=lambda _: binding,
+                    orchestrator_watchdog_candidates=load_candidates,
+                    split_brain_watchdog_candidates=load_candidates,
+                    replace_nonperforming_thread=AsyncMock(return_value=binding),
+                    thread_queue_depth=lambda _: 0,
+                    thread_is_active=lambda _: False,
+                    watchdog_dispatch_allowed=lambda _: True,
+                    record_watchdog_dispatch=lambda _: None,
+                    format_orchestrator_watchdog_prompt=lambda *_: "resume",
+                    format_split_brain_watchdog_prompt=lambda *_: "resume",
+                    append_bot_event=lambda _: None,
+                )
+                service = AutonomyService(runtime=runtime)
+                service._bounded_reasoning_dispatch = AsyncMock(return_value={"ok": True})
+                cycle = getattr(service, "run_" + kind + "_cycle")
+                task = asyncio.create_task(cycle())
+                try:
+                    self.assertTrue(await asyncio.to_thread(started.wait, 2))
+                    self.assertFalse(task.done())
+                    self.assertNotEqual(calls[0][1], threading.get_ident())
+                finally:
+                    release.set()
+                await task
+                runtime.replace_nonperforming_thread.assert_awaited_once()
+                service._bounded_reasoning_dispatch.assert_awaited_once()
+                self.assertEqual(service._bounded_reasoning_dispatch.await_args.kwargs["payload"]["item_refs"], ["issue-1"])
