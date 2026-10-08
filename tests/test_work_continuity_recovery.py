@@ -14,6 +14,12 @@ from codex_web.services.work_item_continuity import WorkItemContinuityService
 
 
 class RuntimePolicyTests(unittest.TestCase):
+    def test_local_worker_capacity_configuration_is_bounded(self):
+        policy = RuntimePolicy(Path("/tmp"))
+        for value, expected in [("", 8), ("16", 16), ("0", 1), ("999", 128), ("invalid", 8)]:
+            with patch.dict(os.environ, {"CODEX_WEB_LOCAL_WORKER_MAX_CONCURRENCY": value}):
+                self.assertEqual(policy.local_worker_max_concurrency(), expected)
+
     def test_autonomy_disable_file_and_interval_clamps(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             policy = RuntimePolicy(Path(directory))
