@@ -55,6 +55,35 @@ class ProjectTaskSourceConfigurationTests(unittest.TestCase):
         app.include_router(build_projects_router(service))
         return app
 
+    def test_delivery_configuration_roundtrips_through_canonical_project_api(self):
+        from unittest.mock import Mock
+        from codex_web.services.project_delivery import ProjectDeliveryService
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            projects = self._service(root)
+            projects.set_authoritative_task_source('home', TaskSourceConfiguration(
+                source_type='github', source_instance='https://api.github.com', scope='owner/repo'))
+            app = self._app(root, projects)
+            scope = Mock()
+            app.state.project_delivery_service = ProjectDeliveryService(
+                projects=projects, identity=None, scope=scope, operator=None, states=None,
+                turns=None, execution=None, controller=None, events=None, event_sink=None)
+            with TestClient(app) as client:
+                response = client.put('/api/projects/home/delivery-supervision', json={'thread_id': 'thread-home'})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()['delivery_supervision']['actor_identity_id'], 'local-admin')
+                restored = ProjectService(ProjectRepository(root / 'projects.json')).get('home')
+                self.assertEqual(restored.delivery_supervision.thread_id, 'thread-home')
+                response = client.get('/api/projects/home/delivery-supervision')
+                self.assertEqual(response.status_code, 200)
+                self.assertIsNone(response.json()['last_scan'])
+                response = client.put('/api/projects/home/delivery-supervision', json={'thread_id': None})
+                self.assertEqual(response.status_code, 200)
+                self.assertIsNone(projects.get('home').delivery_supervision)
+                response = client.put('/api/projects/home/delivery-supervision', json={
+                    'thread_id': 'thread-home', 'actor_identity_id': 'foreign-admin'})
+                self.assertEqual(response.status_code, 422)
+
     def test_task_source_configuration_is_strict_and_non_empty(self) -> None:
         source = TaskSourceConfiguration(
             source_type=" gitlab ",

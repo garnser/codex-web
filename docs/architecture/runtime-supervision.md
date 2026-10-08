@@ -107,3 +107,31 @@ read is shown as reconciliation failure, not successful recovery.
 `runtime.core` is an intentional, definition-free compatibility namespace for the verified historical `import server` surface. Application composition may publish aliases to canonical services onto that namespace, but production services never read behavior or state from it.
 
 FastAPI, EventHub, runtime lifecycle supervision, diagnostics, provider runtimes, work-item continuity, and process startup all have explicit owners outside the compatibility namespace. New production code must depend on those owners directly rather than adding new aliases or mutable state to `runtime.core`.
+
+## Configured project backlog delivery
+
+A Project may explicitly bind delivery supervision to an existing same-Project
+Thread. The canonical Project configuration retains the enabling identity and a
+bounded scan interval. Administrators configure or disable it through the
+TaskSource editor and `/api/projects/{project_id}/delivery-supervision`. Every
+scan re-evaluates current membership and Thread ownership; stored configuration
+cannot transfer authority to a different tenant or Project.
+
+The supervisor discovers the configured authoritative TaskSource without model
+reasoning, reconciles retained open items missing from fresh discovery through
+provider reads (at most eight per scan), and selects canonical actionable work.
+Closed work, explicit blockers, failed lanes, and pending handoffs are excluded.
+An externally blocked release item does not suppress independently actionable
+work. Active and queued delivery Threads are not awakened again. Global autonomy
+pause, simulation, dry-run, and scoped autonomy policy remain canonical gates.
+
+When actual delivery requires reasoning, a tenant-scoped canonical event enters
+the bounded autonomy controller. A durable turn is queued before runtime startup,
+so slow provider startup cannot consume the operator's request or lose the work
+on restart. Event identity includes a bounded scan window: a failed dispatch is
+retryable on a later scan without repeatedly sampling an idle or empty backlog.
+Discovery and scan outcomes use existing runtime telemetry; the configuration
+API also reports process-local last scan and next scan time, explicitly distinct
+from durable Project configuration. There is no idle LLM polling.
+
+Canonical thread replacement is reconciled into the persisted delivery binding after rechecking the replacement thread’s Project and tenant scope. Delivery supervision therefore follows governed stale-thread recovery instead of repeatedly dispatching to a retired thread.

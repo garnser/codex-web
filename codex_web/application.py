@@ -356,6 +356,8 @@ from codex_web.services.organizational_memory import OrganizationalMemoryService
 from codex_web.services.retrieval_embedding import (
     ModelGatewayEmbeddingIdentityValidator,
 )
+from codex_web.services.project_delivery import ProjectDeliveryService
+from codex_web.services.work_item_operator import WorkItemOperatorService
 from codex_web.services.projects import ProjectService
 from codex_web.services.project_ui_state import ProjectUiStateService
 from codex_web.services.project_bootstrap import ProjectBootstrapService
@@ -3400,6 +3402,15 @@ turn_service = TurnService(
 )
 app.state.thread_service = thread_service
 app.state.turn_service = turn_service
+project_delivery_service = ProjectDeliveryService(
+    projects=project_service, identity=identity_service, scope=thread_scope_service,
+    operator=WorkItemOperatorService(work_item_service),
+    states=work_item_service.work_items.load_states,
+    turns=turn_service, execution=turn_execution_service,
+    controller=autonomy_controller, events=canonical_event_ingestion,
+    event_sink=bot_runtime_telemetry.append,
+)
+app.state.project_delivery_service = project_delivery_service
 
 agent_team_execution_service = AgentTeamExecutionService(
     agent_team_service,

@@ -290,6 +290,18 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         return service, queue, execution, events, settings
 
+    async def test_deferred_start_persists_work_before_runtime_startup(self):
+        service, queue, execution, events, settings = self._service()
+        queue.queued = []
+        execution.active = False
+        execution.start_error = RuntimeError("runtime unavailable")
+        result = await service.start("thread-1", TurnCreate(message="resume delivery", project_id="home", defer_start=True),
+                                     work_item_ref="github:work-42")
+        self.assertTrue(result["queued"])
+        self.assertEqual(queue.queued[0].message, "resume delivery")
+        self.assertEqual(queue.queued[0].work_item_ref, "github:work-42")
+        self.assertEqual(execution.start_calls, [])
+
     def test_turn_routes_are_owned_by_turn_domain(self) -> None:
         self.assertIn("turns", _path_tags("/api/threads/{thread_id}/turns"))
         self.assertIn("turns", _path_tags("/api/threads/{thread_id}/queue"))
