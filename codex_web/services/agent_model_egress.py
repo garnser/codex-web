@@ -426,7 +426,9 @@ class AssignmentBoundAgentModelEgressBroker:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._handler_tasks.clear()
         if server is not None:
-            server.close_clients()
+            close_clients = getattr(server, "close_clients", None)
+            if callable(close_clients):
+                close_clients()
             await server.wait_closed()
         with contextlib.suppress(FileNotFoundError):
             self.socket_path.unlink()

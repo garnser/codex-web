@@ -279,6 +279,32 @@ class CodexModelEgressBrokerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(root.exists())
 
+    async def test_stop_supports_uvloop_server_without_close_clients(self) -> None:
+        class ServerWithoutCloseClients:
+            def __init__(self) -> None:
+                self.closed = False
+                self.waited = False
+
+            def close(self) -> None:
+                self.closed = True
+
+            async def wait_closed(self) -> None:
+                self.waited = True
+
+        self.echo_server.close()
+        await self.echo_server.wait_closed()
+        server = self.broker.server
+        self.assertIsNotNone(server)
+        server.close()
+        await server.wait_closed()
+        replacement = ServerWithoutCloseClients()
+        self.broker.server = replacement
+
+        await self.broker.stop()
+
+        self.assertTrue(replacement.closed)
+        self.assertTrue(replacement.waited)
+
 
 if __name__ == "__main__":
     unittest.main()
