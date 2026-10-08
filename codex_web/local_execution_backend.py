@@ -291,12 +291,46 @@ class BubblewrapExecutionBackend:
         return total
 
     @staticmethod
+    def _host_uid_task_count() -> int:
+        """Linux NPROC charges tasks for the shared real UID, not the PID namespace."""
+        uid = os.getuid()
+        total = 0
+        try:
+            processes = list(Path("/proc").iterdir())
+        except OSError:
+            return 0
+        for process in processes:
+            if not process.name.isdigit():
+                continue
+            try:
+                fields = dict(
+                    line.split(":", 1) for line in (process / "status").read_text().splitlines()
+                    if ":" in line
+                )
+                if int(fields["Uid"].split()[0]) == uid:
+                    total += int(fields.get("Threads", "1").strip())
+            except (OSError, KeyError, ValueError):
+                continue
+        return total
+
+    @classmethod
     def _limits_preexec(
+        cls,
         limits: WorkerResourceLimits,
         *,
         minimum_address_space_bytes: int = 0,
         minimum_process_count: int = 0,
     ):
+        # Capture outside preexec: scanning /proc after fork in a threaded
+        # service would add avoidable child work. Keep finite incremental
+        # headroom without charging this command for unrelated owner tasks.
+        process_count = max(
+            limits.process_count + cls._host_uid_task_count(),
+            minimum_process_count,
+        )
+        hard_limit = resource.getrlimit(resource.RLIMIT_NPROC)[1]
+        if hard_limit != resource.RLIM_INFINITY:
+            process_count = min(process_count, hard_limit)
         def apply() -> None:
             address_space_bytes = max(
                 limits.memory_bytes,
@@ -304,7 +338,6 @@ class BubblewrapExecutionBackend:
             )
             resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_seconds, limits.cpu_seconds))
             resource.setrlimit(resource.RLIMIT_AS, (address_space_bytes, address_space_bytes))
-            process_count = max(limits.process_count, minimum_process_count)
             resource.setrlimit(resource.RLIMIT_NPROC, (process_count, process_count))
             resource.setrlimit(resource.RLIMIT_FSIZE, (limits.disk_bytes, limits.disk_bytes))
 

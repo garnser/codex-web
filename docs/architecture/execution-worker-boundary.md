@@ -192,10 +192,15 @@ processes and individual file size. The parent worker monitors total workspace
 disk usage and wall time and kills the complete process group on breach.
 
 Linux charges `RLIMIT_NPROC` to the host UID rather than the Bubblewrap PID
-namespace. Trusted interactive Codex sessions therefore use a finite local
-minimum above the shared service-account baseline so their isolated child tools
-can start Chromium threads; one-shot workers retain the assignment's exact
-process limit.
+namespace. The worker snapshots existing tasks for its real UID before launch
+and adds the assignment's requested process headroom to that baseline, capped
+by the inherited hard limit. Trusted interactive Codex sessions additionally
+retain their finite local minimum for Chromium helper threads. This is shared
+UID accounting, not an independent cgroup PID quota; concurrent host tasks can
+consume that headroom. One-shot CPU, address-space and file-size limits retain
+the assignment's exact values. Operator limits inspection reports the requested
+headroom, while execution output records launch failures at the effective
+kernel ceiling.
 
 `danger-full-access` is deliberately scoped to the assigned worker environment.
 The sandbox value is passed through to Codex so its inner command sandbox is
