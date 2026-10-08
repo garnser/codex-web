@@ -35,6 +35,18 @@ class ThreadResumeService:
 
     @staticmethod
     def is_stale_thread_error(exc: Exception) -> bool:
+        detail = getattr(exc, "detail", None)
+        if (
+            getattr(exc, "status_code", None) == 409
+            and isinstance(detail, dict)
+            and detail.get("code") == "thread_agent_profile_immutable"
+            and "effectiveAgentProfile" in detail
+            and detail["effectiveAgentProfile"] is None
+            and detail.get("requestedAgentProfileId")
+        ):
+            # Legacy bot bootstrap has no profile. Recreate it through the
+            # canonical resolver; never change an already-bound profile.
+            return True
         text = str(exc).lower()
         return any(
             marker in text
