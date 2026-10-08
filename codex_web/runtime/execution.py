@@ -1324,33 +1324,46 @@ class TurnExecutionService:
         thread_id = params.get("threadId") or (
             params.get("turn") or {}
         ).get("threadId")
-        if self.thread_history is not None and thread_id:
-            try:
-                self.thread_history.project_message(str(thread_id), message)
-            except Exception as exc:
-                append_event = getattr(self.host, "_append_bot_event", None)
-                if callable(append_event):
-                    with contextlib.suppress(Exception):
-                        append_event(
-                            {
+
+        def project_state() -> None:
+            if self.thread_history is not None and thread_id:
+                try:
+                    self.thread_history.project_message(str(thread_id), message)
+                except Exception as exc:
+                    append_event = getattr(self.host, "_append_bot_event", None)
+                    if callable(append_event):
+                        with contextlib.suppress(Exception):
+                            append_event({
                                 "type": "thread_history_projection_failed",
                                 "thread_id": str(thread_id),
                                 "method": str(message.get("method") or ""),
                                 "error_type": type(exc).__name__,
-                            }
-                        )
-        self.record_thread_activity(message)
+                            })
+            self.record_thread_activity(message)
+
         hub = getattr(self.host, "hub", None)
-        if hub is None:
-            return
         try:
-            loop = asyncio.get_running_loop()
+            loop = asyncio.get_running_loop() if hub is not None else None
         except RuntimeError:
+            loop = None
+        if loop is None:
+            project_state()
             return
+
+        # State stores are synchronous. Match the native reader's offload,
+        # but serialize each thread so late heartbeats cannot revive a turn
+        # after its terminal event. Other threads progress independently.
+        tasks = getattr(self, "agent_runtime_notification_tasks", None)
+        if tasks is None:
+            tasks = self.agent_runtime_notification_tasks = {}
+        key = str(thread_id or "")
+        previous = tasks.get(key)
+
         async def publish() -> None:
-            # Agent adapters bypass CodexRuntime's native notification handler.
-            # Preserve the same canonical relay and terminal queue lifecycle.
             try:
+                if previous is not None:
+                    await previous
+                await asyncio.to_thread(project_state)
                 await hub.publish({"type": "codex.event", "message": message})
                 method = message.get("method")
                 if method == "item/completed":
@@ -1376,7 +1389,14 @@ class TurnExecutionService:
                         "error_type": type(exc).__name__,
                     })
 
-        loop.create_task(publish(), name=f"agent-runtime-notification-{thread_id}")
+        task = loop.create_task(publish(), name=f"agent-runtime-notification-{thread_id}")
+        tasks[key] = task
+
+        def finished(done: asyncio.Task) -> None:
+            if tasks.get(key) is done:
+                tasks.pop(key, None)
+
+        task.add_done_callback(finished)
 
     def record_agent_runtime_event(
         self,
