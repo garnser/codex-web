@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import os
 import time
+import weakref
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -64,7 +65,9 @@ class ThreadRecoveryService:
         self.thread_creator = thread_creator
         self.agent_profile_resolver: Callable[[BotBinding], Any] | None = None
         self.stale_active_turn_reconciler = None
-        self._replacement_lock = asyncio.Lock()
+        self._replacement_locks: weakref.WeakValueDictionary[
+            tuple[str, str, str], asyncio.Lock
+        ] = weakref.WeakValueDictionary()
 
     def bind_thread_creator(
         self,
@@ -133,7 +136,8 @@ class ThreadRecoveryService:
 
     def logical_binding_name(self, binding: BotBinding) -> str:
         h = self.host
-        name = h._binding_report_name(binding) or binding.thread_name or h._binding_prefix(binding)
+        report_name = getattr(h, "_binding_report_name", lambda _binding: None)
+        name = report_name(binding) or binding.thread_name or h._binding_prefix(binding)
         return name.strip().lower()
 
     def same_logical_binding(self, candidate: BotBinding, source: BotBinding) -> bool:
@@ -259,7 +263,15 @@ class ThreadRecoveryService:
         binding: BotBinding,
         error: str,
     ) -> BotBinding:
-        async with self._replacement_lock:
+        # A slow provider bootstrap must only serialize recovery of the same
+        # logical owner. Keep a strong reference while holding/waiting; weak
+        # entries disappear once the last recovery for this owner completes.
+        key = (binding.provider, binding.project_id, self.logical_binding_name(binding))
+        lock = self._replacement_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._replacement_locks[key] = lock
+        async with lock:
             replacement_id = self.thread_replacements.get(binding.thread_id)
             if replacement_id:
                 matches = [

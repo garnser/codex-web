@@ -323,5 +323,69 @@ class ThreadRecoveryReplacementTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class OwnerRecoveryConcurrencyTests(unittest.IsolatedAsyncioTestCase):
+    def binding(self, name, thread="old", project="home", provider="slack"):
+        return BotBinding(id=name, provider=provider, external_conversation_id=name,
+                          thread_id=thread, project_id=project, route_prefix=name,
+                          created_at=1, updated_at=1)
+
+    def service(self):
+        bindings = []
+        host = SimpleNamespace(_binding_prefix=lambda item: item.route_prefix,
+                               _load_bot_bindings=lambda: bindings)
+        return recovery_service(host), bindings
+
+    async def test_blocked_owner_does_not_block_other_owner_project_or_provider(self):
+        service, _ = self.service()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def replace(binding, error):
+            if binding.id == "James" and binding.project_id == "home" and binding.provider == "slack":
+                entered.set()
+                await release.wait()
+            return binding.model_copy(update={"thread_id": "new-" + binding.id})
+
+        service._replace_stale_bot_thread = replace
+        first = asyncio.create_task(service.replace_stale_bot_thread(self.binding("James"), "stale"))
+        await entered.wait()
+        try:
+            for binding in (self.binding("Orchestrator"), self.binding("James", project="other"),
+                            self.binding("James", provider="teams")):
+                result = await asyncio.wait_for(service.replace_stale_bot_thread(binding, "stale"), 1)
+                self.assertEqual(result.thread_id, "new-" + binding.id)
+        finally:
+            release.set()
+            await first
+        self.assertEqual(len(service._replacement_locks), 0)
+
+    async def test_same_logical_owner_waits_and_reuses_canonical_replacement(self):
+        service, bindings = self.service()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        calls = []
+
+        async def replace(binding, error):
+            calls.append(binding.id)
+            entered.set()
+            await release.wait()
+            replacement = binding.model_copy(update={"thread_id": "new"})
+            bindings.append(replacement)
+            service.thread_replacements[binding.thread_id] = "new"
+            return replacement
+
+        service._replace_stale_bot_thread = replace
+        first = asyncio.create_task(service.replace_stale_bot_thread(self.binding("James"), "stale"))
+        await entered.wait()
+        second = asyncio.create_task(service.replace_stale_bot_thread(self.binding("james"), "stale"))
+        await asyncio.sleep(0)
+        self.assertFalse(second.done())
+        release.set()
+        results = await asyncio.gather(first, second)
+        self.assertEqual(calls, ["James"])
+        self.assertEqual([item.thread_id for item in results], ["new", "new"])
+        self.assertEqual(len(service._replacement_locks), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
