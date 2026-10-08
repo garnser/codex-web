@@ -164,6 +164,10 @@ class TurnExecutionService:
         transcript: Any | None = None,
     ) -> None:
         self.host = host
+        try:
+            self._event_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._event_loop = None
         self.binding_service = binding_service
         self.session_manager = session_manager
         self.bootstrap_bindings = bootstrap_bindings
@@ -1074,6 +1078,8 @@ class TurnExecutionService:
     ) -> None:
         if not thread_id:
             return
+        with contextlib.suppress(RuntimeError):
+            self._event_loop = asyncio.get_running_loop()
         h = self.host
         now = time.time()
         current = self._active_turn(thread_id)
@@ -1181,6 +1187,23 @@ class TurnExecutionService:
         assignment_id = active.assignment_id
         if not assignment_id:
             return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = getattr(self, "_event_loop", None)
+            if loop is None or loop.is_closed():
+                raise RuntimeError("terminal assignment completion has no owner event loop")
+            # Durable activity projection runs in a storage worker. Marshal
+            # only scheduling back to the owning loop; never create a task or
+            # mutate task registries from that worker thread. Canonical session
+            # validation, checkpointing and completion remain unchanged.
+            loop.call_soon_threadsafe(
+                lambda: self._schedule_assignment_completion(
+                    active, succeeded=succeeded, message=message
+                )
+            )
+            return
+        self._event_loop = loop
         try:
             manager, _session = self._session_for_assignment(assignment_id)
         except HTTPException:
@@ -1597,7 +1620,9 @@ class TurnExecutionService:
             self.mark_thread_active(thread_id, turn_id=turn_id)
         elif method in {"turn/completed", "turn/failed"}:
             active = h._load_active_turns().get(thread_id) if thread_id else None
-            if active is not None:
+            if active is not None and not (
+                turn_id and active.turn_id and active.turn_id != turn_id
+            ):
                 self._schedule_assignment_completion(
                     active,
                     succeeded=method == "turn/completed",
@@ -3171,6 +3196,7 @@ class TurnExecutionService:
         self,
         thread_ids: set[str] | None = None,
     ) -> None:
+        self._event_loop = asyncio.get_running_loop()
         h = self.host
         if thread_ids is None:
             active_turns = h._load_active_turns()

@@ -1868,6 +1868,56 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         )
         host.codex.request.assert_not_awaited()
 
+    async def test_offloop_terminal_bootstrap_projection_clears_active_and_checkpoints(self):
+        host, _binding, sessions, service = self._service(bootstrap_thread_id="t1")
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        async def checkpoint(assignment_id):
+            entered.set()
+            await release.wait()
+            return (SimpleNamespace(),)
+        sessions.checkpoint = checkpoint
+        service.mark_thread_active("t1", turn_id="turn-1", assignment_id="assignment-1")
+        await asyncio.to_thread(service.record_thread_activity, {
+            "method": "turn/completed",
+            "params": {"threadId": "t1", "turn": {"id": "turn-1"}},
+        })
+        await asyncio.wait_for(entered.wait(), 1)
+        self.assertNotIn("t1", host.active)
+        self.assertEqual(sessions.completed, [])
+        release.set()
+        await asyncio.gather(*list(service.assignment_completion_tasks.values()))
+        self.assertEqual(host.events[-1]["repository_checkpoint_count"], 1)
+        self.assertTrue(host.events[-1]["session_retained"])
+
+    async def test_offloop_terminal_projection_completes_exact_assignment(self):
+        host, _binding, sessions, service = self._service()
+        service.mark_thread_active("t1", turn_id="turn-1", assignment_id="assignment-1")
+        await asyncio.to_thread(service.record_thread_activity, {
+            "method": "turn/failed",
+            "params": {"threadId": "t1", "turn": {"id": "turn-1"}, "error": "provider failed"},
+        })
+        await asyncio.sleep(0)
+        await asyncio.gather(*list(service.assignment_completion_tasks.values()))
+        self.assertNotIn("t1", host.active)
+        self.assertEqual(len(sessions.completed), 1)
+        assignment_id, kwargs = sessions.completed[0]
+        self.assertEqual(assignment_id, "assignment-1")
+        self.assertFalse(kwargs["succeeded"])
+        self.assertEqual(kwargs["failure_code"], "codex_turn_failed")
+
+    async def test_offloop_old_terminal_event_cannot_complete_new_active_turn(self):
+        host, _binding, sessions, service = self._service()
+        service.mark_thread_active("t1", turn_id="new-turn", assignment_id="assignment-1")
+        await asyncio.to_thread(service.record_thread_activity, {
+            "method": "turn/completed",
+            "params": {"threadId": "t1", "turn": {"id": "old-turn"}},
+        })
+        await asyncio.sleep(0)
+        self.assertEqual(host.active["t1"].turn_id, "new-turn")
+        self.assertEqual(sessions.completed, [])
+        self.assertEqual(service.assignment_completion_tasks, {})
+
     async def test_terminal_bootstrap_turn_retains_session_assignment(self) -> None:
         host, _binding, sessions, service = self._service(
             bootstrap_thread_id="t1"
