@@ -289,6 +289,16 @@ class GitLabClient:
         )
         return response if isinstance(response, dict) else {}
 
+    async def merge_request_closes_issues(
+        self, api_base: str, project: str, iid: int, *, token: str,
+    ) -> list[dict[str, Any]]:
+        response = await self.get_json(
+            api_base,
+            f"projects/{quote(project, safe='')}/merge_requests/{iid}/closes_issues",
+            token=token,
+        )
+        return [item for item in response if isinstance(item, dict)] if isinstance(response, list) else []
+
     async def create_merge_request(
         self,
         api_base: str,

@@ -146,6 +146,18 @@ and Git enforces the same expected revision with `--force-with-lease`. This lets
 an isolated replacement execution repair an existing pull request without
 granting arbitrary branch replacement.
 
+For GitLab, `existing_change_request_number` permits a legacy source branch only
+when the canonical workspace and active lease agree on a repository-qualified
+issue reference. The provider independently verifies an opened same-project MR,
+its exact source branch and expected head, its GitLab closing-issue relation, and
+an unprotected non-default remote branch at that same revision. Local workspace
+attestation is repeated after provider reads, and Git still enforces the exact
+remote SHA with compare-and-swap. A thread-bootstrap workspace without an issue
+scope cannot use this recovery; acquire a separate canonical issue workspace.
+Missing, unrelated, forked, protected, stale or changed proofs fail closed. The
+existing ActionIntent preparation and receipts expose the MR and issue reference;
+no separate mutation path or authority is introduced.
+
 Provider success returns normalized `code-host-*` Evidence. Verification uses a
 fresh brokered credential to read the comment, issue, change request, or branch
 back from the provider and compare it with the durable ActionResult. ActionIntent
