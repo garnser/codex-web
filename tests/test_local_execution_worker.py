@@ -599,6 +599,21 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
             [call.args for call in setrlimit.call_args_list],
         )
 
+    def test_command_process_headroom_accounts_for_shared_uid_and_hard_limit(self):
+        limits = _assignment().limits
+        for baseline, hard, expected in [(520, 4096, 520 + limits.process_count), (520, 530, 530)]:
+            with patch.object(BubblewrapExecutionBackend, "_host_uid_task_count", return_value=baseline), patch(
+                "resource.getrlimit", return_value=(hard, hard)
+            ):
+                apply = BubblewrapExecutionBackend._limits_preexec(limits)
+            with patch("resource.setrlimit") as setrlimit:
+                apply()
+            calls = [call.args for call in setrlimit.call_args_list]
+            self.assertIn((resource.RLIMIT_NPROC, (expected, expected)), calls)
+            self.assertIn((resource.RLIMIT_CPU, (limits.cpu_seconds, limits.cpu_seconds)), calls)
+            self.assertIn((resource.RLIMIT_AS, (limits.memory_bytes, limits.memory_bytes)), calls)
+            self.assertIn((resource.RLIMIT_FSIZE, (limits.disk_bytes, limits.disk_bytes)), calls)
+
     def test_one_shot_commands_keep_assignment_address_space_limit(self) -> None:
         limits = _assignment().limits
         preexec_fn = BubblewrapExecutionBackend._limits_preexec(limits)
