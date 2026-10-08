@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+import threading
+from collections.abc import Callable
+from typing import Any
 
 from codex_web.compatibility import MigrationRegistry
 from codex_web.execution_workers import (
@@ -11,7 +13,6 @@ from codex_web.execution_workers import (
     ExecutionWorkerState,
 )
 from codex_web.storage.sqlite_state import SQLiteStateStore
-
 
 EXECUTION_WORKER_MIGRATIONS = MigrationRegistry("execution-worker-state")
 EXECUTION_WORKER_MIGRATIONS.register(
@@ -163,11 +164,16 @@ EXECUTION_WORKER_MIGRATIONS.register(
 
 class ExecutionWorkerStore:
     namespace = "execution_workers"
+    worker_namespace = "execution_workers.workers"
+    assignment_namespace = "execution_workers.assignments"
+    event_namespace = "execution_workers.events"
+    enrollment_namespace = "execution_workers.enrollments"
     max_retained_terminal_assignments = 128
     max_retained_events = 1000
 
     def __init__(self, store: SQLiteStateStore) -> None:
         self.store = store
+        self._lock = threading.RLock()
 
     def _decode(self, payload: Any) -> ExecutionWorkerState:
         if payload is None:
@@ -184,15 +190,72 @@ class ExecutionWorkerStore:
         EXECUTION_WORKER_CONTRACT.require(payload.get("schema_version", ""))
         return ExecutionWorkerState.model_validate(payload)
 
+    def _ensure_records(self) -> None:
+        namespaces = (
+            self.worker_namespace,
+            self.assignment_namespace,
+            self.event_namespace,
+            self.enrollment_namespace,
+        )
+        collection_exists = {
+            item: self.store.record_collection_exists(item) for item in namespaces
+        }
+        legacy_payload = self.store.get(self.namespace)
+        if all(collection_exists.values()) and legacy_payload is None:
+            return
+        state = self._decode(legacy_payload)
+        records = {
+            self.worker_namespace: {
+                item.id: item.model_dump(mode="json") for item in state.workers
+            },
+            self.assignment_namespace: {
+                item.id: item.model_dump(mode="json") for item in state.assignments
+            },
+            self.event_namespace: {
+                item.id: item.model_dump(mode="json") for item in state.events
+            },
+            self.enrollment_namespace: {
+                item.id: item.model_dump(mode="json") for item in state.enrollments
+            },
+        }
+        for namespace, items in records.items():
+            if collection_exists[namespace]:
+                self.store.record_apply(namespace, upserts=items)
+            else:
+                self.store.record_replace(namespace, items)
+        self.store.delete(self.namespace)
+
+    def _load_unlocked(self) -> ExecutionWorkerState:
+        self._ensure_records()
+        return self._decode(
+            {
+                "schema_version": EXECUTION_WORKER_CONTRACT.current,
+                "workers": sorted(
+                    self.store.record_items(self.worker_namespace).values(),
+                    key=lambda item: (item.get("registered_at", 0), item.get("id", "")),
+                ),
+                "assignments": sorted(
+                    self.store.record_items(self.assignment_namespace).values(),
+                    key=lambda item: (item.get("created_at", 0), item.get("id", "")),
+                ),
+                "events": sorted(
+                    self.store.record_items(self.event_namespace).values(),
+                    key=lambda item: (item.get("occurred_at", 0), item.get("id", "")),
+                ),
+                "enrollments": sorted(
+                    self.store.record_items(self.enrollment_namespace).values(),
+                    key=lambda item: (item.get("created_at", 0), item.get("id", "")),
+                ),
+            }
+        )
+
     def load(self) -> ExecutionWorkerState:
-        return self._decode(self.store.get(self.namespace))
+        with self._lock:
+            return self._load_unlocked()
 
     def assignment(self, assignment_id: str) -> ExecutionAssignment | None:
-        payload = self.store.document_array_item(
-            self.namespace,
-            "assignments",
-            assignment_id,
-        )
+        self._ensure_records()
+        payload = self.store.record_get(self.assignment_namespace, assignment_id)
         return (
             ExecutionAssignment.model_validate(payload)
             if payload is not None
@@ -200,11 +263,8 @@ class ExecutionWorkerStore:
         )
 
     def worker(self, worker_id: str) -> ExecutionWorker | None:
-        payload = self.store.document_array_item(
-            self.namespace,
-            "workers",
-            worker_id,
-        )
+        self._ensure_records()
+        payload = self.store.record_get(self.worker_namespace, worker_id)
         return (
             ExecutionWorker.model_validate(payload)
             if payload is not None
@@ -215,8 +275,23 @@ class ExecutionWorkerStore:
         self,
         updater: Callable[[ExecutionWorkerState], ExecutionWorkerState],
     ) -> ExecutionWorkerState:
-        def apply(raw: Any) -> dict[str, Any]:
-            state = updater(self._decode(raw))
+        with self._lock:
+            current = self._load_unlocked()
+            before = {
+                self.worker_namespace: {
+                    item.id: item.model_dump(mode="json") for item in current.workers
+                },
+                self.assignment_namespace: {
+                    item.id: item.model_dump(mode="json") for item in current.assignments
+                },
+                self.event_namespace: {
+                    item.id: item.model_dump(mode="json") for item in current.events
+                },
+                self.enrollment_namespace: {
+                    item.id: item.model_dump(mode="json") for item in current.enrollments
+                },
+            }
+            state = updater(current)
             active_statuses = {
                 AssignmentStatus.PENDING,
                 AssignmentStatus.CLAIMED,
@@ -240,11 +315,29 @@ class ExecutionWorkerStore:
                 or item.id in retained_terminal_ids
             ]
             state.events = state.events[-self.max_retained_events :]
-            return state.model_dump(mode="json")
-
-        payload = self.store.update(
-            self.namespace,
-            apply,
-            default=ExecutionWorkerState().model_dump(mode="json"),
-        )
-        return self._decode(payload)
+            after = {
+                self.worker_namespace: {
+                    item.id: item.model_dump(mode="json") for item in state.workers
+                },
+                self.assignment_namespace: {
+                    item.id: item.model_dump(mode="json") for item in state.assignments
+                },
+                self.event_namespace: {
+                    item.id: item.model_dump(mode="json") for item in state.events
+                },
+                self.enrollment_namespace: {
+                    item.id: item.model_dump(mode="json") for item in state.enrollments
+                },
+            }
+            for namespace, items in after.items():
+                previous = before[namespace]
+                self.store.record_apply(
+                    namespace,
+                    upserts={
+                        key: value
+                        for key, value in items.items()
+                        if previous.get(key) != value
+                    },
+                    deletes=tuple(set(previous) - set(items)),
+                )
+            return state

@@ -182,11 +182,18 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
 
     def test_v1_worker_state_migrates_work_item_assignment_to_subject(self) -> None:
         assignment = self._assignment(execution_id="exec-migrate")
-        raw = self.service.store.store.get(self.service.store.namespace)
+        raw = self.service.store.load().model_dump(mode="json")
         raw["schema_version"] = "1.0"
         for item in raw["assignments"]:
             if item["id"] == assignment.id:
                 item.pop("subject", None)
+        for namespace in (
+            self.service.store.worker_namespace,
+            self.service.store.assignment_namespace,
+            self.service.store.event_namespace,
+            self.service.store.enrollment_namespace,
+        ):
+            self.service.store.store.delete(namespace)
         self.service.store.store.put(self.service.store.namespace, raw)
 
         state = self.service.store.load()
@@ -202,6 +209,33 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
         self.assertEqual(migrated.subject.kind, ExecutionSubjectKind.WORK_ITEM)
         self.assertEqual(migrated.subject.ref, "group/app#42")
         self.assertEqual(migrated.work_item_ref, "group/app#42")
+        self.assertIsNone(
+            self.service.store.store.get(self.service.store.namespace)
+        )
+        self.assertTrue(
+            self.service.store.store.record_collection_exists(
+                self.service.store.assignment_namespace
+            )
+        )
+
+    def test_late_legacy_document_reconciles_into_keyed_records(self) -> None:
+        raw = self.service.store.load().model_dump(mode="json")
+        raw["workers"][0]["version"] = "late-legacy-version"
+        self.service.store.store.put(self.service.store.namespace, raw)
+
+        state = self.service.store.load()
+
+        self.assertEqual(state.workers[0].version, "late-legacy-version")
+        self.assertEqual(
+            self.service.store.store.record_get(
+                self.service.store.worker_namespace,
+                self.worker.id,
+            )["version"],
+            "late-legacy-version",
+        )
+        self.assertIsNone(
+            self.service.store.store.get(self.service.store.namespace)
+        )
 
     def test_assignment_workspace_subject_mismatch_fails_closed(self) -> None:
         self.service.workspaces = SimpleNamespace(
