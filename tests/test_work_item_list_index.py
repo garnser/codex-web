@@ -222,6 +222,63 @@ class WorkItemListIndexTests(unittest.TestCase):
 
             self.assertEqual([item.ref for item in page], [local.ref])
 
+    def test_rebuild_replaces_stale_project_namespaces_and_lookup_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            index = self._index(Path(tmp))
+            stale = _state(1, project_id="stale-project")
+            retained = _state(2, project_id="project-a")
+            index.rebuild({stale.ref: stale, retained.ref: retained})
+
+            replacement = _state(3, project_id="project-a")
+            index.rebuild({replacement.ref: replacement})
+
+            self.assertEqual(
+                index.store.record_items(index.LOOKUP_NAMESPACE),
+                {
+                    replacement.ref: {
+                        "namespace": index.namespace(
+                            TenantScope(), "project-a"
+                        ),
+                        "key": index._key(replacement),
+                    }
+                },
+            )
+            self.assertEqual(
+                index.store.record_items(
+                    index.namespace(TenantScope(), "stale-project")
+                ),
+                {},
+            )
+
+    def test_rebuild_is_write_free_when_index_is_already_current(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            index = self._index(Path(tmp))
+            states = {
+                state.ref: state
+                for state in [_state(1), _state(2, project_id="project-b")]
+            }
+            index.rebuild(states)
+            revisions = {
+                project_id: index.revision(
+                    scope=TenantScope(),
+                    project_id=project_id,
+                )
+                for project_id in ("project-a", "project-b")
+            }
+
+            index.rebuild(states)
+
+            self.assertEqual(
+                revisions,
+                {
+                    project_id: index.revision(
+                        scope=TenantScope(),
+                        project_id=project_id,
+                    )
+                    for project_id in ("project-a", "project-b")
+                },
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

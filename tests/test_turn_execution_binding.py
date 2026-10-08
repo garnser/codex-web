@@ -205,6 +205,7 @@ class TurnExecutionBindingTests(unittest.TestCase):
                 capabilities=(
                     WorkerCapability.GIT,
                     WorkerCapability.COMMAND_EXECUTION,
+                    WorkerCapability.NETWORK,
                     WorkerCapability.ARTIFACT_UPLOAD,
                 ),
                 supported_execution_contract_versions=(
@@ -687,6 +688,7 @@ class TurnExecutionBindingTests(unittest.TestCase):
         self.assertEqual(assignment.secret_refs, ("secret-codex-worker",))
         self.assertEqual(binding.secret_ref, "secret-codex-worker")
         self.assertFalse(assignment.network.enabled)
+        self.assertNotIn(WorkerCapability.NETWORK, assignment.required_capabilities)
         self.assertEqual(binding.deadline_at, self.clock + 900)
         self.assertEqual(len(self.backend.provisioned), 1)
 
@@ -723,6 +725,7 @@ class TurnExecutionBindingTests(unittest.TestCase):
         )
         self.assertNotIn(WorkerCapability.GIT, assignment.required_capabilities)
         self.assertFalse(assignment.network.enabled)
+        self.assertNotIn(WorkerCapability.NETWORK, assignment.required_capabilities)
         self.assertEqual(assignment.execution_profile_id, "orchestration-only")
         self.assertEqual(
             assignment.execution_profile_definition,
@@ -747,7 +750,8 @@ class TurnExecutionBindingTests(unittest.TestCase):
         self.assertEqual(assignment.sandbox, "danger-full-access")
         self.assertIsNotNone(inspection.lease)
         self.assertEqual(inspection.lease.mode, LeaseMode.WRITE)
-        self.assertFalse(assignment.network.enabled)
+        self.assertTrue(assignment.network.enabled)
+        self.assertIn(WorkerCapability.NETWORK, assignment.required_capabilities)
         self.assertEqual(assignment.execution_workspace_id, binding.workspace_id)
 
     def test_prepares_long_lived_thread_bootstrap_without_fake_thread_or_work_item(self) -> None:

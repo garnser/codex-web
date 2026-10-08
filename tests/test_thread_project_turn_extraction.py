@@ -69,6 +69,10 @@ class ThreadProjectTurnExtractionTests(unittest.TestCase):
             application.thread_recovery_service,
         )
         self.assertIs(
+            application.app.state.thread_recovery_compatibility_service.thread_creator.__self__,
+            application.thread_service,
+        )
+        self.assertIs(
             core._thread_run_settings.__self__,
             application.thread_execution_settings_service,
         )

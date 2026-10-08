@@ -211,6 +211,13 @@ class ProjectTaskSourceConfigurationTests(unittest.TestCase):
             app = self._app(root, service)
             client = TestClient(app)
 
+            project = client.get("/api/projects/home")
+            self.assertEqual(project.status_code, 200)
+            self.assertEqual(project.json()["id"], "home")
+
+            missing = client.get("/api/projects/missing")
+            self.assertEqual(missing.status_code, 404)
+
             response = client.put(
                 "/api/projects/missing/task-source",
                 json={
