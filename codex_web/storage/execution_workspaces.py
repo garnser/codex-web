@@ -220,21 +220,27 @@ class ExecutionWorkspaceStateStore:
             self.lease_namespace,
             self.event_namespace,
         )
-        if all(self.store.record_collection_exists(item) for item in namespaces):
+        collection_exists = {
+            item: self.store.record_collection_exists(item) for item in namespaces
+        }
+        legacy_payload = self.store.get(self.namespace)
+        if all(collection_exists.values()) and legacy_payload is None:
             return
-        state = self._decode(self.store.get(self.namespace))
-        self.store.record_replace(
-            self.workspace_namespace,
-            {item.id: item.model_dump(mode="json") for item in state.workspaces},
-        )
-        self.store.record_replace(
-            self.lease_namespace,
-            {item.id: item.model_dump(mode="json") for item in state.leases},
-        )
-        self.store.record_replace(
-            self.event_namespace,
-            self._event_records(state.events),
-        )
+        state = self._decode(legacy_payload)
+        records = {
+            self.workspace_namespace: {
+                item.id: item.model_dump(mode="json") for item in state.workspaces
+            },
+            self.lease_namespace: {
+                item.id: item.model_dump(mode="json") for item in state.leases
+            },
+            self.event_namespace: self._event_records(state.events),
+        }
+        for namespace, items in records.items():
+            if collection_exists[namespace]:
+                self.store.record_apply(namespace, upserts=items)
+            else:
+                self.store.record_replace(namespace, items)
         self.store.delete(self.namespace)
 
     def _load_unlocked(self) -> ExecutionWorkspaceState:

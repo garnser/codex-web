@@ -88,6 +88,23 @@ class UsageResourceTests(unittest.TestCase):
             self.assertEqual(records[first.id]["observed_at"], 200.0)
             self.assertEqual(records[second.id], second.model_dump(mode="json"))
 
+            late = second.model_copy(update={"observed_at": 300.0})
+            with sqlite._connection() as connection:
+                sqlite._upsert(
+                    connection,
+                    store.namespace,
+                    {
+                        "schema_version": "1.1",
+                        "records": [late.model_dump(mode="json")],
+                    },
+                )
+
+            self.assertEqual(
+                next(item for item in store.load().records if item.id == second.id).observed_at,
+                300.0,
+            )
+            self.assertEqual(set(sqlite.record_items(store.namespace)), {first.id, second.id})
+
     def test_usage_state_and_legacy_cost_migrate_without_inventing_provenance(self) -> None:
         usage = AGENT_RUNTIME_USAGE_MIGRATIONS.migrate(
             {"schema_version": "1.0", "records": []},

@@ -59,12 +59,23 @@ class AgentRuntimeUsageStore:
         return AgentRuntimeUsageState.model_validate(payload)
 
     def _ensure_records(self) -> None:
-        if self.store.record_collection_exists(self.namespace):
+        collection_exists = self.store.record_collection_exists(self.namespace)
+        payload = self.store.get(self.namespace)
+        if collection_exists and not (
+            isinstance(payload, dict)
+            and "schema_version" in payload
+            and "records" in payload
+        ):
             return
-        state = self._decode(self.store.get(self.namespace))
+        state = self._decode(payload)
+        records = {item.id: item.model_dump(mode="json") for item in state.records}
+        if collection_exists:
+            merged = self.store.record_items(self.namespace)
+            merged.update(records)
+            records = merged
         self.store.record_replace(
             self.namespace,
-            {item.id: item.model_dump(mode="json") for item in state.records},
+            records,
         )
 
     def _load_unlocked(self) -> AgentRuntimeUsageState:

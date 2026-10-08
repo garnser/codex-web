@@ -444,6 +444,19 @@ class ExecutionWorkspaceTests(unittest.TestCase):
             self.sqlite.record_items(self.service.store.lease_namespace),
         )
 
+        late_legacy = self.service.store.load().model_dump(mode="json")
+        next(
+            item for item in late_legacy["workspaces"] if item["id"] == workspace.id
+        )["head_revision"] = "late-legacy-revision"
+        self.sqlite.put(self.service.store.namespace, late_legacy)
+
+        reconciled = self.service.store.load()
+        self.assertEqual(
+            next(item for item in reconciled.workspaces if item.id == workspace.id).head_revision,
+            "late-legacy-revision",
+        )
+        self.assertIsNone(self.sqlite.get(self.service.store.namespace))
+
     def test_coordinated_workspace_provisions_multiple_writable_members(self) -> None:
         workspace = self.service.acquire(
             ExecutionWorkspaceAcquire(
