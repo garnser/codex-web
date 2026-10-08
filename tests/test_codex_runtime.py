@@ -272,9 +272,13 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sent), 1)
 
     async def test_notification_refresh_failure_is_bounded_and_stop_retires_task(self):
-        self.runtime.request = AsyncMock(side_effect=RuntimeError("transport unavailable"))
+        failed = asyncio.Event()
+        async def unavailable(*args):
+            failed.set()
+            raise RuntimeError("transport unavailable")
+        self.runtime.request = AsyncMock(side_effect=unavailable)
         await self.runtime._handle_message({"method": "account/login/completed", "params": {"success": True}})
-        await self.runtime._authenticated_account_refresh_task
+        await failed.wait()
         self.assertEqual(self.runtime.request.await_count, 1)
         self.assertFalse(self.runtime.authenticated_account_available())
         blocked = asyncio.Event()
@@ -623,6 +627,50 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         await self.runtime.ensure_started()
 
         self.runtime.start.assert_awaited_once()
+
+    async def test_stop_timeout_kills_captured_process_after_reference_retirement(self) -> None:
+        from unittest.mock import Mock
+        process = SimpleNamespace(pid=41, poll=lambda: None, terminate=Mock(),
+                                  kill=Mock(), wait=Mock())
+        self.runtime.proc = process
+        self.runtime.ready.set()
+        async def timeout(awaitable, *, timeout):
+            await awaitable
+            self.runtime.proc = None
+            raise asyncio.TimeoutError()
+        with patch("codex_web.runtime.codex.asyncio.wait_for", side_effect=timeout):
+            await self.runtime.stop()
+        process.terminate.assert_called_once_with()
+        process.kill.assert_called_once_with()
+        self.assertEqual(process.wait.call_count, 2)
+        self.assertIsNone(self.runtime.proc)
+        self.assertFalse(self.runtime.ready.is_set())
+
+    async def test_concurrent_stops_terminate_one_process_and_clear_bookkeeping(self) -> None:
+        from unittest.mock import Mock
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        process = SimpleNamespace(pid=41, poll=lambda: None, terminate=Mock(),
+                                  kill=Mock(), wait=Mock())
+        self.runtime.proc = process
+        self.runtime.ready.set()
+        async def wait_for_exit(callback):
+            entered.set()
+            await release.wait()
+            return callback()
+        with patch("codex_web.runtime.codex.asyncio.to_thread", side_effect=wait_for_exit):
+            first = asyncio.create_task(self.runtime.stop())
+            await entered.wait()
+            await self.runtime.stop()
+            release.set()
+            await first
+        process.terminate.assert_called_once_with()
+        process.wait.assert_called_once_with()
+        process.kill.assert_not_called()
+        self.assertIsNone(self.runtime.proc)
+        self.assertFalse(self.runtime.ready.is_set())
+        self.assertIsNone(self.runtime.reader_task)
+        self.assertIsNone(self.runtime.stderr_task)
 
     async def test_retired_reader_does_not_touch_replacement_process(self) -> None:
         retired = SimpleNamespace(
