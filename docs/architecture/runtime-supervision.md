@@ -57,6 +57,15 @@ On shutdown it:
 5. cancels continuity and native-recovery tasks,
 6. stops assignment-bound worker sessions, bot runtime, and Codex runtime.
 
+Existing-thread Codex bootstrap rebinding can bypass the normal routing quota
+probe. After superseded-session cleanup, it refreshes expired trusted-local
+account evidence with one real `account/read` before canonical bootstrap
+preflight. Fresh evidence and explicitly credential-backed or other runtimes
+do not add that RPC. A failed read prevents bootstrap preparation; returned
+account evidence still passes the existing authentication, actor, repository,
+worker and transport checks. This metadata read does not invoke a model or
+fabricate a session-availability result.
+
 Recovery scheduling is idempotent inside the configured cooldown window. Continuity checks capture the expected owner/handoff identity when scheduled and abort if the canonical work item changes before the check runs.
 
 Owner-work supervision also treats canonical actionable ownership as a durable

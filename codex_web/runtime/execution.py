@@ -3501,6 +3501,22 @@ class TurnExecutionService:
                 ),
             }
         )
+        # Existing-thread healing can bypass routing's ordinary quota probe.
+        # Cleanup above can also outlive its fresh account evidence. Refresh
+        # only expired operator evidence, immediately before canonical
+        # authentication preflight; never substitute transport readiness or
+        # an assumed authentication result for a real account response.
+        transport = getattr(h, "codex", None)
+        account_available = getattr(transport, "authenticated_account_available", None)
+        if (
+            runtime_binding.provider_id == "openai"
+            and runtime_binding.runtime_id == "codex"
+            and runtime_binding.authentication_mode in (None, "trusted_local_session")
+            and callable(account_available)
+            and not account_available()
+        ):
+            await transport.request("account/read", {"refreshToken": False})
+
         token = __import__("uuid").uuid4().hex
 
         def prepare_and_rebind():

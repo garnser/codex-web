@@ -2476,3 +2476,86 @@ class TurnExecutionInstallationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BootstrapAuthenticationEvidenceTests(unittest.IsolatedAsyncioTestCase):
+    async def _rebind(self, *, fresh=False, mode=None, provider="openai", runtime="codex", read_error=None):
+        host = _Host()
+        order = []
+        available = [fresh]
+        host.codex.authenticated_account_available = lambda: available[0]
+
+        async def read(method, params):
+            order.append(("read", method, params))
+            if read_error is not None:
+                raise read_error
+            available[0] = True
+            return {"account": {"type": "chatgpt"}}
+
+        host.codex.request = AsyncMock(side_effect=read)
+        manager = SimpleNamespace(get=lambda assignment_id: object())
+
+        async def complete(*args, **kwargs):
+            order.append(("cleanup",))
+
+        manager.complete = AsyncMock(side_effect=complete)
+        binding_service = SimpleNamespace()
+
+        def prepare(**kwargs):
+            order.append(("prepare", available[0]))
+            return SimpleNamespace(execution_id="replacement", assignment_id="new", workspace_id="workspace")
+
+        binding_service.prepare_bootstrap = prepare
+        bindings = SimpleNamespace(rebind=lambda **kwargs: order.append(("rebind",)))
+        service = TurnExecutionService(host, binding_service=binding_service, bootstrap_bindings=bindings,
+                                       session_managers={(provider, runtime): manager})
+        service._bootstrap_binding_for_thread = lambda thread_id: SimpleNamespace(assignment_id="new")
+        binding = ExecutionRuntimeBinding(provider_id=provider, runtime_id=runtime, capability_revision=1,
+                                          authentication_mode=mode)
+        kwargs = dict(thread_id="t1", project=Project(id="p1", name="P", path="/workspace/project"),
+                      runtime_binding=binding, sandbox="danger-full-access", approval_policy="never",
+                      execution_profile_id=None, agent_profile=None, explicit_repository_id="repository",
+                      previous_assignment_id="old")
+        return service, host, manager, order, available, kwargs
+
+    async def test_expired_evidence_refreshes_after_cleanup_before_preflight(self):
+        service, host, manager, order, available, kwargs = await self._rebind(mode="trusted_local_session")
+        await service._supersede_thread_bootstrap(**kwargs)
+        self.assertEqual(order, [("cleanup",), ("read", "account/read", {"refreshToken": False}),
+                                 ("prepare", True), ("rebind",)])
+
+    async def test_cleanup_expiration_is_checked_at_preparation_boundary(self):
+        service, host, manager, order, available, kwargs = await self._rebind(fresh=True)
+
+        async def expire(*args, **kwargs):
+            order.append(("cleanup",))
+            available[0] = False
+
+        manager.complete.side_effect = expire
+        await service._supersede_thread_bootstrap(**kwargs)
+        host.codex.request.assert_awaited_once_with("account/read", {"refreshToken": False})
+        self.assertEqual(order[-2:], [("prepare", True), ("rebind",)])
+
+    async def test_fresh_evidence_does_not_add_rpc(self):
+        service, host, manager, order, available, kwargs = await self._rebind(fresh=True)
+        await service._supersede_thread_bootstrap(**kwargs)
+        host.codex.request.assert_not_awaited()
+
+    async def test_account_rpc_failure_never_prepares_or_rebinds(self):
+        service, host, manager, order, available, kwargs = await self._rebind(read_error=RuntimeError("account unavailable"))
+        with self.assertRaisesRegex(RuntimeError, "account unavailable"):
+            await service._supersede_thread_bootstrap(**kwargs)
+        self.assertFalse(available[0])
+        self.assertEqual([item[0] for item in order], ["cleanup", "read"])
+
+    async def test_other_runtime_does_not_use_operator_account(self):
+        service, host, manager, order, available, kwargs = await self._rebind(provider="anthropic", runtime="claude-code")
+        await service._supersede_thread_bootstrap(**kwargs)
+        host.codex.request.assert_not_awaited()
+
+    async def test_explicit_credential_modes_do_not_read_local_account(self):
+        for mode in ("api_key", "delegated_worker_token"):
+            with self.subTest(mode=mode):
+                service, host, manager, order, available, kwargs = await self._rebind(mode=mode)
+                await service._supersede_thread_bootstrap(**kwargs)
+                host.codex.request.assert_not_awaited()
