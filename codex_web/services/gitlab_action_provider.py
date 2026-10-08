@@ -374,7 +374,15 @@ class GitLabActionProvider:
             output.update({"issue_number": iid, "state": state})
             summary = f"GitLab issue state is {state}."
         elif request.action_id == CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID:
-            payload = self.contract.change_request(request)
+            # Only this pure first-party parser runs before any MR API call.
+            # A ValueError from a later provider read/write is still ambiguous.
+            try:
+                payload = self.contract.change_request(request)
+            except ValueError as exc:
+                raise ActionRequirementError(
+                    f"{exc}; supported change request parameters: "
+                    "title, body, head, base, draft"
+                ) from exc
             marker = self.contract.marker(request)
             desired_body = self._owned_body(payload["body"], marker)
             merge_requests = await self.client.merge_requests(

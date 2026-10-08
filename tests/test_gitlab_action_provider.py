@@ -8,6 +8,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from codex_web.action_providers import ActionProviderBindingCreate, ActionRequest
+from codex_web.action_intents import (
+    ActionIntentClaimRequest, ActionIntentCreate, ActionIntentStatus,
+)
+from codex_web.identity import AuthenticationActor, AuthenticationAssurance, PrincipalKind
 from codex_web.execution_workspaces import (
     ExecutionWorkspace,
     ExecutionWorkspaceKind,
@@ -29,6 +33,9 @@ from codex_web.services.code_host_action_contract import (
 )
 from codex_web.services.gitlab_action_provider import GitLabActionProvider
 from codex_web.services.identity import IdentityService
+from codex_web.services.action_intents import ActionIntentService
+from codex_web.services.authority_roles import install_authority_roles
+from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.services.secrets import SecretBroker
 from codex_web.storage.action_providers import ActionProviderStateStore
@@ -36,6 +43,8 @@ from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.resource_catalog import ResourceCatalogStore
 from codex_web.storage.secret_state import SecretStateStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.storage.action_intents import ActionIntentStore
+from codex_web.storage.definition_registry import DefinitionRegistryStore
 
 
 class _GitLabClient:
@@ -172,6 +181,8 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
         sqlite = SQLiteStateStore(root / "state.sqlite3")
         identity = IdentityService(IdentityStateStore(sqlite))
         identity.bootstrap_local()
+        self.sqlite = sqlite
+        self.identity = identity
         self.actor = identity.local_trusted_actor()
         self.resources = ResourceCatalogService(ResourceCatalogStore(sqlite))
         self.repository = self.resources.create(
@@ -193,7 +204,10 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
             {"local": LocalFileSecretBackend(root / "secrets")},
         )
         secret = self.secrets.create(
-            SecretCreate(name="GitLab token", value="secret-gitlab-token"),
+            SecretCreate(
+                name="GitLab token", value="secret-gitlab-token",
+                allowed_identity_ids=["action-worker"],
+            ),
             actor=self.actor,
         )
         branch = "feature/governed-gitlab-publication"
@@ -406,6 +420,84 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
                 )
             ).verified
         )
+
+    async def _execute_upsert_intent(self, parameters: dict):
+        authority = install_authority_roles(
+            DefinitionRegistryService(DefinitionRegistryStore(self.sqlite)),
+            self.resources,
+        )
+        service = ActionIntentService(
+            ActionIntentStore(self.sqlite), self.execution,
+            authority=authority, identity=self.identity,
+        )
+        worker = AuthenticationActor(
+            identity_id="action-worker", principal_kind=PrincipalKind.SERVICE,
+            organization_id=self.actor.organization_id,
+            workspace_id=self.actor.workspace_id,
+            assurance=AuthenticationAssurance.SERVICE_TOKEN,
+            service_scopes=("action-intent:worker", "secret:use"),
+        )
+        request = self._request(CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID, parameters)
+        intent = service.create(
+            ActionIntentCreate(binding_id=self.binding.id, request=request),
+            actor=self.actor,
+        )
+        service.claim(
+            ActionIntentClaimRequest(worker_id="worker-1", lease_seconds=30),
+            actor=worker, intent_id=intent.id,
+        )
+        completed = await service.execute_claimed(intent.id, "worker-1", actor=worker)
+        self.assertNotEqual(completed.status, ActionIntentStatus.CANCELLED, completed.last_error)
+        return completed, service.history(intent.id, self.actor)
+
+    async def test_local_malformed_upsert_is_known_failed_without_provider_calls(self):
+        completed, history = await self._execute_upsert_intent({
+            "title": "Delivery", "description": "secret-input-not-for-diagnostics",
+            "source_branch": "feature/890", "target_branch": "main",
+        })
+        self.assertEqual(completed.status, ActionIntentStatus.FAILED)
+        self.assertEqual(self.client.credentials, [])
+        self.assertEqual(self.client.merge_request_creates, 0)
+        self.assertEqual(self.client.merge_request_updates, 0)
+        self.assertEqual(history["receipts"][-1]["outcome"], "failed")
+        self.assertFalse(completed.failure.requires_reconciliation)
+        self.assertFalse(completed.failure.automatic_retry_allowed)
+        self.assertIn("title, body, head, base, draft", completed.last_error)
+        self.assertNotIn(
+            "secret-input-not-for-diagnostics",
+            completed.last_error + str(history["receipts"]),
+        )
+        self.assertNotIn("secret-gitlab-token", str(history))
+
+    async def test_value_error_after_mr_write_retains_unknown_receipt(self):
+        create = self.client.create_merge_request
+
+        async def write_then_fail(*args, **kwargs):
+            await create(*args, **kwargs)
+            raise ValueError("response normalization failed after write")
+
+        self.client.create_merge_request = write_then_fail
+        completed, history = await self._execute_upsert_intent({
+            "title": "Delivery", "body": "Closes #890", "head": "feature/890",
+            "base": "main", "draft": False,
+        })
+        self.assertEqual(self.client.merge_request_creates, 1)
+        self.assertEqual(len(self.client.merge_request_rows), 1)
+        self.assertEqual(completed.status, ActionIntentStatus.UNCERTAIN)
+        self.assertEqual(history["receipts"][-1]["outcome"], "unknown")
+        self.assertTrue(completed.failure.requires_reconciliation)
+        self.assertNotIn("secret-gitlab-token", str(history))
+
+    async def test_local_upsert_field_validation_never_calls_mr_api(self):
+        valid = {"title": "Delivery", "body": "", "head": "feature/890", "base": "main"}
+        for invalid in ({"title": ""}, {"draft": "false"}, {"head": "-unsafe"}):
+            with self.subTest(invalid=invalid):
+                request = self._request(
+                    CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID, {**valid, **invalid},
+                )
+                with self.assertRaises(ActionRequirementError):
+                    await self.execution.execute(self.binding.id, request, actor=self.actor)
+                self.assertEqual(self.client.credentials, [])
 
     async def test_unowned_merge_request_is_not_adopted(self) -> None:
         self.client.merge_request_rows.append(
