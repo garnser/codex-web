@@ -151,7 +151,18 @@ class BotBindingLifecycleService:
             thread_id = response["thread"]["id"]
 
         thread_name = payload.thread_name or payload.route_prefix
-        if thread_name:
+        # Updating routing controls on an existing named binding does not
+        # need to contact (or resume) its agent runtime.
+        existing = next(
+            (
+                binding for binding in self.load_bindings()
+                if binding.thread_id == thread_id
+                and binding.provider == provider
+                and binding.external_conversation_id == external_conversation_id
+            ),
+            None,
+        )
+        if thread_name and (existing is None or existing.thread_name != thread_name):
             await self.set_thread_name(thread_id, thread_name)
         return self.upsert(
             BotBinding(

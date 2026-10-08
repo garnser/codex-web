@@ -1347,9 +1347,36 @@ class TurnExecutionService:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.create_task(
-            hub.publish({"type": "codex.event", "message": message})
-        )
+        async def publish() -> None:
+            # Agent adapters bypass CodexRuntime's native notification handler.
+            # Preserve the same canonical relay and terminal queue lifecycle.
+            try:
+                await hub.publish({"type": "codex.event", "message": message})
+                method = message.get("method")
+                if method == "item/completed":
+                    outbound = getattr(self.host, "_record_bot_outbound", None)
+                    if callable(outbound):
+                        await outbound(message)
+                if method in {"turn/completed", "turn/failed"}:
+                    recorder = getattr(self.host, "_record_terminal_turn_result", None)
+                    recovery_scheduled = (
+                        await asyncio.to_thread(recorder, message)
+                        if callable(recorder) else False
+                    )
+                    drain = getattr(self.host, "_schedule_queue_drain", None)
+                    if not recovery_scheduled and callable(drain):
+                        drain(thread_id)
+            except Exception as exc:
+                append_event = getattr(self.host, "_append_bot_event", None)
+                if callable(append_event):
+                    append_event({
+                        "type": "agent_runtime_notification_failed",
+                        "thread_id": str(thread_id or ""),
+                        "method": str(message.get("method") or ""),
+                        "error_type": type(exc).__name__,
+                    })
+
+        loop.create_task(publish(), name=f"agent-runtime-notification-{thread_id}")
 
     def record_agent_runtime_event(
         self,

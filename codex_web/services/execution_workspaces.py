@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import subprocess
 import time
@@ -78,7 +79,16 @@ class ExecutionWorkspaceService:
         self.resources = resources
         self.project_lookup = project_lookup
         self.work_item_host = work_item_host
-        self.quota = quota or WorkspaceQuota()
+        self.quota = quota if quota is not None else WorkspaceQuota.model_validate(
+            {
+                field: os.environ[variable]
+                for field, variable in (
+                    ("max_active_per_tenant", "CODEX_WEB_MAX_ACTIVE_WORKSPACES_PER_TENANT"),
+                    ("max_active_per_identity", "CODEX_WEB_MAX_ACTIVE_WORKSPACES_PER_IDENTITY"),
+                )
+                if variable in os.environ
+            }
+        )
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
