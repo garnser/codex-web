@@ -661,9 +661,10 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         with patch("codex_web.runtime.codex.asyncio.to_thread", side_effect=wait_for_exit):
             first = asyncio.create_task(self.runtime.stop())
             await entered.wait()
-            await self.runtime.stop()
+            second = asyncio.create_task(self.runtime.stop())
+            await asyncio.sleep(0)
             release.set()
-            await first
+            await asyncio.wait_for(asyncio.gather(first, second), timeout=2)
         process.terminate.assert_called_once_with()
         process.wait.assert_called_once_with()
         process.kill.assert_not_called()
