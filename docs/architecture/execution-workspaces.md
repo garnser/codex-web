@@ -38,7 +38,9 @@ thread ID before it has written the first rollout, so attempting to resume that
 ID first would misclassify the new session as stale. After the first accepted
 turn, codex-web clears the marker and all later turns use the normal explicit
 resume path. Bindings written before this marker existed default to the
-already-initialized state.
+already-initialized state. Rebinding an existing provider thread to a
+superseding execution environment also records the initialized state because
+that thread already owns a rollout and must be resumed in the new runtime.
 
 The original assignment/workspace subject is never rewritten to the returned thread ID. This preserves deterministic IDs and historical provenance. A later lookup may map the thread ID back to the still-live bootstrap assignment/session; conflicting rebinding or cross-tenant lookup fails closed. If the isolated process/session is lost and cannot be safely resumed, recovery must mark/fail the canonical execution rather than falling back to the control-plane Codex runtime.
 

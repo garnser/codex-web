@@ -86,7 +86,9 @@ class ThreadBootstrapBindingService:
             assignment_id=assignment_id,
             execution_workspace_id=execution_workspace_id,
             created_by=actor.identity_id,
-            initial_turn_pending=True,
+            # Rebinding supersedes the execution environment for an existing
+            # provider thread. Its rollout already exists and must be resumed.
+            initial_turn_pending=False,
         )
 
         def apply(state):
