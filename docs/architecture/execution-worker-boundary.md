@@ -628,3 +628,13 @@ preflight. A runtime with cleared readiness is unavailable even when its recent
 authenticated-account evidence is still fresh. Worker-scoped delegation, actor,
 policy, credential rotation/expiry, lease/fence and assignment checks remain
 authoritative and unchanged.
+
+Positive Codex `account/updated` or successful login-completed notifications
+invalidate prior account evidence and schedule a real `account/read` outside the
+stdout reader. One in-flight task coalesces bursts; it performs at most two
+metadata reads, including one follow-up when account changes race the first
+response. Negative auth modes/login results do not request a refresh. Logout or
+a newer account change still prevents older responses from publishing proof.
+Transport stop retires the refresh task, without weakening readiness or execution
+authority checks. Continuous changes remain unavailable until a later ordinary
+quota refresh or notification; no polling loop or model call is introduced.

@@ -218,6 +218,76 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         with patch("codex_web.runtime.codex.os.getpid", return_value=123456789):
             self.assertFalse(self.runtime.authenticated_account_available())
 
+    async def test_positive_account_notification_refreshes_without_blocking_reader(self):
+        self.runtime.ensure_started = AsyncMock()
+        sent = []
+        self.runtime._send = AsyncMock(side_effect=lambda message: sent.append(message))
+        await self.runtime._handle_message({"method": "account/updated", "params": {"authMode": "chatgpt"}})
+        task = self.runtime._authenticated_account_refresh_task
+        await asyncio.sleep(0)
+        self.assertFalse(task.done())
+        self.assertFalse(self.runtime.authenticated_account_available())
+        self.assertEqual(sent[0]["method"], "account/read")
+        await self.runtime._handle_message({"id": sent[0]["id"], "result": {"account": {"type": "chatgpt"}}})
+        await task
+        self.assertTrue(self.runtime.authenticated_account_available())
+
+    async def test_positive_notification_burst_coalesces_and_rechecks_latest_epoch(self):
+        self.runtime.ensure_started = AsyncMock()
+        sent = []
+        self.runtime._send = AsyncMock(side_effect=lambda message: sent.append(message))
+        notification = {"method": "account/updated", "params": {"authMode": "chatgpt"}}
+        await self.runtime._handle_message(notification)
+        task = self.runtime._authenticated_account_refresh_task
+        await asyncio.sleep(0)
+        for _ in range(10):
+            await self.runtime._handle_message(notification)
+        self.assertIs(self.runtime._authenticated_account_refresh_task, task)
+        await self.runtime._handle_message({"id": sent[0]["id"], "result": {"account": {"type": "chatgpt"}}})
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        self.assertFalse(self.runtime.authenticated_account_available())
+        self.assertEqual(len(sent), 2)
+        await self.runtime._handle_message({"id": sent[1]["id"], "result": {"account": {"type": "chatgpt"}}})
+        await task
+        self.assertTrue(self.runtime.authenticated_account_available())
+
+    async def test_negative_notification_prevents_pending_read_from_republishing(self):
+        self.runtime.ensure_started = AsyncMock()
+        sent = []
+        self.runtime._send = AsyncMock(side_effect=lambda message: sent.append(message))
+        await self.runtime._handle_message({"method": "account/updated", "params": {"authMode": "chatgpt"}})
+        task = self.runtime._authenticated_account_refresh_task
+        await asyncio.sleep(0)
+        await self.runtime._handle_message({"method": "account/updated", "params": {"authMode": None}})
+        await self.runtime._handle_message({"id": sent[0]["id"], "result": {"account": {"type": "chatgpt"}}})
+        await task
+        self.assertFalse(self.runtime.authenticated_account_available())
+        self.assertEqual(len(sent), 1)
+
+    async def test_notification_refresh_failure_is_bounded_and_stop_retires_task(self):
+        self.runtime.request = AsyncMock(side_effect=RuntimeError("transport unavailable"))
+        await self.runtime._handle_message({"method": "account/login/completed", "params": {"success": True}})
+        await self.runtime._authenticated_account_refresh_task
+        self.assertEqual(self.runtime.request.await_count, 1)
+        self.assertFalse(self.runtime.authenticated_account_available())
+        blocked = asyncio.Event()
+        async def pending(*args):
+            await blocked.wait()
+        self.runtime.request = pending
+        await self.runtime._handle_message({"method": "account/updated", "params": {"authMode": "chatgpt"}})
+        task = self.runtime._authenticated_account_refresh_task
+        await asyncio.sleep(0)
+        await self.runtime.stop()
+        self.assertTrue(task.cancelled())
+        self.assertFalse(self.runtime.authenticated_account_available())
+
+    async def test_negative_login_notification_does_not_request_account_metadata(self):
+        self.runtime.request = AsyncMock()
+        await self.runtime._handle_message({"method": "account/login/completed", "params": {"success": False}})
+        self.runtime.request.assert_not_awaited()
+        self.assertFalse(self.runtime.authenticated_account_available())
+
     async def test_account_source_metadata_change_invalidates_without_reading_contents(self):
         with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"CODEX_HOME": home}):
             await self._authenticated_account()
