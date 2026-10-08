@@ -3511,11 +3511,25 @@ class TurnExecutionService:
         if (
             runtime_binding.provider_id == "openai"
             and runtime_binding.runtime_id == "codex"
-            and runtime_binding.authentication_mode in (None, "trusted_local_session")
             and callable(account_available)
             and not account_available()
         ):
-            await transport.request("account/read", {"refreshToken": False})
+            authentication_mode = runtime_binding.authentication_mode
+            if authentication_mode is None and previous_assignment_id:
+                # Repository drift may omit mode on the new runtime binding.
+                # Preserve the previous canonical mode instead of assuming
+                # an operator session for configured credential-backed work.
+                previous = await asyncio.to_thread(
+                    self._assignment_record, previous_assignment_id
+                )
+                previous_runtime = getattr(previous, "runtime_binding", None)
+                if (
+                    getattr(previous_runtime, "provider_id", None) == "openai"
+                    and getattr(previous_runtime, "runtime_id", None) == "codex"
+                ):
+                    authentication_mode = previous_runtime.authentication_mode
+            if authentication_mode == "trusted_local_session":
+                await transport.request("account/read", {"refreshToken": False})
 
         token = __import__("uuid").uuid4().hex
 

@@ -60,8 +60,10 @@ On shutdown it:
 Existing-thread Codex bootstrap rebinding can bypass the normal routing quota
 probe. After superseded-session cleanup, it refreshes expired trusted-local
 account evidence with one real `account/read` before canonical bootstrap
-preflight. Fresh evidence and explicitly credential-backed or other runtimes
-do not add that RPC. A failed read prevents bootstrap preparation; returned
+preflight. Fresh evidence and credential-backed or other runtimes do not add that
+RPC. When repository rebinding omits the authentication mode, the prior
+canonical assignment supplies it; an unknown mode never assumes operator
+authentication. A failed read prevents bootstrap preparation; returned
 account evidence still passes the existing authentication, actor, repository,
 worker and transport checks. This metadata read does not invoke a model or
 fabricate a session-availability result.

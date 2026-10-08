@@ -2474,8 +2474,6 @@ class TurnExecutionInstallationTests(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class BootstrapAuthenticationEvidenceTests(unittest.IsolatedAsyncioTestCase):
@@ -2510,6 +2508,9 @@ class BootstrapAuthenticationEvidenceTests(unittest.IsolatedAsyncioTestCase):
         service = TurnExecutionService(host, binding_service=binding_service, bootstrap_bindings=bindings,
                                        session_managers={(provider, runtime): manager})
         service._bootstrap_binding_for_thread = lambda thread_id: SimpleNamespace(assignment_id="new")
+        service._assignment_record = lambda assignment_id: SimpleNamespace(runtime_binding=ExecutionRuntimeBinding(
+            provider_id=provider, runtime_id=runtime, capability_revision=1,
+            authentication_mode=mode or "trusted_local_session"))
         binding = ExecutionRuntimeBinding(provider_id=provider, runtime_id=runtime, capability_revision=1,
                                           authentication_mode=mode)
         kwargs = dict(thread_id="t1", project=Project(id="p1", name="P", path="/workspace/project"),
@@ -2559,3 +2560,21 @@ class BootstrapAuthenticationEvidenceTests(unittest.IsolatedAsyncioTestCase):
                 service, host, manager, order, available, kwargs = await self._rebind(mode=mode)
                 await service._supersede_thread_bootstrap(**kwargs)
                 host.codex.request.assert_not_awaited()
+
+
+    async def test_mode_omitted_for_repository_drift_preserves_api_authentication(self):
+        service, host, manager, order, available, kwargs = await self._rebind()
+        service._assignment_record = lambda assignment_id: SimpleNamespace(runtime_binding=ExecutionRuntimeBinding(
+            provider_id="openai", runtime_id="codex", capability_revision=1, authentication_mode="api_key"))
+        await service._supersede_thread_bootstrap(**kwargs)
+        host.codex.request.assert_not_awaited()
+
+    async def test_missing_previous_authentication_mode_does_not_assume_operator(self):
+        service, host, manager, order, available, kwargs = await self._rebind()
+        service._assignment_record = lambda assignment_id: None
+        await service._supersede_thread_bootstrap(**kwargs)
+        host.codex.request.assert_not_awaited()
+
+
+if __name__ == "__main__":
+    unittest.main()
