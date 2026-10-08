@@ -1089,7 +1089,8 @@ class GitLabService:
                 ),
             }
 
-        projected_state = self.work_items.project_event(
+        projected_state = await asyncio.to_thread(
+            self.work_items.project_event,
             payload,
             project_id=project_id,
         )
