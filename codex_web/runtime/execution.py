@@ -1639,7 +1639,11 @@ class TurnExecutionService:
                 and not getattr(h, "IS_SHUTTING_DOWN", False)
             ):
                 self.clear_thread_active(thread_id)
-        elif thread_id and self._active_turn(thread_id) is not None:
+        elif thread_id and (active := self._active_turn(thread_id)) is not None:
+            # Late events from a previous turn must not overwrite the current
+            # turn identity or keep its assignment alive as a false heartbeat.
+            if turn_id and active.turn_id and turn_id != active.turn_id:
+                return
             # Provider turns can run longer than the stale-marker window and
             # some runtimes emit item/completed without a matching
             # item/started notification. Treat every non-terminal runtime

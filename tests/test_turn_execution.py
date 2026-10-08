@@ -357,6 +357,35 @@ class TurnExecutionQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(active.assignment_id, "assignment-1")
         self.assertEqual(active.execution_workspace_id, "workspace-1")
 
+    def test_stale_nonterminal_event_cannot_replace_or_renew_new_active_turn(self) -> None:
+        host = _Host()
+        service = TurnExecutionService(host)
+        original = ActiveThreadTurn(
+            thread_id="t1", turn_id="new-turn", assignment_id="assignment-1",
+            execution_workspace_id="workspace-1", started_at=100.0, updated_at=100.0,
+        )
+        host.active["t1"] = original
+        for method in ("item/completed", "item/agentMessage/delta", "thread/tokenUsage/updated"):
+            with self.subTest(method=method), patch("codex_web.runtime.execution.time.time", return_value=200.0):
+                service.record_thread_activity({"method": method, "params": {
+                    "threadId": "t1", "turnId": "completed-old-turn",
+                }})
+            self.assertIs(host.active["t1"], original)
+            self.assertNotIn("t1", service.activity_heartbeat_at)
+
+    def test_turnless_nonterminal_event_preserves_current_turn_and_renews_heartbeat(self) -> None:
+        host = _Host()
+        service = TurnExecutionService(host)
+        host.active["t1"] = ActiveThreadTurn(
+            thread_id="t1", turn_id="new-turn", assignment_id="assignment-1",
+            started_at=100.0, updated_at=100.0,
+        )
+        with patch("codex_web.runtime.execution.time.time", return_value=200.0):
+            service.record_thread_activity({"method": "item/completed", "params": {"threadId": "t1"}})
+        self.assertEqual(host.active["t1"].turn_id, "new-turn")
+        self.assertEqual(host.active["t1"].assignment_id, "assignment-1")
+        self.assertEqual(host.active["t1"].updated_at, 200.0)
+
     def test_streaming_heartbeat_avoids_per_chunk_storage_work(self) -> None:
         host = _Host()
         service = TurnExecutionService(host)
