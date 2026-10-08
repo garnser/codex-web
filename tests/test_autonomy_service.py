@@ -340,6 +340,17 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
         )
         runtime.gitlab_group_issues.assert_not_awaited()
 
+    async def test_canonical_owner_wake_needs_no_legacy_token_or_group(self) -> None:
+        state = WorkItemState(ref="example/project#1", project_id="project-a",
+            current_owner="james", current_stage="implementation_active",
+            created_at=1.0, updated_at=10.0, last_meaningful_update_at=10.0)
+        runtime = self._runtime({state.ref: state})
+        runtime.gitlab_token_for_project = lambda _project_id: None
+        runtime.gitlab_group_path = lambda _settings: None
+        await AutonomyService(runtime=runtime).run_owner_work_cycle()
+        runtime.dispatch_event.assert_awaited_once()
+        runtime.gitlab_group_issues.assert_not_awaited()
+
     async def test_active_owner_is_not_dispatched_duplicate_work(self) -> None:
         state = WorkItemState(
             ref="example/project#1",

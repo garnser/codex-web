@@ -210,15 +210,6 @@ class AutonomyService:
                 continue
             token = d.gitlab_token_for_project(project_id)
             group = d.gitlab_group_path(project_settings)
-            if not token or not group:
-                d.append_bot_event(
-                    {
-                        "type": "owner_work_watchdog_skipped",
-                        "project_id": project_id,
-                        "reason": "missing_gitlab_token_or_group",
-                    }
-                )
-                continue
             for owner in d.owner_queue_agents:
                 canonical_items = [
                     state
@@ -255,6 +246,10 @@ class AutonomyService:
                     continue
                 missing_state_refs: list[str] = []
                 if not canonical_items:
+                    # Canonical owned work needs no raw provider credential.
+                    # Only the legacy discovery fallback requires these.
+                    if not token or not group:
+                        continue
                     issues = d.gitlab_group_issues(
                         project_id,
                         project_settings,
