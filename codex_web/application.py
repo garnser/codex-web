@@ -3581,6 +3581,8 @@ def _agent_profile_for_bot_binding(binding):
     return profile, actor
 
 
+thread_recovery_service.agent_profile_resolver = _agent_profile_for_bot_binding
+
 bot_event_dispatch_service = BotEventDispatchService(
     projects=project_runtime_service,
     settings=thread_execution_settings_service,
