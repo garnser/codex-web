@@ -163,3 +163,10 @@ class ProjectDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.project.delivery_supervision.thread_id, 'replacement')
         self.turns.start.assert_awaited_once()
         self.assertEqual(self.turns.start.call_args.args[0], 'replacement')
+
+    async def test_inflight_queue_dispatch_does_not_duplicate_a_wakeup(self):
+        self.items = {'new': self.item()}
+        self.execution.queue_drain_tasks = {'delivery-thread': SimpleNamespace(done=lambda: False)}
+        await self.service.run_cycle()
+        self.turns.start.assert_not_awaited()
+        self.assertEqual(self.telemetry[-1]['outcome'], 'dispatching')

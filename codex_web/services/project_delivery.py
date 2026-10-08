@@ -92,6 +92,9 @@ class ProjectDeliveryService:
             return {"outcome": "idle", "actionable_count": 0}
         if await asyncio.to_thread(self.execution.thread_is_active, config.thread_id):
             return {"outcome": "active", "actionable_count": len(items)}
+        drain = getattr(self.execution, "queue_drain_tasks", {}).get(config.thread_id)
+        if drain is not None and not drain.done():
+            return {"outcome": "dispatching", "actionable_count": len(items)}
         queue = await asyncio.to_thread(self.turns.queue, config.thread_id)
         if queue.get("queueDepth"):
             return {"outcome": "queued", "actionable_count": len(items)}
