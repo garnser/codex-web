@@ -52,6 +52,14 @@ canonical assignment state. The worker cannot select the provider, override
 those values, or receive the provider credential. Zero or multiple matching
 bindings fail closed.
 
+Storage-backed broker identity, target-scope and authority checks run in one
+awaited worker-thread boundary, preserving their original order and the caller's
+ContextVars. Paginated Work Item reads and exact-item reads likewise execute
+existing synchronous state/index construction off the shared event loop. Slow
+canonical storage must not prevent the loop from receiving worker completion
+notifications. This scheduling boundary does not alter tenant/resource checks,
+cursor revision/filter validation, response schemas or side-effect authority.
+
 ### Execution subject and v1.1 compatibility
 
 Worker assignments and execution workspaces use one shared typed execution

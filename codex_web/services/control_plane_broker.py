@@ -1082,16 +1082,14 @@ class ControlPlaneBrokerService:
             raise ControlPlaneBrokerAuthorityDeniedError(decision)
         return decision
 
-    async def dispatch(
+    def _dispatch_scope(
         self,
-        *,
         assignment: ExecutionAssignment,
         worker_actor: AuthenticationActor,
-        method: str,
-        raw_target: str,
-        body: bytes,
-    ) -> tuple[int, dict[str, Any], ControlPlaneBrokerOperation, str | None, Any]:
-        resolved = self._resolve_operation(method, raw_target)
+        resolved: _ResolvedOperation,
+    ) -> tuple[AuthenticationActor, AuthenticationActor, Any, Any]:
+        # Preserve identity -> target scope -> authority ordering as one
+        # synchronous boundary. to_thread carries the caller's ContextVars.
         operation = resolved.operation
         actor = self._actor(assignment, worker_actor)
         repository_read = operation.id.startswith("repository.read.")
@@ -1125,6 +1123,26 @@ class ControlPlaneBrokerService:
             operation,
             actor=authority_actor,
             resource_ids=resource_ids,
+        )
+
+        return actor, requester_actor, state, authority_decision
+
+    async def dispatch(
+        self,
+        *,
+        assignment: ExecutionAssignment,
+        worker_actor: AuthenticationActor,
+        method: str,
+        raw_target: str,
+        body: bytes,
+    ) -> tuple[int, dict[str, Any], ControlPlaneBrokerOperation, str | None, Any]:
+        resolved = self._resolve_operation(method, raw_target)
+        operation = resolved.operation
+        repository_read = operation.id.startswith("repository.read.")
+        actor, requester_actor, state, authority_decision = (
+            await asyncio.to_thread(
+                self._dispatch_scope, assignment, worker_actor, resolved
+            )
         )
 
         payload: dict[str, Any] = {}
@@ -1674,7 +1692,9 @@ class AssignmentBoundControlPlaneBroker:
             resolved = self.service._resolve_operation(method, target)
             operation = resolved.operation
             target_ref = resolved.target_ref
-            actor = self.service._actor(assignment, self.worker_actor)
+            actor = await asyncio.to_thread(
+                self.service._actor, assignment, self.worker_actor
+            )
             actor_identity_id = actor.identity_id
 
             status, payload, operation, target_ref, authority_decision = (
