@@ -1319,15 +1319,14 @@ project_readiness_store = ProjectReadinessStore(state_store)
 
 
 def _local_codex_session_available() -> bool:
-    """Return whether the trusted local Codex app-server is ready.
+    """Use fresh actual account evidence for the trusted operator context.
 
-    The trusted-local authentication mode is backed by the operator-owned
-    Codex session.  Keep readiness and turn binding on the same canonical
-    runtime signal instead of treating the mode as unsupported merely because
-    no delegated secret is configured.
+    Authentication evidence and RPC transport readiness are separate facts.
+    Runtime health and execution preflight still independently gate transport.
     """
     runtime = getattr(app.state, "codex_runtime", None)
-    return bool(runtime is not None and runtime.ready.is_set())
+    probe = getattr(runtime, "authenticated_account_available", None)
+    return bool(callable(probe) and probe())
 
 
 def _project_readiness_environment(project, actor):

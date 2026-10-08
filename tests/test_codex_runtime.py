@@ -4,6 +4,8 @@ import asyncio
 import io
 import os
 import threading
+import tempfile
+from pathlib import Path
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -187,6 +189,75 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.host = _Host()
         self.runtime = CodexRuntime(self.host)
+
+    async def _authenticated_account(self, payload=None):
+        self.runtime.ensure_started = AsyncMock()
+        async def send(message):
+            await self.runtime._handle_message({"id": message["id"], "result": payload if payload is not None else {"account": {"type": "chatgpt", "email": "fixture@example.test", "planType": "plus"}}})
+        self.runtime._send = send
+        return await self.runtime.request("account/read", {"refreshToken": False})
+
+    async def test_real_account_rpc_proof_survives_readiness_clear_without_changing_health(self):
+        from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
+        from codex_web.agent_runtime import AgentRuntimeHealth
+        self.runtime.ready.set()
+        self.assertFalse(self.runtime.authenticated_account_available())
+        await self._authenticated_account()
+        self.assertTrue(self.runtime.authenticated_account_available())
+        self.runtime.ready.clear()
+        self.assertTrue(self.runtime.authenticated_account_available())
+        self.assertEqual(await CodexAgentRuntimeAdapter(self.runtime).health(), AgentRuntimeHealth.UNAVAILABLE)
+
+    async def test_account_proof_expires_and_process_identity_changes_invalidate_it(self):
+        await self._authenticated_account()
+        observed = self.runtime._authenticated_account_proof[0]
+        with patch("codex_web.runtime.codex.time.monotonic", return_value=observed + 119):
+            self.assertTrue(self.runtime.authenticated_account_available())
+        with patch("codex_web.runtime.codex.time.monotonic", return_value=observed + 120):
+            self.assertFalse(self.runtime.authenticated_account_available())
+        with patch("codex_web.runtime.codex.os.getpid", return_value=123456789):
+            self.assertFalse(self.runtime.authenticated_account_available())
+
+    async def test_account_source_metadata_change_invalidates_without_reading_contents(self):
+        with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"CODEX_HOME": home}):
+            await self._authenticated_account()
+            self.assertTrue(self.runtime.authenticated_account_available())
+            Path(home, "auth.json").write_text("fixture-only")
+            self.assertFalse(self.runtime.authenticated_account_available())
+
+    async def test_logout_invalidates_before_transport_failure_and_account_updates_invalidate(self):
+        await self._authenticated_account()
+        self.runtime.ensure_started = AsyncMock(side_effect=RuntimeError("transport unavailable"))
+        with self.assertRaises(RuntimeError):
+            await self.runtime.request("account/logout", {})
+        self.assertFalse(self.runtime.authenticated_account_available())
+        await self._authenticated_account()
+        await self.runtime._handle_message({"method": "account/updated", "params": {"authMode": None}})
+        self.assertFalse(self.runtime.authenticated_account_available())
+
+    async def test_account_response_started_before_logout_cannot_republish_stale_proof(self):
+        self.runtime.ensure_started = AsyncMock()
+        async def send(message):
+            await self.runtime._handle_message({"method": "account/updated", "params": {"authMode": None}})
+            await self.runtime._handle_message({"id": message["id"], "result": {"account": {"type": "apiKey"}}})
+        self.runtime._send = send
+        await self.runtime.request("account/read", {})
+        self.assertFalse(self.runtime.authenticated_account_available())
+
+    async def test_logged_out_or_malformed_account_response_clears_prior_proof(self):
+        for account in (None, {}, {"type": "unsupported"}):
+            await self._authenticated_account()
+            await self._authenticated_account({"account": account})
+            self.assertFalse(self.runtime.authenticated_account_available())
+
+    async def test_explicit_account_rpc_error_clears_prior_proof(self):
+        await self._authenticated_account()
+        async def send(message):
+            await self.runtime._handle_message({"id": message["id"], "error": {"code": 401, "message": "not authenticated"}})
+        self.runtime._send = send
+        with self.assertRaises(RuntimeError):
+            await self.runtime.request("account/read", {})
+        self.assertFalse(self.runtime.authenticated_account_available())
 
     async def test_process_launch_closes_unrelated_file_descriptors(self) -> None:
         captured = {}
