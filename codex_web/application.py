@@ -4512,7 +4512,7 @@ install_webhook_security(core, secret_broker)
 previous_context_service = getattr(app.state, "context_compaction_service", None)
 if previous_context_service is not None:
     event_hub.unsubscribe(previous_context_service.observe)
-event_hub.subscribe(context_service.observe)
+event_hub.subscribe_filtered(context_service.observe, event_types=("codex.event",))
 app.state.context_compaction_service = context_service
 
 def _include_domain_router(router) -> int:

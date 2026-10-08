@@ -5,7 +5,7 @@ import contextlib
 import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import nullcontext
 from typing import Any
 
@@ -25,6 +25,7 @@ class EventHub:
         self._queues: dict[WebSocket, asyncio.Queue[dict[str, Any]]] = {}
         self._senders: dict[WebSocket, asyncio.Task[None]] = {}
         self._listeners: set[EventListener] = set()
+        self._listener_event_types: dict[EventListener, frozenset[str]] = {}
         self._metrics: RuntimeMetrics | None = None
         self._stream_id = uuid.uuid4().hex
         self._sequence = 0
@@ -68,9 +69,21 @@ class EventHub:
 
     def subscribe(self, listener: EventListener) -> None:
         self._listeners.add(listener)
+        self._listener_event_types.pop(listener, None)
+
+    def subscribe_filtered(
+        self,
+        listener: EventListener,
+        *,
+        event_types: Iterable[str],
+    ) -> None:
+        """Apply a pure type gate before scheduling a synchronous observer."""
+        self.subscribe(listener)
+        self._listener_event_types[listener] = frozenset(event_types)
 
     def unsubscribe(self, listener: EventListener) -> None:
         self._listeners.discard(listener)
+        self._listener_event_types.pop(listener, None)
 
     async def _sender(self, websocket: WebSocket, queue: asyncio.Queue[dict[str, Any]]) -> None:
         try:
@@ -122,6 +135,9 @@ class EventHub:
         )
         with event_context:
             for listener in list(self._listeners):
+                event_types = self._listener_event_types.get(listener)
+                if event_types is not None and event.get("type") not in event_types:
+                    continue
                 try:
                     await asyncio.to_thread(listener, event)
                 except Exception as exc:
