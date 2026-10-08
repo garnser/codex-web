@@ -4140,17 +4140,6 @@ app.state.runtime_health_service = runtime_health_service
 # Replace the legacy core startup/shutdown callbacks after all runtime and
 # provider services have been composed. The supervisor coordinates explicit
 # runtime owners and receives the extracted health evaluator directly.
-def _compact_turn_queues() -> None:
-    queues = turn_queue_repository.load()
-    compacted = {
-        thread_id: items
-        for thread_id, items in queues.items()
-        if items
-    }
-    if len(compacted) != len(queues):
-        turn_queue_repository.save(compacted)
-
-
 def _flush_compatibility_state() -> None:
     repositories = (
         runtime_state.thread_settings,
@@ -4194,7 +4183,7 @@ runtime_supervisor = install_runtime_supervisor(
     sd_notify=sd_notify,
     daemon_health=runtime_health_service.health,
     load_projects=project_repository.load,
-    compact_turn_queues=_compact_turn_queues,
+    compact_turn_queues=work_item_wakeup_queue_policy.compact_queues,
     dedupe_bot_integrations=bot_connection_service.dedupe_integrations,
     restore_thread_names=thread_naming_service.restore_all,
     resume_active_threads=turn_execution_service.resume_active_threads_after_startup,

@@ -79,26 +79,52 @@ class WorkItemWakeupQueuePolicy:
         return "\n".join(lines)
 
     def coalesce(self, items: list[QueuedTurn]) -> tuple[list[QueuedTurn], bool]:
+        compacted = list(items)
+        changed = False
         candidates = [
             (index, queued, self.entries(queued.message))
-            for index, queued in enumerate(items)
+            for index, queued in enumerate(compacted)
             if queued.reply_target is None
         ]
         candidates = [candidate for candidate in candidates if candidate[2]]
-        if len(candidates) < 2:
-            return items, False
+        if len(candidates) >= 2:
+            first_index, representative, _ = candidates[0]
+            merged_entries = [
+                entry
+                for _, _, entries in candidates
+                for entry in entries
+            ]
+            representative.message = self.render_batch(merged_entries)
+            candidate_ids = {id(queued) for _, queued, _ in candidates}
+            compacted = [
+                queued for queued in compacted if id(queued) not in candidate_ids
+            ]
+            compacted.insert(min(first_index, len(compacted)), representative)
+            changed = True
 
-        first_index, representative, _ = candidates[0]
-        merged_entries = [
-            entry
-            for _, _, entries in candidates
-            for entry in entries
-        ]
-        representative.message = self.render_batch(merged_entries)
-        candidate_ids = {id(queued) for _, queued, _ in candidates}
-        compacted = [queued for queued in items if id(queued) not in candidate_ids]
-        compacted.insert(min(first_index, len(compacted)), representative)
-        return compacted, True
+        # GitLab issue updates are state-reconciliation signals. If several
+        # updates for the same canonical work item accumulated while an agent
+        # was busy, only the newest one can be actionable; processing older
+        # snapshots wastes queue capacity and may reintroduce stale routing.
+        latest_gitlab_index: dict[str, int] = {}
+        for index, queued in enumerate(compacted):
+            if queued.source == "gitlab" and queued.work_item_ref:
+                latest_gitlab_index[queued.work_item_ref] = index
+        if latest_gitlab_index:
+            deduplicated = [
+                queued
+                for index, queued in enumerate(compacted)
+                if not (
+                    queued.source == "gitlab"
+                    and queued.work_item_ref
+                    and latest_gitlab_index[queued.work_item_ref] != index
+                )
+            ]
+            if len(deduplicated) != len(compacted):
+                compacted = deduplicated
+                changed = True
+
+        return (compacted, changed) if changed else (items, False)
 
     def compact_queues(self) -> None:
         queues = self.host._load_turn_queues()
@@ -106,6 +132,9 @@ class WorkItemWakeupQueuePolicy:
         for thread_id, items in list(queues.items()):
             queues[thread_id], queue_changed = self.coalesce(items)
             changed = changed or queue_changed
+            if not queues[thread_id]:
+                del queues[thread_id]
+                changed = True
         if changed:
             self.host._save_turn_queues(queues)
 

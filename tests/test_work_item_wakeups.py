@@ -27,13 +27,22 @@ class WorkItemWakeupQueuePolicyTests(unittest.TestCase):
         self.policy = WorkItemWakeupQueuePolicy(self.host)
 
     @staticmethod
-    def queued(queued_id: str, message: str, *, thread_id: str = "thread-1") -> QueuedTurn:
+    def queued(
+        queued_id: str,
+        message: str,
+        *,
+        thread_id: str = "thread-1",
+        source: str = "web",
+        work_item_ref: str | None = None,
+    ) -> QueuedTurn:
         return QueuedTurn(
             id=queued_id,
             thread_id=thread_id,
             project_id="project-1",
             message=message,
             created_at=1.0,
+            source=source,
+            work_item_ref=work_item_ref,
         )
 
     @staticmethod
@@ -109,6 +118,47 @@ class WorkItemWakeupQueuePolicyTests(unittest.TestCase):
         self.assertIs(compacted, items)
         self.assertFalse(changed)
 
+    def test_coalesce_keeps_only_latest_gitlab_update_per_work_item(self) -> None:
+        first = self.queued(
+            "first",
+            "old issue snapshot",
+            source="gitlab",
+            work_item_ref="group/project#12",
+        )
+        other = self.queued(
+            "other",
+            "another issue",
+            source="gitlab",
+            work_item_ref="group/project#13",
+        )
+        latest = self.queued(
+            "latest",
+            "new issue snapshot",
+            source="gitlab",
+            work_item_ref="group/project#12",
+        )
+
+        compacted, changed = self.policy.coalesce([first, other, latest])
+
+        self.assertTrue(changed)
+        self.assertEqual([item.id for item in compacted], ["other", "latest"])
+
+    def test_coalesce_preserves_unrelated_gitlab_events(self) -> None:
+        items = [
+            self.queued("pipeline", "pipeline event", source="gitlab"),
+            self.queued(
+                "issue",
+                "issue event",
+                source="gitlab",
+                work_item_ref="group/project#12",
+            ),
+        ]
+
+        compacted, changed = self.policy.coalesce(items)
+
+        self.assertIs(compacted, items)
+        self.assertFalse(changed)
+
     def test_compact_queues_saves_only_when_a_queue_changes(self) -> None:
         self.queues = {
             "thread-1": [
@@ -127,6 +177,17 @@ class WorkItemWakeupQueuePolicyTests(unittest.TestCase):
         self.saved.clear()
         self.policy.compact_queues()
         self.assertEqual(self.saved, [])
+
+    def test_compact_queues_removes_empty_queue_records(self) -> None:
+        self.queues = {
+            "empty": [],
+            "thread-1": [self.queued("ordinary", "ordinary message")],
+        }
+
+        self.policy.compact_queues()
+
+        self.assertEqual(list(self.queues), ["thread-1"])
+        self.assertEqual(len(self.saved), 1)
 
     def test_installer_rebinds_historical_wakeup_names(self) -> None:
         app = SimpleNamespace(state=SimpleNamespace())
