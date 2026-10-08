@@ -1001,7 +1001,7 @@ class ThreadService:
                         )
                         else "agent_thread_start_failed"
                     ),
-                    failure_message=str(exc)[:500],
+                    failure_message=(str(exc).strip() or type(exc).__name__)[:500],
                 )
             raise
 

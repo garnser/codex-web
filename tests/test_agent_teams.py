@@ -929,6 +929,31 @@ class AgentTeamExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.turns.calls, [])
 
+    async def test_empty_member_failure_records_exception_type_without_masking(self) -> None:
+        class EmptyFailureThreads(_FakeThreads):
+            async def create(self, **kwargs):
+                self.calls.append(kwargs)
+                raise TimeoutError()
+        threads = EmptyFailureThreads()
+        execution = AgentTeamExecutionService(self.teams, threads=threads, turns=self.turns)
+        result = await execution.execute(
+            "delivery",
+            TeamExecutionRequest(
+                delegation=TeamDelegationRequest(
+                    work_item_id="work-empty-error", project_id="project-a",
+                    required_capabilities=("python",),
+                ),
+                message="Implement.",
+            ),
+            actor=self.member,
+        )
+        self.assertEqual(result.plan.mode, "launch_blocked")
+        self.assertEqual(result.plan.reason, "TimeoutError")
+        self.assertTrue(result.plan.attention_required)
+        self.assertEqual(self.turns.calls, [])
+        failures = [x for x in self.teams.store.load().delegations if x.work_item_id == "work-empty-error" and x.reason == "TimeoutError"]
+        self.assertEqual(len(failures), 1)
+
     async def test_authority_denial_prevents_member_launch(self) -> None:
         restricted = self.profiles.create(
             AgentProfileCreate(

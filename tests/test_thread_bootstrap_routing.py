@@ -560,6 +560,19 @@ class ThreadBootstrapCreateTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(kwargs["succeeded"])
         self.assertEqual(kwargs["failure_code"], "codex_thread_start_failed")
 
+    async def test_empty_start_failure_keeps_exception_and_records_nonempty_reason(self) -> None:
+        error = TimeoutError()
+        session = _Session(error=error)
+        host, _planner, manager, bindings, service = self._service(session=session)
+        with self.assertRaises(TimeoutError) as caught:
+            await service.create(project_id="p1")
+        self.assertIs(caught.exception, error)
+        self.assertEqual(manager.completed[0][1]["failure_message"], "TimeoutError")
+        self.assertEqual(manager.completed[0][1]["failure_code"], "codex_thread_start_failed")
+        self.assertFalse(manager.completed[0][1]["succeeded"])
+        host.codex.request.assert_not_awaited()
+        self.assertEqual(bindings.calls, [])
+
     async def test_missing_returned_thread_id_fails_assignment(self) -> None:
         session = _Session(response={"thread": {}})
         host, _planner, manager, bindings, service = self._service(session=session)
