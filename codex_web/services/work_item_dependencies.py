@@ -329,6 +329,15 @@ def gitlab_project_issue_ref(
     iid = attrs.get("iid")
     if not project_path or iid in {None, ""}:
         return None
+    kind = str(
+        payload.get("object_kind")
+        or payload.get("event_name")
+        or ""
+    ).strip().casefold()
+    if kind == "merge_request":
+        return f"{project_path}!{iid}"
+    if kind == "pipeline":
+        return f"{project_path}@pipeline:{iid}"
     return f"{project_path}#{iid}"
 
 

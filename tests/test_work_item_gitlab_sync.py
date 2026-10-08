@@ -452,7 +452,7 @@ class WorkItemGitLabSyncTests(unittest.TestCase):
         )
 
         self.assertIsNotNone(state)
-        self.assertEqual(state.ref, "veridataops/platform#220")
+        self.assertEqual(state.ref, "veridataops/platform@pipeline:220")
         self.assertEqual(state.kind, "pipeline")
         self.assertEqual(state.current_stage, "closed")
         self.assertIsNone(state.current_owner)
@@ -462,7 +462,7 @@ class WorkItemGitLabSyncTests(unittest.TestCase):
 
     def test_pipeline_event_closes_existing_open_pipeline_state(self) -> None:
         pipeline_state = WorkItemState(
-            ref="veridataops/platform#220",
+            ref="veridataops/platform@pipeline:220",
             project_id="platform",
             project_path="veridataops/platform",
             title=None,
@@ -494,7 +494,7 @@ class WorkItemGitLabSyncTests(unittest.TestCase):
             project_id="platform",
         )
 
-        updated = server._work_item_state("veridataops/platform#220")
+        updated = server._work_item_state("veridataops/platform@pipeline:220")
         self.assertEqual(updated.current_stage, "closed")
         self.assertIsNone(updated.current_owner)
         self.assertIsNone(updated.next_owner)
