@@ -99,7 +99,7 @@ class AgentRuntimeEventProjectionTests(unittest.TestCase):
                 raise RuntimeError("storage unavailable")
 
         service = TurnExecutionService(
-            SimpleNamespace(_append_bot_event=events.append),
+            SimpleNamespace(_append_bot_event=events.append, _load_active_turns=lambda: {}),
             thread_history=FailingHistory(),
         )
 

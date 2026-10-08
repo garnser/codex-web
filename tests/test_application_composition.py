@@ -4,6 +4,8 @@ import hashlib
 import hmac
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi import HTTPException, Request
 
@@ -14,6 +16,8 @@ from codex_web.integrations.webhook_security import (
     verify_telegram_secret,
 )
 from codex_web.runtime import core
+from codex_web.identity import TenantScope
+from codex_web.services.identity import AuthenticationError
 
 
 def _request(headers: dict[str, str] | None = None) -> Request:
@@ -35,6 +39,23 @@ def _path_tags(path: str) -> set[str]:
 
 
 class ApplicationCompositionTests(unittest.TestCase):
+    def test_queue_actor_resolver_uses_current_identity_in_project_scope(self) -> None:
+        project = SimpleNamespace(organization_id="org-queue", workspace_id="ws-queue")
+        actor = object()
+        with patch.object(application.identity_service, "actor_for_identity", return_value=actor) as resolve:
+            result = application.turn_execution_service.actor_resolver("queued-actor", project)
+        self.assertIs(result, actor)
+        resolve.assert_called_once_with(
+            "queued-actor",
+            scope=TenantScope(organization_id="org-queue", workspace_id="ws-queue"),
+        )
+
+    def test_queue_actor_resolver_does_not_fall_back_for_revoked_identity(self) -> None:
+        project = SimpleNamespace(organization_id="org-queue", workspace_id="ws-queue")
+        with patch.object(application.identity_service, "actor_for_identity", side_effect=AuthenticationError("identity not found or disabled")):
+            with self.assertRaises(AuthenticationError):
+                application.turn_execution_service.actor_resolver("revoked-actor", project)
+
     def test_application_uses_single_core_fastapi_instance(self) -> None:
         self.assertIs(application.app, core.app)
 

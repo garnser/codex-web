@@ -3142,6 +3142,13 @@ turn_execution_service = install_turn_execution_service(
     provider_capacity=provider_capacity_service,
     ownership=replicated_ownership_service,
     bindings_for_thread=bot_binding_selection_service.for_thread,
+    actor_resolver=lambda identity_id, project: identity_service.actor_for_identity(
+        identity_id,
+        scope=TenantScope(
+            organization_id=project.organization_id,
+            workspace_id=project.workspace_id,
+        ),
+    ),
     skill_context_resolver=lambda refs, project, objective: (
         skill_service.context_for_refs_scoped(
             refs,
