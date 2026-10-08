@@ -30,9 +30,15 @@ REDIS_URL = os.environ.get("CODEX_WEB_TEST_REDIS_URL")
     "real distributed backends are only exercised when CI supplies PostgreSQL and Redis",
 )
 class RealDistributedBackendTests(unittest.IsolatedAsyncioTestCase):
+    def _store(self, **kwargs):
+        assert POSTGRES_DSN is not None
+        store = PostgresStateStore(POSTGRES_DSN, **kwargs)
+        self.addCleanup(store.close)
+        return store
+
     def setUp(self) -> None:
         assert POSTGRES_DSN is not None
-        self.postgres = PostgresStateStore(POSTGRES_DSN)
+        self.postgres = self._store()
         self._clear_postgres_documents()
 
     def _clear_postgres_documents(self) -> None:
@@ -51,6 +57,38 @@ class RealDistributedBackendTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         await self.redis.aclose()
+
+    async def test_postgres_pool_reuses_connections_and_rolls_back_failed_mutation(self) -> None:
+        pooled = self._store(pool_max_size=1)
+        backend_ids = []
+        for _ in range(4):
+            with pooled._connection() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    backend_ids.append(cursor.fetchone()[0])
+        self.assertEqual(len(set(backend_ids)), 1)
+        short_lived = self._store(pool_max_size=1)
+        with short_lived._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_backend_pid()")
+                self.assertEqual(cursor.fetchone()[0], backend_ids[0])
+        short_lived.close()
+        with pooled._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                self.assertEqual(cursor.fetchone()[0], 1)
+        pooled.put("pool-rollback", {"value": "original"})
+
+        def fail_mutation(raw):
+            raw["value"] = "must-not-commit"
+            raise RuntimeError("intentional rollback")
+
+        with self.assertRaisesRegex(RuntimeError, "intentional rollback"):
+            pooled.update("pool-rollback", fail_mutation, default={})
+        self.assertEqual(pooled.get("pool-rollback"), {"value": "original"})
+        pooled.update("pool-rollback", lambda _raw: {"value": "next"}, default={})
+        self.assertEqual(pooled.get("pool-rollback"), {"value": "next"})
+        self.assertEqual(pooled.status()["connectionPool"]["maxSize"], 1)
 
     async def test_postgres_state_migration_and_shared_fencing(self) -> None:
         with tempfile.TemporaryDirectory() as root:
@@ -74,8 +112,8 @@ class RealDistributedBackendTests(unittest.IsolatedAsyncioTestCase):
 
         # Reset canonical documents before exercising coordination.
         self._clear_postgres_documents()
-        first_store = PostgresStateStore(POSTGRES_DSN)
-        second_store = PostgresStateStore(POSTGRES_DSN)
+        first_store = self._store()
+        second_store = self._store()
         first = StateStoreCoordinationBackend(first_store)
         second = StateStoreCoordinationBackend(second_store)
 
@@ -199,10 +237,10 @@ class RealDistributedBackendTests(unittest.IsolatedAsyncioTestCase):
             claim_idle_ms=20,
         )
         producer_store = CanonicalEventStore(
-            PostgresStateStore(POSTGRES_DSN)
+            self._store()
         )
         consumer_store = CanonicalEventStore(
-            PostgresStateStore(POSTGRES_DSN)
+            self._store()
         )
         producer_bus = CanonicalEventBus(
             producer_store,

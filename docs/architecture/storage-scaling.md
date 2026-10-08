@@ -408,3 +408,14 @@ Before replicated mode is considered supported, tests must demonstrate:
 - two instances transfer ownership deterministically without double execution
 - transport and coordination backends can be replaced independently at their contracts
 - a single-instance deployment continues to work without any external broker
+
+PostgreSQL canonical state uses the official psycopg connection pool so keyed
+operations reuse authenticated connections instead of reopening them for each
+statement. Each checkout retains its own transaction; normal exits commit and
+exceptional exits roll back before reuse. Pool resources are shared only across stores with identical DSN/TLS and pool
+bounds. Closing a short-lived store releases its lease; application shutdown and
+process exit close the shared pools after runtime owners stop. Its default bounds are one retained
+connection, at most sixteen concurrent connections, and a five-second acquisition
+wait; backend construction can supply tighter deployment bounds. Custom injected
+connection factories retain the existing one-operation connection behavior.
+Pool limits and counters are exposed through existing state-storage diagnostics.
