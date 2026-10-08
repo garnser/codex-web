@@ -62,6 +62,7 @@ class ThreadRecoveryService:
             else getattr(host, "THREAD_TERMINAL_FAILURES", {})
         )
         self.thread_creator = thread_creator
+        self.agent_profile_resolver: Callable[[BotBinding], Any] | None = None
         self.stale_active_turn_reconciler = None
         self._replacement_lock = asyncio.Lock()
 
@@ -79,6 +80,7 @@ class ThreadRecoveryService:
         settings: ThreadRunSettings,
         sandbox: str,
         approval_policy: str,
+        binding: BotBinding | None = None,
     ) -> str:
         if self.thread_creator is None:
             raise HTTPException(
@@ -91,6 +93,16 @@ class ThreadRecoveryService:
                     ),
                 },
             )
+        profile_kwargs: dict[str, Any] = {}
+        if binding is not None and self.agent_profile_resolver is not None:
+            context = self.agent_profile_resolver(binding)
+            if context is not None:
+                profile, actor = context
+                profile_kwargs = {
+                    "agent_profile_id": profile.profile_id,
+                    "agent_profile_revision": profile.revision,
+                    "actor": actor,
+                }
         response = await self.thread_creator(
             project_id=project.id,
             sandbox=sandbox,
@@ -102,6 +114,7 @@ class ThreadRecoveryService:
                 settings.read_only_repository_resource_ids
             ),
             execution_profile_id=settings.execution_profile_id,
+            **profile_kwargs,
         )
         thread = response.get("thread") if isinstance(response, dict) else None
         thread_id = thread.get("id") if isinstance(thread, dict) else None
@@ -280,6 +293,7 @@ class ThreadRecoveryService:
             settings=settings,
             sandbox=sandbox,
             approval_policy=approval_policy,
+            binding=binding,
         )
         self.settings.remember(
             new_thread_id,
