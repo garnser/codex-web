@@ -218,6 +218,38 @@ class TaskSourceWorkItemProjectionTests(unittest.TestCase):
         self.assertEqual(result.current_stage, "implementation_active")
         self.assertEqual(result.last_gitlab_event_at, newer_timestamp)
 
+    def test_issue_snapshot_repairs_newer_historical_artifact_collision(self) -> None:
+        snapshot = self.snapshot(revision="2026-09-17T19:00:00Z")
+        self.host.states[snapshot.identity.external_id] = WorkItemState(
+            ref=snapshot.identity.external_id,
+            project_id="home",
+            project_path="group/project",
+            source_identity=snapshot.identity,
+            title="Merged MR with the same IID",
+            kind="merge_request",
+            current_stage="closed",
+            terminal_outcome="completed",
+            artifact_state="merged_main",
+            closed_at=1.0,
+            last_meaningful_update_at=1.0,
+            last_gitlab_event_at=2_000_000_000.0,
+            updated_at=1.0,
+            created_at=1.0,
+        )
+
+        repaired = self.projector.upsert(
+            self.source,
+            snapshot,
+            project_id="home",
+        )
+
+        self.assertEqual(repaired.kind, "issue")
+        self.assertEqual(repaired.title, "External issue")
+        self.assertEqual(repaired.current_stage, "implementation_active")
+        self.assertIsNone(repaired.closed_at)
+        self.assertIsNone(repaired.terminal_outcome)
+        self.assertEqual(repaired.artifact_state, "branch")
+
     def test_normal_projection_uses_no_collection_wide_load_or_save(self) -> None:
         self.projector.upsert(
             self.source,

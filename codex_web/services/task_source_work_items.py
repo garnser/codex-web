@@ -295,11 +295,18 @@ class TaskSourceWorkItemProjector:
             state.project_id = project_id
             state.resource_ids = resource_ids
             state.project_path = project_path or state.project_path
+            # Artifact events historically used the same ``project#iid`` key
+            # as issues. After artifact refs became kind-qualified, an
+            # authoritative issue snapshot must be allowed to repair such a
+            # collided record even when the later MR event has a newer
+            # timestamp.
+            identity_kind_mismatch = state.kind != "issue"
 
             if (
                 source_timestamp is not None
                 and state.last_gitlab_event_at is not None
                 and source_timestamp < state.last_gitlab_event_at
+                and not identity_kind_mismatch
             ):
                 self.state_machine._append_work_item_event(
                     self.state_machine._work_item_event(
@@ -341,6 +348,7 @@ class TaskSourceWorkItemProjector:
                 return state
 
             state.source_identity = snapshot.identity
+            state.kind = "issue"
             state.title = snapshot.title or state.title
             state.url = snapshot.identity.external_url or state.url
             state.priority = priority or state.priority
