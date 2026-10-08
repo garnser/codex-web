@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from codex_web.identity import TenantScope
@@ -41,6 +42,29 @@ class WorkItemListIndexTests(unittest.TestCase):
         return WorkItemListIndex(
             SQLiteStateStore(root / "state.sqlite3")
         )
+
+    def test_rebuild_batches_project_changes_and_preserves_unchanged_revision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            index = self._index(Path(tmp))
+            states = {state.ref: state for state in [_state(i) for i in range(1500)]}
+            with patch.object(index.store, "record_apply", wraps=index.store.record_apply) as apply:
+                index.rebuild(states)
+                self.assertEqual(apply.call_count, 2)
+                revision = index.revision(scope=TenantScope(), project_id="project-a")
+                apply.reset_mock()
+                index.rebuild(states)
+                apply.assert_not_called()
+                self.assertEqual(index.revision(scope=TenantScope(), project_id="project-a"), revision)
+                moved = states.pop("group/project#00000").model_copy(update={"project_id": "project-b"})
+                states[moved.ref] = moved
+                states.pop("group/project#00001")
+                index.rebuild(states)
+                self.assertEqual(apply.call_count, 3)
+            old_rows = index.store.record_items(index.namespace(TenantScope(), "project-a"))
+            self.assertEqual(len(old_rows), 1498)
+            new_rows = index.store.record_items(index.namespace(TenantScope(), "project-b"))
+            self.assertEqual([row["ref"] for row in new_rows.values()], [moved.ref])
+            self.assertIsNone(index.store.record_get(index.LOOKUP_NAMESPACE, "group/project#00001"))
 
     def test_large_project_pages_without_loading_unrelated_project(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
