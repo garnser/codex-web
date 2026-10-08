@@ -119,6 +119,13 @@ class RuntimePolicy:
             minimum=5.0,
         )
 
+    def local_worker_max_concurrency(self) -> int:
+        try:
+            value = int(os.environ.get("CODEX_WEB_LOCAL_WORKER_MAX_CONCURRENCY") or "8")
+        except ValueError:
+            value = 8
+        return max(1, min(value, 128))
+
     def background_task_max_concurrency(self) -> int:
         try:
             value = int(

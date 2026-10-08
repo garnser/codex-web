@@ -1259,6 +1259,7 @@ local_execution_worker = execution_worker_service.ensure_local_worker(
         "thread-bootstrap/1.0",
     ),
     actor=identity_service.local_trusted_actor(),
+    max_concurrency=runtime_policy.local_worker_max_concurrency(),
 )
 app.include_router(
     build_execution_workers_router(
