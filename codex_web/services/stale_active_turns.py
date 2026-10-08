@@ -544,6 +544,31 @@ class StaleActiveTurnRecoveryService:
                     }
                 )
                 if lease.expires_at > now and worker_trusted:
+                    subject = getattr(assignment, "subject", None)
+                    subject_kind = getattr(subject, "kind", None)
+                    subject_kind = getattr(
+                        subject_kind,
+                        "value",
+                        subject_kind,
+                    )
+                    if (
+                        stale
+                        and queued
+                        and subject_kind == "thread_bootstrap"
+                    ):
+                        return ActiveTurnInspection(
+                            thread_id=active.thread_id,
+                            stale=True,
+                            age_seconds=age,
+                            outcome="requeued",
+                            reason_code=(
+                                "retained_session_stale_turn_with_existing_queue"
+                            ),
+                            evidence={
+                                **evidence,
+                                "assignment_subject_kind": subject_kind,
+                            },
+                        )
                     return ActiveTurnInspection(
                         thread_id=active.thread_id,
                         stale=stale,

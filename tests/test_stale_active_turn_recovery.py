@@ -74,6 +74,7 @@ def _assignment(
     worker_id: str | None = None,
     fence: int = 1,
     lease_expires_at: float | None = None,
+    subject_kind: str | None = None,
 ):
     lease = (
         SimpleNamespace(
@@ -91,6 +92,11 @@ def _assignment(
         assigned_worker_id=worker_id,
         fence=fence,
         lease=lease,
+        subject=(
+            SimpleNamespace(kind=subject_kind)
+            if subject_kind is not None
+            else None
+        ),
     )
 
 
@@ -243,6 +249,54 @@ class StaleActiveTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report.legacy_backup_refs, ())
         self.assertEqual(report.resume_thread_ids, ())
         self.assertEqual(self.resumed, [])
+
+    async def test_stale_retained_session_turn_with_queue_is_released(self) -> None:
+        active = _active(
+            "thread-retained",
+            execution_id="exec-retained",
+            assignment_id="assignment-retained",
+            worker_id="worker-1",
+            fence=3,
+        )
+        self._put_active(active)
+        self.queues.put(
+            "thread-retained",
+            [_queued("thread-retained")],
+        )
+        self.worker_state = SimpleNamespace(
+            assignments=[
+                _assignment(
+                    assignment_id="assignment-retained",
+                    execution_id="exec-retained",
+                    status=AssignmentStatus.RUNNING,
+                    worker_id="worker-1",
+                    fence=3,
+                    lease_expires_at=NOW + 120,
+                    subject_kind="thread_bootstrap",
+                )
+            ],
+            workers=[
+                _worker(
+                    "worker-1",
+                    WorkerLifecycle.ACTIVE,
+                )
+            ],
+        )
+
+        report = await self.service.reconcile(
+            reason="queue-recovery",
+            actor_id="system:test",
+        )
+
+        self.assertEqual(report.requeued, 1)
+        self.assertIsNone(self.active.get("thread-retained"))
+        self.assertEqual(report.drain_thread_ids, ("thread-retained",))
+        record = self.recovery_store.get("thread-retained")
+        assert record is not None
+        self.assertEqual(
+            record.reason_code,
+            "retained_session_stale_turn_with_existing_queue",
+        )
 
     async def test_local_startup_resumes_persisted_live_assignment(self) -> None:
         active = _active(
