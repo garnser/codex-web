@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 import asyncio
+import threading
 from unittest.mock import AsyncMock, Mock
 
 from codex_web.agent_runtime import AgentRuntimeEvent
@@ -166,6 +167,65 @@ class AgentRuntimeDeliveryTests(unittest.IsolatedAsyncioTestCase):
         ))
         await self.settle()
         self.host._schedule_queue_drain.assert_not_called()
+
+
+class AgentRuntimeStorageOrderingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_slow_storage_does_not_block_loop_or_reorder_same_thread(self):
+        service = TurnExecutionService(SimpleNamespace(hub=SimpleNamespace(publish=AsyncMock())))
+        started = threading.Event()
+        release = threading.Event()
+        observed = []
+        main_thread = threading.get_ident()
+
+        def record(message):
+            self.assertNotEqual(threading.get_ident(), main_thread)
+            method = message["method"]
+            if method == "item/started":
+                started.set()
+                release.wait(timeout=2)
+            observed.append(method)
+
+        service.record_thread_activity = record
+        try:
+            service._publish_agent_runtime_message({"method": "item/started", "params": {"threadId": "owner"}})
+            service._publish_agent_runtime_message({"method": "turn/completed", "params": {"threadId": "owner"}})
+            self.assertTrue(await asyncio.to_thread(started.wait, 1))
+            await asyncio.sleep(0)
+            self.assertEqual(observed, [])
+        finally:
+            release.set()
+            for task in list(asyncio.all_tasks()):
+                if task.get_name().startswith("agent-runtime-notification-"):
+                    await task
+        self.assertEqual(observed, ["item/started", "turn/completed"])
+        await asyncio.sleep(0)
+        self.assertEqual(service.agent_runtime_notification_tasks, {})
+
+    async def test_unrelated_owner_can_progress_while_one_thread_storage_waits(self):
+        service = TurnExecutionService(SimpleNamespace(hub=SimpleNamespace(publish=AsyncMock())))
+        started = threading.Event()
+        release = threading.Event()
+        fast = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def record(message):
+            if message["params"]["threadId"] == "slow":
+                started.set()
+                release.wait(timeout=2)
+            else:
+                loop.call_soon_threadsafe(fast.set)
+
+        service.record_thread_activity = record
+        try:
+            for owner in ("slow", "fast"):
+                service._publish_agent_runtime_message({"method": "item/started", "params": {"threadId": owner}})
+            self.assertTrue(await asyncio.to_thread(started.wait, 1))
+            await asyncio.wait_for(fast.wait(), timeout=1)
+        finally:
+            release.set()
+            for task in list(asyncio.all_tasks()):
+                if task.get_name().startswith("agent-runtime-notification-"):
+                    await task
 
 
 if __name__ == "__main__":
