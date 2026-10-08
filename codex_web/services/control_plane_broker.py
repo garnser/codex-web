@@ -839,12 +839,22 @@ class ControlPlaneBrokerService:
             ),
             requested_by=requester_actor.identity_id,
         )
+        # Publishing, MR creation, and merging may include provider-side checks. Give
+        # those bounded operations enough time without letting the caller extend
+        # execution or retry authority. The lease also covers receipt recording.
+        extended_deadline = action_id in {
+            CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
+            CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+            CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
+        }
+        deadline = {"timeout_seconds": 120.0} if extended_deadline else {}
         intent = self.action_intents.create(
             ActionIntentCreate(
                 binding_id=binding.id,
                 request=request,
                 work_item_ref=assignment.work_item_ref,
                 execution_id=assignment.execution_id,
+                **deadline,
                 policy_decision=ActionDecisionSnapshot(
                     decision_id=f"assignment-policy-{uuid.uuid4().hex}",
                     outcome=ActionDecisionOutcome.ALLOW,
@@ -866,7 +876,10 @@ class ControlPlaneBrokerService:
         )
         worker_id = f"control-plane-broker:{assignment.assigned_worker_id or 'worker'}"
         claimed = self.action_intents.claim(
-            ActionIntentClaimRequest(worker_id=worker_id),
+            ActionIntentClaimRequest(
+                worker_id=worker_id,
+                **({"lease_seconds": 180} if extended_deadline else {}),
+            ),
             actor=worker_actor,
             intent_id=intent.id,
         )
