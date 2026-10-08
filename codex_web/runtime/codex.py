@@ -170,9 +170,9 @@ def trusted_local_codex_command(
 
 def request_timeout(method: str) -> float | None:
     if method == "initialize":
-        return 15
+        return 60
     if method in {"thread/list", "thread/read", "account/rateLimits/read"}:
-        return 10
+        return 60
     if method in {"thread/resume", "thread/start", "thread/name/set", "turn/start"}:
         return 60
     if method == "turn/interrupt":
@@ -758,7 +758,7 @@ class CodexRuntime:
             await self.start()
         elif not self.ready.is_set():
             try:
-                await asyncio.wait_for(self.ready.wait(), timeout=15)
+                await asyncio.wait_for(self.ready.wait(), timeout=60)
             except asyncio.TimeoutError:
                 if self.metrics:
                     self.metrics.increment("codex.readiness_timeouts")

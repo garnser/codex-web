@@ -391,10 +391,10 @@ test('selecting a Thread again retries a detail read that did not render', async
   const { reads } = await mockChatApi(page, { degradeFirstThreadRead: true });
   await page.goto('http://127.0.0.1:18766/projects/home/chat');
 
-  await page.locator('#threads .item-main').click({ force: true });
+  await page.locator('#threads .item-main', { hasText: 'Home thread' }).click({ force: true });
   await expect(page.locator('#messages')).toContainText('Thread temporarily unavailable');
 
-  await page.locator('#threads .item-main').click({ force: true });
+  await page.locator('#threads .item-main', { hasText: 'Home thread' }).click({ force: true });
   await expect(page.locator('#messages')).toContainText('Loaded home-thread');
   expect(reads).toEqual(['home-thread', 'home-thread']);
 });

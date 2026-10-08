@@ -180,8 +180,10 @@ class CodexRuntimeInstallationTests(unittest.TestCase):
         self.assertIs(host._codex_request_timeout, request_timeout)
 
     def test_request_timeout_contract_matches_runtime_expectations(self) -> None:
-        self.assertEqual(request_timeout("initialize"), 15)
-        self.assertEqual(request_timeout("thread/read"), 10)
+        self.assertEqual(request_timeout("initialize"), 60)
+        self.assertEqual(request_timeout("thread/read"), 60)
+        self.assertEqual(request_timeout("thread/list"), 60)
+        self.assertEqual(request_timeout("account/rateLimits/read"), 60)
         self.assertEqual(request_timeout("turn/start"), 60)
         self.assertEqual(request_timeout("turn/interrupt"), 10)
         self.assertEqual(request_timeout("unknown/method"), 20)
