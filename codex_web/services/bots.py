@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
+from fastapi import HTTPException
+
 from codex_web.identity import AuthenticationActor
 from codex_web.models import (
     BotBindingCreate,
@@ -241,6 +243,15 @@ class BotService:
         self.channels.invalidate(binding.project_id)
         await self.runtime.sync()
         return binding.model_dump()
+
+    async def delete_binding(self, binding_id: str) -> dict[str, Any]:
+        binding = self.bindings.by_id(binding_id)
+        if binding is None:
+            raise HTTPException(status_code=404, detail="bot binding not found")
+        self.binding_lifecycle.remove(binding_id)
+        self.channels.invalidate(binding.project_id)
+        await self.runtime.sync()
+        return {"ok": True, "bindingId": binding_id}
 
     async def inbound(
         self,

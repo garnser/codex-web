@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+from fastapi import HTTPException
 from codex_web.models import BotBinding
 from codex_web.services.bot_bindings import BotBindingLifecycleService
+from codex_web.services.bots import BotService
 
 
 def _binding(binding_id: str = "binding-1") -> BotBinding:
@@ -76,6 +79,34 @@ class BotBindingChangeEventTests(unittest.TestCase):
         self.assertEqual(events[0]["threadId"], "thread-1")
         self.assertEqual(events[0]["bindingId"], saved.id)
         self.assertTrue(events[0]["removed"])
+
+
+class BotBindingDeleteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_delete_binding_removes_and_syncs_runtime(self) -> None:
+        binding = _binding()
+        removed: list[str] = []
+        invalidated: list[str] = []
+        service = BotService.__new__(BotService)
+        service.bindings = SimpleNamespace(by_id=lambda binding_id: binding)
+        service.binding_lifecycle = SimpleNamespace(remove=removed.append)
+        service.channels = SimpleNamespace(invalidate=invalidated.append)
+        service.runtime = SimpleNamespace(sync=AsyncMock())
+
+        result = await service.delete_binding(binding.id)
+
+        self.assertEqual(result, {"ok": True, "bindingId": binding.id})
+        self.assertEqual(removed, [binding.id])
+        self.assertEqual(invalidated, [binding.project_id])
+        service.runtime.sync.assert_awaited_once_with()
+
+    async def test_delete_binding_rejects_unknown_id(self) -> None:
+        service = BotService.__new__(BotService)
+        service.bindings = SimpleNamespace(by_id=lambda _binding_id: None)
+
+        with self.assertRaises(HTTPException) as raised:
+            await service.delete_binding("missing")
+
+        self.assertEqual(raised.exception.status_code, 404)
 
 
 if __name__ == "__main__":

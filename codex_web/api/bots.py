@@ -36,6 +36,10 @@ def build_bots_router(service: BotService) -> APIRouter:
     async def create_binding(payload: BotBindingCreate) -> dict[str, Any]:
         return await service.create_binding(payload)
 
+    @router.delete("/api/bots/bindings/{binding_id}")
+    async def delete_binding(binding_id: str) -> dict[str, Any]:
+        return await service.delete_binding(binding_id)
+
     @router.post("/api/bots/inbound")
     async def inbound(payload: BotInboundMessage) -> dict[str, Any]:
         return await service.inbound(payload)
