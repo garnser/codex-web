@@ -689,6 +689,7 @@ class SkillService:
                 principal_kind=PrincipalKind.SERVICE,
                 organization_id=organization_id,
                 workspace_id=workspace_id,
+                assurance=AuthenticationAssurance.SERVICE_TOKEN,
                 service_scopes=(),
             )
             self.security.assert_allowed(
