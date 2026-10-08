@@ -3501,6 +3501,36 @@ class TurnExecutionService:
                 ),
             }
         )
+        # Existing-thread healing can bypass routing's ordinary quota probe.
+        # Cleanup above can also outlive its fresh account evidence. Refresh
+        # only expired operator evidence, immediately before canonical
+        # authentication preflight; never substitute transport readiness or
+        # an assumed authentication result for a real account response.
+        transport = getattr(h, "codex", None)
+        account_available = getattr(transport, "authenticated_account_available", None)
+        if (
+            runtime_binding.provider_id == "openai"
+            and runtime_binding.runtime_id == "codex"
+            and callable(account_available)
+            and not account_available()
+        ):
+            authentication_mode = runtime_binding.authentication_mode
+            if authentication_mode is None and previous_assignment_id:
+                # Repository drift may omit mode on the new runtime binding.
+                # Preserve the previous canonical mode instead of assuming
+                # an operator session for configured credential-backed work.
+                previous = await asyncio.to_thread(
+                    self._assignment_record, previous_assignment_id
+                )
+                previous_runtime = getattr(previous, "runtime_binding", None)
+                if (
+                    getattr(previous_runtime, "provider_id", None) == "openai"
+                    and getattr(previous_runtime, "runtime_id", None) == "codex"
+                ):
+                    authentication_mode = previous_runtime.authentication_mode
+            if authentication_mode == "trusted_local_session":
+                await transport.request("account/read", {"refreshToken": False})
+
         token = __import__("uuid").uuid4().hex
 
         def prepare_and_rebind():
