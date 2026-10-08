@@ -1581,6 +1581,8 @@ class ActionIntentService:
         intent: ActionIntent,
         payload: ActionIntentRetryRequest,
     ) -> ActionIntent:
+        if intent.attempt >= intent.retry_policy.max_attempts:
+            raise ActionIntentConflictError("action intent retry limit reached")
         not_before = time.time() + intent.retry_policy.backoff_seconds
 
         def apply(state):
@@ -1843,6 +1845,34 @@ class ActionIntentService:
             )
 
         if payload.retry_if_idempotent and intent.provider_idempotency_supported:
+            if intent.attempt >= intent.retry_policy.max_attempts:
+                error = (
+                    "reconciliation cannot requeue action: retry budget exhausted "
+                    f"({intent.attempt}/{intent.retry_policy.max_attempts}); "
+                    "confirm the provider outcome and create a newly authorized "
+                    "replacement ActionIntent if delivery is still required"
+                )
+                if latest_result is not None and latest_result.status == "failed":
+                    return self._set_status(
+                        intent.id,
+                        ActionIntentStatus.FAILED,
+                        error=error,
+                    )
+                return self._set_status(
+                    intent.id,
+                    ActionIntentStatus.REQUIRES_RECONCILIATION,
+                    error=error,
+                    failure=self._failure(
+                        intent,
+                        FailureReason.UNKNOWN_OUTCOME,
+                        summary=error,
+                        details={
+                            "retry_budget_exhausted": True,
+                            "attempt": intent.attempt,
+                            "max_attempts": intent.retry_policy.max_attempts,
+                        },
+                    ),
+                )
             return self._schedule_retry(
                 intent,
                 ActionIntentRetryRequest(
