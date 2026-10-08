@@ -41,6 +41,27 @@ class RealDistributedBackendTests(unittest.IsolatedAsyncioTestCase):
         self.postgres = self._store()
         self._clear_postgres_documents()
 
+    async def test_postgres_usage_point_reads_preserve_migration_without_catalog_scan(self) -> None:
+        from unittest.mock import patch
+        from codex_web.agent_runtime_usage import AgentRuntimeUsage, AGENT_RUNTIME_USAGE_STATE_CONTRACT
+        from codex_web.storage.agent_runtime_usage import AgentRuntimeUsageStore
+        usage = AgentRuntimeUsageStore(self.postgres)
+        record = AgentRuntimeUsage(id="usage-point", organization_id="org", workspace_id="ws",
+                                   provider_id="openai", runtime_id="codex", runtime_type="codex-app-server")
+        self.postgres.put(usage.namespace, {"schema_version": AGENT_RUNTIME_USAGE_STATE_CONTRACT.current,
+                                           "records": [record.model_dump(mode="json")]})
+        self.assertEqual(usage.get(record.id), record)
+        self.assertIsNone(self.postgres.document_get(usage.namespace))
+        with patch.object(self.postgres, "get", side_effect=AssertionError("catalog get")), \
+             patch.object(self.postgres, "record_items", side_effect=AssertionError("catalog enumeration")), \
+             patch.object(self.postgres, "record_replace", side_effect=AssertionError("collection replacement")):
+            self.assertEqual(usage.get(record.id), record)
+            usage.upsert(record.model_copy(update={"input_tokens": 11}))
+            self.assertEqual(usage.get(record.id).input_tokens, 11)
+            self.assertIsNone(usage.get("absent"))
+            with self.assertRaisesRegex(RuntimeError, "another tenant"):
+                usage.upsert(record.model_copy(update={"workspace_id": "other"}))
+
     def _clear_postgres_documents(self) -> None:
         for namespace in tuple(self.postgres.documents()):
             self.postgres.delete(namespace)
