@@ -72,15 +72,15 @@
       const status = entry.status || "unknown";
       const pending = bindingControls.pending.has(binding.id);
       const refreshRequired = bindingControls.refreshRequired.has(binding.id);
-      const nextAction = binding.enabled ? "Disable" : "Enable";
-      const buttonLabel = pending ? "Updating…" : (refreshRequired ? "Refresh required" : nextAction);
+      const next = binding.enabled ? "Disable" : "Enable";
+      const buttonLabel = pending ? "Updating…" : (refreshRequired ? "Refresh required" : next);
       return `<div class="comm-entry" ${referenceAttributes("action_provider", binding.id)} ${pending ? 'aria-busy="true"' : ""}>
         <strong>${escapeHtml(binding.provider_type)}/${escapeHtml(binding.provider_instance)} · ${escapeHtml(status)}</strong>
         <small>Binding: ${escapeHtml(binding.id)} · Enabled: ${binding.enabled ? "yes" : "no"} · Tenant: ${escapeHtml(binding.organization_id)}/${escapeHtml(binding.workspace_id)}</small>
         <small>Project scope: ${escapeHtml(projectText(binding.project_id, state.projects))} · Resources: ${escapeHtml(resourceText(binding.resource_ids, state.resources))}</small>
         <small>Credential reference: ${secretLinks([binding.credential_ref])} · ${actions.length} action(s) advertised</small>
         <div class="action-provider-binding-actions">
-          <button type="button" class="ghost-button" data-action-provider-toggle="${escapeHtml(binding.id)}" ${pending || refreshRequired ? "disabled" : ""} aria-label="${escapeHtml(refreshRequired ? "Refresh required for" : nextAction)} ActionProvider binding ${binding.id}">${buttonLabel}</button>
+          <button type="button" class="ghost-button" data-action-provider-toggle="${escapeHtml(binding.id)}" ${pending || refreshRequired ? "disabled" : ""} aria-label="${escapeHtml(refreshRequired ? "Refresh required for" : next)} ActionProvider binding ${escapeHtml(binding.id)}">${buttonLabel}</button>
         </div>
         ${renderSecurity(binding.security_policy)}
         ${actions.length ? actions.map(renderAction).join("") : '<small>No action contracts currently available from this binding.</small>'}
