@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -58,7 +59,10 @@ class ThreadHistoryProjectionTests(unittest.IsolatedAsyncioTestCase):
             runtime_id="codex-cli",
             created_at=10.0,
         )
-        service = TurnExecutionService(object(), thread_history=self.history)
+        service = TurnExecutionService(
+            SimpleNamespace(_load_active_turns=lambda: {}),
+            thread_history=self.history,
+        )
         service.record_agent_runtime_event(
             "thread-web",
             AgentRuntimeEvent(

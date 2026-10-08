@@ -161,6 +161,7 @@ class _ProjectionHost:
                 status = "status::awaiting confirmation"
             states[external_id] = WorkItemState(
                 ref=external_id,
+                kind="issue",
                 organization_id=SCOPE.organization_id,
                 workspace_id=SCOPE.workspace_id,
                 project_id=PROJECT_ID,

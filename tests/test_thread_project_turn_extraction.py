@@ -53,7 +53,7 @@ class ThreadProjectTurnExtractionTests(unittest.TestCase):
         )
         self.assertIs(
             core._raise_if_thread_replaced.__self__,
-            application.app.state.thread_recovery_compatibility_service,
+            application.thread_recovery_service,
         )
         self.assertIs(
             core._thread_run_settings.__self__,
