@@ -248,7 +248,7 @@ class CodexRuntime:
 
         self.proc = None
         self.ready.clear()
-        tasks = (self.reader_task, self.stderr_task)
+        tasks = (self.reader_task, self.stderr_task, getattr(self, "notification_task", None))
         for task in tasks:
             if task and not task.done():
                 task.cancel()
@@ -258,6 +258,8 @@ class CodexRuntime:
                     await task
         self.reader_task = None
         self.stderr_task = None
+        self.notification_task = None
+        self.notification_queue = None
         pipe_executor = self._pipe_executor
         self._pipe_executor = None
         if pipe_executor is not None:
@@ -345,7 +347,47 @@ class CodexRuntime:
                 await self.host.hub.publish({"type": "codex.raw", "text": line.rstrip("\n")})
                 continue
 
-            await self._handle_message_safely(message)
+            await self._dispatch_message(message)
+
+    async def _dispatch_message(self, message: dict[str, Any]) -> None:
+        if message.get("id") is not None and "method" not in message:
+            await CodexRuntime._handle_message_safely(self, message)
+            return
+        queue = getattr(self, "notification_queue", None)
+        if queue is None:
+            queue = self.notification_queue = asyncio.Queue(maxsize=1024)
+            self.notification_task = asyncio.create_task(
+                self._process_notifications(queue), name="codex-app-server-notifications"
+            )
+        # Adjacent chunks for the same native item are one ordered display
+        # update. Retain every character without filling the bounded queue
+        # with one entry per token and holding RPC responses behind it.
+        if message.get("method") in {
+            "item/agentMessage/delta", "item/reasoning/textDelta",
+            "item/reasoning/summaryTextDelta", "item/commandExecution/outputDelta",
+            "item/fileChange/outputDelta",
+        } and queue._queue:
+            previous = queue._queue[-1]
+            params = message.get("params") or {}
+            prior = previous.get("params") or {}
+            if (previous.get("method") == message.get("method")
+                and isinstance(params.get("delta"), str)
+                and isinstance(prior.get("delta"), str)
+                and {k: v for k, v in params.items() if k != "delta"}
+                    == {k: v for k, v in prior.items() if k != "delta"}):
+                prior["delta"] += params["delta"]
+                return
+        await queue.put(message)
+
+    async def _process_notifications(self, queue: asyncio.Queue) -> None:
+        # Preserve notification order without holding RPC responses behind
+        # durable projections, accounting, or Slack delivery.
+        while True:
+            message = await queue.get()
+            try:
+                await CodexRuntime._handle_message_safely(self, message)
+            finally:
+                queue.task_done()
 
     async def _handle_message_safely(self, message: dict[str, Any]) -> None:
         try:
@@ -460,10 +502,21 @@ class CodexRuntime:
         # Activity projection reads and updates durable runtime state. Keep
         # that work off the app-server reader's event loop so a large state
         # catalog cannot stall RPC responses and HTTP readiness together.
-        await asyncio.to_thread(self.host._record_thread_activity, message)
         method = message.get("method")
         params = message.get("params") or {}
         thread_id = params.get("threadId") or (params.get("turn") or {}).get("threadId")
+        stream_times = getattr(self, "stream_activity_at", None)
+        if stream_times is None:
+            stream_times = self.stream_activity_at = {}
+        display_chunk = method in {
+            "item/agentMessage/delta", "item/reasoning/textDelta",
+            "item/reasoning/summaryTextDelta", "item/commandExecution/outputDelta",
+            "item/fileChange/outputDelta",
+        }
+        now = time.monotonic()
+        if not display_chunk or now - stream_times.get(thread_id, 0) >= 5:
+            await asyncio.to_thread(self.host._record_thread_activity, message)
+            stream_times[thread_id] = now
         terminal_recovery_scheduled = self.host._record_terminal_turn_result(message)
 
         if method == "thread/name/updated":
@@ -566,6 +619,12 @@ class CodexRuntime:
                             "request_id": message_id,
                         }
                     )
+            elif method == "account/rateLimits/read" and self.ready.is_set():
+                # Quota is an optional observation. A slow quota response does
+                # not prove the authenticated transport has died; retiring it
+                # here also prevents otherwise healthy workers bootstrapping.
+                if self.metrics:
+                    self.metrics.increment("codex.quota_probe_timeout_preserved")
             elif self.restart_on_timeout:
                 # A live process is insufficient evidence of a live JSON-RPC
                 # transport. Invalidate this generation and start its

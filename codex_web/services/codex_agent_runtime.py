@@ -94,6 +94,13 @@ class CodexAgentRuntimeAdapter:
         else:
             # Older compatible hubs retain the callback's existing type gate.
             hub.subscribe(project)
+        filter_messages = getattr(hub, "filter_listener_messages", None)
+        if callable(filter_messages):
+            filter_messages(project, excluded_methods=(
+                "item/agentMessage/delta", "item/reasoning/textDelta",
+                "item/reasoning/summaryTextDelta", "item/commandExecution/outputDelta",
+                "item/fileChange/outputDelta",
+            ))
 
         def unsubscribe() -> None:
             hub.unsubscribe(project)

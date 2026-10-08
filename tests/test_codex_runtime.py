@@ -274,6 +274,53 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.stop.assert_awaited_once()
         self.assertEqual(self.runtime.ensure_started.await_count, 2)
 
+    async def test_slow_notification_does_not_block_rpc_response(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        def slow_projection(_message):
+            entered.set()
+            release.wait(timeout=2)
+        self.host._record_thread_activity = slow_projection
+        response = asyncio.get_running_loop().create_future()
+        self.runtime.pending[7] = response
+        try:
+            await self.runtime._dispatch_message({"method": "thread/status/changed", "params": {}})
+            self.assertTrue(await asyncio.to_thread(entered.wait, 0.5))
+            await asyncio.wait_for(self.runtime._dispatch_message({"id": 7, "result": {"ok": True}}), 0.5)
+            self.assertEqual(await response, {"ok": True})
+        finally:
+            release.set()
+            await self.runtime.notification_queue.join()
+            self.runtime.notification_task.cancel()
+            await asyncio.gather(self.runtime.notification_task, return_exceptions=True)
+
+    async def test_adjacent_stream_chunks_coalesce_without_losing_text(self) -> None:
+        for text in ("Hello", " ", "world"):
+            await self.runtime._dispatch_message({"method": "item/agentMessage/delta",
+                "params": {"threadId": "t1", "itemId": "i1", "delta": text}})
+        self.assertEqual(self.runtime.notification_queue.qsize(), 1)
+        message = self.runtime.notification_queue.get_nowait()
+        self.assertEqual(message["params"]["delta"], "Hello world")
+        self.runtime.notification_queue.task_done()
+        self.runtime.notification_task.cancel()
+        await asyncio.gather(self.runtime.notification_task, return_exceptions=True)
+
+    async def test_quota_timeout_preserves_authenticated_process_generation(self) -> None:
+        self.runtime.proc = SimpleNamespace(poll=lambda: None)
+        self.runtime.ready.set()
+        self.runtime.ensure_started = AsyncMock()
+        self.runtime._send = AsyncMock()
+        self.runtime.stop = AsyncMock()
+
+        with patch("codex_web.runtime.codex.request_timeout", return_value=0.001):
+            with self.assertRaises(HTTPException) as caught:
+                await self.runtime.request("account/rateLimits/read", {})
+
+        self.assertEqual(caught.exception.status_code, 504)
+        self.assertTrue(self.runtime.ready.is_set())
+        self.runtime.stop.assert_not_awaited()
+        self.assertEqual(self.runtime.ensure_started.await_count, 1)
+
     async def test_rpc_timeout_preserves_nonrestartable_process_generation(self) -> None:
         runtime = CodexRuntime(self.host, restart_on_timeout=False)
         runtime.proc = SimpleNamespace(poll=lambda: None)
