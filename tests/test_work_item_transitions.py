@@ -211,6 +211,28 @@ class WorkItemStateMachineTransitionTests(unittest.TestCase):
         self.assertEqual(persisted.terminal_outcome, "cancelled")
         self.assertIsNotNone(persisted.closed_at)
 
+    def test_merged_artifact_close_overrides_recoverable_failed_outcome(self) -> None:
+        self.state.current_stage = "failed_with_action_owner"
+        self.state.terminal_outcome = None
+        self.host.states[self.state.ref] = self.state.model_copy(deep=True)
+
+        result = self.machine._structured_progress(
+            self.state.ref,
+            WorkItemProgressUpdate(
+                actor="orchestrator",
+                current_stage="closed",
+                artifact_state="merged_main",
+            ),
+        )
+
+        self.assertEqual(result.current_stage, "closed")
+        self.assertEqual(result.artifact_state, "merged_main")
+        self.assertEqual(result.terminal_outcome, "completed")
+        self.assertEqual(
+            self.host.states[self.state.ref].terminal_outcome,
+            "completed",
+        )
+
 
 class WorkItemServiceCompatibilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_lightweight_override_keeps_historical_mutation_path(self) -> None:

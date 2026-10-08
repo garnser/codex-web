@@ -628,6 +628,13 @@ class WorkItemStateMachine:
                 artifact_state,
                 fallback=state.artifact_state,
             )
+        if (
+            state.current_stage == "closed"
+            and state.artifact_state in {"merged_main", "tag_pipeline"}
+        ):
+            # A governed merged artifact is positive terminal evidence even
+            # when the item was closed directly from a recoverable failed lane.
+            state.terminal_outcome = "completed"
         if state.current_stage == "closed":
             state = self._normalize_closed_work_item_state(
                 state,
