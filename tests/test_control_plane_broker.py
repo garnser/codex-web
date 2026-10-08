@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -1067,6 +1068,93 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                             requester_actor=actor, operation=operation,
                             payload={"parameters": parameters, override: 3600},
                         )
+
+    async def test_repository_intent_catalog_calls_do_not_block_event_loop(self) -> None:
+        context = ContextVar("broker_request_context")
+        marker = object()
+        loop_thread = threading.get_ident()
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "repository-write",
+            "execution_workspace_id": "workspace-a",
+            "resource_ids": ("repository-a",),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default",
+                project_id="project-a", writable_repository_ids=("repository-a",),
+                source=RepositoryTargetSource.SINGLE_REPOSITORY,
+                source_ref="repository-a",
+            ),
+        })
+        actor = self.identity.actor_for_identity(assignment.created_by, scope=self.scope)
+
+        for blocked_call in ("create", "claim", "get"):
+            with self.subTest(blocked_call=blocked_call):
+                entered = threading.Event()
+                release = threading.Event()
+                calls = []
+                observations = []
+                timed_out = []
+
+                class BlockingIntents(_ExecutingActionIntents):
+                    def observe(inner, name, call_actor):
+                        calls.append(name)
+                        observations.append((name, threading.get_ident(), context.get(), call_actor))
+                        if name == blocked_call:
+                            entered.set()
+                            if not release.wait(timeout=2):
+                                timed_out.append(name)
+
+                    def create(inner, payload, *, actor):
+                        inner.observe("create", actor)
+                        return super().create(payload, actor=actor)
+
+                    def claim(inner, payload, *, actor, intent_id):
+                        inner.observe("claim", actor)
+                        result = super().claim(payload, actor=actor, intent_id=intent_id)
+                        return None if blocked_call == "get" else result
+
+                    def get(inner, intent_id, actor):
+                        inner.observe("get", actor)
+                        return SimpleNamespace(model_dump=lambda mode: {
+                            "id": intent_id, "status": "succeeded",
+                        })
+
+                    async def execute_claimed(inner, intent_id, worker_id, *, actor):
+                        calls.append("execute")
+                        return await super().execute_claimed(intent_id, worker_id, actor=actor)
+
+                intents = BlockingIntents(_ActionRegistry("gitlab"))
+                service = ControlPlaneBrokerService(
+                    identity=self.identity, authority=self.authority,
+                    work_items=self.work_items, operator=_Operator(),
+                    audit=ControlPlaneBrokerAuditStore(self.sqlite), action_intents=intents,
+                )
+                operation = service._resolve_operation(
+                    "POST", "/api/repository-actions/pull-request/merge"
+                ).operation
+                token = context.set(marker)
+                task = asyncio.create_task(service._execute_repository_action(
+                    assignment=assignment, worker_actor=self.worker_actor,
+                    requester_actor=actor, operation=operation,
+                    payload={"parameters": {"pull_request_number": 33,
+                        "expected_head_sha": "a" * 40}},
+                ))
+                try:
+                    self.assertTrue(await asyncio.to_thread(entered.wait, 3))
+                    # This checkpoint must run while the catalog call is still
+                    # waiting at its barrier; no latency threshold is involved.
+                    await asyncio.sleep(0)
+                    self.assertFalse(task.done())
+                    self.assertEqual(timed_out, [])
+                finally:
+                    release.set()
+                    result = await task
+                    context.reset(token)
+                self.assertEqual(result["item"]["status"], "succeeded")
+                self.assertEqual(calls, ["create", "claim", "get" if blocked_call == "get" else "execute"])
+                for name, thread, value, call_actor in observations:
+                    self.assertNotEqual(thread, loop_thread)
+                    self.assertIs(value, marker)
+                    self.assertIs(call_actor, self.worker_actor if name == "claim" else actor)
 
     def test_repository_binding_resolution_fails_closed_when_ambiguous(self) -> None:
         registry = _ActionRegistry()

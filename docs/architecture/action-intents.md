@@ -29,6 +29,12 @@ their ActionIntent defaults. These bounds are selected by the broker operation;
 callers cannot override either value. Timeout uncertainty and retry authority
 remain unchanged.
 
+The async repository broker offloads synchronous intent creation, claim, and
+fallback lookup to worker threads so catalog and store reads do not block the
+control-plane event loop. Calls retain sequential ordering, propagated request
+context and actors, and the canonical service transaction and authority guards;
+claimed execution still uses the asynchronous ActionIntent executor.
+
 ## Outbox lifecycle
 
 The primary states are:
