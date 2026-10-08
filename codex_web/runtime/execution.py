@@ -5,6 +5,7 @@ import contextlib
 import json
 import os
 import time
+import weakref
 from collections import deque
 from typing import Any, Callable, Mapping
 
@@ -168,11 +169,15 @@ class TurnExecutionService:
         self.work_item_outcome_recorder = work_item_outcome_recorder
         self.thread_history = thread_history
         self.turn_start_lock = asyncio.Lock()
+        self._turn_start_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
         self.queue_drain_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
         self.assignment_completion_tasks: dict[str, asyncio.Task[None]] = {}
         self.thread_completion_tasks: dict[str, asyncio.Task[None]] = {}
         self.thread_handoffs: set[str] = set()
+        self.activity_heartbeat_at: dict[str, float] = {}
         self.terminal_failures: dict[str, deque[tuple[float, str]]] = {}
         self.last_inputs: dict[str, dict[str, Any]] = {}
 
@@ -948,6 +953,10 @@ class TurnExecutionService:
         method: str,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if method == "turn/interrupt" and not (params or {}).get("turnId"):
+            active = await asyncio.to_thread(self._active_turn, thread_id)
+            if active is not None and active.turn_id:
+                params = {**(params or {}), "turnId": active.turn_id}
         resolved = await asyncio.to_thread(
             self._assignment_session_for_thread,
             thread_id,
@@ -1108,6 +1117,7 @@ class TurnExecutionService:
             last_resume_at=current.last_resume_at if current else None,
         )
         self._save_active_turn(active)
+        self.activity_heartbeat_at[thread_id] = now
 
     def clear_thread_active(self, thread_id: str | None, turn_id: str | None = None) -> None:
         if not thread_id:
@@ -1119,6 +1129,7 @@ class TurnExecutionService:
         if active and turn_id and active.turn_id and active.turn_id != turn_id:
             return
         if active and self._delete_active_turn(thread_id):
+            self.activity_heartbeat_at.pop(thread_id, None)
             if not getattr(h, "IS_SHUTTING_DOWN", False) and h._autonomy_enabled():
                 h._schedule_native_recovery_cycles(reason="thread-became-idle")
 
@@ -1457,6 +1468,12 @@ class TurnExecutionService:
         params = message.get("params") or {}
         thread_id = params.get("threadId") or (params.get("turn") or {}).get("threadId")
         turn_id = params.get("turnId") or (params.get("turn") or {}).get("id")
+        if method in {
+            "item/agentMessage/delta", "item/reasoning/textDelta",
+            "item/reasoning/summaryTextDelta", "item/commandExecution/outputDelta",
+            "item/fileChange/outputDelta",
+        } and time.time() - self.activity_heartbeat_at.get(thread_id, 0) < 5:
+            return
         if method in {"turn/started", "item/started"}:
             self.mark_thread_active(thread_id, turn_id=turn_id)
         elif method in {"turn/completed", "turn/failed"}:
@@ -1572,8 +1589,16 @@ class TurnExecutionService:
         )
         trusted_local_codex_session = False
 
-        async with self.turn_start_lock:
-            if self.thread_is_active(thread_id):
+        # Admission remains serialized within a thread. Independent isolated
+        # threads must not wait behind another thread's provider RPC/bootstrap.
+        start_lock = self._turn_start_locks.get(thread_id)
+        if start_lock is None:
+            start_lock = asyncio.Lock()
+            self._turn_start_locks[thread_id] = start_lock
+        async with start_lock:
+            if self.thread_is_active(thread_id) and not (
+                preserve_active_handoff and self.thread_handoff_in_progress(thread_id)
+            ):
                 raise HTTPException(
                     status_code=409,
                     detail={
@@ -2205,7 +2230,8 @@ class TurnExecutionService:
                         },
                     )
                 try:
-                    skill_context_selection = self.skill_context_resolver(
+                    skill_context_selection = await asyncio.to_thread(
+                        self.skill_context_resolver,
                         effective_skill_refs,
                         project,
                         message,

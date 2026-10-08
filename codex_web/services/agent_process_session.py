@@ -6,6 +6,7 @@ import socket
 import subprocess
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -918,9 +919,17 @@ class AssignmentBoundAgentProcessSessionManager:
         self.runtime_binding = runtime_binding
         self.sessions: dict[str, AssignmentBoundAgentProcessSession] = {}
         self._lock = asyncio.Lock()
+        self._assignment_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+
+    def _assignment_lock(self, assignment_id: str) -> asyncio.Lock:
+        lock = self._assignment_locks.get(assignment_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._assignment_locks[assignment_id] = lock
+        return lock
 
     async def start(self, assignment_id: str) -> AssignmentBoundAgentProcessSession:
-        async with self._lock:
+        async with self._assignment_lock(assignment_id):
             existing = self.sessions.get(assignment_id)
             if existing is not None:
                 status = existing.status()
@@ -1009,15 +1018,12 @@ class AssignmentBoundAgentProcessSessionManager:
         return completed
 
     async def stop(self, assignment_id: str) -> None:
-        async with self._lock:
+        async with self._assignment_lock(assignment_id):
             session = self.sessions.pop(assignment_id, None)
-        if session is not None:
-            await session.stop()
+            if session is not None:
+                await session.stop()
 
     async def stop_all(self) -> None:
-        async with self._lock:
-            sessions = list(self.sessions.values())
-            self.sessions.clear()
-        for session in sessions:
+        for assignment_id in set(self.sessions) | set(self._assignment_locks):
             with contextlib.suppress(Exception):
-                await session.stop()
+                await self.stop(assignment_id)

@@ -3622,6 +3622,7 @@ bot_event_dispatch_service = BotEventDispatchService(
     publish_event=event_hub.publish,
     binding_name=thread_recovery_service.logical_binding_name,
     agent_profile_resolver=_agent_profile_for_bot_binding,
+    execution_profiles=execution_profile_definition_service,
 )
 bot_event_dispatch_compatibility = (
     BotEventDispatchCompatibilityFacade(core)
@@ -4537,6 +4538,9 @@ previous_context_service = getattr(app.state, "context_compaction_service", None
 if previous_context_service is not None:
     event_hub.unsubscribe(previous_context_service.observe)
 event_hub.subscribe_filtered(context_service.observe, event_types=("codex.event",))
+event_hub.filter_listener_messages(context_service.observe, methods=(
+    "thread/tokenUsage/updated", "thread/status/changed", "turn/completed", "turn/failed",
+))
 app.state.context_compaction_service = context_service
 
 def _include_domain_router(router) -> int:

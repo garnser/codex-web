@@ -26,6 +26,7 @@ class EventHub:
         self._senders: dict[WebSocket, asyncio.Task[None]] = {}
         self._listeners: set[EventListener] = set()
         self._listener_event_types: dict[EventListener, frozenset[str]] = {}
+        self._listener_message_filters: dict[EventListener, tuple[frozenset[str] | None, frozenset[str]]] = {}
         self._metrics: RuntimeMetrics | None = None
         self._stream_id = uuid.uuid4().hex
         self._sequence = 0
@@ -70,6 +71,7 @@ class EventHub:
     def subscribe(self, listener: EventListener) -> None:
         self._listeners.add(listener)
         self._listener_event_types.pop(listener, None)
+        self._listener_message_filters.pop(listener, None)
 
     def subscribe_filtered(
         self,
@@ -84,6 +86,16 @@ class EventHub:
     def unsubscribe(self, listener: EventListener) -> None:
         self._listeners.discard(listener)
         self._listener_event_types.pop(listener, None)
+        self._listener_message_filters.pop(listener, None)
+
+    def filter_listener_messages(
+        self, listener: EventListener, *, methods: Iterable[str] | None = None,
+        excluded_methods: Iterable[str] = (),
+    ) -> None:
+        self._listener_message_filters[listener] = (
+            frozenset(methods) if methods is not None else None,
+            frozenset(excluded_methods),
+        )
 
     async def _sender(self, websocket: WebSocket, queue: asyncio.Queue[dict[str, Any]]) -> None:
         try:
@@ -138,6 +150,15 @@ class EventHub:
                 event_types = self._listener_event_types.get(listener)
                 if event_types is not None and event.get("type") not in event_types:
                     continue
+                message_filter = self._listener_message_filters.get(listener)
+                if message_filter is not None:
+                    message = event.get("message")
+                    method = message.get("method") if isinstance(message, dict) else None
+                    if not isinstance(method, str):
+                        method = None
+                    allowed, excluded = message_filter
+                    if method in excluded or (allowed is not None and method not in allowed):
+                        continue
                 try:
                     await asyncio.to_thread(listener, event)
                 except Exception as exc:

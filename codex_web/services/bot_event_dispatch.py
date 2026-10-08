@@ -40,6 +40,7 @@ class BotEventDispatchService:
         binding_name: Callable[[BotBinding], str],
         agent_profile_resolver: Callable[[BotBinding], tuple[Any, Any] | None]
         | None = None,
+        execution_profiles: Any | None = None,
     ) -> None:
         self.projects = projects
         self.settings = settings
@@ -53,6 +54,7 @@ class BotEventDispatchService:
         self.publish_event = publish_event
         self.binding_name = binding_name
         self.agent_profile_resolver = agent_profile_resolver
+        self.execution_profiles = execution_profiles
 
     @staticmethod
     def recent_activity_grace_seconds() -> float:
@@ -172,7 +174,7 @@ class BotEventDispatchService:
         effective_reasoning_effort = settings.reasoning_effort
         reply_target = self.targets.conversation_target(binding)
         profile_context = (
-            self.agent_profile_resolver(binding)
+            await asyncio.to_thread(self.agent_profile_resolver, binding)
             if self.agent_profile_resolver is not None
             else None
         )
@@ -189,6 +191,22 @@ class BotEventDispatchService:
             "agent_profile_revision": getattr(agent_profile, "revision", None),
             "agent_profile_actor_id": getattr(profile_actor, "identity_id", None),
         }
+        # A task's repository is context, not a grant of repository access to
+        # its recipient. Resolve the published execution contract before either
+        # queueing or starting the event so scratch-only agents retain their scope.
+        if self.execution_profiles is not None:
+            execution_profile, _ = await asyncio.to_thread(
+                self.execution_profiles.resolve,
+                profile_kwargs["execution_profile_id"]
+                or getattr(settings, "execution_profile_id", None),
+                organization_id=project.organization_id,
+                workspace_id=project.workspace_id,
+                project_id=project.id,
+            )
+            if execution_profile.repository_access == "none":
+                repository_resource_id = None
+                writable_repository_resource_ids = ()
+                read_only_repository_resource_ids = ()
 
         async def queue_turn(
             event_type: str,
