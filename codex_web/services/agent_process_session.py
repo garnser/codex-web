@@ -720,7 +720,13 @@ class AssignmentBoundAgentProcessSession:
                 await self._stop_runtime_from_watchdog()
                 return
 
-    def _record_unexpected_process_exit(self) -> None:
+    def _record_runtime_failure(
+        self,
+        *,
+        failure_code: str,
+        failure_message: str,
+        release_reason: str,
+    ) -> None:
         try:
             assignment = self._current_assignment()
         except Exception:
@@ -740,8 +746,8 @@ class AssignmentBoundAgentProcessSession:
                     lease_token=lease.lease_token,
                     fence=assignment.fence,
                     succeeded=False,
-                    failure_code="agent_runtime_process_exited",
-                    failure_message="assignment-bound agent runtime process exited",
+                    failure_code=failure_code,
+                    failure_message=failure_message,
                 ),
                 actor=self.local_worker.worker_actor,
             )
@@ -753,10 +759,17 @@ class AssignmentBoundAgentProcessSession:
                     assignment.execution_workspace_id,
                     ExecutionWorkspaceRelease(
                         discard=False,
-                        reason="agent runtime process exited",
+                        reason=release_reason,
                     ),
                     actor=self.local_worker.worker_actor,
                 )
+
+    def _record_unexpected_process_exit(self) -> None:
+        self._record_runtime_failure(
+            failure_code="agent_runtime_process_exited",
+            failure_message="assignment-bound agent runtime process exited",
+            release_reason="agent runtime process exited",
+        )
 
     async def _stop_runtime_from_watchdog(self) -> None:
         self._stopping = True
@@ -772,7 +785,24 @@ class AssignmentBoundAgentProcessSession:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session is not started"
             )
-        return await self.runtime.request(method, params)
+        try:
+            return await self.runtime.request(method, params)
+        except Exception as exc:
+            # Assignment runtimes intentionally use a one-shot authenticated
+            # process and cannot be restarted in place. A transport timeout
+            # therefore makes this fenced assignment unusable even when its
+            # process is still alive. Retire it immediately so recovery can
+            # claim the preserved queue with a fresh process and lease.
+            if getattr(exc, "status_code", None) == 504:
+                self.last_error = f"agent runtime RPC timed out: {method}"
+                await asyncio.to_thread(
+                    self._record_runtime_failure,
+                    failure_code="agent_runtime_rpc_timeout",
+                    failure_message=self.last_error,
+                    release_reason="agent runtime RPC timed out",
+                )
+                await self.stop()
+            raise
 
     async def notify(self, method: str, params: Any = None) -> None:
         await asyncio.to_thread(self.validate_current)

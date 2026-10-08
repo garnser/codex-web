@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from fastapi import HTTPException
+
 from codex_web.execution_workers import (
     AssignmentClaimRequest,
     AssignmentStartRequest,
@@ -296,6 +298,7 @@ class _FakeCodexRuntime:
         self.restart_on_timeout = True
         self.ready = asyncio.Event()
         self.requests = []
+        self.request_error = None
 
     async def start(self) -> None:
         self.proc = self._popen(
@@ -316,6 +319,8 @@ class _FakeCodexRuntime:
 
     async def request(self, method, params=None):
         self.requests.append((method, params))
+        if self.request_error is not None:
+            raise self.request_error
         return {"method": method, "params": params}
 
     async def notify(self, method, params=None) -> None:
@@ -982,6 +987,25 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
             "agent_runtime_process_exited",
         )
         self.assertIn("process exited", session.last_error)
+
+    async def test_rpc_timeout_retires_one_shot_assignment(self) -> None:
+        assignment = self._create_assignment()
+        session = await self._session(assignment)
+        session.runtime.request_error = HTTPException(
+            status_code=504,
+            detail="turn/interrupt timed out after 10s",
+        )
+
+        with self.assertRaises(HTTPException) as raised:
+            await session.request("turn/interrupt", {"threadId": "thread-1"})
+
+        self.assertEqual(raised.exception.status_code, 504)
+        current = self.worker_service.store.assignment(assignment.id)
+        self.assertEqual(current.status, AssignmentStatus.FAILED)
+        self.assertIsNone(current.lease)
+        self.assertEqual(current.failure_code, "agent_runtime_rpc_timeout")
+        self.assertTrue(self.backend.processes[0].terminated)
+        self.assertFalse(session.runtime.ready.is_set())
 
     async def test_watchdog_terminates_when_worker_is_quarantined(self) -> None:
         assignment = self._create_assignment()
