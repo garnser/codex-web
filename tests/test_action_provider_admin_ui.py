@@ -10,7 +10,10 @@ ROOT = Path(__file__).resolve().parents[1]
 class ActionProviderAdminUiTests(unittest.TestCase):
     def test_action_provider_browser_exposes_contracts_without_preparing_or_executing(self) -> None:
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        javascript = (ROOT / "static" / "action_provider_admin.js").read_text(encoding="utf-8")
+        javascript = "\n".join(
+            (ROOT / "static" / name).read_text(encoding="utf-8")
+            for name in ("action_provider_admin.js", "action_provider_binding_controls.js")
+        )
 
         self.assertIn('id="action-provider-list"', html)
         self.assertIn('apiRequest("/api/action-providers")', javascript)
@@ -29,6 +32,15 @@ class ActionProviderAdminUiTests(unittest.TestCase):
         self.assertIn("allowed_read_roots", javascript)
         self.assertIn("allowed_executables", javascript)
         self.assertIn("does not prepare or execute actions", javascript)
+        self.assertIn('method: "PATCH"', javascript)
+        self.assertIn("data-action-provider-toggle", javascript)
+        self.assertIn("confirmAction", javascript)
+        self.assertIn("bindingTarget", javascript)
+        self.assertIn("Administrator MFA or scoped service authority", javascript)
+        self.assertIn("Binding missing", javascript)
+        self.assertIn("Conflict:", javascript)
+        self.assertIn("Update outcome unknown", javascript)
+        self.assertIn("Canonical enabled state", javascript)
         self.assertNotIn("/prepare", javascript)
         self.assertNotIn("/execute", javascript)
 

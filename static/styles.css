@@ -1122,6 +1122,20 @@ select {
   color: var(--muted);
 }
 
+.action-provider-binding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.action-provider-binding-actions button {
+  min-height: 44px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .developer-card pre,
 .comm-log {
   margin: 0;
@@ -1879,6 +1893,10 @@ menu {
 
   .developer-grid {
     grid-template-columns: 1fr;
+  }
+
+  .action-provider-binding-actions button {
+    width: 100%;
   }
 
   .comm-row {
