@@ -271,6 +271,56 @@ class ExecutionWorkerStore:
             else None
         )
 
+    def update_worker(
+        self,
+        worker_id: str,
+        updater: Callable[[ExecutionWorkerState], ExecutionWorkerState],
+    ) -> ExecutionWorkerState:
+        """Mutate one current worker without scanning retained runtime history."""
+        with self._lock:
+            self._ensure_records()
+            result: list[ExecutionWorkerState] = []
+
+            def apply(raw: Any) -> Any:
+                current = ExecutionWorker.model_validate(raw) if raw is not None else None
+                state = ExecutionWorkerState(workers=[current] if current else [])
+                state = updater(state)
+                if (len(state.workers) != 1 or state.workers[0].id != worker_id
+                        or state.assignments or state.events or state.enrollments):
+                    raise ValueError("worker mutation must only update its target record")
+                result.append(state)
+                return state.workers[0].model_dump(mode="json")
+
+            self.store.record_update(self.worker_namespace, worker_id, apply, default=None)
+            return result[0]
+
+    def update_assignment(
+        self,
+        worker_id: str,
+        assignment_id: str,
+        updater: Callable[[ExecutionWorkerState], ExecutionWorkerState],
+    ) -> ExecutionWorkerState:
+        """Mutate a current assignment with its owning worker's trust context."""
+        with self._lock:
+            self._ensure_records()
+            raw_worker = self.store.record_get(self.worker_namespace, worker_id)
+            worker = ExecutionWorker.model_validate(raw_worker) if raw_worker is not None else None
+            result: list[ExecutionWorkerState] = []
+
+            def apply(raw: Any) -> Any:
+                assignment = ExecutionAssignment.model_validate(raw) if raw is not None else None
+                workers = [worker] if worker else []
+                state = ExecutionWorkerState(workers=workers, assignments=[assignment] if assignment else [])
+                state = updater(state)
+                if (len(state.assignments) != 1 or state.assignments[0].id != assignment_id
+                        or state.workers != workers or state.events or state.enrollments):
+                    raise ValueError("assignment mutation must only update its target record")
+                result.append(state)
+                return state.assignments[0].model_dump(mode="json")
+
+            self.store.record_update(self.assignment_namespace, assignment_id, apply, default=None)
+            return result[0]
+
     def update(
         self,
         updater: Callable[[ExecutionWorkerState], ExecutionWorkerState],
