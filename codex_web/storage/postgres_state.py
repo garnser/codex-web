@@ -596,6 +596,17 @@ class PostgresStateStore:
             ),
         }
 
+    def document_get(self, namespace: str) -> Any | None:
+        """Read only the legacy document, without reconstructing keyed records."""
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT payload FROM codex_state_documents WHERE namespace = %s",
+                    (namespace,),
+                )
+                row = cursor.fetchone()
+                return self._decode(row) if row is not None else None
+
     def get(self, namespace: str) -> Any | None:
         with self._connection() as connection:
             with connection.cursor() as cursor:

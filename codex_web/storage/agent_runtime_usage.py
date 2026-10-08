@@ -60,7 +60,20 @@ class AgentRuntimeUsageStore:
 
     def _ensure_records(self) -> None:
         collection_exists = self.store.record_collection_exists(self.namespace)
-        payload = self.store.get(self.namespace)
+        document_get = getattr(self.store, "document_get", None)
+        payload = (
+            document_get(self.namespace)
+            if callable(document_get)
+            else self.store.get(self.namespace)
+        )
+        if collection_exists and payload is None and callable(document_get):
+            # A compatible generic put can install a legacy envelope as keyed
+            # entries. Probe only those reserved keys, never the usage catalog.
+            version = self.store.record_get(self.namespace, "schema_version")
+            if version is not None:
+                records = self.store.record_get(self.namespace, "records")
+                if records is not None:
+                    payload = {"schema_version": version, "records": records}
         if collection_exists and not (
             isinstance(payload, dict)
             and "schema_version" in payload
@@ -71,6 +84,8 @@ class AgentRuntimeUsageStore:
         records = {item.id: item.model_dump(mode="json") for item in state.records}
         if collection_exists:
             merged = self.store.record_items(self.namespace)
+            merged.pop("schema_version", None)
+            merged.pop("records", None)
             merged.update(records)
             records = merged
         self.store.record_replace(
