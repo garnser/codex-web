@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import ExitStack
 from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
@@ -589,6 +590,83 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             payload["_broker"]["operation"],
             "control_plane.operations.list",
         )
+
+    async def test_dispatch_scope_reads_yield_with_context_and_original_order(self):
+        context = ContextVar("broker_scope_authority")
+        marker = object()
+        loop_thread = threading.get_ident()
+        names = ("_actor", "_requester_actor", "_state_for_target", "_authorize")
+        for blocked_name in names:
+            with self.subTest(blocked_name=blocked_name):
+                entered, release = threading.Event(), threading.Event()
+                observations, timeouts = [], []
+                originals = {name: getattr(self.service, name) for name in names}
+                def wrapper(name):
+                    def read(*args, **kwargs):
+                        observations.append((name, threading.get_ident(), context.get()))
+                        if name == blocked_name:
+                            entered.set()
+                            if not release.wait(2):
+                                timeouts.append(name)
+                        return originals[name](*args, **kwargs)
+                    return read
+                target = (
+                    "/api/control-plane-broker/operations"
+                    if blocked_name == "_requester_actor"
+                    else "/api/work-items/" + quote(self.ref, safe="")
+                )
+                token = context.set(marker)
+                with ExitStack() as patches:
+                    for name in names:
+                        patches.enter_context(patch.object(self.service, name, wrapper(name)))
+                    task = asyncio.create_task(self.service.dispatch(
+                        assignment=self.assignment, worker_actor=self.worker_actor,
+                        method="GET", raw_target=target, body=b"",
+                    ))
+                    try:
+                        self.assertTrue(await asyncio.to_thread(entered.wait, 3))
+                        await asyncio.sleep(0)
+                        self.assertFalse(task.done())
+                        self.assertEqual(timeouts, [])
+                    finally:
+                        release.set()
+                        result = await task
+                        context.reset(token)
+                self.assertEqual(result[0], 200)
+                expected = (
+                    ["_actor", "_requester_actor", "_authorize"]
+                    if blocked_name == "_requester_actor"
+                    else ["_actor", "_state_for_target", "_authorize"]
+                )
+                self.assertEqual([row[0] for row in observations], expected)
+                for _, thread, value in observations:
+                    self.assertNotEqual(thread, loop_thread)
+                    self.assertIs(value, marker)
+
+    async def test_http_actor_lookup_runs_off_event_loop(self):
+        loop_thread = threading.get_ident()
+        threads = []
+        original = self.service._actor
+        def actor(*args, **kwargs):
+            threads.append(threading.get_ident())
+            return original(*args, **kwargs)
+        with patch.object(self.service, "_actor", actor):
+            status, _, payload = await self._request("GET", "/api/work-items")
+        self.assertEqual(status, 200, payload)
+        # Both HTTP audit attribution and canonical dispatch resolve identities.
+        self.assertEqual(len(threads), 2)
+        self.assertTrue(all(thread != loop_thread for thread in threads))
+
+    async def test_scope_denial_precedes_authority_and_work_item_read(self):
+        with patch.object(self.service, "_authorize", wraps=self.service._authorize) as authority:
+            with patch.object(self.work_items, "get", new=AsyncMock()) as read:
+                with self.assertRaises(ControlPlaneBrokerDeniedError):
+                    await self.service.dispatch(
+                        assignment=self.assignment, worker_actor=self.worker_actor,
+                        method="GET", raw_target="/api/work-items/" + quote(self.other_ref, safe=""), body=b"",
+                    )
+                authority.assert_not_called()
+                read.assert_not_awaited()
 
     async def test_assignment_validation_runs_off_event_loop(self) -> None:
         event_loop_thread = threading.get_ident()
