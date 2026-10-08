@@ -144,6 +144,43 @@ class GitLabTaskSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(read.identity.external_id, snapshot.identity.external_id)
         self.assertEqual(self.client.read_calls[-1], ("group/project", 42))
 
+    async def test_description_survives_discovery_read_and_both_webhook_paths(self) -> None:
+        from codex_web.services.gitlab_task_source_events import GitLabWebhookTaskSource
+
+        body = "## Acceptance\n- Verify exact persisted revision.\n\nMR: https://gitlab.example/group/project/-/merge_requests/7"
+        self.client.issue["description"] = f"  {body}\n"
+        discovered = (await self.source.discover(scope="group"))[0]
+        self.assertEqual(discovered.body_text, body)
+        self.assertEqual((await self.source.read(discovered.identity)).body_text, body)
+        payload = {
+            "object_kind": "issue",
+            "project": {"path_with_namespace": "group/project"},
+            "object_attributes": {"iid": 42, "description": f"  {body}\n"},
+        }
+        asynchronous = await self.source.normalize_event(payload)
+        synchronous = GitLabWebhookTaskSource(
+            "https://gitlab.example/api/v4"
+        ).normalize_event_sync(payload)
+        self.assertEqual(asynchronous.snapshot.body_text, body)
+        self.assertEqual(synchronous.snapshot.body_text, body)
+        self.conformance.validate_event(self.source, asynchronous)
+
+    async def test_missing_or_blank_descriptions_remain_absent(self) -> None:
+        from codex_web.services.gitlab_task_source_events import GitLabWebhookTaskSource
+
+        webhook = GitLabWebhookTaskSource("https://gitlab.example/api/v4")
+        for description in [None, "", " \n "]:
+            with self.subTest(description=description):
+                issue = {**self.client.issue, "description": description}
+                self.assertIsNone(self.source._snapshot_from_issue(issue).body_text)
+                payload = {
+                    "object_kind": "issue",
+                    "project": {"path_with_namespace": "group/project"},
+                    "object_attributes": {"iid": 42, "description": description},
+                }
+                self.assertIsNone((await self.source.normalize_event(payload)).snapshot.body_text)
+                self.assertIsNone(webhook.normalize_event_sync(payload).snapshot.body_text)
+
     def test_projection_preserves_existing_label_semantics(self) -> None:
         snapshot = self.source._snapshot_from_issue(self.client.issue)
         projection = self.source.project(snapshot, current_stage="validation_running")
