@@ -225,6 +225,9 @@ class ExecutionContractSchemaTests(unittest.TestCase):
         self.assertEqual(contract.definition_refs, (DEFINITION_REF,))
         self.assertIn("execution-roles.default@1", text)
         self.assertIn("CANONICAL EXECUTION CONTRACT (schema 1.4)", text)
+        self.assertIn("ASSIGNMENT CONTROL-PLANE ACCESS", text)
+        self.assertIn("GET /api/control-plane-broker/operations", text)
+        self.assertIn("Do not use direct GitLab API calls or direct git push", text)
         self.assertIn("WORK ITEM group/app#42", text)
         self.assertNotIn('"expected_outputs"', text)
 

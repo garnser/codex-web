@@ -233,6 +233,15 @@ class WorkItemContractService:
             "authoritative for owner, stage, handoff and next action. The versioned execution contract and its exact "
             f"{profile_text}"
             "Apply the resolved role below; do not create parallel ownership, definition or permission state.\n\n"
+            "ASSIGNMENT CONTROL-PLANE ACCESS\n"
+            "Direct Git host DNS, SSH, HTTP, and localhost access may be intentionally unavailable in the execution "
+            "sandbox. When CODEX_WEB_CONTROL_PLANE_URL is set, use that assignment-bound broker before reporting a "
+            "GitLab or repository-access blocker. Discover the exact allowlisted methods and paths with "
+            "GET /api/control-plane-broker/operations. Repository facts, refs, merge requests, checks, job logs, "
+            "artifacts, governed branch publication, merge-request upsert/merge, and check rerun operations exposed "
+            "there are the supported access paths. Do not use direct GitLab API calls or direct git push when the "
+            "broker provides the required operation. If the required operation is absent or the broker denies it, "
+            "record the exact broker operation, status, and denial as the blocker.\n\n"
             f"{execution_contract_prompt(role, catalog=catalog)}"
         )
 
