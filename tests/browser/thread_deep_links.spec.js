@@ -385,6 +385,8 @@ test('loading earlier activity performs a scoped read for the already selected T
   await expect.poll(() => readQueries.some(query => query.limit === '80' && query.project === 'home')).toBe(true);
   await expect(page.locator('#thread-history-control button')).toBeEnabled();
   await expect(page).toHaveURL(/projects\/home\/chat\?thread=home-thread/);
+});
+
 test('selecting a Thread again retries a detail read that did not render', async ({ page }) => {
   const { reads } = await mockChatApi(page, { degradeFirstThreadRead: true });
   await page.goto('http://127.0.0.1:18766/projects/home/chat');
