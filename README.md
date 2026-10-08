@@ -289,3 +289,14 @@ Before substantial work, read:
 Use focused tests while iterating and treat CI as the authoritative clean-environment merge gate.
 
 Delivery status, priorities, dependencies, and completion belong in **GitHub Issues, Milestones, the GitHub Project, and linked Pull Requests**.
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+development workflow and Developer Certificate of Origin sign-off requirement.
+
+## License
+
+codex-web is licensed under the [Apache License 2.0](LICENSE). Required
+attributions are recorded in [NOTICE](NOTICE). The source-code license does not
+grant project branding rights; see [TRADEMARKS.md](TRADEMARKS.md).

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -213,6 +214,39 @@ class CodexRuntime:
         self.stderr_task: asyncio.Task[None] | None = None
         self.lifecycle_lock = asyncio.Lock()
         self._pipe_executor: ThreadPoolExecutor | None = None
+        self._authentication_epoch = 0
+        self._authenticated_account_proof = None
+
+    AUTHENTICATED_ACCOUNT_MAX_AGE_SECONDS = 120.0
+
+    def _authentication_context(self) -> str:
+        # Compare metadata only; never read credential contents or expose this
+        # process-local context fingerprint in provider/UI diagnostics.
+        home = Path(os.environ.get("CODEX_HOME") or str(Path.home() / ".codex"))
+        files = []
+        for name in ("auth.json", "config.toml"):
+            try:
+                stat = (home / name).stat()
+                files.append((name, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns))
+            except OSError:
+                files.append((name, None))
+        context = (os.getpid(), os.geteuid(), str(self.cwd), tuple(self.command), str(home), files,
+                   tuple((key, os.environ.get(key)) for key in ("CODEX_ACCESS_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY")))
+        return hashlib.sha256(repr(context).encode("utf-8")).hexdigest()
+
+    def _invalidate_authenticated_account(self) -> None:
+        self._authentication_epoch = getattr(self, "_authentication_epoch", 0) + 1
+        self._authenticated_account_proof = None
+
+    def authenticated_account_available(self) -> bool:
+        proof = getattr(self, "_authenticated_account_proof", None)
+        if proof is None:
+            return False
+        observed, context, epoch = proof
+        now = time.monotonic()
+        return bool(observed <= now < observed + self.AUTHENTICATED_ACCOUNT_MAX_AGE_SECONDS
+                    and epoch == getattr(self, "_authentication_epoch", 0)
+                    and context == self._authentication_context())
 
     async def start(self) -> None:
         async with self.lifecycle_lock:
@@ -490,6 +524,8 @@ class CodexRuntime:
             )
 
     async def _handle_message(self, message: dict[str, Any]) -> None:
+        if message.get("method") in {"account/updated", "account/login/completed", "account/chatgptAuthTokens/refresh"}:
+            self._invalidate_authenticated_account()
         message_id = message.get("id")
         if message_id is not None and "method" not in message:
             future = self.pending.pop(message_id, None)
@@ -625,7 +661,11 @@ class CodexRuntime:
             self.proc.stdin.flush()
 
     async def request(self, method: str, params: Any = None) -> dict[str, Any]:
+        if method in {"account/logout", "account/login/start"}:
+            self._invalidate_authenticated_account()
         await self.ensure_started(method == "initialize")
+        account_epoch = getattr(self, "_authentication_epoch", 0)
+        account_context = self._authentication_context() if method == "account/read" else None
         message_id = self.next_id
         self.next_id += 1
         loop = asyncio.get_running_loop()
@@ -643,9 +683,23 @@ class CodexRuntime:
                 result = await future
             else:
                 result = await asyncio.wait_for(future, timeout=timeout)
+            if method == "account/read":
+                account = result.get("account") if isinstance(result, dict) else None
+                if not isinstance(account, dict) or account.get("type") not in {"apiKey", "chatgpt"}:
+                    self._invalidate_authenticated_account()
+                elif (account_epoch == getattr(self, "_authentication_epoch", 0)
+                      and account_context == self._authentication_context()):
+                    self._authenticated_account_proof = (time.monotonic(), account_context, account_epoch)
             if self.metrics:
                 self.metrics.increment("codex.rpc_success")
             return result
+        except RuntimeError as exc:
+            # A returned account/read RPC error is negative credential evidence.
+            # Local transport retirement errors carry strings and do not replace
+            # recent successful account evidence with an invented auth failure.
+            if method == "account/read" and exc.args and isinstance(exc.args[0], dict):
+                self._invalidate_authenticated_account()
+            raise
         except asyncio.TimeoutError as exc:
             self.pending.pop(message_id, None)
             timeout_error = f"{method} timed out after {timeout}s"

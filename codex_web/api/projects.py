@@ -32,6 +32,16 @@ def build_projects_router(
         scope = request.state.tenant_scope
         return [project.model_dump() for project in service.list(scope)]
 
+    @router.get("/api/projects/{project_id}")
+    async def get_project(project_id: str, request: Request) -> dict[str, Any]:
+        try:
+            return service.get(
+                project_id,
+                request.state.tenant_scope,
+            ).model_dump()
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @router.post("/api/projects")
     async def create_project(payload: ProjectCreate, request: Request) -> dict[str, Any]:
         try:

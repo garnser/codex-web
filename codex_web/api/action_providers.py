@@ -4,7 +4,11 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from codex_web.action_providers import ActionProviderBindingCreate, ActionRequest
+from codex_web.action_providers import (
+    ActionProviderBindingCreate,
+    ActionProviderBindingUpdate,
+    ActionRequest,
+)
 from codex_web.api.identity import request_actor
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.services.action_providers import (
@@ -99,6 +103,31 @@ def build_action_providers_router(
                     for item in provider.actions()
                 ],
             }
+        except Exception as exc:
+            if isinstance(
+                exc,
+                (ActionProviderError, AuthorizationError, TenantIsolationError),
+            ):
+                raise _error(exc) from exc
+            raise
+
+    @router.patch("/api/action-providers/bindings/{binding_id}")
+    async def update_binding(
+        binding_id: str,
+        payload: ActionProviderBindingUpdate,
+        request: Request,
+    ) -> dict[str, Any]:
+        actor = request_actor(request)
+        try:
+            if actor.principal_kind != PrincipalKind.SERVICE:
+                IdentityService.require_admin(actor)
+                IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+            binding = registry.set_enabled(
+                binding_id,
+                payload.enabled,
+                actor=actor,
+            )
+            return {"item": binding.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(
                 exc,

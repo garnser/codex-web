@@ -52,7 +52,10 @@ class LocalIsolationStatus:
         ]
         if self.ready:
             values.append(WorkerCapability.COMMAND_EXECUTION)
-        if self.ready and self.supports_network_allowlist:
+        # The local worker can provide unrestricted host networking only to an
+        # explicitly danger-full-access assignment.  Host allowlists remain
+        # unsupported by Bubblewrap and are rejected separately.
+        if self.ready:
             values.append(WorkerCapability.NETWORK)
         return tuple(values)
 
@@ -107,6 +110,7 @@ class BubblewrapExecutionBackend:
         (Path("/etc/ssl/certs"), Path("/etc/ssl/certs")),
         (Path("/etc/pki"), Path("/etc/pki")),
     )
+    SYSTEM_NETWORK_FILES = (Path("/etc/hosts"), Path("/etc/nsswitch.conf"), Path("/etc/resolv.conf"))
 
     def __init__(
         self,
@@ -432,9 +436,6 @@ class BubblewrapExecutionBackend:
             raise LocalExecutionPolicyError(
                 "local bubblewrap worker cannot enforce host allowlists"
             )
-        raise LocalExecutionPolicyError(
-            "local worker does not advertise unrestricted network execution"
-        )
 
     @staticmethod
     def _directory_creation_args(path: Path) -> list[str]:
@@ -521,7 +522,6 @@ class BubblewrapExecutionBackend:
             "--unshare-pid",
             "--unshare-uts",
             "--unshare-ipc",
-            "--unshare-net",
             "--ro-bind",
             "/usr",
             "/usr",
@@ -532,6 +532,8 @@ class BubblewrapExecutionBackend:
             "usr/lib",
             "/lib",
         ]
+        if not assignment.network.enabled:
+            command.insert(command.index("--ro-bind"), "--unshare-net")
         if Path("/usr/lib64").exists():
             command.extend(("--symlink", "usr/lib64", "/lib64"))
         command.extend(
@@ -546,6 +548,31 @@ class BubblewrapExecutionBackend:
                 "/tmp/codex-worker-home",
             )
         )
+        if assignment.network.enabled:
+            for network_file in self.SYSTEM_NETWORK_FILES:
+                if not network_file.is_file():
+                    continue
+                command.extend(self._directory_creation_args(network_file.parent))
+                command.extend(
+                    ("--ro-bind", str(network_file), str(network_file))
+                )
+            runtime_directory = Path(f"/run/user/{os.getuid()}")
+            container_socket = runtime_directory / "podman" / "podman.sock"
+            if container_socket.is_socket():
+                command.extend(self._directory_creation_args(container_socket.parent))
+                command.extend(
+                    ("--bind", str(container_socket), str(container_socket))
+                )
+                command.extend(
+                    ("--setenv", "XDG_RUNTIME_DIR", str(runtime_directory))
+                )
+                command.extend(
+                    (
+                        "--setenv",
+                        "CONTAINER_HOST",
+                        f"unix://{container_socket}",
+                    )
+                )
         # The assignment-bound model runtime reaches its allowlisted HTTPS
         # endpoints through a fixed-destination broker. Keep the broader host
         # /etc tree private, but provide the platform CA roots required to

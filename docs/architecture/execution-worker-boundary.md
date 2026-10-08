@@ -615,3 +615,27 @@ process is associated with canonical assignment/workspace/lease state and uses
 this delegation contract. Until that migration is complete, new untrusted
 command/tool execution paths must use the isolated worker backend rather than
 introducing direct `subprocess` execution in the control plane.
+
+### Trusted operator authentication evidence and transport health
+
+The trusted-local credential-availability probe uses an actual successful
+`account/read` response from the canonical operator Codex runtime, retained for
+at most 120 monotonic seconds. Readiness alone never establishes authenticated
+account evidence. A transient shared RPC subprocess restart does not log the
+operator out: proof remains bounded to the same host process, effective UID,
+Codex command, working directory, auth-source location and environment, and
+credential/config file metadata. Credential contents and account email are not
+stored in this proof or exposed in diagnostics.
+
+Logout/login requests, account-change/login/refresh notifications, explicit
+account-read RPC errors, logged-out/malformed account responses, expiry, and
+operator/auth-context changes invalidate the evidence. An account-read started
+before an invalidation cannot restore old evidence. The existing bounded quota
+probe verifies account metadata once before reading quota; no model sampling or
+additional polling loop is introduced.
+
+Authentication evidence remains separate from RPC transport health and execution
+preflight. A runtime with cleared readiness is unavailable even when its recent
+authenticated-account evidence is still fresh. Worker-scoped delegation, actor,
+policy, credential rotation/expiry, lease/fence and assignment checks remain
+authoritative and unchanged.

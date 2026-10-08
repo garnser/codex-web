@@ -203,7 +203,7 @@ def _assignment(**overrides) -> ExecutionAssignment:
 
 
 class BubblewrapExecutionBackendTests(unittest.TestCase):
-    def test_successful_probe_advertises_command_execution_without_network(self) -> None:
+    def test_successful_probe_advertises_command_execution_and_unrestricted_network(self) -> None:
         backend = BubblewrapExecutionBackend(
             executable="/usr/bin/bwrap",
             probe_runner=_probe_success,
@@ -213,7 +213,7 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
 
         self.assertTrue(status.ready)
         self.assertIn(WorkerCapability.COMMAND_EXECUTION, status.capabilities)
-        self.assertNotIn(WorkerCapability.NETWORK, status.capabilities)
+        self.assertIn(WorkerCapability.NETWORK, status.capabilities)
         self.assertTrue(status.supports_network_disabled)
         self.assertFalse(status.supports_network_allowlist)
 
@@ -387,6 +387,44 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
         )
         self.assertIn("--unshare-net", command)
         self.assertNotIn(["--ro-bind", "/", "/"], mounts)
+
+    def test_network_enabled_danger_full_access_uses_host_network_namespace(self) -> None:
+        backend = BubblewrapExecutionBackend(
+            executable="/usr/bin/bwrap",
+            probe_runner=_probe_success,
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = Path(raw) / "workspace"
+            workspace.mkdir()
+            command = backend.build_command(
+                _assignment(
+                    sandbox="danger-full-access",
+                    network=NetworkPolicy(enabled=True),
+                    required_capabilities=(
+                        WorkerCapability.GIT,
+                        WorkerCapability.COMMAND_EXECUTION,
+                        WorkerCapability.NETWORK,
+                    ),
+                ),
+                argv=("python", "-m", "pip", "--version"),
+                workspace_path=workspace,
+            )
+
+        self.assertNotIn("--unshare-net", command)
+        mounts = [
+            command[index:index + 3]
+            for index in range(max(0, len(command) - 2))
+        ]
+        for network_file in backend.SYSTEM_NETWORK_FILES:
+            if network_file.is_file():
+                self.assertIn(
+                    ["--ro-bind", str(network_file), str(network_file)],
+                    mounts,
+                )
+        self.assertNotIn(["--ro-bind", "/", "/"], [
+            command[index:index + 3]
+            for index in range(max(0, len(command) - 2))
+        ])
 
     def test_danger_full_access_cannot_make_read_only_sibling_repository_writable(self) -> None:
         backend = BubblewrapExecutionBackend(
