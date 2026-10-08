@@ -21,6 +21,7 @@ export function createTaskSourceEditor(state, { refreshAll, setStatus, esc, fmtT
   function bind(container) {
     root = container; validation = formValidation(root);
     const delivery = document.createElement('div');
+    delivery.className = 'work-source-grid work-source-delivery';
     delivery.innerHTML = '<label>Delivery thread ID <input class="work-source-delivery-thread" placeholder="Leave empty to disable automatic delivery" /></label><p class="work-source-delivery-status" aria-live="polite"></p>';
     root.appendChild(delivery);
 
