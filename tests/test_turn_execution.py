@@ -321,6 +321,35 @@ class TurnExecutionQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(host.bulk_active_loads, 0)
         self.assertNotIn("t1", host.active)
 
+    def test_nonterminal_runtime_event_refreshes_active_turn_heartbeat(self) -> None:
+        host = _Host()
+        service = TurnExecutionService(host)
+        host.active["t1"] = ActiveThreadTurn(
+            thread_id="t1",
+            turn_id="turn-1",
+            assignment_id="assignment-1",
+            execution_workspace_id="workspace-1",
+            started_at=100.0,
+            updated_at=100.0,
+        )
+
+        with patch("codex_web.runtime.execution.time.time", return_value=200.0):
+            service.record_thread_activity(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": "t1",
+                        "turnId": "turn-1",
+                        "item": {"type": "commandExecution"},
+                    },
+                }
+            )
+
+        active = host.active["t1"]
+        self.assertEqual(active.updated_at, 200.0)
+        self.assertEqual(active.assignment_id, "assignment-1")
+        self.assertEqual(active.execution_workspace_id, "workspace-1")
+
     def test_handoff_fences_observational_active_turn_clears_until_finish(self) -> None:
         host = _Host()
         service = TurnExecutionService(host)

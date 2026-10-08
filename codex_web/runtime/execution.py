@@ -1431,6 +1431,13 @@ class TurnExecutionService:
                 and not getattr(h, "IS_SHUTTING_DOWN", False)
             ):
                 self.clear_thread_active(thread_id)
+        elif thread_id and self._active_turn(thread_id) is not None:
+            # Provider turns can run longer than the stale-marker window and
+            # some runtimes emit item/completed without a matching
+            # item/started notification. Treat every non-terminal runtime
+            # event as a heartbeat so queue recovery cannot release the
+            # assignment and discard its dirty workspace while work is live.
+            self.mark_thread_active(thread_id, turn_id=turn_id)
 
     async def start_thread_turn_now(
         self,
