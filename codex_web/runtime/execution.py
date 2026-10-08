@@ -3077,6 +3077,7 @@ class TurnExecutionService:
         self,
         thread_ids: set[str] | None = None,
     ) -> None:
+        self._event_loop = asyncio.get_running_loop()
         h = self.host
         if thread_ids is None:
             active_turns = h._load_active_turns()
