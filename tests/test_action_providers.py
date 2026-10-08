@@ -379,6 +379,26 @@ class ActionProviderApiAssuranceTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["item"]["resource_ids"], [self.resource.id])
 
+    def test_binding_toggle_rechecks_assurance_authority_and_tenant(self) -> None:
+        self.actor = self.actor.model_copy(update={"assurance": AuthenticationAssurance.MFA})
+        created = self.client.post("/api/action-providers/bindings", json=self._binding_payload())
+        binding_id = created.json()["item"]["id"]
+        endpoint = f"/api/action-providers/bindings/{binding_id}"
+        self.actor = self.actor.model_copy(update={"assurance": AuthenticationAssurance.PRIMARY})
+        self.assertEqual(self.client.patch(endpoint, json={"enabled": False}).status_code, 403)
+        self.actor = self.actor.model_copy(update={"assurance": AuthenticationAssurance.MFA})
+        disabled = self.client.patch(endpoint, json={"enabled": False})
+        self.assertEqual(disabled.status_code, 200)
+        self.assertFalse(disabled.json()["item"]["enabled"])
+        with self.assertRaises(ActionResolutionError):
+            self.registry.binding(binding_id, self.actor)
+        enabled = self.client.patch(endpoint, json={"enabled": True})
+        self.assertTrue(enabled.json()["item"]["enabled"])
+        self.actor = self.actor.model_copy(update={"workspace_id": "another-workspace"})
+        self.assertEqual(self.client.patch(endpoint, json={"enabled": False}).status_code, 404)
+        self.actor = self.actor.model_copy(update={"workspace_id": "default", "roles": (MembershipRole.MEMBER,)})
+        self.assertEqual(self.client.patch(endpoint, json={"enabled": False}).status_code, 403)
+
     def test_action_provider_admin_service_scope_remains_supported(self) -> None:
         self.actor = AuthenticationActor(
             identity_id="action-provider-admin",

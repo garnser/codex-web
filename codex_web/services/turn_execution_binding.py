@@ -1142,6 +1142,11 @@ class TurnExecutionBindingService:
                 WorkerCapability.COMMAND_EXECUTION,
             )
         )
+        network = NetworkPolicy(enabled=sandbox == "danger-full-access")
+        if network.enabled:
+            required_capabilities = tuple(
+                dict.fromkeys((*required_capabilities, WorkerCapability.NETWORK))
+            )
         effective_skill_refs = tuple(dict.fromkeys((agent_profile.skill_refs if agent_profile is not None else ()) + skill_refs))
         if effective_skill_refs:
             if self.skill_worker_requirements is None:
@@ -1399,7 +1404,7 @@ class TurnExecutionBindingService:
                     required_capabilities=required_capabilities,
                     sandbox=sandbox,
                     approval_policy=approval_policy,
-                    network=NetworkPolicy(),
+                    network=network,
                     limits=effective_limits,
                     secret_refs=((secret_ref,) if secret_ref else ()),
                     deadline_at=deadline_at,

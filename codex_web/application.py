@@ -130,6 +130,7 @@ from codex_web.identity import TenantScope
 from codex_web.model_providers import AnthropicModelProviderAdapter, OpenAIModelProviderAdapter
 from codex_web.key_backends import LocalFileKeyBackend
 from codex_web.execution_workspace_backend import LocalGitWorkspaceBackend
+from codex_web.execution_workspaces import WorkspaceQuota
 from codex_web.local_execution_backend import BubblewrapExecutionBackend
 from codex_web.execution_workers import (
     ExecutionRuntimeBinding,
@@ -1134,6 +1135,14 @@ execution_workspace_service = ExecutionWorkspaceService(
     resource_catalog_service,
     project_service.get,
     work_item_host=core,
+    quota=WorkspaceQuota(
+        max_active_per_tenant=int(
+            os.environ.get("CODEX_WEB_MAX_ACTIVE_WORKSPACES_PER_TENANT", "20")
+        ),
+        max_active_per_identity=int(
+            os.environ.get("CODEX_WEB_MAX_ACTIVE_WORKSPACES_PER_IDENTITY", "8")
+        ),
+    ),
 )
 app.include_router(build_execution_workspaces_router(execution_workspace_service))
 app.state.execution_workspace_state_store = execution_workspace_state_store
@@ -3489,6 +3498,7 @@ install_thread_compatibility_facade(
     core,
     canonical_settings=thread_execution_settings_service,
     canonical_recovery=thread_recovery_service,
+    thread_creator=thread_service.create,
 )
 
 async def _resume_provider_capacity_wait(wait):
@@ -4124,6 +4134,9 @@ def _autonomy_health():
         and not task_status[name].get("running", False)
     ]
     states = runtime_state.work_item_states.load().values()
+    canonical_project_ids = {
+        project.id for project in project_repository.load()
+    }
     idle_actionable_owners = []
     for owner in OWNER_QUEUE_AGENTS:
         actionable_projects = {

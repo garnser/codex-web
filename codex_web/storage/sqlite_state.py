@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import stat
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -28,6 +29,7 @@ class SQLiteStateStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(self.path.parent, 0o700)
         self._keyed_mutation_metrics = OperationTimingMetrics()
+        self._write_lock = threading.RLock()
         self._initialize()
 
     def _secure_database_files(self) -> None:
@@ -68,6 +70,18 @@ class SQLiteStateStore:
             connection.close()
             self._secure_database_files()
 
+    @contextmanager
+    def _write_connection(self) -> Iterator[sqlite3.Connection]:
+        """Serialize this process's SQLite write transactions.
+
+        Runtime event listeners and API handlers use worker threads, so they
+        can otherwise contend for the single WAL writer and exhaust SQLite's
+        busy timeout. Reads retain their normal concurrent WAL behavior.
+        """
+        with self._write_lock:
+            with self._connection() as connection:
+                yield connection
+
     @staticmethod
     def _decode(row: tuple[Any, ...] | None, default: Any = None) -> Any:
         if row is None:
@@ -91,7 +105,7 @@ class SQLiteStateStore:
         )
 
     def _initialize(self) -> None:
-        with self._connection() as connection:
+        with self._write_connection() as connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS state_documents (
@@ -345,7 +359,7 @@ class SQLiteStateStore:
         started = time.perf_counter()
         success = False
         try:
-            with self._connection() as connection:
+            with self._write_connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 self._ensure_record_collection_in_connection(
                     connection,
@@ -380,7 +394,7 @@ class SQLiteStateStore:
         started = time.perf_counter()
         success = False
         try:
-            with self._connection() as connection:
+            with self._write_connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 self._ensure_record_collection_in_connection(
                     connection,
@@ -416,7 +430,7 @@ class SQLiteStateStore:
         started = time.perf_counter()
         success = False
         try:
-            with self._connection() as connection:
+            with self._write_connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 self._replace_records_in_connection(
                     connection,
@@ -466,7 +480,7 @@ class SQLiteStateStore:
 
     def checkpoint(self, *, truncate: bool = False) -> dict[str, int]:
         mode = "TRUNCATE" if truncate else "PASSIVE"
-        with self._connection() as connection:
+        with self._write_connection() as connection:
             row = connection.execute(f"PRAGMA wal_checkpoint({mode})").fetchone()
         busy, log_frames, checkpointed_frames = row or (0, 0, 0)
         return {
@@ -544,7 +558,7 @@ class SQLiteStateStore:
         ):
             self.record_replace(namespace, payload)
             return
-        with self._connection() as connection:
+        with self._write_connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if self._record_collection_exists_in_connection(
                 connection,
@@ -569,7 +583,7 @@ class SQLiteStateStore:
         Record-backed mappings remain physically keyed while compatibility
         callers can continue to use the document-level update contract.
         """
-        with self._connection() as connection:
+        with self._write_connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if self._record_collection_exists_in_connection(
                 connection,
@@ -616,7 +630,7 @@ class SQLiteStateStore:
         if not namespaces:
             raise ValueError("update_many requires at least one namespace")
 
-        with self._connection() as connection:
+        with self._write_connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             current: dict[str, Any] = {}
             record_backed: set[str] = set()
@@ -702,7 +716,7 @@ class SQLiteStateStore:
             )
 
     def delete(self, namespace: str) -> bool:
-        with self._connection() as connection:
+        with self._write_connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 "DELETE FROM state_documents WHERE namespace = ?",

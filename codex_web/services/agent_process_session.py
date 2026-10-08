@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import socket
 import subprocess
 import threading
 import time
@@ -53,6 +54,16 @@ class AssignmentBoundAgentProcessSessionStaleError(
     AssignmentBoundAgentSessionStaleError,
 ):
     pass
+
+
+def _available_loopback_port(*, exclude: frozenset[int] = frozenset()) -> int:
+    """Select a relay port when the sandbox shares the host network namespace."""
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = int(listener.getsockname()[1])
+        if port not in exclude:
+            return port
 
 
 def _executable_mount_destination(command: tuple[str, ...]) -> Path | None:
@@ -385,15 +396,24 @@ class AssignmentBoundAgentProcessSession:
                 environment["CODEX_WRITABLE_REPOSITORIES"] = ":".join(
                     str(destination) for destination in writable_destinations
                 )
+            model_egress_port: int | None = None
             if broker is not None:
+                model_egress_port = (
+                    _available_loopback_port()
+                    if assignment.network.enabled
+                    else 8787
+                )
+                model_proxy_url = broker.proxy_url.replace(
+                    ":8787", f":{model_egress_port}"
+                )
                 environment.update(
                     {
-                        "HTTP_PROXY": broker.proxy_url,
-                        "HTTPS_PROXY": broker.proxy_url,
+                        "HTTP_PROXY": model_proxy_url,
+                        "HTTPS_PROXY": model_proxy_url,
                         "ALL_PROXY": "",
                         "NO_PROXY": "",
-                        "http_proxy": broker.proxy_url,
-                        "https_proxy": broker.proxy_url,
+                        "http_proxy": model_proxy_url,
+                        "https_proxy": model_proxy_url,
                         "all_proxy": "",
                         "no_proxy": "",
                     }
@@ -404,7 +424,7 @@ class AssignmentBoundAgentProcessSession:
                     "-c",
                     AGENT_MODEL_EGRESS_RELAY_SCRIPT,
                     str(broker.sandbox_socket_path),
-                    "8787",
+                    str(model_egress_port),
                     *launch_input.command,
                 )
                 trusted_mounts = (
@@ -412,16 +432,35 @@ class AssignmentBoundAgentProcessSession:
                     (broker.mount_source, broker.mount_destination),
                 )
             if control_broker is not None:
-                environment["CODEX_WEB_CONTROL_PLANE_URL"] = (
-                    control_broker.sandbox_url
+                control_plane_port = (
+                    _available_loopback_port(
+                        exclude=frozenset(
+                            (model_egress_port,)
+                            if model_egress_port is not None
+                            else ()
+                        )
+                    )
+                    if assignment.network.enabled
+                    else 8788
                 )
+                environment["CODEX_WEB_CONTROL_PLANE_URL"] = (
+                    f"http://127.0.0.1:{control_plane_port}"
+                )
+                if assignment.network.enabled:
+                    command = tuple(
+                        str(argument).replace(
+                            "http://127.0.0.1:8788",
+                            f"http://127.0.0.1:{control_plane_port}",
+                        )
+                        for argument in command
+                    )
                 command = (
                     "/usr/bin/python3",
                     "-u",
                     "-c",
                     CONTROL_PLANE_RELAY_SCRIPT,
                     str(control_broker.sandbox_socket_path),
-                    "8788",
+                    str(control_plane_port),
                     *command,
                 )
                 trusted_mounts = (

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from codex_web.security import security_boundary_instructions
@@ -237,6 +238,7 @@ def install_thread_compatibility_facade(
     *,
     canonical_settings: ThreadExecutionSettingsService,
     canonical_recovery: ThreadRecoveryService | None = None,
+    thread_creator: Callable[..., Awaitable[dict[str, Any]]] | None = None,
 ) -> tuple[ThreadService, TurnService, ThreadRecoveryService]:
     """Preserve direct import-server behavior without coupling production routes.
 
@@ -283,6 +285,7 @@ def install_thread_compatibility_facade(
         runtime_request=runtime_request,
         event_sink=lambda payload: host._append_bot_event(payload),
         truncate_text=lambda value, limit: host._truncate_text(value, limit),
+        thread_creator=thread_creator,
     )
     published_recovery = canonical_recovery or compat_recovery_service
 
