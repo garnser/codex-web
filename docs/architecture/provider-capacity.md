@@ -87,6 +87,14 @@ The existing capacity service may consume the same underlying observations for
 deterministic routing, while display code only reports them and cannot make a
 routing decision.
 
+A successful tenant-scoped `GET /api/account/rate-limits` also reconciles that
+fresh provider snapshot into the existing `openai/codex` capacity record. When
+the snapshot proves capacity is available, matching waits in the same tenant
+are resumed through their existing canonical handlers before the old reset
+time. Failed, malformed, or cross-tenant reads leave the prior blocker and its
+waits unchanged. The response includes the effective capacity record and the
+IDs of waits resumed by that read; it never includes account credentials.
+
 The chat sidebar renders one compact component per resource. It shows a progress
 bar only when both consumption and an authoritative positive limit are present.
 Usage or balance without a denominator stays absolute. Monetary values use the

@@ -15,7 +15,9 @@ from codex_web.agent_runtime_usage import (
     UsageResourceKind,
     UsageResourceSource,
 )
+from codex_web.identity import AuthenticationActor
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
+from codex_web.services.provider_capacity import ProviderCapacityService
 
 
 class RuntimeService:
@@ -57,6 +59,7 @@ class RuntimeService:
         native_recovery_status: Callable[[], dict[str, Any]] | None = None,
         continuity_background_status: Callable[[], dict[str, Any]] | None = None,
         extra_model_sources: tuple[Callable[[], list[dict[str, Any]]], ...] = (),
+        provider_capacity: ProviderCapacityService | None = None,
     ) -> None:
         if host is not None:
             codex = codex or getattr(host, "codex", None)
@@ -176,6 +179,7 @@ class RuntimeService:
             raise TypeError("RuntimeService requires a runtime transport")
         self.codex = codex
         self.extra_model_sources = tuple(extra_model_sources)
+        self.provider_capacity = provider_capacity
         self.static_version = static_version or (lambda: "unknown")
         self.runtime_health = runtime_health or (
             lambda: {"ok": True, "problems": []}
@@ -595,12 +599,25 @@ class RuntimeService:
             )
         return resources
 
-    async def rate_limits(self) -> dict[str, Any]:
+    async def rate_limits(
+        self,
+        *,
+        actor: AuthenticationActor,
+    ) -> dict[str, Any]:
         raw = await self.codex.request("account/rateLimits/read")
         result = dict(raw) if isinstance(raw, dict) else {"provider_payload": raw}
         result["usage_resources"] = [
             item.model_dump(mode="json") for item in self._rate_limit_resources(raw)
         ]
+        if self.provider_capacity is not None:
+            if not isinstance(raw, dict):
+                raise ValueError("Codex rate-limit read returned invalid payload")
+            capacity, resumed = await self.provider_capacity.reconcile_codex_snapshot(
+                raw,
+                actor=actor,
+            )
+            result["provider_capacity"] = capacity.model_dump(mode="json")
+            result["resumed_capacity_wait_ids"] = [item.id for item in resumed]
         return result
 
     async def models(
