@@ -231,6 +231,7 @@ class GitLabTaskSource:
         return TaskSourceSnapshot(
             identity=identity,
             title=str(issue.get("title") or "").strip() or None,
+            body_text=str(issue.get("description") or "").strip() or None,
             source_state=str(issue.get("state") or "").strip().lower() or None,
             owners=self._normalize_assignees(issue.get("assignees")),
             labels=self._normalize_labels(issue.get("labels")),
@@ -291,6 +292,7 @@ class GitLabTaskSource:
         snapshot = TaskSourceSnapshot(
             identity=identity,
             title=str(attrs.get("title") or "").strip() or None,
+            body_text=str(attrs.get("description") or "").strip() or None,
             source_state=str(attrs.get("state") or payload.get("state") or "").strip().lower() or None,
             owners=self._event_assignees(payload),
             labels=self._event_labels(payload),
