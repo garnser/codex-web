@@ -263,6 +263,15 @@ metadata and scope, never credentials or lease material. Catalog discovery and
 repository actions evaluate the assignment requester through canonical Role
 authority; the fenced worker service identity remains the executing principal.
 
+The channel is HTTP and does not require MCP tool registration. Task instructions
+include an explicit direct-loopback discovery example with a bounded client
+connection/read deadline. Proxy bypass is local to that broker request; it must
+not alter model egress or global network policy. Preserve the returned HTTP
+status, denial and correlation evidence. A client timeout is distinct from an
+authority denial, and an ambiguous mutation must reconcile its existing
+ActionIntent before retrying. Client deadlines never extend server-side
+assignment leases, operation deadlines or authorization.
+
 Initial reachability is limited to scoped Work Item operations:
 
 - list/read;
