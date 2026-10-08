@@ -282,7 +282,7 @@ class TurnExecutionPreflightRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.allowed_network_profiles, ())
 
 
-class TurnExecutionQueueTests(unittest.TestCase):
+class TurnExecutionQueueTests(unittest.IsolatedAsyncioTestCase):
     def test_queue_is_fifo_and_requeue_front_preserves_item(self) -> None:
         host = _Host()
         service = TurnExecutionService(host)
@@ -357,6 +357,47 @@ class TurnExecutionQueueTests(unittest.TestCase):
 
         self.assertIs(first, duplicate)
         self.assertEqual(host._thread_queue_depth("t1"), 1)
+
+    async def test_queue_drain_remembers_repository_scope_before_start(self) -> None:
+        host = _Host()
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="never",
+            model="codex/gpt-5.6-sol",
+        )
+        host._project = lambda _project_id: project
+        host._remember_thread_run_settings = MagicMock()
+        service = TurnExecutionService(host)
+        service.start_thread_turn_now = AsyncMock(return_value={"ok": True})
+        service.enqueue_turn(
+            thread_id="t1",
+            project_id="p1",
+            message="queued repository work",
+            repository_resource_id="repo-1",
+            writable_repository_resource_ids=("repo-1",),
+            read_only_repository_resource_ids=("repo-2",),
+            execution_profile_id="repository-write",
+            model="codex/gpt-5.6-sol",
+        )
+
+        await service.drain_thread_queue("t1")
+
+        host._remember_thread_run_settings.assert_called_once_with(
+            "t1",
+            sandbox="workspace-write",
+            approval_policy="never",
+            model="codex/gpt-5.6-sol",
+            reasoning_effort=None,
+            repository_resource_id="repo-1",
+            writable_repository_resource_ids=("repo-1",),
+            read_only_repository_resource_ids=("repo-2",),
+            execution_profile_id="repository-write",
+        )
+        service.start_thread_turn_now.assert_awaited_once()
+        self.assertEqual(host._thread_queue_depth("t1"), 0)
 
 
 class TurnExecutionRestartRecoveryTests(unittest.IsolatedAsyncioTestCase):

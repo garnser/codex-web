@@ -2685,6 +2685,56 @@ class TurnExecutionService:
         reschedule_queue = True
         try:
             project = h._project(queued.project_id)
+            # Queue drains bypass ``TurnService.start``, which normally makes
+            # the requested repository/runtime settings durable before an
+            # isolated turn starts.  Persist the same effective settings here
+            # so stale-thread recovery creates its replacement bootstrap for
+            # the queued turn's repository.  Without this, a fresh provider
+            # thread can be created in the previous repository, immediately
+            # rebound to a second app-server for target drift, and then fail
+            # its first ``turn/start`` because that second process has never
+            # seen the provider-native thread id.
+            remember_settings = getattr(
+                h,
+                "_remember_thread_run_settings",
+                None,
+            )
+            if callable(remember_settings):
+                current_settings = h._thread_run_settings(thread_id)
+                remember_settings(
+                    thread_id,
+                    sandbox=(
+                        queued.sandbox
+                        or current_settings.sandbox
+                        or project.sandbox
+                    ),
+                    approval_policy=(
+                        queued.approval_policy
+                        or current_settings.approval_policy
+                        or project.approval_policy
+                    ),
+                    model=(queued.model or current_settings.model or project.model),
+                    reasoning_effort=(
+                        queued.reasoning_effort
+                        or current_settings.reasoning_effort
+                    ),
+                    repository_resource_id=(
+                        queued.repository_resource_id
+                        or current_settings.repository_resource_id
+                    ),
+                    writable_repository_resource_ids=(
+                        queued.writable_repository_resource_ids
+                        or current_settings.writable_repository_resource_ids
+                    ),
+                    read_only_repository_resource_ids=(
+                        queued.read_only_repository_resource_ids
+                        or current_settings.read_only_repository_resource_ids
+                    ),
+                    execution_profile_id=(
+                        queued.execution_profile_id
+                        or current_settings.execution_profile_id
+                    ),
+                )
             queued_actor = None
             if queued.agent_profile_id:
                 if (
