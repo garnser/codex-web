@@ -47,6 +47,12 @@ class GoalContinuationEventService:
     def _event_type(value: str) -> str:
         return str(value or "").strip().lower().replace(".", "/")
 
+    @classmethod
+    def is_terminal_event(cls, event: AgentRuntimeEvent) -> bool:
+        return cls._event_type(event.event_type) in (
+            cls._COMPLETED | cls._FAILED | cls._INTERRUPTED
+        )
+
     @staticmethod
     def _actor(scope: TenantScope) -> AuthenticationActor:
         return AuthenticationActor(
@@ -102,7 +108,7 @@ class GoalContinuationEventService:
         now: float | None = None,
     ) -> GoalContinuationEventResult:
         event_type = self._event_type(event.event_type)
-        if event_type not in self._COMPLETED | self._FAILED | self._INTERRUPTED:
+        if not self.is_terminal_event(event):
             return GoalContinuationEventResult(
                 outcome="ignored",
                 reason="non_terminal_event",
