@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+import asyncio
+from unittest.mock import AsyncMock, Mock
 
 from codex_web.agent_runtime import AgentRuntimeEvent
 from codex_web.runtime.execution import TurnExecutionService
@@ -113,6 +115,57 @@ class AgentRuntimeEventProjectionTests(unittest.TestCase):
         self.assertEqual(events[0]["type"], "thread_history_projection_failed")
         self.assertEqual(events[0]["thread_id"], "thread-web")
         self.assertEqual(events[0]["error_type"], "RuntimeError")
+
+
+class AgentRuntimeDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    def service(self, recovery=False):
+        self.host = SimpleNamespace(
+            hub=SimpleNamespace(publish=AsyncMock()),
+            _record_bot_outbound=AsyncMock(),
+            _record_terminal_turn_result=Mock(return_value=recovery),
+            _schedule_queue_drain=Mock(),
+            _append_bot_event=Mock(),
+        )
+        service = TurnExecutionService(self.host)
+        service.record_thread_activity = Mock()
+        return service
+
+    async def settle(self):
+        for task in list(asyncio.all_tasks()):
+            if task.get_name().startswith("agent-runtime-notification-"):
+                await task
+
+    async def test_adapter_completion_reaches_existing_slack_relay_once(self):
+        service = self.service()
+        service.record_agent_runtime_event("orchestrator", AgentRuntimeEvent(
+            event_type="item.completed", provider_native_session_id="session",
+            payload={"item": {"type": "agent_message", "text": "Owner progress"}},
+        ))
+        await self.settle()
+        self.host._record_bot_outbound.assert_awaited_once()
+        message = self.host._record_bot_outbound.await_args.args[0]
+        self.assertEqual(message["params"]["item"]["type"], "agentMessage")
+        self.assertEqual(message["params"]["threadId"], "orchestrator")
+        self.assertEqual(self.host.hub.publish.await_count, 2)
+
+    async def test_terminal_adapter_event_advances_existing_owner_queue(self):
+        service = self.service()
+        service.record_agent_runtime_event("owner", AgentRuntimeEvent(
+            event_type="turn.completed", provider_native_session_id="session",
+            provider_native_turn_id="turn", payload={},
+        ))
+        await self.settle()
+        self.host._record_terminal_turn_result.assert_called_once()
+        self.host._schedule_queue_drain.assert_called_once_with("owner")
+        self.host._record_bot_outbound.assert_not_awaited()
+
+    async def test_terminal_recovery_retains_control_of_queue(self):
+        service = self.service(recovery=True)
+        service.record_agent_runtime_event("owner", AgentRuntimeEvent(
+            event_type="turn.failed", provider_native_session_id="session", payload={},
+        ))
+        await self.settle()
+        self.host._schedule_queue_drain.assert_not_called()
 
 
 if __name__ == "__main__":
