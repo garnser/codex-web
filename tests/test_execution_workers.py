@@ -456,6 +456,25 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
         self.assertIsNotNone(claimed)
         self.assertEqual(claimed.assigned_worker_id, compatible.id)
 
+    def test_local_worker_capacity_honored_on_registration_and_reconciliation(self):
+        self.identity.bootstrap_service_actor(
+            identity_id="new-local-worker", name="New Local Worker",
+            scope=self.admin.tenant, service_scopes=("execution-worker:run",),
+        )
+        first = self.service.ensure_local_worker(
+            service_identity_id="new-local-worker", version="1.0.0",
+            capabilities=self.worker.capabilities, actor=self.admin,
+            max_concurrency=16,
+        )
+        self.assertEqual(first.max_concurrency, 16)
+        second = self.service.ensure_local_worker(
+            service_identity_id="new-local-worker", version="1.0.0",
+            capabilities=self.worker.capabilities, actor=self.admin,
+            max_concurrency=12,
+        )
+        self.assertEqual(second.id, first.id)
+        self.assertEqual(second.max_concurrency, 12)
+
     def test_execution_readiness_reports_missing_capability(self) -> None:
         self.service.ensure_local_worker(
             service_identity_id="worker-service",
