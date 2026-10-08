@@ -61,6 +61,22 @@ class EventHubTests(unittest.IsolatedAsyncioTestCase):
         hub.subscribe(filtered_listener)
         await hub.publish({"type": "two"})
         self.assertEqual([event["type"] for event in filtered], ["one", "two"])
+    async def test_message_filter_skips_observer_without_dropping_browser_stream(self) -> None:
+        hub = EventHub()
+        browser = FakeWebSocket()
+        seen = []
+        listener = seen.append
+        hub.subscribe_filtered(listener, event_types=("codex.event",))
+        hub.filter_listener_messages(listener, excluded_methods=("item/agentMessage/delta",))
+        await hub.connect(browser)
+        try:
+            await hub.publish({"type": "codex.event", "message": {"method": "item/agentMessage/delta"}})
+            await hub.publish({"type": "codex.event", "message": {"method": "turn/completed"}})
+            await hub._queues[browser].join()
+            self.assertEqual(len(browser.messages), 2)
+            self.assertEqual([e["message"]["method"] for e in seen], ["turn/completed"])
+        finally:
+            hub.disconnect(browser)
 
     async def test_slow_client_does_not_block_other_clients(self) -> None:
         hub = EventHub()

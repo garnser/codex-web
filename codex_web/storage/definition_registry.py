@@ -26,7 +26,9 @@ class DefinitionRegistryStore:
     def __init__(self, store: SQLiteStateStore) -> None:
         self.store = store
 
-    def _decode(self, payload: Any) -> list[DefinitionRecord]:
+    def _decode(
+        self, payload: Any, *, matches: dict[str, str] | None = None
+    ) -> list[DefinitionRecord]:
         if payload is None:
             return []
         if isinstance(payload, list):
@@ -44,6 +46,12 @@ class DefinitionRegistryStore:
         records = payload.get("records", [])
         if not isinstance(records, list):
             raise ValueError("definition registry records must be a list")
+        if matches:
+            records = [
+                item for item in records
+                if isinstance(item, dict)
+                and all(item.get(key) == value for key, value in matches.items())
+            ]
         return [DefinitionRecord.model_validate(item) for item in records]
 
     @staticmethod
@@ -55,6 +63,10 @@ class DefinitionRegistryStore:
 
     def load(self) -> list[DefinitionRecord]:
         return self._decode(self.store.get(self.namespace))
+
+    def load_matching(self, **matches: str) -> list[DefinitionRecord]:
+        """Validate only requested revisions, retaining canonical storage reads."""
+        return self._decode(self.store.get(self.namespace), matches=matches)
 
     def replace(self, records: list[DefinitionRecord]) -> list[DefinitionRecord]:
         self.store.put(self.namespace, self._encode(records))

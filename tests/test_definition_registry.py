@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -69,6 +70,16 @@ class DefinitionRegistryTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tempdir.cleanup()
+
+    def test_targeted_read_validates_only_requested_revision(self) -> None:
+        first = self._draft()
+        second = self._draft()
+        from codex_web.definitions import DefinitionRecord
+        with patch.object(DefinitionRecord, "model_validate", wraps=DefinitionRecord.model_validate) as validate:
+            selected = self.service.get_record(first.record_id)
+        self.assertEqual(selected.record_id, first.record_id)
+        self.assertNotEqual(first.record_id, second.record_id)
+        self.assertEqual(validate.call_count, 1)
 
     def _draft(self, payload: dict | None = None, *, actor: str = "admin"):
         return self.service.create_draft(

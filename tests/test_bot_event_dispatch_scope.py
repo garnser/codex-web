@@ -102,6 +102,45 @@ class BotEventDispatchScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(result, self.binding)
         self.service.recovery.replace_stale_bot_thread.assert_not_awaited()
 
+    async def test_scratch_profile_removes_event_repository_grants(self) -> None:
+        self.service.projects.get.return_value.organization_id = "local"
+        self.service.projects.get.return_value.workspace_id = "default"
+        self.service.agent_profile_resolver = Mock(return_value=(
+            SimpleNamespace(profile_id="coordinator", revision=5,
+                            execution_profile_id="custom-scratch-profile"),
+            SimpleNamespace(identity_id="operator"),
+        ))
+        self.service.execution_profiles = SimpleNamespace(resolve=Mock(
+            return_value=(SimpleNamespace(repository_access="none"), None)
+        ))
+        await self.service.dispatch(
+            self.binding, "coordinate issue", "gitlab",
+            work_item_ref="project/repo#1", repository_resource_id="repo-1",
+            writable_repository_resource_ids=("repo-1",),
+            read_only_repository_resource_ids=("repo-2",),
+        )
+        kwargs = self.execution.enqueue_turn.call_args.kwargs
+        self.assertIsNone(kwargs["repository_resource_id"])
+        self.assertEqual(kwargs["writable_repository_resource_ids"], ())
+        self.assertEqual(kwargs["read_only_repository_resource_ids"], ())
+        self.assertEqual(kwargs["work_item_ref"], "project/repo#1")
+        self.assertEqual(kwargs["execution_profile_id"], "custom-scratch-profile")
+
+    async def test_repository_profile_retains_event_repository_grants(self) -> None:
+        self.service.projects.get.return_value.organization_id = "local"
+        self.service.projects.get.return_value.workspace_id = "default"
+        self.service.execution_profiles = SimpleNamespace(resolve=Mock(
+            return_value=(SimpleNamespace(repository_access="write"), None)
+        ))
+        await self.service.dispatch(
+            self.binding, "implement issue", "gitlab",
+            repository_resource_id="repo-1",
+            writable_repository_resource_ids=("repo-1",),
+        )
+        kwargs = self.execution.enqueue_turn.call_args.kwargs
+        self.assertEqual(kwargs["repository_resource_id"], "repo-1")
+        self.assertEqual(kwargs["writable_repository_resource_ids"], ("repo-1",))
+
     async def test_fresh_replacement_gets_recent_activity_grace(self) -> None:
         self.execution.thread_is_active.return_value = False
         self.execution.thread_has_live_agent_runtime_session.return_value = False

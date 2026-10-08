@@ -146,3 +146,9 @@ class AgentRuntimeUsageStore:
                 upserts={record.id: record.model_dump(mode="json")},
             )
         return record
+
+    def get(self, record_id: str) -> AgentRuntimeUsage | None:
+        with self._lock:
+            self._ensure_records()
+            payload = self.store.record_get(self.namespace, record_id)
+        return AgentRuntimeUsage.model_validate(payload) if payload is not None else None
