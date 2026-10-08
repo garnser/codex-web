@@ -23,6 +23,7 @@ class WorkItemWakeupQueuePolicyTests(unittest.TestCase):
             _load_turn_queues=lambda: self.queues,
             _save_turn_queues=save,
             _truncate_text=lambda value, limit: value[:limit],
+            _work_item_state=lambda _ref: None,
         )
         self.policy = WorkItemWakeupQueuePolicy(self.host)
 
@@ -154,6 +155,62 @@ class WorkItemWakeupQueuePolicyTests(unittest.TestCase):
             ),
         ]
 
+        compacted, changed = self.policy.coalesce(items)
+
+        self.assertIs(compacted, items)
+        self.assertFalse(changed)
+
+    def test_coalesce_discards_gitlab_notification_for_terminal_item(self) -> None:
+        self.host._work_item_state = lambda ref: (
+            SimpleNamespace(
+                current_stage="closed",
+                closed_at=2.0,
+                terminal_outcome="completed",
+            )
+            if ref == "group/project#12"
+            else SimpleNamespace(
+                current_stage="implementation_active",
+                closed_at=None,
+                terminal_outcome=None,
+            )
+        )
+        terminal = self.queued(
+            "terminal",
+            "closed issue update",
+            source="gitlab",
+            work_item_ref="group/project#12",
+        )
+        actionable = self.queued(
+            "actionable",
+            "active issue update",
+            source="gitlab",
+            work_item_ref="group/project#13",
+        )
+
+        compacted, changed = self.policy.coalesce([terminal, actionable])
+
+        self.assertTrue(changed)
+        self.assertEqual([item.id for item in compacted], ["actionable"])
+
+    def test_coalesce_keeps_terminal_handoffs_and_unresolved_notifications(self) -> None:
+        self.host._work_item_state = lambda _ref: SimpleNamespace(
+            current_stage="closed",
+            closed_at=2.0,
+            terminal_outcome="completed",
+        )
+        handoff = self.queued(
+            "handoff",
+            "explicit handoff",
+            source="work-item-handoff",
+            work_item_ref="group/project#12",
+        )
+        unresolved = self.queued(
+            "unresolved",
+            "unknown issue update",
+            source="gitlab",
+        )
+
+        items = [handoff, unresolved]
         compacted, changed = self.policy.coalesce(items)
 
         self.assertIs(compacted, items)

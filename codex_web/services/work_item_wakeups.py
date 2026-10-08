@@ -78,6 +78,24 @@ class WorkItemWakeupQueuePolicy:
         )
         return "\n".join(lines)
 
+    def _work_item_is_terminal(self, ref: str) -> bool:
+        loader = getattr(self.host, "_work_item_state", None)
+        if not callable(loader):
+            loader = getattr(self.host, "_get_work_item_state_record", None)
+        if not callable(loader):
+            return False
+        try:
+            state = loader(ref)
+        except Exception:
+            return False
+        if state is None:
+            return False
+        return bool(
+            getattr(state, "current_stage", None) == "closed"
+            or getattr(state, "closed_at", None) is not None
+            or getattr(state, "terminal_outcome", None) is not None
+        )
+
     def coalesce(self, items: list[QueuedTurn]) -> tuple[list[QueuedTurn], bool]:
         compacted = list(items)
         changed = False
@@ -123,6 +141,19 @@ class WorkItemWakeupQueuePolicy:
             if len(deduplicated) != len(compacted):
                 compacted = deduplicated
                 changed = True
+
+        without_terminal_notifications = [
+            queued
+            for queued in compacted
+            if not (
+                queued.source == "gitlab"
+                and queued.work_item_ref
+                and self._work_item_is_terminal(queued.work_item_ref)
+            )
+        ]
+        if len(without_terminal_notifications) != len(compacted):
+            compacted = without_terminal_notifications
+            changed = True
 
         return (compacted, changed) if changed else (items, False)
 
