@@ -88,7 +88,12 @@ class CodexAgentRuntimeAdapter:
                 )
             )
 
-        hub.subscribe(project)
+        filtered_subscribe = getattr(hub, "subscribe_filtered", None)
+        if callable(filtered_subscribe):
+            filtered_subscribe(project, event_types=("codex.event",))
+        else:
+            # Older compatible hubs retain the callback's existing type gate.
+            hub.subscribe(project)
 
         def unsubscribe() -> None:
             hub.unsubscribe(project)
