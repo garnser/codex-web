@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import FastAPI, HTTPException
 
 from codex_web.agent_runtime import AgentRuntimeResult
+from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.models import (
     ActiveThreadTurn,
@@ -1391,6 +1392,57 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sessions.stopped, ["assignment-1"])
         self.assertEqual(sessions.started, ["assignment-1"])
         self.assertEqual(binding.calls, [])
+        host.codex.request.assert_not_awaited()
+
+    async def test_missing_bootstrap_assignment_reroutes_and_preserves_profile(self) -> None:
+        host, _binding, sessions, service = self._service(bootstrap_thread_id="t1")
+        sessions.session = None
+        service._assignment_record = MagicMock(return_value=None)
+        runtime = ExecutionRuntimeBinding(provider_id="openai", runtime_id="codex", capability_revision=1)
+        profile = AgentProfileExecutionBinding(
+            profile_id="reviewer", profile_revision=4, profile_record_id="reviewer-r4",
+            selected_provider_id="openai", selected_runtime_id="codex",
+        )
+        actor = SimpleNamespace(identity_id="requesting-human")
+        service._select_runtime_binding = AsyncMock(return_value=(runtime, profile))
+        recovered = _Session()
+        assignment = recovered.validate_current()
+        assignment.runtime_binding = runtime
+        assignment.agent_profile = profile
+        recovered.validate_current = MagicMock(return_value=assignment)
+        sessions.start = AsyncMock(side_effect=[RuntimeError("assignment not found"), recovered])
+        service._supersede_thread_bootstrap = AsyncMock(
+            return_value=service.bootstrap_bindings.get_by_thread("t1", service.control_actor)
+        )
+        result = await service.start_thread_turn_now(
+            "t1", project=Project(id="p1", name="Project", path="/workspace/project", model="gpt-6.1-sol"),
+            message="recover", sandbox="workspace-write", approval_policy="on-request",
+            actor=actor, agent_profile_id="reviewer", agent_profile_revision=4,
+        )
+        self.assertEqual(result["turn"]["id"], "turn-1")
+        service._select_runtime_binding.assert_awaited_once_with(
+            project_id="p1", sandbox="workspace-write", trusted_local_codex_session=False,
+            actor=actor, agent_profile_id="reviewer", agent_profile_revision=4,
+        )
+        healing = service._supersede_thread_bootstrap.await_args.kwargs
+        self.assertIs(healing["agent_profile"], profile)
+        self.assertEqual(healing["previous_assignment_id"], "assignment-1")
+        host.codex.request.assert_not_awaited()
+
+    async def test_missing_bootstrap_assignment_routing_denial_stays_fail_closed(self) -> None:
+        host, _binding, sessions, service = self._service(bootstrap_thread_id="t1")
+        sessions.session = None
+        service._assignment_record = MagicMock(return_value=None)
+        service._select_runtime_binding = AsyncMock(side_effect=HTTPException(status_code=403, detail="profile access denied"))
+        sessions.start = AsyncMock()
+        with self.assertRaises(HTTPException) as caught:
+            await service.start_thread_turn_now(
+                "t1", project=Project(id="p1", name="Project", path="/workspace/project"),
+                message="recover", sandbox="workspace-write", approval_policy="on-request",
+                agent_profile_id="reviewer",
+            )
+        self.assertEqual(caught.exception.status_code, 403)
+        sessions.start.assert_not_awaited()
         host.codex.request.assert_not_awaited()
 
     async def test_turn_on_bootstrap_thread_reuses_original_assignment_and_session(self) -> None:

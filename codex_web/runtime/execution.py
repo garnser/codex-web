@@ -1566,6 +1566,7 @@ class TurnExecutionService:
                 session = None
                 assignment = None
                 runtime_binding = None
+                recovered_profile = None
                 try:
                     session_manager, session = self._session_for_assignment(
                         bootstrap.assignment_id
@@ -1600,6 +1601,23 @@ class TurnExecutionService:
                         getattr(assignment, "runtime_binding", None)
                         if assignment is not None
                         else None
+                    )
+                if (
+                    session is None
+                    and assignment is None
+                    and runtime_binding is None
+                    and desired_runtime is None
+                ):
+                    # A durable bootstrap can outlive its historical assignment.
+                    # Re-route through canonical access/authority checks rather
+                    # than guessing a runtime or leaving the thread stuck.
+                    runtime_binding, recovered_profile = await self._select_runtime_binding(
+                        project_id=project.id,
+                        sandbox=effective_sandbox,
+                        trusted_local_codex_session=False,
+                        actor=actor,
+                        agent_profile_id=agent_profile_id,
+                        agent_profile_revision=agent_profile_revision,
                     )
                 switch_needed = (
                     desired_runtime is not None
@@ -1683,7 +1701,7 @@ class TurnExecutionService:
                             assignment,
                             "agent_profile",
                             None,
-                        ),
+                        ) or recovered_profile,
                         # A repository-scoped turn is allowed to supersede a
                         # thread's previous bootstrap repository. Prefer the
                         # requested target here; using the old assignment
@@ -1787,7 +1805,10 @@ class TurnExecutionService:
                         sandbox=effective_sandbox,
                         approval_policy=effective_approval_policy,
                         execution_profile_id=effective_execution_profile_id,
-                        agent_profile=None,
+                        agent_profile=(
+                            getattr(assignment, "agent_profile", None)
+                            or recovered_profile
+                        ),
                         explicit_repository_id=(
                             repository_resource_id
                             or settings.repository_resource_id

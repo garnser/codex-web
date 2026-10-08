@@ -75,6 +75,14 @@ recovery records and runtime events.
 
 ## Steering handoffs
 
+When a durable Thread bootstrap outlives its historical execution assignment,
+an unprefixed model cannot identify the former runtime. Turn admission resolves
+an eligible runtime through canonical routing using the current invoking actor
+and exact requested Agent Profile revision before creating a fresh assignment.
+The recovered bootstrap retains the resolved profile binding. Routing denial
+remains fail-closed; recovery never falls back to the ambient runtime or an
+administrator identity.
+
 Steering a durable queued turn into an active Thread is a fenced handoff. The
 runtime retains the prior active-turn record until interrupt and replacement
 start either commit or roll back. Observational `thread/read` timeouts and
