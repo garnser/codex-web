@@ -238,6 +238,46 @@ class DefinitionRegistryTests(unittest.TestCase):
         self.assertEqual(selected.record_id, project_record.record_id)
         self.assertEqual(other.record_id, global_record.record_id)
 
+    def test_resolve_accepts_verified_payload_when_schema_adds_defaults(self) -> None:
+        legacy_service = DefinitionRegistryService(self.store)
+        legacy_service.register_schema(
+            DefinitionKindSchema(
+                kind="test.compatible-defaults",
+                schema_version="1.0",
+                validate=lambda payload: dict(payload),
+            )
+        )
+        draft = legacy_service.create_draft(
+            DefinitionDraftCreate(
+                definition_id="compatible-defaults",
+                kind="test.compatible-defaults",
+                definition_schema_version="1.0",
+                payload={"name": "legacy"},
+                actor="admin",
+            )
+        )
+        published = legacy_service.publish(
+            draft.record_id,
+            DefinitionPublishRequest(actor="publisher"),
+        )
+
+        current_service = DefinitionRegistryService(self.store)
+        current_service.register_schema(
+            DefinitionKindSchema(
+                kind="test.compatible-defaults",
+                schema_version="1.0",
+                validate=lambda payload: {**payload, "items": []},
+            )
+        )
+
+        resolved = current_service.resolve(
+            definition_id="compatible-defaults",
+            kind="test.compatible-defaults",
+        )
+
+        self.assertEqual(resolved.record_id, published.record_id)
+        self.assertEqual(resolved.checksum, published.checksum)
+
     def test_missing_quarantined_or_incompatible_definitions_fail_closed(self) -> None:
         with self.assertRaises(DefinitionNotFoundError):
             self.service.resolve(

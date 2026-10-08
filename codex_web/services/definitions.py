@@ -180,7 +180,21 @@ class DefinitionRegistryService:
             payload=normalized,
         )
         if checksum != record.checksum:
-            raise DefinitionError("definition payload normalization changed checksum")
+            # Published records created before a schema began materializing
+            # optional defaults legitimately retain the checksum of their
+            # original canonical payload. Verify that payload exactly before
+            # accepting the deterministic normalization; arbitrary payload
+            # changes still fail closed.
+            stored_payload_checksum = definition_checksum(
+                definition_id=record.definition_id,
+                kind=record.kind,
+                definition_schema_version=record.definition_schema_version,
+                payload=dict(record.payload),
+            )
+            if stored_payload_checksum != record.checksum:
+                raise DefinitionError(
+                    "definition payload normalization changed checksum"
+                )
         return record
 
     def _notify(self, event_type: str, record: DefinitionRecord) -> None:
@@ -882,4 +896,3 @@ class DefinitionRegistryService:
             "items": values,
             "count": len(values),
         }
-
