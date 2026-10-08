@@ -21,6 +21,13 @@ An ActionIntent snapshots the information needed to reconstruct why and how an e
 
 A denied authority/policy decision is still persisted for audit, but the intent is created as `cancelled` and is never claimable.
 
+The assignment broker gives branch publication and pull-request merge a bounded
+120-second provider execution deadline and a 180-second claim lease, leaving
+time to record receipts and verification. Other repository operations retain
+their ActionIntent defaults. These bounds are selected by the broker operation;
+callers cannot override either value. Timeout uncertainty and retry authority
+remain unchanged.
+
 ## Outbox lifecycle
 
 The primary states are:

@@ -45,6 +45,7 @@ from codex_web.services.authority_roles import install_authority_roles
 from codex_web.services.control_plane_broker import (
     AssignmentBoundControlPlaneBroker,
     ControlPlaneBrokerDeniedError,
+    ControlPlaneBrokerRequestError,
     ControlPlaneBrokerService,
     DeferredControlPlaneBrokerFactory,
 )
@@ -258,13 +259,14 @@ class _ExecutingActionIntents:
     def __init__(self, registry) -> None:
         self.execution = SimpleNamespace(registry=registry)
         self.created = []
+        self.claimed = []
 
     def create(self, payload, *, actor):
         self.created.append((payload, actor))
         return SimpleNamespace(id="action-intent-gitlab")
 
     def claim(self, payload, *, actor, intent_id):
-        del payload, actor
+        self.claimed.append((payload, actor, intent_id))
         return SimpleNamespace(id=intent_id)
 
     async def execute_claimed(self, intent_id, worker_id, *, actor):
@@ -1007,6 +1009,63 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         created, _actor = action_intents.created[0]
         self.assertEqual(created.binding_id, "gitlab-action-binding")
         self.assertEqual(created.request.resource_ids, ("repository-a",))
+        self.assertEqual(created.timeout_seconds, 120)
+        self.assertEqual(action_intents.claimed[0][0].lease_seconds, 180)
+
+    async def test_repository_action_deadlines_are_operation_bound(self) -> None:
+        action_intents = _ExecutingActionIntents(_ActionRegistry("gitlab"))
+        service = ControlPlaneBrokerService(
+            identity=self.identity,
+            authority=self.authority,
+            work_items=self.work_items,
+            operator=_Operator(),
+            audit=ControlPlaneBrokerAuditStore(self.sqlite),
+            action_intents=action_intents,
+        )
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "repository-write",
+            "execution_workspace_id": "workspace-a",
+            "resource_ids": ("repository-a",),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default",
+                project_id="project-a", writable_repository_ids=("repository-a",),
+                source=RepositoryTargetSource.SINGLE_REPOSITORY,
+                source_ref="repository-a",
+            ),
+        })
+        actor = self.identity.actor_for_identity(assignment.created_by, scope=self.scope)
+        cases = (
+            ("branch/publish", {"branch": "work", "head_revision": "a" * 40}, 120, 180),
+            ("pull-request/merge", {"pull_request_number": 33, "expected_head_sha": "a" * 40}, 120, 180),
+            ("pull-request/upsert", {"head": "work", "base": "main", "title": "Work"}, None, 120),
+        )
+        for path, parameters, timeout, lease in cases:
+            with self.subTest(operation=path):
+                operation = service._resolve_operation(
+                    "POST", f"/api/repository-actions/{path}"
+                ).operation
+                await service._execute_repository_action(
+                    assignment=assignment, worker_actor=self.worker_actor,
+                    requester_actor=actor, operation=operation,
+                    payload={"parameters": parameters},
+                )
+                created = action_intents.created[-1][0]
+                self.assertEqual(created.timeout_seconds, timeout)
+                self.assertEqual(action_intents.claimed[-1][0].lease_seconds, lease)
+                self.assertEqual(created.policy_decision.source, "policy:assignment-control-plane")
+                self.assertEqual(created.request.resource_ids, ("repository-a",))
+                for field, value in parameters.items():
+                    self.assertEqual(created.request.parameters[field], value)
+                if path == "branch/publish":
+                    self.assertEqual(created.request.parameters["execution_workspace_id"], "workspace-a")
+
+                for override in ("timeout_seconds", "lease_seconds"):
+                    with self.assertRaisesRegex(ControlPlaneBrokerRequestError, "unsupported fields"):
+                        await service._execute_repository_action(
+                            assignment=assignment, worker_actor=self.worker_actor,
+                            requester_actor=actor, operation=operation,
+                            payload={"parameters": parameters, override: 3600},
+                        )
 
     def test_repository_binding_resolution_fails_closed_when_ambiguous(self) -> None:
         registry = _ActionRegistry()
