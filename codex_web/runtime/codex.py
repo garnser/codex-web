@@ -540,11 +540,17 @@ class CodexRuntime:
                 "_thread_handoff_in_progress",
                 None,
             )
+            active_check = getattr(self.host, "_thread_is_active", None)
+            handoff_active = bool(
+                callable(handoff_check) and handoff_check(thread_id)
+            )
+            turn_active = bool(
+                callable(active_check) and active_check(thread_id)
+            )
             preserve_generation = (
                 method == "thread/read"
                 and thread_id
-                and callable(handoff_check)
-                and handoff_check(thread_id)
+                and (handoff_active or turn_active)
             )
             if preserve_generation:
                 if self.metrics:

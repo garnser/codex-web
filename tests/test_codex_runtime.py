@@ -39,6 +39,7 @@ class _Host:
         self.approval_policy = "on-request"
         self.approval_requests: list[dict] = []
         self.handoff_threads: set[str] = set()
+        self.active_threads: set[str] = set()
 
     def _approval_thread_id(self, message: dict) -> str:
         return "thread-1"
@@ -72,6 +73,9 @@ class _Host:
 
     def _thread_handoff_in_progress(self, thread_id: str) -> bool:
         return thread_id in self.handoff_threads
+
+    def _thread_is_active(self, thread_id: str) -> bool:
+        return thread_id in self.active_threads
 
 
 class TrustedLocalCodexSecurityPolicyTests(unittest.TestCase):
@@ -352,6 +356,30 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.runtime._send = AsyncMock()
         self.runtime.stop = AsyncMock()
         self.host.handoff_threads.add("thread-1")
+
+        with patch("codex_web.runtime.codex.request_timeout", return_value=0.001):
+            with self.assertRaises(HTTPException) as caught:
+                await self.runtime.request(
+                    "thread/read",
+                    {"threadId": "thread-1"},
+                )
+
+        self.assertEqual(caught.exception.status_code, 504)
+        self.assertTrue(self.runtime.ready.is_set())
+        self.runtime.stop.assert_not_awaited()
+        self.assertEqual(
+            self.host.bot_events[-1]["type"],
+            "thread_read_timeout_handoff_preserved",
+        )
+
+    async def test_thread_read_timeout_preserves_generation_during_active_turn(self) -> None:
+        process = SimpleNamespace(poll=lambda: None)
+        self.runtime.proc = process
+        self.runtime.ready.set()
+        self.runtime.ensure_started = AsyncMock()
+        self.runtime._send = AsyncMock()
+        self.runtime.stop = AsyncMock()
+        self.host.active_threads.add("thread-1")
 
         with patch("codex_web.runtime.codex.request_timeout", return_value=0.001):
             with self.assertRaises(HTTPException) as caught:
