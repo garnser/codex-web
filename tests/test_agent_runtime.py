@@ -479,6 +479,16 @@ class CodexAgentRuntimeAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(health, AgentRuntimeHealth.HEALTHY)
         self.assertEqual(hub.listeners, set())
 
+    async def test_codex_capacity_refresh_verifies_real_account_when_proof_supported(self) -> None:
+        calls = []
+        async def request(method, params):
+            calls.append((method, params))
+            return {"account": {"type": "chatgpt"}} if method == "account/read" else {"rateLimits": {}}
+        transport = SimpleNamespace(request=request, authenticated_account_available=lambda: False)
+        result = await CodexAgentRuntimeAdapter(transport).capacity_snapshot()
+        self.assertEqual(calls, [("account/read", {"refreshToken": False}), ("account/rateLimits/read", {})])
+        self.assertEqual(result, {"rateLimits": {}})
+
     async def test_codex_capacity_snapshot_uses_structured_rate_limit_rpc(self) -> None:
         transport = SimpleNamespace(
             request=AsyncMock(
