@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
 
@@ -119,6 +119,25 @@ class AutonomyActionDelegationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AutonomyBoundedDispatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_identical_idle_owner_payload_has_bounded_dedup_window(self):
+        events = SimpleNamespace(ingest=AsyncMock(return_value=SimpleNamespace(
+            inserted=False, event=SimpleNamespace(event_id="event-1"))))
+        service = AutonomyService(
+            runtime=SimpleNamespace(project_scope=lambda _project: ("org", "workspace")),
+            controller=object(), canonical_events=events,
+        )
+        keys = []
+        with patch("codex_web.services.autonomy.WatchdogDispatchPolicy.cooldown_seconds", return_value=120):
+            for now in [1200, 1259, 1320]:
+                with patch("codex_web.services.autonomy.time.time", return_value=now):
+                    await service._bounded_reasoning_dispatch(
+                        SimpleNamespace(thread_id="owner"), "resume", "owner-work-watchdog",
+                        cycle_key="owner-work:owner", payload={"project_id": "project-a"},
+                    )
+                keys.append(events.ingest.await_args.kwargs["idempotency_key"])
+        self.assertEqual(keys[0], keys[1])
+        self.assertNotEqual(keys[1], keys[2])
+
     async def test_canonical_event_uses_project_scope(self) -> None:
         runtime = SimpleNamespace(
             project_scope=lambda project_id: (
