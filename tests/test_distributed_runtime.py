@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+import threading
+from contextlib import ExitStack
+from unittest.mock import patch
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -614,6 +617,35 @@ class _SwitchTransport:
 
 
 class DurableOutboxTests(unittest.IsolatedAsyncioTestCase):
+    async def test_outbox_storage_never_blocks_the_event_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            events = CanonicalEventStore(SQLiteStateStore(Path(root) / "state.sqlite3"))
+            transport = _SwitchTransport()
+            bus = CanonicalEventBus(events, transport=transport, outbox_backoff_seconds=0)
+            ingestion = CanonicalEventIngestionService(bus)
+            loop_thread = threading.get_ident()
+            calls = []
+            with ExitStack() as patches:
+                for name in ("load", "mark_outbox_published", "mark_outbox_failed"):
+                    original = getattr(events, name)
+                    def checked(*args, _name=name, _original=original, **kwargs):
+                        self.assertNotEqual(threading.get_ident(), loop_thread,
+                                            f"{_name} blocked the event loop")
+                        calls.append(_name)
+                        return _original(*args, **kwargs)
+                    patches.enter_context(patch.object(events, name, side_effect=checked))
+                delivery = await ingestion.ingest(event_type="test.event", source="test",
+                    idempotency_key="offload", payload={"value": 1}, tenant_id="org",
+                    workspace_id="ws")
+                self.assertTrue(delivery.transport_pending)
+                transport.fail_publish = False
+                recovered = await bus.dispatch_outbox_once(now=10_000_000_000.0)
+                self.assertEqual(recovered["published"], 1)
+            self.assertIn("load", calls)
+            self.assertIn("mark_outbox_failed", calls)
+            self.assertIn("mark_outbox_published", calls)
+            self.assertEqual(events.outbox_status()["published"], 1)
+
     async def test_commit_before_publish_recovers_after_transport_returns(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             store = SQLiteStateStore(Path(root) / "state.sqlite3")

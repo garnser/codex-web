@@ -120,7 +120,8 @@ class CanonicalEventBus:
                 attempt=max(1, attempt),
             )
         except Exception as exc:
-            self.store.mark_outbox_failed(
+            await asyncio.to_thread(
+                self.store.mark_outbox_failed,
                 event.event_id,
                 error_code=f"{type(exc).__name__}",
                 now=now,
@@ -131,7 +132,8 @@ class CanonicalEventBus:
                 ),
             )
             return None, True
-        self.store.mark_outbox_published(
+        await asyncio.to_thread(
+            self.store.mark_outbox_published,
             event.event_id,
             backend_id=delivery.backend_id,
             delivery_id=delivery.transport_message_id or delivery.id,
@@ -163,7 +165,8 @@ class CanonicalEventBus:
         transport_delivery_id = None
         transport_pending = False
         if self.transport is not None:
-            outbox = self.store.load().outbox.get(event.event_id)
+            state = await asyncio.to_thread(self.store.load)
+            outbox = state.outbox.get(event.event_id)
             attempt = (outbox.attempts + 1) if outbox is not None else 1
             transport_delivery_id, transport_pending = await self._publish_transport(
                 event,
