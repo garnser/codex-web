@@ -567,9 +567,16 @@ class _SessionManager:
 
 
 class _BootstrapBindings:
-    def __init__(self, thread_id: str | None = None) -> None:
+    def __init__(
+        self,
+        thread_id: str | None = None,
+        *,
+        initial_turn_pending: bool = False,
+    ) -> None:
         self.thread_id = thread_id
+        self.initial_turn_pending = initial_turn_pending
         self.rebinds = []
+        self.initial_turn_started = []
 
     def get_by_thread(self, thread_id, actor):
         if self.thread_id != thread_id:
@@ -582,11 +589,16 @@ class _BootstrapBindings:
             execution_id="bootstrap-exec",
             assignment_id="assignment-1",
             execution_workspace_id="workspace-1",
+            initial_turn_pending=self.initial_turn_pending,
         )
 
     def rebind(self, **kwargs):
         self.rebinds.append(kwargs)
         return SimpleNamespace(**kwargs)
+
+    def mark_initial_turn_started(self, thread_id, actor):
+        self.initial_turn_started.append((thread_id, actor))
+        self.initial_turn_pending = False
 
 
 class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
@@ -772,6 +784,48 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.last_inputs["t1"]["assignment_id"], "assignment-1")
         self.assertEqual(host.events[-1]["assignment_id"], "assignment-1")
         self.assertEqual(host.hub.events[-1]["type"], "queue.status")
+
+    async def test_fresh_bootstrap_starts_first_turn_without_resume(self) -> None:
+        host = _Host()
+        binding = _BindingService()
+        sessions = _SessionManager()
+        bootstraps = _BootstrapBindings(
+            "t1",
+            initial_turn_pending=True,
+        )
+        service = TurnExecutionService(
+            host,
+            binding_service=binding,
+            session_manager=sessions,
+            bootstrap_bindings=bootstraps,
+            control_actor=SimpleNamespace(identity_id="control"),
+        )
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        result = await service.start_thread_turn_now(
+            "t1",
+            project=project,
+            message="start replacement work",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+            source="queued:gitlab",
+        )
+
+        self.assertEqual(result["turn"]["id"], "turn-1")
+        self.assertEqual(
+            [method for method, _params in sessions.session.requests],
+            ["turn/start"],
+        )
+        self.assertEqual(
+            [item[0] for item in bootstraps.initial_turn_started],
+            ["t1"],
+        )
 
     async def test_work_item_metadata_supplies_writable_repository_scope(self) -> None:
         host, binding, _sessions, service = self._service()

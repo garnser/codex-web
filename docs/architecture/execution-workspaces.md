@@ -32,6 +32,14 @@ The pinned Codex app-server generates the canonical thread ID during `thread/sta
 
 A control-plane generated immutable bootstrap ID is used as `thread_bootstrap:<bootstrap-id>` to acquire the workspace and worker assignment first. The returned Codex thread ID is then recorded in a separate immutable, tenant-scoped bootstrap binding that references the existing execution, assignment, and execution workspace.
 
+The binding also carries a durable initial-turn lifecycle marker. A newly
+created provider session starts its first turn directly: Codex may return the
+thread ID before it has written the first rollout, so attempting to resume that
+ID first would misclassify the new session as stale. After the first accepted
+turn, codex-web clears the marker and all later turns use the normal explicit
+resume path. Bindings written before this marker existed default to the
+already-initialized state.
+
 The original assignment/workspace subject is never rewritten to the returned thread ID. This preserves deterministic IDs and historical provenance. A later lookup may map the thread ID back to the still-live bootstrap assignment/session; conflicting rebinding or cross-tenant lookup fails closed. If the isolated process/session is lost and cannot be safely resumed, recovery must mark/fail the canonical execution rather than falling back to the control-plane Codex runtime.
 
 Bootstrap and ordinary `thread` subjects never synchronize Work Item execution state. Only `work_item` subjects populate or update legacy Work Item execution references.

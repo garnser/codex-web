@@ -40,6 +40,13 @@ class ThreadBootstrapBinding(BaseModel):
     execution_workspace_id: str = Field(min_length=1)
     created_by: str = Field(min_length=1)
     created_at: float = Field(default_factory=time.time)
+    # ``thread/start`` returns the provider-native ID before Codex writes the
+    # first rollout.  The first turn must therefore go straight to
+    # ``turn/start``; trying ``thread/resume`` first treats the not-yet-created
+    # rollout as stale and can trigger an unbounded replacement loop.  Old
+    # bindings default to False because their first turn already predates this
+    # lifecycle marker.
+    initial_turn_pending: bool = False
 
     @property
     def subject(self) -> ExecutionSubject:

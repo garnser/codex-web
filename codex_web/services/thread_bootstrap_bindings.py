@@ -86,6 +86,7 @@ class ThreadBootstrapBindingService:
             assignment_id=assignment_id,
             execution_workspace_id=execution_workspace_id,
             created_by=actor.identity_id,
+            initial_turn_pending=True,
         )
 
         def apply(state):
@@ -169,6 +170,7 @@ class ThreadBootstrapBindingService:
             assignment_id=assignment_id,
             execution_workspace_id=execution_workspace_id,
             created_by=actor.identity_id,
+            initial_turn_pending=True,
         )
 
         def apply(state):
@@ -252,6 +254,36 @@ class ThreadBootstrapBindingService:
         raise ThreadBootstrapBindingNotFoundError(
             "thread bootstrap binding not found"
         )
+
+    def mark_initial_turn_started(
+        self,
+        thread_id: str,
+        actor: AuthenticationActor,
+    ) -> ThreadBootstrapBinding:
+        normalized = self._value(thread_id, "thread_id")
+        selected: dict[str, ThreadBootstrapBinding] = {}
+
+        def apply(state):
+            bindings: list[ThreadBootstrapBinding] = []
+            for item in state.bindings:
+                if (
+                    self._scope_matches(item, actor)
+                    and item.thread_id == normalized
+                ):
+                    item = item.model_copy(
+                        update={"initial_turn_pending": False}
+                    )
+                    selected["item"] = item
+                bindings.append(item)
+            if "item" not in selected:
+                raise ThreadBootstrapBindingNotFoundError(
+                    "thread bootstrap binding not found"
+                )
+            state.bindings = bindings
+            return state
+
+        self.store.update(apply)
+        return selected["item"]
 
     def list(
         self,

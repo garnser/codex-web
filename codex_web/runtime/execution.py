@@ -2265,32 +2265,37 @@ class TurnExecutionService:
                 getattr(getattr(session, "runtime", None), "native_session_id", None)
                 or thread_id
             )
-            try:
-                await runtime_adapter.resume_session(
-                    native_session_id,
-                    runtime_session_request,
-                )
-            except Exception as exc:
-                capacity_error = await self._capacity_error(runtime_binding, exc)
-                if capacity_error is not None:
-                    raise capacity_error from exc
-                if not trusted_local_codex_session:
-                    with contextlib.suppress(Exception):
-                        await session_manager.complete(
-                            assignment_id,
-                            succeeded=False,
-                            failure_code=(
-                                "codex_thread_resume_failed"
-                                if runtime_binding is None
-                                or (
-                                    runtime_binding.provider_id == "openai"
-                                    and runtime_binding.runtime_id == "codex"
-                                )
-                                else "agent_thread_resume_failed"
-                            ),
-                            failure_message=str(exc)[:500],
-                        )
-                raise
+            initial_turn_pending = bool(
+                bootstrap is not None
+                and getattr(bootstrap, "initial_turn_pending", False)
+            )
+            if not initial_turn_pending:
+                try:
+                    await runtime_adapter.resume_session(
+                        native_session_id,
+                        runtime_session_request,
+                    )
+                except Exception as exc:
+                    capacity_error = await self._capacity_error(runtime_binding, exc)
+                    if capacity_error is not None:
+                        raise capacity_error from exc
+                    if not trusted_local_codex_session:
+                        with contextlib.suppress(Exception):
+                            await session_manager.complete(
+                                assignment_id,
+                                succeeded=False,
+                                failure_code=(
+                                    "codex_thread_resume_failed"
+                                    if runtime_binding is None
+                                    or (
+                                        runtime_binding.provider_id == "openai"
+                                        and runtime_binding.runtime_id == "codex"
+                                    )
+                                    else "agent_thread_resume_failed"
+                                ),
+                                failure_message=str(exc)[:500],
+                            )
+                    raise
 
             if not preserve_active_handoff:
                 self.mark_thread_active(
@@ -2392,6 +2397,11 @@ class TurnExecutionService:
                     native_session_id,
                     runtime_turn_request,
                 )
+                if initial_turn_pending and self.bootstrap_bindings is not None:
+                    self.bootstrap_bindings.mark_initial_turn_started(
+                        thread_id,
+                        self.control_actor,
+                    )
                 remember_native_session_id = getattr(
                     session,
                     "remember_native_session_id",

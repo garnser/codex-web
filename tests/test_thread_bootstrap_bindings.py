@@ -69,6 +69,20 @@ class ThreadBootstrapBindingTests(unittest.TestCase):
         self.assertEqual(self.service.get_by_bootstrap("bootstrap-1", self.actor), first)
         self.assertEqual(self.service.list(self.actor), (first,))
 
+    def test_binding_persists_initial_turn_lifecycle(self) -> None:
+        binding = self._bind()
+
+        self.assertTrue(binding.initial_turn_pending)
+        updated = self.service.mark_initial_turn_started(
+            binding.thread_id,
+            self.actor,
+        )
+
+        self.assertFalse(updated.initial_turn_pending)
+        self.assertFalse(
+            self.service.get_by_thread(binding.thread_id, self.actor).initial_turn_pending
+        )
+
     def test_bootstrap_cannot_be_rebound_to_different_thread_or_execution(self) -> None:
         self._bind()
 
