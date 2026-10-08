@@ -804,7 +804,7 @@ class ExecutionWorkerService:
             updated.append(replacement)
             return state
 
-        self.store.update(apply)
+        self.store.update_worker(worker_id, apply)
         return updated[0]
 
     def set_lifecycle(
@@ -1218,9 +1218,9 @@ class ExecutionWorkerService:
         actor: AuthenticationActor,
     ) -> ExecutionAssignment:
         updated: list[ExecutionAssignment] = []
-        now = time.time()
 
         def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            now = time.time()
             worker = self._worker(state, worker_id, actor)
             assignment = self._assignment(state, assignment_id, actor)
             lease = self._validate_lease(
@@ -1251,7 +1251,7 @@ class ExecutionWorkerService:
             updated.append(replacement)
             return state
 
-        self.store.update(apply)
+        self.store.update_assignment(worker_id, assignment_id, apply)
         result = updated[0]
         self._notify_assignment(result, "assignment_renewed")
         return result
