@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import weakref
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -53,6 +54,7 @@ class AutonomyController:
         self.action_intents = action_intents
         self.policy = policy
         self.audit = audit
+        self._process_locks = weakref.WeakValueDictionary()
 
     def status(self) -> dict[str, Any]:
         state = self.store.load()
@@ -352,7 +354,38 @@ class AutonomyController:
             )
         )
 
+    async def _storage_call(self, function, *args, **kwargs):
+        # Finish canonical persistence before releasing same-event ownership,
+        # even if the HTTP request is cancelled while its transaction runs.
+        task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+
     async def process(
+        self, event: CanonicalEventEnvelope, observation: AutonomyObservation, *,
+        cycle_key: str | None = None, depth: int = 0,
+        reasoner: Reasoner | None = None, actor: AuthenticationActor | None = None,
+    ) -> AutonomyCycleRecord:
+        key = str(cycle_key or event.event_id).strip()
+        if not key:
+            raise ValueError("autonomy cycle key must not be empty")
+        if not hasattr(self, "_process_locks"):
+            self._process_locks = weakref.WeakValueDictionary()
+        identity = (key, event.event_id)
+        lock = self._process_locks.get(identity)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._process_locks[identity] = lock
+        async with lock:
+            return await self._process_owned(
+                event, observation, cycle_key=key, depth=depth,
+                reasoner=reasoner, actor=actor,
+            )
+
+    async def _process_owned(
         self,
         event: CanonicalEventEnvelope,
         observation: AutonomyObservation,
@@ -366,11 +399,11 @@ class AutonomyController:
         if not key:
             raise ValueError("autonomy cycle key must not be empty")
 
-        existing = self._existing(key, event.event_id)
+        existing = await self._storage_call(self._existing, key, event.event_id)
         if existing is not None:
             return existing
 
-        control = self.store.load().control
+        control = (await self._storage_call(self.store.load)).control
         started_at = time.time()
         project_value = event.payload.get("project_id") if isinstance(event.payload, dict) else None
         event_project_id = (
@@ -416,7 +449,7 @@ class AutonomyController:
                 reason=scoped_pause_reason,
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor)
+            await self._storage_call(self._persist_cycle, cycle, event, actor)
             return cycle
 
         if control.mode != "active":
@@ -429,7 +462,7 @@ class AutonomyController:
                 reason=f"autonomy_{control.mode.value}",
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor)
+            await self._storage_call(self._persist_cycle, cycle, event, actor)
             return cycle
 
         exclusive_scope_reason = self._exclusive_goal_scope_reason(
@@ -446,7 +479,7 @@ class AutonomyController:
                 reason=exclusive_scope_reason,
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor)
+            await self._storage_call(self._persist_cycle, cycle, event, actor)
             return cycle
 
         if depth > control.max_recursion_depth:
@@ -459,8 +492,8 @@ class AutonomyController:
                 reason="maximum_recursion_depth_exceeded",
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor)
-            self._record_dead_letter(cycle, reason=cycle.reason)
+            await self._storage_call(self._persist_cycle, cycle, event, actor)
+            await self._storage_call(self._record_dead_letter, cycle, reason=cycle.reason)
             return cycle
 
         if observation.deterministic_resolved:
@@ -473,7 +506,7 @@ class AutonomyController:
                 reason=observation.reason,
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor)
+            await self._storage_call(self._persist_cycle, cycle, event, actor)
             return cycle
 
         if event_level == AutonomyLevel.OBSERVE:
@@ -488,7 +521,7 @@ class AutonomyController:
                 policy_fingerprint=event_policy_fingerprint,
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor)
+            await self._storage_call(self._persist_cycle, cycle, event, actor)
             return cycle
 
         if (
@@ -504,7 +537,7 @@ class AutonomyController:
                 reason="event_type_not_enabled_for_reasoning",
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor)
+            await self._storage_call(self._persist_cycle, cycle, event, actor)
             return cycle
 
         if observation.reasoning_score < control.reasoning_threshold:
@@ -517,10 +550,10 @@ class AutonomyController:
                 reason="reasoning_threshold_not_met",
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor)
+            await self._storage_call(self._persist_cycle, cycle, event, actor)
             return cycle
 
-        if self._cooldown_active(event, cycle_key=key, control=control, now=started_at):
+        if await self._storage_call(self._cooldown_active, event, cycle_key=key, control=control, now=started_at):
             cycle = self._cycle(
                 event,
                 cycle_key=key,
@@ -530,7 +563,7 @@ class AutonomyController:
                 reason="reasoning_cooldown_active",
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor)
+            await self._storage_call(self._persist_cycle, cycle, event, actor)
             return cycle
 
         if control.dry_run or control.simulation:
@@ -547,7 +580,7 @@ class AutonomyController:
                 reason="reasoning_would_run",
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor)
+            await self._storage_call(self._persist_cycle, cycle, event, actor)
             return cycle
 
         if reasoner is None:
@@ -560,8 +593,8 @@ class AutonomyController:
                 reason="reasoner_unconfigured",
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor)
-            self._record_dead_letter(cycle, reason=cycle.reason)
+            await self._storage_call(self._persist_cycle, cycle, event, actor)
+            await self._storage_call(self._record_dead_letter, cycle, reason=cycle.reason)
             return cycle
 
         attempts = 0
@@ -609,8 +642,8 @@ class AutonomyController:
                 started_at=started_at,
                 last_error=str(error)[:1000] if error else None,
             )
-            self._persist_cycle(cycle, event, actor)
-            self._record_dead_letter(
+            await self._storage_call(self._persist_cycle, cycle, event, actor)
+            await self._storage_call(self._record_dead_letter, 
                 cycle,
                 reason=cycle.reason,
                 error=cycle.last_error,
@@ -651,8 +684,8 @@ class AutonomyController:
                 budget_usage=base_usage,
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor, reasoning_result=result)
-            self._record_dead_letter(cycle, reason=cycle.reason)
+            await self._storage_call(self._persist_cycle, cycle, event, actor, reasoning_result=result)
+            await self._storage_call(self._record_dead_letter, cycle, reason=cycle.reason)
             return cycle
 
         if event_level == AutonomyLevel.RECOMMEND:
@@ -671,7 +704,7 @@ class AutonomyController:
                 budget_usage=base_usage,
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor, reasoning_result=result)
+            await self._storage_call(self._persist_cycle, cycle, event, actor, reasoning_result=result)
             return cycle
 
         if result.actions and (self.action_intents is None or actor is None):
@@ -690,8 +723,8 @@ class AutonomyController:
                 budget_usage=base_usage,
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor, reasoning_result=result)
-            self._record_dead_letter(cycle, reason=cycle.reason)
+            await self._storage_call(self._persist_cycle, cycle, event, actor, reasoning_result=result)
+            await self._storage_call(self._record_dead_letter, cycle, reason=cycle.reason)
             return cycle
 
         if event_level == AutonomyLevel.PREPARE:
@@ -711,8 +744,8 @@ class AutonomyController:
                     budget_usage=base_usage,
                     started_at=started_at,
                 )
-                self._persist_cycle(cycle, event, actor, reasoning_result=result)
-                self._record_dead_letter(cycle, reason=cycle.reason)
+                await self._storage_call(self._persist_cycle, cycle, event, actor, reasoning_result=result)
+                await self._storage_call(self._record_dead_letter, cycle, reason=cycle.reason)
                 return cycle
             try:
                 for action in result.actions:
@@ -740,7 +773,7 @@ class AutonomyController:
                     started_at=started_at,
                     last_error=str(exc)[:1000],
                 )
-                self._persist_cycle(cycle, event, actor, reasoning_result=result)
+                await self._storage_call(self._persist_cycle, cycle, event, actor, reasoning_result=result)
                 return cycle
             cycle = self._cycle(
                 event,
@@ -757,7 +790,7 @@ class AutonomyController:
                 budget_usage=base_usage,
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor, reasoning_result=result)
+            await self._storage_call(self._persist_cycle, cycle, event, actor, reasoning_result=result)
             return cycle
 
         # Standalone/legacy controller usage keeps the historical ActionIntent
@@ -795,7 +828,7 @@ class AutonomyController:
                 budget_usage=base_usage,
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor, reasoning_result=result)
+            await self._storage_call(self._persist_cycle, cycle, event, actor, reasoning_result=result)
             return cycle
 
         decisions = []
@@ -836,7 +869,7 @@ class AutonomyController:
                 started_at=started_at,
                 last_error=str(exc)[:1000],
             )
-            self._persist_cycle(cycle, event, actor, reasoning_result=result)
+            await self._storage_call(self._persist_cycle, cycle, event, actor, reasoning_result=result)
             return cycle
 
         decisions_tuple = tuple(decisions)
@@ -863,7 +896,7 @@ class AutonomyController:
                 budget_usage=usage,
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor, reasoning_result=result)
+            await self._storage_call(self._persist_cycle, cycle, event, actor, reasoning_result=result)
             return cycle
 
         denied_decisions = [
@@ -891,7 +924,7 @@ class AutonomyController:
                 budget_usage=usage,
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor, reasoning_result=result)
+            await self._storage_call(self._persist_cycle, cycle, event, actor, reasoning_result=result)
             return cycle
 
         approval_ids = []
@@ -937,7 +970,7 @@ class AutonomyController:
                 budget_usage=usage,
                 started_at=started_at,
             )
-            self._persist_cycle(cycle, event, actor, reasoning_result=result)
+            await self._storage_call(self._persist_cycle, cycle, event, actor, reasoning_result=result)
             return cycle
 
         prepared_actions = []
@@ -984,7 +1017,7 @@ class AutonomyController:
                 started_at=started_at,
                 last_error=str(exc)[:1000],
             )
-            self._persist_cycle(cycle, event, actor, reasoning_result=result)
+            await self._storage_call(self._persist_cycle, cycle, event, actor, reasoning_result=result)
             return cycle
 
         # Consume exact approved targets before exposing executable intents to
@@ -1050,6 +1083,6 @@ class AutonomyController:
             budget_usage=usage,
             started_at=started_at,
         )
-        self._persist_cycle(cycle, event, actor, reasoning_result=result)
+        await self._storage_call(self._persist_cycle, cycle, event, actor, reasoning_result=result)
         return cycle
 
