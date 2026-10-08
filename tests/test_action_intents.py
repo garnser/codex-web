@@ -14,6 +14,7 @@ from codex_web.action_intents import (
     ActionIntentClaimRequest,
     ActionIntentCreate,
     ActionIntentReconcileRequest,
+    ActionIntentRetryPolicy,
     ActionIntentRetryRequest,
     ActionIntentRollbackRequest,
     ActionIntentStatus,
@@ -509,6 +510,7 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         )
         intent = self._create(
             expected_evidence=(requirement,),
+            retry_policy=ActionIntentRetryPolicy(max_attempts=1),
             work_item_success=ActionIntentWorkItemSuccess(
                 current_stage="ready_for_validation",
             ),
@@ -533,7 +535,7 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         )
         reconciled = await self.service.reconcile(
             intent.id,
-            ActionIntentReconcileRequest(retry_if_idempotent=False),
+            ActionIntentReconcileRequest(retry_if_idempotent=True),
             actor=self.worker_actor,
         )
 
@@ -934,6 +936,73 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             retried.request.idempotency_key,
             intent.request.idempotency_key,
+        )
+
+    async def test_reconciliation_does_not_requeue_exhausted_uncertain_action(self) -> None:
+        provider = _SlowProvider()
+        self.registry.register(provider)
+        binding = self.registry.bind(
+            ActionProviderBindingCreate(
+                provider_type=provider.provider_type,
+                provider_instance=provider.provider_instance,
+                resource_ids=(self.resource.id,),
+            ),
+            actor=self.actor,
+            resources=self.resources,
+        )
+        intent = self.service.create(
+            ActionIntentCreate(
+                binding_id=binding.id,
+                request=ActionRequest(
+                    action_id="slow.write",
+                    organization_id="local",
+                    workspace_id="default",
+                    resource_ids=(self.resource.id,),
+                ),
+                timeout_seconds=0.001,
+                retry_policy=ActionIntentRetryPolicy(max_attempts=1),
+            ),
+            actor=self.actor,
+        )
+        uncertain = await self._execute(intent)
+        self.assertEqual(uncertain.status, ActionIntentStatus.UNCERTAIN)
+        history_before = self.service.history(intent.id, self.actor)
+
+        reconciled = await self.service.reconcile(
+            intent.id,
+            ActionIntentReconcileRequest(retry_if_idempotent=True),
+            actor=self.worker_actor,
+        )
+
+        self.assertEqual(
+            reconciled.status,
+            ActionIntentStatus.REQUIRES_RECONCILIATION,
+        )
+        self.assertEqual(reconciled.attempt, 1)
+        self.assertIsNone(reconciled.lease)
+        self.assertIn("retry budget exhausted (1/1)", reconciled.last_error or "")
+        self.assertIn(
+            "newly authorized replacement ActionIntent",
+            reconciled.last_error or "",
+        )
+        self.assertIsNotNone(reconciled.failure)
+        self.assertEqual(reconciled.failure.reason_code.value, "unknown_outcome")
+        self.assertTrue(reconciled.failure.requires_reconciliation)
+        self.assertTrue(reconciled.failure.details["retry_budget_exhausted"])
+        self.assertEqual(reconciled.failure.details["attempt"], 1)
+        self.assertEqual(reconciled.failure.details["max_attempts"], 1)
+        history_after = self.service.history(intent.id, self.actor)
+        self.assertEqual(history_after["receipts"], history_before["receipts"])
+        self.assertEqual(
+            history_after["verifications"],
+            history_before["verifications"],
+        )
+        self.assertIsNone(
+            self.service.claim(
+                ActionIntentClaimRequest(worker_id="worker-1", lease_seconds=30),
+                actor=self.worker_actor,
+                intent_id=intent.id,
+            )
         )
 
     async def test_rollback_is_recorded_as_terminal_history(self) -> None:

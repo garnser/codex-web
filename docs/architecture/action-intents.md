@@ -112,6 +112,15 @@ Reconciliation can:
 - requeue an action only when provider idempotency makes replay safe;
 - retain `requires_reconciliation` when no trustworthy result exists.
 
+Provider idempotency makes a replay technically safe; it does not grant more
+retry authority. When the immutable attempt budget is exhausted, reconciliation
+must not return the intent to `pending`. A known provider failure remains
+`failed`; an unknown outcome remains `requires_reconciliation`, with the
+exhausted/nonclaimable condition visible in the existing operator surface. If
+delivery is still required after the provider outcome is established, an
+authorized caller creates a replacement ActionIntent that passes current
+authority, policy, security, provider, and resource checks.
+
 A rolled-back provider result is canonicalized as `rolled_back`.
 
 ## Rollback
