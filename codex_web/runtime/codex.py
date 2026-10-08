@@ -216,6 +216,8 @@ class CodexRuntime:
         self._pipe_executor: ThreadPoolExecutor | None = None
         self._authentication_epoch = 0
         self._authenticated_account_proof = None
+        self._authenticated_account_refresh_task = None
+        self._authenticated_account_refresh_requested = False
 
     AUTHENTICATED_ACCOUNT_MAX_AGE_SECONDS = 120.0
 
@@ -237,6 +239,38 @@ class CodexRuntime:
     def _invalidate_authenticated_account(self) -> None:
         self._authentication_epoch = getattr(self, "_authentication_epoch", 0) + 1
         self._authenticated_account_proof = None
+        self._authenticated_account_refresh_requested = False
+
+    def _refresh_authenticated_account_after_notification(self) -> None:
+        """Coalesce positive auth changes into at most two real metadata RPCs.
+
+        Never await a response inside the reader that must deliver it. A second
+        read handles changes during the first; continuous changes remain
+        unavailable until the next ordinary quota refresh or notification.
+        """
+        self._authenticated_account_refresh_requested = True
+        task = getattr(self, "_authenticated_account_refresh_task", None)
+        if task is not None and not task.done():
+            return
+
+        async def refresh() -> None:
+            try:
+                for _ in range(2):
+                    self._authenticated_account_refresh_requested = False
+                    try:
+                        await self.request("account/read", {"refreshToken": False})
+                    except Exception:
+                        # Only a successful real response publishes evidence.
+                        # Failure leaves the existing execution guards in force.
+                        return
+                    if not self._authenticated_account_refresh_requested:
+                        return
+            finally:
+                self._authenticated_account_refresh_task = None
+
+        self._authenticated_account_refresh_task = asyncio.create_task(
+            refresh(), name="codex-authenticated-account-refresh"
+        )
 
     def authenticated_account_available(self) -> bool:
         proof = getattr(self, "_authenticated_account_proof", None)
@@ -353,7 +387,9 @@ class CodexRuntime:
                 pid=pid,
             )
 
-        tasks = (self.reader_task, self.stderr_task, getattr(self, "notification_task", None))
+        auth_refresh = getattr(self, "_authenticated_account_refresh_task", None)
+        tasks = (self.reader_task, self.stderr_task, getattr(self, "notification_task", None),
+                 auth_refresh if auth_refresh is not asyncio.current_task() else None)
         for task in tasks:
             if task and not task.done():
                 task.cancel()
@@ -526,6 +562,17 @@ class CodexRuntime:
     async def _handle_message(self, message: dict[str, Any]) -> None:
         if message.get("method") in {"account/updated", "account/login/completed", "account/chatgptAuthTokens/refresh"}:
             self._invalidate_authenticated_account()
+            params = message.get("params")
+            params = params if isinstance(params, dict) else {}
+            positive = (
+                message.get("method") == "account/updated"
+                and params.get("authMode") in {"apikey", "chatgpt", "chatgptAuthTokens"}
+            ) or (
+                message.get("method") == "account/login/completed"
+                and params.get("success") is True
+            )
+            if positive:
+                self._refresh_authenticated_account_after_notification()
         message_id = message.get("id")
         if message_id is not None and "method" not in message:
             future = self.pending.pop(message_id, None)
