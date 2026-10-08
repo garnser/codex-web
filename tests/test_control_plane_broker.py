@@ -1037,7 +1037,8 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         cases = (
             ("branch/publish", {"branch": "work", "head_revision": "a" * 40}, 120, 180),
             ("pull-request/merge", {"pull_request_number": 33, "expected_head_sha": "a" * 40}, 120, 180),
-            ("pull-request/upsert", {"head": "work", "base": "main", "title": "Work"}, None, 120),
+            ("pull-request/upsert", {"head": "work", "base": "main", "title": "Work"}, 120, 180),
+            ("issue/update", {"issue_number": 33, "labels": ["progress"]}, None, 120),
         )
         for path, parameters, timeout, lease in cases:
             with self.subTest(operation=path):

@@ -839,12 +839,13 @@ class ControlPlaneBrokerService:
             ),
             requested_by=requester_actor.identity_id,
         )
-        # Publishing and merging may include provider-side Git/CI checks. Give
+        # Publishing, MR creation, and merging may include provider-side checks. Give
         # those bounded operations enough time without letting the caller extend
         # execution or retry authority. The lease also covers receipt recording.
         extended_deadline = action_id in {
             CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
             CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+            CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
         }
         deadline = {"timeout_seconds": 120.0} if extended_deadline else {}
         intent = self.action_intents.create(
