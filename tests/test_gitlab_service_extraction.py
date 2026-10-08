@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+import threading
+from unittest.mock import AsyncMock, Mock
 from types import SimpleNamespace
 
 from codex_web import application
@@ -66,6 +68,30 @@ class GitLabServiceExtractionTests(unittest.IsolatedAsyncioTestCase):
             {"ok": True, "ignored": True, "reason": "gitlab_routing_disabled"},
         )
         self.assertEqual(host.event_ids, [])
+
+    async def test_projection_runs_off_loop_and_finishes_before_routing(self) -> None:
+        service = GitLabService(_Host())
+        service.is_support_servicedesk_ticket_payload = lambda _payload: False
+        service.project_settings_for_payload = lambda *_args: (
+            "project-a", SimpleNamespace(enabled=True))
+        service._ingest_canonical_event = AsyncMock(return_value=None)
+        loop_thread = threading.get_ident()
+        state = object()
+        projected = []
+        def project(payload, *, project_id):
+            self.assertNotEqual(threading.get_ident(), loop_thread)
+            self.assertEqual(project_id, "project-a")
+            projected.append(payload)
+            return state
+        def targets(payload, settings, projected_state):
+            self.assertEqual(projected, [payload])
+            self.assertIs(projected_state, state)
+            return []
+        service.work_items = SimpleNamespace(project_event=project)
+        service.event_target_agents = targets
+        service.routing_bindings_for_master = Mock(return_value=[])
+        result = await service.handle_event(_Request({"object_kind": "issue"}))
+        self.assertEqual(result["reason"], "no_matching_binding")
 
     async def test_duplicate_event_stops_before_project_routing(self) -> None:
         host = _Host(enabled=True, remember_event=False)
