@@ -8,7 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from urllib.parse import quote
 
 from codex_web.code_hosts import CodeHostPullRequestFact
@@ -130,8 +130,11 @@ class _WorkItems:
         stage,
         release_gate,
         scope,
+        q=None,
+        limit=None,
+        cursor=None,
     ):
-        del owner, stage, release_gate
+        del owner, stage, release_gate, q, limit, cursor
         items = [
             {
                 "ref": state.ref,
@@ -517,6 +520,38 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 key, value = line.split(":", 1)
                 parsed_headers[key.casefold()] = value.strip()
         return status, parsed_headers, json.loads(raw_body or b"{}")
+
+    async def test_work_item_list_continues_cursor_with_unchanged_filters(self) -> None:
+        pages = [
+            {"items": [{"ref": "group/app#42"}], "nextCursor": "opaque-cursor"},
+            {"items": [{"ref": "group/app#43"}], "nextCursor": None},
+        ]
+        with patch.object(self.work_items, "list", new=AsyncMock(side_effect=pages)) as listing:
+            target = "/api/work-items?owner=james&stage=implementation_active&q=scope%20proof&limit=1"
+            first_status, _, first = await self._request("GET", target)
+            second_status, _, second = await self._request(
+                "GET", target + "&cursor=" + first["nextCursor"]
+            )
+            self.assertEqual((first_status, second_status), (200, 200))
+            self.assertNotEqual(first["items"], second["items"])
+            for call in listing.await_args_list:
+                self.assertEqual(call.kwargs["project_id"], "project-a")
+                self.assertEqual(call.kwargs["scope"], self.scope)
+                self.assertEqual(call.kwargs["owner"], "james")
+                self.assertEqual(call.kwargs["stage"], "implementation_active")
+                self.assertEqual(call.kwargs["q"], "scope proof")
+                self.assertEqual(call.kwargs["limit"], 1)
+            self.assertIsNone(listing.await_args_list[0].kwargs["cursor"])
+            self.assertEqual(listing.await_args_list[1].kwargs["cursor"], "opaque-cursor")
+
+    async def test_work_item_list_rejects_non_integer_limit_before_listing(self) -> None:
+        with patch.object(self.work_items, "list", new=AsyncMock()) as listing:
+            status, _, response = await self._request(
+                "GET", "/api/work-items?limit=invalid"
+            )
+            self.assertEqual(status, 400)
+            self.assertIn("limit must be an integer", response["error"]["message"])
+            listing.assert_not_awaited()
 
     async def test_assignment_can_list_its_broker_operation_catalog(self) -> None:
         with patch.object(

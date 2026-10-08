@@ -1243,10 +1243,20 @@ class ControlPlaneBrokerService:
                 raise ControlPlaneBrokerDeniedError(
                     "work-item list project differs from assignment scope"
                 )
+            raw_limit = (resolved.query.get("limit") or [None])[0]
+            try:
+                limit = int(raw_limit) if raw_limit is not None else None
+            except ValueError as exc:
+                raise ControlPlaneBrokerRequestError(
+                    "work-item list limit must be an integer"
+                ) from exc
             result = await self.work_items.list(
                 project_id=assignment.project_id,
                 owner=(resolved.query.get("owner") or [None])[0],
                 stage=(resolved.query.get("stage") or [None])[0],
+                q=(resolved.query.get("q") or [None])[0],
+                limit=limit,
+                cursor=(resolved.query.get("cursor") or [None])[0],
                 release_gate=None,
                 scope=actor.tenant,
             )
