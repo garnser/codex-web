@@ -251,6 +251,126 @@ class AutonomyStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(host.events[-1]["event_type"], "handoff_expired")
 
 
+class AutonomyWorkItemSlaScopeTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _runtime(state: WorkItemState) -> SimpleNamespace:
+        binding = SimpleNamespace(thread_id="thread-owner")
+
+        async def replace(current, _reason):
+            return current
+
+        return SimpleNamespace(
+            load_work_item_states=lambda: {state.ref: state},
+            save_work_item_states=lambda _states: None,
+            coerce_owner=lambda value: str(value).strip().lower() if value else None,
+            handoff_timeout_seconds=lambda: 60.0,
+            archive_active_handoff=lambda current, **_kwargs: current,
+            append_work_item_event=lambda _event: None,
+            work_item_event=lambda *_args, **_kwargs: {},
+            handoff_coordination_channel=None,
+            binding_for_agent=lambda *_args, **_kwargs: binding,
+            thread_is_active=lambda _thread_id: False,
+            thread_queue_depth=lambda _thread_id: 0,
+            thread_recently_active=lambda _thread_id: False,
+            replace_nonperforming_thread=replace,
+            watchdog_dispatch_allowed=lambda _key: True,
+            record_watchdog_dispatch=lambda _key: None,
+            work_item_dispatch_text=lambda current: f"dispatch:{current.ref}",
+            owner_activity_timestamp=lambda current: current.last_meaningful_update_at,
+            work_item_sla_threshold_seconds=lambda _state: 10.0,
+            append_bot_event=lambda _event: None,
+        )
+
+    async def test_owner_sla_dispatch_carries_project_for_canonical_scope(self) -> None:
+        state = WorkItemState(
+            ref="example/project#1",
+            project_id="project-a",
+            current_owner="james",
+            current_stage="implementation_active",
+            created_at=1.0,
+            updated_at=10.0,
+            last_meaningful_update_at=10.0,
+        )
+        service = AutonomyService(runtime=self._runtime(state))
+        service._bounded_reasoning_dispatch = AsyncMock(return_value={"ok": True})
+
+        with patch("codex_web.services.autonomy.time.time", return_value=100.0):
+            await service.run_work_item_sla_cycle()
+
+        payload = service._bounded_reasoning_dispatch.await_args.kwargs["payload"]
+        self.assertEqual(payload["project_id"], "project-a")
+        self.assertEqual(payload["ref"], state.ref)
+
+    async def test_handoff_sla_dispatch_carries_project_for_canonical_scope(self) -> None:
+        state = WorkItemState(
+            ref="example/project#2",
+            project_id="project-a",
+            current_owner="alice",
+            current_stage="implementation_active",
+            handoff=WorkItemHandoff(
+                from_agent="alice",
+                to_agent="bob",
+                requested_at=90.0,
+                status="pending",
+            ),
+            created_at=1.0,
+            updated_at=90.0,
+            last_meaningful_update_at=90.0,
+        )
+        service = AutonomyService(runtime=self._runtime(state))
+        service._bounded_reasoning_dispatch = AsyncMock(return_value={"ok": True})
+
+        with patch("codex_web.services.autonomy.time.time", return_value=100.0):
+            await service.run_work_item_sla_cycle()
+
+        payload = service._bounded_reasoning_dispatch.await_args.kwargs["payload"]
+        self.assertEqual(payload["project_id"], "project-a")
+        self.assertEqual(payload["handoff_status"], "pending")
+
+    async def test_sla_cycle_resolves_tenant_from_work_item_project(self) -> None:
+        state = WorkItemState(
+            ref="example/project#3",
+            project_id="project-a",
+            current_owner="james",
+            current_stage="implementation_active",
+            created_at=1.0,
+            updated_at=10.0,
+            last_meaningful_update_at=10.0,
+        )
+        runtime = self._runtime(state)
+        resolved_projects = []
+
+        def project_scope(project_id):
+            resolved_projects.append(project_id)
+            return "org-a", "workspace-a"
+
+        runtime.project_scope = project_scope
+        runtime.dispatch_event = AsyncMock(return_value={"ok": True})
+        canonical_events = SimpleNamespace(
+            ingest=AsyncMock(
+                return_value=SimpleNamespace(
+                    inserted=False,
+                    event=SimpleNamespace(event_id="event-duplicate"),
+                )
+            )
+        )
+        service = AutonomyService(
+            runtime=runtime,
+            controller=SimpleNamespace(),
+            canonical_events=canonical_events,
+        )
+
+        with patch("codex_web.services.autonomy.time.time", return_value=100.0):
+            await service.run_work_item_sla_cycle()
+
+        self.assertEqual(resolved_projects, ["project-a"])
+        dispatched = canonical_events.ingest.await_args.kwargs
+        self.assertEqual(dispatched["tenant_id"], "org-a")
+        self.assertEqual(dispatched["workspace_id"], "workspace-a")
+        self.assertEqual(dispatched["payload"]["project_id"], "project-a")
+        runtime.dispatch_event.assert_not_awaited()
+
+
 class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def _runtime(
