@@ -86,8 +86,10 @@ class ThreadBootstrapBindingService:
             assignment_id=assignment_id,
             execution_workspace_id=execution_workspace_id,
             created_by=actor.identity_id,
-            # Rebinding supersedes the execution environment for an existing
-            # provider thread. Its rollout already exists and must be resumed.
+            # Most rebound provider threads already have a rollout. The
+            # atomic update below preserves a pending initial-turn lifecycle
+            # when quota recovery moves a newly created thread before that
+            # rollout has been written.
             initial_turn_pending=False,
         )
 
@@ -122,6 +124,22 @@ class ThreadBootstrapBindingService:
                         "canonical execution state"
                     )
                 return state
+            existing_thread = next(
+                (
+                    item
+                    for item in scoped
+                    if item.thread_id == thread_id
+                ),
+                None,
+            )
+            replacement = candidate.model_copy(
+                update={
+                    "initial_turn_pending": bool(
+                        existing_thread
+                        and existing_thread.initial_turn_pending
+                    )
+                }
+            )
             state.bindings = [
                 item
                 for item in state.bindings
@@ -130,7 +148,7 @@ class ThreadBootstrapBindingService:
                     and item.thread_id == thread_id
                 )
             ]
-            state.bindings.append(candidate)
+            state.bindings.append(replacement)
             return state
 
         self.store.update(apply)

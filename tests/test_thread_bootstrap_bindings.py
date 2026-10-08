@@ -83,7 +83,7 @@ class ThreadBootstrapBindingTests(unittest.TestCase):
             self.service.get_by_thread(binding.thread_id, self.actor).initial_turn_pending
         )
 
-    def test_rebind_existing_thread_requires_resume(self) -> None:
+    def test_rebind_preserves_pending_initial_turn(self) -> None:
         original = self._bind()
 
         rebound = self.service.rebind(
@@ -95,11 +95,26 @@ class ThreadBootstrapBindingTests(unittest.TestCase):
             actor=self.actor,
         )
 
-        self.assertFalse(rebound.initial_turn_pending)
+        self.assertTrue(rebound.initial_turn_pending)
         self.assertEqual(
             self.service.get_by_thread(original.thread_id, self.actor),
             rebound,
         )
+
+    def test_rebind_started_thread_requires_resume(self) -> None:
+        original = self._bind()
+        self.service.mark_initial_turn_started(original.thread_id, self.actor)
+
+        rebound = self.service.rebind(
+            bootstrap_id="bootstrap-2",
+            thread_id=original.thread_id,
+            execution_id="thread-bootstrap-exec-2",
+            assignment_id="assignment-2",
+            execution_workspace_id="execws-2",
+            actor=self.actor,
+        )
+
+        self.assertFalse(rebound.initial_turn_pending)
 
     def test_bootstrap_cannot_be_rebound_to_different_thread_or_execution(self) -> None:
         self._bind()
