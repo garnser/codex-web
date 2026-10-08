@@ -594,3 +594,20 @@ test('ServiceNow editor preserves all canonical mappings and edits schema-declar
   expect(saved.provider_settings.fields.assignee).toBe('custom_owner');
   expect(saved.provider_settings.canonical_state_values).toEqual({ implementation_active: '2', ready_for_validation: '3', validation_running: '5', closed: '7' });
 });
+
+test('delivery thread is saved with its project source configuration', async ({ page }) => {
+  await mockOperatorApis(page, []);
+  let supervision = null;
+  await page.route('**/api/projects/project-a/task-source', route => route.fulfill({ json: projectPayload()[0] }));
+  await page.route('**/api/projects/project-a/delivery-supervision', async route => {
+    supervision = route.request().postDataJSON();
+    await route.fulfill({ json: projectPayload()[0] });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
+  const dialog = page.locator('#work-items-dialog');
+  await expect(dialog.locator('.work-source-scope')).toHaveValue('team/project-a');
+  await dialog.locator('.work-source-delivery-thread').fill('delivery-thread');
+  await dialog.locator('.work-source-save').click();
+  await expect.poll(() => supervision).toEqual({ thread_id: 'delivery-thread', enabled: true });
+});

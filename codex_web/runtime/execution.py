@@ -2887,10 +2887,16 @@ class TurnExecutionService:
                 bindings = h._bindings_for_thread(thread_id)
                 if bindings:
                     replacement = await h._replace_stale_bot_thread(bindings[0], str(exc))
-                    queued.thread_id = replacement.thread_id
+                    replacement_id = replacement.thread_id
+                elif queued.source == "web":
+                    replacement_id = await h._replace_stale_web_thread(thread_id, project, str(exc))
+                else:
+                    replacement_id = None
+                if replacement_id:
+                    queued.thread_id = replacement_id
                     if queued.reply_target and queued.reply_target.thread_id == thread_id:
                         queued.reply_target = queued.reply_target.model_copy(
-                            update={"thread_id": replacement.thread_id}
+                            update={"thread_id": replacement_id}
                         )
                     queued.attempts = 0
                     self.requeue_turn_front(queued)
@@ -2898,14 +2904,14 @@ class TurnExecutionService:
                         {
                             "type": "queued_turn_retargeted",
                             "old_thread_id": thread_id,
-                            "new_thread_id": replacement.thread_id,
+                            "new_thread_id": replacement_id,
                             "queued_id": queued.id,
                             "error": h._truncate_text(str(exc), 500),
                         }
                     )
                     asyncio.get_running_loop().call_soon(
                         self.schedule_queue_drain,
-                        replacement.thread_id,
+                        replacement_id,
                     )
                     return
             if h._is_codex_timeout_error(exc):

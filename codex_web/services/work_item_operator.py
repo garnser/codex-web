@@ -469,17 +469,17 @@ class WorkItemOperatorService:
         actor: str | None,
         reason: str | None,
     ) -> dict[str, Any]:
-        project = self._project(project_id)
+        project = await asyncio.to_thread(self._project, project_id)
         if project is None:
             raise HTTPException(status_code=404, detail={"code": "project_not_found"})
-        configuration = self._project_source(project)
+        configuration = await asyncio.to_thread(self._project_source, project)
         if configuration is None:
             raise HTTPException(
                 status_code=409,
                 detail={"code": "authoritative_task_source_not_configured"},
             )
         try:
-            source = self._source_for_configuration(project_id, configuration, required=True)
+            source = await asyncio.to_thread(self._source_for_configuration, project_id, configuration, required=True)
             assert source is not None
             source.capabilities.require(TaskSourceCapability.DISCOVERY)
             snapshots = await source.discover(scope=configuration.scope)
@@ -494,28 +494,32 @@ class WorkItemOperatorService:
                 detail={"code": "task_source_unavailable", "message": str(exc)},
             ) from exc
 
-        refs: list[str] = []
-        for snapshot in snapshots:
-            state = self.work_items.task_source_projector.upsert(
-                source,
-                snapshot,
-                project_id=project_id,
-            )
-            refs.append(state.ref)
-            self.state_machine._append_work_item_event(
-                WorkItemEvent(
-                    ref=state.ref,
-                    event_type="operator_source_sync",
-                    created_at=time.time(),
-                    actor=actor,
-                    source="operator-ui",
-                    reason=reason or "operator source sync",
-                    payload={"source_type": configuration.source_type},
+        def project_snapshots():
+            refs: list[str] = []
+            for snapshot in snapshots:
+                state = self.work_items.task_source_projector.upsert(
+                    source,
+                    snapshot,
+                    project_id=project_id,
                 )
-            )
+                refs.append(state.ref)
+                self.state_machine._append_work_item_event(
+                    WorkItemEvent(
+                        ref=state.ref,
+                        event_type="operator_source_sync",
+                        created_at=time.time(),
+                        actor=actor,
+                        source="operator-ui",
+                        reason=reason or "operator source sync",
+                        payload={"source_type": configuration.source_type},
+                    )
+                )
 
+            return refs
+
+        refs = await asyncio.to_thread(project_snapshots)
         if self.sync_health is not None:
-            self.sync_health.record_success()
+            await asyncio.to_thread(self.sync_health.record_success)
         if callable(self.publish_event):
             await self.publish_event(
                 {
@@ -530,5 +534,6 @@ class WorkItemOperatorService:
             "project_id": project_id,
             "synced": len(refs),
             "refs": len(set(refs)),
+            "work_item_refs": refs,
             "sync": self._sync_status(),
         }

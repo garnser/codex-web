@@ -131,6 +131,19 @@ class ProjectService:
             return updated
         raise ProjectNotFoundError("Project not found")
 
+    def set_delivery_supervision(self, project_id, configuration, scope=None) -> Project:
+        projects = self.repository.load()
+        for index, project in enumerate(projects):
+            if project.id != project_id:
+                continue
+            if scope is not None and (project.organization_id, project.workspace_id) != (scope.organization_id, scope.workspace_id):
+                raise ProjectNotFoundError("Project not found")
+            updated = project.model_copy(update={"delivery_supervision": configuration})
+            projects[index] = updated
+            self.repository.save(projects)
+            return updated
+        raise ProjectNotFoundError("Project not found")
+
     def delete(self, project_id: str, scope: TenantScope | None = None) -> None:
         projects = self.repository.load()
         target = next((project for project in projects if project.id == project_id), None)

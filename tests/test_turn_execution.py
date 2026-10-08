@@ -451,6 +451,31 @@ class TurnExecutionQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(arguments["agent_profile_actor_id"], "requesting-human")
         self.assertEqual(host._thread_queue_depth("t1"), 0)
 
+    async def test_stale_queued_web_thread_uses_canonical_replacement(self) -> None:
+        host = _Host()
+        project = Project(id="p1", name="Project", path="/workspace/project")
+        host._project = lambda _project_id: project
+        host._is_stale_thread_error = lambda _exc: True
+        host._bindings_for_thread = lambda _thread_id: []
+        host._replace_stale_web_thread = AsyncMock(return_value="t2")
+        host._truncate_text = lambda value, limit: str(value)[:limit]
+        service = TurnExecutionService(host)
+        service.start_thread_turn_now = AsyncMock(side_effect=RuntimeError("thread not found"))
+        service.publish_queue_status = AsyncMock()
+        service.schedule_queue_drain = MagicMock()
+        queued = service.enqueue_turn(thread_id="t1", project_id="p1", message="delivery", source="web",
+                                      repository_resource_id="repo-1", execution_profile_id="repository-write")
+        await service.drain_thread_queue("t1")
+        await asyncio.sleep(0)
+        host._replace_stale_web_thread.assert_awaited_once_with("t1", project, "thread not found")
+        moved = host._thread_queue("t2")
+        self.assertEqual(len(moved), 1)
+        self.assertEqual(moved[0].id, queued.id)
+        self.assertEqual(moved[0].repository_resource_id, "repo-1")
+        self.assertEqual(moved[0].execution_profile_id, "repository-write")
+        self.assertEqual(moved[0].attempts, 0)
+        service.schedule_queue_drain.assert_called_once_with("t2")
+
     async def test_repeated_bot_resume_timeout_replaces_thread(self) -> None:
         host = _Host()
         project = Project(

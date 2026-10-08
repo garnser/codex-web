@@ -477,6 +477,11 @@ class TurnService:
                 ),
             }
 
+        if getattr(payload, "defer_start", False):
+            result = await queue_web_turn("web_turn_queued")
+            self.execution.schedule_queue_drain(thread_id)
+            return result
+
         self.recovery.release_stale_active_turn(thread_id, "web:start")
         if (
             self.execution.thread_is_active(thread_id)

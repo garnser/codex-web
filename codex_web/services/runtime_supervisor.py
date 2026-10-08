@@ -632,6 +632,14 @@ class RuntimeSupervisor:
                 responsibility="split-brain",
             ),
         )
+        delivery = getattr(self.app.state, "project_delivery_service", None)
+        if delivery is not None:
+            self._spawn(
+                "project-delivery",
+                self._cycle_loop(lambda: 30.0, delivery.run_cycle,
+                                 failure_event="project_delivery_supervisor_failed",
+                                 responsibility="project-delivery"),
+            )
         self._spawn("queue-recovery", self._queue_recovery_loop())
 
         scheduler = getattr(self.app.state, "scheduler_service", None)

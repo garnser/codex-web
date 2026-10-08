@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
 from codex_web.models import (
     ProjectCreate,
+    ProjectDeliveryUpdate,
     ProjectRepositorySelectionUpdate,
     TaskSourceConfiguration,
 )
@@ -113,6 +116,27 @@ def build_projects_router(
             raise identity_http_error(exc) from exc
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.get("/api/projects/{project_id}/delivery-supervision")
+    async def delivery_status(project_id: str, request: Request):
+        delivery = request.app.state.project_delivery_service
+        try:
+            return await asyncio.to_thread(delivery.status, project_id, request.state.identity_actor)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.put("/api/projects/{project_id}/delivery-supervision")
+    async def configure_delivery(project_id: str, payload: ProjectDeliveryUpdate, request: Request):
+        delivery = request.app.state.project_delivery_service
+        try:
+            return (await asyncio.to_thread(delivery.configure, project_id, payload,
+                                           request.state.identity_actor)).model_dump()
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.delete("/api/projects/{project_id}")
     async def delete_project(project_id: str, request: Request) -> dict[str, bool]:
