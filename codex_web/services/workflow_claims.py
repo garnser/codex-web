@@ -23,20 +23,23 @@ class WorkflowClaimPolicy:
         self.owner_names = owner_names
 
     def mentioned_states(self, text: str) -> list[WorkItemState]:
-        states = self.load_states()
         refs = set(
             re.findall(
                 r"\b[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#\d+\b",
                 text,
             )
         )
-        mentioned = [states[ref] for ref in refs if ref in states]
-        for iid in set(
+        iids = set(
             re.findall(
                 r"(?<![A-Za-z0-9_./-])#(\d+)\b",
                 text,
             )
-        ):
+        )
+        if not refs and not iids:
+            return []
+        states = self.load_states()
+        mentioned = [states[ref] for ref in refs if ref in states]
+        for iid in iids:
             matches = [
                 state
                 for ref, state in states.items()
