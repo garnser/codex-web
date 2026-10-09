@@ -3437,6 +3437,9 @@ turn_service = TurnService(
     preflight=execution_preflight_service,
     agent_profiles=agent_profile_service,
 )
+turn_execution_service.upgrade_turn_admission_guard = (
+    upgrade_service.worker_assignment_allowed
+)
 app.state.thread_service = thread_service
 app.state.turn_service = turn_service
 project_delivery_service = ProjectDeliveryService(

@@ -1840,6 +1840,13 @@ class TurnExecutionService:
         preserve_active_handoff: bool = False,
     ) -> dict[str, Any]:
         h = self.host
+        if self.upgrade_turn_admission_guard is not None:
+            current_bootstrap = self._bootstrap_binding_for_thread(thread_id)
+            await self._require_upgrade_turn_admission(
+                thread_id, project,
+                current_bootstrap.assignment_id if current_bootstrap is not None else None,
+                allow_bootstrap_recovery=True,
+            )
         binding_service, default_session_manager = self._require_worker_routing()
         settings = h._thread_run_settings(thread_id)
         effective_sandbox = sandbox or settings.sandbox or project.sandbox
@@ -3753,6 +3760,12 @@ class TurnExecutionService:
                 )
                 if local_worker is not None:
                     def release_superseded() -> None:
+                        # Terminal assignment retention may prune the record
+                        # while its durable thread bootstrap binding survives.
+                        # Verify actual absence before skipping cleanup; scoped
+                        # lookup failures and storage errors must still fail.
+                        if local_worker.worker_service.store.assignment(previous_assignment_id) is None:
+                            return
                         assignment = local_worker._pending_assignment(previous_assignment_id)
                         # No registered session means this process cannot attest
                         # ownership of a live claim. Only unclaimed/lost records
