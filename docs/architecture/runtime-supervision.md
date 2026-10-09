@@ -205,7 +205,8 @@ Agent Profile revision and actor/tenant identity. Its optional replacement targe
 records only a canonical recovery mapping, qualified under the current retry
 claim. Retry uses the ordinary admission path on that target, including repository,
 authentication, policy and capacity checks. A stale replacement response alone is
-not delivery: retry may continue once on the verified replacement and then stops
+not delivery: a web replacement bootstraps the exact admitted Agent Profile
+revision and actor before retry may continue once on the verified replacement and then stops
 with a retained failure if another replacement is needed. Started state still
 requires actual execution admission. Both original and current thread views can
 inspect the same attempt; the retry card displays original/current provenance and

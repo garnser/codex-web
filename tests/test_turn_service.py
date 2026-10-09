@@ -659,6 +659,27 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(preflight.get(retained.id, actor=actor).status, "failed")
                 self.assertIsNone(preflight.get(retained.id, actor=actor).started_at)
 
+    async def test_stale_web_replacement_bootstraps_exact_admitted_profile(self):
+        from unittest.mock import AsyncMock
+        service, queue, execution, _events, _settings = self._service()
+        queue.queued = []
+        execution.active = False
+        execution.start_thread_turn_now = AsyncMock(side_effect=RuntimeError("native thread not found"))
+        service.resume_runtime.is_stale_thread_error = lambda _error: True
+        profile = SimpleNamespace(profile_id="james-saml", revision=2,
+            sandbox_requirement="danger-full-access", execution_profile_id="repo-write")
+        service.agent_profiles = SimpleNamespace(resolve_for_execution=lambda *args, **kwargs: (profile, None))
+        replacement = AsyncMock(return_value="replacement")
+        service.recovery.replace_stale_web_thread = replacement
+        actor = _admin_actor()
+        result = await service.start("original", TurnCreate(message="retained correction",
+            project_id="home", agent_profile_id=profile.profile_id,
+            agent_profile_revision=profile.revision, repository_resource_id="repo-saas"), actor=actor)
+        self.assertTrue(result["staleThreadReplaced"])
+        self.assertEqual(replacement.await_args.kwargs["agent_profile_id"], "james-saml")
+        self.assertEqual(replacement.await_args.kwargs["agent_profile_revision"], 2)
+        self.assertIs(replacement.await_args.kwargs["actor"], actor)
+
     async def test_existing_replacement_still_enforces_real_profile_admission(self):
         from codex_web.services.agent_profiles import AgentProfileAccessDenied
         service, preflight, retained, actor, calls = await self._replacement_retry(existing=True)

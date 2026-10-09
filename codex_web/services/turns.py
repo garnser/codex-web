@@ -622,6 +622,11 @@ class TurnService:
                         thread_id,
                         project,
                         str(exc),
+                        **({
+                            "agent_profile_id": agent_profile_id,
+                            "agent_profile_revision": agent_profile_revision,
+                            "actor": actor,
+                        } if profile is not None else {}),
                     )
                 return {
                     "ok": False,
