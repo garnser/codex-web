@@ -1,14 +1,128 @@
 from __future__ import annotations
 
+import asyncio
+import contextvars
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-from codex_web.models import BotBinding
-from codex_web.services.bot_event_dispatch import BotEventDispatchService
+from codex_web.models import BotBinding, BotReplyTarget
+from codex_web.services.bot_event_dispatch import (
+    BotEventDispatchService, BotEventDispatchCompatibilityFacade,
+)
+from codex_web.services.bot_targets import BotTargetService
 
 
 class BotEventDispatchScopeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_target_resolution_keeps_loop_responsive_and_context_before_queueing(self):
+        self.install_captured_target()
+        started, release = threading.Event(), threading.Event()
+        tenant = contextvars.ContextVar("dispatch_tenant", default=None)
+        tenant.set("project-1")
+        selected = self.service.targets.event_reply_target
+        observed = []
+
+        def blocking(binding):
+            observed.append((threading.get_ident(), tenant.get()))
+            started.set()
+            release.wait(2)
+            return selected(binding)
+
+        self.service.targets.event_reply_target = blocking
+        task = asyncio.create_task(self.service.dispatch(self.binding, "continue", "watchdog"))
+        try:
+            self.assertTrue(await asyncio.to_thread(started.wait, 3))
+            await asyncio.sleep(0)
+            self.assertFalse(task.done())
+            self.execution.enqueue_turn.assert_not_called()
+            self.assertNotEqual(observed[0][0], threading.get_ident())
+            self.assertEqual(observed[0][1], "project-1")
+        finally:
+            release.set()
+            await task
+        self.assertEqual(self.execution.enqueue_turn.call_args.kwargs["reply_target"], self.captured)
+
+    def install_captured_target(self):
+        self.binding = self.binding.model_copy(update={"connection_id": "connection"})
+        primary = self.binding.model_copy(update={
+            "id": "primary", "external_conversation_id": "PRIMARY",
+            "is_primary_channel": True,
+        })
+        self.captured = BotReplyTarget(
+            thread_id="thread-1", provider="slack", external_conversation_id="PRIMARY",
+            external_thread_id="human-message", message_id="human-message", updated_at=100,
+        )
+        self.reply_records = {"slack:PRIMARY:thread-1": self.captured}
+        self.target_bindings = [self.binding, primary]
+        self.service.targets = BotTargetService(
+            load_reply_targets=lambda: self.reply_records,
+            save_reply_targets=lambda _records: None,
+            load_delivery_targets=lambda: {},
+            save_delivery_targets=lambda _records: None,
+            load_active_turns=lambda: {},
+            bindings_for_project=lambda _provider, _project: self.target_bindings,
+        )
+
+    async def test_background_queue_keeps_human_conversation_without_rewriting_capture(self):
+        self.install_captured_target()
+        await self.service.dispatch(self.binding, "continue owned work", "owner-work-watchdog")
+        self.assertEqual(self.execution.enqueue_turn.call_args.kwargs["reply_target"], self.captured)
+        self.assertEqual(self.reply_records["slack:PRIMARY:thread-1"], self.captured)
+        self.execution.enqueue_turn.assert_called_once()
+
+    async def test_immediate_dispatch_and_recovery_revalidate_captured_target(self):
+        self.install_captured_target()
+        self.execution.thread_is_active.return_value = False
+        self.queue_policy.depth.return_value = 0
+        self.execution.start_thread_turn_now = AsyncMock(side_effect=[
+            RuntimeError("stale thread"), {"turn": {"id": "new-turn"}},
+        ])
+        self.service.resume = SimpleNamespace(
+            is_timeout_error=lambda _error: False,
+            is_stale_thread_error=lambda _error: True,
+        )
+
+        async def replace(_binding, _error):
+            replacement = self.binding.model_copy(update={"thread_id": "replacement"})
+            self.service.targets.retarget("thread-1", "replacement")
+            # Use canonical state collaborators as real recovery does.
+            self.reply_records = {
+                "slack:PRIMARY:replacement": self.captured.model_copy(update={"thread_id": "replacement"})
+            }
+            self.target_bindings = [b.model_copy(update={"thread_id": "replacement"}) for b in self.target_bindings]
+            return replacement
+
+        self.service.recovery.replace_stale_bot_thread = AsyncMock(side_effect=replace)
+        await self.service.dispatch(self.binding, "continue work", "work-item-sla")
+        first, second = self.execution.start_thread_turn_now.call_args_list
+        self.assertEqual(first.kwargs["reply_target"], self.captured)
+        actual = second.kwargs["reply_target"]
+        self.assertEqual(actual.thread_id, "replacement")
+        self.assertEqual(actual.external_conversation_id, "PRIMARY")
+        self.assertEqual(actual.external_thread_id, "human-message")
+
+    async def test_compatibility_dispatch_keeps_same_validated_target(self):
+        self.install_captured_target()
+        host = SimpleNamespace(
+            _project=self.service.projects.get,
+            _thread_run_settings=self.service.settings.get,
+            _event_reply_target_for_binding=self.service.targets.event_reply_target,
+            _conversation_target_for_binding=self.service.targets.conversation_target,
+            _release_stale_active_turn=Mock(),
+            _thread_is_active=Mock(return_value=True),
+            _thread_queue_depth=Mock(return_value=1),
+            _find_duplicate_queued_turn=Mock(return_value=None),
+            _enqueue_turn=Mock(return_value=SimpleNamespace(id="queued")),
+            _upsert_bot_binding=Mock(),
+            _append_bot_event=Mock(),
+            _publish_queue_status=AsyncMock(),
+            hub=SimpleNamespace(publish=AsyncMock()),
+        )
+        await BotEventDispatchCompatibilityFacade(host).dispatch(self.binding, "continue", "orchestrator-watchdog")
+        self.assertEqual(host._enqueue_turn.call_args.kwargs["reply_target"], self.captured)
+        host._enqueue_turn.assert_called_once()
+
     def setUp(self) -> None:
         self.execution = SimpleNamespace(
             find_duplicate_queued_turn=Mock(return_value=None),
@@ -26,7 +140,10 @@ class BotEventDispatchScopeTests(unittest.IsolatedAsyncioTestCase):
             settings=SimpleNamespace(
                 get=Mock(return_value=SimpleNamespace(model=None, reasoning_effort=None))
             ),
-            targets=SimpleNamespace(conversation_target=Mock(return_value=None)),
+            targets=SimpleNamespace(
+                event_reply_target=Mock(return_value=None),
+                conversation_target=Mock(return_value=None),
+            ),
             bindings=SimpleNamespace(upsert=Mock()),
             execution=self.execution,
             queue_policy=self.queue_policy,

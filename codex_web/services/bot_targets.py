@@ -204,6 +204,56 @@ class BotTargetService:
             updated_at=time.time(),
         )
 
+    def event_reply_target(self, binding: BotBinding) -> BotReplyTarget | None:
+        """Retain captured human context within one canonical bot connection.
+
+        Background events carry a binding, not a new human reply destination.
+        Crossing its channel requires another binding for the same thread,
+        Project, provider and connection; delivery targets never supply it.
+        """
+        context = self.routing_context()
+        candidates = [
+            candidate
+            for candidate in self.bindings_for_project(
+                binding.provider, binding.project_id
+            )
+            if candidate.thread_id == binding.thread_id
+            and candidate.project_id == binding.project_id
+            and candidate.provider == binding.provider
+            and candidate.connection_id == binding.connection_id
+            and (
+                candidate.external_conversation_id == binding.external_conversation_id
+                or bool(binding.connection_id)
+            )
+        ]
+        active = self._active_turn(binding.thread_id, context)
+        active_target = (
+            active.reply_target
+            if active and getattr(active, "project_id", None) == binding.project_id
+            else None
+        )
+        captured = []
+        for candidate in candidates:
+            for target in (
+                self.reply_target_for_binding(candidate, context),
+                active_target,
+            ):
+                if (
+                    target
+                    and target.thread_id == candidate.thread_id
+                    and target.provider == candidate.provider
+                    and target.external_conversation_id
+                    == candidate.external_conversation_id
+                    and (target.external_thread_id or target.message_id)
+                ):
+                    captured.append((
+                        target.updated_at,
+                        candidate.is_primary_channel,
+                        candidate.id,
+                        target,
+                    ))
+        return max(captured, key=lambda item: item[:3])[3] if captured else None
+
     def remember_reply_target(self, binding: BotBinding, message: BotInboundMessage) -> BotReplyTarget | None:
         if not message.external_thread_id and not message.message_id:
             return None
@@ -522,7 +572,10 @@ class BotTargetService:
                 elif key.endswith(f":{old_thread_id}") and ":external:" not in key:
                     next_key = f"{key.rsplit(':', 1)[0]}:{new_thread_id}"
                 if target.thread_id == old_thread_id:
-                    target = target.model_copy(update={"thread_id": new_thread_id, "updated_at": time.time()})
+                    # Identity recovery is not a new inbound/delivery message.
+                    # Preserve recency rather than making registry iteration
+                    # order decide which human conversation becomes newest.
+                    target = target.model_copy(update={"thread_id": new_thread_id})
                 rewritten[next_key] = target
             return rewritten
 
@@ -596,6 +649,7 @@ def install_bot_target_service(
     host._external_target_key = service.external_target_key
     host._thread_target_key = service.thread_target_key
     host._conversation_target_for_binding = service.conversation_target
+    host._event_reply_target_for_binding = service.event_reply_target
     host._remember_bot_reply_target = service.remember_reply_target
     host._reply_target_for_binding = service.reply_target_for_binding
     host._delivery_target_for_binding = service.delivery_target_for_binding

@@ -150,6 +150,20 @@ each provider, delivery selects exactly one binding using active reply, reply,
 primary, and recency precedence. A completed turn must never fan out merely
 because the thread has additional non-threaded bindings.
 
+Background work dispatch retains the newest captured human reply context rather
+than constructing a channel-only target from its triggering binding. Another
+channel is eligible only through a canonical binding for the same native thread,
+Project, provider and nonempty connection identity. Targets must match that
+binding and contain an actual external message/thread reference; delivery
+receipts cannot substitute for inbound context. Equal recency prefers the primary
+binding. A newer human request on a secondary channel keeps its own context.
+When no valid capture exists, the triggering conversation remains the fallback.
+Queued turns retain their selected target; stale-thread replacement revalidates
+the retargeted canonical bindings. Identity recovery preserves original message
+recency rather than marking old captures as newly received. Existing conversation/queue inspection and
+single-target outbound delivery show the resulting attribution without a new
+operator control or model call.
+
 Consequential external mutations—messages, replies, reactions, subscription
 changes or other provider writes—must use the existing ActionIntent /
 ActionProvider authority/evidence path.

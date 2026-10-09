@@ -82,6 +82,103 @@ def _binding(
 
 
 class BotTargetServiceTests(unittest.TestCase):
+    def event_context(self):
+        host = _TargetHost()
+        secondary = _binding("secondary", thread_id="owner", conversation="OTHER").model_copy(
+            update={"connection_id": "connection"}
+        )
+        primary = _binding("primary", thread_id="owner", conversation="PRIMARY", primary=True).model_copy(
+            update={"connection_id": "connection"}
+        )
+        host.bindings = [secondary, primary]
+        target = BotReplyTarget(
+            thread_id="owner", provider="slack", external_conversation_id="PRIMARY",
+            external_thread_id="human-message", message_id="human-message", updated_at=100,
+        )
+        service = _service(host)
+        host.reply_targets[service.reply_target_key(primary)] = target
+        return host, service, secondary, primary, target
+
+    def test_background_event_retains_primary_human_target(self):
+        host, service, secondary, primary, target = self.event_context()
+        # A background turn's channel-only context must not displace the user.
+        host.active_turns["owner"] = SimpleNamespace(
+            project_id="home", reply_target=service.conversation_target(secondary)
+        )
+        before = dict(host.reply_targets)
+        self.assertEqual(service.event_reply_target(secondary), target)
+        self.assertEqual(host.reply_targets, before)
+        # Once started with the selected target, existing delivery stays single-target.
+        host.active_turns["owner"].reply_target = target
+        selected = service.outbound_bindings_for_thread("owner", [secondary, primary])
+        self.assertEqual([binding.id for binding in selected], ["primary"])
+
+    def test_new_secondary_human_context_keeps_its_own_reply(self):
+        host, service, secondary, _primary, target = self.event_context()
+        newer = target.model_copy(update={"external_conversation_id": "OTHER", "updated_at": 101})
+        host.reply_targets[service.reply_target_key(secondary)] = newer
+        self.assertEqual(service.event_reply_target(secondary), newer)
+
+    def test_active_capture_requires_matching_project_and_binding(self):
+        host, service, secondary, _primary, target = self.event_context()
+        host.reply_targets.clear()
+        host.active_turns["owner"] = SimpleNamespace(project_id="home", reply_target=target)
+        self.assertEqual(service.event_reply_target(secondary), target)
+        host.active_turns["owner"].project_id = "foreign-project"
+        self.assertIsNone(service.event_reply_target(secondary))
+
+    def test_channel_only_capture_is_not_a_human_reply_destination(self):
+        host, service, secondary, primary, target = self.event_context()
+        host.reply_targets[service.reply_target_key(primary)] = target.model_copy(
+            update={"external_thread_id": None, "message_id": None}
+        )
+        self.assertIsNone(service.event_reply_target(secondary))
+
+    def test_event_target_requires_canonical_binding_scope(self):
+        for field, value in (
+            ("thread_id", "foreign-thread"),
+            ("project_id", "foreign-project"),
+            ("provider", "telegram"),
+            ("connection_id", "foreign-connection"),
+        ):
+            with self.subTest(field=field):
+                host, service, secondary, primary, _target = self.event_context()
+                host.bindings[1] = primary.model_copy(update={field: value})
+                self.assertIsNone(service.event_reply_target(secondary))
+
+    def test_missing_connection_does_not_authorize_cross_channel_target(self):
+        host, service, secondary, primary, _target = self.event_context()
+        host.bindings = [b.model_copy(update={"connection_id": None}) for b in (secondary, primary)]
+        self.assertIsNone(service.event_reply_target(host.bindings[0]))
+
+    def test_wrong_target_thread_and_delivery_receipts_cannot_supply_human_target(self):
+        host, service, secondary, primary, target = self.event_context()
+        key = service.reply_target_key(primary)
+        host.reply_targets[key] = target.model_copy(update={"thread_id": "foreign-thread"})
+        host.delivery_targets[key] = target
+        self.assertIsNone(service.event_reply_target(secondary))
+
+    def test_recovered_thread_revalidates_retargeted_human_context(self):
+        host, service, secondary, primary, target = self.event_context()
+        service.retarget("owner", "replacement")
+        host.bindings = [b.model_copy(update={"thread_id": "replacement"}) for b in (secondary, primary)]
+        actual = service.event_reply_target(host.bindings[0])
+        self.assertEqual(actual.thread_id, "replacement")
+        self.assertEqual(actual.external_thread_id, target.external_thread_id)
+        self.assertEqual(actual.external_conversation_id, "PRIMARY")
+
+    def test_recovery_keeps_original_human_recency_across_channels(self):
+        host, service, secondary, primary, target = self.event_context()
+        # Registry insertion order is not the order of human messages.
+        host.reply_targets[service.reply_target_key(secondary)] = target.model_copy(
+            update={"external_conversation_id": "OTHER", "updated_at": 99}
+        )
+        service.retarget("owner", "replacement")
+        host.bindings = [b.model_copy(update={"thread_id": "replacement"}) for b in (secondary, primary)]
+        actual = service.event_reply_target(host.bindings[0])
+        self.assertEqual(actual.external_conversation_id, "PRIMARY")
+        self.assertEqual(actual.updated_at, 100)
+
     def test_remember_reply_target_indexes_binding_and_external_thread(self) -> None:
         host = _TargetHost()
         service = _service(host)

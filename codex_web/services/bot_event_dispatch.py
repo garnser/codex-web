@@ -173,7 +173,10 @@ class BotEventDispatchService:
         settings = self.settings.get(binding.thread_id)
         effective_model = settings.model or project.model
         effective_reasoning_effort = settings.reasoning_effort
-        reply_target = self.targets.conversation_target(binding)
+        reply_target = (
+            await asyncio.to_thread(self.targets.event_reply_target, binding)
+            or self.targets.conversation_target(binding)
+        )
         profile_context = (
             await asyncio.to_thread(self.agent_profile_resolver, binding)
             if self.agent_profile_resolver is not None
@@ -378,7 +381,10 @@ class BotEventDispatchService:
             settings = self.settings.get(binding.thread_id)
             effective_model = settings.model or project.model
             effective_reasoning_effort = settings.reasoning_effort
-            reply_target = self.targets.conversation_target(binding)
+            reply_target = (
+                await asyncio.to_thread(self.targets.event_reply_target, binding)
+                or self.targets.conversation_target(binding)
+            )
             turn = await self.execution.start_thread_turn_now(
                 binding.thread_id,
                 project=project,
@@ -441,7 +447,12 @@ class BotEventDispatchCompatibilityFacade:
         settings = host._thread_run_settings(binding.thread_id)
         effective_model = settings.model or project.model
         effective_reasoning_effort = settings.reasoning_effort
-        reply_target = host._conversation_target_for_binding(binding)
+        captured_target_for = getattr(host, "_event_reply_target_for_binding", None)
+        reply_target = (
+            (await asyncio.to_thread(captured_target_for, binding)
+             if callable(captured_target_for) else None)
+            or host._conversation_target_for_binding(binding)
+        )
 
         async def queue_binding_turn(
             event_type: str,
@@ -586,7 +597,12 @@ class BotEventDispatchCompatibilityFacade:
             settings = host._thread_run_settings(binding.thread_id)
             effective_model = settings.model or project.model
             effective_reasoning_effort = settings.reasoning_effort
-            reply_target = host._conversation_target_for_binding(binding)
+            captured_target_for = getattr(host, "_event_reply_target_for_binding", None)
+            reply_target = (
+                (await asyncio.to_thread(captured_target_for, binding)
+                 if callable(captured_target_for) else None)
+                or host._conversation_target_for_binding(binding)
+            )
             turn = await host._start_thread_turn_now(
                 binding.thread_id,
                 project=project,
