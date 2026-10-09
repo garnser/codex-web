@@ -17,6 +17,14 @@ The canonical lifecycle is intentionally richer than a simple `created` → `rea
 | `ready_to_close` | Validation is complete and the lane is ready for successful closure. |
 | `closed` | Persisted terminal lifecycle lane. The semantic result is carried by `terminal_outcome`. |
 
+Automatic owner dispatch for `failed_with_action_owner` selects the canonical
+`next_owner`, falling back to `current_owner` when no next action owner is set.
+Other stages retain current-owner precedence. Binding selection, queued dispatch,
+and post-recovery revalidation use the same rule. This does not change the
+implementation/validation owners or accepted handoffs, and pending handoffs
+remain ineligible for automatic owner dispatch. Issue and merge-request refs
+remain distinct; selecting an owner does not grant provider writeback capability.
+
 `failed_with_action_owner` is intentionally resumable because the canonical stage describes ownership/lane state, while execution retry/failure metadata is persisted separately inside the same `WorkItemState`.
 
 ## Terminal outcomes

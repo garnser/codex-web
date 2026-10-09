@@ -523,6 +523,32 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+    async def test_failed_mr_routes_next_action_owner_without_changing_parent_handoff(self):
+        parent = WorkItemState(ref="example/gtm#3", project_id="project-a",
+            current_owner="Orchestrator", next_owner="Orchestrator",
+            implementation_owner="Sally", validation_owner="Quinn",
+            current_stage="failed_with_action_owner", blocker="renderer provisioning",
+            handoff=WorkItemHandoff(from_agent="Sally", to_agent="Orchestrator",
+                status="accepted", requested_at=1.0, acknowledged_at=2.0),
+            mr_refs=["example/gtm!16"], created_at=1.0, updated_at=2.0,
+            last_meaningful_update_at=2.0)
+        mr = parent.model_copy(update={"ref": "example/gtm!16", "handoff": None,
+            "current_owner": "Sally", "next_owner": "Carl", "mr_refs": [],
+            "blocker": "Infra renderer prerequisite"})
+        states = {parent.ref: parent, mr.ref: mr}
+        before = {ref: state.model_dump() for ref, state in states.items()}
+        runtime = self._runtime(states)
+        runtime.owner_queue_agents = ("sally", "carl", "orchestrator")
+        runtime.gitlab_token_for_project = lambda _project: None
+        runtime.binding_for_agent = lambda owner, *_args, **_kwargs: SimpleNamespace(
+            thread_id="thread-" + owner, thread_name=owner)
+        await AutonomyService(runtime=runtime).run_owner_work_cycle()
+        deliveries = runtime.dispatch_event.await_args_list
+        self.assertEqual([(call.args[0].thread_id, call.args[1]) for call in deliveries],
+            [("thread-carl", "dispatch:example/gtm!16"),
+             ("thread-orchestrator", "dispatch:example/gtm#3")])
+        self.assertEqual({ref: state.model_dump() for ref, state in states.items()}, before)
+
     async def test_owner_snapshot_keeps_loop_responsive_context_and_selection(self):
         state = WorkItemState(ref="example/project#1", project_id="project-a",
             current_owner="james", current_stage="implementation_active",
