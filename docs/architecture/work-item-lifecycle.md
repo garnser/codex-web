@@ -20,7 +20,8 @@ The canonical lifecycle is intentionally richer than a simple `created` → `rea
 Automatic owner dispatch for `failed_with_action_owner` selects the canonical
 `next_owner`, falling back to `current_owner` when no next action owner is set.
 Other stages retain current-owner precedence. Binding selection, queued dispatch,
-and post-recovery revalidation use the same rule. This does not change the
+post-recovery revalidation and prompt addressees use the same rule. An accepted
+handoff is described as live only when its recipient matches the actionable owner. This does not change the
 implementation/validation owners or accepted handoffs, and pending handoffs
 remain ineligible for automatic owner dispatch. Issue and merge-request refs
 remain distinct; selecting an owner does not grant provider writeback capability.
