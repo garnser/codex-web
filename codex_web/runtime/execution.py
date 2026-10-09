@@ -3534,6 +3534,12 @@ class TurnExecutionService:
                 )
                 if local_worker is not None:
                     def release_superseded() -> None:
+                        # Terminal assignment retention may prune the record
+                        # while its durable thread bootstrap binding survives.
+                        # Verify actual absence before skipping cleanup; scoped
+                        # lookup failures and storage errors must still fail.
+                        if local_worker.worker_service.store.assignment(previous_assignment_id) is None:
+                            return
                         assignment = local_worker._pending_assignment(previous_assignment_id)
                         # No registered session means this process cannot attest
                         # ownership of a live claim. Only unclaimed/lost records
