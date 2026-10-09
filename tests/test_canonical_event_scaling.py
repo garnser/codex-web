@@ -15,6 +15,9 @@ from codex_web.storage.canonical_events import CanonicalEventState, CanonicalEve
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
+OBSERVED_CANONICAL_EVENT_COUNT = 10_001
+
+
 def _event(number: int) -> CanonicalEventEnvelope:
     return CanonicalEventEnvelope(
         event_id=f"evt-{number}",
@@ -134,24 +137,77 @@ class CanonicalEventScalingTests(unittest.TestCase):
             CanonicalEventOutboxStatus.PUBLISHED,
         )
 
-    def test_point_reads_and_outbox_mutation_do_not_load_retained_collection(self):
+    def test_point_reads_and_outbox_mutation_do_not_load_observed_retained_collection(self):
         sqlite = _ObservedSQLiteStateStore(self.path)
-        events = CanonicalEventStore(sqlite, max_events=500)
-        for number in range(200):
-            events.record_if_new(
-                _event(number),
-                idempotency_key=f"key-{number}",
-                enqueue_transport=True,
+        events = CanonicalEventStore(
+            sqlite,
+            max_events=OBSERVED_CANONICAL_EVENT_COUNT,
+        )
+        records = {
+            events._meta_key: {
+                "schema_version": events.records_schema_version,
+                "event_count": OBSERVED_CANONICAL_EVENT_COUNT,
+                "inbox_count": 0,
+                "outbox_counts": {
+                    status.value: (
+                        OBSERVED_CANONICAL_EVENT_COUNT
+                        if status == CanonicalEventOutboxStatus.PENDING
+                        else 0
+                    )
+                    for status in CanonicalEventOutboxStatus
+                },
+            }
+        }
+        for number in range(OBSERVED_CANONICAL_EVENT_COUNT):
+            event = _event(number)
+            outbox = CanonicalEventOutboxRecord(
+                event_id=event.event_id,
+                created_at=float(number),
+                updated_at=float(number),
             )
+            idempotency_key = f"key-{number}"
+            record_key = events._idempotency_record_key(idempotency_key)
+            order_key = events._order_key(number, event.event_id)
+            entry = events._entry(
+                idempotency_key=idempotency_key,
+                event=event,
+                order_key=order_key,
+                outbox=outbox,
+            )
+            records[record_key] = entry
+            records[events._event_alias_key(event.event_id)] = {
+                "record_key": record_key
+            }
+            records[order_key] = {"record_key": record_key}
+            records[entry["outbox_index_key"]] = entry["outbox"]
+        sqlite.record_replace(events.records_namespace, records)
         sqlite.calls.clear()
 
-        self.assertEqual(events.event("evt-199"), _event(199))
-        self.assertEqual(len(events.pending_outbox(now=1_000.0, limit=5)), 5)
+        last_number = OBSERVED_CANONICAL_EVENT_COUNT - 1
+        last_event_id = f"evt-{last_number}"
+        self.assertEqual(events.event(last_event_id), _event(last_number))
+        self.assertEqual(
+            len(
+                events.pending_outbox(
+                    now=float(OBSERVED_CANONICAL_EVENT_COUNT + 1),
+                    limit=5,
+                )
+            ),
+            5,
+        )
         events.mark_outbox_published(
-            "evt-199",
+            last_event_id,
             backend_id="transport-a",
-            delivery_id="delivery-199",
-            now=1_000.0,
+            delivery_id=f"delivery-{last_number}",
+            now=float(OBSERVED_CANONICAL_EVENT_COUNT + 1),
+        )
+        self.assertEqual(
+            events.outbox_status(),
+            {
+                "pending": OBSERVED_CANONICAL_EVENT_COUNT - 1,
+                "published": 1,
+                "dead_letter": 0,
+            },
         )
 
         self.assertEqual(sqlite.calls.get("get", 0), 0)
