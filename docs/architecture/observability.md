@@ -76,6 +76,13 @@ Dependencies explicitly declare whether they are required for readiness and/or a
 
 Health is deterministic application state derived from current dependency checks. It must not require an LLM.
 
+Catalog-backed health checks must use keyed or bounded paginated reads and
+validate only the fields that determine the health result. They must not
+reconstruct, deep-copy, or fully validate unrelated canonical payloads merely
+to produce a diagnostic projection. Corruption of a field that influences the
+health decision fails the refresh visibly; the projection never repairs or
+mutates canonical state.
+
 ## Runtime diagnostics ownership
 
 Process/operator diagnostics are composed from focused services rather than from the legacy runtime module:
