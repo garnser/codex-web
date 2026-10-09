@@ -4307,6 +4307,7 @@ runtime_service = RuntimeService(
     codex=codex_runtime,
     static_version=static_asset_version_service.version,
     extra_model_sources=(_mammouth_model_entries,),
+    provider_capacity=provider_capacity_service,
     runtime_health=runtime_health_service.health,
     load_active_turns=runtime_state.active_turns.load,
     load_turn_queues=turn_queue_repository.load,

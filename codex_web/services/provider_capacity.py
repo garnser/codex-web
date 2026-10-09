@@ -529,6 +529,54 @@ class ProviderCapacityService:
             actor=actor,
         )
 
+    async def reconcile_codex_snapshot(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        actor: AuthenticationActor,
+        provider_id: str = "openai",
+        runtime_id: str = "codex",
+    ) -> tuple[ProviderCapacityRecord, tuple[ProviderCapacityWait, ...]]:
+        """Persist fresh account evidence and resume only matching scoped waits."""
+
+        record = self.report_codex_snapshot(
+            snapshot,
+            actor=actor,
+            provider_id=provider_id,
+            runtime_id=runtime_id,
+        )
+        if record.status != ProviderCapacityStatus.AVAILABLE:
+            return record, ()
+
+        resumed: list[ProviderCapacityWait] = []
+        for wait in self.list_waits(actor, include_terminal=False):
+            if record.key not in wait.provider_keys:
+                continue
+            changed = self._transition_wait(
+                wait.id,
+                actor=actor,
+                status=ProviderCapacityWaitStatus.RESUMED,
+                resumed_at=float(self.clock()),
+            )
+            if changed is None:
+                continue
+            resumed.append(changed)
+            if changed.schedule_id and self.scheduler is not None:
+                try:
+                    self.scheduler.cancel(
+                        changed.schedule_id,
+                        actor_id=actor.identity_id,
+                    )
+                except Exception:
+                    # The durable wait transition prevents duplicate resume even
+                    # when the obsolete scheduler record cannot be cancelled.
+                    pass
+            for handler in tuple(self._resume_handlers):
+                outcome = handler(changed)
+                if inspect.isawaitable(outcome):
+                    await outcome
+        return record, tuple(resumed)
+
     async def refresh_if_due(
         self,
         provider_id: str,
@@ -643,6 +691,9 @@ class ProviderCapacityService:
             rows = []
             for item in state.waits:
                 if item.id != wait_id:
+                    rows.append(item)
+                    continue
+                if item.status != ProviderCapacityWaitStatus.WAITING:
                     rows.append(item)
                     continue
                 if actor is not None and not self._same_scope(item, actor):
