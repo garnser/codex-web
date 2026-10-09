@@ -689,3 +689,12 @@ a newer account change still prevents older responses from publishing proof.
 Transport stop retires the refresh task, without weakening readiness or execution
 authority checks. Continuous changes remain unavailable until a later ordinary
 quota refresh or notification; no polling loop or model call is introduced.
+
+Assignment-bound thread startup and turn continuation include the shared HTTP
+control-plane broker discovery guidance, even when a Slack or bootstrap turn has
+no work-item reference. Work-item contracts reuse that same guidance; an existing
+copy is delivered once. This explains the current assignment channel and its
+catalogued operations, without changing actor, repository, route, or policy
+permissions. Trusted local execution without a worker assignment does not receive
+an assignment-channel claim. A mutation timeout still requires reconciliation of
+its existing ActionIntent before a retry.

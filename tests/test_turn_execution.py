@@ -30,6 +30,7 @@ from codex_web.services.agent_worker_session import (
     AssignmentBoundAgentSessionStaleError,
 )
 from codex_web.services.turns import TurnService
+from codex_web.services.work_item_contracts import assignment_control_plane_instructions
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingNotFoundError,
 )
@@ -952,6 +953,10 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call.args[0] for call in calls], ["thread/resume", "turn/start"])
         self.assertEqual(calls[0].args[1]["cwd"], "/workspace/project")
         self.assertEqual(calls[1].args[1]["cwd"], "/workspace/project")
+        self.assertNotIn(
+            "ASSIGNMENT CONTROL-PLANE ACCESS",
+            calls[1].args[1].get("developerInstructions") or "",
+        )
         self.assertEqual(
             calls[1].args[1]["sandboxPolicy"],
             {"type": "danger-full-access"},
@@ -1209,6 +1214,51 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(binding.calls, [])
         self.assertEqual(sessions.started, [])
+
+    def test_shared_broker_guidance_does_not_advertise_work_item_only_operations(self) -> None:
+        guidance = assignment_control_plane_instructions()
+        self.assertIn("GET /api/control-plane-broker/operations", guidance)
+        self.assertNotIn("assigned_scope", guidance)
+        self.assertNotIn("work_item.steer", guidance)
+
+    async def test_null_work_item_assignment_delivers_broker_discovery(self) -> None:
+        for source, bootstrap in (("slack", None), ("autonomy-watchdog", "t1")):
+            with self.subTest(source=source, bootstrap=bootstrap):
+                resolved_refs = []
+                _host, _binding, sessions, service = self._service(
+                    bootstrap_thread_id=bootstrap,
+                    work_item_context_resolver=lambda ref: resolved_refs.append(ref),
+                )
+                project = Project(id="p1", name="Project", path="/workspace/project")
+                await service.start_thread_turn_now(
+                    "t1", project=project, message="inspect canonical work",
+                    sandbox="workspace-write", approval_policy="on-request",
+                    source=source, execution_id="exec-no-work-item",
+                )
+                self.assertEqual(resolved_refs, [])
+                for _method, request in sessions.session.requests:
+                    instructions = request["developerInstructions"]
+                    self.assertEqual(instructions.count("ASSIGNMENT CONTROL-PLANE ACCESS"), 1)
+                    self.assertIn("GET /api/control-plane-broker/operations", instructions)
+                    self.assertIn("existing ActionIntent before retrying", instructions)
+                    self.assertIn("absence of MCP tools", instructions)
+                self.assertEqual(sessions.session.requests[1][0], "turn/start")
+
+    async def test_existing_work_item_broker_guidance_is_not_duplicated(self) -> None:
+        guidance = assignment_control_plane_instructions()
+        _host, _binding, sessions, service = self._service()
+        service._work_item_continuation_context = MagicMock(
+            return_value=("Canonical work context\n" + guidance, None, None)
+        )
+        project = Project(id="p1", name="Project", path="/workspace/project")
+        await service.start_thread_turn_now(
+            "t1", project=project, message="continue issue",
+            sandbox="workspace-write", approval_policy="never",
+            work_item_ref="group/app#531",
+        )
+        instructions = sessions.session.requests[1][1]["developerInstructions"]
+        self.assertIn("Canonical work context", instructions)
+        self.assertEqual(instructions.count(guidance), 1)
 
     async def test_work_item_delta_is_delivered_and_recorded_after_turn_start(self) -> None:
         recorded = []
