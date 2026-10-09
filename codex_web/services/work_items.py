@@ -42,6 +42,7 @@ from codex_web.services.task_sources import (
 from codex_web.services.work_item_dependencies import (
     GitLabWorkItemDependencies,
     WorkItemRuntimeDependencies,
+    work_item_progress_evidence,
 )
 from codex_web.services.work_item_state import WorkItemStateMachine
 from codex_web.storage.work_item_list_index import WorkItemListIndex
@@ -1413,21 +1414,31 @@ class WorkItemService:
         split_brain_findings: Any,
         publish_event: Any,
     ) -> dict[str, Any]:
+        read_state = getattr(self.state_machine, "_work_item_state", None)
+        previous_evidence = (
+            work_item_progress_evidence(read_state(ref))
+            if callable(read_state)
+            else None
+        )
         state = structured_progress(ref, payload)
         state = await self.task_source_writeback.sync(state)
         public = public_state(state)
         await publish_event(
             {"type": "work-item.progress", "ref": ref, "state": public}
         )
-        continuity.schedule_actionable_owner_dispatch(
-            state,
-            source="work-item-progress",
-            actor=payload.actor,
-        )
-        continuity.schedule_actionable_owner_continuity_check(
-            state,
-            source="work-item-progress-continuity",
-        )
+        if (
+            previous_evidence is None
+            or previous_evidence != work_item_progress_evidence(state)
+        ):
+            continuity.schedule_actionable_owner_dispatch(
+                state,
+                source="work-item-progress",
+                actor=payload.actor,
+            )
+            continuity.schedule_actionable_owner_continuity_check(
+                state,
+                source="work-item-progress-continuity",
+            )
         if split_brain_findings(state):
             recovery.schedule(reason="work-item-progress-routing-drift")
         return {"ok": True, "item": public}
