@@ -26,6 +26,7 @@ from codex_web.runtime.execution import (
     install_turn_execution_service,
 )
 from codex_web.services.agent_routing import AgentRoutingError
+from codex_web.services.local_execution_worker import LocalExecutionWorkerCapacityError
 from codex_web.services.agent_worker_session import (
     AssignmentBoundAgentSessionStaleError,
 )
@@ -508,6 +509,23 @@ class TurnExecutionQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(arguments["agent_profile_id"], "reviewer")
         self.assertEqual(arguments["agent_profile_revision"], 4)
         self.assertEqual(arguments["agent_profile_actor_id"], "requesting-human")
+        self.assertEqual(host._thread_queue_depth("t1"), 0)
+
+    async def test_worker_capacity_wait_does_not_exhaust_message_retries(self) -> None:
+        host = _Host()
+        host._project = lambda _project_id: Project(id="p1", name="Project", path="/workspace/project")
+        service = TurnExecutionService(host)
+        queued = service.enqueue_turn(thread_id="t1", project_id="p1", message="human request", source="slack")
+        service.start_thread_turn_now = AsyncMock(side_effect=LocalExecutionWorkerCapacityError("worker full"))
+        with patch.object(asyncio.get_running_loop(), "call_later") as retry:
+            for _ in range(4):
+                await service.drain_thread_queue("t1")
+            self.assertEqual(retry.call_count, 4)
+        self.assertEqual(host._thread_queue_depth("t1"), 1)
+        self.assertEqual(service._thread_queue("t1")[0].id, queued.id)
+        self.assertEqual(service._thread_queue("t1")[0].attempts, 0)
+        service.start_thread_turn_now = AsyncMock(return_value={"ok": True})
+        await service.drain_thread_queue("t1")
         self.assertEqual(host._thread_queue_depth("t1"), 0)
 
     async def test_stale_queued_web_thread_uses_canonical_replacement(self) -> None:

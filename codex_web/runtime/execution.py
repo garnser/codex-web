@@ -40,6 +40,7 @@ from codex_web.services.provider_capacity import (
     ProviderCapacityService,
 )
 from codex_web.services.project_runtime import assignment_sandbox_policy
+from codex_web.services.local_execution_worker import LocalExecutionWorkerCapacityError
 from codex_web.services.replicated_ownership import ReplicatedOwnershipService
 from codex_web.services.agent_worker_session import (
     AssignmentBoundAgentSessionManager,
@@ -3042,6 +3043,18 @@ class TurnExecutionService:
                 }
             )
         except Exception as exc:
+            if isinstance(exc, LocalExecutionWorkerCapacityError):
+                queued.attempts = max(0, queued.attempts - 1)
+                self.requeue_turn_front(queued)
+                reschedule_queue = False
+                h._append_bot_event({
+                    "type": "queued_turn_waiting_for_worker_capacity",
+                    "thread_id": thread_id,
+                    "queued_id": queued.id,
+                    "error": str(exc),
+                })
+                asyncio.get_running_loop().call_later(30, self.schedule_queue_drain, thread_id)
+                return
             if isinstance(exc, ProviderCapacityBlockedError):
                 queued.attempts = max(0, queued.attempts - 1)
                 self.requeue_turn_front(queued)

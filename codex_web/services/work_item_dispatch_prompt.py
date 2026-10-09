@@ -4,6 +4,7 @@ import urllib.parse
 from collections.abc import Callable
 
 from codex_web.models import WorkItemState
+from codex_web.services.work_item_dependencies import actionable_owner_value
 
 
 class WorkItemDispatchPromptPolicy:
@@ -19,6 +20,7 @@ class WorkItemDispatchPromptPolicy:
         self.coordination_channel = coordination_channel
 
     def render(self, state: WorkItemState) -> str:
+        owner = actionable_owner_value(state)
         findings_suffix = ""
         if state.blocking_findings:
             findings_suffix = (
@@ -40,11 +42,11 @@ class WorkItemDispatchPromptPolicy:
         if (
             state.handoff
             and state.handoff.status == "accepted"
-            and self.coerce_owner(state.current_owner)
+            and self.coerce_owner(owner)
             == self.coerce_owner(state.handoff.to_agent)
         ):
             return (
-                f"{state.current_owner or state.next_owner or 'owner'}: accepted "
+                f"{owner or 'owner'}: accepted "
                 f"handoff is live for {state.ref}. Current stage: "
                 f"{state.current_stage}. Next action: "
                 f"{state.next_action or 'continue the owned lane now'}."
@@ -58,7 +60,7 @@ class WorkItemDispatchPromptPolicy:
             "ready_to_close",
         }:
             return (
-                f"{state.current_owner or state.next_owner or 'owner'}: "
+                f"{owner or 'owner'}: "
                 f"release/validation lane for {state.ref}. Current stage: "
                 f"{state.current_stage}. Next action: "
                 f"{state.next_action or 'acknowledge and process the release-side lane'}."
@@ -67,7 +69,7 @@ class WorkItemDispatchPromptPolicy:
                 "progress before ending the turn."
             )
         return (
-            f"{state.current_owner or state.next_owner or 'owner'}: owned-work "
+            f"{owner or 'owner'}: owned-work "
             f"SLA triggered for {state.ref}. Current stage: {state.current_stage}. "
             f"Next action: {state.next_action or 'state the exact next action and continue the item'}."
             f"{findings_suffix} No passive waiting is allowed. Record the resulting "

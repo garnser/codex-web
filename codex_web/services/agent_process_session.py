@@ -915,14 +915,14 @@ class AssignmentBoundAgentProcessSession:
         try:
             return await self.runtime.request(method, params)
         except Exception as exc:
-            # Assignment runtimes intentionally use a one-shot authenticated
-            # process and cannot be restarted in place. A transport timeout
-            # therefore makes this fenced assignment unusable even when its
-            # process is still alive. Retire it immediately so recovery can
-            # claim the preserved queue with a fresh process and lease.
+            # A timed-out interrupt has an unknown outcome; it does not prove
+            # the running turn or its fenced process is unusable. Keep that
+            # session so a failed steering request can preserve the queue and
+            # await the actual terminal notification. Start/mutation timeouts
+            # still require canonical retirement and fresh recovery.
             if (
                 getattr(exc, "status_code", None) == 504
-                and method != "thread/read"
+                and method not in {"thread/read", "turn/interrupt"}
             ):
                 self.last_error = f"agent runtime RPC timed out: {method}"
                 await asyncio.to_thread(

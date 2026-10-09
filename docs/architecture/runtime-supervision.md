@@ -198,6 +198,14 @@ Observers apply native-message filters before worker scheduling; browser fan-out
 retains the stream. Usage projection reads its canonical record by ID instead of
 loading the complete usage history for each measurement.
 
+Worker concurrency exhaustion is backpressure: queue drains preserve the same
+message without consuming execution retries and retry admission after 30 seconds.
+An interrupt timeout also preserves the fenced running session and requeues the
+steering message, because cancellation may have succeeded without an observed
+acknowledgement. Interrupted turns retain the canonical handoff checks.
+Activity updates for an existing bot binding preserve its recovered thread ID.
+The thread list renders pending queue depth alongside busy status and refreshes
+that depth from canonical project binding snapshots.
 ### Retained retry after stale-thread replacement
 
 A retained preflight attempt keeps its original thread, request, execution ID,

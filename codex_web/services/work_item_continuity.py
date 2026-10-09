@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from codex_web.models import WorkItemState
+from codex_web.services.work_item_dependencies import actionable_owner_value
 from codex_web.services.keyed_background_tasks import KeyedTaskCoordinator
 from codex_web.services.runtime_policy import RuntimePolicy
 
@@ -187,7 +188,7 @@ class WorkItemContinuityService:
                 state.ref,
                 str(
                     self.coerce_owner(
-                        state.current_owner or state.next_owner
+                        actionable_owner_value(state)
                     )
                     or ""
                 ),
@@ -223,7 +224,7 @@ class WorkItemContinuityService:
         }
 
     def responsible_binding(self, state: WorkItemState) -> Any | None:
-        owner = self.coerce_owner(state.current_owner or state.next_owner)
+        owner = self.coerce_owner(actionable_owner_value(state))
         if not owner or not state.project_id:
             return None
         return self.binding_for_agent(
@@ -511,7 +512,7 @@ class WorkItemContinuityService:
             return {"status": "not_actionable", "dispatched": False}
         if state.handoff and state.handoff.status == "pending":
             return {"status": "handoff_pending", "dispatched": False}
-        owner = self.coerce_owner(state.current_owner or state.next_owner)
+        owner = self.coerce_owner(actionable_owner_value(state))
         if not owner or self.coerce_owner(actor) == owner:
             return {"status": "owner_unavailable", "dispatched": False}
         binding = self.responsible_binding(state)
@@ -538,7 +539,7 @@ class WorkItemContinuityService:
             except HTTPException:
                 return {"status": "work_item_unavailable", "dispatched": False}
             latest_owner = self.coerce_owner(
-                latest.current_owner or latest.next_owner
+                actionable_owner_value(latest)
             )
             if (
                 latest.current_stage == "closed"
@@ -669,7 +670,7 @@ class WorkItemContinuityService:
         actor: str,
         source: str,
     ) -> dict[str, Any]:
-        owner = self.coerce_owner(state.current_owner or state.next_owner)
+        owner = self.coerce_owner(actionable_owner_value(state))
         expected = self.coerce_owner(expected_owner)
         if not owner or owner != expected:
             raise self._steer_conflict(
@@ -736,7 +737,7 @@ class WorkItemContinuityService:
         if state.handoff and state.handoff.status == "pending":
             return
         expected_owner = self.coerce_owner(
-            state.current_owner or state.next_owner
+            actionable_owner_value(state)
         )
         if not expected_owner:
             return
@@ -749,7 +750,7 @@ class WorkItemContinuityService:
             except HTTPException:
                 return
             current_owner = self.coerce_owner(
-                latest.current_owner or latest.next_owner
+                actionable_owner_value(latest)
             )
             if (
                 latest.current_stage == "closed"
@@ -823,7 +824,7 @@ class WorkItemContinuityService:
         if not self.actionable_owner_stage(state.current_stage):
             return
         current_owner = self.coerce_owner(
-            state.current_owner or state.next_owner
+            actionable_owner_value(state)
         )
         if expected_owner and current_owner != expected_owner:
             return
@@ -845,7 +846,7 @@ class WorkItemContinuityService:
             return
         if not self.actionable_owner_stage(state.current_stage):
             return
-        owner = self.coerce_owner(state.current_owner or state.next_owner)
+        owner = self.coerce_owner(actionable_owner_value(state))
         if not owner:
             return
         existing = self.actionable_owner_tasks.get(state.ref)
