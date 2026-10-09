@@ -16,6 +16,7 @@ from codex_web.services.upgrades import (
 from codex_web.upgrades import (
     UpgradeDefinitionMigrationCreate,
     UpgradePlanCreate,
+    UpgradeServiceDrainRequest,
     UpgradeStepExecute,
 )
 
@@ -99,6 +100,26 @@ def build_upgrades_router(service: UpgradeService) -> APIRouter:
     ) -> dict[str, Any]:
         try:
             item = service.start_drain(plan_id, actor=admin(request))
+            return {"item": item.model_dump(mode="json")}
+        except Exception as exc:
+            if isinstance(exc, (UpgradeError, AuthorizationError)):
+                raise error(exc) from exc
+            raise
+
+    @router.post("/{plan_id}/service-drain")
+    async def service_drain(
+        plan_id: str,
+        payload: UpgradeServiceDrainRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            item = service.start_service_drain(
+                plan_id,
+                actor=admin(request),
+                service_instance_id=payload.service_instance_id,
+                source_revision=payload.source_revision,
+                target_revision=payload.target_revision,
+            )
             return {"item": item.model_dump(mode="json")}
         except Exception as exc:
             if isinstance(exc, (UpgradeError, AuthorizationError)):

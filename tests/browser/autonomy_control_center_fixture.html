@@ -55,8 +55,18 @@
       },
       upgrades: { count: 1, active: [{
         id: "upgrade-1", current_app_version: "1.0.0", target_app_version: "1.1.0", status: "preflight_blocked",
-        maintenance_mode: false, rollback_available: true, irreversible_boundary_crossed: false,
-        preflight: { satisfied: false, blockers: ["definition_incompatible:policy.old"] }
+        maintenance_scope: "service", service_instance_id: "control-plane-test",
+        deployment_source_revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        deployment_target_revision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        covered_scopes: [
+          { organization_id: "org-a", workspace_id: "ws-a" },
+          { organization_id: "org-b", workspace_id: "ws-b" }
+        ],
+        maintenance_mode: true, rollback_available: true, irreversible_boundary_crossed: false,
+        preflight: {
+          satisfied: false, blockers: ["definition_incompatible:policy.old"], evidence_id: "evidence-upgrade-1",
+          active_native_admissions: 1, active_fenced_admissions: 2
+        }
       }]},
       execution_plane: {
         workers: [{ id: "worker-1", lifecycle: "active", version: "1.1.0", pool: "default", supported_execution_contract_versions: ["1.0"] }],

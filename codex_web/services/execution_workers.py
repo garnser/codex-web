@@ -74,12 +74,14 @@ class ExecutionWorkerService:
         identity: IdentityService | None = None,
         workspaces: ExecutionWorkspaceService | None = None,
         maintenance_guard=None,
+        maintenance_admission=None,
         assignment_notifier=None,
     ) -> None:
         self.store = store
         self.identity = identity
         self.workspaces = workspaces
         self.maintenance_guard = maintenance_guard
+        self.maintenance_admission = maintenance_admission
         self.assignment_notifier = assignment_notifier
 
     def _notify_assignment(
@@ -892,6 +894,24 @@ class ExecutionWorkerService:
         *,
         actor: AuthenticationActor,
     ) -> ExecutionAssignment:
+        if self.maintenance_admission is not None:
+            with self.maintenance_admission(
+                actor.organization_id,
+                actor.workspace_id,
+            ) as admitted:
+                if not admitted:
+                    raise WorkerConflictError(
+                        "execution assignments are drained during upgrade maintenance"
+                    )
+                return self._create_assignment(payload, actor=actor)
+        return self._create_assignment(payload, actor=actor)
+
+    def _create_assignment(
+        self,
+        payload: ExecutionAssignmentCreate,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutionAssignment:
         self._require_admin(actor)
         if (
             self.maintenance_guard is not None
@@ -1094,6 +1114,34 @@ class ExecutionWorkerService:
         return sorted(items, key=lambda item: (item.created_at, item.id), reverse=True)
 
     def claim(
+        self,
+        worker_id: str,
+        payload: AssignmentClaimRequest,
+        *,
+        actor: AuthenticationActor,
+        assignment_id: str | None = None,
+    ) -> ExecutionAssignment | None:
+        if self.maintenance_admission is not None:
+            with self.maintenance_admission(
+                actor.organization_id,
+                actor.workspace_id,
+            ) as admitted:
+                if not admitted:
+                    return None
+                return self._claim(
+                    worker_id,
+                    payload,
+                    actor=actor,
+                    assignment_id=assignment_id,
+                )
+        return self._claim(
+            worker_id,
+            payload,
+            actor=actor,
+            assignment_id=assignment_id,
+        )
+
+    def _claim(
         self,
         worker_id: str,
         payload: AssignmentClaimRequest,

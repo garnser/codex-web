@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
+import threading
 import time
 from collections.abc import Callable
+from contextlib import contextmanager
 from typing import Any
 
 from codex_web.action_intents import (
@@ -33,7 +37,12 @@ from codex_web.definitions import (
 )
 from codex_web.execution_workers import AssignmentStatus, WorkerLifecycle
 from codex_web.extensions import ExtensionLifecycleState
-from codex_web.identity import AuthenticationActor
+from codex_web.identity import (
+    AuthenticationActor,
+    AuthenticationAssurance,
+    MembershipRole,
+    PrincipalKind,
+)
 from codex_web.releases import ReleaseStatus
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.approval_requests import ApprovalRequestService
@@ -52,6 +61,8 @@ from codex_web.upgrades import (
     DefinitionMigrationRecord,
     UpgradeDefinitionBaseline,
     UpgradeDefinitionMigrationCreate,
+    UpgradeHostedScope,
+    UpgradeMaintenanceScope,
     UpgradePhase,
     UpgradePlan,
     UpgradePlanCreate,
@@ -81,6 +92,59 @@ MigrationHandler = Callable[
 ]
 
 
+class UpgradeAdmissionCoordinator:
+    """Fence new work while allowing already-admitted operations to finish."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._active: dict[tuple[str, str, str], int] = {}
+
+    @contextmanager
+    def admit(
+        self,
+        organization_id: str,
+        workspace_id: str,
+        allowed,
+        *,
+        kind: str = "native",
+    ):
+        scope = (kind, organization_id, workspace_id)
+        with self._lock:
+            accepted = bool(allowed())
+            if accepted:
+                self._active[scope] = self._active.get(scope, 0) + 1
+        try:
+            yield accepted
+        finally:
+            if accepted:
+                with self._lock:
+                    remaining = self._active.get(scope, 1) - 1
+                    if remaining:
+                        self._active[scope] = remaining
+                    else:
+                        self._active.pop(scope, None)
+
+    def mutate_drain(self, callback):
+        with self._lock:
+            return callback()
+
+    def active_count(
+        self,
+        organization_id: str | None = None,
+        workspace_id: str | None = None,
+        *,
+        kind: str | None = None,
+    ) -> int:
+        with self._lock:
+            return sum(
+                count
+                for (active_kind, active_org, active_workspace), count in self._active.items()
+                if (kind is None or active_kind == kind)
+                and (organization_id is None or active_org == organization_id)
+                and (workspace_id is None or active_workspace == workspace_id)
+            )
+
+
 class UpgradeService:
     def __init__(
         self,
@@ -95,6 +159,9 @@ class UpgradeService:
         action_intents: ActionIntentService,
         approvals: ApprovalRequestService,
         evidence: ArtifactEvidenceService,
+        identity=None,
+        service_instance_id: str | None = None,
+        admission: UpgradeAdmissionCoordinator | None = None,
         clock=time.time,
     ) -> None:
         self.store = store
@@ -107,6 +174,9 @@ class UpgradeService:
         self.action_intents = action_intents
         self.approvals = approvals
         self.evidence = evidence
+        self.identity = identity
+        self.service_instance_id = service_instance_id
+        self.admission = admission or UpgradeAdmissionCoordinator()
         self.clock = clock
         self._migration_handlers: dict[str, MigrationHandler] = {}
 
@@ -236,7 +306,20 @@ class UpgradeService:
             return False
         return True
 
-    def _active_action_count(self, actor: AuthenticationActor) -> int:
+    def _service_wide(self, plan: UpgradePlan) -> bool:
+        return plan.maintenance_scope == UpgradeMaintenanceScope.SERVICE
+
+    def _active_action_count(
+        self,
+        actor: AuthenticationActor,
+        *,
+        service_wide: bool = False,
+    ) -> int:
+        items = (
+            self.action_intents.store.load().intents
+            if service_wide
+            else self.action_intents.list(actor)
+        )
         return sum(
             item.status in {
                 ActionIntentStatus.CLAIMED,
@@ -244,16 +327,123 @@ class UpgradeService:
                 ActionIntentStatus.UNCERTAIN,
                 ActionIntentStatus.REQUIRES_RECONCILIATION,
             }
-            for item in self.action_intents.list(actor)
+            for item in items
         )
 
-    def _active_assignment_count(self, actor: AuthenticationActor) -> int:
+    def _active_assignment_count(
+        self,
+        actor: AuthenticationActor,
+        *,
+        service_wide: bool = False,
+    ) -> int:
+        items = (
+            self.workers.store.load().assignments
+            if service_wide
+            else self.workers.list_assignments(actor)
+        )
         return sum(
             item.status in {
                 AssignmentStatus.CLAIMED,
                 AssignmentStatus.RUNNING,
             }
-            for item in self.workers.list_assignments(actor)
+            for item in items
+        )
+
+    def _hosted_scopes(self) -> tuple[UpgradeHostedScope, ...]:
+        scopes: set[tuple[str, str]] = set()
+        if self.identity is not None:
+            state = self.identity.state()
+            scopes.update(
+                (item.organization_id, item.id)
+                for item in state.workspaces
+                if item.disabled_at is None
+            )
+        scopes.update(
+            (item.organization_id, item.workspace_id)
+            for item in self.workers.store.load().assignments
+        )
+        scopes.update(
+            (item.organization_id, item.workspace_id)
+            for item in self.action_intents.store.load().intents
+        )
+        scopes.update(
+            (item.organization_id, item.workspace_id)
+            for item in self.store.load().plans.values()
+        )
+        return tuple(
+            UpgradeHostedScope(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            )
+            for organization_id, workspace_id in sorted(scopes)
+        )
+
+    @staticmethod
+    def _scope_fingerprint(scopes: tuple[UpgradeHostedScope, ...]) -> str:
+        return hashlib.sha256(
+            json.dumps(
+                [item.model_dump(mode="json") for item in scopes],
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+    def _require_service_drain_authority(self, actor: AuthenticationActor) -> None:
+        if (
+            actor.principal_kind == PrincipalKind.HUMAN
+            and actor.assurance == AuthenticationAssurance.LOCAL_TRUSTED
+            and actor.has_role(MembershipRole.OWNER, MembershipRole.ADMIN)
+        ):
+            return
+        required_scopes = {
+            (item.organization_id, item.workspace_id)
+            for item in self._hosted_scopes()
+        }
+        if (
+            actor.principal_kind == PrincipalKind.HUMAN
+            and actor.assurance == AuthenticationAssurance.MFA
+            and actor.has_role(MembershipRole.OWNER, MembershipRole.ADMIN)
+            and self.identity is not None
+        ):
+            authorized_scopes = {
+                (item.organization_id, item.workspace_id)
+                for item in self.identity.state().memberships
+                if item.identity_id == actor.identity_id
+                and item.revoked_at is None
+                and item.workspace_id is not None
+                and set(item.roles).intersection(
+                    {MembershipRole.OWNER, MembershipRole.ADMIN}
+                )
+            }
+            if required_scopes.issubset(authorized_scopes):
+                return
+            raise UpgradeConflictError(
+                "administrator authority does not cover every hosted scope"
+            )
+        if (
+            actor.principal_kind == PrincipalKind.SERVICE
+            and "upgrade:admin" in actor.service_scopes
+        ):
+            if self.identity is None:
+                raise UpgradeConflictError(
+                    "whole-service authority cannot verify hosted scope memberships"
+                )
+            memberships = self.identity.state().memberships
+            authorized_scopes = {
+                (item.organization_id, item.workspace_id)
+                for item in memberships
+                if item.identity_id == actor.identity_id
+                and item.revoked_at is None
+                and item.workspace_id is not None
+            }
+            if required_scopes.issubset(authorized_scopes):
+                return
+            raise UpgradeConflictError(
+                "upgrade:admin service authority does not cover every hosted scope"
+            )
+        raise UpgradeConflictError(
+            "whole-service local drain requires administrator+MFA or "
+            "upgrade:admin service authority with complete hosted scope access"
         )
 
     def preflight(
@@ -361,11 +551,24 @@ class UpgradeService:
             for item in incompatible_definitions
         )
 
+        service_wide = self._service_wide(plan)
+        covered_scopes = self._hosted_scopes() if service_wide else (
+            UpgradeHostedScope(
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+            ),
+        )
+        scope_fingerprint = self._scope_fingerprint(covered_scopes)
         incompatible_workers: list[str] = []
         allowed_worker_versions = set(
             profile.supported_worker_versions_during_rollout
         )
-        for worker in self.workers.list_workers(actor):
+        workers = (
+            self.workers.store.load().workers
+            if service_wide
+            else self.workers.list_workers(actor)
+        )
+        for worker in workers:
             if worker.lifecycle in {
                 WorkerLifecycle.REVOKED,
                 WorkerLifecycle.OFFLINE,
@@ -381,7 +584,12 @@ class UpgradeService:
             for item in incompatible_workers
         )
 
-        for assignment in self.workers.list_assignments(actor):
+        assignments = (
+            self.workers.store.load().assignments
+            if service_wide
+            else self.workers.list_assignments(actor)
+        )
+        for assignment in assignments:
             if assignment.status in {
                 AssignmentStatus.CANCELLED,
                 AssignmentStatus.FAILED,
@@ -399,7 +607,12 @@ class UpgradeService:
                 )
 
         incompatible_extensions: list[str] = []
-        for installation in self.extensions.list(actor):
+        installations = (
+            self.extensions.store.load().installations
+            if service_wide
+            else self.extensions.list(actor)
+        )
+        for installation in installations:
             if installation.lifecycle not in {
                 ExtensionLifecycleState.ENABLED,
                 ExtensionLifecycleState.CONFIGURED,
@@ -424,12 +637,31 @@ class UpgradeService:
             for item in incompatible_extensions
         )
 
-        active_actions = self._active_action_count(actor)
-        active_assignments = self._active_assignment_count(actor)
-        if plan.require_drain and (active_actions or active_assignments):
+        active_actions = self._active_action_count(
+            actor,
+            service_wide=service_wide,
+        )
+        active_assignments = self._active_assignment_count(
+            actor,
+            service_wide=service_wide,
+        )
+        active_native_admissions = self.admission.active_count(
+            None if service_wide else actor.organization_id,
+            None if service_wide else actor.workspace_id,
+            kind="native",
+        )
+        active_fenced_admissions = self.admission.active_count(
+            None if service_wide else actor.organization_id,
+            None if service_wide else actor.workspace_id,
+        )
+        if plan.require_drain and (
+            active_actions or active_assignments or active_fenced_admissions
+        ):
             blockers.append(
                 "active_operations_not_drained:"
-                f"actions={active_actions}:assignments={active_assignments}"
+                f"actions={active_actions}:assignments={active_assignments}:"
+                f"native_admissions={active_native_admissions}:"
+                f"fenced_admissions={active_fenced_admissions}"
             )
         if plan.require_drain and not plan.maintenance_mode:
             warnings.append("maintenance_mode_not_entered")
@@ -457,6 +689,11 @@ class UpgradeService:
                     "blocker_count": len(blockers),
                     "active_action_intents": active_actions,
                     "active_worker_assignments": active_assignments,
+                    "active_native_admissions": active_native_admissions,
+                    "active_fenced_admissions": active_fenced_admissions,
+                    "maintenance_scope": plan.maintenance_scope.value,
+                    "service_instance_id": plan.service_instance_id,
+                    "hosted_scope_fingerprint": scope_fingerprint,
                     "definition_baseline_count": len(baseline),
                 },
             ),
@@ -470,6 +707,13 @@ class UpgradeService:
             recovery_qualified=recovery_health.recovery_qualified,
             active_action_intents=active_actions,
             active_worker_assignments=active_assignments,
+            active_native_admissions=active_native_admissions,
+            active_fenced_admissions=active_fenced_admissions,
+            maintenance_scope=plan.maintenance_scope,
+            service_instance_id=plan.service_instance_id,
+            covered_scopes=covered_scopes,
+            hosted_scope_fingerprint=scope_fingerprint,
+            admission_epoch=plan.admission_epoch,
             incompatible_worker_ids=tuple(incompatible_workers),
             incompatible_extension_ids=tuple(incompatible_extensions),
             incompatible_definition_record_ids=tuple(
@@ -494,6 +738,8 @@ class UpgradeService:
             lambda current: current.model_copy(
                 update={
                     "preflight": preflight,
+                    "covered_scopes": covered_scopes,
+                    "hosted_scope_fingerprint": scope_fingerprint,
                     "status": status,
                     "updated_at": float(self.clock()),
                 }
@@ -513,17 +759,71 @@ class UpgradeService:
         }:
             raise UpgradeConflictError("terminal upgrade cannot enter maintenance")
         now = float(self.clock())
-        return self._update(
-            plan.id,
-            actor,
-            lambda current: current.model_copy(
-                update={
-                    "maintenance_mode": True,
-                    "drain_started_at": current.drain_started_at or now,
-                    "status": UpgradeStatus.DRAINING,
-                    "updated_at": now,
-                }
-            ),
+        return self.admission.mutate_drain(
+            lambda: self._update(
+                plan.id,
+                actor,
+                lambda current: current.model_copy(
+                    update={
+                        "maintenance_mode": True,
+                        "maintenance_scope": UpgradeMaintenanceScope.TENANT,
+                        "drain_started_at": current.drain_started_at or now,
+                        "admission_epoch": current.admission_epoch + 1,
+                        "status": UpgradeStatus.DRAINING,
+                        "updated_at": now,
+                    }
+                ),
+            )
+        )
+
+    def start_service_drain(
+        self,
+        plan_id: str,
+        *,
+        actor: AuthenticationActor,
+        service_instance_id: str,
+        source_revision: str,
+        target_revision: str,
+    ) -> UpgradePlan:
+        self._require_service_drain_authority(actor)
+        plan = self.get(plan_id, actor=actor)
+        if plan.status in {UpgradeStatus.COMPLETED, UpgradeStatus.ROLLED_BACK}:
+            raise UpgradeConflictError("terminal upgrade cannot enter maintenance")
+        if plan.compatibility.deployment_mode.value != "local":
+            raise UpgradeConflictError(
+                "whole-service deployment drain is supported only for local mode"
+            )
+        if not self.service_instance_id or service_instance_id != self.service_instance_id:
+            raise UpgradeConflictError("service instance changed before drain")
+        release = self.releases.get(plan.release_id, actor=actor)
+        if release.build.source_revision != target_revision:
+            raise UpgradeConflictError(
+                "target revision does not match the immutable Release"
+            )
+        scopes = self._hosted_scopes()
+        fingerprint = self._scope_fingerprint(scopes)
+        now = float(self.clock())
+        return self.admission.mutate_drain(
+            lambda: self._update(
+                plan.id,
+                actor,
+                lambda current: current.model_copy(
+                    update={
+                        "maintenance_mode": True,
+                        "maintenance_scope": UpgradeMaintenanceScope.SERVICE,
+                        "drain_started_at": current.drain_started_at or now,
+                        "service_instance_id": service_instance_id,
+                        "covered_scopes": scopes,
+                        "hosted_scope_fingerprint": fingerprint,
+                        "admission_epoch": current.admission_epoch + 1,
+                        "deployment_source_revision": source_revision,
+                        "deployment_target_revision": target_revision,
+                        "preflight": None,
+                        "status": UpgradeStatus.DRAINING,
+                        "updated_at": now,
+                    }
+                ),
+            )
         )
 
     def _maintenance_plan(
@@ -534,8 +834,13 @@ class UpgradeService:
         candidates = [
             item
             for item in self.store.load().plans.values()
-            if item.organization_id == organization_id
-            and item.workspace_id == workspace_id
+            if (
+                item.maintenance_scope == UpgradeMaintenanceScope.SERVICE
+                or (
+                    item.organization_id == organization_id
+                    and item.workspace_id == workspace_id
+                )
+            )
             and item.maintenance_mode
             and item.status not in {
                 UpgradeStatus.COMPLETED,
@@ -544,7 +849,11 @@ class UpgradeService:
         ]
         return max(
             candidates,
-            key=lambda item: (item.created_at, item.id),
+            key=lambda item: (
+                item.maintenance_scope == UpgradeMaintenanceScope.SERVICE,
+                item.created_at,
+                item.id,
+            ),
             default=None,
         )
 
@@ -555,6 +864,8 @@ class UpgradeService:
         )
         if plan is None:
             return True
+        if self._service_wide(plan):
+            return False
         parameters = intent.request.parameters
         return bool(
             parameters.get("incident_id")
@@ -572,6 +883,163 @@ class UpgradeService:
             organization_id,
             workspace_id,
         ) is None
+
+    @contextmanager
+    def native_turn_admission(
+        self,
+        organization_id: str,
+        workspace_id: str,
+    ):
+        with self.admission.admit(
+            organization_id,
+            workspace_id,
+            lambda: self.worker_assignment_allowed(
+                organization_id,
+                workspace_id,
+            ),
+            kind="native",
+        ) as accepted:
+            yield accepted
+
+    @contextmanager
+    def worker_admission(
+        self,
+        organization_id: str,
+        workspace_id: str,
+    ):
+        with self.admission.admit(
+            organization_id,
+            workspace_id,
+            lambda: self.worker_assignment_allowed(
+                organization_id,
+                workspace_id,
+            ),
+            kind="worker",
+        ) as accepted:
+            yield accepted
+
+    @contextmanager
+    def hosted_scope_admission(
+        self,
+        organization_id: str,
+        workspace_id: str,
+    ):
+        with self.admission.admit(
+            organization_id,
+            workspace_id,
+            lambda: not any(
+                self._service_wide(item)
+                and item.maintenance_mode
+                and item.status
+                not in {UpgradeStatus.COMPLETED, UpgradeStatus.ROLLED_BACK}
+                for item in self.store.load().plans.values()
+            ),
+            kind="hosted_scope",
+        ) as accepted:
+            yield accepted
+
+    @contextmanager
+    def action_admission(self, intent: ActionIntent):
+        with self.admission.admit(
+            intent.organization_id,
+            intent.workspace_id,
+            lambda: self.action_execution_allowed(intent),
+            kind="action",
+        ) as accepted:
+            yield accepted
+
+    def qualify_local_deployment(
+        self,
+        plan_id: str,
+        *,
+        actor: AuthenticationActor,
+        service_instance_id: str,
+        source_revision: str,
+        target_revision: str,
+        preflight_evidence_id: str,
+    ) -> dict[str, Any]:
+        return self.admission.mutate_drain(
+            lambda: self._qualify_local_deployment(
+                plan_id,
+                actor=actor,
+                service_instance_id=service_instance_id,
+                source_revision=source_revision,
+                target_revision=target_revision,
+                preflight_evidence_id=preflight_evidence_id,
+            )
+        )
+
+    def _qualify_local_deployment(
+        self,
+        plan_id: str,
+        *,
+        actor: AuthenticationActor,
+        service_instance_id: str,
+        source_revision: str,
+        target_revision: str,
+        preflight_evidence_id: str,
+    ) -> dict[str, Any]:
+        self._require_service_drain_authority(actor)
+        plan = self.get(plan_id, actor=actor)
+        if not plan.maintenance_mode or not self._service_wide(plan):
+            raise UpgradePreflightError(
+                "local deployment requires an active whole-service drain"
+            )
+        if (
+            not self.service_instance_id
+            or service_instance_id != self.service_instance_id
+            or plan.service_instance_id != service_instance_id
+        ):
+            raise UpgradePreflightError("local deployment service instance is stale")
+        if (
+            plan.deployment_source_revision != source_revision
+            or plan.deployment_target_revision != target_revision
+        ):
+            raise UpgradePreflightError("local deployment source/target changed")
+        release = self.releases.get(plan.release_id, actor=actor)
+        if release.build.source_revision != target_revision:
+            raise UpgradePreflightError(
+                "local deployment target no longer matches its Release"
+            )
+        preflight = plan.preflight
+        if (
+            preflight is None
+            or not preflight.satisfied
+            or preflight.evidence_id != preflight_evidence_id
+            or preflight.service_instance_id != service_instance_id
+            or preflight.admission_epoch != plan.admission_epoch
+            or preflight.evaluated_at < (plan.drain_started_at or 0)
+        ):
+            raise UpgradePreflightError(
+                "local deployment requires fresh passing service-drain preflight evidence"
+            )
+        scopes = self._hosted_scopes()
+        fingerprint = self._scope_fingerprint(scopes)
+        if (
+            preflight.hosted_scope_fingerprint != fingerprint
+            or plan.hosted_scope_fingerprint != fingerprint
+        ):
+            raise UpgradePreflightError(
+                "hosted scope inventory changed after deployment preflight"
+            )
+        active_admissions = self.admission.active_count()
+        active_actions = self._active_action_count(actor, service_wide=True)
+        active_assignments = self._active_assignment_count(actor, service_wide=True)
+        if active_admissions or active_actions or active_assignments:
+            raise UpgradePreflightError(
+                "local deployment drain still has active operations"
+            )
+        return {
+            "upgrade_plan_id": plan.id,
+            "release_id": plan.release_id,
+            "preflight_evidence_id": preflight.evidence_id,
+            "service_instance_id": service_instance_id,
+            "source_revision": source_revision,
+            "target_revision": target_revision,
+            "admission_epoch": plan.admission_epoch,
+            "hosted_scope_fingerprint": fingerprint,
+            "covered_scopes": [item.model_dump(mode="json") for item in scopes],
+        }
 
     def capture_pre_upgrade_backup(
         self,

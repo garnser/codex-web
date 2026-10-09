@@ -6,9 +6,11 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from collections import deque
@@ -406,6 +408,8 @@ class ControlPlaneBrokerService:
         action_intents: ActionIntentService | None = None,
         code_hosts: CodeHostService | None = None,
         execution_workspaces: ExecutionWorkspaceService | None = None,
+        upgrades=None,
+        service_instance_id: str | None = None,
         operator: WorkItemOperatorService | None = None,
         limits: ControlPlaneBrokerLimits | None = None,
         clock: Callable[[], float] = time.time,
@@ -419,6 +423,8 @@ class ControlPlaneBrokerService:
         self.action_intents = action_intents
         self.code_hosts = code_hosts
         self.execution_workspaces = execution_workspaces
+        self.upgrades = upgrades
+        self.service_instance_id = service_instance_id
         self.limits = limits or ControlPlaneBrokerLimits()
         self._clock = clock
         self._monotonic = monotonic
@@ -1188,7 +1194,10 @@ class ControlPlaneBrokerService:
         elif operation.id == "deployment.local.status":
             result = self._local_deployment_status()
         elif operation.id == "deployment.local.install":
-            result = self._schedule_local_deployment(payload)
+            result = self._schedule_local_deployment(
+                payload,
+                actor=requester_actor,
+            )
         elif repository_read:
             result = await self._read_repository_fact(
                 assignment=assignment,
@@ -1429,51 +1438,156 @@ class ControlPlaneBrokerService:
             "source_commit": self._git_revision(source),
             "available_commit": self._git_revision(source, "origin/main"),
             "live_commit": self._git_revision(live),
+            "service_instance_id": self.service_instance_id,
+            "qualified_install_required": True,
             "helper_available": helper.is_file(),
             "log_path": "/home/nbingester/codex-web-native-runtime/local-deploy.log",
         }
 
-    def _schedule_local_deployment(self, payload: dict[str, Any]) -> dict[str, Any]:
-        allowed = {"candidate_revision"}
+    def _qualify_local_deployment(self, payload: dict[str, Any], *, actor):
+        if self.upgrades is None or not self.service_instance_id:
+            raise ControlPlaneBrokerDeniedError(
+                "canonical local deployment qualification is unavailable"
+            )
+        required = {
+            "candidate_revision",
+            "upgrade_plan_id",
+            "preflight_evidence_id",
+            "source_revision",
+            "service_instance_id",
+        }
+        missing = sorted(required - set(payload))
+        if missing:
+            raise ControlPlaneBrokerRequestError(
+                "local deployment is missing fields: " + ", ".join(missing)
+            )
+        candidate = str(payload["candidate_revision"]).strip()
+        source_revision = str(payload["source_revision"]).strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", candidate):
+            raise ControlPlaneBrokerRequestError(
+                "candidate_revision must be an exact 40-character lowercase Git SHA"
+            )
+        if not re.fullmatch(r"[0-9a-f]{40}", source_revision):
+            raise ControlPlaneBrokerRequestError(
+                "source_revision must be an exact 40-character lowercase Git SHA"
+            )
+        service_instance_id = str(payload["service_instance_id"]).strip()
+        if service_instance_id != self.service_instance_id:
+            raise ControlPlaneBrokerDeniedError(
+                "local deployment service instance is stale"
+            )
+        return self.upgrades.qualify_local_deployment(
+            str(payload["upgrade_plan_id"]),
+            actor=actor,
+            service_instance_id=service_instance_id,
+            source_revision=source_revision,
+            target_revision=candidate,
+            preflight_evidence_id=str(payload["preflight_evidence_id"]),
+        )
+
+    def _serve_local_deployment_guard(
+        self,
+        channel: socket.socket,
+        payload: dict[str, Any],
+        *,
+        actor,
+    ) -> None:
+        try:
+            channel.settimeout(900)
+            request = channel.recv(32)
+            if request != b"verify\n":
+                raise ControlPlaneBrokerDeniedError(
+                    "local deployment helper did not request canonical verification"
+                )
+            source, live, _helper = self._local_deployment_paths()
+            candidate = str(payload["candidate_revision"])
+            source_revision = str(payload["source_revision"])
+            if self._git_revision(source, "origin/main") != candidate:
+                raise ControlPlaneBrokerDeniedError(
+                    "candidate changed before local deployment switch"
+                )
+            if self._git_revision(live) != source_revision:
+                raise ControlPlaneBrokerDeniedError(
+                    "live source changed before local deployment switch"
+                )
+            qualification = self._qualify_local_deployment(payload, actor=actor)
+            response = {"ok": True, "qualification": qualification}
+        except Exception as exc:
+            response = {"ok": False, "error": str(exc)[:500]}
+        try:
+            channel.sendall(json.dumps(response).encode("utf-8") + b"\n")
+        finally:
+            channel.close()
+
+    def _schedule_local_deployment(
+        self,
+        payload: dict[str, Any],
+        *,
+        actor,
+    ) -> dict[str, Any]:
+        allowed = {
+            "candidate_revision",
+            "upgrade_plan_id",
+            "preflight_evidence_id",
+            "source_revision",
+            "service_instance_id",
+        }
         unexpected = sorted(set(payload) - allowed)
         if unexpected:
             raise ControlPlaneBrokerRequestError(
                 "local deployment contains unsupported fields: " + ", ".join(unexpected)
             )
-        candidate = str(payload.get("candidate_revision") or "").strip()
-        if not re.fullmatch(r"[0-9a-f]{40}", candidate):
-            raise ControlPlaneBrokerRequestError(
-                "candidate_revision must be an exact 40-character lowercase Git SHA"
-            )
+        qualification = self._qualify_local_deployment(payload, actor=actor)
+        candidate = str(payload["candidate_revision"])
+        source_revision = str(payload["source_revision"])
         source, live, helper = self._local_deployment_paths()
         if not helper.is_file():
             raise ControlPlaneBrokerDeniedError("local deployment helper is unavailable")
         log_path = Path("/home/nbingester/codex-web-native-runtime/local-deploy.log")
         log_handle = log_path.open("a", encoding="utf-8")
+        parent_channel, child_channel = socket.socketpair()
         try:
-            process = subprocess.Popen(
-                [
-                    sys.executable,
-                    str(helper),
-                    "--candidate",
-                    candidate,
-                    "--source",
-                    str(source),
-                    "--live",
-                    str(live),
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                close_fds=True,
-            )
+            try:
+                process = subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(helper),
+                        "--candidate",
+                        candidate,
+                        "--source",
+                        str(source),
+                        "--live",
+                        str(live),
+                        "--expected-live",
+                        source_revision,
+                        "--guard-fd",
+                        str(child_channel.fileno()),
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                    close_fds=True,
+                    pass_fds=(child_channel.fileno(),),
+                )
+            except Exception:
+                parent_channel.close()
+                raise
         finally:
+            child_channel.close()
             log_handle.close()
+        threading.Thread(
+            target=self._serve_local_deployment_guard,
+            args=(parent_channel, dict(payload)),
+            kwargs={"actor": actor},
+            name=f"local-deployment-guard-{process.pid}",
+            daemon=True,
+        ).start()
         return {
             "accepted": True,
             "candidate_revision": candidate,
             "process_id": process.pid,
+            "qualification": qualification,
             "status_href": "/api/local-deployment",
             "log_path": str(log_path),
         }

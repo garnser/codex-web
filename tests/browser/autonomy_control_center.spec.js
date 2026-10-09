@@ -14,6 +14,8 @@ test("Autonomy Control Center renders canonical M11 readiness without triggering
   await expect(card).toContainText("Load-shed mode");
   await expect(card).toContainText("openai/codex · throttled");
   await expect(card).toContainText("1.0.0 → 1.1.0");
+  await expect(card).toContainText("service instance control-plane-test · covered scopes 2 · native admissions 1 · fenced admissions 2");
+  await expect(card).toContainText("evidence evidence-upgrade-1 · source aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa · target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
   await expect(card).toContainText("state-store:postgresql");
   await expect(card).toContainText("Audit integrity · verified");
   await expect(card).toContainText("Simulated actions 2 · executed actions 1 · evaluation records 3");

@@ -114,6 +114,35 @@ uncertain/reconciliation activity has reached a safe state.
 This avoids a race where preflight succeeds and new ordinary work starts while a
 migration begins.
 
+Native Thread turns use the same boundary. Admission owns a short-lived fenced
+lease from before bootstrap/session resolution until the provider turn is
+accepted. A drain activated while that code awaits preserves the already
+admitted operation, while later web, queue, steering and recovery starts fail
+with a typed maintenance result. Queue drains restore the same FIFO item without
+consuming an execution retry.
+
+Local whole-service rollouts are distinct from tenant-scoped maintenance. A
+local Upgrade Plan may enter `service` maintenance only with the existing
+upgrade administrator authority and explicit instance-local/cross-scope
+coverage. The plan records the service instance, exact source and immutable
+Release target revisions, admission epoch, complete hosted-scope inventory and
+its fingerprint. Service maintenance gates every hosted scope; it does not make
+the requesting principal a tenant administrator. Service-principal use requires
+an existing `upgrade:admin` grant and canonical membership in every covered
+scope. It also fences workspace creation and every new ActionIntent claim while
+the whole process is being replaced; tenant-scoped incident/recovery exceptions
+remain unchanged. Unknown coverage fails closed.
+
+The supported local installer accepts only a fresh passing preflight from that
+service drain. It checks active native admissions, ActionIntents and worker
+assignments across all scopes. Under the deployment lock, immediately before
+switching the checkout, an inherited one-shot channel asks the still-running
+control plane to revalidate the exact plan, Release, evidence, instance,
+admission epoch, scope fingerprint and live/source revisions. Missing or stale
+revalidation aborts without restarting. A receipt file is not authoritative.
+Root-capable tools can still bypass the helper; that explicit host-operator
+boundary remains visible and must not be described as universal protection.
+
 ## Migration phases
 
 Steps are declared before execution and must be ordered:
@@ -181,14 +210,18 @@ FAIL keeps the upgrade in a failed state for recovery/rollback decisions.
 
 ## API and UI
 
-/api/upgrades exposes plan creation/list/read, preflight, drain, backup capture,
+/api/upgrades exposes plan creation/list/read, preflight, tenant drain,
+whole-service local drain, backup capture,
 irreversible-step approval, step execution, Definition migration recording,
 post-upgrade verification and rollback recording.
 
 Human mutation requires administrator authority + MFA; service principals
 require upgrade:admin.
 
-The Autonomy Control Center and operator workspaces should display source/target versions, mixed-version warnings,
-Definition incompatibilities, drain state, step progress/Evidence, irreversible
-boundaries and rollback availability. The operator upgrade/runbook documentation
-documentation.
+The Autonomy Control Center and operator workspaces display source/target
+versions, mixed-version warnings, Definition incompatibilities, tenant/service
+drain scope, service instance, covered-scope and native/fenced-admission state,
+exact deployment source/target revisions and preflight Evidence ID, step
+progress/Evidence, irreversible boundaries and rollback availability. The
+operator upgrade/runbook documentation describes the guarded local path and its
+external bypass limit.

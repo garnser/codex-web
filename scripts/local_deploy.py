@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import socket
 import subprocess
 import sys
 import tempfile
@@ -65,14 +66,46 @@ def checkout(live: Path, commit: str) -> None:
     git(live, "checkout", "--detach", commit)
 
 
+def verify_canonical_guard(fd: int) -> dict[str, object]:
+    """Perform the one-shot canonical recheck immediately before switching."""
+    channel = socket.socket(fileno=fd)
+    try:
+        channel.settimeout(30)
+        channel.sendall(b"verify\n")
+        chunks = bytearray()
+        while b"\n" not in chunks and len(chunks) < 65536:
+            chunk = channel.recv(4096)
+            if not chunk:
+                break
+            chunks.extend(chunk)
+        response = json.loads(bytes(chunks).split(b"\n", 1)[0] or b"{}")
+    finally:
+        channel.close()
+    if response.get("ok") is not True:
+        raise RuntimeError(
+            "canonical deployment guard denied the switch: "
+            + str(response.get("error") or "no verified response")
+        )
+    qualification = response.get("qualification")
+    if not isinstance(qualification, dict):
+        raise RuntimeError("canonical deployment guard returned no qualification")
+    return qualification
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--candidate", required=True)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--live", type=Path, required=True)
+    parser.add_argument("--expected-live", required=True)
+    parser.add_argument("--guard-fd", type=int, required=True)
     args = parser.parse_args()
     if len(args.candidate) != 40 or any(c not in "0123456789abcdef" for c in args.candidate):
         raise SystemExit("candidate must be an exact lowercase SHA")
+    if len(args.expected_live) != 40 or any(
+        c not in "0123456789abcdef" for c in args.expected_live
+    ):
+        raise SystemExit("expected-live must be an exact lowercase SHA")
     for path in (args.source, args.live):
         if not (path / ".git").exists():
             raise SystemExit(f"not a Git worktree: {path}")
@@ -81,6 +114,10 @@ def main() -> int:
     with lock_path.open("w", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         previous = revision(args.live)
+        if previous != args.expected_live:
+            raise SystemExit(
+                f"live revision changed before deployment: {previous} != {args.expected_live}"
+            )
         print(json.dumps({"event": "start", "candidate": args.candidate, "previous": previous}), flush=True)
         git(args.source, "fetch", "--prune", "origin", "main")
         available = revision(args.source, "origin/main")
@@ -110,6 +147,26 @@ def main() -> int:
                     timeout=300,
                 )
                 built = revision(stage)
+                if revision(args.source, "origin/main") != args.candidate:
+                    raise SystemExit("candidate changed while deployment was staged")
+                if revision(args.live) != previous:
+                    raise SystemExit("live revision changed while deployment was staged")
+                qualification = verify_canonical_guard(args.guard_fd)
+                print(
+                    json.dumps(
+                        {
+                            "event": "qualified",
+                            "upgrade_plan_id": qualification.get("upgrade_plan_id"),
+                            "preflight_evidence_id": qualification.get(
+                                "preflight_evidence_id"
+                            ),
+                            "service_instance_id": qualification.get(
+                                "service_instance_id"
+                            ),
+                        }
+                    ),
+                    flush=True,
+                )
                 checkout(args.live, built)
             finally:
                 git(args.source, "worktree", "remove", "--force", str(stage), check=False)

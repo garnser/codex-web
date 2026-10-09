@@ -37,6 +37,7 @@ from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingNotFoundError,
 )
 from codex_web.services.turn_execution_binding import TurnExecutionBindingError
+from codex_web.services.upgrades import UpgradeAdmissionCoordinator
 from codex_web.storage.runtime_state import RuntimeStateRepositories
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
@@ -584,6 +585,41 @@ class TurnExecutionQueueTests(unittest.IsolatedAsyncioTestCase):
         await service.drain_thread_queue("t1")
         self.assertEqual(host._thread_queue_depth("t1"), 0)
 
+    async def test_upgrade_drain_retains_fifo_queue_without_consuming_retry(self) -> None:
+        host = _Host()
+        host._project = lambda _project_id: Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+        )
+        service = TurnExecutionService(host)
+        queued = service.enqueue_turn(
+            thread_id="t1",
+            project_id="p1",
+            message="finish after rollout",
+        )
+        service.start_thread_turn_now = AsyncMock(
+            side_effect=HTTPException(
+                status_code=409,
+                detail={
+                    "code": "upgrade_maintenance_active",
+                    "retryable": True,
+                },
+            )
+        )
+
+        with patch.object(asyncio.get_running_loop(), "call_later") as retry:
+            await service.drain_thread_queue("t1")
+
+        retained = host._thread_queue("t1")
+        self.assertEqual([item.id for item in retained], [queued.id])
+        self.assertEqual(retained[0].attempts, 0)
+        retry.assert_called_once_with(30, service.schedule_queue_drain, "t1")
+        self.assertEqual(
+            host.events[-1]["type"],
+            "queued_turn_waiting_for_upgrade_drain",
+        )
+
     async def test_stale_queued_web_thread_uses_canonical_replacement(self) -> None:
         host = _Host()
         project = Project(id="p1", name="Project", path="/workspace/project")
@@ -959,6 +995,96 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             control_actor=SimpleNamespace(identity_id="control"),
         )
         return host, binding, sessions, service
+
+    async def test_upgrade_drain_fences_bound_turns_across_bootstrap_await(self) -> None:
+        coordinator = UpgradeAdmissionCoordinator()
+        state = {"draining": False}
+
+        def admission(organization_id, workspace_id):
+            return coordinator.admit(
+                organization_id,
+                workspace_id,
+                lambda: not state["draining"],
+            )
+
+        _host, _binding, _sessions, service = self._service(
+            bootstrap_thread_id="t1",
+            maintenance_admission=admission,
+        )
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def admitted_start(*args, **kwargs):
+            del args, kwargs
+            entered.set()
+            await release.wait()
+            return {"turn": {"id": "turn-before-drain"}}
+
+        service._start_thread_turn_now_admitted = admitted_start
+        project = Project(id="p1", name="Project", path="/workspace/project")
+        first = asyncio.create_task(
+            service.start_thread_turn_now(
+                "t1",
+                project=project,
+                message="already admitted",
+                sandbox="workspace-write",
+                approval_policy="on-request",
+            )
+        )
+        await entered.wait()
+        self.assertEqual(coordinator.active_count(), 1)
+        state["draining"] = True
+
+        with self.assertRaises(HTTPException) as caught:
+            await service.start_thread_turn_now(
+                "t1",
+                project=project,
+                message="must remain queued",
+                sandbox="workspace-write",
+                approval_policy="on-request",
+            )
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(
+            caught.exception.detail["code"],
+            "upgrade_maintenance_active",
+        )
+        self.assertFalse(first.done())
+        release.set()
+        self.assertEqual((await first)["turn"]["id"], "turn-before-drain")
+        self.assertEqual(coordinator.active_count(), 0)
+
+    async def test_upgrade_drain_rejects_already_bound_turn_before_bootstrap(self) -> None:
+        coordinator = UpgradeAdmissionCoordinator()
+
+        def admission(organization_id, workspace_id):
+            return coordinator.admit(
+                organization_id,
+                workspace_id,
+                lambda: False,
+            )
+
+        _host, _binding, _sessions, service = self._service(
+            bootstrap_thread_id="t1",
+            maintenance_admission=admission,
+        )
+        service._start_thread_turn_now_admitted = AsyncMock()
+        project = Project(id="p1", name="Project", path="/workspace/project")
+
+        with self.assertRaises(HTTPException) as caught:
+            await service.start_thread_turn_now(
+                "t1",
+                project=project,
+                message="must stay queued",
+                sandbox="workspace-write",
+                approval_policy="on-request",
+            )
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(
+            caught.exception.detail["code"],
+            "upgrade_maintenance_active",
+        )
+        service._start_thread_turn_now_admitted.assert_not_awaited()
 
     async def test_supersede_bootstrap_auth_failure_is_structured_preflight(self) -> None:
         host = _Host()
