@@ -164,6 +164,59 @@ class AgentSessionIndexScalingTests(unittest.TestCase):
             first.id,
         )
 
+    def test_partial_filters_skip_other_valid_native_id_aliases(self) -> None:
+        store = AgentSessionStore(self.sqlite)
+        target = _session(1, native_id="shared-native")
+        other_provider = _session(2, native_id="shared-native").model_copy(
+            update={"provider_id": "other-provider", "runtime_id": "other-runtime"}
+        )
+        store.upsert(other_provider)
+        store.upsert(target)
+        for filters in ({"provider_id": "provider-a"}, {"runtime_id": "runtime-a"}):
+            with self.subTest(filters=filters):
+                result = store.find_by_native_id(
+                    "shared-native", organization_id="org-a",
+                    workspace_id="workspace-a", **filters,
+                )
+                self.assertEqual(result.id, target.id)
+        self.assertIsNone(store.find_by_native_id(
+            "shared-native", organization_id="org-a", workspace_id="workspace-a",
+            provider_id="missing-provider",
+        ))
+
+    def test_partial_filter_advances_past_full_page_of_other_providers(self) -> None:
+        store = AgentSessionStore(self.sqlite)
+        for index in range(101):
+            store.upsert(_session(index, native_id="shared-native").model_copy(
+                update={"provider_id": "a-other-provider"}
+            ))
+        target = _session(102, native_id="shared-native").model_copy(
+            update={"provider_id": "z-target-provider"}
+        )
+        store.upsert(target)
+        result = store.find_by_native_id(
+            "shared-native", organization_id="org-a", workspace_id="workspace-a",
+            provider_id="z-target-provider",
+        )
+        self.assertEqual(result.id, target.id)
+
+    def test_alias_with_wrong_encoded_identity_still_fails_closed(self) -> None:
+        store = AgentSessionStore(self.sqlite)
+        target = _session(1, native_id="shared-native")
+        other = _session(2, native_id="shared-native").model_copy(
+            update={"provider_id": "other-provider"}
+        )
+        store.upsert(target)
+        store.upsert(other)
+        self.sqlite.record_apply(store.records_namespace, upserts={
+            store._native_key(target): {"session_id": other.id},
+        })
+        with self.assertRaisesRegex(ValueError, "index target mismatch"):
+            store.find_by_native_id(
+                "shared-native", organization_id="org-a", workspace_id="workspace-a",
+                provider_id="provider-a",
+            )
+
     def test_canonical_id_collision_still_cannot_cross_tenant_scope(self) -> None:
         store = AgentSessionStore(self.sqlite)
         store.upsert(_session(1, session_id="canonical-id"))

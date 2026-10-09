@@ -262,7 +262,7 @@ class AgentSessionStore:
                 after=after,
                 limit=page_limit,
             )
-            for alias in page.values():
+            for alias_key, alias in page.items():
                 if not isinstance(alias, dict) or not alias.get("session_id"):
                     raise ValueError("invalid agent session native index")
                 raw = self.store.record_get(
@@ -275,10 +275,14 @@ class AgentSessionStore:
                 if (
                     session.provider_native_session_id
                     != provider_native_session_id
-                    or (provider_id is not None and session.provider_id != provider_id)
-                    or (runtime_id is not None and session.runtime_id != runtime_id)
+                    or self._native_key(session) != alias_key
                 ):
                     raise ValueError("agent session native index target mismatch")
+                if (
+                    (provider_id is not None and session.provider_id != provider_id)
+                    or (runtime_id is not None and session.runtime_id != runtime_id)
+                ):
+                    continue
                 matches.append(session)
                 if limit is not None and len(matches) >= limit:
                     break

@@ -42,6 +42,11 @@ invalid. The former aggregate document remains a rollback checkpoint and is
 refreshed by the normal compatibility-state flush; it is not a second active
 authority.
 
+Tenant-scoped native lookups support independent provider and runtime filters.
+Each index alias must match its canonical record's complete encoded identity;
+valid aliases outside a partial filter are skipped, while corrupt aliases fail
+closed even when the filter would otherwise exclude their target.
+
 ## Evidence
 
 Terminal runtime outcomes emit compact EvidenceType.RUNTIME_RESULT records linked to project/work/execution scope. Evidence contains identifiers, result, telemetry quality and bounded counters; it does not contain prompts, provider transcripts, shell output or raw model responses.
