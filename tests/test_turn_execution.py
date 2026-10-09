@@ -1712,6 +1712,131 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(healing["previous_assignment_id"], "assignment-1")
         host.codex.request.assert_not_awaited()
 
+    async def _explicit_recovery(self, *, scope_switch=False, bound_profile=None,
+                                 requested_revision=6, routing_error=None,
+                                 selected_runtime_id="codex"):
+        host, _binding, sessions, service = self._service(bootstrap_thread_id="t1")
+        runtime = ExecutionRuntimeBinding(provider_id="openai", runtime_id="codex", capability_revision=1)
+        profile = AgentProfileExecutionBinding(
+            profile_id="veridataops-james", profile_revision=6,
+            profile_record_id="james-r6", execution_profile_id="repository-write",
+            selected_provider_id="openai", selected_runtime_id="codex",
+        )
+        old = sessions.session.validate_current()
+        old.runtime_binding = runtime
+        old.agent_profile = bound_profile
+        old.repository_target = SimpleNamespace(mutable_repository_id="repo-old")
+        old.repository_scope = SimpleNamespace(writable_repository_ids=("repo-old",))
+        sessions.session.validate_current = MagicMock(return_value=old)
+        service._assignment_record = MagicMock(return_value=old)
+        recovered = _Session()
+        new = recovered.validate_current()
+        new.runtime_binding = runtime
+        new.agent_profile = profile if bound_profile is None else bound_profile
+        new.repository_target = SimpleNamespace(mutable_repository_id="repo-new" if scope_switch else "repo-old")
+        new.repository_scope = SimpleNamespace(writable_repository_ids=("repo-new" if scope_switch else "repo-old",))
+        recovered.validate_current = MagicMock(return_value=new)
+        if not scope_switch:
+            sessions.session = None
+            sessions.start = AsyncMock(side_effect=[RuntimeError("historical workspace unavailable"), recovered])
+        else:
+            sessions.start = AsyncMock(return_value=recovered)
+        selected = runtime.model_copy(update={"runtime_id": selected_runtime_id, "capability_revision": 7})
+        service._select_runtime_binding = AsyncMock(
+            return_value=(selected, profile), side_effect=routing_error)
+        service._supersede_thread_bootstrap = AsyncMock(
+            return_value=service.bootstrap_bindings.get_by_thread("t1", service.control_actor))
+        actor = SimpleNamespace(identity_id="real-request-actor")
+        kwargs = dict(project=Project(id="p1", name="Project", path="/workspace/project"),
+                      message="real repository task", sandbox="workspace-write", approval_policy="on-request",
+                      actor=actor, agent_profile_id="veridataops-james", agent_profile_revision=requested_revision,
+                      repository_resource_id="repo-new" if scope_switch else "repo-old",
+                      writable_repository_resource_ids=("repo-new" if scope_switch else "repo-old",))
+        return host, sessions, service, profile, selected, actor, kwargs
+
+    async def test_explicit_null_profile_scope_supersession_resolves_canonical_profile(self):
+        host, _sessions, service, profile, runtime, actor, kwargs = await self._explicit_recovery(scope_switch=True)
+        await service.start_thread_turn_now("t1", **kwargs)
+        service._select_runtime_binding.assert_awaited_once_with(
+            project_id="p1", sandbox="workspace-write", trusted_local_codex_session=False,
+            actor=actor, agent_profile_id="veridataops-james", agent_profile_revision=6)
+        recovery = service._supersede_thread_bootstrap.await_args.kwargs
+        self.assertIs(recovery["agent_profile"], profile)
+        self.assertEqual(recovery["runtime_binding"], runtime)
+        self.assertEqual(recovery["explicit_repository_id"], "repo-new")
+        self.assertEqual(recovery["writable_repository_ids"], ("repo-new",))
+        host.codex.request.assert_not_awaited()
+
+    async def test_explicit_null_profile_failed_start_resolves_canonical_profile(self):
+        _host, _sessions, service, profile, runtime, actor, kwargs = await self._explicit_recovery()
+        await service.start_thread_turn_now("t1", **kwargs)
+        service._select_runtime_binding.assert_awaited_once()
+        self.assertIs(service._select_runtime_binding.await_args.kwargs["actor"], actor)
+        recovery = service._supersede_thread_bootstrap.await_args.kwargs
+        self.assertIs(recovery["agent_profile"], profile)
+        self.assertEqual(recovery["runtime_binding"], runtime)
+        self.assertEqual(recovery["explicit_repository_id"], "repo-old")
+        self.assertEqual(recovery["writable_repository_ids"], ("repo-old",))
+
+    async def test_matching_bound_profile_survives_failed_session_start(self):
+        _host, _sessions, _initial, profile, _runtime, _actor, _kwargs = await self._explicit_recovery()
+        _host, _sessions, service, _profile, _runtime, _actor, kwargs = await self._explicit_recovery(bound_profile=profile)
+        await service.start_thread_turn_now("t1", **kwargs)
+        service._select_runtime_binding.assert_not_awaited()
+        self.assertIs(service._supersede_thread_bootstrap.await_args.kwargs["agent_profile"], profile)
+
+    async def test_bound_profile_mismatch_rejects_before_scope_or_heal_mutations(self):
+        for scope_switch in (False, True):
+            with self.subTest(scope_switch=scope_switch):
+                _host, _sessions, _service, profile, _runtime, _actor, _kwargs = await self._explicit_recovery()
+                _host, sessions, service, _profile, _runtime, _actor, kwargs = await self._explicit_recovery(
+                    scope_switch=scope_switch, bound_profile=profile, requested_revision=5)
+                with self.assertRaises(HTTPException) as caught:
+                    await service.start_thread_turn_now("t1", **kwargs)
+                self.assertEqual(caught.exception.detail["code"], "thread_agent_profile_immutable")
+                service._supersede_thread_bootstrap.assert_not_awaited()
+                service._select_runtime_binding.assert_not_awaited()
+                sessions.start.assert_not_awaited()
+
+    async def test_null_profile_recovery_routing_denial_prevents_supersession(self):
+        for scope_switch in (False, True):
+            with self.subTest(scope_switch=scope_switch):
+                _host, _sessions, service, _profile, _runtime, _actor, kwargs = await self._explicit_recovery(
+                    scope_switch=scope_switch, routing_error=HTTPException(status_code=403, detail="profile denied"))
+                with self.assertRaises(HTTPException) as caught:
+                    await service.start_thread_turn_now("t1", **kwargs)
+                self.assertEqual(caught.exception.status_code, 403)
+                service._supersede_thread_bootstrap.assert_not_awaited()
+
+    async def test_profile_recovery_does_not_silently_switch_inherited_runtime(self):
+        _host, _sessions, service, _profile, _runtime, _actor, kwargs = await self._explicit_recovery(
+            scope_switch=True, selected_runtime_id="different-runtime")
+        with self.assertRaises(HTTPException) as caught:
+            await service.start_thread_turn_now("t1", **kwargs)
+        self.assertEqual(caught.exception.detail["code"], "execution_preflight_blocked")
+        service._supersede_thread_bootstrap.assert_not_awaited()
+
+    async def test_null_profile_nonrunning_session_and_explicit_model_preserve_selected_binding(self):
+        _host, sessions, service, profile, selected, actor, kwargs = await self._explicit_recovery()
+        old = service._assignment_record.return_value
+        sessions.session = _Session()
+        sessions.session.validate_current = MagicMock(return_value=old)
+        sessions.session.status = MagicMock(return_value=SimpleNamespace(running=False))
+        recovered = _Session()
+        fresh = recovered.validate_current()
+        fresh.runtime_binding = selected
+        fresh.agent_profile = profile
+        fresh.repository_scope = SimpleNamespace(writable_repository_ids=("repo-old",))
+        fresh.repository_target = SimpleNamespace(mutable_repository_id="repo-old")
+        recovered.validate_current = MagicMock(return_value=fresh)
+        sessions.start = AsyncMock(return_value=recovered)
+        kwargs["model"] = "codex/gpt-6.1-sol"
+        await service.start_thread_turn_now("t1", **kwargs)
+        service._select_runtime_binding.assert_awaited_once()
+        recovery = service._supersede_thread_bootstrap.await_args.kwargs
+        self.assertIs(recovery["runtime_binding"], selected)
+        self.assertIs(recovery["agent_profile"], profile)
+
     async def test_missing_bootstrap_assignment_routing_denial_stays_fail_closed(self) -> None:
         host, _binding, sessions, service = self._service(bootstrap_thread_id="t1")
         sessions.session = None
