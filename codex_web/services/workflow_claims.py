@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from codex_web.models import WorkItemState
 
@@ -16,11 +16,13 @@ class WorkflowClaimPolicy:
         ensure_defaults: Callable[[WorkItemState], WorkItemState],
         coerce_owner: Callable[[str | None], str | None],
         owner_names: tuple[str, ...],
+        get_states: Callable[[tuple[str, ...]], Mapping[str, WorkItemState]] | None = None,
     ) -> None:
         self.load_states = load_states
         self.ensure_defaults = ensure_defaults
         self.coerce_owner = coerce_owner
         self.owner_names = owner_names
+        self.get_states = get_states
 
     def mentioned_states(self, text: str) -> list[WorkItemState]:
         refs = set(
@@ -29,15 +31,14 @@ class WorkflowClaimPolicy:
                 text,
             )
         )
-        iids = set(
-            re.findall(
-                r"(?<![A-Za-z0-9_./-])#(\d+)\b",
-                text,
-            )
-        )
+        iids = set(re.findall(r"(?<![A-Za-z0-9_./-])#(\d+)\b", text))
         if not refs and not iids:
             return []
-        states = self.load_states()
+        # Bare numbers require the full catalog to detect ambiguity across
+        # repositories. Fully qualified references need only selected records.
+        states = (self.get_states(tuple(sorted(refs)))
+                  if self.get_states is not None and not iids and len(refs) <= 1000
+                  else self.load_states())
         mentioned = [states[ref] for ref in refs if ref in states]
         for iid in iids:
             matches = [

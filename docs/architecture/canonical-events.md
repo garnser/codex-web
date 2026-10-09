@@ -1,5 +1,10 @@
 # Canonical event bus and ingestion boundary
 
+Transport dispatch reads the committed event's outbox record through its keyed
+event alias. Determining the next publication attempt must not reconstruct the
+canonical event journal or unrelated outbox/inbox history. Existing transport
+retry, idempotency, consumer-group and delivery-status rules remain authoritative.
+
 ## Status
 
 **Canonical event orchestration contract.** This boundary builds on the versioned

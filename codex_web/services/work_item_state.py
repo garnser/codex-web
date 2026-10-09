@@ -20,6 +20,7 @@ from codex_web.services.work_item_dependencies import (
 )
 from codex_web.services.work_item_transitions import WorkItemTransitionService
 from codex_web.storage.state_store import StateStore
+from codex_web.storage.work_item_events import WorkItemEventStore
 
 
 class WorkItemStateMachine:
@@ -43,22 +44,15 @@ class WorkItemStateMachine:
             dependencies = WorkItemRuntimeDependencies.from_host(host)
         self.dependencies = dependencies
         self.store = store
+        self.event_store = WorkItemEventStore(store) if store is not None else None
         self.transitions = WorkItemTransitionService()
 
     def _append_work_item_event(self, event: WorkItemEvent) -> None:
         payload = event.model_dump(mode="json")
-        if self.store is not None:
-            def append_event(current: Any) -> list[dict[str, Any]]:
-                rows = list(current) if isinstance(current, list) else []
-                rows.append(payload)
-                return rows[-10000:]
-            self.store.update(
-                "work_item_events",
-                append_event,
-                default=[],
-            )
+        if self.event_store is not None:
+            self.event_store.append(event)
         # Keep the historical JSONL mirror for rollback/forensics. The shared
-        # StateStore document above is authoritative in shared deployments.
+        # StateStore records above are authoritative in shared deployments.
         self.dependencies.data_dir.mkdir(exist_ok=True)
         with self.dependencies.events_file.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, separators=(",", ":")) + "\n")

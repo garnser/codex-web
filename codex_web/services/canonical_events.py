@@ -165,8 +165,7 @@ class CanonicalEventBus:
         transport_delivery_id = None
         transport_pending = False
         if self.transport is not None:
-            state = await asyncio.to_thread(self.store.load)
-            outbox = state.outbox.get(event.event_id)
+            outbox = await asyncio.to_thread(self.store.outbox, event.event_id)
             attempt = (outbox.attempts + 1) if outbox is not None else 1
             transport_delivery_id, transport_pending = await self._publish_transport(
                 event,

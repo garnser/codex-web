@@ -33,7 +33,7 @@ class ProjectDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.execution = SimpleNamespace(thread_is_active=Mock(return_value=False))
         self.controller = Mock()
         self.control = SimpleNamespace(mode=AutonomyMode.ACTIVE, dry_run=False, simulation=False)
-        self.controller.store.load.return_value = SimpleNamespace(control=self.control)
+        self.controller.store.control.return_value = self.control
         async def process(_event, _observation, **kwargs):
             await kwargs['reasoner']()
             return SimpleNamespace(outcome=AutonomyCycleOutcome.COMPLETED, reason="queued")

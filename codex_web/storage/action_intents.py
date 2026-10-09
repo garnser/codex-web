@@ -186,6 +186,8 @@ class ActionIntentStore:
         return records
 
     def _ensure_records(self) -> None:
+        if not self.store.record_collection_exists(self.records_namespace):
+            self.store.record_mutate(self.records_namespace, (), lambda _current: {})
         meta = self.store.record_get(self.records_namespace, self._meta_key)
         if meta is not None:
             if meta != {"schema_version": "1.0"}:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from codex_web.canonical_events import CanonicalEventType
 from codex_web.models import TaskSourceIdentity
@@ -11,7 +13,10 @@ from codex_web.services.task_sources import TaskSourceEvent, TaskSourceSnapshot
 from codex_web.storage.canonical_events import (
     CanonicalEventConflictError,
     CanonicalEventStore,
+    CanonicalEventState,
 )
+from codex_web.compatibility import CanonicalEventEnvelope
+from codex_web.canonical_events import CanonicalEventOutboxRecord
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
@@ -25,6 +30,26 @@ class CanonicalEventTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    async def test_transport_dispatch_reads_one_outbox_without_loading_event_history(self):
+        events = [CanonicalEventEnvelope(event_id=f"history-{i}", event_type="test.event",
+                  source="test", occurred_at=float(i), payload={}) for i in range(5000)]
+        target = events[-1]
+        state = CanonicalEventState(events=events,
+            idempotency={f"key-{i}": event.event_id for i, event in enumerate(events)},
+            outbox={target.event_id: CanonicalEventOutboxRecord(event_id=target.event_id,
+                                                             attempts=3)})
+        self.store.store.put(self.store.namespace, state.model_dump(mode="json"))
+        self.assertIsNotNone(self.store.event(target.event_id))
+        transport = SimpleNamespace(capabilities=SimpleNamespace(durable=False, consumer_groups=False))
+        bus = CanonicalEventBus(self.store, transport=transport)
+        with patch.object(self.store, "load", side_effect=AssertionError("full journal")), \
+             patch.object(self.store.store, "record_items", side_effect=AssertionError("bulk read")), \
+             patch.object(bus, "_publish_transport", new=AsyncMock(return_value=("delivery", False))) as publish:
+            delivery = await bus.dispatch_committed(target)
+        publish.assert_awaited_once_with(target, attempt=4)
+        self.assertEqual(delivery.transport_delivery_id, "delivery")
+        self.assertIsNone(self.store.outbox("missing"))
 
     async def test_repeated_delivery_is_persisted_and_dispatched_once(self) -> None:
         seen = []

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from codex_web.models import WorkItemState
+from codex_web.models import WorkItemEvent, WorkItemState
 from codex_web.services.work_item_execution import WorkItemExecutionLifecycleService
 from codex_web.services.work_item_state import WorkItemStateMachine
 from codex_web.work_item_execution_models import (
@@ -242,6 +244,18 @@ class WorkItemExecutionLifecycleTests(unittest.TestCase):
         self.assertEqual(history["count"], 2)
         self.assertEqual(history["returned"], 1)
         self.assertEqual(history["items"][0]["payload"]["summary"], "second")
+
+    def test_history_does_not_validate_ten_thousand_unrelated_events(self):
+        self.service.checkpoint(self.state.ref, WorkItemCheckpointCreate(summary="selected"))
+        with self.host.WORK_ITEM_EVENTS_FILE.open("a", encoding="utf-8") as handle:
+            for i in range(10000):
+                handle.write(json.dumps({"ref": f"unrelated/project#{i}",
+                    "event_type": "progress_updated", "created_at": i, "payload": {}}) + "\n")
+        with patch.object(WorkItemEvent, "model_validate", wraps=WorkItemEvent.model_validate) as validate:
+            history = self.service.history(self.state.ref)
+        self.assertEqual(history["count"], 1)
+        self.assertEqual(validate.call_count, 1)
+        self.assertEqual(validate.call_args.args[0]["ref"], self.state.ref)
 
 
 if __name__ == "__main__":

@@ -991,7 +991,7 @@ class AutonomyAuditService:
         )
         if not metrics.should_suspend:
             return
-        current = self.autonomy_store.load().control
+        current = self.autonomy_store.control()
         if current.mode == AutonomyMode.PAUSED:
             return
         self.autonomy_store.set_control(

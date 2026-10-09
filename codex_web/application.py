@@ -3873,6 +3873,7 @@ work_item_wakeup_queue_policy = install_work_item_wakeup_queue_policy(app, core)
 
 workflow_claim_policy = WorkflowClaimPolicy(
     load_states=runtime_state.work_item_states.load,
+    get_states=runtime_state.work_item_states.get_many,
     ensure_defaults=work_item_state_machine._ensure_work_item_lane_defaults,
     coerce_owner=work_item_state_machine._coerce_owner,
     owner_names=OWNER_QUEUE_AGENTS,
@@ -4249,6 +4250,7 @@ def _flush_compatibility_state() -> None:
         bot_state.reply_targets,
         bot_state.delivery_targets,
         action_intent_store,
+        work_item_state_machine.event_store,
     )
     for repository in repositories:
         if repository is not None:

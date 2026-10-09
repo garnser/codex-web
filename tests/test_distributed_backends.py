@@ -41,6 +41,37 @@ class RealDistributedBackendTests(unittest.IsolatedAsyncioTestCase):
         self.postgres = self._store()
         self._clear_postgres_documents()
 
+    async def test_postgres_control_and_work_item_audit_reads_are_bounded(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from unittest.mock import patch
+        from codex_web.autonomy import AutonomyState, AutonomyMode
+        from codex_web.models import WorkItemEvent
+        from codex_web.storage.autonomy import AutonomyStateStore
+        from codex_web.storage.work_item_events import WorkItemEventStore
+
+        initial = AutonomyState()
+        self.postgres.put("autonomy", initial.model_dump(mode="json"))
+        autonomy = AutonomyStateStore(self.postgres)
+        self.assertEqual(autonomy.control().mode, AutonomyMode.ACTIVE)
+        with patch.object(self.postgres, "get", side_effect=AssertionError("whole autonomy read")), \
+             patch.object(self.postgres, "record_items", side_effect=AssertionError("history read")):
+            self.assertEqual(autonomy.control(), initial.control)
+
+        def event(number):
+            return WorkItemEvent(ref="test/project#1", event_type="progress_updated",
+                                 created_at=number, payload={"number": number})
+        events = WorkItemEventStore(self.postgres, max_events=30)
+        self.postgres.put(events.legacy_namespace, [event(0).model_dump(mode="json")])
+        events._ensure_records()
+        with patch.object(self.postgres, "get", side_effect=AssertionError("legacy audit read")), \
+             patch.object(self.postgres, "record_items", side_effect=AssertionError("bulk audit read")):
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                list(pool.map(lambda i: events.append(event(i)), range(1, 21)))
+        self.assertEqual(len(events.load()), 21)
+        self.assertEqual({item.created_at for item in events.load()}, set(range(21)))
+        events.flush_legacy_mirror()
+        self.assertEqual(len(self.postgres.get(events.legacy_namespace)), 21)
+
     async def test_postgres_batch_reads_are_selected_readonly_and_legacy_compatible(self):
         from unittest.mock import patch
         for keyed in (False, True):
