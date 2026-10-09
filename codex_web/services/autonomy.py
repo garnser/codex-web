@@ -17,7 +17,7 @@ from codex_web.action_providers import ActionRequest
 from codex_web.autonomy import AutonomyCycleOutcome, AutonomyObservation, AutonomyReasoningResult
 from codex_web.canonical_events import CanonicalEventType
 from codex_web.identity import AuthenticationActor
-from codex_web.services.work_item_dependencies import actionable_owner_value
+from codex_web.services.work_item_dependencies import actionable_owner_value, work_item_repository_scope
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.action_providers import ActionExecutionService
 from codex_web.services.autonomy_controller import AutonomyController
@@ -89,11 +89,21 @@ class AutonomyService:
         *,
         cycle_key: str,
         payload: dict[str, Any],
+        work_item: Any | None = None,
     ) -> dict[str, Any]:
         """Route watchdog reasoning through canonical event + autonomy controls."""
 
+        dispatch_context = {}
+        if work_item is not None:
+            primary, writable = work_item_repository_scope(work_item)
+            dispatch_context = {
+                "work_item_ref": work_item.ref,
+                "repository_resource_id": primary,
+                "writable_repository_resource_ids": writable,
+                "require_idle": True,
+            }
         if self.controller is None or self.canonical_events is None:
-            return await self.runtime.dispatch_event(binding, text, source)
+            return await self.runtime.dispatch_event(binding, text, source, **dispatch_context)
 
         # Project scope may read canonical PostgreSQL state. Resolve it before
         # ingestion without blocking runtime RPC or changing the scoped result.
@@ -134,7 +144,7 @@ class AutonomyService:
 
         async def reasoner(*_args) -> AutonomyReasoningResult:
             dispatched.update(
-                await self.runtime.dispatch_event(binding, text, source)
+                await self.runtime.dispatch_event(binding, text, source, **dispatch_context)
             )
             return AutonomyReasoningResult(
                 summary=f"{source} dispatched through bounded autonomy"
@@ -321,6 +331,7 @@ class AutonomyService:
                     text,
                     "owner-work-watchdog",
                     cycle_key=dispatch_key,
+                    work_item=selected,
                     payload={
                         "project_id": project_id,
                         "agent": owner,
