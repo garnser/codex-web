@@ -138,6 +138,8 @@ New work-item construction may set its initial stage directly because initializa
 
 External authoritative task-source reconciliation is deliberately distinct from the manual/API transition policy. An upstream item can close or reopen and codex-web must reconcile that authoritative event, subject to stale-event and handoff-preservation checks.
 
+Implementation attribution is distinct from the actor performing a repair and from the owner of the current lifecycle lane. Operational coordination identities such as `operator` and `orchestrator`, plus the configured validation and release owners, are never inferred as `implementation_owner` from progress or handoff state. Existing attribution survives operator coordination and handoff expiry. An explicit operator reconciliation may correct it only from fresh, exact-resource provider assignment evidence and records the correction without claiming validation, closure, or external-source ownership.
+
 An issue already at `ready_for_validation` may retain that stage, its
 implementation owner, and its next validation owner when canonical state holds
 a fresh provider-verified open merge-request relation. Ordinary issue refreshes

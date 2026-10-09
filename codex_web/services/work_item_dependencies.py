@@ -91,7 +91,8 @@ class WorkItemRuntimeDependencies:
                         "orchestrator",
                     },
                 )
-            ),
+            )
+            | {"operator"},
             get_state=getattr(
                 host,
                 "_get_work_item_state_record",
@@ -225,11 +226,8 @@ NON_IMPLEMENTATION_OWNERS = frozenset(
         DEFAULT_VALIDATION_OWNER,
         DEFAULT_RELEASE_OWNER,
         "orchestrator",
-        "carl",
+        "operator",
         "compliance manager",
-        "nora",
-        "maya",
-        "larry",
     }
 )
 

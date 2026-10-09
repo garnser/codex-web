@@ -358,7 +358,11 @@ def build_work_items_router(
         request: Request,
     ) -> dict[str, Any]:
         require_item_scope(ref, request)
-        return await operator.reconcile(ref, actor=payload.actor, reason=payload.reason)
+        return await operator.reconcile(
+            ref,
+            actor=request.state.identity_actor.identity_id,
+            reason=payload.reason,
+        )
 
     @router.get("/api/work-items/{ref:path}")
     async def get_work_item(ref: str, request: Request) -> dict[str, Any]:

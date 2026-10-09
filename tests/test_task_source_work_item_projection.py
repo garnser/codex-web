@@ -152,6 +152,21 @@ class TaskSourceWorkItemProjectionTests(unittest.TestCase):
         self.assertTrue(state.release_gate)
         self.assertEqual(self.host.states[state.ref].source_identity, state.source_identity)
 
+    def test_issue_refresh_preserves_implementation_attribution_during_operator_repair(self) -> None:
+        state = self.projector.upsert(self.source, self.snapshot(), project_id="home")
+        state.implementation_owner = "nora"
+        state.current_owner = "operator"
+        self.host.states[state.ref] = state
+
+        refreshed = self.projector.upsert(
+            self.source,
+            self.snapshot(revision="2026-09-17T19:10:00Z"),
+            project_id="home",
+        )
+
+        self.assertEqual(refreshed.current_owner, "carl")
+        self.assertEqual(refreshed.implementation_owner, "nora")
+
     def test_non_gitlab_projection_retains_project_resource_scope(self) -> None:
         self.assertEqual(
             self.projector._project_resource_ids(

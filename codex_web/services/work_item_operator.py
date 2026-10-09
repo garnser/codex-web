@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from codex_web.models import TaskSourceIdentity, WorkItemEvent, WorkItemState
 from codex_web.services.task_source_runtime import TaskSourceResolutionError
+from codex_web.services.task_source_reconciliation import same_task_source_identity
 from codex_web.services.task_sources import (
     TaskSource,
     TaskSourceCapability,
@@ -463,10 +464,27 @@ class WorkItemOperatorService:
             assert source is not None and state.source_identity is not None
             source.capabilities.require(TaskSourceCapability.READ)
             snapshot = await source.read(state.source_identity)
+            if not same_task_source_identity(
+                snapshot.identity,
+                state.source_identity,
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "task_source_identity_mismatch",
+                        "message": (
+                            "Authoritative task-source read returned a different "
+                            "resource identity"
+                        ),
+                    },
+                )
             state = self.work_items.task_source_projector.upsert(
                 source,
                 snapshot,
                 project_id=state.project_id or "home",
+                reconcile_implementation_owner=True,
+                reconciliation_actor=actor,
+                reconciliation_reason=reason,
             )
         except UnsupportedTaskSourceCapability as exc:
             raise HTTPException(
