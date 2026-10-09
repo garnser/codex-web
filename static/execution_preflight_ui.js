@@ -69,6 +69,9 @@ export function createExecutionPreflightUi({
         const lines = [
           `Preflight attempt ${Number(attempt?.attempt_number || 1)} · ${status}`,
           correlation ? `Correlation: ${correlation}` : "",
+          attempt.replacement_thread_id
+            ? `Original thread: ${attempt.thread_id}; current thread: ${attempt.replacement_thread_id}`
+            : "",
           ...context,
           ...blockers.map((blocker) => {
             const target = blocker?.target_type
@@ -109,15 +112,18 @@ export function createExecutionPreflightUi({
           const current = captureView();
           retry.disabled = true;
           retry.textContent = "Retrying…";
+          let targetThreadId = threadId;
           try {
-            await api(attempt.retry_href, { method: "POST" });
+            const response = await api(attempt.retry_href, { method: "POST" });
+            targetThreadId = response?.threadId || threadId;
           } catch (error) {
+            targetThreadId = error?.detail?.threadId || targetThreadId;
             if (current() && error?.detail?.code !== "execution_preflight_blocked") {
               addMessage("Error", error.message, "tool", new Date());
             }
           } finally {
             if (current()) {
-              await loadThread(threadId);
+              await loadThread(targetThreadId);
               if (current()) scheduleRefresh(0);
             }
           }

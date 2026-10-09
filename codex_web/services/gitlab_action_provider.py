@@ -33,6 +33,7 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE,
     CodeHostActionContract,
+    AttestedBranch,
     result_resource_output,
 )
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
@@ -193,6 +194,54 @@ class GitLabActionProvider:
             except (OSError, subprocess.SubprocessError) as exc:
                 raise RuntimeError("GitLab branch publication failed") from exc
 
+    async def _attest_existing_merge_request(
+        self, attested: AttestedBranch, project: str, credential: str,
+    ) -> None:
+        iid = attested.existing_change_request_number
+        mr = await self.client.merge_request(self.api_base, project, iid, token=credential)
+        issue = await self.client.project_issue(
+            self.api_base, project, attested.work_item_issue_number, token=credential,
+        )
+        closes = await self.client.merge_request_closes_issues(
+            self.api_base, project, iid, token=credential,
+        )
+        remote = await self.client.branch(
+            self.api_base, project, attested.branch, token=credential,
+        )
+        project_id = issue.get("project_id")
+        if (
+            type(project_id) is not int
+            or project_id < 1
+            or issue.get("iid") != attested.work_item_issue_number
+            or type(issue.get("iid")) is not int
+            or type(mr.get("iid")) is not int
+            or mr.get("iid") != iid
+            or mr.get("state") != "opened"
+            or type(mr.get("source_project_id")) is not int
+            or type(mr.get("target_project_id")) is not int
+            or mr.get("source_project_id") != project_id
+            or mr.get("target_project_id") != project_id
+            or mr.get("source_branch") != attested.branch
+            or mr.get("sha") != attested.expected_remote_revision
+            or not isinstance(mr.get("target_branch"), str)
+            or not mr.get("target_branch")
+            or mr.get("target_branch") == attested.branch
+            or remote.get("protected") is not False
+            or remote.get("default") is not False
+            or remote.get("name") != attested.branch
+            or (remote.get("commit") or {}).get("id") != attested.expected_remote_revision
+            or not any(
+                type(row.get("iid")) is int
+                and row.get("iid") == attested.work_item_issue_number
+                and type(row.get("project_id")) is int
+                and row.get("project_id") == project_id
+                for row in closes
+            )
+        ):
+            raise ActionRequirementError(
+                "existing merge request source, current revision and assigned issue relation could not be attested"
+            )
+
     async def prepare(
         self,
         request: ActionRequest,
@@ -236,6 +285,8 @@ class GitLabActionProvider:
                 "branch": attested.branch,
                 "head_revision": attested.revision,
                 "workspace_attested": attested.workspace_path.is_dir(),
+                "existing_change_request_number": attested.existing_change_request_number,
+                "work_item_issue_number": attested.work_item_issue_number,
             }
         if request.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
             payload = self.contract.pull_request_merge(request)
@@ -247,6 +298,25 @@ class GitLabActionProvider:
                 "expected_head_sha": payload["expected_head_sha"],
             }
         raise ValueError("unsupported GitLab action")
+
+    @staticmethod
+    def _merge_request_title(title: str, draft: bool) -> str:
+        # GitLab's REST interface represents Draft state through the title.
+        # Only documented leading markers are formatting; mid-title words
+        # remain user content and exact verification still checks the result.
+        prefixes = ("Draft:", "[Draft]", "(Draft)")
+        if draft:
+            return title if any(title.casefold().startswith(p.casefold()) for p in prefixes) else f"Draft: {title}"
+        remaining = title
+        while True:
+            prefix = next((p for p in prefixes if remaining.casefold().startswith(p.casefold())), None)
+            if prefix is None:
+                break
+            remaining = remaining[len(prefix):].lstrip()
+        if not remaining:
+            raise ValueError("ready merge-request title must contain content after its Draft marker")
+        return remaining
+
 
     async def execute(
         self,
@@ -323,7 +393,16 @@ class GitLabActionProvider:
             output.update({"issue_number": iid, "state": state})
             summary = f"GitLab issue state is {state}."
         elif request.action_id == CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID:
-            payload = self.contract.change_request(request)
+            # Only this pure first-party parser runs before any MR API call.
+            # A ValueError from a later provider read/write is still ambiguous.
+            try:
+                payload = self.contract.change_request(request)
+                desired_title = self._merge_request_title(payload["title"], payload["draft"])
+            except ValueError as exc:
+                raise ActionRequirementError(
+                    f"{exc}; supported change request parameters: "
+                    "title, body, head, base, draft"
+                ) from exc
             marker = self.contract.marker(request)
             desired_body = self._owned_body(payload["body"], marker)
             merge_requests = await self.client.merge_requests(
@@ -346,11 +425,10 @@ class GitLabActionProvider:
                     "an existing merge request for head/base is not owned by this ActionIntent"
                 )
             api_payload = {
-                "title": payload["title"],
+                "title": desired_title,
                 "description": desired_body,
                 "source_branch": payload["head"],
                 "target_branch": payload["base"],
-                "draft": payload["draft"],
             }
             if owned is None:
                 item = await self.client.create_merge_request(
@@ -363,7 +441,7 @@ class GitLabActionProvider:
                 iid = self._positive_iid(owned, field="merge request")
                 changed = any(
                     (
-                        str(owned.get("title") or "") != payload["title"],
+                        str(owned.get("title") or "") != desired_title,
                         str(owned.get("description") or "") != desired_body,
                         str(owned.get("target_branch") or "") != payload["base"],
                         bool(owned.get("draft")) != payload["draft"],
@@ -379,7 +457,6 @@ class GitLabActionProvider:
                             "title": api_payload["title"],
                             "description": api_payload["description"],
                             "target_branch": api_payload["target_branch"],
-                            "draft": api_payload["draft"],
                         },
                     )
                     if changed
@@ -396,7 +473,7 @@ class GitLabActionProvider:
                     "base": payload["base"],
                     "draft": payload["draft"],
                     "title_sha256": hashlib.sha256(
-                        payload["title"].encode()
+                        desired_title.encode()
                     ).hexdigest(),
                     "body_sha256": hashlib.sha256(
                         desired_body.encode()
@@ -409,6 +486,12 @@ class GitLabActionProvider:
                 attested = self.contract.attest_branch(request)
             except ValueError as exc:
                 raise ActionRequirementError(str(exc)) from exc
+            if attested.existing_change_request_number is not None:
+                await self._attest_existing_merge_request(attested, project, credential)
+                # Provider reads may outlive the lease or overlap workspace mutation.
+                # Re-attest every local guard after the remote proof, before push.
+                if self.contract.attest_branch(request) != attested:
+                    raise ActionRequirementError("execution workspace attestation changed during existing merge request verification")
             if self.branch_publisher is not None:
                 await self.branch_publisher(
                     attested.workspace_path,
@@ -439,6 +522,8 @@ class GitLabActionProvider:
                     "branch": attested.branch,
                     "head_revision": attested.revision,
                     "execution_workspace_id": attested.workspace_id,
+                    "existing_change_request_number": attested.existing_change_request_number,
+                    "work_item_issue_number": attested.work_item_issue_number,
                 }
             )
             summary = "GitLab branch matches the committed execution workspace head."
@@ -535,6 +620,7 @@ class GitLabActionProvider:
                 ),
             ),
         )
+
 
     async def verify(
         self,

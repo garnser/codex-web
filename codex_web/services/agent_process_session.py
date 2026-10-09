@@ -5,6 +5,7 @@ import contextlib
 import subprocess
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -230,6 +231,10 @@ class AssignmentBoundAgentProcessSession:
 
     def _prepare_assignment(self) -> tuple[ExecutionAssignment, Path]:
         assignment = self.local_worker._pending_assignment(self.assignment_id)
+        if getattr(self, "require_new_claim", False) and assignment.status != AssignmentStatus.PENDING:
+            raise AssignmentBoundAgentProcessSessionStaleError(
+                "bootstrap startup lost its pending assignment to another claim"
+            )
         if not runtime_binding_identity_matches(
             assignment.runtime_binding,
             self.runtime_binding,
@@ -255,6 +260,9 @@ class AssignmentBoundAgentProcessSession:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session requires a live worker lease"
             )
+        # Capture ownership before start() can fail, so failure cleanup cannot
+        # revoke a later claimant or a session this attempt never claimed.
+        self.fence = lease.fence
 
         if assignment.status == AssignmentStatus.CLAIMED:
             assignment = self.local_worker.worker_service.start(
@@ -788,14 +796,14 @@ class AssignmentBoundAgentProcessSession:
         try:
             return await self.runtime.request(method, params)
         except Exception as exc:
-            # Assignment runtimes intentionally use a one-shot authenticated
-            # process and cannot be restarted in place. A transport timeout
-            # therefore makes this fenced assignment unusable even when its
-            # process is still alive. Retire it immediately so recovery can
-            # claim the preserved queue with a fresh process and lease.
+            # A timed-out interrupt has an unknown outcome; it does not prove
+            # the running turn or its fenced process is unusable. Keep that
+            # session so a failed steering request can preserve the queue and
+            # await the actual terminal notification. Start/mutation timeouts
+            # still require canonical retirement and fresh recovery.
             if (
                 getattr(exc, "status_code", None) == 504
-                and method != "thread/read"
+                and method not in {"thread/read", "turn/interrupt"}
             ):
                 self.last_error = f"agent runtime RPC timed out: {method}"
                 await asyncio.to_thread(
@@ -879,9 +887,17 @@ class AssignmentBoundAgentProcessSessionManager:
         self.runtime_binding = runtime_binding
         self.sessions: dict[str, AssignmentBoundAgentProcessSession] = {}
         self._lock = asyncio.Lock()
+        self._assignment_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+
+    def _assignment_lock(self, assignment_id: str) -> asyncio.Lock:
+        lock = self._assignment_locks.get(assignment_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._assignment_locks[assignment_id] = lock
+        return lock
 
     async def start(self, assignment_id: str) -> AssignmentBoundAgentProcessSession:
-        async with self._lock:
+        async with self._assignment_lock(assignment_id):
             existing = self.sessions.get(assignment_id)
             if existing is not None:
                 status = existing.status()
@@ -901,7 +917,7 @@ class AssignmentBoundAgentProcessSessionManager:
                 credential_provider=self.credential_provider,
                 runtime_binding=self.runtime_binding,
             )
-            await session.start()
+            await start_assignment_session(session, self.local_worker, assignment_id)
             self.sessions[assignment_id] = session
             return session
 
@@ -935,6 +951,15 @@ class AssignmentBoundAgentProcessSessionManager:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session is not registered"
             )
+        if not succeeded:
+            current = await asyncio.to_thread(
+                self.local_worker._pending_assignment, assignment_id,
+            )
+            if current.subject.kind == "thread_bootstrap":
+                return await self.cancel_bootstrap(
+                    assignment_id,
+                    reason=failure_message or failure_code or "bootstrap failed",
+                )
         assignment = session.validate_current()
         lease = assignment.lease
         if lease is None or session.fence is None:
@@ -970,15 +995,35 @@ class AssignmentBoundAgentProcessSessionManager:
         return completed
 
     async def stop(self, assignment_id: str) -> None:
-        async with self._lock:
+        async with self._assignment_lock(assignment_id):
             session = self.sessions.pop(assignment_id, None)
-        if session is not None:
-            await session.stop()
+            if session is not None:
+                await session.stop()
 
     async def stop_all(self) -> None:
-        async with self._lock:
-            sessions = list(self.sessions.values())
-            self.sessions.clear()
-        for session in sessions:
+        for assignment_id in set(self.sessions) | set(self._assignment_locks):
             with contextlib.suppress(Exception):
-                await session.stop()
+                await self.stop(assignment_id)
+
+    async def cancel_bootstrap(self, assignment_id: str, *, reason: str) -> ExecutionAssignment:
+        async with self._assignment_lock(assignment_id):
+            session = self.sessions.get(assignment_id)
+            if session is None or session.fence is None:
+                raise AssignmentBoundAgentProcessSessionStaleError(
+                    "bootstrap cancellation requires the registered fenced session"
+                )
+            cancelled = await asyncio.to_thread(
+                self.local_worker.worker_service.cancel_bootstrap,
+                assignment_id,
+                AssignmentCancelRequest(
+                    expected_fence=session.fence,
+                    reason=bootstrap_cancellation_reason(reason),
+                ),
+                actor=self.local_worker.control_actor,
+            )
+            self.sessions.pop(assignment_id, None)
+            await session.stop()
+            return cancelled
+
+from codex_web.execution_workers import AssignmentCancelRequest
+from codex_web.services.agent_worker_session import start_assignment_session, bootstrap_cancellation_reason

@@ -179,6 +179,7 @@ class RuntimeSupervisor:
         release_stale_active_turn: Callable[[str, str], Any] | None = None,
         schedule_queue_drain: Callable[[str], Any] | None = None,
         local_worker_heartbeat: Callable[[], Any] | None = None,
+        recover_expired_assignments: Callable[[], Any] | None = None,
         flush_compatibility_state: Callable[[], Any] | None = None,
     ) -> None:
         self.app = app
@@ -253,6 +254,7 @@ class RuntimeSupervisor:
             _noop,
         )
         self.local_worker_heartbeat = local_worker_heartbeat
+        self.recover_expired_assignments = recover_expired_assignments
         self.flush_compatibility_state = (
             flush_compatibility_state
             or getattr(host, "_flush_compatibility_state", _noop)
@@ -553,6 +555,16 @@ class RuntimeSupervisor:
                 self._local_worker_heartbeat_loop(),
             )
 
+        if self.recover_expired_assignments is not None:
+            self._spawn(
+                "execution-assignment-recovery",
+                self._cycle_loop(
+                    self.queue_recovery_interval_seconds,
+                    self._recover_expired_assignments_once,
+                    failure_event="execution_assignment_recovery_failed",
+                ),
+            )
+
         telemetry = getattr(
             self.app.state,
             "bot_runtime_telemetry",
@@ -632,6 +644,14 @@ class RuntimeSupervisor:
                 responsibility="split-brain",
             ),
         )
+        delivery = getattr(self.app.state, "project_delivery_service", None)
+        if delivery is not None:
+            self._spawn(
+                "project-delivery",
+                self._cycle_loop(lambda: 30.0, delivery.run_cycle,
+                                 failure_event="project_delivery_supervisor_failed",
+                                 responsibility="project-delivery"),
+            )
         self._spawn("queue-recovery", self._queue_recovery_loop())
 
         scheduler = getattr(self.app.state, "scheduler_service", None)
@@ -780,6 +800,10 @@ class RuntimeSupervisor:
                 }
             )
         self.started = False
+
+    async def _recover_expired_assignments_once(self) -> None:
+        if self.recover_expired_assignments is not None:
+            await asyncio.to_thread(self.recover_expired_assignments)
 
 
 def _replace_lifecycle_handler(

@@ -103,7 +103,7 @@ class ExecutionPreflightService:
         attempt_id = self._attempt_id(execution_id)
         existing = self.store.get(attempt_id)
         if existing is not None and (
-            existing.thread_id != thread_id
+            thread_id not in {existing.thread_id, existing.replacement_thread_id}
             or existing.project_id != project_id
             or existing.message != payload.message
             or existing.organization_id != actor.organization_id
@@ -364,7 +364,7 @@ class ExecutionPreflightService:
         payload = attempt.model_dump(mode="json")
         payload["can_retry"] = self.can_retry(actor)
         payload["retry_href"] = (
-            f"/api/threads/{attempt.thread_id}/preflight-attempts/"
+            f"/api/threads/{attempt.replacement_thread_id or attempt.thread_id}/preflight-attempts/"
             f"{attempt.id}/retry"
         )
         return payload
@@ -391,3 +391,29 @@ class ExecutionPreflightService:
             agent_profile_id=attempt.agent_profile_id,
             agent_profile_revision=attempt.agent_profile_revision,
         )
+
+    def bind_replacement(
+        self,
+        attempt_id: str,
+        *,
+        actor: AuthenticationActor,
+        claim_id: str,
+        previous_thread_id: str,
+        replacement_thread_id: str,
+    ) -> ExecutionPreflightAttempt:
+        current = self.get(attempt_id, actor=actor)
+        self._authorize(current, actor, require_admin=True)
+
+        def update(value: ExecutionPreflightAttempt) -> ExecutionPreflightAttempt:
+            if (
+                value.status != "retrying"
+                or value.retry_claim_id != claim_id
+                or (value.replacement_thread_id or value.thread_id) != previous_thread_id
+            ):
+                raise HTTPException(status_code=409, detail="preflight retry target changed")
+            return value.model_copy(update={
+                "replacement_thread_id": replacement_thread_id,
+                "updated_at": float(self.clock()),
+            })
+
+        return self.store.update(attempt_id, update)

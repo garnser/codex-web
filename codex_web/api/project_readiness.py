@@ -27,7 +27,7 @@ def build_project_readiness_router(
         request: Request,
     ) -> dict[str, Any]:
         try:
-            value = service.evaluate(
+            value = await service.evaluate_with_refresh(
                 project_id,
                 actor=request_actor(request),
                 record=True,

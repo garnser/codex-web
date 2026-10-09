@@ -490,6 +490,15 @@ class SQLiteStateStore:
         os.chmod(destination, 0o600)
         return destination
 
+    def document_get(self, namespace: str) -> Any | None:
+        """Read only the legacy document, without reconstructing keyed records."""
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT payload FROM state_documents WHERE namespace = ?",
+                (namespace,),
+            ).fetchone()
+            return self._decode(row) if row is not None else None
+
     def get(self, namespace: str) -> Any | None:
         with self._connection() as connection:
             row = connection.execute(

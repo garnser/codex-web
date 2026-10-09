@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
 from codex_web.code_hosts import (
+    validate_artifact_member_path,
     CodeHostArtifactDownloadFact,
     CodeHostArtifactFact,
     CodeHostCapability,
@@ -353,6 +354,8 @@ class CodeHostService:
         binding, provider = self.registry.resolve(binding_id, actor=actor)
         self._require_capability(binding, provider, CodeHostCapability.ARTIFACTS_READ)
         resource = self._resource(resource_id, actor=actor, binding=binding)
+        if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id < 1:
+            raise CodeHostError("run identifiers must be positive integers")
         return await self._with_credential(
             binding, actor=actor, resource=resource,
             operation="code-host.artifacts.read",
@@ -363,17 +366,29 @@ class CodeHostService:
 
     async def artifact_download(
         self, binding_id: str, resource_id: str, artifact_id: int, *,
-        actor: AuthenticationActor, max_bytes: int,
+        actor: AuthenticationActor, max_bytes: int, member_path: str | None = None,
     ) -> CodeHostArtifactDownloadFact:
         binding, provider = self.registry.resolve(binding_id, actor=actor)
         self._require_capability(binding, provider, CodeHostCapability.ARTIFACTS_READ)
         resource = self._resource(resource_id, actor=actor, binding=binding)
+        if isinstance(artifact_id, bool) or not isinstance(artifact_id, int) or artifact_id < 1:
+            raise CodeHostError("artifact identifiers must be positive integers")
+        if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or not 1 <= max_bytes <= 320 * 1024:
+            raise CodeHostError("max_bytes must be between 1 and 327680")
+        download = provider.artifact_download
+        options = {}
+        if member_path is not None:
+            validate_artifact_member_path(member_path)
+            download = getattr(provider, "artifact_member", None)
+            if not callable(download):
+                raise CodeHostUnsupportedCapabilityError("provider does not support artifact member reads")
+            options["member_path"] = member_path
         return await self._with_credential(
             binding, actor=actor, resource=resource,
             operation="code-host.artifact.download",
-            callback=lambda credential: provider.artifact_download(
+            callback=lambda credential: download(
                 binding, resource, artifact_id,
-                credential=credential, max_bytes=max_bytes,
+                credential=credential, max_bytes=max_bytes, **options,
             ),
         )
 

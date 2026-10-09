@@ -37,6 +37,30 @@ class WorkItemRuntimeDependencies:
     ] | None = None
     save_state: Callable[[WorkItemState], None] | None = None
 
+    def project_tenant(self, project_id: str) -> tuple[str, str]:
+        for project in self.load_projects():
+            if getattr(project, "id", None) == project_id:
+                return (
+                    str(getattr(project, "organization_id", "local") or "local"),
+                    str(getattr(project, "workspace_id", "default") or "default"),
+                )
+        return ("local", "default")
+
+    def project_resource_ids(
+        self, project_id: str, *, source_type: str, project_path: str | None
+    ) -> list[str]:
+        try:
+            if source_type.strip().casefold() == "gitlab" and project_path:
+                values = self.resource_ids_for_project(
+                    project_id, alias_value=project_path, provider="gitlab"
+                )
+            else:
+                values = self.resource_ids_for_project(project_id)
+            return list(dict.fromkeys(str(value) for value in values if str(value).strip()))
+        except Exception:
+            # An unresolved mapping remains visible to canonical readiness.
+            return []
+
     @classmethod
     def from_host(cls, host: Any) -> "WorkItemRuntimeDependencies":
         data_dir = Path(getattr(host, "DATA_DIR", "."))
@@ -91,7 +115,8 @@ class WorkItemRuntimeDependencies:
                         "orchestrator",
                     },
                 )
-            ),
+            )
+            | {"operator"},
             get_state=getattr(
                 host,
                 "_get_work_item_state_record",
@@ -225,11 +250,8 @@ NON_IMPLEMENTATION_OWNERS = frozenset(
         DEFAULT_VALIDATION_OWNER,
         DEFAULT_RELEASE_OWNER,
         "orchestrator",
-        "carl",
+        "operator",
         "compliance manager",
-        "nora",
-        "maya",
-        "larry",
     }
 )
 

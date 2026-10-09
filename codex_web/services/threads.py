@@ -987,6 +987,28 @@ class ThreadService:
         try:
             runtime_result = await runtime_adapter.create_session(runtime_request)
             response = runtime_result.payload
+        except asyncio.CancelledError as exc:
+            # This session already owns a registered worker fence. Request
+            # cancellation must settle its canonical cleanup before returning;
+            # another cancellation must not interrupt that cleanup task.
+            cleanup = asyncio.create_task(session_manager.complete(
+                binding.assignment_id,
+                succeeded=False,
+                failure_code="native_thread_create_cancelled",
+                failure_message=(str(exc).strip() or type(exc).__name__)[:500],
+            ))
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            try:
+                cleanup.result()
+            except BaseException as cleanup_error:
+                raise exc from cleanup_error
+            raise
         except Exception as exc:
             with contextlib.suppress(Exception):
                 await session_manager.complete(
@@ -1001,7 +1023,7 @@ class ThreadService:
                         )
                         else "agent_thread_start_failed"
                     ),
-                    failure_message=str(exc)[:500],
+                    failure_message=(str(exc).strip() or type(exc).__name__)[:500],
                 )
             raise
 

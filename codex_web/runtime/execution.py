@@ -5,6 +5,7 @@ import contextlib
 import json
 import os
 import time
+import weakref
 from collections import deque
 from typing import Any, Callable, Mapping
 
@@ -40,6 +41,7 @@ from codex_web.services.provider_capacity import (
     ProviderCapacityService,
 )
 from codex_web.services.project_runtime import assignment_sandbox_policy
+from codex_web.services.local_execution_worker import LocalExecutionWorkerCapacityError
 from codex_web.services.replicated_ownership import ReplicatedOwnershipService
 from codex_web.services.agent_worker_session import (
     AssignmentBoundAgentSessionManager,
@@ -53,6 +55,7 @@ from codex_web.services.turn_execution_binding import (
     TurnExecutionBindingError,
     TurnExecutionBindingService,
 )
+from codex_web.services.work_item_contracts import assignment_control_plane_instructions
 from codex_web.storage.thread_history import ThreadHistoryRepository
 
 
@@ -146,6 +149,10 @@ class TurnExecutionService:
         thread_history: ThreadHistoryRepository | None = None,
     ) -> None:
         self.host = host
+        try:
+            self._event_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._event_loop = None
         self.binding_service = binding_service
         self.session_manager = session_manager
         self.bootstrap_bindings = bootstrap_bindings
@@ -168,11 +175,15 @@ class TurnExecutionService:
         self.work_item_outcome_recorder = work_item_outcome_recorder
         self.thread_history = thread_history
         self.turn_start_lock = asyncio.Lock()
+        self._turn_start_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
         self.queue_drain_tasks: dict[str, asyncio.Task[None]] = {}
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
         self.assignment_completion_tasks: dict[str, asyncio.Task[None]] = {}
         self.thread_completion_tasks: dict[str, asyncio.Task[None]] = {}
         self.thread_handoffs: set[str] = set()
+        self.activity_heartbeat_at: dict[str, float] = {}
         self.terminal_failures: dict[str, deque[tuple[float, str]]] = {}
         self.last_inputs: dict[str, dict[str, Any]] = {}
 
@@ -948,6 +959,10 @@ class TurnExecutionService:
         method: str,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if method == "turn/interrupt" and not (params or {}).get("turnId"):
+            active = await asyncio.to_thread(self._active_turn, thread_id)
+            if active is not None and active.turn_id:
+                params = {**(params or {}), "turnId": active.turn_id}
         resolved = await asyncio.to_thread(
             self._assignment_session_for_thread,
             thread_id,
@@ -1046,6 +1061,8 @@ class TurnExecutionService:
     ) -> None:
         if not thread_id:
             return
+        with contextlib.suppress(RuntimeError):
+            self._event_loop = asyncio.get_running_loop()
         h = self.host
         now = time.time()
         current = self._active_turn(thread_id)
@@ -1108,6 +1125,7 @@ class TurnExecutionService:
             last_resume_at=current.last_resume_at if current else None,
         )
         self._save_active_turn(active)
+        self.activity_heartbeat_at[thread_id] = now
 
     def clear_thread_active(self, thread_id: str | None, turn_id: str | None = None) -> None:
         if not thread_id:
@@ -1119,6 +1137,7 @@ class TurnExecutionService:
         if active and turn_id and active.turn_id and active.turn_id != turn_id:
             return
         if active and self._delete_active_turn(thread_id):
+            self.activity_heartbeat_at.pop(thread_id, None)
             if not getattr(h, "IS_SHUTTING_DOWN", False) and h._autonomy_enabled():
                 h._schedule_native_recovery_cycles(reason="thread-became-idle")
 
@@ -1151,6 +1170,23 @@ class TurnExecutionService:
         assignment_id = active.assignment_id
         if not assignment_id:
             return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = getattr(self, "_event_loop", None)
+            if loop is None or loop.is_closed():
+                raise RuntimeError("terminal assignment completion has no owner event loop")
+            # Durable activity projection runs in a storage worker. Marshal
+            # only scheduling back to the owning loop; never create a task or
+            # mutate task registries from that worker thread. Canonical session
+            # validation, checkpointing and completion remain unchanged.
+            loop.call_soon_threadsafe(
+                lambda: self._schedule_assignment_completion(
+                    active, succeeded=succeeded, message=message
+                )
+            )
+            return
+        self._event_loop = loop
         try:
             manager, _session = self._session_for_assignment(assignment_id)
         except HTTPException:
@@ -1324,32 +1360,79 @@ class TurnExecutionService:
         thread_id = params.get("threadId") or (
             params.get("turn") or {}
         ).get("threadId")
-        if self.thread_history is not None and thread_id:
-            try:
-                self.thread_history.project_message(str(thread_id), message)
-            except Exception as exc:
-                append_event = getattr(self.host, "_append_bot_event", None)
-                if callable(append_event):
-                    with contextlib.suppress(Exception):
-                        append_event(
-                            {
+
+        def project_state() -> None:
+            if self.thread_history is not None and thread_id:
+                try:
+                    self.thread_history.project_message(str(thread_id), message)
+                except Exception as exc:
+                    append_event = getattr(self.host, "_append_bot_event", None)
+                    if callable(append_event):
+                        with contextlib.suppress(Exception):
+                            append_event({
                                 "type": "thread_history_projection_failed",
                                 "thread_id": str(thread_id),
                                 "method": str(message.get("method") or ""),
                                 "error_type": type(exc).__name__,
-                            }
-                        )
-        self.record_thread_activity(message)
+                            })
+            self.record_thread_activity(message)
+
         hub = getattr(self.host, "hub", None)
-        if hub is None:
-            return
         try:
-            loop = asyncio.get_running_loop()
+            loop = asyncio.get_running_loop() if hub is not None else None
         except RuntimeError:
+            loop = None
+        if loop is None:
+            project_state()
             return
-        loop.create_task(
-            hub.publish({"type": "codex.event", "message": message})
-        )
+
+        # State stores are synchronous. Match the native reader's offload,
+        # but serialize each thread so late heartbeats cannot revive a turn
+        # after its terminal event. Other threads progress independently.
+        tasks = getattr(self, "agent_runtime_notification_tasks", None)
+        if tasks is None:
+            tasks = self.agent_runtime_notification_tasks = {}
+        key = str(thread_id or "")
+        previous = tasks.get(key)
+
+        async def publish() -> None:
+            try:
+                if previous is not None:
+                    await previous
+                await asyncio.to_thread(project_state)
+                await hub.publish({"type": "codex.event", "message": message})
+                method = message.get("method")
+                if method == "item/completed":
+                    outbound = getattr(self.host, "_record_bot_outbound", None)
+                    if callable(outbound):
+                        await outbound(message)
+                if method in {"turn/completed", "turn/failed"}:
+                    recorder = getattr(self.host, "_record_terminal_turn_result", None)
+                    recovery_scheduled = (
+                        await asyncio.to_thread(recorder, message)
+                        if callable(recorder) else False
+                    )
+                    drain = getattr(self.host, "_schedule_queue_drain", None)
+                    if not recovery_scheduled and callable(drain):
+                        drain(thread_id)
+            except Exception as exc:
+                append_event = getattr(self.host, "_append_bot_event", None)
+                if callable(append_event):
+                    append_event({
+                        "type": "agent_runtime_notification_failed",
+                        "thread_id": str(thread_id or ""),
+                        "method": str(message.get("method") or ""),
+                        "error_type": type(exc).__name__,
+                    })
+
+        task = loop.create_task(publish(), name=f"agent-runtime-notification-{thread_id}")
+        tasks[key] = task
+
+        def finished(done: asyncio.Task) -> None:
+            if tasks.get(key) is done:
+                tasks.pop(key, None)
+
+        task.add_done_callback(finished)
 
     def record_agent_runtime_event(
         self,
@@ -1410,11 +1493,19 @@ class TurnExecutionService:
         params = message.get("params") or {}
         thread_id = params.get("threadId") or (params.get("turn") or {}).get("threadId")
         turn_id = params.get("turnId") or (params.get("turn") or {}).get("id")
+        if method in {
+            "item/agentMessage/delta", "item/reasoning/textDelta",
+            "item/reasoning/summaryTextDelta", "item/commandExecution/outputDelta",
+            "item/fileChange/outputDelta",
+        } and time.time() - self.activity_heartbeat_at.get(thread_id, 0) < 5:
+            return
         if method in {"turn/started", "item/started"}:
             self.mark_thread_active(thread_id, turn_id=turn_id)
         elif method in {"turn/completed", "turn/failed"}:
             active = h._load_active_turns().get(thread_id) if thread_id else None
-            if active is not None:
+            if active is not None and not (
+                turn_id and active.turn_id and active.turn_id != turn_id
+            ):
                 self._schedule_assignment_completion(
                     active,
                     succeeded=method == "turn/completed",
@@ -1431,7 +1522,11 @@ class TurnExecutionService:
                 and not getattr(h, "IS_SHUTTING_DOWN", False)
             ):
                 self.clear_thread_active(thread_id)
-        elif thread_id and self._active_turn(thread_id) is not None:
+        elif thread_id and (active := self._active_turn(thread_id)) is not None:
+            # Late events from a previous turn must not overwrite the current
+            # turn identity or keep its assignment alive as a false heartbeat.
+            if turn_id and active.turn_id and turn_id != active.turn_id:
+                return
             # Provider turns can run longer than the stale-marker window and
             # some runtimes emit item/completed without a matching
             # item/started notification. Treat every non-terminal runtime
@@ -1525,8 +1620,16 @@ class TurnExecutionService:
         )
         trusted_local_codex_session = False
 
-        async with self.turn_start_lock:
-            if self.thread_is_active(thread_id):
+        # Admission remains serialized within a thread. Independent isolated
+        # threads must not wait behind another thread's provider RPC/bootstrap.
+        start_lock = self._turn_start_locks.get(thread_id)
+        if start_lock is None:
+            start_lock = asyncio.Lock()
+            self._turn_start_locks[thread_id] = start_lock
+        async with start_lock:
+            if self.thread_is_active(thread_id) and not (
+                preserve_active_handoff and self.thread_handoff_in_progress(thread_id)
+            ):
                 raise HTTPException(
                     status_code=409,
                     detail={
@@ -2158,7 +2261,8 @@ class TurnExecutionService:
                         },
                     )
                 try:
-                    skill_context_selection = self.skill_context_resolver(
+                    skill_context_selection = await asyncio.to_thread(
+                        self.skill_context_resolver,
                         effective_skill_refs,
                         project,
                         message,
@@ -2216,6 +2320,15 @@ class TurnExecutionService:
                     )
                     if item
                 )
+
+            if assignment is not None:
+                broker_instructions = assignment_control_plane_instructions()
+                if broker_instructions not in (effective_developer_instructions or ""):
+                    effective_developer_instructions = "\n\n".join(
+                        item
+                        for item in (effective_developer_instructions, broker_instructions)
+                        if item
+                    )
 
             if trusted_local_codex_session:
                 workspace_cwd = project.path
@@ -2811,6 +2924,18 @@ class TurnExecutionService:
                 }
             )
         except Exception as exc:
+            if isinstance(exc, LocalExecutionWorkerCapacityError):
+                queued.attempts = max(0, queued.attempts - 1)
+                self.requeue_turn_front(queued)
+                reschedule_queue = False
+                h._append_bot_event({
+                    "type": "queued_turn_waiting_for_worker_capacity",
+                    "thread_id": thread_id,
+                    "queued_id": queued.id,
+                    "error": str(exc),
+                })
+                asyncio.get_running_loop().call_later(30, self.schedule_queue_drain, thread_id)
+                return
             if isinstance(exc, ProviderCapacityBlockedError):
                 queued.attempts = max(0, queued.attempts - 1)
                 self.requeue_turn_front(queued)
@@ -2840,10 +2965,16 @@ class TurnExecutionService:
                 bindings = h._bindings_for_thread(thread_id)
                 if bindings:
                     replacement = await h._replace_stale_bot_thread(bindings[0], str(exc))
-                    queued.thread_id = replacement.thread_id
+                    replacement_id = replacement.thread_id
+                elif queued.source == "web":
+                    replacement_id = await h._replace_stale_web_thread(thread_id, project, str(exc))
+                else:
+                    replacement_id = None
+                if replacement_id:
+                    queued.thread_id = replacement_id
                     if queued.reply_target and queued.reply_target.thread_id == thread_id:
                         queued.reply_target = queued.reply_target.model_copy(
-                            update={"thread_id": replacement.thread_id}
+                            update={"thread_id": replacement_id}
                         )
                     queued.attempts = 0
                     self.requeue_turn_front(queued)
@@ -2851,14 +2982,14 @@ class TurnExecutionService:
                         {
                             "type": "queued_turn_retargeted",
                             "old_thread_id": thread_id,
-                            "new_thread_id": replacement.thread_id,
+                            "new_thread_id": replacement_id,
                             "queued_id": queued.id,
                             "error": h._truncate_text(str(exc), 500),
                         }
                     )
                     asyncio.get_running_loop().call_soon(
                         self.schedule_queue_drain,
-                        replacement.thread_id,
+                        replacement_id,
                     )
                     return
             if h._is_codex_timeout_error(exc):
@@ -2973,6 +3104,7 @@ class TurnExecutionService:
         self,
         thread_ids: set[str] | None = None,
     ) -> None:
+        self._event_loop = asyncio.get_running_loop()
         h = self.host
         if thread_ids is None:
             active_turns = h._load_active_turns()
@@ -3191,15 +3323,14 @@ class TurnExecutionService:
             released = False
             for manager in dict(self.session_managers or {}).values():
                 if manager.get(previous_assignment_id) is not None:
-                    with contextlib.suppress(Exception):
-                        await manager.complete(
-                            previous_assignment_id,
-                            succeeded=False,
-                            failure_code="thread_runtime_switched",
-                            failure_message=(
-                                "thread superseded onto a different agent runtime"
-                            ),
-                        )
+                    await manager.complete(
+                        previous_assignment_id,
+                        succeeded=False,
+                        failure_code="thread_runtime_switched",
+                        failure_message=(
+                            "thread superseded onto a different agent runtime"
+                        ),
+                    )
                     released = True
                     break
             if not released:
@@ -3210,57 +3341,31 @@ class TurnExecutionService:
                 )
                 if local_worker is not None:
                     def release_superseded() -> None:
-                        with contextlib.suppress(Exception):
-                            local_worker.worker_service.recover_expired(
-                                actor=self.control_actor
+                        assignment = local_worker._pending_assignment(previous_assignment_id)
+                        # No registered session means this process cannot attest
+                        # ownership of a live claim. Only unclaimed/lost records
+                        # may be cancelled here; an active foreign claim fails.
+                        if assignment.status in (AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING):
+                            raise HTTPException(
+                                status_code=409,
+                                detail="superseded bootstrap has an unowned live worker claim",
                             )
-                        with contextlib.suppress(Exception):
-                            local_worker.workspace_service.recover_expired()
-                        with contextlib.suppress(Exception):
-                            superseded_assignment = (
-                                local_worker._pending_assignment(
-                                    previous_assignment_id
-                                )
-                            )
-                            superseded_workspace_id = (
-                                superseded_assignment.execution_workspace_id
-                            )
-                            if superseded_workspace_id:
-                                local_worker.workspace_service.release(
-                                    superseded_workspace_id,
-                                    ExecutionWorkspaceRelease(
-                                        discard=True,
-                                        reason=(
-                                            "thread superseded onto a different "
-                                            "agent runtime"
-                                        ),
+                        if assignment.status in (
+                            AssignmentStatus.PENDING, AssignmentStatus.LOST,
+                            AssignmentStatus.CANCELLED,
+                        ):
+                            local_worker.worker_service.cancel_bootstrap(
+                                assignment.id,
+                                AssignmentCancelRequest(
+                                    expected_fence=(
+                                        assignment.fence - 1
+                                        if assignment.status == AssignmentStatus.CANCELLED
+                                        else assignment.fence
                                     ),
-                                    actor=self.control_actor,
-                                )
-                        with contextlib.suppress(Exception):
-                            assignment = local_worker._pending_assignment(
-                                previous_assignment_id
+                                    reason="thread superseded onto a different agent runtime",
+                                ),
+                                actor=local_worker.control_actor,
                             )
-                            lease = assignment.lease
-                            if lease is not None and assignment.status in (
-                                AssignmentStatus.CLAIMED,
-                                AssignmentStatus.RUNNING,
-                            ):
-                                local_worker.worker_service.complete(
-                                    assignment.assigned_worker_id,
-                                    assignment.id,
-                                    AssignmentCompleteRequest(
-                                        lease_token=lease.lease_token,
-                                        fence=assignment.fence,
-                                        succeeded=False,
-                                        failure_code="thread_runtime_switched",
-                                        failure_message=(
-                                            "thread superseded onto a different "
-                                            "agent runtime"
-                                        ),
-                                    ),
-                                    actor=local_worker.worker_actor,
-                                )
 
                     await asyncio.to_thread(release_superseded)
         h._append_bot_event(
@@ -3273,6 +3378,36 @@ class TurnExecutionService:
                 ),
             }
         )
+        # Existing-thread healing can bypass routing's ordinary quota probe.
+        # Cleanup above can also outlive its fresh account evidence. Refresh
+        # only expired operator evidence, immediately before canonical
+        # authentication preflight; never substitute transport readiness or
+        # an assumed authentication result for a real account response.
+        transport = getattr(h, "codex", None)
+        account_available = getattr(transport, "authenticated_account_available", None)
+        if (
+            runtime_binding.provider_id == "openai"
+            and runtime_binding.runtime_id == "codex"
+            and callable(account_available)
+            and not account_available()
+        ):
+            authentication_mode = runtime_binding.authentication_mode
+            if authentication_mode is None and previous_assignment_id:
+                # Repository drift may omit mode on the new runtime binding.
+                # Preserve the previous canonical mode instead of assuming
+                # an operator session for configured credential-backed work.
+                previous = await asyncio.to_thread(
+                    self._assignment_record, previous_assignment_id
+                )
+                previous_runtime = getattr(previous, "runtime_binding", None)
+                if (
+                    getattr(previous_runtime, "provider_id", None) == "openai"
+                    and getattr(previous_runtime, "runtime_id", None) == "codex"
+                ):
+                    authentication_mode = previous_runtime.authentication_mode
+            if authentication_mode == "trusted_local_session":
+                await transport.request("account/read", {"refreshToken": False})
+
         token = __import__("uuid").uuid4().hex
 
         def prepare_and_rebind():
@@ -3289,17 +3424,31 @@ class TurnExecutionService:
                 execution_profile_id=execution_profile_id,
                 agent_profile=agent_profile,
             )
-            self.bootstrap_bindings.rebind(
-                bootstrap_id=f"bootstrap-{token}",
-                thread_id=thread_id,
-                execution_id=binding.execution_id,
-                assignment_id=binding.assignment_id,
-                execution_workspace_id=binding.workspace_id,
-                actor=self.control_actor,
-            )
+            try:
+                self.bootstrap_bindings.rebind(
+                    bootstrap_id=f"bootstrap-{token}",
+                    thread_id=thread_id,
+                    execution_id=binding.execution_id,
+                    assignment_id=binding.assignment_id,
+                    execution_workspace_id=binding.workspace_id,
+                    actor=self.control_actor,
+                )
+            except Exception:
+                self.binding_service.workers.cancel_bootstrap(
+                    binding.assignment_id,
+                    AssignmentCancelRequest(
+                        expected_fence=0,
+                        reason="bootstrap replacement could not be durably bound",
+                    ),
+                    actor=self.binding_service.control_actor,
+                )
+                raise
             return self._bootstrap_binding_for_thread(thread_id)
 
-        return await asyncio.to_thread(prepare_and_rebind)
+        try:
+            return await asyncio.to_thread(prepare_and_rebind)
+        except TurnExecutionBindingError as exc:
+            raise _execution_preflight_blocked(exc) from exc
 
     async def _convert_legacy_thread_to_bootstrap(
         self,
@@ -3624,3 +3773,22 @@ def install_turn_execution_service(
     host.THREAD_ASSIGNMENT_COMPLETION_TASKS = service.thread_completion_tasks
     host.THREAD_HANDOFFS = service.thread_handoffs
     return service
+
+from codex_web.execution_workers import AssignmentCancelRequest
+
+
+def _execution_preflight_blocked(
+    exc: TurnExecutionBindingError,
+) -> HTTPException:
+    """Translate deterministic binding failures at every bootstrap boundary."""
+
+    return HTTPException(
+        status_code=503,
+        detail={
+            "code": "execution_preflight_blocked",
+            "message": str(exc),
+            "blockers": [exc.public()],
+            "retryable": False,
+        },
+    )
+

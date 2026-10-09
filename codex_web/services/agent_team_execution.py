@@ -245,13 +245,13 @@ class AgentTeamExecutionService:
                         request,
                         profile_id=profile_id,
                         role="member",
-                        reason=str(exc),
+                        reason=(str(exc).strip() or type(exc).__name__)[:2000],
                         actor=actor,
                     )
                     blocked = plan.model_copy(
                         update={
                             "mode": "launch_blocked",
-                            "reason": str(exc)[:2000],
+                            "reason": (str(exc).strip() or type(exc).__name__)[:2000],
                             "blocked": True,
                             "attention_required": True,
                         }
@@ -299,13 +299,13 @@ class AgentTeamExecutionService:
                     request,
                     profile_id=plan.leader_profile_id,
                     role="coordinator",
-                    reason=str(exc),
+                    reason=(str(exc).strip() or type(exc).__name__)[:2000],
                     actor=actor,
                 )
                 blocked = plan.model_copy(
                     update={
                         "mode": "launch_blocked",
-                        "reason": str(exc)[:2000],
+                        "reason": (str(exc).strip() or type(exc).__name__)[:2000],
                         "blocked": True,
                         "attention_required": True,
                     }
@@ -370,13 +370,13 @@ class AgentTeamExecutionService:
                     request,
                     profile_id=profile_id,
                     role="member",
-                    reason=str(exc),
+                    reason=(str(exc).strip() or type(exc).__name__)[:2000],
                     actor=actor,
                 )
                 blocked = plan.model_copy(
                     update={
                         "mode": "launch_blocked",
-                        "reason": str(exc)[:2000],
+                        "reason": (str(exc).strip() or type(exc).__name__)[:2000],
                         "blocked": True,
                         "attention_required": True,
                     }
@@ -626,12 +626,12 @@ class AgentTeamExecutionService:
                 request,
                 profile_id=team.leader_profile_id,
                 role="coordinator",
-                reason=str(exc),
+                reason=(str(exc).strip() or type(exc).__name__)[:2000],
                 actor=actor,
             )
             return TeamMemberResultOutcome(
                 status="launch_blocked",
-                reason=str(exc)[:2000],
+                reason=(str(exc).strip() or type(exc).__name__)[:2000],
                 delegation=request,
                 attention_required=True,
             )

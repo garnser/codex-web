@@ -821,6 +821,32 @@ class WorkItemService:
         limit: int | None = None,
         cursor: str | None = None,
     ) -> dict[str, Any]:
+        # Keep the complete canonical read/filter/cursor sequence together;
+        # StateStore reads can wait on the database and must not block worker
+        # completion or broker socket handling on the shared event loop.
+        return await asyncio.to_thread(
+            self._list_sync,
+            project_id=project_id,
+            owner=owner,
+            stage=stage,
+            release_gate=release_gate,
+            q=q,
+            scope=scope,
+            limit=limit,
+            cursor=cursor,
+        )
+    def _list_sync(
+        self,
+        *,
+        project_id: str | None,
+        owner: str | None,
+        stage: str | None,
+        release_gate: bool | None,
+        q: str | None = None,
+        scope: TenantScope | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
         from fastapi import HTTPException
 
         if scope is None:
@@ -1259,6 +1285,8 @@ class WorkItemService:
         return True
 
     async def get(self, ref: str) -> dict[str, Any]:
+        return await asyncio.to_thread(self._get_sync, ref)
+    def _get_sync(self, ref: str) -> dict[str, Any]:
         return self.state_machine._work_item_state_public(
             self.state_machine._work_item_state(ref)
         )

@@ -9,6 +9,7 @@ from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.compatibility import TASK_SOURCE_CONTRACT
 from codex_web.models import TaskSourceIdentity, WorkItemStage
 from codex_web.services.task_sources import (
+    InvalidTaskSourceIdentity,
     TaskSourceCanonicalProjection,
     TaskSourceCapabilities,
     TaskSourceCapability,
@@ -159,9 +160,14 @@ class GitLabTaskSource:
 
     def _validate_identity(self, identity: TaskSourceIdentity) -> None:
         if identity.source_type.strip().casefold() != self.source_type:
-            raise ValueError("Task-source identity does not belong to GitLab adapter")
+            raise InvalidTaskSourceIdentity(
+                "Task-source identity does not belong to GitLab adapter"
+            )
         if identity.source_instance.strip().rstrip("/") != self.source_instance:
-            raise ValueError("Task-source identity belongs to another GitLab instance")
+            raise InvalidTaskSourceIdentity(
+                "Task-source identity belongs to another GitLab instance"
+            )
+
 
     async def create(
         self,
@@ -201,8 +207,11 @@ class GitLabTaskSource:
         project_path = project_path.strip().strip("/")
         iid_text = iid_text.strip()
         if not separator or not project_path or not iid_text.isdigit():
-            raise ValueError("GitLab external_id must use <project-path>#<issue-iid>")
+            raise InvalidTaskSourceIdentity(
+                "GitLab external_id must use <project-path>#<issue-iid>"
+            )
         return project_path, int(iid_text)
+
 
     @staticmethod
     def _issue_external_id(issue: dict[str, Any], *, project_path: str | None = None) -> str:
@@ -231,6 +240,7 @@ class GitLabTaskSource:
         return TaskSourceSnapshot(
             identity=identity,
             title=str(issue.get("title") or "").strip() or None,
+            body_text=str(issue.get("description") or "").strip() or None,
             source_state=str(issue.get("state") or "").strip().lower() or None,
             owners=self._normalize_assignees(issue.get("assignees")),
             labels=self._normalize_labels(issue.get("labels")),
@@ -253,9 +263,65 @@ class GitLabTaskSource:
                 snapshots.append(self._snapshot_from_issue(issue))
         return snapshots
 
+    async def _read_merge_request(
+        self, identity: TaskSourceIdentity,
+    ) -> TaskSourceSnapshot:
+        self.capabilities.require(TaskSourceCapability.READ)
+        self._validate_identity(identity)
+        project_path, separator, iid_text = identity.external_id.partition("!")
+        project_path = project_path.strip().strip("/")
+        iid_text = iid_text.strip()
+        if (
+            not separator
+            or not project_path
+            or "#" in identity.external_id
+            or "!" in project_path
+            or not iid_text.isascii()
+            or not iid_text.isdigit()
+            or int(iid_text) < 1
+        ):
+            raise InvalidTaskSourceIdentity(
+                "GitLab merge-request identity must use <project-path>!<positive-iid>"
+            )
+        iid = int(iid_text)
+        expected_ref = f"{project_path}!{iid}"
+        merge_request = await self.client.merge_request(
+            self.api_base, project_path, iid, token=self.token,
+        )
+        provider_ref = str((merge_request.get("references") or {}).get("full") or "").strip()
+        if (
+            type(merge_request.get("iid")) is not int
+            or merge_request["iid"] != iid
+            or (provider_ref and provider_ref != expected_ref)
+        ):
+            raise InvalidTaskSourceIdentity(
+                "GitLab merge-request response does not match the requested identity"
+            )
+        revision_value = (
+            merge_request.get("updated_at")
+            or merge_request.get("merged_at")
+            or merge_request.get("closed_at")
+            or merge_request.get("created_at")
+        )
+        return TaskSourceSnapshot(
+            identity=self._identity(
+                expected_ref,
+                external_url=str(merge_request.get("web_url") or "").strip() or None,
+                revision=str(revision_value).strip() if revision_value else None,
+            ),
+            title=str(merge_request.get("title") or "").strip() or None,
+            body_text=str(merge_request.get("description") or "").strip() or None,
+            source_state=str(merge_request.get("state") or "").strip().lower() or None,
+            owners=self._normalize_assignees(merge_request.get("assignees")),
+            labels=self._normalize_labels(merge_request.get("labels")),
+        )
+
+
     async def read(self, identity: TaskSourceIdentity) -> TaskSourceSnapshot:
         self.capabilities.require(TaskSourceCapability.READ)
         self._validate_identity(identity)
+        if "!" in identity.external_id:
+            return await self._read_merge_request(identity)
         project_path, iid = self._split_external_id(identity.external_id)
         issue = await self.client.project_issue(
             self.api_base,
@@ -291,6 +357,7 @@ class GitLabTaskSource:
         snapshot = TaskSourceSnapshot(
             identity=identity,
             title=str(attrs.get("title") or "").strip() or None,
+            body_text=str(attrs.get("description") or "").strip() or None,
             source_state=str(attrs.get("state") or payload.get("state") or "").strip().lower() or None,
             owners=self._event_assignees(payload),
             labels=self._event_labels(payload),

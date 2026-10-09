@@ -507,6 +507,9 @@ class ControlPlaneBrokerService:
             )
         path = parsed.path
         query = parse_qs(parsed.query, keep_blank_values=False)
+        member_query = parse_qs(parsed.query, keep_blank_values=True)
+        if "member_path" in member_query:
+            query["member_path"] = member_query["member_path"]
         repository_action = _REPOSITORY_ACTIONS.get(path)
         if repository_action is not None:
             operation = _OPERATION_BY_ID[repository_action[0]]
@@ -839,12 +842,23 @@ class ControlPlaneBrokerService:
             ),
             requested_by=requester_actor.identity_id,
         )
-        intent = self.action_intents.create(
+        # Publishing, MR creation, and merging may include provider-side checks. Give
+        # those bounded operations enough time without letting the caller extend
+        # execution or retry authority. The lease also covers receipt recording.
+        extended_deadline = action_id in {
+            CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
+            CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+            CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
+        }
+        deadline = {"timeout_seconds": 120.0} if extended_deadline else {}
+        intent = await asyncio.to_thread(
+            self.action_intents.create,
             ActionIntentCreate(
                 binding_id=binding.id,
                 request=request,
                 work_item_ref=assignment.work_item_ref,
                 execution_id=assignment.execution_id,
+                **deadline,
                 policy_decision=ActionDecisionSnapshot(
                     decision_id=f"assignment-policy-{uuid.uuid4().hex}",
                     outcome=ActionDecisionOutcome.ALLOW,
@@ -865,13 +879,19 @@ class ControlPlaneBrokerService:
             actor=requester_actor,
         )
         worker_id = f"control-plane-broker:{assignment.assigned_worker_id or 'worker'}"
-        claimed = self.action_intents.claim(
-            ActionIntentClaimRequest(worker_id=worker_id),
+        claimed = await asyncio.to_thread(
+            self.action_intents.claim,
+            ActionIntentClaimRequest(
+                worker_id=worker_id,
+                **({"lease_seconds": 180} if extended_deadline else {}),
+            ),
             actor=worker_actor,
             intent_id=intent.id,
         )
         if claimed is None:
-            current = self.action_intents.get(intent.id, requester_actor)
+            current = await asyncio.to_thread(
+                self.action_intents.get, intent.id, requester_actor
+            )
             return {"item": current.model_dump(mode="json")}
         completed = await self.action_intents.execute_claimed(
             intent.id,
@@ -986,7 +1006,7 @@ class ControlPlaneBrokerService:
             assert target_ref is not None
             if not target_ref.isdigit() or int(target_ref) < 1:
                 raise ControlPlaneBrokerRequestError(
-                    "GitHub job, run, and artifact identifiers must be positive integers"
+                    "Code-host job, run, and artifact identifiers must be positive integers"
                 )
             external_id = int(target_ref)
             max_bytes_raw = (query.get("max_bytes") or [str(128 * 1024)])[0]
@@ -1009,9 +1029,14 @@ class ControlPlaneBrokerService:
                     binding_id, repository_id, external_id, actor=actor
                 )
                 return {"items": [item.model_dump(mode="json") for item in items]}
+            options = {}
+            if "member_path" in query:
+                if len(query["member_path"]) != 1:
+                    raise ControlPlaneBrokerRequestError("member_path must occur once")
+                options["member_path"] = query["member_path"][0]
             item = await self.code_hosts.artifact_download(
                 binding_id, repository_id, external_id,
-                actor=actor, max_bytes=max_bytes,
+                actor=actor, max_bytes=max_bytes, **options,
             )
             return {"item": item.model_dump(mode="json")}
         if operation.id == "repository.read.releases":
@@ -1065,16 +1090,14 @@ class ControlPlaneBrokerService:
             raise ControlPlaneBrokerAuthorityDeniedError(decision)
         return decision
 
-    async def dispatch(
+    def _dispatch_scope(
         self,
-        *,
         assignment: ExecutionAssignment,
         worker_actor: AuthenticationActor,
-        method: str,
-        raw_target: str,
-        body: bytes,
-    ) -> tuple[int, dict[str, Any], ControlPlaneBrokerOperation, str | None, Any]:
-        resolved = self._resolve_operation(method, raw_target)
+        resolved: _ResolvedOperation,
+    ) -> tuple[AuthenticationActor, AuthenticationActor, Any, Any]:
+        # Preserve identity -> target scope -> authority ordering as one
+        # synchronous boundary. to_thread carries the caller's ContextVars.
         operation = resolved.operation
         actor = self._actor(assignment, worker_actor)
         repository_read = operation.id.startswith("repository.read.")
@@ -1108,6 +1131,25 @@ class ControlPlaneBrokerService:
             operation,
             actor=authority_actor,
             resource_ids=resource_ids,
+        )
+
+        return actor, requester_actor, state, authority_decision
+    async def dispatch(
+        self,
+        *,
+        assignment: ExecutionAssignment,
+        worker_actor: AuthenticationActor,
+        method: str,
+        raw_target: str,
+        body: bytes,
+    ) -> tuple[int, dict[str, Any], ControlPlaneBrokerOperation, str | None, Any]:
+        resolved = self._resolve_operation(method, raw_target)
+        operation = resolved.operation
+        repository_read = operation.id.startswith("repository.read.")
+        actor, requester_actor, state, authority_decision = (
+            await asyncio.to_thread(
+                self._dispatch_scope, assignment, worker_actor, resolved
+            )
         )
 
         payload: dict[str, Any] = {}
@@ -1243,10 +1285,20 @@ class ControlPlaneBrokerService:
                 raise ControlPlaneBrokerDeniedError(
                     "work-item list project differs from assignment scope"
                 )
+            raw_limit = (resolved.query.get("limit") or [None])[0]
+            try:
+                limit = int(raw_limit) if raw_limit is not None else None
+            except ValueError as exc:
+                raise ControlPlaneBrokerRequestError(
+                    "work-item list limit must be an integer"
+                ) from exc
             result = await self.work_items.list(
                 project_id=assignment.project_id,
                 owner=(resolved.query.get("owner") or [None])[0],
                 stage=(resolved.query.get("stage") or [None])[0],
+                q=(resolved.query.get("q") or [None])[0],
+                limit=limit,
+                cursor=(resolved.query.get("cursor") or [None])[0],
                 release_gate=None,
                 scope=actor.tenant,
             )
@@ -1278,14 +1330,14 @@ class ControlPlaneBrokerService:
             assert resolved.target_ref is not None
             result = await self.operator.retry(
                 resolved.target_ref,
-                actor=str(payload.get("actor") or actor.identity_id),
+                actor=actor.identity_id,
                 reason=(str(payload["reason"]) if payload.get("reason") else None),
             )
         elif operation.id == "work_item.reconcile":
             assert resolved.target_ref is not None
             result = await self.operator.reconcile(
                 resolved.target_ref,
-                actor=str(payload.get("actor") or actor.identity_id),
+                actor=actor.identity_id,
                 reason=(str(payload["reason"]) if payload.get("reason") else None),
             )
         else:  # pragma: no cover - closed operation catalog
@@ -1647,7 +1699,9 @@ class AssignmentBoundControlPlaneBroker:
             resolved = self.service._resolve_operation(method, target)
             operation = resolved.operation
             target_ref = resolved.target_ref
-            actor = self.service._actor(assignment, self.worker_actor)
+            actor = await asyncio.to_thread(
+                self.service._actor, assignment, self.worker_actor
+            )
             actor_identity_id = actor.identity_id
 
             status, payload, operation, target_ref, authority_decision = (

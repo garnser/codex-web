@@ -21,6 +21,31 @@ from codex_web.services.execution_profile_definitions import ExecutionProfileDef
 from codex_web.security import TrustZone, envelope_untrusted, render_untrusted_content, security_boundary_instructions
 
 
+def assignment_control_plane_instructions() -> str:
+    """Describe the existing assignment broker; never grant additional access."""
+
+    return (
+        "ASSIGNMENT CONTROL-PLANE ACCESS\n"
+        "Direct Git host DNS, SSH, HTTP, and localhost access may be intentionally unavailable in the execution "
+        "sandbox. When CODEX_WEB_CONTROL_PLANE_URL is set, use that assignment-bound broker before reporting a "
+        "GitLab or repository-access blocker. This is an HTTP tool channel; absence of MCP tools does not "
+        "mean governed operations are unavailable. Discover the exact allowlisted methods and paths with "
+        "GET /api/control-plane-broker/operations, for example: "
+        "curl --noproxy '*' --connect-timeout 5 --max-time 60 --silent --show-error "
+        "--write-out '\\nHTTP %{http_code}\\n' "
+        "\"${CODEX_WEB_CONTROL_PLANE_URL}/api/control-plane-broker/operations\". "
+        "Bypass proxies only for this assignment-loopback request; do not change global proxy or network "
+        "settings. A short client timeout is not proof of denial. Preserve HTTP status, broker denial and "
+        "correlation evidence; a client timeout does not prove whether a mutation ran, so reconcile its "
+        "existing ActionIntent before retrying. Repository facts, refs, merge requests, checks, job logs, "
+        "artifacts, governed branch publication, merge-request upsert/merge, and check rerun operations exposed "
+        "there are the supported access paths. Do not use direct GitLab API calls or direct git push when the "
+        "broker provides the required operation. If the required operation is absent or the broker denies it, "
+        "record the exact broker operation, status, and denial as the blocker.\n\n"
+    ).rstrip()
+
+
+
 class WorkItemContractService:
     """Derive execution contracts from canonical work state + published definitions."""
 
@@ -233,15 +258,7 @@ class WorkItemContractService:
             "authoritative for owner, stage, handoff and next action. The versioned execution contract and its exact "
             f"{profile_text}"
             "Apply the resolved role below; do not create parallel ownership, definition or permission state.\n\n"
-            "ASSIGNMENT CONTROL-PLANE ACCESS\n"
-            "Direct Git host DNS, SSH, HTTP, and localhost access may be intentionally unavailable in the execution "
-            "sandbox. When CODEX_WEB_CONTROL_PLANE_URL is set, use that assignment-bound broker before reporting a "
-            "GitLab or repository-access blocker. Discover the exact allowlisted methods and paths with "
-            "GET /api/control-plane-broker/operations. Repository facts, refs, merge requests, checks, job logs, "
-            "artifacts, governed branch publication, merge-request upsert/merge, and check rerun operations exposed "
-            "there are the supported access paths. Do not use direct GitLab API calls or direct git push when the "
-            "broker provides the required operation. If the required operation is absent or the broker denies it, "
-            "record the exact broker operation, status, and denial as the blocker.\n\n"
+            f"{assignment_control_plane_instructions()}\n\n"
             f"{execution_contract_prompt(role, catalog=catalog)}"
         )
 

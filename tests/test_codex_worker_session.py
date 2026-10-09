@@ -993,11 +993,11 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         session = await self._session(assignment)
         session.runtime.request_error = HTTPException(
             status_code=504,
-            detail="turn/interrupt timed out after 10s",
+            detail="turn/start timed out after 60s",
         )
 
         with self.assertRaises(HTTPException) as raised:
-            await session.request("turn/interrupt", {"threadId": "thread-1"})
+            await session.request("turn/start", {"threadId": "thread-1"})
 
         self.assertEqual(raised.exception.status_code, 504)
         current = self.worker_service.store.assignment(assignment.id)
@@ -1006,6 +1006,18 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(current.failure_code, "agent_runtime_rpc_timeout")
         self.assertTrue(self.backend.processes[0].terminated)
         self.assertFalse(session.runtime.ready.is_set())
+
+    async def test_interrupt_timeout_preserves_running_assignment(self) -> None:
+        assignment = self._create_assignment()
+        session = await self._session(assignment)
+        session.runtime.request_error = HTTPException(status_code=504, detail="turn/interrupt timed out after 30s")
+        with self.assertRaises(HTTPException):
+            await session.request("turn/interrupt", {"threadId": "thread-1"})
+        current = self.worker_service.store.assignment(assignment.id)
+        self.assertEqual(current.status, AssignmentStatus.RUNNING)
+        self.assertIsNotNone(current.lease)
+        self.assertFalse(self.backend.processes[0].terminated)
+        await session.stop()
 
     async def test_thread_read_timeout_preserves_one_shot_assignment(self) -> None:
         assignment = self._create_assignment()

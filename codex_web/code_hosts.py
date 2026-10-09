@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+import unicodedata
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,6 +29,18 @@ class CodeHostError(RuntimeError):
 
 class CodeHostUnsupportedCapabilityError(CodeHostError):
     pass
+
+
+def validate_artifact_member_path(path: str) -> str:
+    # Provider paths are data, never URLs or filesystem destinations.
+    if (
+        not isinstance(path, str) or not path or len(path) > 1024
+        or any(unicodedata.category(char) == "Cc" for char in path)
+        or any(char in path for char in "\\:%")
+        or any(part in {"", ".", ".."} for part in path.split("/"))
+    ):
+        raise CodeHostError("artifact member_path must be a bounded relative path without traversal")
+    return path
 
 
 class CodeHostTransientError(CodeHostError):

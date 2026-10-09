@@ -1,3 +1,4 @@
+import { renderProjectDelivery } from './project_delivery_status.js';
 import { confirmAction } from './action_confirmation.js';
 import { request } from './api_client.js';
 import { captureProjectView } from './project_view_scope.js';
@@ -19,6 +20,11 @@ export function createTaskSourceEditor(state, { refreshAll, setStatus, esc, fmtT
   }
   function bind(container) {
     root = container; validation = formValidation(root);
+    const delivery = document.createElement('div');
+    delivery.className = 'work-source-grid work-source-delivery';
+    delivery.innerHTML = '<label>Delivery thread ID <input class="work-source-delivery-thread" placeholder="Leave empty to disable automatic delivery" /></label><p class="work-source-delivery-status" aria-live="polite"></p>';
+    root.appendChild(delivery);
+
     const provenance = document.createElement('p'); provenance.dataset.sourceProvenance = ''; root.prepend(provenance);
     const discard = document.createElement('button'); discard.type = 'button'; discard.textContent = 'Discard source edits';
     discard.addEventListener('click', () => { if (confirmDiscard(dirty)) renderSourceConfig(); });
@@ -104,6 +110,7 @@ function renderSourceConfig() {
     sync.last_success_at ? `Shared synchronizer last success: ${fmtTime(sync.last_success_at)}` : 'Shared synchronizer has no recorded success',
     sync.last_error ? `Shared synchronizer last error: ${sync.last_error}` : '',
   ].filter(Boolean).join(' · ');
+  renderProjectDelivery(project, field, capture, fmtTime);
   dirty?.markSaved();
 }
 async function saveSource() {
@@ -149,6 +156,13 @@ async function saveSource() {
       body: JSON.stringify(payload),
     });
     if (!op.current()) return;
+    const thread_id = field('delivery-thread').value.trim() || null;
+    if (thread_id || selectedProject()?.delivery_supervision) {
+      await request(`/api/projects/${encodeURIComponent(op.projectId)}/delivery-supervision`, {
+        method: 'PUT', body: JSON.stringify({ thread_id, enabled: Boolean(thread_id) }),
+      });
+      if (!op.current()) return;
+    }
     dirty.markSaved(); await refreshAll({ preserveSource: false });
     if (op.current()) setStatus('Authoritative source saved');
   } catch (error) {

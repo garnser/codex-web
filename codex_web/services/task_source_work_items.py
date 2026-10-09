@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from codex_web.models import WorkItemState
+from codex_web.models import WorkItemEvent, WorkItemState
 from codex_web.services.task_source_conformance import TaskSourceConformanceSuite
 from codex_web.services.work_item_dependencies import WorkItemRuntimeDependencies
 from codex_web.services.task_source_reconciliation import same_task_source_identity
@@ -98,51 +98,14 @@ class TaskSourceWorkItemProjector:
         return None
 
     def _project_tenant(self, project_id: str) -> tuple[str, str]:
-        for project in self.dependencies.load_projects():
-            if getattr(project, "id", None) == project_id:
-                return (
-                    str(
-                        getattr(project, "organization_id", "local")
-                        or "local"
-                    ),
-                    str(
-                        getattr(project, "workspace_id", "default")
-                        or "default"
-                    ),
-                )
-        return ("local", "default")
+        return self.dependencies.project_tenant(project_id)
 
     def _project_resource_ids(
-        self,
-        project_id: str,
-        *,
-        source_type: str,
-        project_path: str | None,
+        self, project_id: str, *, source_type: str, project_path: str | None,
     ) -> list[str]:
-        try:
-            if source_type.strip().casefold() == "gitlab" and project_path:
-                return list(
-                    dict.fromkeys(
-                        str(item)
-                        for item in self.dependencies.resource_ids_for_project(
-                            project_id,
-                            alias_value=project_path,
-                            provider="gitlab",
-                        )
-                        if str(item).strip()
-                    )
-                )
-            return list(
-                dict.fromkeys(
-                    str(item)
-                    for item in self.dependencies.resource_ids_for_project(
-                        project_id
-                    )
-                    if str(item).strip()
-                )
-            )
-        except Exception:
-            return []
+        return self.dependencies.project_resource_ids(
+            project_id, source_type=source_type, project_path=project_path,
+        )
 
     def _persist(
         self,
@@ -165,6 +128,9 @@ class TaskSourceWorkItemProjector:
         snapshot: TaskSourceSnapshot,
         *,
         project_id: str,
+        reconcile_implementation_owner: bool = False,
+        reconciliation_actor: str | None = None,
+        reconciliation_reason: str | None = None,
     ) -> WorkItemState:
         self.conformance.validate_snapshot(source, snapshot)
         external_ref = snapshot.identity.external_id.strip()
@@ -208,7 +174,7 @@ class TaskSourceWorkItemProjector:
         labels = sorted(dict.fromkeys(str(label).strip() for label in snapshot.labels if str(label).strip()))
         status_label = self._first_prefixed(tuple(labels), "status::")
         priority = self._first_prefixed(tuple(labels), "priority::")
-        project_path = external_ref.split("#", 1)[0] if "#" in external_ref else None
+        project_path = external_ref.split("!", 1)[0].split("#", 1)[0] if "#" in external_ref or "!" in external_ref else None
         resource_ids = self._project_resource_ids(
             project_id,
             source_type=snapshot.identity.source_type,
@@ -278,6 +244,7 @@ class TaskSourceWorkItemProjector:
                     now=now,
                 )
         else:
+            implementation_owner_reconciled = False
             previous_stage = state.current_stage
             previous_owner = state.current_owner
             previous_status_label = state.status_label
@@ -325,6 +292,57 @@ class TaskSourceWorkItemProjector:
                     self._persist(state, states)
                 return state
 
+            if (
+                reconcile_implementation_owner
+                and projection.owner_known
+                and projected_owner
+                and self.state_machine._coerce_owner(projected_owner)
+                not in self.dependencies.non_implementation_owners
+            ):
+                previous_implementation_owner = self.state_machine._coerce_owner(
+                    state.implementation_owner
+                )
+                reconciled_implementation_owner = self.state_machine._coerce_owner(
+                    projected_owner
+                )
+                if (
+                    reconciled_implementation_owner
+                    and reconciled_implementation_owner
+                    != previous_implementation_owner
+                ):
+                    state.implementation_owner = reconciled_implementation_owner
+                    state.updated_at = now
+                    implementation_owner_reconciled = True
+                    self.state_machine._append_work_item_event(
+                        WorkItemEvent(
+                            ref=ref,
+                            event_type="implementation_owner_reconciled",
+                            created_at=now,
+                            actor=reconciliation_actor,
+                            source="operator-ui",
+                            reason=(
+                                reconciliation_reason
+                                or "operator reconcile from authoritative assignment"
+                            ),
+                            payload={
+                                "previous_implementation_owner": (
+                                    previous_implementation_owner
+                                ),
+                                "implementation_owner": (
+                                    reconciled_implementation_owner
+                                ),
+                                "project_id": project_id,
+                                "resource_ids": resource_ids,
+                                "source_type": snapshot.identity.source_type,
+                                "source_instance": (
+                                    snapshot.identity.source_instance
+                                ),
+                                "external_id": snapshot.identity.external_id,
+                                "source_revision": snapshot.identity.revision,
+                            },
+                        )
+                    )
+
             if self.state_machine._preserve_accepted_handoff_recipient(
                 state,
                 incoming_owner=projected_owner,
@@ -342,7 +360,7 @@ class TaskSourceWorkItemProjector:
                         },
                     )
                 )
-                if routing_metadata_changed:
+                if routing_metadata_changed or implementation_owner_reconciled:
                     state.updated_at = now
                     self._persist(state, states)
                 return state

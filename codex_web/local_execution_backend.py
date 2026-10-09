@@ -5,6 +5,7 @@ import os
 import resource
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -265,15 +266,29 @@ class BubblewrapExecutionBackend:
     @staticmethod
     def _tree_disk_usage(root: Path) -> int:
         total = 0
-        if not root.exists():
-            return 0
-        for path in root.rglob("*"):
+        pending = [root]
+        while pending:
+            directory = pending.pop()
             try:
-                if path.is_file() and not path.is_symlink():
-                    total += path.stat().st_size
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        try:
+                            # DirEntry reuses directory metadata instead of
+                            # repeating Path.stat for type and size checks.
+                            if entry.is_symlink():
+                                continue
+                            if entry.is_dir(follow_symlinks=False):
+                                pending.append(entry.path)
+                            elif entry.is_file(follow_symlinks=False):
+                                metadata = entry.stat(follow_symlinks=False)
+                                if stat.S_ISREG(metadata.st_mode):
+                                    total += metadata.st_size
+                        except OSError:
+                            continue
             except OSError:
                 continue
         return total
+
 
     @classmethod
     def _execution_disk_usage(
@@ -291,12 +306,46 @@ class BubblewrapExecutionBackend:
         return total
 
     @staticmethod
+    def _host_uid_task_count() -> int:
+        """Linux NPROC charges tasks for the shared real UID, not the PID namespace."""
+        uid = os.getuid()
+        total = 0
+        try:
+            processes = list(Path("/proc").iterdir())
+        except OSError:
+            return 0
+        for process in processes:
+            if not process.name.isdigit():
+                continue
+            try:
+                fields = dict(
+                    line.split(":", 1) for line in (process / "status").read_text().splitlines()
+                    if ":" in line
+                )
+                if int(fields["Uid"].split()[0]) == uid:
+                    total += int(fields.get("Threads", "1").strip())
+            except (OSError, KeyError, ValueError):
+                continue
+        return total
+
+    @classmethod
     def _limits_preexec(
+        cls,
         limits: WorkerResourceLimits,
         *,
         minimum_address_space_bytes: int = 0,
         minimum_process_count: int = 0,
     ):
+        # Capture outside preexec: scanning /proc after fork in a threaded
+        # service would add avoidable child work. Keep finite incremental
+        # headroom without charging this command for unrelated owner tasks.
+        process_count = max(
+            limits.process_count + cls._host_uid_task_count(),
+            minimum_process_count,
+        )
+        hard_limit = resource.getrlimit(resource.RLIMIT_NPROC)[1]
+        if hard_limit != resource.RLIM_INFINITY:
+            process_count = min(process_count, hard_limit)
         def apply() -> None:
             address_space_bytes = max(
                 limits.memory_bytes,
@@ -304,7 +353,6 @@ class BubblewrapExecutionBackend:
             )
             resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_seconds, limits.cpu_seconds))
             resource.setrlimit(resource.RLIMIT_AS, (address_space_bytes, address_space_bytes))
-            process_count = max(limits.process_count, minimum_process_count)
             resource.setrlimit(resource.RLIMIT_NPROC, (process_count, process_count))
             resource.setrlimit(resource.RLIMIT_FSIZE, (limits.disk_bytes, limits.disk_bytes))
 

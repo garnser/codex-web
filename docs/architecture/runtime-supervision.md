@@ -34,6 +34,20 @@ without invoking a model, so a later stale-worker sweep cannot strand queued
 work. Heartbeat failures are observable runtime events and do not terminate
 unrelated supervised tasks.
 
+Event dispatch resolves the recipient's published execution profile before
+starting or queueing work. An event's repository references do not grant
+repository authority: profiles with no repository access receive no mutable
+repository target or repository scope. The canonical work-item reference remains
+attached for coordination and audit. Repository-capable recipients retain the
+event's requested scope, subject to normal execution admission checks.
+
+Recovery serializes replacements for each provider, project and logical agent;
+turn admission serializes starts for each Thread. Slow provider calls for one
+owner or Thread do not hold unrelated owners or Threads. Canonical assignment,
+workspace, lease and fence checks remain responsible for resource authority.
+Blocking profile and Skill lookups run outside the event loop so they do not
+delay Slack keepalives or worker supervision.
+
 On shutdown it:
 
 1. marks native recovery as shutting down,
@@ -107,3 +121,68 @@ read is shown as reconciliation failure, not successful recovery.
 `runtime.core` is an intentional, definition-free compatibility namespace for the verified historical `import server` surface. Application composition may publish aliases to canonical services onto that namespace, but production services never read behavior or state from it.
 
 FastAPI, EventHub, runtime lifecycle supervision, diagnostics, provider runtimes, work-item continuity, and process startup all have explicit owners outside the compatibility namespace. New production code must depend on those owners directly rather than adding new aliases or mutable state to `runtime.core`.
+
+## Configured project backlog delivery
+
+A Project may explicitly bind delivery supervision to an existing same-Project
+Thread. The canonical Project configuration retains the enabling identity and a
+bounded scan interval. Administrators configure or disable it through the
+TaskSource editor and `/api/projects/{project_id}/delivery-supervision`. Every
+scan re-evaluates current membership and Thread ownership; stored configuration
+cannot transfer authority to a different tenant or Project.
+
+The supervisor discovers the configured authoritative TaskSource without model
+reasoning, reconciles retained open items missing from fresh discovery through
+provider reads (at most eight per scan), and selects canonical actionable work.
+Closed work, explicit blockers, failed lanes, and pending handoffs are excluded.
+An externally blocked release item does not suppress independently actionable
+work. Active and queued delivery Threads are not awakened again. Global autonomy
+pause, simulation, dry-run, and scoped autonomy policy remain canonical gates.
+
+When actual delivery requires reasoning, a tenant-scoped canonical event enters
+the bounded autonomy controller. A durable turn is queued before runtime startup,
+so slow provider startup cannot consume the operator's request or lose the work
+on restart. Event identity includes a bounded scan window: a failed dispatch is
+retryable on a later scan without repeatedly sampling an idle or empty backlog.
+Discovery and scan outcomes use existing runtime telemetry; the configuration
+API also reports process-local last scan and next scan time, explicitly distinct
+from durable Project configuration. There is no idle LLM polling.
+
+## Codex transport and notification processing
+
+Optional quota-read timeouts report unavailable measurements without retiring an
+initialized authenticated Codex transport. Transport failure and required RPC
+failure retain their existing recovery behavior. Definition reads for a known
+record or definition validate only matching canonical revisions; publication,
+checksums, scope selection, and security policy evaluation remain required.
+Runtime usage accounting ignores display-only text/output chunks, so streaming
+text does not create accounting writes that delay subsequent RPC responses.
+Usage, tool lifecycle, and terminal events retain canonical attribution.
+Assignment model connection attempts use a private bounded blocking executor
+for authority checks and DNS, with a fifteen-second connection budget.
+
+Canonical thread replacement is reconciled into the persisted delivery binding after rechecking the replacement thread’s Project and tenant scope. Delivery supervision therefore follows governed stale-thread recovery instead of repeatedly dispatching to a retired thread.
+Codex stdout dispatch resolves RPC responses independently of its bounded,
+ordered notification queue. Notification processing preserves native order and
+existing projection, approval, and delivery checks. Runtime shutdown cancels
+both readers and the notification processor.
+Assignment process startup and teardown serialize per canonical assignment;
+initializing an unrelated worker does not hold a runtime-wide startup lock.
+Streaming text/output refreshes durable activity at most once every five seconds;
+lifecycle events update immediately. This retains liveness evidence without one
+state transaction per token. Steering interrupts include the canonical native
+turn ID and may replace the active marker only during an owned steering handoff.
+Display-only notification chunks coalesce only when adjacent native method and
+item/turn/thread metadata match, preserving all text and lifecycle ordering.
+Observers apply native-message filters before worker scheduling; browser fan-out
+retains the stream. Usage projection reads its canonical record by ID instead of
+loading the complete usage history for each measurement.
+
+Worker concurrency exhaustion is backpressure: queue drains preserve the same
+message without consuming execution retries and retry admission after 30 seconds.
+An interrupt timeout also preserves the fenced running session and requeues the
+steering message, because cancellation may have succeeded without an observed
+acknowledgement. Interrupted turns retain the canonical handoff checks.
+Activity updates for an existing bot binding preserve its recovered thread ID.
+The thread list renders pending queue depth alongside busy status and refreshes
+that depth from canonical project binding snapshots.

@@ -356,6 +356,8 @@ from codex_web.services.organizational_memory import OrganizationalMemoryService
 from codex_web.services.retrieval_embedding import (
     ModelGatewayEmbeddingIdentityValidator,
 )
+from codex_web.services.project_delivery import ProjectDeliveryService
+from codex_web.services.work_item_operator import WorkItemOperatorService
 from codex_web.services.projects import ProjectService
 from codex_web.services.project_ui_state import ProjectUiStateService
 from codex_web.services.project_bootstrap import ProjectBootstrapService
@@ -1259,6 +1261,7 @@ local_execution_worker = execution_worker_service.ensure_local_worker(
         "thread-bootstrap/1.0",
     ),
     actor=identity_service.local_trusted_actor(),
+    max_concurrency=runtime_policy.local_worker_max_concurrency(),
 )
 app.include_router(
     build_execution_workers_router(
@@ -1316,15 +1319,27 @@ project_readiness_store = ProjectReadinessStore(state_store)
 
 
 def _local_codex_session_available() -> bool:
-    """Return whether the trusted local Codex app-server is ready.
+    """Use fresh actual account evidence for the trusted operator context.
 
-    The trusted-local authentication mode is backed by the operator-owned
-    Codex session.  Keep readiness and turn binding on the same canonical
-    runtime signal instead of treating the mode as unsupported merely because
-    no delegated secret is configured.
+    Authentication evidence and RPC transport readiness are separate facts.
+    Runtime health and execution preflight still independently gate transport.
     """
     runtime = getattr(app.state, "codex_runtime", None)
-    return bool(runtime is not None and runtime.ready.is_set())
+    probe = getattr(runtime, "authenticated_account_available", None)
+    return bool(callable(probe) and probe())
+
+
+_local_codex_session_refresh_lock = asyncio.Lock()
+
+
+async def _refresh_local_codex_session() -> None:
+    # Read account metadata only on a readiness request with missing/expired
+    # evidence. Coalesce concurrent readers; never sample a model or poll idle.
+    async with _local_codex_session_refresh_lock:
+        if not _local_codex_session_available():
+            runtime = getattr(app.state, "codex_runtime", None)
+            if runtime is not None:
+                await runtime.request("account/read", {"refreshToken": False})
 
 
 def _project_readiness_environment(project, actor):
@@ -1366,6 +1381,7 @@ project_readiness_service = ProjectReadinessService(
     configuration=configuration_service,
     runtime_binding=codex_execution_runtime_binding,
     local_session_probe=_local_codex_session_available,
+    local_session_refresh=_refresh_local_codex_session,
 )
 app.state.project_bootstrap_store = project_bootstrap_store
 app.state.project_readiness_store = project_readiness_store
@@ -2473,6 +2489,10 @@ def _subscribe_goal_continuation_events(
     runtime_id: str,
 ):
     def listener(event) -> None:
+        # Streaming events cannot continue a Goal. Reject them before the
+        # durable session lookup so token deltas do not block RPC readers.
+        if not goal_continuation_event_service.is_terminal_event(event):
+            return
         native_session_id = event.provider_native_session_id
         if not native_session_id:
             return
@@ -3395,6 +3415,15 @@ turn_service = TurnService(
 )
 app.state.thread_service = thread_service
 app.state.turn_service = turn_service
+project_delivery_service = ProjectDeliveryService(
+    projects=project_service, identity=identity_service, scope=thread_scope_service,
+    operator=WorkItemOperatorService(work_item_service),
+    states=work_item_service.work_items.load_states,
+    turns=turn_service, execution=turn_execution_service,
+    controller=autonomy_controller, events=canonical_event_ingestion,
+    event_sink=bot_runtime_telemetry.append,
+)
+app.state.project_delivery_service = project_delivery_service
 
 agent_team_execution_service = AgentTeamExecutionService(
     agent_team_service,
@@ -3581,6 +3610,8 @@ def _agent_profile_for_bot_binding(binding):
     return profile, actor
 
 
+thread_recovery_service.agent_profile_resolver = _agent_profile_for_bot_binding
+
 bot_event_dispatch_service = BotEventDispatchService(
     projects=project_runtime_service,
     settings=thread_execution_settings_service,
@@ -3594,6 +3625,7 @@ bot_event_dispatch_service = BotEventDispatchService(
     publish_event=event_hub.publish,
     binding_name=thread_recovery_service.logical_binding_name,
     agent_profile_resolver=_agent_profile_for_bot_binding,
+    execution_profiles=execution_profile_definition_service,
 )
 bot_event_dispatch_compatibility = (
     BotEventDispatchCompatibilityFacade(core)
@@ -4206,6 +4238,12 @@ def _heartbeat_local_execution_worker() -> None:
     app.state.local_execution_worker = refreshed
 
 
+def _recover_expired_execution_assignments() -> list[str]:
+    return execution_worker_service.recover_expired(
+        actor=identity_service.local_trusted_actor(),
+    )
+
+
 runtime_supervisor = install_runtime_supervisor(
     app,
     core,
@@ -4232,6 +4270,7 @@ runtime_supervisor = install_runtime_supervisor(
     release_stale_active_turn=thread_recovery_service.release_stale_active_turn,
     schedule_queue_drain=turn_execution_service.schedule_queue_drain,
     local_worker_heartbeat=_heartbeat_local_execution_worker,
+    recover_expired_assignments=_recover_expired_execution_assignments,
     flush_compatibility_state=_flush_compatibility_state,
 )
 
@@ -4505,7 +4544,10 @@ install_webhook_security(core, secret_broker)
 previous_context_service = getattr(app.state, "context_compaction_service", None)
 if previous_context_service is not None:
     event_hub.unsubscribe(previous_context_service.observe)
-event_hub.subscribe(context_service.observe)
+event_hub.subscribe_filtered(context_service.observe, event_types=("codex.event",))
+event_hub.filter_listener_messages(context_service.observe, methods=(
+    "thread/tokenUsage/updated", "thread/status/changed", "turn/completed", "turn/failed",
+))
 app.state.context_compaction_service = context_service
 
 def _include_domain_router(router) -> int:
@@ -4641,3 +4683,12 @@ app.state.api_authorization_service = api_authorization_service
 
 def main() -> None:
     run_server()
+
+
+async def _close_postgres_state_connections() -> None:
+    from codex_web.storage.postgres_state import close_postgres_connection_pools
+
+    await asyncio.to_thread(close_postgres_connection_pools)
+
+
+app.router.add_event_handler("shutdown", _close_postgres_state_connections)

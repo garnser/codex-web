@@ -37,12 +37,19 @@ class AutonomyAuditStore:
         self,
         updater: Callable[[AutonomyAuditState], AutonomyAuditState],
     ) -> AutonomyAuditState:
-        payload = self.store.update(
+        return self._decode(self._persist_update(updater))
+
+
+    def _persist_update(
+        self,
+        updater: Callable[[AutonomyAuditState], AutonomyAuditState],
+    ) -> Any:
+        return self.store.update(
             self.namespace,
             lambda raw: updater(self._decode(raw)).model_dump(mode="json"),
             default=AutonomyAuditState().model_dump(mode="json"),
         )
-        return self._decode(payload)
+
 
     def append(
         self,
@@ -74,8 +81,12 @@ class AutonomyAuditStore:
             appended.append(record)
             return state
 
-        self.update(apply)
+        # The transaction validates existing state and serializes the full
+        # updated document. Append returns its new immutable record, so it
+        # needs no second reconstruction of the entire persisted state.
+        self._persist_update(apply)
         return appended[0]
+
 
     def add_checkpoint(
         self,

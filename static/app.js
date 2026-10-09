@@ -504,9 +504,9 @@ function renderThreads() {
       :"";
     const waiting=isThreadBusy(thread.id);
     const depth=queuedDepth(thread.id);
-    const threadStatus=waiting
+    const threadStatus=(waiting
       ?`<span class="thread-state waiting"><span class="thread-state-dot"></span>Waiting for Codex</span>`
-      :(depth>0?`<span class="thread-state queued">Queued ${depth}</span>`:"");
+      :"")+(depth>0?`<span class="thread-state queued">Queued ${depth}</span>`:"");
 
     let actionMarkup="";
     if(expanded){
@@ -1006,6 +1006,11 @@ async function refresh({ reloadProjects = false } = {}) {
     state.models=snapshot.models;
     state.projectResources=snapshot.resources;
     state.botBindings=snapshot.bindings;
+    for(const binding of snapshot.bindings||[]){
+      if(binding.thread_id&&Number.isFinite(binding.queueDepth)){
+        state.queuedDepthByThread.set(binding.thread_id, Math.max(0,binding.queueDepth));
+      }
+    }
     state.threadSettings=snapshot.threadSettings;
     state.botChannels=snapshot.channels;
     state.threads=snapshot.threads;

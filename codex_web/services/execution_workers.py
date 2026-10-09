@@ -768,7 +768,7 @@ class ExecutionWorkerService:
                     supported_execution_contract_versions
                 ),
                 supported_sandbox_profiles=supported_sandbox_profiles,
-                max_concurrency=8,
+                max_concurrency=max_concurrency,
             ),
             actor=actor,
         )
@@ -804,7 +804,7 @@ class ExecutionWorkerService:
             updated.append(replacement)
             return state
 
-        self.store.update(apply)
+        self.store.update_worker(worker_id, apply)
         return updated[0]
 
     def set_lifecycle(
@@ -1218,9 +1218,9 @@ class ExecutionWorkerService:
         actor: AuthenticationActor,
     ) -> ExecutionAssignment:
         updated: list[ExecutionAssignment] = []
-        now = time.time()
 
         def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            now = time.time()
             worker = self._worker(state, worker_id, actor)
             assignment = self._assignment(state, assignment_id, actor)
             lease = self._validate_lease(
@@ -1251,7 +1251,7 @@ class ExecutionWorkerService:
             updated.append(replacement)
             return state
 
-        self.store.update(apply)
+        self.store.update_assignment(worker_id, assignment_id, apply)
         result = updated[0]
         self._notify_assignment(result, "assignment_renewed")
         return result
@@ -1434,6 +1434,25 @@ class ExecutionWorkerService:
     ) -> list[str]:
         self._require_admin(actor)
         current = time.time() if now is None else now
+        # Periodic recovery must not rewrite retained state when nothing has
+        # expired. The atomic update below rechecks the authoritative current
+        # lease/status after this bounded read-only prefilter.
+        cursor = None
+        while True:
+            assignments, cursor = self.store.assignment_page(after=cursor)
+            expired = any(
+                self._same_scope(item, actor) and (
+                    (item.status == AssignmentStatus.PENDING
+                     and item.deadline_at is not None and item.deadline_at <= current)
+                    or (item.status in {AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING}
+                        and item.lease is not None and item.lease.expires_at <= current)
+                )
+                for item in assignments
+            )
+            if expired:
+                break
+            if cursor is None:
+                return []
         lost: list[str] = []
         expired_workspace_ids: list[str] = []
 
@@ -1545,6 +1564,7 @@ class ExecutionWorkerService:
                         reason="worker lease expired",
                     ),
                     actor=actor,
+                    preserve_files=True,
                 )
         if lost:
             current = self.store.load()
@@ -1633,3 +1653,73 @@ class ExecutionWorkerService:
             key=lambda item: (item.occurred_at, item.id),
             reverse=True,
         )
+
+    def cancel_bootstrap(
+        self,
+        assignment_id: str,
+        payload: AssignmentCancelRequest,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutionAssignment:
+        """Fence a bootstrap and release its reservation, retaining all files.
+
+        The guarded transition commits before workspace release (separate
+        canonical stores). Repeating the same cancellation retries release.
+        """
+        self._require_admin(actor)
+        updated: list[ExecutionAssignment] = []
+        now = time.time()
+
+        def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            assignment = self._assignment(state, assignment_id, actor)
+            if assignment.subject.kind != "thread_bootstrap":
+                raise WorkerConflictError("cancellation requires a thread bootstrap")
+            if assignment.status == AssignmentStatus.CANCELLED:
+                if assignment.fence != payload.expected_fence + 1:
+                    raise WorkerConflictError("bootstrap cancellation fence changed")
+                updated.append(assignment)
+                return state
+            if assignment.fence != payload.expected_fence:
+                raise WorkerConflictError("bootstrap cancellation fence changed")
+            if assignment.status not in {
+                AssignmentStatus.PENDING, AssignmentStatus.CLAIMED,
+                AssignmentStatus.RUNNING, AssignmentStatus.LOST,
+            }:
+                raise WorkerConflictError("bootstrap assignment is already terminal")
+            replacement = assignment.model_copy(update={
+                "status": AssignmentStatus.CANCELLED,
+                "fence": assignment.fence + 1,
+                "lease": None,
+                "completed_at": now,
+                "updated_at": now,
+                "failure_code": "thread_bootstrap_cancelled",
+                "failure_message": payload.reason,
+            })
+            state.assignments = [
+                replacement if item.id == assignment.id else item
+                for item in state.assignments
+            ]
+            self._event(
+                state, actor=actor, event_type="assignment_cancelled",
+                worker_id=assignment.assigned_worker_id,
+                assignment_id=assignment.id,
+                details={"previous_fence": assignment.fence,
+                         "fence": replacement.fence, "reason": payload.reason,
+                         "execution_workspace_id": assignment.execution_workspace_id,
+                         "preserve_files": True},
+            )
+            updated.append(replacement)
+            return state
+
+        self.store.update(apply)
+        result = updated[0]
+        self._notify_assignment(result, "assignment_cancelled")
+        if result.execution_workspace_id and self.workspaces is not None:
+            self.workspaces.release(
+                result.execution_workspace_id,
+                ExecutionWorkspaceRelease(discard=False, reason=payload.reason),
+                actor=actor, preserve_files=True,
+            )
+        return result
+
+from codex_web.execution_workers import AssignmentCancelRequest

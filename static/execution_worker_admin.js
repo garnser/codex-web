@@ -193,8 +193,9 @@
     const active = workers.filter((item) => item.lifecycle === "active").length;
     const unhealthy = workers.filter((item) => ["quarantined", "revoked", "offline"].includes(item.lifecycle)).length;
     const running = assignments.filter((item) => ["claimed", "running"].includes(item.status)).length;
+    const cancelled = assignments.filter((item) => item.status === "cancelled").length;
     const lost = assignments.filter((item) => ["lost", "failed"].includes(item.status)).length;
-    setStatus(`${workers.length} worker(s), ${active} active, ${unhealthy} unavailable · ${assignments.length} assignment(s), ${running} leased/running, ${lost} lost/failed. Worker control-plane state is distinct from execution lease authority.`);
+    setStatus(`${workers.length} worker(s), ${active} active, ${unhealthy} unavailable · ${assignments.length} assignment(s), ${running} leased/running, ${lost} lost/failed, ${cancelled} cancelled. Worker control-plane state is distinct from execution lease authority.`);
   }
 
   async function refresh() {

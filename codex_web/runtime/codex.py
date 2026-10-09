@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -111,14 +112,15 @@ def trusted_local_codex_command(
 
 def request_timeout(method: str) -> float | None:
     if method == "initialize":
-        return 15
+        return 60
     if method in {"thread/list", "thread/read", "account/rateLimits/read"}:
-        return 10
+        return 60
     if method in {"thread/resume", "thread/start", "thread/name/set", "turn/start"}:
         return 60
     if method == "turn/interrupt":
         return 10
     return 20
+
 
 
 class CodexRuntime:
@@ -154,6 +156,73 @@ class CodexRuntime:
         self.stderr_task: asyncio.Task[None] | None = None
         self.lifecycle_lock = asyncio.Lock()
         self._pipe_executor: ThreadPoolExecutor | None = None
+        self._authentication_epoch = 0
+        self._authenticated_account_proof = None
+        self._authenticated_account_refresh_task = None
+        self._authenticated_account_refresh_requested = False
+
+    AUTHENTICATED_ACCOUNT_MAX_AGE_SECONDS = 120.0
+
+    def _authentication_context(self) -> str:
+        # Compare metadata only; never read credential contents or expose this
+        # process-local context fingerprint in provider/UI diagnostics.
+        home = Path(os.environ.get("CODEX_HOME") or str(Path.home() / ".codex"))
+        files = []
+        for name in ("auth.json", "config.toml"):
+            try:
+                stat = (home / name).stat()
+                files.append((name, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns))
+            except OSError:
+                files.append((name, None))
+        context = (os.getpid(), os.geteuid(), str(self.cwd), tuple(self.command), str(home), files,
+                   tuple((key, os.environ.get(key)) for key in ("CODEX_ACCESS_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY")))
+        return hashlib.sha256(repr(context).encode("utf-8")).hexdigest()
+
+    def _invalidate_authenticated_account(self) -> None:
+        self._authentication_epoch = getattr(self, "_authentication_epoch", 0) + 1
+        self._authenticated_account_proof = None
+        self._authenticated_account_refresh_requested = False
+
+    def _refresh_authenticated_account_after_notification(self) -> None:
+        """Coalesce positive auth changes into at most two real metadata RPCs.
+
+        Never await a response inside the reader that must deliver it. A second
+        read handles changes during the first; continuous changes remain
+        unavailable until the next ordinary quota refresh or notification.
+        """
+        self._authenticated_account_refresh_requested = True
+        task = getattr(self, "_authenticated_account_refresh_task", None)
+        if task is not None and not task.done():
+            return
+
+        async def refresh() -> None:
+            try:
+                for _ in range(2):
+                    self._authenticated_account_refresh_requested = False
+                    try:
+                        await self.request("account/read", {"refreshToken": False})
+                    except Exception:
+                        # Only a successful real response publishes evidence.
+                        # Failure leaves the existing execution guards in force.
+                        return
+                    if not self._authenticated_account_refresh_requested:
+                        return
+            finally:
+                self._authenticated_account_refresh_task = None
+
+        self._authenticated_account_refresh_task = asyncio.create_task(
+            refresh(), name="codex-authenticated-account-refresh"
+        )
+
+    def authenticated_account_available(self) -> bool:
+        proof = getattr(self, "_authenticated_account_proof", None)
+        if proof is None:
+            return False
+        observed, context, epoch = proof
+        now = time.monotonic()
+        return bool(observed <= now < observed + self.AUTHENTICATED_ACCOUNT_MAX_AGE_SECONDS
+                    and epoch == getattr(self, "_authentication_epoch", 0)
+                    and context == self._authentication_context())
 
     async def start(self) -> None:
         async with self.lifecycle_lock:
@@ -186,8 +255,15 @@ class CodexRuntime:
                 pid=self.proc.pid,
                 command=" ".join(self.command),
             )
-            self.reader_task = asyncio.create_task(self._read_loop(), name="codex-app-server-stdout")
-            self.stderr_task = asyncio.create_task(self._stderr_loop(), name="codex-app-server-stderr")
+            process = self.proc
+            self.reader_task = asyncio.create_task(
+                self._read_loop(process),
+                name="codex-app-server-stdout",
+            )
+            self.stderr_task = asyncio.create_task(
+                self._stderr_loop(process),
+                name="codex-app-server-stderr",
+            )
 
             try:
                 init = await asyncio.wait_for(
@@ -229,15 +305,22 @@ class CodexRuntime:
 
     async def stop(self) -> None:
         self._fail_pending(RuntimeError("Codex app-server stopped"))
-        if self.proc and self.proc.poll() is None:
-            pid = self.proc.pid
-            self.proc.terminate()
+        process = self.proc
+        # Retire this generation before terminating it. Reader tasks retain
+        # their own process reference and can now distinguish an intentional
+        # stop from an unexpected close without racing a cleared self.proc.
+        if self.proc is process:
+            self.proc = None
+        self.ready.clear()
+        if process and process.poll() is None:
+            pid = process.pid
+            process.terminate()
             try:
-                await asyncio.wait_for(asyncio.to_thread(self.proc.wait), timeout=5)
+                await asyncio.wait_for(asyncio.to_thread(process.wait), timeout=5)
             except asyncio.TimeoutError:
-                self.proc.kill()
+                process.kill()
                 with contextlib.suppress(Exception):
-                    await asyncio.to_thread(self.proc.wait)
+                    await asyncio.to_thread(process.wait)
             log_event(
                 logger,
                 logging.INFO,
@@ -246,9 +329,9 @@ class CodexRuntime:
                 pid=pid,
             )
 
-        self.proc = None
-        self.ready.clear()
-        tasks = (self.reader_task, self.stderr_task)
+        auth_refresh = getattr(self, "_authenticated_account_refresh_task", None)
+        tasks = (self.reader_task, self.stderr_task, getattr(self, "notification_task", None),
+                 auth_refresh if auth_refresh is not asyncio.current_task() else None)
         for task in tasks:
             if task and not task.done():
                 task.cancel()
@@ -258,6 +341,8 @@ class CodexRuntime:
                     await task
         self.reader_task = None
         self.stderr_task = None
+        self.notification_task = None
+        self.notification_queue = None
         pipe_executor = self._pipe_executor
         self._pipe_executor = None
         if pipe_executor is not None:
@@ -290,8 +375,8 @@ class CodexRuntime:
         if self.metrics and failed:
             self.metrics.increment("codex.pending_requests_failed", failed)
 
-    async def _stderr_loop(self) -> None:
-        proc = self.proc
+    async def _stderr_loop(self, process: subprocess.Popen[str] | None = None) -> None:
+        proc = process or self.proc
         assert proc and proc.stderr
         executor = self._pipe_reader_executor()
         loop = asyncio.get_running_loop()
@@ -312,14 +397,16 @@ class CodexRuntime:
             )
             await self.host.hub.publish({"type": "codex.stderr", "text": text})
 
-    async def _read_loop(self) -> None:
-        proc = self.proc
+    async def _read_loop(self, process: subprocess.Popen[str] | None = None) -> None:
+        proc = process or self.proc
         assert proc and proc.stdout
         executor = self._pipe_reader_executor()
         loop = asyncio.get_running_loop()
         while True:
             line = await loop.run_in_executor(executor, proc.stdout.readline)
             if not line:
+                if self.proc is not proc:
+                    return
                 self.ready.clear()
                 self.last_error = "Codex app-server stopped"
                 self._fail_pending(RuntimeError(self.last_error))
@@ -345,7 +432,47 @@ class CodexRuntime:
                 await self.host.hub.publish({"type": "codex.raw", "text": line.rstrip("\n")})
                 continue
 
-            await self._handle_message_safely(message)
+            await self._dispatch_message(message)
+
+    async def _dispatch_message(self, message: dict[str, Any]) -> None:
+        if message.get("id") is not None and "method" not in message:
+            await CodexRuntime._handle_message_safely(self, message)
+            return
+        queue = getattr(self, "notification_queue", None)
+        if queue is None:
+            queue = self.notification_queue = asyncio.Queue(maxsize=1024)
+            self.notification_task = asyncio.create_task(
+                self._process_notifications(queue), name="codex-app-server-notifications"
+            )
+        # Adjacent chunks for the same native item are one ordered display
+        # update. Retain every character without filling the bounded queue
+        # with one entry per token and holding RPC responses behind it.
+        if message.get("method") in {
+            "item/agentMessage/delta", "item/reasoning/textDelta",
+            "item/reasoning/summaryTextDelta", "item/commandExecution/outputDelta",
+            "item/fileChange/outputDelta",
+        } and queue._queue:
+            previous = queue._queue[-1]
+            params = message.get("params") or {}
+            prior = previous.get("params") or {}
+            if (previous.get("method") == message.get("method")
+                and isinstance(params.get("delta"), str)
+                and isinstance(prior.get("delta"), str)
+                and {k: v for k, v in params.items() if k != "delta"}
+                    == {k: v for k, v in prior.items() if k != "delta"}):
+                prior["delta"] += params["delta"]
+                return
+        await queue.put(message)
+
+    async def _process_notifications(self, queue: asyncio.Queue) -> None:
+        # Preserve notification order without holding RPC responses behind
+        # durable projections, accounting, or Slack delivery.
+        while True:
+            message = await queue.get()
+            try:
+                await CodexRuntime._handle_message_safely(self, message)
+            finally:
+                queue.task_done()
 
     async def _handle_message_safely(self, message: dict[str, Any]) -> None:
         try:
@@ -375,6 +502,19 @@ class CodexRuntime:
             )
 
     async def _handle_message(self, message: dict[str, Any]) -> None:
+        if message.get("method") in {"account/updated", "account/login/completed", "account/chatgptAuthTokens/refresh"}:
+            self._invalidate_authenticated_account()
+            params = message.get("params")
+            params = params if isinstance(params, dict) else {}
+            positive = (
+                message.get("method") == "account/updated"
+                and params.get("authMode") in {"apikey", "chatgpt", "chatgptAuthTokens"}
+            ) or (
+                message.get("method") == "account/login/completed"
+                and params.get("success") is True
+            )
+            if positive:
+                self._refresh_authenticated_account_after_notification()
         message_id = message.get("id")
         if message_id is not None and "method" not in message:
             future = self.pending.pop(message_id, None)
@@ -460,10 +600,21 @@ class CodexRuntime:
         # Activity projection reads and updates durable runtime state. Keep
         # that work off the app-server reader's event loop so a large state
         # catalog cannot stall RPC responses and HTTP readiness together.
-        await asyncio.to_thread(self.host._record_thread_activity, message)
         method = message.get("method")
         params = message.get("params") or {}
         thread_id = params.get("threadId") or (params.get("turn") or {}).get("threadId")
+        stream_times = getattr(self, "stream_activity_at", None)
+        if stream_times is None:
+            stream_times = self.stream_activity_at = {}
+        display_chunk = method in {
+            "item/agentMessage/delta", "item/reasoning/textDelta",
+            "item/reasoning/summaryTextDelta", "item/commandExecution/outputDelta",
+            "item/fileChange/outputDelta",
+        }
+        now = time.monotonic()
+        if not display_chunk or now - stream_times.get(thread_id, 0) >= 5:
+            await asyncio.to_thread(self.host._record_thread_activity, message)
+            stream_times[thread_id] = now
         terminal_recovery_scheduled = self.host._record_terminal_turn_result(message)
 
         if method == "thread/name/updated":
@@ -492,7 +643,11 @@ class CodexRuntime:
             self.proc.stdin.flush()
 
     async def request(self, method: str, params: Any = None) -> dict[str, Any]:
+        if method in {"account/logout", "account/login/start"}:
+            self._invalidate_authenticated_account()
         await self.ensure_started(method == "initialize")
+        account_epoch = getattr(self, "_authentication_epoch", 0)
+        account_context = self._authentication_context() if method == "account/read" else None
         message_id = self.next_id
         self.next_id += 1
         loop = asyncio.get_running_loop()
@@ -510,9 +665,23 @@ class CodexRuntime:
                 result = await future
             else:
                 result = await asyncio.wait_for(future, timeout=timeout)
+            if method == "account/read":
+                account = result.get("account") if isinstance(result, dict) else None
+                if not isinstance(account, dict) or account.get("type") not in {"apiKey", "chatgpt"}:
+                    self._invalidate_authenticated_account()
+                elif (account_epoch == getattr(self, "_authentication_epoch", 0)
+                      and account_context == self._authentication_context()):
+                    self._authenticated_account_proof = (time.monotonic(), account_context, account_epoch)
             if self.metrics:
                 self.metrics.increment("codex.rpc_success")
             return result
+        except RuntimeError as exc:
+            # A returned account/read RPC error is negative credential evidence.
+            # Local transport retirement errors carry strings and do not replace
+            # recent successful account evidence with an invented auth failure.
+            if method == "account/read" and exc.args and isinstance(exc.args[0], dict):
+                self._invalidate_authenticated_account()
+            raise
         except asyncio.TimeoutError as exc:
             self.pending.pop(message_id, None)
             timeout_error = f"{method} timed out after {timeout}s"
@@ -566,6 +735,12 @@ class CodexRuntime:
                             "request_id": message_id,
                         }
                     )
+            elif method == "account/rateLimits/read" and self.ready.is_set():
+                # Quota is an optional observation. A slow quota response does
+                # not prove the authenticated transport has died; retiring it
+                # here also prevents otherwise healthy workers bootstrapping.
+                if self.metrics:
+                    self.metrics.increment("codex.quota_probe_timeout_preserved")
             elif self.restart_on_timeout:
                 # A live process is insufficient evidence of a live JSON-RPC
                 # transport. Invalidate this generation and start its

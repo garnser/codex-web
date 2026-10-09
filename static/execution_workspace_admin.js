@@ -154,6 +154,7 @@
       ${repositoryMembersHtml(workspace)}
       <small>Disk: requested ${bytes(workspace.requested_disk_bytes)} · actual ${workspace.actual_disk_bytes == null ? "unknown" : bytes(workspace.actual_disk_bytes)}</small>
       <small>Created: ${timeText(workspace.created_at)} · updated: ${timeText(workspace.updated_at)} · cleaned: ${timeText(workspace.cleaned_at)}</small>
+      ${workspace.status === "released" && !workspace.cleaned_at && workspace.path ? '<small>Reservation released; files retained for recovery. Review the recorded path, branch, and event history before cleanup.</small>' : ""}
       ${workspace.error ? `<small>Error: ${escapeHtml(workspace.error)}</small>` : ""}
       ${lease ? `<small>Lease: ${escapeHtml(lease.id)} · ${escapeHtml(lease.mode)} · ${leaseState} · acquired ${timeText(lease.acquired_at)} · renewed ${timeText(lease.renewed_at)} · expires ${timeText(lease.expires_at)}</small>
         <small>Per-resource lease modes: ${escapeHtml(JSON.stringify(lease.resource_modes || {}))}</small>

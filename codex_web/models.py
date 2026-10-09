@@ -149,6 +149,17 @@ class TaskSourceConfiguration(BaseModel):
         return self
 
 
+class ProjectDeliveryUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    thread_id: str | None = None
+    enabled: bool = True
+    interval_seconds: int = Field(default=120, ge=30, le=3600)
+
+
+class ProjectDeliveryConfiguration(ProjectDeliveryUpdate):
+    actor_identity_id: str = Field(min_length=1)
+
+
 class Project(BaseModel):
     id: str
     organization_id: str = "local"
@@ -160,6 +171,7 @@ class Project(BaseModel):
     approval_policy: ApprovalPolicy = "on-request"
     repository_selection_policy: RepositorySelectionPolicy = "deterministic"
     authoritative_task_source: TaskSourceConfiguration | None = None
+    delivery_supervision: ProjectDeliveryConfiguration | None = None
 
 
 class ProjectCreate(BaseModel):
@@ -177,6 +189,7 @@ class ProjectRepositorySelectionUpdate(BaseModel):
 
 
 class TurnCreate(BaseModel):
+    defer_start: bool = False
     message: str = Field(min_length=1)
     project_id: str | None = None
     model: str | None = None
@@ -367,6 +380,7 @@ class ExecutionPreflightAttempt(BaseModel):
     organization_id: str = Field(min_length=1)
     workspace_id: str = Field(min_length=1)
     thread_id: str = Field(min_length=1)
+    replacement_thread_id: str | None = Field(default=None, min_length=1)
     project_id: str = Field(min_length=1)
     message: str = Field(min_length=1)
     sandbox: SandboxMode | None = None

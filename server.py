@@ -46,6 +46,9 @@ install_bot_runtime(
     telegram_client=_application.app.state.telegram_client,
 )
 
+# Validate the complete route set, including late observability registration.
+_application.app.state.api_authorization_service.validate_app(_application.app)
+
 # Lifecycle supervision is composed once in application.py through
 # RuntimeSupervisor. The server module is only a CLI/compatibility edge.
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -103,6 +104,18 @@ class AgentRuntimeTelemetryTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_display_delta_does_not_read_or_write_accounting_state(self) -> None:
+        event = AgentRuntimeEvent(
+            event_type="item/agentMessage/delta",
+            provider_native_session_id="native-session-1",
+            provider_native_turn_id="turn-1",
+            payload={"delta": "Hello"},
+        )
+        with patch.object(self.service, "_canonical_session") as resolve:
+            self.assertIsNone(self.service.observe_event("anthropic", "claude-code", event))
+        resolve.assert_not_called()
+        self.assertEqual(self.usage.list(), [])
 
     def test_claude_terminal_usage_is_partial_attributed_and_emits_compact_evidence(self) -> None:
         record = self.service.observe_event(

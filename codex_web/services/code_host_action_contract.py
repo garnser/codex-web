@@ -51,6 +51,8 @@ class AttestedBranch:
     branch: str
     revision: str
     expected_remote_revision: str | None = None
+    existing_change_request_number: int | None = None
+    work_item_issue_number: int | None = None
 
 
 class CodeHostActionContract:
@@ -450,6 +452,7 @@ class CodeHostActionContract:
             "branch",
             "head_revision",
             "expected_remote_revision",
+            "existing_change_request_number",
         }:
             raise ValueError("unsupported branch publication parameters")
         if self.workspaces is None:
@@ -507,9 +510,41 @@ class CodeHostActionContract:
         )
         if member is None:
             raise ValueError("repository is not writable in the execution workspace")
+        existing_number = request.parameters.get("existing_change_request_number")
+        issue_number = None
+        if existing_number is not None:
+            if (
+                self.provider_type != "gitlab"
+                or isinstance(existing_number, bool)
+                or not isinstance(existing_number, int)
+                or existing_number < 1
+                or expected_remote_revision is None
+            ):
+                raise ValueError("existing GitLab change request requires a positive number and expected remote revision")
+            if (
+                lease.execution_workspace_id != workspace.id
+                or lease.organization_id != workspace.organization_id
+                or lease.workspace_id != workspace.workspace_id
+                or lease.execution_id != workspace.execution_id
+                or lease.owner_identity_id != workspace.owner_identity_id
+                or lease.resource_modes.get(resource_id) != LeaseMode.WRITE
+            ):
+                raise ValueError("existing change request recovery lease is outside the writable workspace scope")
+            ref = str(workspace.work_item_ref or "")
+            repository, separator, issue = ref.rpartition("#")
+            if (
+                not separator
+                or repository != self.locator(request)
+                or not issue.isdecimal()
+                or int(issue) < 1
+                or lease.work_item_ref != ref
+            ):
+                raise ValueError("existing change request recovery requires a matching repository issue-scoped workspace lease")
+            issue_number = int(issue)
         publishing_recovery_branch = member.branch_name != branch
         if publishing_recovery_branch and (
-            not branch.startswith("codex/") or expected_remote_revision is None
+            (not branch.startswith("codex/") and existing_number is None)
+            or expected_remote_revision is None
         ):
             raise ValueError(
                 "a recovery publication requires a codex/ branch and its expected remote revision"
@@ -537,7 +572,7 @@ class CodeHostActionContract:
             member.base_revision,
             revision,
         )
-        if publishing_recovery_branch:
+        if publishing_recovery_branch or existing_number is not None:
             self.git(
                 workspace_path,
                 "merge-base",
@@ -553,6 +588,8 @@ class CodeHostActionContract:
             branch=branch,
             revision=revision,
             expected_remote_revision=expected_remote_revision,
+            existing_change_request_number=existing_number,
+            work_item_issue_number=issue_number,
         )
 
     @staticmethod

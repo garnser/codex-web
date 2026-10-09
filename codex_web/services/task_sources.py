@@ -48,6 +48,12 @@ class UnsupportedTaskSourceCapability(RuntimeError):
         super().__init__(f"Task source does not support capability: {capability.value}")
 
 
+class InvalidTaskSourceIdentity(ValueError):
+    """A provider identity cannot be routed without guessing its resource."""
+
+
+
+
 @dataclass(frozen=True, slots=True)
 class TaskSourceUserReference:
     """Provider-native user reference that is never canonical authorization truth."""

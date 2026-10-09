@@ -156,12 +156,42 @@ class WorkItemListIndex:
     def rebuild(self, states: dict[str, WorkItemState]) -> None:
         """Reconcile the index during startup/compatibility checkpoints."""
 
-        desired_refs = set(states)
-        current = self.store.record_items(self.LOOKUP_NAMESPACE)
-        for ref in set(current) - desired_refs:
-            self.remove(ref)
+        current_lookup = self.store.record_items(self.LOOKUP_NAMESPACE)
+        desired_lookup: dict[str, Any] = {}
+        desired_by_namespace: dict[str, dict[str, Any]] = {}
         for state in states.values():
-            self.upsert(state)
+            if not state.project_id:
+                continue
+            namespace = self.namespace(self._scope_for_state(state), state.project_id)
+            key = self._key(state)
+            desired_lookup[state.ref] = {"namespace": namespace, "key": key}
+            desired_by_namespace.setdefault(namespace, {})[key] = {
+                "ref": state.ref,
+                "updatedAt": state.updated_at,
+            }
+
+        namespaces = set(desired_by_namespace)
+        namespaces.update(
+            str(row["namespace"])
+            for row in current_lookup.values()
+            if isinstance(row, dict) and row.get("namespace")
+        )
+        # Reconcile once per project, rather than opening several database
+        # connections per work item. Unchanged projects keep their revision.
+        for namespace in sorted(namespaces):
+            current = self.store.record_items(namespace)
+            desired = desired_by_namespace.get(namespace, {})
+            upserts = {key: value for key, value in desired.items() if current.get(key) != value}
+            deletes = tuple(set(current) - set(desired))
+            if upserts or deletes:
+                self.store.record_apply(namespace, upserts=upserts, deletes=deletes)
+        upserts = {
+            ref: value for ref, value in desired_lookup.items()
+            if current_lookup.get(ref) != value
+        }
+        deletes = tuple(set(current_lookup) - set(desired_lookup))
+        if upserts or deletes:
+            self.store.record_apply(self.LOOKUP_NAMESPACE, upserts=upserts, deletes=deletes)
         self._metric("rebuilds")
 
     def page(

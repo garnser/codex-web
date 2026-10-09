@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -19,6 +20,7 @@ from codex_web.identity import AuthenticationActor
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.action_providers import ActionExecutionService
 from codex_web.services.autonomy_controller import AutonomyController
+from codex_web.services.watchdog_dispatch import WatchdogDispatchPolicy
 from codex_web.services.autonomy_dependencies import AutonomyRuntimeDependencies
 from codex_web.services.canonical_events import CanonicalEventIngestionService
 
@@ -92,8 +94,10 @@ class AutonomyService:
         if self.controller is None or self.canonical_events is None:
             return await self.runtime.dispatch_event(binding, text, source)
 
-        organization_id, workspace_id = self.runtime.project_scope(
-            str(payload.get("project_id") or "")
+        # Project scope may read canonical PostgreSQL state. Resolve it before
+        # ingestion without blocking runtime RPC or changing the scoped result.
+        organization_id, workspace_id = await asyncio.to_thread(
+            self.runtime.project_scope, str(payload.get("project_id") or "")
         )
         normalized = json.dumps(
             {
@@ -106,10 +110,13 @@ class AutonomyService:
             default=str,
         )
         digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        # Repeated idle-owner wakeups are new scheduled observations after
+        # cooldown; unchanged issue payloads must not deduplicate forever.
+        window = int(time.time() // WatchdogDispatchPolicy.cooldown_seconds())
         delivery = await self.canonical_events.ingest(
             event_type=CanonicalEventType.WORK_TRANSITION,
             source=f"autonomy-watchdog:{source}",
-            idempotency_key=f"{cycle_key}:{digest}",
+            idempotency_key=f"{cycle_key}:{window}:{digest}",
             payload=payload,
             tenant_id=organization_id,
             workspace_id=workspace_id,
@@ -200,21 +207,13 @@ class AutonomyService:
         settings = d.load_gitlab_routing_settings()
         if not settings.enabled:
             return
-        states = d.load_work_item_states()
+        # The canonical snapshot can require database IO and full catalog decoding.
+        states = await asyncio.to_thread(d.load_work_item_states)
         for project_id, project_settings in settings.projects.items():
             if not project_settings.enabled:
                 continue
             token = d.gitlab_token_for_project(project_id)
             group = d.gitlab_group_path(project_settings)
-            if not token or not group:
-                d.append_bot_event(
-                    {
-                        "type": "owner_work_watchdog_skipped",
-                        "project_id": project_id,
-                        "reason": "missing_gitlab_token_or_group",
-                    }
-                )
-                continue
             for owner in d.owner_queue_agents:
                 canonical_items = [
                     state
@@ -251,6 +250,10 @@ class AutonomyService:
                     continue
                 missing_state_refs: list[str] = []
                 if not canonical_items:
+                    # Canonical owned work needs no raw provider credential.
+                    # Only the legacy discovery fallback requires these.
+                    if not token or not group:
+                        continue
                     issues = d.gitlab_group_issues(
                         project_id,
                         project_settings,
@@ -351,6 +354,7 @@ class AutonomyService:
                     }
                 )
 
+
     async def run_release_gate_cycle(self) -> None:
         d = self.runtime
         settings = d.load_gitlab_routing_settings()
@@ -431,7 +435,7 @@ class AutonomyService:
             binding = d.orchestrator_binding(project_id)
             if not binding:
                 continue
-            items = d.orchestrator_watchdog_candidates(project_id)
+            items = await asyncio.to_thread(d.orchestrator_watchdog_candidates, project_id)
             if not items:
                 continue
             binding = await d.replace_nonperforming_thread(binding, "orchestrator-watchdog")
@@ -473,7 +477,7 @@ class AutonomyService:
             binding = d.orchestrator_binding(project_id)
             if not binding:
                 continue
-            items = d.split_brain_watchdog_candidates(project_id)
+            items = await asyncio.to_thread(d.split_brain_watchdog_candidates, project_id)
             if not items:
                 continue
             binding = await d.replace_nonperforming_thread(binding, "split-brain-watchdog")

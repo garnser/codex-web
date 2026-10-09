@@ -69,8 +69,19 @@ class GitLabClient:
             raise ValueError("GitLab response byte limit must be between 1 and 524288")
         url = f"{api_base.rstrip('/')}/{path.lstrip('/')}"
         headers = {"PRIVATE-TOKEN": token, "Accept": "text/plain"}
+        origin = httpx.URL(url)
+
+        async def protect_credential(request: httpx.Request) -> None:
+            if origin.scheme == "https" and request.url.scheme != "https":
+                raise RuntimeError("GitLab byte download refused an insecure redirect")
+            if (request.url.scheme, request.url.host, request.url.port) != (
+                origin.scheme, origin.host, origin.port
+            ):
+                request.headers.pop("PRIVATE-TOKEN", None)
+
         async with httpx.AsyncClient(
-            transport=self.transport, timeout=self.timeout, follow_redirects=True
+            transport=self.transport, timeout=self.timeout, follow_redirects=True,
+            event_hooks={"request": [protect_credential]},
         ) as client:
             async with client.stream(method.upper(), url, headers=headers) as response:
                 if response.status_code >= 400:
@@ -288,6 +299,16 @@ class GitLabClient:
             token=token,
         )
         return response if isinstance(response, dict) else {}
+
+    async def merge_request_closes_issues(
+        self, api_base: str, project: str, iid: int, *, token: str,
+    ) -> list[dict[str, Any]]:
+        response = await self.get_json(
+            api_base,
+            f"projects/{quote(project, safe='')}/merge_requests/{iid}/closes_issues",
+            token=token,
+        )
+        return [item for item in response if isinstance(item, dict)] if isinstance(response, list) else []
 
     async def create_merge_request(
         self,

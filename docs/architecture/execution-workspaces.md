@@ -69,6 +69,40 @@ If assignment-bound bootstrap is unavailable or returns no canonical thread
 identity, replacement fails visibly and leaves the existing logical binding in
 place.
 
+### Failed bootstrap cancellation
+
+Failed pre-registration process startup and failed provider session creation
+cancel the bootstrap through the canonical worker service using the existing
+control actor. Cancellation requires tenant-scoped worker administrator
+authority and the observed assignment fence. The atomic assignment transition
+records `cancelled`, advances the fence, clears the worker lease, and emits an
+`assignment_cancelled` event with actor, reason, prior/new fence, and workspace
+reference. Late worker renew/start/complete calls fail fenced validation.
+A startup attempt only automatically cancels a previously pending bootstrap;
+a competing claimant cannot be revoked using the prior fence. Startup is
+shielded while an executor claim/spawn settles: request cancellation or timeout
+then cancels the observed owned bootstrap and stops an unregistered session,
+rather than letting an abandoned executor claim a new lease after cleanup.
+
+Cancellation then releases the canonical workspace reservation with explicit
+retained-files semantics. It preserves the entire Git worktree or scratch
+workspace, including dirty, checkpointed, untracked and ignored files, plus
+all branches. `released` with no `cleaned_at` means quota is free while files
+remain available for operator recovery. Workspace event details record
+`preserve_files: true`; existing worker/workspace inspection shows cancellation,
+actor, fence, release reason, recovery path and event evidence.
+
+Assignment and workspace stores commit separately. Repeating cancellation with
+the original fence retries workspace release without another assignment fence
+change or cancellation event. The tenant-scoped, MFA-admin or scoped-service
+`POST /api/execution-workers/assignments/{id}/cancel-bootstrap` endpoint accepts
+`expected_fence` and a bounded `reason`. Thread supersession reconciles a
+cancelled predecessor before acquiring its replacement. Unregistered live
+claimed/running assignments require explicit administrator recovery; thread
+healing cannot infer their ownership or discard their files. If assignment
+creation fails after workspace reservation, preparation releases only that
+reservation and retains its files.
+
 ## Repository target provenance and multi-repository members
 
 The execution binding resolves a canonical repository target before workspace

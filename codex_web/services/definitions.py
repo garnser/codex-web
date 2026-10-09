@@ -246,7 +246,7 @@ class DefinitionRegistryService:
         )
 
     def get_record(self, record_id: str) -> DefinitionRecord:
-        for record in self.store.load():
+        for record in self.store.load_matching(record_id=record_id):
             if record.record_id == record_id:
                 return record
         raise DefinitionNotFoundError(f"definition record not found: {record_id}")
@@ -707,7 +707,7 @@ class DefinitionRegistryService:
 
         candidates = [
             record
-            for record in self.store.load()
+            for record in self.store.load_matching(definition_id=definition_id, kind=kind)
             if record.definition_id == definition_id
             and record.kind == kind
             and definition_is_effective(record, now=now)

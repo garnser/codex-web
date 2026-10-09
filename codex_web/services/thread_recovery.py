@@ -4,11 +4,13 @@ import asyncio
 import contextlib
 import os
 import time
+import weakref
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import HTTPException
 
+from codex_web.identity import AuthenticationActor
 from codex_web.models import BotBinding, IndexedThread, Project, ThreadRunSettings
 from codex_web.services.project_runtime import ProjectRuntimeService
 from codex_web.services.thread_execution_settings import ThreadExecutionSettingsService
@@ -62,8 +64,11 @@ class ThreadRecoveryService:
             else getattr(host, "THREAD_TERMINAL_FAILURES", {})
         )
         self.thread_creator = thread_creator
+        self.agent_profile_resolver: Callable[[BotBinding], Any] | None = None
         self.stale_active_turn_reconciler = None
-        self._replacement_lock = asyncio.Lock()
+        self._replacement_locks: weakref.WeakValueDictionary[
+            tuple[str, str, str], asyncio.Lock
+        ] = weakref.WeakValueDictionary()
 
     def bind_thread_creator(
         self,
@@ -79,6 +84,10 @@ class ThreadRecoveryService:
         settings: ThreadRunSettings,
         sandbox: str,
         approval_policy: str,
+        binding: BotBinding | None = None,
+        agent_profile_id: str | None = None,
+        agent_profile_revision: int | None = None,
+        actor: AuthenticationActor | None = None,
     ) -> str:
         if self.thread_creator is None:
             raise HTTPException(
@@ -91,6 +100,24 @@ class ThreadRecoveryService:
                     ),
                 },
             )
+        profile_kwargs: dict[str, Any] = {}
+        if agent_profile_id is not None:
+            if actor is None or agent_profile_revision is None:
+                raise HTTPException(status_code=403, detail="replacement profile requires its actor and revision")
+            profile_kwargs = {
+                "agent_profile_id": agent_profile_id,
+                "agent_profile_revision": agent_profile_revision,
+                "actor": actor,
+            }
+        elif binding is not None and self.agent_profile_resolver is not None:
+            context = self.agent_profile_resolver(binding)
+            if context is not None:
+                profile, actor = context
+                profile_kwargs = {
+                    "agent_profile_id": profile.profile_id,
+                    "agent_profile_revision": profile.revision,
+                    "actor": actor,
+                }
         response = await self.thread_creator(
             project_id=project.id,
             sandbox=sandbox,
@@ -102,6 +129,7 @@ class ThreadRecoveryService:
                 settings.read_only_repository_resource_ids
             ),
             execution_profile_id=settings.execution_profile_id,
+            **profile_kwargs,
         )
         thread = response.get("thread") if isinstance(response, dict) else None
         thread_id = thread.get("id") if isinstance(thread, dict) else None
@@ -120,7 +148,8 @@ class ThreadRecoveryService:
 
     def logical_binding_name(self, binding: BotBinding) -> str:
         h = self.host
-        name = h._binding_report_name(binding) or binding.thread_name or h._binding_prefix(binding)
+        report_name = getattr(h, "_binding_report_name", lambda _binding: None)
+        name = report_name(binding) or binding.thread_name or h._binding_prefix(binding)
         return name.strip().lower()
 
     def same_logical_binding(self, candidate: BotBinding, source: BotBinding) -> bool:
@@ -246,7 +275,14 @@ class ThreadRecoveryService:
         binding: BotBinding,
         error: str,
     ) -> BotBinding:
-        async with self._replacement_lock:
+        # Serialize the same logical owner without blocking unrelated agents
+        # behind a slow provider bootstrap.
+        key = (binding.provider, binding.project_id, self.logical_binding_name(binding))
+        lock = self._replacement_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._replacement_locks[key] = lock
+        async with lock:
             replacement_id = self.thread_replacements.get(binding.thread_id)
             if replacement_id:
                 matches = [
@@ -280,6 +316,7 @@ class ThreadRecoveryService:
             settings=settings,
             sandbox=sandbox,
             approval_policy=approval_policy,
+            binding=binding,
         )
         self.settings.remember(
             new_thread_id,
@@ -344,7 +381,12 @@ class ThreadRecoveryService:
         )
         return replacement
 
-    async def replace_stale_web_thread(self, thread_id: str, project: Project, error: str) -> str:
+    async def replace_stale_web_thread(
+        self, thread_id: str, project: Project, error: str, *,
+        agent_profile_id: str | None = None,
+        agent_profile_revision: int | None = None,
+        actor: AuthenticationActor | None = None,
+    ) -> str:
         h = self.host
         settings = self.settings.get(thread_id)
         sandbox = settings.sandbox or project.sandbox
@@ -354,6 +396,9 @@ class ThreadRecoveryService:
             settings=settings,
             sandbox=sandbox,
             approval_policy=approval_policy,
+            agent_profile_id=agent_profile_id,
+            agent_profile_revision=agent_profile_revision,
+            actor=actor,
         )
         self.settings.remember(
             new_thread_id,

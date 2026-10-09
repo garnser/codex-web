@@ -47,6 +47,9 @@ class CodexAgentRuntimeAdapter:
                 return AgentRuntimeHealth.DEGRADED
             if getattr(value, "ready", True) is False:
                 return AgentRuntimeHealth.UNAVAILABLE
+        ready = getattr(self.transport, "ready", None)
+        if callable(getattr(ready, "is_set", None)) and not ready.is_set():
+            return AgentRuntimeHealth.UNAVAILABLE
         proc = getattr(self.transport, "proc", None)
         if proc is not None and getattr(proc, "poll", lambda: None)() is not None:
             return AgentRuntimeHealth.UNAVAILABLE
@@ -88,7 +91,19 @@ class CodexAgentRuntimeAdapter:
                 )
             )
 
-        hub.subscribe(project)
+        filtered_subscribe = getattr(hub, "subscribe_filtered", None)
+        if callable(filtered_subscribe):
+            filtered_subscribe(project, event_types=("codex.event",))
+        else:
+            # Older compatible hubs retain the callback's existing type gate.
+            hub.subscribe(project)
+        filter_messages = getattr(hub, "filter_listener_messages", None)
+        if callable(filter_messages):
+            filter_messages(project, excluded_methods=(
+                "item/agentMessage/delta", "item/reasoning/textDelta",
+                "item/reasoning/summaryTextDelta", "item/commandExecution/outputDelta",
+                "item/fileChange/outputDelta",
+            ))
 
         def unsubscribe() -> None:
             hub.unsubscribe(project)
@@ -104,6 +119,10 @@ class CodexAgentRuntimeAdapter:
     async def capacity_snapshot(self) -> dict[str, Any]:
         """Read structured Codex account quota without consuming model tokens."""
 
+        # One real credential-metadata read per existing bounded quota refresh,
+        # without model sampling or a separate authentication polling loop.
+        if callable(getattr(self.transport, "authenticated_account_available", None)):
+            await self.transport.request("account/read", {"refreshToken": False})
         response = await self.transport.request("account/rateLimits/read", {})
         if not isinstance(response, dict):
             raise RuntimeError("Codex rate-limit read returned an invalid payload")
