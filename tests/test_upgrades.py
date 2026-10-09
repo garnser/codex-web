@@ -486,6 +486,54 @@ class UpgradeTests(unittest.IsolatedAsyncioTestCase):
                 preflight_evidence_id="evidence-stale",
             )
 
+    async def test_service_drain_accepts_organization_wide_admin_coverage(self):
+        target = "b" * 40
+        self.releases.release.build = SimpleNamespace(
+            digest="sha256:" + "a" * 64,
+            source_revision=target,
+        )
+        self.service.service_instance_id = "control-plane-test"
+        self.service.identity = SimpleNamespace(
+            state=lambda: SimpleNamespace(
+                workspaces=[
+                    SimpleNamespace(
+                        id="ws-a",
+                        organization_id="org-a",
+                        disabled_at=None,
+                    ),
+                    SimpleNamespace(
+                        id="ws-b",
+                        organization_id="org-a",
+                        disabled_at=None,
+                    ),
+                ],
+                memberships=[
+                    SimpleNamespace(
+                        identity_id=self.actor.identity_id,
+                        organization_id="org-a",
+                        workspace_id=None,
+                        revoked_at=None,
+                        roles=(MembershipRole.ADMIN,),
+                    )
+                ],
+            )
+        )
+        plan = self.create_plan(
+            require_drain=True,
+            profile=self.profile(deployment_mode=UpgradeDeploymentMode.LOCAL),
+        )
+
+        plan = self.service.start_service_drain(
+            plan.id,
+            actor=self.actor,
+            service_instance_id="control-plane-test",
+            source_revision="a" * 40,
+            target_revision=target,
+        )
+
+        self.assertEqual(plan.maintenance_scope.value, "service")
+        self.assertEqual(len(plan.covered_scopes), 2)
+
     async def test_service_drain_fences_incident_claims_and_rechecks_live_actions(self):
         source = "a" * 40
         target = "b" * 40

@@ -399,23 +399,41 @@ class UpgradeService:
             (item.organization_id, item.workspace_id)
             for item in self._hosted_scopes()
         }
+        memberships = (
+            self.identity.state().memberships
+            if self.identity is not None
+            else ()
+        )
+
+        def covers_every_scope(*, require_admin_role: bool) -> bool:
+            authorized = [
+                item
+                for item in memberships
+                if item.identity_id == actor.identity_id
+                and item.revoked_at is None
+                and (
+                    not require_admin_role
+                    or set(item.roles).intersection(
+                        {MembershipRole.OWNER, MembershipRole.ADMIN}
+                    )
+                )
+            ]
+            return all(
+                any(
+                    item.organization_id == organization_id
+                    and item.workspace_id in {None, workspace_id}
+                    for item in authorized
+                )
+                for organization_id, workspace_id in required_scopes
+            )
+
         if (
             actor.principal_kind == PrincipalKind.HUMAN
             and actor.assurance == AuthenticationAssurance.MFA
             and actor.has_role(MembershipRole.OWNER, MembershipRole.ADMIN)
             and self.identity is not None
         ):
-            authorized_scopes = {
-                (item.organization_id, item.workspace_id)
-                for item in self.identity.state().memberships
-                if item.identity_id == actor.identity_id
-                and item.revoked_at is None
-                and item.workspace_id is not None
-                and set(item.roles).intersection(
-                    {MembershipRole.OWNER, MembershipRole.ADMIN}
-                )
-            }
-            if required_scopes.issubset(authorized_scopes):
+            if covers_every_scope(require_admin_role=True):
                 return
             raise UpgradeConflictError(
                 "administrator authority does not cover every hosted scope"
@@ -428,15 +446,7 @@ class UpgradeService:
                 raise UpgradeConflictError(
                     "whole-service authority cannot verify hosted scope memberships"
                 )
-            memberships = self.identity.state().memberships
-            authorized_scopes = {
-                (item.organization_id, item.workspace_id)
-                for item in memberships
-                if item.identity_id == actor.identity_id
-                and item.revoked_at is None
-                and item.workspace_id is not None
-            }
-            if required_scopes.issubset(authorized_scopes):
+            if covers_every_scope(require_admin_role=False):
                 return
             raise UpgradeConflictError(
                 "upgrade:admin service authority does not cover every hosted scope"
