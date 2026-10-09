@@ -5,6 +5,7 @@ import os
 import resource
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -286,12 +287,25 @@ class BubblewrapExecutionBackend:
     @staticmethod
     def _tree_disk_usage(root: Path) -> int:
         total = 0
-        if not root.exists():
-            return 0
-        for path in root.rglob("*"):
+        pending = [root]
+        while pending:
+            directory = pending.pop()
             try:
-                if path.is_file() and not path.is_symlink():
-                    total += path.stat().st_size
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        try:
+                            # DirEntry reuses directory metadata instead of
+                            # repeating Path.stat for type and size checks.
+                            if entry.is_symlink():
+                                continue
+                            if entry.is_dir(follow_symlinks=False):
+                                pending.append(entry.path)
+                            elif entry.is_file(follow_symlinks=False):
+                                metadata = entry.stat(follow_symlinks=False)
+                                if stat.S_ISREG(metadata.st_mode):
+                                    total += metadata.st_size
+                        except OSError:
+                            continue
             except OSError:
                 continue
         return total
