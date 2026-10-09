@@ -16,6 +16,7 @@ from codex_web.action_providers import ActionRequest
 from codex_web.autonomy import AutonomyCycleOutcome
 from codex_web.models import WorkItemHandoff, WorkItemState
 from codex_web.services.autonomy import AutonomyService, install_autonomy_service
+from codex_web.services.work_item_dispatch_prompt import WorkItemDispatchPromptPolicy
 
 
 class _Host:
@@ -380,6 +381,27 @@ class AutonomyWorkItemSlaScopeTests(unittest.IsolatedAsyncioTestCase):
             append_bot_event=lambda _event: None,
         )
 
+    async def test_failed_sla_routes_and_addresses_canonical_next_owner(self):
+        state = WorkItemState(ref="example/gtm!16", project_id="project-a",
+            current_owner="Sally", next_owner="Carl", implementation_owner="Sally",
+            validation_owner="Quinn", current_stage="failed_with_action_owner",
+            blocker="renderer prerequisite", created_at=1.0, updated_at=2.0,
+            last_meaningful_update_at=2.0)
+        before = state.model_dump()
+        runtime = self._runtime(state)
+        runtime.binding_for_agent = lambda owner, *_args, **_kwargs: SimpleNamespace(
+            thread_id="thread-" + owner)
+        runtime.work_item_dispatch_text = WorkItemDispatchPromptPolicy(
+            coerce_owner=runtime.coerce_owner, coordination_channel="coordination").render
+        runtime.dispatch_event = AsyncMock(return_value={"ok": True})
+        with patch("codex_web.services.autonomy.time.time", return_value=100.0):
+            await AutonomyService(runtime=runtime).run_work_item_sla_cycle()
+        delivery = runtime.dispatch_event.await_args
+        self.assertEqual(delivery.args[0].thread_id, "thread-carl")
+        self.assertTrue(delivery.args[1].startswith("Carl: owned-work SLA"))
+        self.assertIn(state.ref, delivery.args[1])
+        self.assertEqual(state.model_dump(), before)
+
     async def test_owner_sla_dispatch_carries_project_for_canonical_scope(self) -> None:
         state = WorkItemState(
             ref="example/project#1",
@@ -522,6 +544,37 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
                 state.last_meaningful_update_at
             ),
         )
+
+    async def test_failed_mr_routes_next_action_owner_without_changing_parent_handoff(self):
+        parent = WorkItemState(ref="example/gtm#3", project_id="project-a",
+            current_owner="Orchestrator", next_owner="Orchestrator",
+            implementation_owner="Sally", validation_owner="Quinn",
+            current_stage="failed_with_action_owner", blocker="renderer provisioning",
+            handoff=WorkItemHandoff(from_agent="Sally", to_agent="Orchestrator",
+                status="accepted", requested_at=1.0, acknowledged_at=2.0),
+            mr_refs=["example/gtm!16"], created_at=1.0, updated_at=2.0,
+            last_meaningful_update_at=2.0)
+        mr = parent.model_copy(update={"ref": "example/gtm!16", "handoff": None,
+            "current_owner": "Sally", "next_owner": "Carl", "mr_refs": [],
+            "blocker": "Infra renderer prerequisite"})
+        states = {parent.ref: parent, mr.ref: mr}
+        before = {ref: state.model_dump() for ref, state in states.items()}
+        runtime = self._runtime(states)
+        runtime.owner_queue_agents = ("sally", "carl", "orchestrator")
+        runtime.gitlab_token_for_project = lambda _project: None
+        runtime.binding_for_agent = lambda owner, *_args, **_kwargs: SimpleNamespace(
+            thread_id="thread-" + owner, thread_name=owner)
+        runtime.work_item_dispatch_text = WorkItemDispatchPromptPolicy(
+            coerce_owner=runtime.coerce_owner, coordination_channel="coordination").render
+        await AutonomyService(runtime=runtime).run_owner_work_cycle()
+        deliveries = runtime.dispatch_event.await_args_list
+        self.assertEqual([call.args[0].thread_id for call in deliveries],
+            ["thread-carl", "thread-orchestrator"])
+        self.assertTrue(deliveries[0].args[1].startswith("Carl: owned-work SLA"))
+        self.assertIn(mr.ref, deliveries[0].args[1])
+        self.assertTrue(deliveries[1].args[1].startswith("Orchestrator: accepted handoff"))
+        self.assertIn(parent.ref, deliveries[1].args[1])
+        self.assertEqual({ref: state.model_dump() for ref, state in states.items()}, before)
 
     async def test_owner_snapshot_keeps_loop_responsive_context_and_selection(self):
         state = WorkItemState(ref="example/project#1", project_id="project-a",

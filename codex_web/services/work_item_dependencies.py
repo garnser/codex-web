@@ -16,6 +16,13 @@ from codex_web.models import (
 )
 
 
+def actionable_owner_value(state: WorkItemState) -> str | None:
+    """Select the canonical action lane without changing implementation ownership."""
+    if state.current_stage == "failed_with_action_owner":
+        return state.next_owner or state.current_owner
+    return state.current_owner or state.next_owner
+
+
 @dataclass(frozen=True, slots=True)
 class WorkItemRuntimeDependencies:
     """Narrow canonical dependencies shared by work-item domain services."""
