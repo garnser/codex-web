@@ -23,6 +23,16 @@ def actionable_owner_value(state: WorkItemState) -> str | None:
     return state.current_owner or state.next_owner
 
 
+def work_item_progress_evidence(state: WorkItemState) -> dict[str, Any]:
+    """Canonical evidence without receipt, provider-observation or activity clocks."""
+    return state.model_dump(
+        exclude={
+            "updated_at", "last_meaningful_update_at", "last_owner_activity_at",
+            "last_gitlab_event_at",
+        }
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class WorkItemRuntimeDependencies:
     """Narrow canonical dependencies shared by work-item domain services."""

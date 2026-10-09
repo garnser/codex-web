@@ -26,6 +26,18 @@ implementation/validation owners or accepted handoffs, and pending handoffs
 remain ineligible for automatic owner dispatch. Issue and merge-request refs
 remain distinct; selecting an owner does not grant provider writeback capability.
 
+An identical normalized progress update remains an attributed audit receipt and
+owner activity acknowledgement. It does not advance `last_meaningful_update_at`
+or schedule another owner dispatch/continuity check solely for the unchanged
+receipt. The attributed `progress_updated` audit payload includes
+`meaningful_change` so operators can distinguish a receipt from new evidence.
+Comparison uses canonical state excluding receipt/activity/provider
+observation clocks; notes, findings, action/owner, handoff, artifact and source
+revision changes remain meaningful. Provider synchronization and public progress
+acknowledgements still run. Independent watchdog retry/cooldown behavior remains
+unchanged; this is not permanent blocked-work suppression or inferred dependency
+readiness.
+
 `failed_with_action_owner` is intentionally resumable because the canonical stage describes ownership/lane state, while execution retry/failure metadata is persisted separately inside the same `WorkItemState`.
 
 ## Terminal outcomes

@@ -16,6 +16,7 @@ from codex_web.models import (
 )
 from codex_web.services.work_item_dependencies import (
     WorkItemRuntimeDependencies,
+    work_item_progress_evidence,
 )
 from codex_web.services.work_item_transitions import WorkItemTransitionService
 from codex_web.storage.state_store import StateStore
@@ -582,6 +583,7 @@ class WorkItemStateMachine:
         event_type: str = "progress_updated",
         note: str | None = None,
     ) -> WorkItemState:
+        previous_evidence = work_item_progress_evidence(state)
         state = self._ensure_work_item_lane_defaults(state)
         now = time.time()
         previous_owner = self._coerce_owner(state.current_owner)
@@ -720,11 +722,13 @@ class WorkItemStateMachine:
             or state.last_owner_activity_at is None
         )
         state.updated_at = now
-        state.last_meaningful_update_at = now
         if refresh_owner_activity:
             state.last_owner_activity_at = now
         if note:
             state.notes = (state.notes + [note])[-20:]
+        meaningful_change = previous_evidence != work_item_progress_evidence(state)
+        if meaningful_change:
+            state.last_meaningful_update_at = now
         self._append_work_item_event(
             self._work_item_event(
                 state.ref,
@@ -740,6 +744,7 @@ class WorkItemStateMachine:
                     "artifact_state": state.artifact_state,
                     "release_gate": state.release_gate,
                     "status_label": state.status_label,
+                    "meaningful_change": meaningful_change,
                 },
             )
         )
