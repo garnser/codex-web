@@ -522,6 +522,9 @@ class ControlPlaneBrokerService:
             )
         path = parsed.path
         query = parse_qs(parsed.query, keep_blank_values=False)
+        member_query = parse_qs(parsed.query, keep_blank_values=True)
+        if "member_path" in member_query:
+            query["member_path"] = member_query["member_path"]
         repository_action = _REPOSITORY_ACTIONS.get(path)
         if repository_action is not None:
             operation = _OPERATION_BY_ID[repository_action[0]]
@@ -1018,7 +1021,7 @@ class ControlPlaneBrokerService:
             assert target_ref is not None
             if not target_ref.isdigit() or int(target_ref) < 1:
                 raise ControlPlaneBrokerRequestError(
-                    "GitHub job, run, and artifact identifiers must be positive integers"
+                    "Code-host job, run, and artifact identifiers must be positive integers"
                 )
             external_id = int(target_ref)
             max_bytes_raw = (query.get("max_bytes") or [str(128 * 1024)])[0]
@@ -1041,9 +1044,14 @@ class ControlPlaneBrokerService:
                     binding_id, repository_id, external_id, actor=actor
                 )
                 return {"items": [item.model_dump(mode="json") for item in items]}
+            options = {}
+            if "member_path" in query:
+                if len(query["member_path"]) != 1:
+                    raise ControlPlaneBrokerRequestError("member_path must occur once")
+                options["member_path"] = query["member_path"][0]
             item = await self.code_hosts.artifact_download(
                 binding_id, repository_id, external_id,
-                actor=actor, max_bytes=max_bytes,
+                actor=actor, max_bytes=max_bytes, **options,
             )
             return {"item": item.model_dump(mode="json")}
         if operation.id == "repository.read.releases":

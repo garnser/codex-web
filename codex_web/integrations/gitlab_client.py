@@ -69,8 +69,19 @@ class GitLabClient:
             raise ValueError("GitLab response byte limit must be between 1 and 524288")
         url = f"{api_base.rstrip('/')}/{path.lstrip('/')}"
         headers = {"PRIVATE-TOKEN": token, "Accept": "text/plain"}
+        origin = httpx.URL(url)
+
+        async def protect_credential(request: httpx.Request) -> None:
+            if origin.scheme == "https" and request.url.scheme != "https":
+                raise RuntimeError("GitLab byte download refused an insecure redirect")
+            if (request.url.scheme, request.url.host, request.url.port) != (
+                origin.scheme, origin.host, origin.port
+            ):
+                request.headers.pop("PRIVATE-TOKEN", None)
+
         async with httpx.AsyncClient(
-            transport=self.transport, timeout=self.timeout, follow_redirects=True
+            transport=self.transport, timeout=self.timeout, follow_redirects=True,
+            event_hooks={"request": [protect_credential]},
         ) as client:
             async with client.stream(method.upper(), url, headers=headers) as response:
                 if response.status_code >= 400:
