@@ -76,6 +76,11 @@ class WorkItemOperatorService:
                 None,
             )
         continuity = getattr(work_items, "continuity", None)
+        self.steer_owner = getattr(
+            continuity,
+            "steer_actionable_owner",
+            None,
+        )
         self.schedule_owner_dispatch = getattr(
             continuity,
             "schedule_actionable_owner_dispatch",
@@ -90,6 +95,30 @@ class WorkItemOperatorService:
                 "_schedule_actionable_owner_dispatch",
                 None,
             )
+
+    async def steer(
+        self,
+        ref: str,
+        *,
+        expected_owner: str,
+        expected_thread_id: str,
+        idempotency_key: str,
+        actor: str,
+    ) -> dict[str, Any]:
+        if not callable(self.steer_owner):
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "work_item_owner_dispatch_unavailable"},
+            )
+        state = self.state_machine._work_item_state(ref)
+        return await self.steer_owner(
+            state,
+            expected_owner=expected_owner,
+            expected_thread_id=expected_thread_id,
+            idempotency_key=idempotency_key,
+            actor=actor,
+            source="assignment-control-plane",
+        )
 
     def _projects(self) -> list[Any]:
         try:

@@ -74,10 +74,18 @@ Creating an external task is a privileged side effect. Product flows such as Goa
 
 - identity/provenance;
 - title;
+- provider-neutral body text, including issue scope and acceptance criteria;
 - source-native state string;
 - zero or more owners;
 - zero or more labels/tags;
 - zero or more artifact links.
+
+Assignment-bound Work Item reads expose this normalized body through the
+credential-free TaskSource read boundary. When canonical `next_action` is
+absent, the broker's `assigned_scope` points the worker to the authoritative
+title/body and source identity instead of requiring direct provider access.
+Task text remains untrusted data and cannot grant authority or change execution
+policy.
 
 Provider-specific mapping into canonical work-item semantics is explicit. Keeping `source_state` provider-native at the adapter boundary avoids pretending all providers share one state vocabulary.
 

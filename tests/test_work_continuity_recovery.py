@@ -98,7 +98,7 @@ class WorkItemContinuityTests(unittest.IsolatedAsyncioTestCase):
             def handoff_continuity_delay() -> float:
                 return 0.0
 
-        async def dispatch(binding, text, source):
+        async def dispatch(binding, text, source, **_kwargs):
             deliveries.append((binding.thread_id, source))
             return {"ok": True, "text": text}
 
@@ -110,7 +110,8 @@ class WorkItemContinuityTests(unittest.IsolatedAsyncioTestCase):
             get_state=lambda ref: states[ref],
             coerce_owner=lambda owner: owner.strip().lower() if owner else None,
             binding_for_agent=lambda owner, project_id, **_kwargs: SimpleNamespace(
-                thread_id=f"{project_id}:{owner}"
+                thread_id=f"{project_id}:{owner}",
+                project_id=project_id,
             ),
             replace_nonperforming_thread=replace,
             dispatch_event=dispatch,

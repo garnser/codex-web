@@ -64,6 +64,19 @@ class BotEventDispatchScopeTests(unittest.IsolatedAsyncioTestCase):
             ("repo-saas-app",),
         )
 
+    async def test_idle_only_dispatch_does_not_queue_duplicate_work(self) -> None:
+        result = await self.service.dispatch(
+            self.binding,
+            "wake only if idle",
+            "assignment-control-plane",
+            work_item_ref="project/repo#1",
+            require_idle=True,
+        )
+
+        self.assertEqual(result["skipped"], "already_active")
+        self.assertFalse(result["queued"])
+        self.execution.enqueue_turn.assert_not_called()
+
     async def test_queued_event_preserves_recipient_agent_profile(self) -> None:
         actor = SimpleNamespace(identity_id="local-admin")
         profile = SimpleNamespace(
