@@ -162,15 +162,12 @@ class AgentSessionService:
         provider_id: str | None = None,
         runtime_id: str | None = None,
     ) -> AgentSession | None:
-        return next(
-            (
-                item
-                for item in self.list(actor)
-                if item.provider_native_session_id == provider_native_session_id
-                and (provider_id is None or item.provider_id == provider_id)
-                and (runtime_id is None or item.runtime_id == runtime_id)
-            ),
-            None,
+        return self.store.find_by_native_id(
+            provider_native_session_id,
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id,
+            provider_id=provider_id,
+            runtime_id=runtime_id,
         )
 
     def adopt(

@@ -33,6 +33,15 @@ Current normalization includes:
 
 Provider events are fingerprinted before aggregation so duplicate/replayed events do not double-count usage or evidence.
 
+Canonical sessions are stored as keyed records with a transactional secondary
+index over provider, runtime, and provider-native session identity. Telemetry
+resolves only the matching index entries and canonical records; its cost does
+not grow with unrelated session history. The resolver fails closed when a
+native identity is ambiguous across tenant scopes or when an index entry is
+invalid. The former aggregate document remains a rollback checkpoint and is
+refreshed by the normal compatibility-state flush; it is not a second active
+authority.
+
 ## Evidence
 
 Terminal runtime outcomes emit compact EvidenceType.RUNTIME_RESULT records linked to project/work/execution scope. Evidence contains identifiers, result, telemetry quality and bounded counters; it does not contain prompts, provider transcripts, shell output or raw model responses.
