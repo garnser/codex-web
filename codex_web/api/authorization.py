@@ -276,6 +276,23 @@ def _domain_for(path: str) -> str | None:
     remainder = path[len("/api/") :]
     return remainder.split("/", 1)[0] or None
 
+# These operator snapshots are installed by server.py after application.py
+# composition. Keep exact GET policies: adjacent paths stay unclassified.
+for _observability_path in (
+    "/api/health",
+    "/api/traces/recent",
+    "/api/logs/recent",
+    "/api/observability",
+):
+    EXACT_POLICIES[("GET", _observability_path)] = ApiAuthorizationPolicy(
+        capability="api.observability.read",
+        level=AuthorityLevel.READ,
+        access=ApiAccessMode.ADMIN,
+        service_scopes=("observability:read",),
+        description="Operator observability snapshot; preserves scoped service readers.",
+    )
+
+
 # Definition/schedule mutations remain administrative; an authenticated manual
 # trigger still uses the canonical AutomationTriggerService and launch guards.
 for _path in (
