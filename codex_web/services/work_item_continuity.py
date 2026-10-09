@@ -64,6 +64,25 @@ class DeferredWorkItemContinuityService:
             actor=actor,
         )
 
+    async def steer_actionable_owner(
+        self,
+        state: WorkItemState,
+        *,
+        expected_owner: str,
+        expected_thread_id: str,
+        idempotency_key: str,
+        actor: str,
+        source: str,
+    ) -> dict[str, Any]:
+        return await self._require().steer_actionable_owner(
+            state,
+            expected_owner=expected_owner,
+            expected_thread_id=expected_thread_id,
+            idempotency_key=idempotency_key,
+            actor=actor,
+            source=source,
+        )
+
     def schedule_actionable_owner_continuity_check(
         self,
         state: WorkItemState,
@@ -94,7 +113,7 @@ class WorkItemContinuityService:
         coerce_owner: Callable[[str | None], str | None],
         binding_for_agent: Callable[..., Any],
         replace_nonperforming_thread: Callable[[Any, str], Awaitable[Any]],
-        dispatch_event: Callable[[Any, str, str], Awaitable[dict[str, Any]]],
+        dispatch_event: Callable[..., Awaitable[dict[str, Any]]],
         dispatch_text: Callable[[WorkItemState], str],
         append_event: Callable[[dict[str, Any]], None],
         truncate_text: Callable[[str, int], str],
@@ -126,6 +145,7 @@ class WorkItemContinuityService:
         )
         self.actionable_owner_tasks: dict[str, asyncio.Task[None]] = {}
         self.handoff_tasks: dict[str, asyncio.Task[None]] = {}
+        self.owner_steer_locks: dict[str, asyncio.Lock] = {}
         max_concurrency_getter = getattr(
             self.policy,
             "background_task_max_concurrency",
@@ -211,6 +231,22 @@ class WorkItemContinuityService:
             state.project_id,
             preferred_conversation_id=self.coordination_channel,
         )
+
+    @staticmethod
+    def _dispatch_repository_scope(
+        state: WorkItemState,
+    ) -> tuple[str | None, tuple[str, ...]]:
+        execution = getattr(state, "execution", None)
+        writable = tuple(
+            dict.fromkeys(
+                getattr(execution, "writable_repository_resource_ids", ())
+            )
+        )
+        resource_ids = tuple(getattr(state, "resource_ids", ()))
+        if not writable and len(resource_ids) == 1:
+            writable = (resource_ids[0],)
+        primary = writable[0] if len(writable) == 1 else None
+        return primary, writable
 
     async def dispatch_structured_handoff(
         self,
@@ -468,30 +504,39 @@ class WorkItemContinuityService:
         *,
         source: str,
         actor: str | None = None,
-    ) -> None:
+    ) -> dict[str, Any]:
         if state.current_stage == "closed" or state.closed_at:
-            return
+            return {"status": "closed", "dispatched": False}
         if not self.actionable_owner_stage(state.current_stage):
-            return
+            return {"status": "not_actionable", "dispatched": False}
         if state.handoff and state.handoff.status == "pending":
-            return
+            return {"status": "handoff_pending", "dispatched": False}
         owner = self.coerce_owner(state.current_owner or state.next_owner)
         if not owner or self.coerce_owner(actor) == owner:
-            return
+            return {"status": "owner_unavailable", "dispatched": False}
         binding = self.responsible_binding(state)
         if not binding:
-            return
-        if (
-            self.thread_is_active(binding.thread_id)
-            or self.thread_queue_depth(binding.thread_id)
-        ):
-            return
+            return {"status": "binding_unavailable", "dispatched": False}
+        if self.thread_is_active(binding.thread_id):
+            return {
+                "status": "already_active",
+                "dispatched": False,
+                "owner": owner,
+                "thread_id": binding.thread_id,
+            }
+        if self.thread_queue_depth(binding.thread_id):
+            return {
+                "status": "already_queued",
+                "dispatched": False,
+                "owner": owner,
+                "thread_id": binding.thread_id,
+            }
         binding = await self.replace_nonperforming_thread(binding, source)
         if self.revalidate_after_thread_replacement:
             try:
                 latest = self.get_state(state.ref)
             except HTTPException:
-                return
+                return {"status": "work_item_unavailable", "dispatched": False}
             latest_owner = self.coerce_owner(
                 latest.current_owner or latest.next_owner
             )
@@ -506,20 +551,57 @@ class WorkItemContinuityService:
                 or latest_owner != owner
                 or latest.current_stage != state.current_stage
             ):
-                return
+                return {"status": "stale_state", "dispatched": False}
             state = latest
         dispatch_key = (
             f"work-item-owner-progress:{state.ref}:{binding.thread_id}:"
             f"{owner}:{state.current_stage}"
         )
         if not self.watchdog_dispatch_allowed(dispatch_key):
-            return
+            return {
+                "status": "duplicate",
+                "dispatched": False,
+                "owner": owner,
+                "thread_id": binding.thread_id,
+                "dispatch_key": dispatch_key,
+            }
         self.record_watchdog_dispatch(dispatch_key)
+        repository_resource_id, writable_repository_resource_ids = (
+            self._dispatch_repository_scope(state)
+        )
         result = await self.dispatch_event(
             binding,
             self.dispatch_text(state),
             source,
+            work_item_ref=state.ref,
+            repository_resource_id=repository_resource_id,
+            writable_repository_resource_ids=(
+                writable_repository_resource_ids
+            ),
+            require_idle=True,
         )
+        skipped = str(result.get("skipped") or "").strip()
+        if skipped:
+            self.append_event(
+                {
+                    "type": "work_item_owner_progress_dispatch_skipped",
+                    "ref": state.ref,
+                    "thread_id": binding.thread_id,
+                    "agent": owner,
+                    "current_stage": state.current_stage,
+                    "source": source,
+                    "actor": actor,
+                    "reason": skipped,
+                }
+            )
+            return {
+                "status": skipped,
+                "dispatched": False,
+                "owner": owner,
+                "thread_id": binding.thread_id,
+                "dispatch_key": dispatch_key,
+                "dispatch": result,
+            }
         self.append_event(
             {
                 "type": "work_item_owner_progress_dispatched",
@@ -532,6 +614,110 @@ class WorkItemContinuityService:
                 "result": result,
             }
         )
+        return {
+            "status": "dispatched",
+            "dispatched": True,
+            "owner": owner,
+            "thread_id": binding.thread_id,
+            "dispatch_key": dispatch_key,
+            "dispatch": result,
+        }
+
+    @staticmethod
+    def _steer_conflict(code: str, message: str) -> HTTPException:
+        return HTTPException(
+            status_code=409,
+            detail={"code": code, "message": message},
+        )
+
+    async def steer_actionable_owner(
+        self,
+        state: WorkItemState,
+        *,
+        expected_owner: str,
+        expected_thread_id: str,
+        idempotency_key: str,
+        actor: str,
+        source: str,
+    ) -> dict[str, Any]:
+        """Wake only the exact canonical owner binding named by the caller."""
+        lock = self.owner_steer_locks.setdefault(state.ref, asyncio.Lock())
+        async with lock:
+            try:
+                latest = self.get_state(state.ref)
+            except HTTPException as exc:
+                raise self._steer_conflict(
+                    "work_item_unavailable",
+                    "work item became unavailable before owner steering",
+                ) from exc
+            return await self._steer_actionable_owner_locked(
+                latest,
+                expected_owner=expected_owner,
+                expected_thread_id=expected_thread_id,
+                idempotency_key=idempotency_key,
+                actor=actor,
+                source=source,
+            )
+
+    async def _steer_actionable_owner_locked(
+        self,
+        state: WorkItemState,
+        *,
+        expected_owner: str,
+        expected_thread_id: str,
+        idempotency_key: str,
+        actor: str,
+        source: str,
+    ) -> dict[str, Any]:
+        owner = self.coerce_owner(state.current_owner or state.next_owner)
+        expected = self.coerce_owner(expected_owner)
+        if not owner or owner != expected:
+            raise self._steer_conflict(
+                "work_item_owner_changed",
+                "expected owner does not match the canonical current owner",
+            )
+        if state.current_stage == "closed" or state.closed_at:
+            raise self._steer_conflict(
+                "work_item_closed",
+                "closed work cannot be steered",
+            )
+        if not self.actionable_owner_stage(state.current_stage):
+            raise self._steer_conflict(
+                "work_item_not_actionable",
+                "work item is not in an actionable owner stage",
+            )
+        if state.handoff and state.handoff.status == "pending":
+            raise self._steer_conflict(
+                "work_item_handoff_pending",
+                "pending handoff must be resolved before owner steering",
+            )
+        binding = self.responsible_binding(state)
+        if binding is None:
+            raise self._steer_conflict(
+                "work_item_owner_binding_unavailable",
+                "canonical owner has no same-project thread binding",
+            )
+        if binding.project_id != state.project_id:
+            raise self._steer_conflict(
+                "work_item_owner_project_mismatch",
+                "canonical owner thread is outside the work-item project",
+            )
+        if binding.thread_id != expected_thread_id:
+            raise self._steer_conflict(
+                "work_item_owner_thread_changed",
+                "expected thread does not match the canonical owner binding",
+            )
+
+        result = await self.dispatch_actionable_owner(
+            state,
+            source=source,
+            actor=actor,
+        )
+        return {
+            **result,
+            "work_item_ref": state.ref,
+            "idempotency_key": idempotency_key,
+        }
 
     def schedule_actionable_owner_dispatch(
         self,
@@ -769,10 +955,11 @@ def build_work_item_continuity_compatibility_service(
                 reason,
             )
         ),
-        dispatch_event=lambda binding, text, source: host._dispatch_event_to_binding(
+        dispatch_event=lambda binding, text, source, **kwargs: host._dispatch_event_to_binding(
             binding,
             text,
             source,
+            **kwargs,
         ),
         dispatch_text=lambda state: host._work_item_dispatch_text(state),
         append_event=lambda event: host._append_bot_event(event),

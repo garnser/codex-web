@@ -173,6 +173,9 @@ class _WorkItems:
 
 
 class _Operator:
+    def __init__(self):
+        self.steers = []
+
     async def source_detail(self, ref):
         return {
             "snapshot": {"identity": {"external_id": ref}, "body_text": "Acceptance criteria"},
@@ -184,6 +187,33 @@ class _Operator:
 
     async def reconcile(self, ref, *, actor, reason):
         return {"ok": True, "item": {"ref": ref, "actor": actor, "reason": reason}}
+
+    async def steer(
+        self,
+        ref,
+        *,
+        expected_owner,
+        expected_thread_id,
+        idempotency_key,
+        actor,
+    ):
+        self.steers.append(
+            (
+                ref,
+                expected_owner,
+                expected_thread_id,
+                idempotency_key,
+                actor,
+            )
+        )
+        return {
+            "status": "dispatched",
+            "dispatched": True,
+            "work_item_ref": ref,
+            "owner": expected_owner,
+            "thread_id": expected_thread_id,
+            "idempotency_key": idempotency_key,
+        }
 
 
 class _CodeHostRegistry:
@@ -344,11 +374,12 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             ),
         }
         self.work_items = _WorkItems(self.states)
+        self.operator = _Operator()
         self.service = ControlPlaneBrokerService(
             identity=self.identity,
             authority=self.authority,
             work_items=self.work_items,
-            operator=_Operator(),
+            operator=self.operator,
             audit=ControlPlaneBrokerAuditStore(self.sqlite),
             limits=ControlPlaneBrokerLimits(
                 max_request_bytes=1024,
@@ -396,6 +427,12 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                         AuthorityGrant(
                             id="orchestration.handoff",
                             capability="work_item.handoff",
+                            level=AuthorityLevel.EXECUTE,
+                            project_ids=("project-a",),
+                        ),
+                        AuthorityGrant(
+                            id="orchestration.steer",
+                            capability="work_item.steer",
                             level=AuthorityLevel.EXECUTE,
                             project_ids=("project-a",),
                         ),
@@ -583,6 +620,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("repository.check.rerun", operation_ids)
         self.assertIn("repository.workspace.refresh", operation_ids)
         self.assertIn("action_intent.reconcile", operation_ids)
+        self.assertIn("work_item.steer", operation_ids)
         self.assertIn("deployment.local.status", operation_ids)
         self.assertIn("deployment.local.install", operation_ids)
         self.assertNotIn("lease_token", json.dumps(payload))
@@ -736,6 +774,14 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(payload["ref"], self.ref)
+        self.assertEqual(
+            payload["assigned_scope"]["source"],
+            "authoritative_task_source",
+        )
+        self.assertEqual(
+            payload["assigned_scope"]["body_text"],
+            "Acceptance criteria",
+        )
         self.assertEqual(headers["x-correlation-id"], "corr-read-1")
         self.assertEqual(payload["_broker"]["operation"], "work_item.read")
 
@@ -759,6 +805,49 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(audit[0].actor_identity_id, self.worker_actor.identity_id)
         self.assertIsNotNone(audit[0].authority_definition)
         self.assertEqual(audit[0].authority_decision_id.startswith("authority-"), True)
+
+    async def test_owner_steer_uses_bounded_preconditions_and_exact_authority(self) -> None:
+        encoded = quote(self.ref, safe="")
+        status, _, payload = await self._request(
+            "POST",
+            f"/api/work-items/{encoded}/steer",
+            payload={
+                "expected_owner": "james",
+                "expected_thread_id": "thread-james",
+                "idempotency_key": "owner-wakeup:42:1",
+            },
+        )
+
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(payload["dispatched"])
+        self.assertEqual(payload["_broker"]["operation"], "work_item.steer")
+        self.assertEqual(
+            self.operator.steers,
+            [
+                (
+                    self.ref,
+                    "james",
+                    "thread-james",
+                    "owner-wakeup:42:1",
+                    self.worker_actor.identity_id,
+                )
+            ],
+        )
+
+    async def test_owner_steer_rejects_unbounded_payload_before_dispatch(self) -> None:
+        status, _, payload = await self._request(
+            "POST",
+            f"/api/work-items/{quote(self.ref, safe='')}/steer",
+            payload={
+                "expected_owner": "james",
+                "expected_thread_id": "thread-james",
+                "idempotency_key": "owner-wakeup:42:1",
+                "message": "mutate an arbitrary thread",
+            },
+        )
+
+        self.assertEqual(status, 422, payload)
+        self.assertEqual(self.operator.steers, [])
 
     async def test_non_allowlisted_arbitrary_localhost_and_method_mismatch_fail_closed(self) -> None:
         status, _, payload = await self._request(

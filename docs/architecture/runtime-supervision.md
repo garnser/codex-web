@@ -70,6 +70,15 @@ fabricate a session-availability result.
 
 Recovery scheduling is idempotent inside the configured cooldown window. Continuity checks capture the expected owner/handoff identity when scheduled and abort if the canonical work item changes before the check runs.
 
+Assignment-triggered owner steering reuses the same continuity owner rather
+than adding a second Thread mutation path. The broker supplies exact
+owner/Thread preconditions; continuity checks canonical actionable state,
+Project binding, active/queued state, and its stable dispatch key before using
+the normal event-dispatch seam. The dispatched turn retains the Work Item ref
+and singular canonical repository scope. The event seam resolves the recipient's
+published profile and removes repository scope for scratch-only profiles, so a
+wakeup cannot promote execution authority.
+
 Owner-work supervision also treats canonical actionable ownership as a durable
 wake condition. For each configured agent owner, an idle lane with no active or
 queued turn receives at most one exact canonical Work Item per bounded dispatch

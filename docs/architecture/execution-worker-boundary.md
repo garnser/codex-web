@@ -297,8 +297,27 @@ Initial reachability is limited to scoped Work Item operations:
 - progress;
 - handoff;
 - acknowledgement;
+- exact-owner steering;
 - retry;
 - reconciliation.
+
+`work_item.steer` is not a general Thread API. Its request carries only the
+expected canonical owner, the exact current owner-binding Thread, and a bounded
+idempotency key. Tenant/workspace/Project and Work Item scope are checked before
+Role authority. Continuity then revalidates actionable state and the same-Project
+owner binding, refuses unrelated or stale Threads, and reports active, queued,
+duplicate, or dispatched outcomes without launching duplicate work. The stable
+canonical dispatch key remains the deduplication authority; changing a caller
+key cannot bypass it. Dispatch uses the existing event path, which resolves the
+recipient's published Agent/Execution Profile and strips repository scope from
+profiles that do not permit it. A singular canonical Work Item repository is
+attached as execution context, not as a grant.
+
+`work_item.read` returns both canonical state and the configured TaskSource read
+projection. Its `assigned_scope` selects canonical `next_action` when present;
+otherwise it exposes the authoritative title, body/acceptance criteria, and
+source identity already available through that credential-free boundary. Raw
+provider credentials never enter the assignment.
 
 Repository-write assignments may also reconcile only their own branch-publish
 ActionIntents. The broker requires the same execution, Project, requester and
