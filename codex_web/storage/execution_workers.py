@@ -262,6 +262,16 @@ class ExecutionWorkerStore:
             else None
         )
 
+    def assignment_page(
+        self, *, after: str | None = None, limit: int = 100,
+    ) -> tuple[list[ExecutionAssignment], str | None]:
+        """Read bounded assignments without loading worker/event history."""
+        self._ensure_records()
+        records, cursor = self.store.record_page(
+            self.assignment_namespace, after=after, limit=limit,
+        )
+        return [ExecutionAssignment.model_validate(raw) for raw in records.values()], cursor
+
     def worker(self, worker_id: str) -> ExecutionWorker | None:
         self._ensure_records()
         payload = self.store.record_get(self.worker_namespace, worker_id)

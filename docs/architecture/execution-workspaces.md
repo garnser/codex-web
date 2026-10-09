@@ -69,6 +69,24 @@ If assignment-bound bootstrap is unavailable or returns no canonical thread
 identity, replacement fails visibly and leaves the existing logical binding in
 place.
 
+### Periodic assignment lease recovery
+
+The runtime supervisor invokes canonical expired-assignment recovery independently
+of thread queues, using the existing local control actor and configurable queue
+recovery cadence. The synchronous callback runs off the event loop; callback
+failure emits `execution_assignment_recovery_failed` and retries next cycle.
+Bounded assignment pages prefilter same-tenant expiry without loading worker/event
+history or rewriting state when no expiry exists. The existing atomic transition
+rechecks current status and lease expiry, records `WORKER_LEASE_LOST`/`lost`, clears
+the lease and preserves the fence. Renewed and foreign-tenant assignments are not
+lost from a stale prefilter snapshot.
+
+Expiry release always retains the entire worktree/scratch directory and branches,
+including ignored and untracked artifacts, even if ordinary Git status looks clean.
+Assignment loss and workspace release remain separate commits. Existing suppressed
+workspace-release failures require supported operator reconciliation; this periodic
+callback does not claim durable retry of that second write.
+
 ### Failed bootstrap cancellation
 
 Failed pre-registration process startup and failed provider session creation
