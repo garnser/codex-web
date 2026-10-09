@@ -1374,14 +1374,14 @@ class ControlPlaneBrokerService:
             assert resolved.target_ref is not None
             result = await self.operator.retry(
                 resolved.target_ref,
-                actor=str(payload.get("actor") or actor.identity_id),
+                actor=actor.identity_id,
                 reason=(str(payload["reason"]) if payload.get("reason") else None),
             )
         elif operation.id == "work_item.reconcile":
             assert resolved.target_ref is not None
             result = await self.operator.reconcile(
                 resolved.target_ref,
-                actor=str(payload.get("actor") or actor.identity_id),
+                actor=actor.identity_id,
                 reason=(str(payload["reason"]) if payload.get("reason") else None),
             )
         else:  # pragma: no cover - closed operation catalog

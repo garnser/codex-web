@@ -402,11 +402,33 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         )
         await self.broker.start()
 
+    async def test_operator_audit_actor_is_authenticated_assignment_identity(self):
+        for operation in ("retry", "reconcile"):
+            with self.subTest(operation=operation):
+                path = "/api/work-items/" + quote(self.ref, safe="") + "/" + operation
+                status, _, body = await self._request("POST", path,
+                    payload={"actor": "spoofed-admin", "reason": "verified operation"})
+                self.assertEqual(status, 200)
+                self.assertEqual(body["item"]["actor"], self.worker_actor.identity_id)
+                self.assertEqual(body["item"]["reason"], "verified operation")
+                foreign = "/api/work-items/" + quote(self.other_ref, safe="") + "/" + operation
+                status, _, _ = await self._request("POST", foreign, payload={})
+                self.assertEqual(status, 403)
+
+    async def test_operator_mutations_still_require_execute_grant(self):
+        self._publish_worker_authority(operator_grants=False)
+        for operation in ("retry", "reconcile"):
+            path = "/api/work-items/" + quote(self.ref, safe="") + "/" + operation
+            status, _, body = await self._request("POST", path,
+                payload={"actor": "local-admin"})
+            self.assertEqual(status, 403)
+            self.assertNotIn("item", body)
+
     async def asyncTearDown(self) -> None:
         await self.broker.stop()
         self.temp.cleanup()
 
-    def _publish_worker_authority(self) -> None:
+    def _publish_worker_authority(self, *, operator_grants=True) -> None:
         active = self.registry.resolve(
             definition_id=AUTHORITY_ROLE_CATALOG_ID,
             kind=AUTHORITY_ROLE_CATALOG_KIND,
@@ -414,7 +436,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         active_catalog = AuthorityRoleCatalogDefinition.model_validate(active.payload)
         catalog = AuthorityRoleCatalogDefinition(
             roles=(
-                *active_catalog.roles,
+                *(role for role in active_catalog.roles if role.id != "orchestration-worker"),
                 AuthorityRoleDefinition(
                     id="orchestration-worker",
                     name="Orchestration worker",
@@ -431,6 +453,23 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                             capability="work_item.handoff",
                             level=AuthorityLevel.EXECUTE,
                             project_ids=("project-a",),
+                        ),
+                        *(
+                            (
+                                AuthorityGrant(
+                                    id="orchestration.reconcile",
+                                    capability="work_item.reconcile",
+                                    level=AuthorityLevel.EXECUTE,
+                                    project_ids=("project-a",),
+                                ),
+                                AuthorityGrant(
+                                    id="orchestration.retry",
+                                    capability="work_item.retry",
+                                    level=AuthorityLevel.EXECUTE,
+                                    project_ids=("project-a",),
+                                ),
+                            )
+                            if operator_grants else ()
                         ),
                         AuthorityGrant(
                             id="orchestration.steer",
@@ -454,7 +493,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             bindings=(
-                *active_catalog.bindings,
+                *(binding for binding in active_catalog.bindings if binding.id != "worker-binding"),
                 AuthorityRoleBinding(
                     id="worker-binding",
                     role_id="orchestration-worker",
