@@ -186,6 +186,14 @@ Codex stdout dispatch resolves RPC responses independently of its bounded,
 ordered notification queue. Notification processing preserves native order and
 existing projection, approval, and delivery checks. Runtime shutdown cancels
 both readers and the notification processor.
+Outbound workflow-claim verification runs through `asyncio.to_thread`, preserving
+the actor/tenant ContextVars and awaiting the existing findings/correction before
+provider delivery and the next native notification. A cancelled wait does not
+send or retry the update. Messages without qualified or bare issue references
+do not read the Work Item catalog; qualified-reference matching and unique bare
+number ambiguity checks retain their existing semantics. Referenced catalog
+scans still exist and this off-loop isolation does not claim to remove their
+project-size CPU cost.
 Assignment process startup and teardown serialize per canonical assignment;
 initializing an unrelated worker does not hold a runtime-wide startup lock.
 Streaming text/output refreshes durable activity at most once every five seconds;
