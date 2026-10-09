@@ -399,6 +399,7 @@ test("Project coordinated policy submits all repositories without per-turn selec
 
 test("retryable steering failure preserves the queued message and reconciles canonical state", async ({ page }) => {
   await mirrorProductionStaticMount(page);
+  await page.routeWebSocket("**/ws", () => {});
   let queueReads = 0;
   let threadReads = 0;
   const project = {
