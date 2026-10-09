@@ -30,10 +30,11 @@ from codex_web.models import Project, WorkItemState
 from codex_web.resources import ResourceAlias, ResourceCreate, ResourceType
 from codex_web.services.execution_workspaces import (
     ExecutionWorkspaceConflictError,
+    ExecutionWorkspaceNotFoundError,
     ExecutionWorkspaceQuotaError,
     ExecutionWorkspaceService,
 )
-from codex_web.services.identity import IdentityService
+from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.storage.identity_state import IdentityStateStore
@@ -189,6 +190,75 @@ class ExecutionWorkspaceTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_workspace_lookup_does_not_read_unrelated_history(self) -> None:
+        workspace = self._acquire("point-read")
+        store = self.service.store
+        raw = workspace.model_dump(mode="json")
+        self.sqlite.record_apply(store.workspace_namespace, upserts={
+            f"historical-{i}": {**raw, "id": f"historical-{i}"}
+            for i in range(2000)
+        })
+        self.sqlite.record_apply(store.event_namespace, upserts={
+            f"event-{i}": {"workspace_id": f"historical-{i}",
+                           "event_type": "released", "occurred_at": float(i)}
+            for i in range(1530)
+        })
+        # Unrelated invalid historical data must not be deserialized by a point read.
+        self.sqlite.record_apply(store.workspace_namespace,
+                                 upserts={"unrelated-corrupt": {"id": "unrelated-corrupt"}})
+        original = self.sqlite.record_items
+        def bounded_items(namespace):
+            self.assertNotIn(namespace, (store.workspace_namespace,
+                                        store.lease_namespace, store.event_namespace))
+            return original(namespace)
+        with patch.object(self.sqlite, "record_items", side_effect=bounded_items), \
+             patch.object(self.sqlite, "record_get", wraps=self.sqlite.record_get) as read:
+            self.assertEqual(self.service.get(workspace.id, self.actor), workspace)
+            read.assert_called_once_with(store.workspace_namespace, workspace.id)
+
+    def test_workspace_lookup_missing_is_bounded(self) -> None:
+        self._acquire("point-missing")
+        with patch.object(self.service.store, "load", side_effect=AssertionError("bulk read")):
+            with self.assertRaises(ExecutionWorkspaceNotFoundError):
+                self.service.get("missing", self.actor)
+
+    def test_workspace_lookup_preserves_tenant_and_owner_checks(self) -> None:
+        workspace = self._acquire("point-authority")
+        other_tenant = self.actor.model_copy(update={"workspace_id": "other"})
+        other_owner = self.actor.model_copy(update={"identity_id": "other", "roles": ()})
+        with patch.object(self.service.store, "load", side_effect=AssertionError("bulk read")):
+            with self.assertRaises(ExecutionWorkspaceNotFoundError):
+                self.service.get(workspace.id, other_tenant)
+            with self.assertRaises(AuthorizationError):
+                self.service.get(workspace.id, other_owner)
+
+    def test_workspace_lookup_rejects_corrupt_selected_record(self) -> None:
+        workspace = self._acquire("point-corrupt")
+        raw = workspace.model_dump(mode="json")
+        for invalid in ({**raw, "requested_disk_bytes": "invalid"},
+                        {**raw, "id": "different-record"}):
+            with self.subTest(invalid=invalid["id"]):
+                self.sqlite.record_apply(self.service.store.workspace_namespace,
+                                         upserts={workspace.id: invalid})
+                with self.assertRaises(ValueError):
+                    self.service.get(workspace.id, self.actor)
+
+    def test_workspace_point_read_migrates_legacy_state_once(self) -> None:
+        workspace = self._acquire("point-migrate")
+        raw = self.service.store.load().model_dump(mode="json")
+        raw["schema_version"] = "1.0"
+        for item in raw["workspaces"]:
+            item.pop("subject", None)
+        for item in raw["leases"]:
+            item.pop("subject", None)
+        legacy = SQLiteStateStore(Path(self.temp.name) / "point-legacy.db")
+        legacy.put(self.service.store.namespace, raw)
+        store = ExecutionWorkspaceStateStore(legacy)
+        self.assertEqual(store.workspace(workspace.id), workspace)
+        self.assertIsNone(legacy.get(store.namespace))
+        with patch.object(legacy, "record_items", side_effect=AssertionError("bulk read")):
+            self.assertEqual(store.workspace(workspace.id), workspace)
 
     def _acquire(
         self,
