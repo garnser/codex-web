@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import math
 import time
 import threading
 from contextlib import contextmanager
@@ -255,8 +256,13 @@ class PostgresStateStore:
     ) -> None:
         prefix = state_record_prefix(namespace)
         cursor.execute(
-            "DELETE FROM codex_state_documents WHERE LEFT(namespace, LENGTH(%s)) = %s",
-            (prefix, prefix),
+            "SELECT MAX(updated_at) FROM codex_state_documents WHERE namespace = %s OR (namespace >= %s AND namespace < %s)",
+            (namespace, prefix, prefix + "\uffff"),
+        )
+        previous = cursor.fetchone()[0]
+        cursor.execute(
+            "DELETE FROM codex_state_documents WHERE namespace >= %s AND namespace < %s",
+            (prefix, prefix + "\uffff"),
         )
         cursor.execute(
             "DELETE FROM codex_state_documents WHERE namespace = %s",
@@ -273,6 +279,7 @@ class PostgresStateStore:
                 state_record_storage_key(namespace, str(key)),
                 payload,
             )
+        cls._touch_record_revision(cursor, namespace, minimum=previous or 0.0)
 
     @classmethod
     def _ensure_record_collection_in_cursor(
@@ -474,17 +481,25 @@ class PostgresStateStore:
                         cursor,
                         namespace,
                     )
+                    changed = bool(upserts)
+                    deleted_revision = 0.0
                     for key in dict.fromkeys(str(item) for item in deletes):
                         cursor.execute(
-                            "DELETE FROM codex_state_documents WHERE namespace = %s",
+                            "DELETE FROM codex_state_documents WHERE namespace = %s RETURNING updated_at",
                             (state_record_storage_key(namespace, key),),
                         )
+                        deleted = cursor.fetchone()
+                        if deleted is not None:
+                            changed = True
+                            deleted_revision = max(deleted_revision, deleted[0])
                     for key, payload in upserts.items():
                         self._upsert(
                             cursor,
                             state_record_storage_key(namespace, str(key)),
                             payload,
                         )
+                    if changed:
+                        self._touch_record_revision(cursor, namespace, minimum=deleted_revision)
             success = True
         finally:
             self._keyed_mutation_metrics.observe(
@@ -505,14 +520,13 @@ class PostgresStateStore:
         try:
             with self._connection() as connection:
                 with connection.cursor() as cursor:
-                    self._lock(cursor, f"{namespace}:{key}")
+                    # All collection writers acquire the namespace lock before
+                    # record/marker locks, including replacement and deletion.
+                    self._lock(cursor, namespace)
                     if not self._record_collection_exists_in_cursor(
                         cursor,
                         namespace,
                     ):
-                        # Migration is a namespace-wide transition; serialize the
-                        # one-time conversion before returning to per-key locks.
-                        self._lock(cursor, namespace)
                         self._ensure_record_collection_in_cursor(
                             cursor,
                             namespace,
@@ -527,13 +541,20 @@ class PostgresStateStore:
                     )
                     current = self._decode(cursor.fetchone(), default)
                     updated = updater(current)
+                    deleted_revision = 0.0
                     if updated is None:
                         cursor.execute(
-                            "DELETE FROM codex_state_documents WHERE namespace = %s",
+                            "DELETE FROM codex_state_documents WHERE namespace = %s RETURNING updated_at",
                             (storage_key,),
                         )
+                        deleted = cursor.fetchone()
+                        changed = deleted is not None
+                        deleted_revision = deleted[0] if deleted is not None else 0.0
                     else:
                         self._upsert(cursor, storage_key, updated)
+                        changed = True
+                    if changed:
+                        self._touch_record_revision(cursor, namespace, minimum=deleted_revision)
             success = True
             return updated
         finally:
@@ -569,15 +590,24 @@ class PostgresStateStore:
                     changes = updater(current)
                     if not isinstance(changes, dict):
                         raise TypeError("record_mutate updater must return a mapping")
+                    changed = False
+                    deleted_revision = 0.0
                     for key, payload in changes.items():
                         storage_key = state_record_storage_key(namespace, str(key))
                         if payload is None:
                             cursor.execute(
-                                "DELETE FROM codex_state_documents WHERE namespace = %s",
+                                "DELETE FROM codex_state_documents WHERE namespace = %s RETURNING updated_at",
                                 (storage_key,),
                             )
+                            deleted = cursor.fetchone()
+                            if deleted is not None:
+                                changed = True
+                                deleted_revision = max(deleted_revision, deleted[0])
                         else:
                             self._upsert(cursor, storage_key, payload)
+                            changed = True
+                    if changed:
+                        self._touch_record_revision(cursor, namespace, minimum=deleted_revision)
             success = True
             return changes
         finally:
@@ -803,6 +833,30 @@ class PostgresStateStore:
                         self._upsert(cursor, namespace, updated[namespace])
                 return updated
 
+    @classmethod
+    def _touch_record_revision(cls, cursor, namespace: str, *, minimum: float = 0.0) -> None:
+        marker = state_record_marker(namespace)
+        cursor.execute(
+            "SELECT payload, updated_at FROM codex_state_documents WHERE namespace = %s FOR UPDATE",
+            (marker,),
+        )
+        payload, timestamp = cursor.fetchone()
+        metadata = json.loads(payload) if isinstance(payload, str) else dict(payload)
+        if not metadata.get("revisionTracked"):
+            prefix = state_record_prefix(namespace)
+            cursor.execute(
+                "SELECT MAX(updated_at) FROM codex_state_documents WHERE namespace >= %s AND namespace < %s",
+                (prefix, prefix + "\uffff"),
+            )
+            latest = cursor.fetchone()[0]
+            timestamp = max(timestamp, latest or timestamp)
+            metadata["revisionTracked"] = True
+        revision = max(time.time(), math.nextafter(max(float(timestamp), minimum), math.inf))
+        cursor.execute(
+            "UPDATE codex_state_documents SET payload = %s, updated_at = %s WHERE namespace = %s",
+            (cls._serialized(metadata), revision, marker),
+        )
+
     def namespace_revision(self, namespace: str) -> float | None:
         with self._connection() as connection:
             with connection.cursor() as cursor:
@@ -826,9 +880,9 @@ class PostgresStateStore:
                     """
                     SELECT MAX(updated_at)
                     FROM codex_state_documents
-                    WHERE LEFT(namespace, LENGTH(%s)) = %s
+                    WHERE namespace >= %s AND namespace < %s
                     """,
-                    (prefix, prefix),
+                    (prefix, prefix + "\uffff"),
                 )
                 latest = cursor.fetchone()
                 return (
