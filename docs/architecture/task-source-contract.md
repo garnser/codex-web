@@ -89,6 +89,16 @@ relations from the native related-MR endpoint and accept only same-project
 source/target MRs with an exact commit head. Discovery does not add one provider
 request per issue merely to populate these relations.
 
+GitLab relation reads enumerate numeric pages on the same credential-bound
+endpoint, with limits of ten pages, 1,000 items, 512 KiB per page, 4 MiB total,
+and sixty seconds overall. Missing pagination headers require an empty page
+before enumeration is complete. Invalid continuations, repeated items,
+inconsistent totals, malformed pages, provider errors, and exhausted limits
+fail the read visibly before projection. Partial collections must never become
+fresh absence or remove a previously verified MR/reviewer lane. This leaves
+the existing snapshot contract unchanged: a returned relation collection is
+complete; a failed read returns no snapshot to reconcile.
+
 Assignment-bound Work Item reads expose this normalized body through the
 credential-free TaskSource read boundary. When canonical `next_action` is
 absent, the broker's `assigned_scope` points the worker to the authoritative

@@ -76,7 +76,7 @@ class GitLabClientTests(unittest.IsolatedAsyncioTestCase):
 
         async def handler(request):
             seen.append(request)
-            return httpx.Response(200, json=[{"iid": 287}, None])
+            return httpx.Response(200, json=[{"iid": 287}], headers={"X-Next-Page": ""})
 
         client = GitLabClient(transport=httpx.MockTransport(handler))
         result = await client.issue_related_merge_requests(
