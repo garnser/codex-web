@@ -1415,9 +1415,15 @@ class WorkItemService:
         publish_event: Any,
     ) -> dict[str, Any]:
         read_state = getattr(self.state_machine, "_work_item_state", None)
+        canonical_progress = self.state_machine._structured_progress
+        is_canonical_progress = (
+            getattr(structured_progress, "__self__", None) is self.state_machine
+            and getattr(structured_progress, "__func__", None)
+            is getattr(canonical_progress, "__func__", None)
+        )
         previous_evidence = (
             work_item_progress_evidence(read_state(ref))
-            if callable(read_state)
+            if callable(read_state) and is_canonical_progress
             else None
         )
         state = structured_progress(ref, payload)

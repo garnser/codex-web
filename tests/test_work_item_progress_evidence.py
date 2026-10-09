@@ -78,6 +78,26 @@ class ProgressEvidenceTests(unittest.TestCase):
 
 
 class ProgressSchedulingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_historical_override_does_not_require_a_canonical_record(self):
+        fixture = ProgressEvidenceTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        synthetic = fixture.machine._work_item_state(fixture.ref).model_copy(deep=True)
+        fixture.fixture.host.states.clear()
+        service = object.__new__(WorkItemService)
+        service.state_machine = fixture.machine
+        service.task_source_writeback = SimpleNamespace(sync=AsyncMock(side_effect=lambda state: state))
+        override = Mock(return_value=synthetic)
+        continuity = SimpleNamespace(schedule_actionable_owner_dispatch=Mock(), schedule_actionable_owner_continuity_check=Mock())
+        result = await service._progress_with(fixture.ref, fixture.payload,
+            continuity=continuity, recovery=SimpleNamespace(schedule=Mock()),
+            structured_progress=override, public_state=lambda state: {"ref": state.ref},
+            split_brain_findings=lambda state: [], publish_event=AsyncMock())
+        self.assertTrue(result["ok"])
+        override.assert_called_once_with(fixture.ref, fixture.payload)
+        continuity.schedule_actionable_owner_dispatch.assert_called_once()
+        continuity.schedule_actionable_owner_continuity_check.assert_called_once()
+
     async def test_noop_acknowledges_without_scheduling_but_new_evidence_dispatches(self):
         fixture = ProgressEvidenceTests()
         fixture.setUp()
