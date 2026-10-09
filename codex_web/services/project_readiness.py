@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from codex_web.bootstrap_engine import (
@@ -62,6 +63,7 @@ class ProjectReadinessService:
         runtime_credential_configs: Mapping[tuple[str, str], str] | None = None,
         permitted_codex_authentication_modes: tuple[CodexExecutionAuthenticationMode, ...] | None = None,
         local_session_probe: Callable[[], bool] | None = None,
+        local_session_refresh: Callable[[], Awaitable[None]] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.projects = projects
@@ -79,7 +81,31 @@ class ProjectReadinessService:
         )
         self.permitted_codex_authentication_modes = permitted_codex_authentication_modes
         self.local_session_probe = local_session_probe
+        self.local_session_refresh = local_session_refresh
         self.clock = clock
+
+    async def evaluate_with_refresh(
+        self, project_id: str, *, actor: AuthenticationActor, record: bool = True
+    ) -> ProjectReadinessSnapshot:
+        # Scope and policy are evaluated before touching the operator session.
+        value = await asyncio.to_thread(self.evaluate, project_id, actor=actor, record=False)
+        if self.local_session_refresh is not None and any(
+            check.id == "runtime:credential-reference"
+            and check.code == "local_session_unavailable"
+            for check in value.checks
+        ):
+            try:
+                await self.local_session_refresh()
+            except Exception:
+                # Failed metadata reads cannot grant authentication readiness.
+                pass
+            return await asyncio.to_thread(self.evaluate, project_id, actor=actor, record=record)
+        if record:
+            saved = await asyncio.to_thread(self.store.record, value)
+            value = value.model_copy(update={
+                "last_successful_verification_at": saved.last_successful_verification_at
+            })
+        return value
 
     @staticmethod
     def _check(

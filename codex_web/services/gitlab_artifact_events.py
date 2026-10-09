@@ -46,6 +46,15 @@ class GitLabArtifactEventProjector:
         self.gitlab = gitlab_dependencies
         self.state_machine = state_machine
 
+    def _persist(self, state: WorkItemState, states: dict[str, WorkItemState] | None) -> None:
+        if self.work_items.save_state is not None:
+            self.work_items.save_state(state)
+        else:
+            if states is None:
+                states = self.work_items.load_states()
+            states[state.ref] = state
+            self.work_items.save_states(states)
+
     @staticmethod
     def _parse_timestamp(value: Any) -> float | None:
         if isinstance(value, (int, float)):
@@ -201,8 +210,20 @@ class GitLabArtifactEventProjector:
         priority = self._priority(labels)
         now = time.time()
         event_timestamp = self._payload_timestamp(payload)
-        states = self.work_items.load_states()
-        state = states.get(ref)
+        states = None
+        if self.work_items.get_state is not None and self.work_items.save_state is not None:
+            state = self.work_items.get_state(ref)
+        else:
+            states = self.work_items.load_states()
+            state = states.get(ref)
+        project_path = (
+            str(project.get("path_with_namespace") or "").strip()
+            or ref.split("!", 1)[0].split("#", 1)[0]
+        )
+        organization_id, workspace_id = self.work_items.project_tenant(project_id)
+        resource_ids = self.work_items.project_resource_ids(
+            project_id, source_type="gitlab", project_path=project_path
+        )
         projected_stage = self._stage(
             state_name=str(attrs.get("state") or attrs.get("status") or ""),
             status_label=status_label,
@@ -214,10 +235,12 @@ class GitLabArtifactEventProjector:
         projected_status_label = None if projected_stage == "closed" else status_label
 
         if state is None:
-            project_path = str(project.get("path_with_namespace") or "").strip() or None
             state = WorkItemState(
                 ref=ref,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
                 project_id=project_id,
+                resource_ids=resource_ids,
                 project_path=project_path,
                 source_identity=TaskSourceIdentity(
                     source_type="gitlab",
@@ -277,6 +300,18 @@ class GitLabArtifactEventProjector:
                     now=now,
                 )
         else:
+            association_changed = (
+                state.organization_id != organization_id
+                or state.workspace_id != workspace_id
+                or state.project_id != project_id
+                or state.project_path != project_path
+                or state.resource_ids != resource_ids
+            )
+            state.organization_id = organization_id
+            state.workspace_id = workspace_id
+            state.project_id = project_id
+            state.project_path = project_path
+            state.resource_ids = resource_ids
             previous_stage = state.current_stage
             previous_owner = state.current_owner
             previous_status_label = state.status_label
@@ -302,6 +337,8 @@ class GitLabArtifactEventProjector:
                         },
                     )
                 )
+                if association_changed:
+                    self._persist(state, states)
                 return state
             if self.state_machine._preserve_accepted_handoff_recipient(
                 state,
@@ -321,6 +358,8 @@ class GitLabArtifactEventProjector:
                         },
                     )
                 )
+                if association_changed:
+                    self._persist(state, states)
                 return state
 
             state.project_id = project_id
@@ -382,8 +421,7 @@ class GitLabArtifactEventProjector:
         state.artifact_state = self._artifact_state(payload, state)
         if state.current_stage == "ready_for_validation" and not state.handoff:
             state.next_owner = state.current_owner
-        states[ref] = state
-        self.work_items.save_states(states)
+        self._persist(state, states)
         self.state_machine._append_work_item_event(
             self.state_machine._work_item_event(
                 ref,
