@@ -288,6 +288,10 @@ class AssignmentBoundAgentProcessSession:
 
     def _prepare_assignment(self) -> tuple[ExecutionAssignment, Path]:
         assignment = self.local_worker._pending_assignment(self.assignment_id)
+        if getattr(self, "require_new_claim", False) and assignment.status != AssignmentStatus.PENDING:
+            raise AssignmentBoundAgentProcessSessionStaleError(
+                "bootstrap startup lost its pending assignment to another claim"
+            )
         if not runtime_binding_identity_matches(
             assignment.runtime_binding,
             self.runtime_binding,

@@ -204,6 +204,9 @@ async def start_assignment_session(session: Any, local_worker: Any, assignment_i
         if original.subject.kind != "thread_bootstrap" or original.status != AssignmentStatus.PENDING:
             await session.start()
             return
+        # A same-worker lease can otherwise be resumed by _claim_or_resume.
+        # This pending bootstrap attempt owns only a new claim it actually wins.
+        session.require_new_claim = True
         startup_task = asyncio.create_task(session.start())
         await asyncio.shield(startup_task)
     except (Exception, asyncio.CancelledError) as startup_error:
