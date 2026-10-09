@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -26,20 +27,27 @@ def build_agent_runtime_usage_router(
         runtime_id: str | None = None,
         model_id: str | None = None,
     ) -> dict[str, Any]:
-        items = service.list(
-            request_actor(request),
-            project_id=project_id,
-            execution_id=execution_id,
-            agent_session_id=agent_session_id,
-            provider_id=provider_id,
-            runtime_id=runtime_id,
-            model_id=model_id,
-        )
-        aggregates = service.aggregate_resources(items)
-        return {
-            "items": [item.model_dump(mode="json") for item in items],
-            "count": len(items),
-            "resources": [item.model_dump(mode="json") for item in aggregates],
-        }
+        actor = request_actor(request)
+
+        def read_projection() -> dict[str, Any]:
+            items = service.list(
+                actor,
+                project_id=project_id,
+                execution_id=execution_id,
+                agent_session_id=agent_session_id,
+                provider_id=provider_id,
+                runtime_id=runtime_id,
+                model_id=model_id,
+            )
+            aggregates = service.aggregate_resources(items)
+            return {
+                "items": [item.model_dump(mode="json") for item in items],
+                "count": len(items),
+                "resources": [item.model_dump(mode="json") for item in aggregates],
+            }
+
+        # The existing validated catalog read, aggregation and serialization
+        # stay together, preserving request context without blocking ASGI.
+        return await asyncio.to_thread(read_projection)
 
     return router

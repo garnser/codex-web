@@ -53,3 +53,16 @@ The shared AgentRuntime conformance suite is run against both Codex and Claude a
 Assignment-bound process tests separately exercise the shared worker boundary for lease/fence changes, runtime revision mismatch, credential rotation/expiry, sandboxed process execution and termination. Telemetry tests cover replay deduplication, attribution, quality markers, redaction and provider-specific usage normalization.
 
 Provider-specific fixtures remain at the adapter edge. Assertions over canonical usage, identity and lifecycle remain provider-neutral.
+
+### Usage inspection scheduling
+
+The runtime usage API resolves its authenticated request actor before scheduling
+one awaited worker-pool read. That operation retains the existing validated catalog
+lookup, tenant and request filters, resource aggregation, output order and JSON
+projection together, with the request ContextVars. Invalid catalog data and read
+failures still fail visibly; an unauthenticated request never starts the read.
+Cancellation stops the response task; an already executing synchronous read may
+finish without producing a response. This scheduling boundary prevents synchronous
+usage inspection from blocking ASGI and native RPC scheduling. It does not reduce
+the catalog's total validation, CPU or database work, and introduces no cache or
+storage migration.
