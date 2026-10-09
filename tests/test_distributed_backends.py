@@ -41,6 +41,28 @@ class RealDistributedBackendTests(unittest.IsolatedAsyncioTestCase):
         self.postgres = self._store()
         self._clear_postgres_documents()
 
+    async def test_postgres_batch_reads_are_selected_readonly_and_legacy_compatible(self):
+        from unittest.mock import patch
+        for keyed in (False, True):
+            namespace = "batch-keyed" if keyed else "batch-legacy"
+            payload = {"a/%?": {"value": 1}, "unrequested": {"value": 2}}
+            if keyed:
+                self.postgres.record_replace(namespace, payload)
+                # Unrequested malformed JSON/model data must not be read.
+                self.postgres.record_apply(namespace, upserts={"invalid": {"bad": True}})
+            else:
+                self.postgres.put(namespace, payload)
+            before = self.postgres.namespace_revision(namespace)
+            with patch.object(self.postgres, "_connection", wraps=self.postgres._connection) as connections:
+                self.assertEqual(self.postgres.record_get_many(namespace, ("a/%?", "missing", "a/%?")),
+                                 {"a/%?": {"value": 1}})
+                self.assertEqual(connections.call_count, 1)
+            self.assertEqual(self.postgres.namespace_revision(namespace), before)
+        with patch.object(self.postgres, "_connection", side_effect=AssertionError("empty batch I/O")):
+            self.assertEqual(self.postgres.record_get_many("batch-keyed", ()), {})
+            with self.assertRaises(ValueError):
+                self.postgres.record_get_many("batch-keyed", ("a",) * 1001)
+
     async def test_postgres_action_point_updates_and_concurrent_claims(self):
         from concurrent.futures import ThreadPoolExecutor
         from unittest.mock import patch

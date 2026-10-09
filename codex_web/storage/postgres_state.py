@@ -330,6 +330,27 @@ class PostgresStateStore:
                     return payload.get(key)
                 return None
 
+    def record_get_many(self, namespace: str, keys: tuple[str, ...]) -> dict[str, Any]:
+        if len(keys) > 1000:
+            raise ValueError("record batch exceeds 1000 keys")
+        keys = tuple(dict.fromkeys(str(key) for key in keys))
+        if not keys:
+            return {}
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                if not self._record_collection_exists_in_cursor(cursor, namespace):
+                    cursor.execute(
+                        "SELECT payload FROM codex_state_documents WHERE namespace = %s", (namespace,),
+                    )
+                    payload = self._decode(cursor.fetchone())
+                    return {key: payload[key] for key in keys if key in payload} if isinstance(payload, dict) else {}
+                storage_keys = {state_record_storage_key(namespace, key): key for key in keys}
+                cursor.execute(
+                    "SELECT namespace, payload FROM codex_state_documents WHERE namespace = ANY(%s)",
+                    (list(storage_keys),),
+                )
+                return {storage_keys[row[0]]: self._decode((row[1],)) for row in cursor.fetchall()}
+
     def record_items(self, namespace: str) -> dict[str, Any]:
         with self._connection() as connection:
             with connection.cursor() as cursor:

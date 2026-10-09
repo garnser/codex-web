@@ -252,6 +252,27 @@ class SQLiteStateStore:
                 return payload.get(key)
             return None
 
+    def record_get_many(self, namespace: str, keys: tuple[str, ...]) -> dict[str, Any]:
+        if len(keys) > 1000:
+            raise ValueError("record batch exceeds 1000 keys")
+        keys = tuple(dict.fromkeys(str(key) for key in keys))
+        if not keys:
+            return {}
+        with self._connection() as connection:
+            if not self._record_collection_exists_in_connection(connection, namespace):
+                row = connection.execute(
+                    "SELECT payload FROM state_documents WHERE namespace = ?", (namespace,),
+                ).fetchone()
+                payload = self._decode(row)
+                return {key: payload[key] for key in keys if key in payload} if isinstance(payload, dict) else {}
+            storage_keys = {state_record_storage_key(namespace, key): key for key in keys}
+            placeholders = ",".join("?" for _ in storage_keys)
+            rows = connection.execute(
+                f"SELECT namespace, payload FROM state_documents WHERE namespace IN ({placeholders})",
+                tuple(storage_keys),
+            ).fetchall()
+            return {storage_keys[row[0]]: self._decode((row[1],)) for row in rows}
+
     def record_items(self, namespace: str) -> dict[str, Any]:
         with self._connection() as connection:
             if self._record_collection_exists_in_connection(

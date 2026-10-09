@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Iterator, Mapping
 import json
 from contextvars import ContextVar
 from pathlib import Path
@@ -14,6 +15,26 @@ from codex_web.storage.state_store import OperationTimingMetrics, StateStore
 
 
 T = TypeVar("T", bound=BaseModel)
+
+
+class _SelectedModelMapping(Mapping[str, T]):
+    """Validate a selected raw batch only as canonical records are visited."""
+
+    def __init__(self, raw: dict[str, Any], model: type[T]) -> None:
+        self._raw = raw
+        self._model = model
+        self._validated: dict[str, T] = {}
+
+    def __getitem__(self, key: str) -> T:
+        if key not in self._validated:
+            self._validated[key] = self._model.model_validate(self._raw[key])
+        return self._validated[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._raw)
+
+    def __len__(self) -> int:
+        return len(self._raw)
 
 
 class ModelMapRepository(Generic[T]):
@@ -92,6 +113,21 @@ class ModelMapRepository(Generic[T]):
         self._ensure_records()
         raw = self.store.record_get(self.namespace, key)
         return self.model.model_validate(raw) if raw is not None else None
+
+    def get_many(self, keys: tuple[str, ...]) -> Mapping[str, T]:
+        if len(keys) > 1000:
+            raise ValueError("model batch exceeds 1000 keys")
+        keys = tuple(dict.fromkeys(str(key) for key in keys if self._included(str(key))))
+        if not keys:
+            return {}
+        self._ensure_records()
+        batch_get = getattr(self.store, "record_get_many", None)
+        if callable(batch_get):
+            raw = batch_get(self.namespace, keys)
+        else:
+            # Historical store implementations keep the point-read contract.
+            raw = {key: self.store.record_get(self.namespace, key) for key in keys}
+        return _SelectedModelMapping({key: raw[key] for key in keys if raw.get(key) is not None}, self.model)
 
     def count(self) -> int:
         self._ensure_records()

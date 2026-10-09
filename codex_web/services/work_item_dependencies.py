@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -53,6 +53,7 @@ class WorkItemRuntimeDependencies:
         WorkItemState | None,
     ] | None = None
     save_state: Callable[[WorkItemState], None] | None = None
+    get_states: Callable[[tuple[str, ...]], Mapping[str, WorkItemState]] | None = None
 
     def project_tenant(self, project_id: str) -> tuple[str, str]:
         for project in self.load_projects():

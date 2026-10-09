@@ -2244,6 +2244,7 @@ work_item_dependencies = WorkItemRuntimeDependencies(
     default_release_owner=DEFAULT_RELEASE_OWNER,
     non_implementation_owners=NON_IMPLEMENTATION_OWNERS,
     get_state=runtime_state.work_item_states.get,
+    get_states=runtime_state.work_item_states.get_many,
     get_state_by_source_identity=_get_work_item_state_by_source_identity,
     save_state=_put_work_item_state_record,
 )
