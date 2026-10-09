@@ -565,6 +565,7 @@ class AutonomyService:
                                 "work-item-sla",
                                 cycle_key=dispatch_key,
                                 payload={
+                                    "project_id": state.project_id,
                                     "ref": ref,
                                     "agent": recipient,
                                     "stage": state.current_stage,
@@ -609,6 +610,7 @@ class AutonomyService:
                 "work-item-sla",
                 cycle_key=dispatch_key,
                 payload={
+                    "project_id": state.project_id,
                     "ref": ref,
                     "agent": owner,
                     "stage": state.current_stage,
