@@ -315,13 +315,21 @@ class GitLabTaskSource:
     ) -> TaskSourceSnapshot:
         self.capabilities.require(TaskSourceCapability.READ)
         self._validate_identity(identity)
-        project_path, separator, iid_text = identity.external_id.partition("!")
+        project_path, iid = self._split_merge_request_id(identity.external_id)
+        merge_request = await self.client.merge_request(
+            self.api_base, project_path, iid, token=self.token,
+        )
+        return self._snapshot_from_merge_request(identity, merge_request)
+
+    @staticmethod
+    def _split_merge_request_id(external_id: str) -> tuple[str, int]:
+        project_path, separator, iid_text = external_id.partition("!")
         project_path = project_path.strip().strip("/")
         iid_text = iid_text.strip()
         if (
             not separator
             or not project_path
-            or "#" in identity.external_id
+            or "#" in external_id
             or "!" in project_path
             or not iid_text.isascii()
             or not iid_text.isdigit()
@@ -330,11 +338,14 @@ class GitLabTaskSource:
             raise InvalidTaskSourceIdentity(
                 "GitLab merge-request identity must use <project-path>!<positive-iid>"
             )
-        iid = int(iid_text)
+        return project_path, int(iid_text)
+
+    def _snapshot_from_merge_request(
+        self, identity: TaskSourceIdentity, merge_request: dict[str, Any],
+    ) -> TaskSourceSnapshot:
+        self._validate_identity(identity)
+        project_path, iid = self._split_merge_request_id(identity.external_id)
         expected_ref = f"{project_path}!{iid}"
-        merge_request = await self.client.merge_request(
-            self.api_base, project_path, iid, token=self.token,
-        )
         provider_ref = str((merge_request.get("references") or {}).get("full") or "").strip()
         if (
             type(merge_request.get("iid")) is not int
@@ -564,6 +575,25 @@ class GitLabTaskSource:
 
         current_owner = self._owner_from_labels(current.labels)
         current_status = self._status_label(current.labels)
+        if "!" in identity.external_id:
+            project_path, iid = self._split_merge_request_id(identity.external_id)
+            self._validate_identity(current.identity)
+            if current.identity.external_id != f"{project_path}!{iid}":
+                raise InvalidTaskSourceIdentity(
+                    "GitLab merge-request projection snapshot does not match its identity"
+                )
+            if current_owner == normalized_owner and current_status == desired_status:
+                return TaskSourceWritebackResult(snapshot=current, mutated=False)
+            # Lifecycle changes belong to governed MR actions. Progress only
+            # projects labels; it cannot close/reopen/merge or alter a branch.
+            merge_request = await self.client.update_merge_request(
+                self.api_base, project_path, iid, token=self.token,
+                payload={"labels": ",".join(labels)},
+            )
+            return TaskSourceWritebackResult(
+                snapshot=self._snapshot_from_merge_request(identity, merge_request),
+                mutated=True,
+            )
         source_closed = (current.source_state or "").lower() == "closed"
         desired_closed = stage == "closed"
         labels_changed = (

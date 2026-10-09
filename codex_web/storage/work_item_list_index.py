@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from codex_web.identity import TenantScope
@@ -204,6 +204,7 @@ class WorkItemListIndex:
         get_state: Callable[[str], WorkItemState | None],
         predicate: Callable[[WorkItemState], bool],
         scan_budget: int | None = None,
+        get_states: Callable[[tuple[str, ...]], Mapping[str, WorkItemState]] | None = None,
     ) -> tuple[list[WorkItemState], str | None, bool]:
         page_size = max(1, min(int(limit), 100))
         budget = max(
@@ -217,7 +218,7 @@ class WorkItemListIndex:
         cursor = after
         selected: list[WorkItemState] = []
         scanned = 0
-        batch_size = min(1000, max(100, page_size * 4))
+        batch_size = 100 if get_states is not None else min(1000, max(100, page_size * 4))
 
         while scanned < budget:
             rows, backend_next = self.store.record_page(
@@ -228,6 +229,10 @@ class WorkItemListIndex:
             if not rows:
                 return selected, None, False
 
+            batch_states = get_states(tuple(dict.fromkeys(
+                str(payload.get("ref") or "") for payload in rows.values()
+                if isinstance(payload, dict) and payload.get("ref")
+            ))) if get_states is not None else None
             for key, payload in rows.items():
                 cursor = key
                 scanned += 1
@@ -236,7 +241,7 @@ class WorkItemListIndex:
                 ref = str(payload.get("ref") or "")
                 if not ref:
                     continue
-                state = get_state(ref)
+                state = batch_states.get(ref) if batch_states is not None else get_state(ref)
                 if state is None:
                     self.remove(ref)
                     continue

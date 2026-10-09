@@ -75,6 +75,20 @@ a key prefix plus cursor. They are the read-side primitive for provider,
 conversation, Project, or tenant scoped indexes; callers should encode those
 scope dimensions into domain keys rather than loading the full collection.
 
+`record_get_many()` reads at most 1,000 explicitly named keys through one
+connection and collection check. Empty input performs no storage I/O; reads
+retain legacy-document compatibility without migrating or rewriting it.
+`ModelMapRepository.get_many()` provides a request-local lazy mapping: only
+visited selected records are validated and cached. Work Item list pagination
+uses batches of at most 100 canonical records before applying its existing
+scope and filter checks. It retains ordering, scan budgets, cursor revision
+checks and missing/moved-record repair; no separate owner projection is
+introduced. Compositions predating the optional batch dependency may use the
+batch reader only when their getter is the exact bound
+`ModelMapRepository.get`; custom or overridden getters retain their callback
+behavior. This reduces database round trips for sparse filters while scan
+CPU still depends on the number of candidates visited.
+
 `record_mutate()` is the conditional keyed-write primitive. It acquires the
 collection transaction lock, reads only the named records, and applies one
 bounded upsert/delete delta. The updater may emit derived index keys, allowing

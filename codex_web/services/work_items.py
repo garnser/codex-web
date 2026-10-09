@@ -45,6 +45,7 @@ from codex_web.services.work_item_dependencies import (
     work_item_progress_evidence,
 )
 from codex_web.services.work_item_state import WorkItemStateMachine
+from codex_web.storage.runtime_state import ModelMapRepository
 from codex_web.storage.work_item_list_index import WorkItemListIndex
 
 
@@ -971,6 +972,17 @@ class WorkItemService:
             loaded = self.work_items.load_states()
             get_state = loaded.get
 
+        get_states = getattr(self.work_items, "get_states", None)
+        repository = getattr(get_state, "__self__", None)
+        if (
+            get_states is None
+            and isinstance(repository, ModelMapRepository)
+            and getattr(get_state, "__func__", None) is ModelMapRepository.get
+        ):
+            # Existing compositions may predate the optional batch dependency.
+            # Infer it only from the exact canonical repository getter.
+            get_states = repository.get_many
+
         states, next_after, scan_truncated = index.page(
             scope=scope,
             project_id=project_id,
@@ -982,6 +994,7 @@ class WorkItemService:
             limit=page_size,
             get_state=get_state,
             predicate=predicate,
+            get_states=get_states,
         )
         next_cursor = (
             self._list_cursor_payload(

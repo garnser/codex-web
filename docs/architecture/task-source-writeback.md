@@ -28,7 +28,13 @@ then performs:
 5. at most one provider mutation when either/both fields differ
 
 The GitLab adapter implements this contract by editing owner/status labels and
-open/closed state in one issue update.
+open/closed state in one issue update. For a merge-request identity, combined
+projection edits only owner/status labels through the merge-request endpoint.
+The adapter validates the exact positive MR identity and provider response,
+preserves unrelated labels, and skips unchanged labels. Canonical progress
+never merges, closes, reopens, or changes the draft or branch of an MR; its
+provider lifecycle remains controlled by governed merge-request actions.
+The same-number issue is never used as a substitute.
 
 Adapters without the combined capability continue through the provider-neutral
 owner/state write contracts while still benefiting from keyed task coalescing.

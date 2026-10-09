@@ -95,6 +95,17 @@ class WorkItemAsyncReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row["ref"] for row in result["items"]], ["group/app#3"])
         self.assertTrue(result["nextCursor"])
 
+    async def test_batch_page_storage_yields_and_preserves_authority_context(self):
+        def install(barrier):
+            def get_many(keys):
+                barrier()
+                return {key:self.states[key] for key in keys if key in self.states}
+            self.service.work_items.get_states = get_many
+            self.service.work_items.get_state = lambda _: self.fail("point read")
+        result = await self._assert_blocked_read_yields(self._list, install)
+        self.assertEqual([row["ref"] for row in result["items"]], ["group/app#3"])
+        self.assertTrue(result["nextCursor"])
+
     async def test_compatibility_read_remains_bounded_off_loop(self):
         self.service.work_item_list_index = None
         def install(barrier):

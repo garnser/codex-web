@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import unittest
 from collections import deque
 from pathlib import Path
@@ -36,6 +37,11 @@ from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingNotFoundError,
 )
 from codex_web.services.turn_execution_binding import TurnExecutionBindingError
+from codex_web.storage.runtime_state import RuntimeStateRepositories
+from codex_web.storage.sqlite_state import SQLiteStateStore
+
+
+OBSERVED_WORK_ITEM_COUNT = 1_728
 
 
 class _Hub:
@@ -359,15 +365,65 @@ class TurnExecutionQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(active.assignment_id, "assignment-1")
         self.assertEqual(active.execution_workspace_id, "workspace-1")
 
-    def test_work_item_repository_lookup_uses_only_the_referenced_record(self):
-        host = _Host()
-        state = SimpleNamespace(execution=SimpleNamespace(writable_repository_resource_ids=("repo-1",)))
-        host._get_work_item_state_record = MagicMock(return_value=state)
-        host._load_work_item_states = MagicMock(side_effect=AssertionError("whole work item collection loaded"))
-        service = TurnExecutionService(host)
-        self.assertEqual(service._work_item_writable_repository_ids("work-1728"), ("repo-1",))
-        host._get_work_item_state_record.assert_called_once_with("work-1728")
-        host._load_work_item_states.assert_not_called()
+    def test_work_item_repository_lookup_uses_only_one_of_observed_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = SQLiteStateStore(root / "state.sqlite3")
+            repositories = RuntimeStateRepositories(
+                store,
+                thread_settings_file=root / "thread-settings.json",
+                active_turns_file=root / "active-turns.json",
+                work_item_states_file=root / "work-items.json",
+            )
+            target_ref = f"work-{OBSERVED_WORK_ITEM_COUNT - 1}"
+            records = {}
+            for number in range(OBSERVED_WORK_ITEM_COUNT):
+                state = WorkItemState(
+                    ref=f"work-{number}",
+                    project_id="project-a",
+                    current_owner="james",
+                    current_stage="implementation_active",
+                    last_meaningful_update_at=1.0,
+                    updated_at=1.0,
+                    created_at=1.0,
+                )
+                if state.ref == target_ref:
+                    state.execution.writable_repository_resource_ids = (
+                        "repo-1",
+                    )
+                records[state.ref] = state.model_dump(mode="json")
+            store.record_replace(
+                repositories.work_item_states.namespace,
+                records,
+            )
+
+            host = _Host()
+            host._get_work_item_state_record = (
+                repositories.work_item_states.get
+            )
+            host._load_work_item_states = MagicMock(
+                side_effect=AssertionError("whole work item collection loaded")
+            )
+            service = TurnExecutionService(host)
+            with patch.object(
+                store,
+                "record_items",
+                side_effect=AssertionError("whole record collection loaded"),
+            ), patch.object(
+                store,
+                "record_get",
+                wraps=store.record_get,
+            ) as point_read:
+                self.assertEqual(
+                    service._work_item_writable_repository_ids(target_ref),
+                    ("repo-1",),
+                )
+
+            point_read.assert_called_once_with(
+                repositories.work_item_states.namespace,
+                target_ref,
+            )
+            host._load_work_item_states.assert_not_called()
 
     def test_stale_nonterminal_event_cannot_replace_or_renew_new_active_turn(self) -> None:
         host = _Host()

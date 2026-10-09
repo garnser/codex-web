@@ -4,10 +4,13 @@ import asyncio
 import tempfile
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
-from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
+
+import httpx
+from fastapi import FastAPI
 
 from codex_web.action_intents import (
     ActionDecisionOutcome,
@@ -423,7 +426,7 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(backend, "get", side_effect=AssertionError("checkpoint replayed")):
             self.assertEqual(restarted.get(intent.id).status, ActionIntentStatus.FAILED)
 
-    async def test_slow_action_storage_does_not_block_event_loop(self):
+    async def test_slow_action_storage_keeps_lightweight_http_responsive(self):
         intent = self._create()
         claimed = self.service.claim(ActionIntentClaimRequest(worker_id="worker"),
                                      actor=self.worker_actor, intent_id=intent.id)
@@ -434,12 +437,30 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
             loop.call_soon_threadsafe(entered.set)
             time.sleep(0.15)
             return original(*args, **kwargs)
+        app = FastAPI()
+
+        @app.get("/api/qualification-ping")
+        async def qualification_ping():
+            return {"ok": True}
+
+        transport = httpx.ASGITransport(app=app)
         with patch.object(self.service, "_append_receipt", side_effect=slow_receipt):
             task = asyncio.create_task(self.service.execute_claimed(claimed.id, worker_id="worker",
                                                                     actor=self.worker_actor))
             await asyncio.wait_for(entered.wait(), 2)
             self.assertFalse(task.done())
-            await asyncio.wait_for(asyncio.sleep(0.01), 0.08)
+            started = time.perf_counter()
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await asyncio.wait_for(
+                    client.get("/api/qualification-ping"),
+                    0.08,
+                )
+            self.assertEqual(response.status_code, 200)
+            self.assertLess(time.perf_counter() - started, 0.08)
+            self.assertFalse(task.done())
             self.assertEqual((await task).status, ActionIntentStatus.SUCCEEDED)
 
     async def asyncTearDown(self) -> None:
