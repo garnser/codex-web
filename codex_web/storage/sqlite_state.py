@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import stat
@@ -180,9 +181,13 @@ class SQLiteStateStore:
         records: dict[str, Any],
     ) -> None:
         prefix = state_record_prefix(namespace)
+        previous = connection.execute(
+            "SELECT MAX(updated_at) FROM state_documents WHERE namespace = ? OR (namespace >= ? AND namespace < ?)",
+            (namespace, prefix, prefix + "\uffff"),
+        ).fetchone()[0]
         connection.execute(
-            "DELETE FROM state_documents WHERE substr(namespace, 1, length(?)) = ?",
-            (prefix, prefix),
+            "DELETE FROM state_documents WHERE namespace >= ? AND namespace < ?",
+            (prefix, prefix + "\uffff"),
         )
         connection.execute(
             "DELETE FROM state_documents WHERE namespace = ?",
@@ -199,6 +204,7 @@ class SQLiteStateStore:
                 state_record_storage_key(namespace, str(key)),
                 payload,
             )
+        self._touch_record_revision(connection, namespace, minimum=previous or 0.0)
 
     def _ensure_record_collection_in_connection(
         self,
@@ -386,17 +392,24 @@ class SQLiteStateStore:
                     connection,
                     namespace,
                 )
+                changed = bool(upserts)
+                deleted_revision = 0.0
                 for key in dict.fromkeys(str(item) for item in deletes):
-                    connection.execute(
-                        "DELETE FROM state_documents WHERE namespace = ?",
+                    deleted = connection.execute(
+                        "DELETE FROM state_documents WHERE namespace = ? RETURNING updated_at",
                         (state_record_storage_key(namespace, key),),
-                    )
+                    ).fetchone()
+                    if deleted is not None:
+                        changed = True
+                        deleted_revision = max(deleted_revision, deleted[0])
                 for key, payload in upserts.items():
                     self._upsert(
                         connection,
                         state_record_storage_key(namespace, str(key)),
                         payload,
                     )
+                if changed:
+                    self._touch_record_revision(connection, namespace, minimum=deleted_revision)
             success = True
         finally:
             self._keyed_mutation_metrics.observe(
@@ -428,13 +441,19 @@ class SQLiteStateStore:
                 ).fetchone()
                 current = self._decode(row, default)
                 updated = updater(current)
+                deleted_revision = 0.0
                 if updated is None:
-                    connection.execute(
-                        "DELETE FROM state_documents WHERE namespace = ?",
+                    deleted = connection.execute(
+                        "DELETE FROM state_documents WHERE namespace = ? RETURNING updated_at",
                         (storage_key,),
-                    )
+                    ).fetchone()
+                    changed = deleted is not None
+                    deleted_revision = deleted[0] if deleted is not None else 0.0
                 else:
                     self._upsert(connection, storage_key, updated)
+                    changed = True
+                if changed:
+                    self._touch_record_revision(connection, namespace, minimum=deleted_revision)
             success = True
             return updated
         finally:
@@ -467,15 +486,23 @@ class SQLiteStateStore:
                 changes = updater(current)
                 if not isinstance(changes, dict):
                     raise TypeError("record_mutate updater must return a mapping")
+                changed = False
+                deleted_revision = 0.0
                 for key, payload in changes.items():
                     storage_key = state_record_storage_key(namespace, str(key))
                     if payload is None:
-                        connection.execute(
-                            "DELETE FROM state_documents WHERE namespace = ?",
+                        deleted = connection.execute(
+                            "DELETE FROM state_documents WHERE namespace = ? RETURNING updated_at",
                             (storage_key,),
-                        )
+                        ).fetchone()
+                        if deleted is not None:
+                            changed = True
+                            deleted_revision = max(deleted_revision, deleted[0])
                     else:
                         self._upsert(connection, storage_key, payload)
+                        changed = True
+                if changed:
+                    self._touch_record_revision(connection, namespace, minimum=deleted_revision)
             success = True
             return changes
         finally:
@@ -742,6 +769,29 @@ class SQLiteStateStore:
                     self._upsert(connection, namespace, updated[namespace])
             return updated
 
+    def _touch_record_revision(self, connection, namespace: str, *, minimum: float = 0.0) -> None:
+        marker = state_record_marker(namespace)
+        payload, timestamp = connection.execute(
+            "SELECT payload, updated_at FROM state_documents WHERE namespace = ?",
+            (marker,),
+        ).fetchone()
+        metadata = json.loads(payload)
+        if not metadata.get("revisionTracked"):
+            # One-time initialization for collections written by older releases.
+            # Subsequent mutations read only their collection marker.
+            prefix = state_record_prefix(namespace)
+            latest = connection.execute(
+                "SELECT MAX(updated_at) FROM state_documents WHERE namespace >= ? AND namespace < ?",
+                (prefix, prefix + "\uffff"),
+            ).fetchone()[0]
+            timestamp = max(timestamp, latest or timestamp)
+            metadata["revisionTracked"] = True
+        revision = max(time.time(), math.nextafter(max(float(timestamp), minimum), math.inf))
+        connection.execute(
+            "UPDATE state_documents SET payload = ?, updated_at = ? WHERE namespace = ?",
+            (self._serialized(metadata), revision, marker),
+        )
+
     def namespace_revision(self, namespace: str) -> float | None:
         with self._connection() as connection:
             row = connection.execute(
@@ -762,9 +812,9 @@ class SQLiteStateStore:
                 """
                 SELECT MAX(updated_at)
                 FROM state_documents
-                WHERE substr(namespace, 1, length(?)) = ?
+                WHERE namespace >= ? AND namespace < ?
                 """,
-                (prefix, prefix),
+                (prefix, prefix + "\uffff"),
             ).fetchone()
             return (
                 float(latest[0])

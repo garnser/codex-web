@@ -106,6 +106,31 @@ explicitly refreshed rollback checkpoint. This keeps outbox dispatch cost
 bounded as retained event history grows without changing event identity,
 delivery ordering, or replay semantics.
 
+### Cache revisions for keyed state
+
+`namespace_revision()` is an opaque equality token for read projections, not a
+wall-clock timestamp or an authority decision. Keyed collection revision reads
+use a primary-key range scoped to the encoded namespace; they do not scan
+unrelated logical collections. The maximum includes the collection marker and
+record timestamps so reads remain compatible with older supported writers.
+
+Every successful keyed upsert, deletion of an existing record, and replacement
+updates the collection marker in the same transaction. Empty deltas and deletion
+of missing records preserve the revision of an existing collection. Marker
+revisions advance even when the system clock is frozen or moves backwards, and
+removing an older or final record still invalidates readers in another process.
+A pre-existing marker is initialized from retained record timestamps once on its
+first mutation; the additive metadata preserves schema-version compatibility.
+Aggregate writes to keyed state use the same replacement path. Failed writes
+roll back both data and revision.
+
+PostgreSQL collection writers acquire the namespace advisory lock before record
+and marker locks, including point updates and replacement. This serializes
+mutations within one logical collection and prevents lock-order inversions;
+independent collections retain concurrency. SQLite uses its existing immediate
+write transaction. These revisions support existing read-only caches without
+introducing a second canonical store, TTL-based authority, or a Redis dependency.
+
 ### Bot routing read indexes
 
 Bot binding routing maintains a process-local index over canonical binding state
