@@ -297,10 +297,7 @@ class ExecutionWorkspaceService:
         return item
 
     def _workspace_reference(self, workspace: ExecutionWorkspace) -> ExecutionWorkspaceReference:
-        lease = next(
-            (item for item in self.store.load().leases if item.id == workspace.lease_id),
-            None,
-        )
+        lease = self.store.lease(workspace.lease_id) if workspace.lease_id else None
         return ExecutionWorkspaceReference(
             workspace_id=workspace.id,
             lease_id=workspace.lease_id,

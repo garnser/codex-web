@@ -94,7 +94,10 @@ are separate bounded records. Exact event reads, inbox dedupe, outbox outcome
 updates, and pending delivery pages therefore do not deserialize or rewrite the
 retained event history. A collection-scoped transaction keeps each event,
 idempotency alias, and pending index change atomic on both SQLite and
-PostgreSQL. Event-plus-domain commits continue to use the StateStore
+PostgreSQL. Outbox status counts are updated in the same transaction as
+outbox insertion, status changes and retention, so periodic diagnostics do not
+load retained event history. Existing keyed collections receive a one-time,
+transactional counter backfill. Event-plus-domain commits continue to use the StateStore
 cross-namespace transaction boundary.
 
 The first access migrates the legacy `canonical_events` v1/v2 document into

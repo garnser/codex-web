@@ -6,7 +6,11 @@ import threading
 from typing import Any, Callable
 
 from codex_web.compatibility import ContractSpec, MigrationRegistry
-from codex_web.execution_workspaces import ExecutionWorkspace, ExecutionWorkspaceState
+from codex_web.execution_workspaces import (
+    ExecutionWorkspace,
+    ExecutionWorkspaceLease,
+    ExecutionWorkspaceState,
+)
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
@@ -285,6 +289,13 @@ class ExecutionWorkspaceStateStore:
             if workspace.id != workspace_id:
                 raise ValueError("execution workspace record key does not match its id")
             return workspace
+
+    def lease(self, lease_id: str) -> ExecutionWorkspaceLease | None:
+        with self._lock:
+            self._ensure_records()
+            raw = self.store.record_get(self.lease_namespace, lease_id)
+            return ExecutionWorkspaceLease.model_validate(raw) if raw is not None else None
+
 
     def _apply_records(
         self,

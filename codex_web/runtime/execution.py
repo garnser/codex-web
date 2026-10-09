@@ -210,11 +210,12 @@ class TurnExecutionService:
     ) -> tuple[str, ...]:
         if not work_item_ref:
             return ()
+        getter = getattr(self.host, "_get_work_item_state_record", None)
         loader = getattr(self.host, "_load_work_item_states", None)
-        if not callable(loader):
+        if not callable(getter) and not callable(loader):
             return ()
         try:
-            state = loader().get(work_item_ref)
+            state = getter(work_item_ref) if callable(getter) else loader().get(work_item_ref)
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
@@ -1700,8 +1701,8 @@ class TurnExecutionService:
                 if str(value).strip()
             )
         )
-        work_item_writable_repositories = self._work_item_writable_repository_ids(
-            work_item_ref
+        work_item_writable_repositories = await asyncio.to_thread(
+            self._work_item_writable_repository_ids, work_item_ref,
         )
         if (
             requested_writable_repositories

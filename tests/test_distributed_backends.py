@@ -41,6 +41,37 @@ class RealDistributedBackendTests(unittest.IsolatedAsyncioTestCase):
         self.postgres = self._store()
         self._clear_postgres_documents()
 
+    async def test_postgres_action_point_updates_and_concurrent_claims(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from unittest.mock import patch
+        from tests.test_action_intents import ActionIntentTests
+        from codex_web.action_intents import ActionIntentState, ActionIntentClaimRequest, ActionIntentStatus
+        from codex_web.storage.action_intents import ActionIntentStore
+        from codex_web.services.action_intents import ActionIntentService
+        fixture = ActionIntentTests()
+        await fixture.asyncSetUp()
+        self.addAsyncCleanup(fixture.asyncTearDown)
+        intent = fixture._create()
+        self.postgres.put(ActionIntentStore.namespace, ActionIntentState(intents=[intent]).model_dump(mode="json"))
+        store = ActionIntentStore(self.postgres)
+        service = ActionIntentService(store, fixture.execution)
+        self.assertEqual(store.get(intent.id), intent)
+        with patch.object(self.postgres, "get", side_effect=AssertionError("legacy document read")), \
+             patch.object(self.postgres, "record_items", side_effect=AssertionError("whole collection read")):
+            def claim(number):
+                return service.claim(ActionIntentClaimRequest(worker_id=f"worker-{number}"),
+                                     actor=fixture.worker_actor, intent_id=intent.id)
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                results = list(executor.map(claim, range(8)))
+            self.assertEqual(len([item for item in results if item is not None]), 1)
+            current = store.get(intent.id)
+            self.assertEqual(current.status, ActionIntentStatus.CLAIMED)
+            before = self.postgres.namespace_revision(store.records_namespace)
+            self.assertIsNone(claim(9))
+            self.assertEqual(self.postgres.namespace_revision(store.records_namespace), before)
+            service._set_status(intent.id, ActionIntentStatus.FAILED, error="test")
+            self.assertEqual(store.get(intent.id).status, ActionIntentStatus.FAILED)
+
     async def test_postgres_usage_point_reads_preserve_migration_without_catalog_scan(self) -> None:
         from unittest.mock import patch
         from codex_web.agent_runtime_usage import AgentRuntimeUsage, AGENT_RUNTIME_USAGE_STATE_CONTRACT

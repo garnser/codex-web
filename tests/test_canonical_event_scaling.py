@@ -60,6 +60,39 @@ class CanonicalEventScalingTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "state.sqlite3"
 
+    def test_outbox_status_counts_are_transactional_and_do_not_decode_history(self):
+        sqlite = _ObservedSQLiteStateStore(self.path)
+        events = CanonicalEventStore(sqlite, max_events=10000)
+        for number in range(4):
+            events.record_if_new(_event(number), idempotency_key=f"key-{number}", enqueue_transport=True)
+        events.mark_outbox_published("evt-0", backend_id="local", delivery_id=None, now=1)
+        events.mark_outbox_published("evt-0", backend_id="local", delivery_id=None, now=2)
+        events.mark_outbox_failed("evt-1", error_code="test", now=3, max_attempts=1, backoff_seconds=1)
+        sqlite.calls.clear()
+        self.assertEqual(events.outbox_status(), {"pending": 2, "published": 1, "dead_letter": 1})
+        self.assertEqual(sqlite.calls.get("record_items", 0), 0)
+        self.assertEqual(sqlite.calls.get("get", 0), 0)
+        events.record_with_document_mutation("test-domain", {}, lambda state: {"updated": True},
+                                            _event(4), idempotency_key="key-4", enqueue_transport=True)
+        self.assertEqual(events.outbox_status()["pending"], 3)
+        events.max_events = 1
+        events._prune_events()
+        self.assertEqual(events.outbox_status()["published"], 0)
+
+    def test_existing_keyed_event_state_receives_one_counter_upgrade(self):
+        sqlite = _ObservedSQLiteStateStore(self.path)
+        events = CanonicalEventStore(sqlite)
+        events.record_if_new(_event(1), idempotency_key="key", enqueue_transport=True)
+        def drop_counts(current):
+            meta = dict(current[events._meta_key])
+            meta.pop("outbox_counts")
+            return {events._meta_key: meta}
+        sqlite.record_mutate(events.records_namespace, (events._meta_key,), drop_counts)
+        self.assertEqual(events.outbox_status()["pending"], 1)
+        sqlite.calls.clear()
+        self.assertEqual(events.outbox_status()["pending"], 1)
+        self.assertEqual(sqlite.calls.get("record_items", 0), 0)
+
     def test_legacy_document_migrates_and_explicit_checkpoint_supports_rollback(self):
         sqlite = SQLiteStateStore(self.path)
         event = _event(1)

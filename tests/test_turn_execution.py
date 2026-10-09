@@ -359,6 +359,16 @@ class TurnExecutionQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(active.assignment_id, "assignment-1")
         self.assertEqual(active.execution_workspace_id, "workspace-1")
 
+    def test_work_item_repository_lookup_uses_only_the_referenced_record(self):
+        host = _Host()
+        state = SimpleNamespace(execution=SimpleNamespace(writable_repository_resource_ids=("repo-1",)))
+        host._get_work_item_state_record = MagicMock(return_value=state)
+        host._load_work_item_states = MagicMock(side_effect=AssertionError("whole work item collection loaded"))
+        service = TurnExecutionService(host)
+        self.assertEqual(service._work_item_writable_repository_ids("work-1728"), ("repo-1",))
+        host._get_work_item_state_record.assert_called_once_with("work-1728")
+        host._load_work_item_states.assert_not_called()
+
     def test_stale_nonterminal_event_cannot_replace_or_renew_new_active_turn(self) -> None:
         host = _Host()
         service = TurnExecutionService(host)

@@ -64,6 +64,24 @@ class _Evidence:
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_keyed_action_restore_disables_execution_and_removes_readiness_indexes(self):
+        from codex_web.storage.action_intents import ActionIntentStore
+        from codex_web.services.recovery import RecoveryService
+        documents = {ActionIntentStore.records_namespace: {
+            "meta": {"schema_version": "1.0"},
+            "intents:pending": {"status": "pending", "lease": {"owner": "old"}},
+            "intents:done": {"status": "succeeded", "lease": None},
+            "pending:scope:pending": {"id": "pending"},
+            "lease:scope:pending": {"id": "pending"},
+        }}
+        restored = RecoveryService._sanitize_restored_documents(documents)
+        records = restored[ActionIntentStore.records_namespace]
+        self.assertEqual(records["intents:pending"]["status"], "requires_reconciliation")
+        self.assertIsNone(records["intents:pending"]["lease"])
+        self.assertEqual(records["intents:done"]["status"], "succeeded")
+        self.assertFalse(any(key.startswith(("pending:", "lease:")) for key in records))
+        self.assertEqual(documents[ActionIntentStore.records_namespace]["intents:pending"]["status"], "pending")
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
