@@ -113,6 +113,13 @@ title/body and source identity instead of requiring direct provider access.
 Task text remains untrusted data and cannot grant authority or change execution
 policy.
 
+GitLab reads route provider-qualified issue (`project#iid`) and merge-request
+(`project!iid`) identities to their respective native endpoints. Merge-request
+normalization is read-only: issue write-back continues to require an issue
+identity, and neither identity form broadens the canonical tenant, Project,
+actor, secret-binding, or assignment repository checks. Missing or malformed
+identities fail with a typed, sanitized error rather than provider-path guessing.
+
 Provider-specific mapping into canonical work-item semantics is explicit. Keeping `source_state` provider-native at the adapter boundary avoids pretending all providers share one state vocabulary.
 
 `TaskSourceEvent` provides an identity, event type, optional timestamp, and optional normalized snapshot. Event normalization itself must not mutate canonical work-item state.

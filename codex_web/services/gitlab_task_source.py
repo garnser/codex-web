@@ -13,6 +13,7 @@ from codex_web.models import (
     WorkItemStage,
 )
 from codex_web.services.task_sources import (
+    InvalidTaskSourceIdentity,
     TaskSourceCanonicalProjection,
     TaskSourceCapabilities,
     TaskSourceCapability,
@@ -163,9 +164,13 @@ class GitLabTaskSource:
 
     def _validate_identity(self, identity: TaskSourceIdentity) -> None:
         if identity.source_type.strip().casefold() != self.source_type:
-            raise ValueError("Task-source identity does not belong to GitLab adapter")
+            raise InvalidTaskSourceIdentity(
+                "Task-source identity does not belong to GitLab adapter"
+            )
         if identity.source_instance.strip().rstrip("/") != self.source_instance:
-            raise ValueError("Task-source identity belongs to another GitLab instance")
+            raise InvalidTaskSourceIdentity(
+                "Task-source identity belongs to another GitLab instance"
+            )
 
     async def create(
         self,
@@ -205,7 +210,9 @@ class GitLabTaskSource:
         project_path = project_path.strip().strip("/")
         iid_text = iid_text.strip()
         if not separator or not project_path or not iid_text.isdigit():
-            raise ValueError("GitLab external_id must use <project-path>#<issue-iid>")
+            raise InvalidTaskSourceIdentity(
+                "GitLab external_id must use <project-path>#<issue-iid>"
+            )
         return project_path, int(iid_text)
 
     @staticmethod
@@ -320,7 +327,9 @@ class GitLabTaskSource:
             or not iid_text.isdigit()
             or int(iid_text) < 1
         ):
-            raise ValueError("GitLab merge-request identity must use <project-path>!<positive-iid>")
+            raise InvalidTaskSourceIdentity(
+                "GitLab merge-request identity must use <project-path>!<positive-iid>"
+            )
         iid = int(iid_text)
         expected_ref = f"{project_path}!{iid}"
         merge_request = await self.client.merge_request(
@@ -332,7 +341,9 @@ class GitLabTaskSource:
             or merge_request["iid"] != iid
             or (provider_ref and provider_ref != expected_ref)
         ):
-            raise ValueError("GitLab merge-request response does not match the requested identity")
+            raise InvalidTaskSourceIdentity(
+                "GitLab merge-request response does not match the requested identity"
+            )
         revision_value = (
             merge_request.get("updated_at")
             or merge_request.get("merged_at")

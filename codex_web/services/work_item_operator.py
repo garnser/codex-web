@@ -11,6 +11,7 @@ from codex_web.models import TaskSourceIdentity, WorkItemEvent, WorkItemState
 from codex_web.services.task_source_runtime import TaskSourceResolutionError
 from codex_web.services.task_source_reconciliation import same_task_source_identity
 from codex_web.services.task_sources import (
+    InvalidTaskSourceIdentity,
     TaskSource,
     TaskSourceCapability,
     UnsupportedTaskSourceCapability,
@@ -404,8 +405,26 @@ class WorkItemOperatorService:
             source.capabilities.require(TaskSourceCapability.READ)
             return state, source
 
-        state, source = await asyncio.to_thread(resolve_source)
-        snapshot = await source.read(state.source_identity)
+        try:
+            state, source = await asyncio.to_thread(resolve_source)
+        except TaskSourceResolutionError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "task_source_unavailable",
+                    "message": "Authoritative task source is unavailable",
+                },
+            ) from exc
+        try:
+            snapshot = await source.read(state.source_identity)
+        except InvalidTaskSourceIdentity as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "task_source_identity_invalid",
+                    "message": "Authoritative task-source identity is malformed",
+                },
+            ) from exc
         discussion: list[dict[str, Any]] = []
         discussion_reader = getattr(source, "discussion", None)
         if callable(discussion_reader) and source.capabilities.supports(
