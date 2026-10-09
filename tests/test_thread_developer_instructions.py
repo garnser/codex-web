@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import server
 from codex_web.security import security_boundary_instructions
+from codex_web.services.work_item_contracts import assignment_control_plane_instructions
 from codex_web.models import (
     BotBinding,
     BotConnection,
@@ -462,7 +463,8 @@ class ThreadDeveloperInstructionsTests(unittest.TestCase):
         turn_start_call = session.request.await_args_list[1]
         self.assertEqual(
             turn_start_call.args[1]["developerInstructions"],
-            f"base instructions\n\n{security_boundary_instructions()}\n\ncontract",
+            f"base instructions\n\n{security_boundary_instructions()}\n\ncontract"
+            f"\n\n{assignment_control_plane_instructions()}",
         )
 
 

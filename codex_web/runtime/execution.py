@@ -53,6 +53,7 @@ from codex_web.services.turn_execution_binding import (
     TurnExecutionBindingError,
     TurnExecutionBindingService,
 )
+from codex_web.services.work_item_contracts import assignment_control_plane_instructions
 from codex_web.storage.thread_history import ThreadHistoryRepository
 
 
@@ -2428,6 +2429,15 @@ class TurnExecutionService:
                     )
                     if item
                 )
+
+            if assignment is not None:
+                broker_instructions = assignment_control_plane_instructions()
+                if broker_instructions not in (effective_developer_instructions or ""):
+                    effective_developer_instructions = "\n\n".join(
+                        item
+                        for item in (effective_developer_instructions, broker_instructions)
+                        if item
+                    )
 
             if trusted_local_codex_session:
                 workspace_cwd = project.path
