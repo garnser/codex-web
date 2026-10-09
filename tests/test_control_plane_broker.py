@@ -6,6 +6,8 @@ import tempfile
 import threading
 import time
 import unittest
+import base64
+import httpx
 from contextlib import ExitStack
 from contextvars import ContextVar
 from pathlib import Path
@@ -434,6 +436,12 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                             id="orchestration.steer",
                             capability="work_item.steer",
                             level=AuthorityLevel.EXECUTE,
+                            project_ids=("project-a",),
+                        ),
+                        AuthorityGrant(
+                            id="repository.checks.read",
+                            capability="repository.checks.read",
+                            level=AuthorityLevel.READ,
                             project_ids=("project-a",),
                         ),
                         AuthorityGrant(
@@ -1073,6 +1081,133 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             code_hosts.registry.binding.credential_ref,
             "secret-github",
         )
+
+    async def test_gitlab_artifacts_use_assignment_resource_and_credential_boundary(self) -> None:
+        from codex_web.code_hosts import CodeHostError, CodeHostUnsupportedCapabilityError
+        from codex_web.resources import ResourceCreate, ResourceProvenance, ResourceType
+        from codex_web.services.resources import ResourceCatalogService
+        from codex_web.storage.resource_catalog import ResourceCatalogStore
+        from codex_web.services.code_hosts import CodeHostService, CodeHostRegistry
+        from codex_web.services.gitlab_code_host import GitLabCodeHostProvider
+        from codex_web.services.github_code_host import GitHubCodeHostProvider
+        from codex_web.integrations.gitlab_client import GitLabClient
+        from codex_web.integrations.github_client import GitHubClient
+        from tests.test_code_hosts import _SecretBroker
+
+        resources = ResourceCatalogService(ResourceCatalogStore(self.sqlite))
+        resource = resources.create(
+            ResourceCreate(
+                name="acme/widgets", resource_type=ResourceType.REPOSITORY,
+                provenance=ResourceProvenance(
+                    provider="gitlab", provider_instance="gitlab.example", external_id="42",
+                ),
+            ), actor=self.identity.local_trusted_actor(),
+        )
+        self.authority.resources = resources
+        calls = []
+        job = {
+            "id": 19025, "pipeline": {"id": 3394, "project_id": 42},
+            "artifacts_file": {"filename": "preview.zip", "size": 400000},
+        }
+        def transport(request):
+            calls.append(request)
+            self.assertEqual(request.headers["PRIVATE-TOKEN"], "provider-secret")
+            path = request.url.path
+            if path == "/api/v4/projects/42":
+                return httpx.Response(200, json={"id": 42, "name": "widgets"})
+            if path == "/api/v4/projects/42/pipelines/3394/jobs":
+                return httpx.Response(200, json=[job])
+            if path == "/api/v4/projects/42/jobs/19025":
+                return httpx.Response(200, json=job)
+            if path == "/api/v4/projects/42/jobs/19025/artifacts":
+                return httpx.Response(200, content=b"PK\x03\x04archive", headers={"content-type": "application/zip"})
+            if path == "/api/v4/projects/42/jobs/19025/artifacts/html/index.html":
+                return httpx.Response(200, content=b"<html>preview</html>", headers={"content-type": "text/html"})
+            return httpx.Response(404)
+        registry = CodeHostRegistry()
+        registry.register_provider(GitLabCodeHostProvider(GitLabClient(transport=httpx.MockTransport(transport))))
+        secret_broker = _SecretBroker()
+        code_hosts = CodeHostService(registry, resources, secrets=secret_broker)
+        action_registry = _ActionRegistry("gitlab")
+        original_bindings = action_registry.list_bindings
+        def bindings(actor):
+            items = original_bindings(actor)
+            items[0].resource_ids = (resource.id,)
+            return items
+        action_registry.list_bindings = bindings
+        service = ControlPlaneBrokerService(
+            identity=self.identity, authority=self.authority, work_items=self.work_items,
+            operator=_Operator(), audit=ControlPlaneBrokerAuditStore(self.sqlite),
+            action_intents=SimpleNamespace(execution=SimpleNamespace(registry=action_registry)),
+            code_hosts=code_hosts,
+        )
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "repository-write", "resource_ids": (resource.id,),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default", project_id="project-a",
+                writable_repository_ids=(resource.id,), source=RepositoryTargetSource.SINGLE_REPOSITORY,
+                source_ref=resource.id,
+            ),
+        })
+        async def read(path, selected=assignment):
+            return await service.dispatch(
+                assignment=selected, worker_actor=self.worker_actor,
+                method="GET", raw_target=path, body=b"",
+            )
+        status, payload, *_ = await read("/api/repository-facts/runs/3394/artifacts")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["items"][0]["external_id"], "19025")
+        status, payload, *_ = await read("/api/repository-facts/artifacts/19025/download?max_bytes=327680")
+        self.assertEqual(base64.b64decode(payload["item"]["content_base64"]), b"PK\x03\x04archive")
+        status, payload, *_ = await read("/api/repository-facts/artifacts/19025/download?max_bytes=8&member_path=html%2Findex.html")
+        self.assertEqual(base64.b64decode(payload["item"]["content_base64"]), b"<html>pr")
+        self.assertEqual(payload["item"]["media_type"], "text/html")
+        self.assertTrue(payload["item"]["truncated"])
+        self.assertEqual([call[0] for call in secret_broker.calls], ["secret-gitlab"] * 3)
+        self.assertTrue(all(call[1] == self.worker_actor.identity_id for call in secret_broker.calls))
+        self.assertNotIn("provider-secret", json.dumps(payload))
+        self.assertNotIn("provider-secret", json.dumps(service.audit.load().model_dump(mode="json")))
+        observed = len(calls)
+        for path, error in (
+            ("?member_path=../index.html", CodeHostError),
+            ("?member_path=%2Findex.html", CodeHostError),
+            ("?member_path=html%5Cindex.html", CodeHostError),
+            ("?member_path=html%00index.html", CodeHostError),
+            ("?member_path=", CodeHostError),
+            ("?member_path=a&member_path=b", ControlPlaneBrokerRequestError),
+            ("?max_bytes=327681", ControlPlaneBrokerRequestError),
+        ):
+            with self.assertRaises(error):
+                await read("/api/repository-facts/artifacts/19025/download" + path)
+        self.assertEqual(len(calls), observed)
+        denied = assignment.model_copy(update={"execution_profile_id": "orchestration-only"})
+        with self.assertRaises(ControlPlaneBrokerDeniedError):
+            await read("/api/repository-facts/artifacts/19025/download", denied)
+        cross_tenant = assignment.model_copy(update={"workspace_id": "other"})
+        with self.assertRaises(ControlPlaneBrokerDeniedError):
+            await read("/api/repository-facts/artifacts/19025/download", cross_tenant)
+        # Unsupported optional member reads fail before secret resolution; whole-archive
+        # behavior remains exercised by the existing GitHub adapter regressions.
+        github = GitHubCodeHostProvider(GitHubClient(transport=httpx.MockTransport(lambda r: httpx.Response(404))))
+        registry.register_provider(github)
+        from codex_web.code_hosts import CodeHostProviderBinding, CodeHostCapability
+        github_resource = resources.create(
+            ResourceCreate(
+                name="acme/widgets", resource_type=ResourceType.REPOSITORY,
+                provenance=ResourceProvenance(provider="github", provider_instance="github.com", external_id="42"),
+            ), actor=self.identity.local_trusted_actor(),
+        )
+        registry.register_binding(CodeHostProviderBinding(
+            id="github-read", organization_id="local", workspace_id="default",
+            provider_type="github", provider_instance="github.com", base_url="https://api.github.com",
+            credential_ref="secret-github", capabilities=tuple(CodeHostCapability),
+        ))
+        with self.assertRaises(CodeHostUnsupportedCapabilityError):
+            await code_hosts.artifact_download(
+                "github-read", github_resource.id, 19025, actor=self.worker_actor,
+                max_bytes=327680, member_path="html/index.html",
+            )
+        self.assertEqual(len(secret_broker.calls), 3)
 
     async def test_gitlab_assignment_can_read_merge_request_fact(self) -> None:
         code_hosts = _CodeHosts()

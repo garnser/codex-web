@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+import base64
+import time
 import re
 from urllib.parse import quote
 
@@ -8,6 +10,9 @@ import httpx
 
 from codex_web.canonical_events import CanonicalEventType
 from codex_web.code_hosts import (
+    CodeHostArtifactDownloadFact,
+    CodeHostArtifactFact,
+    validate_artifact_member_path,
     CodeHostCapability,
     CodeHostCheckFact,
     CodeHostCommitFact,
@@ -358,6 +363,135 @@ class GitLabCodeHostProvider:
             byte_count=len(raw),
             truncated=truncated,
             redacted=redacted,
+        )
+
+    @staticmethod
+    def _positive_id(value: int) -> None:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise CodeHostError("GitLab pipeline and job identifiers must be positive integers")
+
+    @staticmethod
+    def _artifact_project_id(repository: CodeHostRepositoryFact, resource: Resource) -> str:
+        project_id = repository.external_id
+        if not project_id.isdigit() or int(project_id) < 1:
+            raise CodeHostError("GitLab artifact project identity is invalid")
+        expected = resource.provenance.external_id if resource.provenance else None
+        if expected and expected.isdigit() and int(expected) != int(project_id):
+            raise CodeHostError("GitLab artifact project does not match the repository Resource")
+        return project_id
+
+    @staticmethod
+    def _artifact(job: dict) -> CodeHostArtifactFact | None:
+        archive = job.get("artifacts_file")
+        if not isinstance(archive, dict) or not archive.get("filename"):
+            return None
+        expires = _timestamp(job.get("artifacts_expire_at"))
+        try:
+            size = int(archive.get("size") or 0)
+        except (ValueError, TypeError) as exc:
+            raise CodeHostError("GitLab artifact size is invalid") from exc
+        if size < 0:
+            raise CodeHostError("GitLab artifact size is invalid")
+        return CodeHostArtifactFact(
+            external_id=str(job["id"]), name=str(archive["filename"]),
+            size_bytes=size, expired=bool(job.get("erased_at")) or (
+                expires is not None and expires <= time.time()
+            ),
+            created_at=_timestamp(job.get("created_at")), expires_at=expires,
+            web_url=job.get("web_url"),
+        )
+
+    async def artifacts(
+        self, binding: CodeHostProviderBinding, resource: Resource, run_id: int,
+        *, credential: str | None,
+    ) -> tuple[CodeHostArtifactFact, ...]:
+        self._positive_id(run_id)
+        project = quote(_project_name(resource), safe="")
+        # Resolve the selected project once and verify every returned native identity.
+        repository = await self.repository(binding, resource, credential=credential)
+        project_id = self._artifact_project_id(repository, resource)
+        facts: list[CodeHostArtifactFact] = []
+        seen: set[int] = set()
+        for page in range(1, 11):
+            rows = await self._get(
+                binding, f"projects/{project}/pipelines/{run_id}/jobs",
+                credential=credential, params={"per_page": 100, "page": page},
+            )
+            if not isinstance(rows, list) or len(rows) > 100:
+                raise CodeHostError("GitLab pipeline jobs response is invalid")
+            for job in rows:
+                if not isinstance(job, dict):
+                    raise CodeHostError("GitLab pipeline job response is invalid")
+                self._positive_id(job.get("id"))
+                pipeline = job.get("pipeline")
+                if not isinstance(pipeline, dict) or (
+                    pipeline.get("id") != run_id
+                    or str(pipeline.get("project_id")) != project_id
+                ):
+                    raise CodeHostError("GitLab artifact job does not belong to the selected project and pipeline")
+                if job["id"] in seen:
+                    raise CodeHostError("GitLab pipeline jobs pagination repeated a job")
+                seen.add(job["id"])
+                fact = self._artifact(job)
+                if fact is not None:
+                    facts.append(fact)
+            if len(rows) < 100:
+                return tuple(facts)
+        # Do not return a silently incomplete fact collection.
+        raise CodeHostError("GitLab artifact discovery exceeded the 1000-job pagination limit")
+
+    async def artifact_download(
+        self, binding: CodeHostProviderBinding, resource: Resource, artifact_id: int,
+        *, credential: str | None, max_bytes: int,
+    ) -> CodeHostArtifactDownloadFact:
+        return await self._artifact_download(
+            binding, resource, artifact_id, credential=credential, max_bytes=max_bytes
+        )
+
+    async def artifact_member(
+        self, binding: CodeHostProviderBinding, resource: Resource, artifact_id: int,
+        *, credential: str | None, max_bytes: int, member_path: str,
+    ) -> CodeHostArtifactDownloadFact:
+        validate_artifact_member_path(member_path)
+        return await self._artifact_download(
+            binding, resource, artifact_id, credential=credential,
+            max_bytes=max_bytes, member_path=member_path,
+        )
+
+    async def _artifact_download(
+        self, binding: CodeHostProviderBinding, resource: Resource, artifact_id: int,
+        *, credential: str | None, max_bytes: int, member_path: str | None = None,
+    ) -> CodeHostArtifactDownloadFact:
+        self._positive_id(artifact_id)
+        if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or not 1 <= max_bytes <= 320 * 1024:
+            raise CodeHostError("max_bytes must be between 1 and 327680")
+        project = quote(_project_name(resource), safe="")
+        repository = await self.repository(binding, resource, credential=credential)
+        project_id = self._artifact_project_id(repository, resource)
+        job = await self._get(
+            binding, f"projects/{project}/jobs/{artifact_id}", credential=credential
+        )
+        pipeline = job.get("pipeline") if isinstance(job, dict) else None
+        if not isinstance(job, dict) or job.get("id") != artifact_id or (
+            not isinstance(pipeline, dict)
+            or str(pipeline.get("project_id")) != project_id
+        ):
+            raise CodeHostError("GitLab artifact job does not belong to the selected project")
+        fact = self._artifact(job)
+        if fact is None or fact.expired:
+            raise CodeHostError("GitLab job artifact is missing or expired")
+        path = f"projects/{project}/jobs/{artifact_id}/artifacts"
+        if member_path is not None:
+            path += "/" + quote(member_path, safe="/")
+        try:
+            raw, truncated, media_type = await self.client.request_bytes(
+                "GET", binding.base_url, path, token=credential, max_bytes=max_bytes,
+            )
+        except Exception as exc:
+            raise self._classify(exc) from exc
+        return CodeHostArtifactDownloadFact(
+            external_id=str(artifact_id), content_base64=base64.b64encode(raw).decode("ascii"),
+            byte_count=len(raw), truncated=truncated, media_type=media_type,
         )
 
     async def releases(
