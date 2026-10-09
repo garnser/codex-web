@@ -535,6 +535,33 @@ class GitLabTaskSource:
             "closed": None,
         }[state]
 
+    async def _write_merge_request_labels(
+        self,
+        identity: TaskSourceIdentity,
+        current: TaskSourceSnapshot,
+        *,
+        labels: list[str],
+        changed: bool,
+    ) -> TaskSourceWritebackResult:
+        """Project labels onto an exact MR without changing its lifecycle."""
+        self._validate_identity(identity)
+        project_path, iid = self._split_merge_request_id(identity.external_id)
+        self._validate_identity(current.identity)
+        if current.identity.external_id != f"{project_path}!{iid}":
+            raise InvalidTaskSourceIdentity(
+                "GitLab merge-request projection snapshot does not match its identity"
+            )
+        if not changed:
+            return TaskSourceWritebackResult(snapshot=current, mutated=False)
+        merge_request = await self.client.update_merge_request(
+            self.api_base, project_path, iid, token=self.token,
+            payload={"labels": ",".join(labels)},
+        )
+        return TaskSourceWritebackResult(
+            snapshot=self._snapshot_from_merge_request(identity, merge_request),
+            mutated=True,
+        )
+
     async def write_projection(
         self,
         identity: TaskSourceIdentity,
@@ -576,23 +603,9 @@ class GitLabTaskSource:
         current_owner = self._owner_from_labels(current.labels)
         current_status = self._status_label(current.labels)
         if "!" in identity.external_id:
-            project_path, iid = self._split_merge_request_id(identity.external_id)
-            self._validate_identity(current.identity)
-            if current.identity.external_id != f"{project_path}!{iid}":
-                raise InvalidTaskSourceIdentity(
-                    "GitLab merge-request projection snapshot does not match its identity"
-                )
-            if current_owner == normalized_owner and current_status == desired_status:
-                return TaskSourceWritebackResult(snapshot=current, mutated=False)
-            # Lifecycle changes belong to governed MR actions. Progress only
-            # projects labels; it cannot close/reopen/merge or alter a branch.
-            merge_request = await self.client.update_merge_request(
-                self.api_base, project_path, iid, token=self.token,
-                payload={"labels": ",".join(labels)},
-            )
-            return TaskSourceWritebackResult(
-                snapshot=self._snapshot_from_merge_request(identity, merge_request),
-                mutated=True,
+            return await self._write_merge_request_labels(
+                identity, current, labels=labels,
+                changed=current_owner != normalized_owner or current_status != desired_status,
             )
         source_closed = (current.source_state or "").lower() == "closed"
         desired_closed = stage == "closed"
@@ -636,13 +649,19 @@ class GitLabTaskSource:
     ) -> TaskSourceSnapshot:
         self.capabilities.require(TaskSourceCapability.OWNER_WRITE)
         current = await self.read(identity)
-        project_path, iid = self._split_external_id(identity.external_id)
         owner = str(owner or "").strip().lower() or None
         labels = self._replace_prefixed_label(
             current.labels,
             "owner::",
             f"owner::{owner}" if owner else None,
         )
+        if "!" in identity.external_id:
+            result = await self._write_merge_request_labels(
+                identity, current, labels=labels,
+                changed=self._owner_from_labels(current.labels) != owner,
+            )
+            return result.snapshot
+        project_path, iid = self._split_external_id(identity.external_id)
         issue = await self.client.update_project_issue(
             self.api_base,
             project_path,
@@ -662,12 +681,18 @@ class GitLabTaskSource:
             raise ValueError(f"Unsupported canonical work-item stage: {state!r}")
 
         current = await self.read(identity)
-        project_path, iid = self._split_external_id(identity.external_id)
         labels = self._replace_prefixed_label(
             current.labels,
             "status::",
             self._status_label_for_stage(state),
         )
+        if "!" in identity.external_id:
+            result = await self._write_merge_request_labels(
+                identity, current, labels=labels,
+                changed=self._status_label(current.labels) != self._status_label_for_stage(state),
+            )
+            return result.snapshot
+        project_path, iid = self._split_external_id(identity.external_id)
         update_payload: dict[str, Any] = {"labels": ",".join(labels)}
         if state == "closed":
             update_payload["state_event"] = "close"

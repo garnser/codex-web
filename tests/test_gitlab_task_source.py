@@ -275,8 +275,9 @@ class GitLabTaskSourceTests(unittest.IsolatedAsyncioTestCase):
             return {"iid": 42}
         self.client.merge_request = read
         identity = self.source._identity("group/project!42")
-        with self.assertRaises(ValueError):
-            await self.source.write_owner(identity, "quinn")
+        snapshot = await self.source.write_owner(identity, "quinn")
+        self.assertEqual(snapshot.identity.external_id, "group/project!42")
+        self.assertEqual(self.client.merge_request_updates, [{"labels": "owner::quinn"}])
         with self.assertRaises(ValueError):
             await self.source.add_comment(identity, "review")
         self.assertEqual(self.client.update_payloads, [])
