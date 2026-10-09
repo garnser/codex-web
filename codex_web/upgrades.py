@@ -52,6 +52,18 @@ class UpgradeStatus(StrEnum):
     ROLLED_BACK = "rolled_back"
 
 
+class UpgradeMaintenanceScope(StrEnum):
+    TENANT = "tenant"
+    SERVICE = "service"
+
+
+class UpgradeHostedScope(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    organization_id: str = Field(min_length=1)
+    workspace_id: str = Field(min_length=1)
+
+
 class UpgradeCompatibilityProfile(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
@@ -184,6 +196,13 @@ class UpgradePreflight(BaseModel):
     recovery_qualified: bool
     active_action_intents: int = Field(ge=0)
     active_worker_assignments: int = Field(ge=0)
+    active_native_admissions: int = Field(default=0, ge=0)
+    active_fenced_admissions: int = Field(default=0, ge=0)
+    maintenance_scope: UpgradeMaintenanceScope = UpgradeMaintenanceScope.TENANT
+    service_instance_id: str | None = None
+    covered_scopes: tuple[UpgradeHostedScope, ...] = ()
+    hosted_scope_fingerprint: str | None = None
+    admission_epoch: int = Field(default=0, ge=0)
     incompatible_worker_ids: tuple[str, ...] = ()
     incompatible_extension_ids: tuple[str, ...] = ()
     incompatible_definition_record_ids: tuple[str, ...] = ()
@@ -243,7 +262,14 @@ class UpgradePlan(BaseModel):
     status: UpgradeStatus = UpgradeStatus.DRAFT
     preflight: UpgradePreflight | None = None
     maintenance_mode: bool = False
+    maintenance_scope: UpgradeMaintenanceScope = UpgradeMaintenanceScope.TENANT
     drain_started_at: float | None = None
+    service_instance_id: str | None = None
+    covered_scopes: tuple[UpgradeHostedScope, ...] = ()
+    hosted_scope_fingerprint: str | None = None
+    admission_epoch: int = Field(default=0, ge=0)
+    deployment_source_revision: str | None = None
+    deployment_target_revision: str | None = None
     irreversible_boundary_crossed: bool = False
     rollback_available: bool = True
     definition_migrations: tuple[DefinitionMigrationRecord, ...] = ()
@@ -269,6 +295,14 @@ class UpgradeDefinitionMigrationCreate(BaseModel):
     from_record_id: str = Field(min_length=1)
     to_record_id: str = Field(min_length=1)
     reason: str = Field(min_length=1, max_length=4000)
+
+
+class UpgradeServiceDrainRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    service_instance_id: str = Field(min_length=1, max_length=500)
+    source_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    target_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
 
 
 class UpgradeState(BaseModel):

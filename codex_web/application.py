@@ -2139,6 +2139,8 @@ upgrade_service = UpgradeService(
     action_intents=action_intent_service,
     approvals=approval_request_service,
     evidence=artifact_evidence_service,
+    identity=identity_service,
+    service_instance_id=instance_id,
 )
 action_intent_service.maintenance_guard = (
     upgrade_service.action_execution_allowed
@@ -2146,6 +2148,9 @@ action_intent_service.maintenance_guard = (
 execution_worker_service.maintenance_guard = (
     upgrade_service.worker_assignment_allowed
 )
+action_intent_service.maintenance_admission = upgrade_service.action_admission
+execution_worker_service.maintenance_admission = upgrade_service.worker_admission
+identity_service.workspace_creation_admission = upgrade_service.hosted_scope_admission
 app.state.upgrade_store = upgrade_store
 app.state.upgrade_service = upgrade_service
 app.include_router(build_upgrades_router(upgrade_service))
@@ -2384,6 +2389,8 @@ control_plane_broker_service = ControlPlaneBrokerService(
     action_intents=action_intent_service,
     code_hosts=code_host_service,
     execution_workspaces=execution_workspace_service,
+    upgrades=upgrade_service,
+    service_instance_id=instance_id,
 )
 control_plane_broker_factory.configure(control_plane_broker_service)
 app.state.control_plane_broker_audit_store = control_plane_broker_audit_store
@@ -3201,6 +3208,7 @@ turn_execution_service = install_turn_execution_service(
     ),
     thread_history=thread_history_repository,
     transcript=thread_transcript_service,
+    maintenance_admission=upgrade_service.native_turn_admission,
 )
  
 def _codex_cli_thread_event(event):

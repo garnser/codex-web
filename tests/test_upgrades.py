@@ -29,6 +29,7 @@ from codex_web.recovery import RecoveryHealth
 from codex_web.releases import ReleaseStatus
 from codex_web.services.upgrades import (
     UpgradeConflictError,
+    UpgradePreflightError,
     UpgradeService,
 )
 from codex_web.storage.sqlite_state import SQLiteStateStore
@@ -74,6 +75,12 @@ class _Workers:
     def __init__(self, workers=(), assignments=()):
         self._workers = list(workers)
         self._assignments = list(assignments)
+        self.store = SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                workers=list(self._workers),
+                assignments=list(self._assignments),
+            )
+        )
 
     def list_workers(self, actor):
         del actor
@@ -87,6 +94,11 @@ class _Workers:
 class _Extensions:
     def __init__(self, installations=()):
         self.installations = list(installations)
+        self.store = SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                installations=list(self.installations),
+            )
+        )
 
     def list(self, actor):
         del actor
@@ -138,6 +150,9 @@ class _Releases:
 class _Actions:
     def __init__(self, intents=()):
         self.intents = list(intents)
+        self.store = SimpleNamespace(
+            load=lambda: SimpleNamespace(intents=list(self.intents))
+        )
 
     def list(self, actor):
         del actor
@@ -291,10 +306,17 @@ class UpgradeTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.actions.intents.append(
-            SimpleNamespace(status=ActionIntentStatus.EXECUTING)
+            SimpleNamespace(
+                organization_id="org-a",
+                workspace_id="ws-a",
+                status=ActionIntentStatus.EXECUTING,
+            )
         )
 
-        plan = self.create_plan(require_drain=True)
+        plan = self.create_plan(
+            require_drain=True,
+            profile=self.profile(deployment_mode=UpgradeDeploymentMode.LOCAL),
+        )
         plan = self.service.preflight(plan.id, actor=self.actor)
 
         self.assertFalse(plan.preflight.satisfied)
@@ -307,7 +329,10 @@ class UpgradeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.evidence.items[-1].payload.result, EvidenceResult.FAIL)
 
     async def test_drain_guard_blocks_ordinary_actions_but_allows_incident_and_blocks_workers(self):
-        plan = self.create_plan(require_drain=True)
+        plan = self.create_plan(
+            require_drain=True,
+            profile=self.profile(deployment_mode=UpgradeDeploymentMode.LOCAL),
+        )
         plan = self.service.start_drain(plan.id, actor=self.actor)
         self.assertTrue(plan.maintenance_mode)
 
@@ -328,6 +353,235 @@ class UpgradeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(
             self.service.worker_assignment_allowed("org-a", "ws-a")
         )
+        with self.service.native_turn_admission("org-a", "ws-a") as admitted:
+            self.assertFalse(admitted)
+
+    async def test_service_drain_covers_all_hosted_scopes_and_native_admissions(self):
+        source = "a" * 40
+        target = "b" * 40
+        self.releases.release.build = SimpleNamespace(
+            digest="sha256:" + "a" * 64,
+            source_revision=target,
+        )
+        self.service.service_instance_id = "control-plane-test"
+        self.service.identity = SimpleNamespace(
+            state=lambda: SimpleNamespace(
+                workspaces=[
+                    SimpleNamespace(
+                        id="ws-a",
+                        organization_id="org-a",
+                        disabled_at=None,
+                    ),
+                    SimpleNamespace(
+                        id="ws-b",
+                        organization_id="org-b",
+                        disabled_at=None,
+                    ),
+                ]
+            )
+        )
+        self.workers._assignments.append(
+            SimpleNamespace(
+                id="assignment-other-scope",
+                organization_id="org-b",
+                workspace_id="ws-b",
+                status=AssignmentStatus.RUNNING,
+                execution_contract_version="1.0",
+            )
+        )
+        actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.LOCAL_TRUSTED}
+        )
+        plan = self.create_plan(
+            require_drain=True,
+            profile=self.profile(deployment_mode=UpgradeDeploymentMode.LOCAL),
+        )
+
+        with self.service.native_turn_admission("org-a", "ws-a") as admitted:
+            self.assertTrue(admitted)
+            plan = self.service.start_service_drain(
+                plan.id,
+                actor=actor,
+                service_instance_id="control-plane-test",
+                source_revision=source,
+                target_revision=target,
+            )
+            self.assertFalse(
+                self.service.worker_assignment_allowed("org-b", "ws-b")
+            )
+            plan = self.service.preflight(plan.id, actor=actor)
+            self.assertFalse(plan.preflight.satisfied)
+            self.assertEqual(plan.preflight.active_native_admissions, 1)
+            self.assertEqual(plan.preflight.active_worker_assignments, 1)
+            self.assertEqual(
+                {
+                    (item.organization_id, item.workspace_id)
+                    for item in plan.preflight.covered_scopes
+                },
+                {("org-a", "ws-a"), ("org-b", "ws-b")},
+            )
+
+        self.workers._assignments.clear()
+        plan = self.service.preflight(plan.id, actor=actor)
+        self.assertTrue(plan.preflight.satisfied)
+        qualification = self.service.qualify_local_deployment(
+            plan.id,
+            actor=actor,
+            service_instance_id="control-plane-test",
+            source_revision=source,
+            target_revision=target,
+            preflight_evidence_id=plan.preflight.evidence_id,
+        )
+        self.assertEqual(qualification["source_revision"], source)
+        self.assertEqual(qualification["target_revision"], target)
+        self.assertEqual(len(qualification["covered_scopes"]), 2)
+
+    async def test_service_drain_rejects_stale_instance_release_and_evidence(self):
+        source = "a" * 40
+        target = "b" * 40
+        self.releases.release.build = SimpleNamespace(
+            digest="sha256:" + "a" * 64,
+            source_revision=target,
+        )
+        self.service.service_instance_id = "control-plane-test"
+        actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.LOCAL_TRUSTED}
+        )
+        plan = self.create_plan(
+            require_drain=True,
+            profile=self.profile(deployment_mode=UpgradeDeploymentMode.LOCAL),
+        )
+        with self.assertRaisesRegex(UpgradeConflictError, "instance"):
+            self.service.start_service_drain(
+                plan.id,
+                actor=actor,
+                service_instance_id="old-instance",
+                source_revision=source,
+                target_revision=target,
+            )
+        with self.assertRaisesRegex(UpgradeConflictError, "Release"):
+            self.service.start_service_drain(
+                plan.id,
+                actor=actor,
+                service_instance_id="control-plane-test",
+                source_revision=source,
+                target_revision="c" * 40,
+            )
+
+        plan = self.service.start_service_drain(
+            plan.id,
+            actor=actor,
+            service_instance_id="control-plane-test",
+            source_revision=source,
+            target_revision=target,
+        )
+        plan = self.service.preflight(plan.id, actor=actor)
+        with self.assertRaisesRegex(UpgradeConflictError, "fresh passing"):
+            self.service.qualify_local_deployment(
+                plan.id,
+                actor=actor,
+                service_instance_id="control-plane-test",
+                source_revision=source,
+                target_revision=target,
+                preflight_evidence_id="evidence-stale",
+            )
+
+    async def test_service_drain_accepts_organization_wide_admin_coverage(self):
+        target = "b" * 40
+        self.releases.release.build = SimpleNamespace(
+            digest="sha256:" + "a" * 64,
+            source_revision=target,
+        )
+        self.service.service_instance_id = "control-plane-test"
+        self.service.identity = SimpleNamespace(
+            state=lambda: SimpleNamespace(
+                workspaces=[
+                    SimpleNamespace(
+                        id="ws-a",
+                        organization_id="org-a",
+                        disabled_at=None,
+                    ),
+                    SimpleNamespace(
+                        id="ws-b",
+                        organization_id="org-a",
+                        disabled_at=None,
+                    ),
+                ],
+                memberships=[
+                    SimpleNamespace(
+                        identity_id=self.actor.identity_id,
+                        organization_id="org-a",
+                        workspace_id=None,
+                        revoked_at=None,
+                        roles=(MembershipRole.ADMIN,),
+                    )
+                ],
+            )
+        )
+        plan = self.create_plan(
+            require_drain=True,
+            profile=self.profile(deployment_mode=UpgradeDeploymentMode.LOCAL),
+        )
+
+        plan = self.service.start_service_drain(
+            plan.id,
+            actor=self.actor,
+            service_instance_id="control-plane-test",
+            source_revision="a" * 40,
+            target_revision=target,
+        )
+
+        self.assertEqual(plan.maintenance_scope.value, "service")
+        self.assertEqual(len(plan.covered_scopes), 2)
+
+    async def test_service_drain_fences_incident_claims_and_rechecks_live_actions(self):
+        source = "a" * 40
+        target = "b" * 40
+        self.releases.release.build = SimpleNamespace(
+            digest="sha256:" + "a" * 64,
+            source_revision=target,
+        )
+        self.service.service_instance_id = "control-plane-test"
+        actor = self.actor.model_copy(
+            update={"assurance": AuthenticationAssurance.LOCAL_TRUSTED}
+        )
+        plan = self.create_plan(
+            require_drain=True,
+            profile=self.profile(deployment_mode=UpgradeDeploymentMode.LOCAL),
+        )
+        plan = self.service.start_service_drain(
+            plan.id,
+            actor=actor,
+            service_instance_id="control-plane-test",
+            source_revision=source,
+            target_revision=target,
+        )
+        incident = SimpleNamespace(
+            organization_id="org-a",
+            workspace_id="ws-a",
+            action_id="incident.reconcile",
+            request=SimpleNamespace(parameters={"incident_id": "incident-1"}),
+        )
+        self.assertFalse(self.service.action_execution_allowed(incident))
+        plan = self.service.preflight(plan.id, actor=actor)
+        self.assertTrue(plan.preflight.satisfied)
+
+        self.actions.intents.append(
+            SimpleNamespace(
+                organization_id="org-a",
+                workspace_id="ws-a",
+                status=ActionIntentStatus.EXECUTING,
+            )
+        )
+        with self.assertRaisesRegex(UpgradePreflightError, "active operations"):
+            self.service.qualify_local_deployment(
+                plan.id,
+                actor=actor,
+                service_instance_id="control-plane-test",
+                source_revision=source,
+                target_revision=target,
+                preflight_evidence_id=plan.preflight.evidence_id,
+            )
 
     async def test_failed_idempotent_step_resumes_and_publishes_step_evidence(self):
         attempts = {"count": 0}

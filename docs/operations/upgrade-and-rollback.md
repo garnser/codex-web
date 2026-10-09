@@ -70,6 +70,32 @@ When rollback is still supported:
 
 For a disposable/local development environment, normal source-control/container update procedures may be sufficient, but back up any state you care about first. Do not use a development shortcut as a production migration procedure.
 
+For the persistent local service, use a local-mode Upgrade Plan and its
+whole-service drain before invoking the governed installer:
+
+1. Bind the drain to the current service instance, exact live source revision,
+   and the immutable Release source revision through
+   `POST /api/upgrades/{plan_id}/service-drain`.
+2. Let existing turns/actions/assignments finish. Queued Thread messages remain
+   FIFO and are not rewritten or cancelled.
+3. Run preflight again after the service drain. Confirm every hosted scope is
+   listed and native admissions, active ActionIntents and active worker
+   assignments are zero.
+4. Submit `deployment.local.install` with the exact plan ID, preflight Evidence
+   ID, service instance, live source revision and candidate revision. The
+   candidate must be the plan's immutable Release source.
+5. The helper holds the shared deployment lock and obtains a one-shot canonical
+   recheck immediately before checkout/restart. A lost callback, changed scope,
+   stale instance/evidence, changed Git revision or new blocker aborts the
+   switch.
+6. Verify health, exact installed revision, retained queues and owner
+   continuation before completing post-upgrade verification.
+
+Direct root/systemd commands and ad-hoc scripts can bypass this application
+boundary. Treat that as an explicit operator-policy violation; neither the
+helper nor a successful merge can technically constrain an unrestricted host
+administrator.
+
 ## Failure modes
 
 | Symptom | Meaning | Response |

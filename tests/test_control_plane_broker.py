@@ -718,6 +718,42 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             "control_plane.operations.list",
         )
 
+    async def test_local_deployment_qualification_binds_exact_canonical_inputs(self) -> None:
+        calls = []
+
+        class Upgrades:
+            def qualify_local_deployment(inner, plan_id, **kwargs):
+                calls.append((plan_id, kwargs))
+                return {"upgrade_plan_id": plan_id, **{
+                    key: kwargs[key]
+                    for key in (
+                        "service_instance_id",
+                        "source_revision",
+                        "target_revision",
+                        "preflight_evidence_id",
+                    )
+                }}
+
+        self.service.upgrades = Upgrades()
+        self.service.service_instance_id = "control-plane-test"
+        actor = self.identity.local_trusted_actor()
+        payload = {
+            "candidate_revision": "b" * 40,
+            "upgrade_plan_id": "upgrade-1",
+            "preflight_evidence_id": "evidence-1",
+            "source_revision": "a" * 40,
+            "service_instance_id": "control-plane-test",
+        }
+
+        result = self.service._qualify_local_deployment(payload, actor=actor)
+
+        self.assertEqual(result["target_revision"], "b" * 40)
+        self.assertEqual(calls[0][0], "upgrade-1")
+        self.assertIs(calls[0][1]["actor"], actor)
+        stale = dict(payload, service_instance_id="old-instance")
+        with self.assertRaisesRegex(ControlPlaneBrokerDeniedError, "stale"):
+            self.service._qualify_local_deployment(stale, actor=actor)
+
     async def test_dispatch_scope_reads_yield_with_context_and_original_order(self):
         context = ContextVar("broker_scope_authority")
         marker = object()

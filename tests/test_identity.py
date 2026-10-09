@@ -4,6 +4,7 @@ import os
 import time
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -28,6 +29,7 @@ from codex_web.identity import (
 from codex_web.services.identity import (
     AuthenticationError,
     AuthenticationRateLimiter,
+    IdentityError,
     IdentityService,
     TenantIsolationError,
     TokenReplayError,
@@ -60,6 +62,25 @@ class IdentityServiceTests(unittest.TestCase):
         self.assertIn(MembershipRole.OWNER, actor.roles)
         self.assertEqual(actor.organization_id, "local")
         self.assertEqual(actor.workspace_id, "default")
+
+    def test_workspace_creation_honors_service_maintenance_admission(self) -> None:
+        self.service.workspace_creation_admission = (
+            lambda organization_id, workspace_id: nullcontext(False)
+        )
+
+        with self.assertRaisesRegex(IdentityError, "service maintenance"):
+            self.service.create_workspace(
+                organization_id="local",
+                workspace_id="blocked-workspace",
+                name="Blocked",
+            )
+
+        self.assertFalse(
+            any(
+                item.id == "blocked-workspace"
+                for item in self.service.state().workspaces
+            )
+        )
 
     def test_identity_state_13_migrates_authentication_policy_collections(self) -> None:
         self.state_store.store.put("identity_state", {"schema_version": "1.3"})

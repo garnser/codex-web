@@ -173,8 +173,17 @@ function accRender(card, data) {
   const upgrades = data.upgrades?.active || [];
   card.querySelector("[data-acc-upgrades]").innerHTML = upgrades.length ? upgrades.map(function (item) {
     const preflight = item.preflight ? (item.preflight.satisfied ? "preflight pass" : "preflight blocked: " + (item.preflight.blockers || []).join(", ")) : "preflight not run";
+    const coverage = item.maintenance_scope === "service"
+      ? " · service instance " + (item.service_instance_id || "unknown") +
+        " · covered scopes " + ((item.covered_scopes || []).length) +
+        " · native admissions " + (item.preflight?.active_native_admissions ?? "unknown") +
+        " · fenced admissions " + (item.preflight?.active_fenced_admissions ?? "unknown") +
+        " · evidence " + (item.preflight?.evidence_id || "none") +
+        " · source " + (item.deployment_source_revision || "unbound") +
+        " · target " + (item.deployment_target_revision || "unbound")
+      : " · tenant scope";
     return accRow(item.current_app_version + " → " + item.target_app_version + " · " + item.status,
-      preflight + " · maintenance " + item.maintenance_mode + " · rollback " + item.rollback_available + " · irreversible " + item.irreversible_boundary_crossed,
+      preflight + " · maintenance " + item.maintenance_mode + coverage + " · rollback " + item.rollback_available + " · irreversible " + item.irreversible_boundary_crossed,
       accLink("/api/upgrades/" + encodeURIComponent(item.id), "Open " + item.id));
   }).join("") : accEmpty("No active upgrade plans.");
 

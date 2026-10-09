@@ -116,6 +116,7 @@ class ActionIntentService:
         capacity: CapacityService | None = None,
         execution_workers: Any | None = None,
         maintenance_guard=None,
+        maintenance_admission=None,
         status_notifier=None,
     ) -> None:
         self.store = store
@@ -129,6 +130,7 @@ class ActionIntentService:
         self.capacity = capacity
         self.execution_workers = execution_workers
         self.maintenance_guard = maintenance_guard
+        self.maintenance_admission = maintenance_admission
         self.status_notifier = status_notifier
 
     @staticmethod
@@ -1007,7 +1009,13 @@ class ActionIntentService:
         for candidate in candidates:
             if candidate is None:
                 continue
-            self.store.update(apply, intent_ids=(candidate.id,))
+            if self.maintenance_admission is not None:
+                with self.maintenance_admission(candidate) as admitted:
+                    if not admitted:
+                        continue
+                    self.store.update(apply, intent_ids=(candidate.id,))
+            else:
+                self.store.update(apply, intent_ids=(candidate.id,))
             if claimed:
                 break
         return claimed[0] if claimed else None

@@ -105,9 +105,8 @@ Upgrade maintenance is canonical plan state. While maintenance is active:
 - ordinary ActionIntent claims are not admitted;
 - new execution-worker assignments are rejected;
 - execution-worker assignment claims are paused;
-- native turns on existing bound sessions are checked against their canonical
-  assignment scope before admission and again after provider resume/bootstrap
-  waits; scope cannot be replaced by the calling actor or project;
+- native turns on existing bound sessions resolve their canonical assignment
+  scope before admission; scope cannot be replaced by the caller or Project;
 - queued native turns rejected by maintenance retain FIFO position and failure
   attempts, with delayed deterministic admission retries and no model call;
 - incident/recovery/rollback/reconciliation ActionIntents remain eligible.
@@ -119,22 +118,34 @@ uncertain/reconciliation activity has reached a safe state.
 This avoids a race where preflight succeeds and new ordinary work starts while a
 migration begins.
 
-### Local whole-service deployment qualification
+Native Thread turns use the same boundary. Admission owns a short-lived fenced
+lease from before bootstrap/session resolution until the provider turn is
+accepted. A drain activated while that code awaits preserves the already
+admitted operation, while later web, queue, steering and recovery starts fail
+with a typed maintenance result. Queue drains restore the same FIFO item without
+consuming an execution retry.
 
-Scoped maintenance is not proof that an entire hosted service can restart.
-The native admission check above closes a scoped bound-session bypass; it does
-not produce an atomic host-wide admission fence or complete scope inventory.
-Unbound trusted local sessions and a concurrent admission after the last scoped
-check remain relevant to such a fence. Deployment tooling must not interpret one
-Upgrade Plan's zero counts as a complete hosted-scope drain receipt.
+Local whole-service rollouts are distinct from tenant-scoped maintenance. A
+local Upgrade Plan may enter `service` maintenance only with the existing
+upgrade administrator authority and explicit instance-local/cross-scope
+coverage. The plan records the service instance, exact source and immutable
+Release target revisions, admission epoch, complete hosted-scope inventory and
+its fingerprint. Service maintenance gates every hosted scope; it does not make
+the requesting principal a tenant administrator. Service-principal use requires
+an existing `upgrade:admin` grant and canonical membership in every covered
+scope. It also fences workspace creation and every new ActionIntent claim while
+the whole process is being replaced; tenant-scoped incident/recovery exceptions
+remain unchanged. Unknown coverage fails closed.
 
-The existing local deployment lock serializes installers only. A whole-service
-rollout needs complete authority-checked hosted scope coverage, a canonical
-admission fence shared with native starts, and fresh exact source/target and
-service-instance evidence immediately before restart. Operators must coordinate
-necessary restarts until that contract is implemented. Repository helper changes
-also require explicit adoption by separate operator scripts; privileged ad-hoc
-installers are outside that helper's protection.
+The supported local installer accepts only a fresh passing preflight from that
+service drain. It checks active native admissions, ActionIntents and worker
+assignments across all scopes. Under the deployment lock, immediately before
+switching the checkout, an inherited one-shot channel asks the still-running
+control plane to revalidate the exact plan, Release, evidence, instance,
+admission epoch, scope fingerprint and live/source revisions. Missing or stale
+revalidation aborts without restarting. A receipt file is not authoritative.
+Root-capable tools can still bypass the helper; that explicit host-operator
+boundary remains visible and must not be described as universal protection.
 
 ## Migration phases
 
@@ -203,14 +214,18 @@ FAIL keeps the upgrade in a failed state for recovery/rollback decisions.
 
 ## API and UI
 
-/api/upgrades exposes plan creation/list/read, preflight, drain, backup capture,
+/api/upgrades exposes plan creation/list/read, preflight, tenant drain,
+whole-service local drain, backup capture,
 irreversible-step approval, step execution, Definition migration recording,
 post-upgrade verification and rollback recording.
 
 Human mutation requires administrator authority + MFA; service principals
 require upgrade:admin.
 
-The Autonomy Control Center and operator workspaces should display source/target versions, mixed-version warnings,
-Definition incompatibilities, drain state, step progress/Evidence, irreversible
-boundaries and rollback availability. The operator upgrade/runbook documentation
-documentation.
+The Autonomy Control Center and operator workspaces display source/target
+versions, mixed-version warnings, Definition incompatibilities, tenant/service
+drain scope, service instance, covered-scope and native/fenced-admission state,
+exact deployment source/target revisions and preflight Evidence ID, step
+progress/Evidence, irreversible boundaries and rollback availability. The
+operator upgrade/runbook documentation describes the guarded local path and its
+external bypass limit.

@@ -163,6 +163,7 @@ class TurnExecutionService:
         work_item_outcome_recorder: Callable[..., Any] | None = None,
         thread_history: ThreadHistoryRepository | None = None,
         transcript: Any | None = None,
+        maintenance_admission=None,
     ) -> None:
         self.host = host
         try:
@@ -191,6 +192,7 @@ class TurnExecutionService:
         self.work_item_outcome_recorder = work_item_outcome_recorder
         self.thread_history = thread_history
         self.transcript = transcript
+        self.maintenance_admission = maintenance_admission
         self.upgrade_turn_admission_guard = None
         self.turn_start_lock = asyncio.Lock()
         self._turn_start_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
@@ -1657,10 +1659,8 @@ class TurnExecutionService:
     async def _require_upgrade_turn_admission(
         self, thread_id: str, project: Project, assignment_id: str | None = None,
         *, allow_bootstrap_recovery: bool = False,
-    ) -> None:
+    ) -> tuple[str, str]:
         guard = self.upgrade_turn_admission_guard
-        if guard is None:
-            return
         # A bound assignment owns its scope independently of the HTTP caller.
         # Read through the existing canonical assignment boundary, never infer
         # tenancy from a repository path or trust caller-supplied scope.
@@ -1705,13 +1705,117 @@ class TurnExecutionService:
                 "code": "upgrade_turn_scope_unknown", "threadId": thread_id,
                 "message": "Canonical native turn scope is unavailable",
             })
-        if not await asyncio.to_thread(guard, organization_id, workspace_id):
+        if guard is not None and not await asyncio.to_thread(
+            guard,
+            organization_id,
+            workspace_id,
+        ):
             raise HTTPException(status_code=409, detail={
                 "code": "upgrade_maintenance", "threadId": thread_id,
                 "message": "Native turn admission is paused during upgrade maintenance",
             })
+        return organization_id, workspace_id
 
     async def start_thread_turn_now(
+        self,
+        thread_id: str,
+        *,
+        project: Project,
+        message: str,
+        sandbox: str | None,
+        approval_policy: str | None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+        source: str = "web",
+        reply_target: BotReplyTarget | None = None,
+        execution_id: str | None = None,
+        work_item_ref: str | None = None,
+        repository_resource_id: str | None = None,
+        writable_repository_resource_ids: tuple[str, ...] = (),
+        read_only_repository_resource_ids: tuple[str, ...] = (),
+        execution_profile_id: str | None = None,
+        actor: AuthenticationActor | None = None,
+        agent_profile_id: str | None = None,
+        agent_profile_revision: int | None = None,
+        agent_profile_actor_id: str | None = None,
+        preserve_active_handoff: bool = False,
+    ) -> dict[str, Any]:
+        scope = (project.organization_id, project.workspace_id)
+        if (
+            self.maintenance_admission is not None
+            or self.upgrade_turn_admission_guard is not None
+        ):
+            current_bootstrap = self._bootstrap_binding_for_thread(thread_id)
+            scope = await self._require_upgrade_turn_admission(
+                thread_id,
+                project,
+                (
+                    current_bootstrap.assignment_id
+                    if current_bootstrap is not None
+                    else None
+                ),
+                allow_bootstrap_recovery=True,
+            )
+        if self.maintenance_admission is not None:
+            with self.maintenance_admission(*scope) as admitted:
+                if not admitted:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "upgrade_maintenance_active",
+                            "message": (
+                                "Native turn admission is drained for a canonical upgrade"
+                            ),
+                            "retryable": True,
+                            "threadId": thread_id,
+                        },
+                    )
+                return await self._start_thread_turn_now_admitted(
+                    thread_id,
+                    project=project,
+                    message=message,
+                    sandbox=sandbox,
+                    approval_policy=approval_policy,
+                    model=model,
+                    reasoning_effort=reasoning_effort,
+                    source=source,
+                    reply_target=reply_target,
+                    execution_id=execution_id,
+                    work_item_ref=work_item_ref,
+                    repository_resource_id=repository_resource_id,
+                    writable_repository_resource_ids=writable_repository_resource_ids,
+                    read_only_repository_resource_ids=read_only_repository_resource_ids,
+                    execution_profile_id=execution_profile_id,
+                    actor=actor,
+                    agent_profile_id=agent_profile_id,
+                    agent_profile_revision=agent_profile_revision,
+                    agent_profile_actor_id=agent_profile_actor_id,
+                    preserve_active_handoff=preserve_active_handoff,
+                )
+        return await self._start_thread_turn_now_admitted(
+            thread_id,
+            project=project,
+            message=message,
+            sandbox=sandbox,
+            approval_policy=approval_policy,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            source=source,
+            reply_target=reply_target,
+            execution_id=execution_id,
+            work_item_ref=work_item_ref,
+            repository_resource_id=repository_resource_id,
+            writable_repository_resource_ids=writable_repository_resource_ids,
+            read_only_repository_resource_ids=read_only_repository_resource_ids,
+            execution_profile_id=execution_profile_id,
+            actor=actor,
+            agent_profile_id=agent_profile_id,
+            agent_profile_revision=agent_profile_revision,
+            agent_profile_actor_id=agent_profile_actor_id,
+            preserve_active_handoff=preserve_active_handoff,
+        )
+
+    async def _start_thread_turn_now_admitted(
         self,
         thread_id: str,
         *,
@@ -2688,11 +2792,17 @@ class TurnExecutionService:
                             )
                     raise
 
-            # Recheck after bootstrap/session/resume awaits; scoped drain may
-            # have started while the provider was resuming the native session.
-            await self._require_upgrade_turn_admission(
-                thread_id, project, assignment_id,
-            )
+            if (
+                self.maintenance_admission is None
+                and self.upgrade_turn_admission_guard is not None
+            ):
+                # Compatibility for installations that have not yet wired the
+                # fenced admission coordinator: recheck after provider awaits.
+                await self._require_upgrade_turn_admission(
+                    thread_id,
+                    project,
+                    assignment_id,
+                )
 
             if not preserve_active_handoff:
                 self.mark_thread_active(
@@ -3188,10 +3298,34 @@ class TurnExecutionService:
                 }
             )
         except Exception as exc:
-            if (isinstance(exc, HTTPException) and isinstance(exc.detail, dict)
-                    and exc.detail.get("code") in {
-                        "upgrade_maintenance", "upgrade_turn_scope_unknown",
-                    }):
+            if (
+                isinstance(exc, HTTPException)
+                and exc.status_code == 409
+                and isinstance(exc.detail, dict)
+                and exc.detail.get("code") == "upgrade_maintenance_active"
+            ):
+                queued.attempts = max(0, queued.attempts - 1)
+                self.requeue_turn_front(queued)
+                reschedule_queue = False
+                h._append_bot_event(
+                    {
+                        "type": "queued_turn_waiting_for_upgrade_drain",
+                        "thread_id": thread_id,
+                        "queued_id": queued.id,
+                    }
+                )
+                asyncio.get_running_loop().call_later(
+                    30,
+                    self.schedule_queue_drain,
+                    thread_id,
+                )
+                return
+            if (
+                isinstance(exc, HTTPException)
+                and isinstance(exc.detail, dict)
+                and exc.detail.get("code")
+                in {"upgrade_maintenance", "upgrade_turn_scope_unknown"}
+            ):
                 queued.attempts = max(0, queued.attempts - 1)
                 self.requeue_turn_front(queued)
                 reschedule_queue = False
@@ -3976,6 +4110,7 @@ def install_turn_execution_service(
     work_item_outcome_recorder: Callable[..., Any] | None = None,
     thread_history: ThreadHistoryRepository | None = None,
     transcript: Any | None = None,
+    maintenance_admission=None,
 ) -> TurnExecutionService:
     existing = getattr(app.state, "turn_execution_service", None)
     if isinstance(existing, TurnExecutionService) and existing.host is host:
@@ -4010,6 +4145,8 @@ def install_turn_execution_service(
             service.thread_history = thread_history
         if transcript is not None:
             service.transcript = transcript
+        if maintenance_admission is not None:
+            service.maintenance_admission = maintenance_admission
     else:
         service = TurnExecutionService(
             host,
@@ -4030,6 +4167,7 @@ def install_turn_execution_service(
             work_item_outcome_recorder=work_item_outcome_recorder,
             thread_history=thread_history,
             transcript=transcript,
+            maintenance_admission=maintenance_admission,
         )
         app.state.turn_execution_service = service
 

@@ -131,6 +131,7 @@ class IdentityService:
 
     def __init__(self, store: IdentityStateStore) -> None:
         self.store = store
+        self.workspace_creation_admission = None
 
     def bootstrap_local(self) -> IdentityState:
         """Create deterministic single-user defaults for existing installations."""
@@ -1069,6 +1070,21 @@ class IdentityService:
             organization_id=organization_id,
             name=name,
         )
+
+        if self.workspace_creation_admission is not None:
+            with self.workspace_creation_admission(
+                workspace.organization_id,
+                workspace.id,
+            ) as admitted:
+                if not admitted:
+                    raise IdentityError(
+                        "workspace creation is drained during service maintenance"
+                    )
+                return self._create_workspace(workspace)
+        return self._create_workspace(workspace)
+
+    def _create_workspace(self, workspace: Workspace) -> Workspace:
+        organization_id = workspace.organization_id
 
         def apply(state: IdentityState) -> IdentityState:
             organization = next(
