@@ -24,7 +24,7 @@ from codex_web.services.task_sources import (
 
 
 class GitLabTaskSource:
-    """Provider-neutral authoritative-task adapter backed by GitLab issues.
+    """Provider-neutral task adapter for GitLab issues and merge-request reads.
 
     This adapter owns GitLab-native discovery/read/event/label semantics. It
     returns only normalized TaskSource objects to callers and performs
@@ -303,9 +303,60 @@ class GitLabTaskSource:
                 snapshots.append(self._snapshot_from_issue(issue))
         return snapshots
 
+    async def _read_merge_request(
+        self, identity: TaskSourceIdentity,
+    ) -> TaskSourceSnapshot:
+        self.capabilities.require(TaskSourceCapability.READ)
+        self._validate_identity(identity)
+        project_path, separator, iid_text = identity.external_id.partition("!")
+        project_path = project_path.strip().strip("/")
+        iid_text = iid_text.strip()
+        if (
+            not separator
+            or not project_path
+            or "#" in identity.external_id
+            or "!" in project_path
+            or not iid_text.isascii()
+            or not iid_text.isdigit()
+            or int(iid_text) < 1
+        ):
+            raise ValueError("GitLab merge-request identity must use <project-path>!<positive-iid>")
+        iid = int(iid_text)
+        expected_ref = f"{project_path}!{iid}"
+        merge_request = await self.client.merge_request(
+            self.api_base, project_path, iid, token=self.token,
+        )
+        provider_ref = str((merge_request.get("references") or {}).get("full") or "").strip()
+        if (
+            type(merge_request.get("iid")) is not int
+            or merge_request["iid"] != iid
+            or (provider_ref and provider_ref != expected_ref)
+        ):
+            raise ValueError("GitLab merge-request response does not match the requested identity")
+        revision_value = (
+            merge_request.get("updated_at")
+            or merge_request.get("merged_at")
+            or merge_request.get("closed_at")
+            or merge_request.get("created_at")
+        )
+        return TaskSourceSnapshot(
+            identity=self._identity(
+                expected_ref,
+                external_url=str(merge_request.get("web_url") or "").strip() or None,
+                revision=str(revision_value).strip() if revision_value else None,
+            ),
+            title=str(merge_request.get("title") or "").strip() or None,
+            body_text=str(merge_request.get("description") or "").strip() or None,
+            source_state=str(merge_request.get("state") or "").strip().lower() or None,
+            owners=self._normalize_assignees(merge_request.get("assignees")),
+            labels=self._normalize_labels(merge_request.get("labels")),
+        )
+
     async def read(self, identity: TaskSourceIdentity) -> TaskSourceSnapshot:
         self.capabilities.require(TaskSourceCapability.READ)
         self._validate_identity(identity)
+        if "!" in identity.external_id:
+            return await self._read_merge_request(identity)
         project_path, iid = self._split_external_id(identity.external_id)
         issue = await self.client.project_issue(
             self.api_base,

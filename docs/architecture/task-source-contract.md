@@ -68,6 +68,13 @@ Creation is resolved from the canonical project's singular `TaskSourceConfigurat
 
 Creating an external task is a privileged side effect. Product flows such as Goal decomposition must not expose `create_authoritative(...)` as a direct user mutation or call provider transports themselves. The code-owned `task-source/authoritative` ActionProvider now supplies that bridge: `task-source.create` is prepared and persisted as an ActionIntent before execution delegates to this seam. The action accepts only provider-neutral creation facts, returns the real projected Work Item ref/source identity, and intentionally does not claim cross-provider idempotency or rollback semantics. Provider identity/receipt/evidence therefore remains attributable to the durable action.
 
+GitLab READ accepts both repository-qualified issue identities (`project#iid`)
+and merge-request identities (`project!iid`). They use distinct native endpoints
+even when their IIDs match. MR reads preserve the requested provenance and
+reject mismatched provider identities. Discovery and task mutation/writeback
+remain issue-specific; MR READ does not grant issue mutation or bypass canonical
+actor, tenant, repository, or credential authorization.
+
 ## Normalized facts
 
 `TaskSourceSnapshot` intentionally contains a small provider-neutral fact set:
