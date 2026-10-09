@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import Any
 from urllib.parse import quote, quote_plus
 
@@ -313,16 +315,79 @@ class GitLabClient:
     async def issue_related_merge_requests(
         self, api_base: str, project: str, iid: int, *, token: str,
     ) -> list[dict[str, Any]]:
-        response = await self.get_json(
-            api_base,
-            f"projects/{quote(project, safe='')}/issues/{iid}/related_merge_requests",
-            token=token,
-        )
-        return (
-            [item for item in response if isinstance(item, dict)]
-            if isinstance(response, list)
-            else []
-        )
+        # Only a complete enumeration can replace verified relation state.
+        # Continuations are page numbers on this fixed credential-bound URL,
+        # never provider-supplied URLs. Bounds fail visibly, not as absence.
+        path = f"projects/{quote(project, safe='')}/issues/{iid}/related_merge_requests"
+        url = f"{api_base.rstrip('/')}/{path}"
+        headers = {"PRIVATE-TOKEN": token, "Accept": "application/json"}
+        items: list[dict[str, Any]] = []
+        seen: set[tuple[int | None, int]] = set()
+        observed_bytes = 0
+        expected_total: int | None = None
+        try:
+            async with asyncio.timeout(60), httpx.AsyncClient(
+                transport=self.transport, timeout=self.timeout,
+            ) as client:
+                for page in range(1, 11):
+                    async with client.stream(
+                        "GET", url, headers=headers,
+                        params={"per_page": 100, "page": page},
+                    ) as response:
+                        if response.status_code != 200:
+                            raise RuntimeError(
+                                f"GitLab API returned HTTP {response.status_code} for {path}"
+                            )
+                        chunks: list[bytes] = []
+                        page_bytes = 0
+                        async for chunk in response.aiter_bytes():
+                            page_bytes += len(chunk)
+                            observed_bytes += len(chunk)
+                            if page_bytes > 512 * 1024 or observed_bytes > 4 * 1024 * 1024:
+                                raise RuntimeError("GitLab related MR response byte limit exceeded")
+                            chunks.append(chunk)
+                        try:
+                            payload = json.loads(b"".join(chunks))
+                        except (ValueError, UnicodeError) as exc:
+                            raise RuntimeError("GitLab related MR response is invalid JSON") from exc
+                        if not isinstance(payload, list) or len(payload) > 100:
+                            raise RuntimeError("GitLab related MR page is invalid")
+                        for item in payload:
+                            if not isinstance(item, dict) or type(item.get("iid")) is not int or item["iid"] < 1:
+                                raise RuntimeError("GitLab related MR item is invalid")
+                            target = item.get("target_project_id")
+                            key = (target if type(target) is int else None, item["iid"])
+                            if key in seen:
+                                raise RuntimeError("GitLab related MR pagination repeated an item")
+                            seen.add(key)
+                            items.append(item)
+                        if len(items) > 1000:
+                            raise RuntimeError("GitLab related MR item limit exceeded")
+                        total = response.headers.get("x-total")
+                        if total is not None:
+                            if not total.isascii() or not total.isdecimal() or len(total) > 10:
+                                raise RuntimeError("GitLab related MR total is invalid")
+                            count = int(total)
+                            if count > 1000 or (expected_total is not None and count != expected_total):
+                                raise RuntimeError("GitLab related MR total exceeds bounds or changed")
+                            expected_total = count
+                        next_page = response.headers.get("x-next-page")
+                        if next_page:
+                            if (
+                                not payload or not next_page.isascii()
+                                or not next_page.isdecimal() or len(next_page) > 10
+                                or int(next_page) != page + 1
+                            ):
+                                raise RuntimeError("GitLab related MR next page is invalid")
+                        # Missing pagination headers require an explicit empty
+                        # page. A short page alone is not proof of completeness.
+                        elif next_page == "" or not payload:
+                            if expected_total is not None and len(items) != expected_total:
+                                raise RuntimeError("GitLab related MR enumeration is incomplete")
+                            return items
+                raise RuntimeError("GitLab related MR page limit exceeded")
+        except TimeoutError as exc:
+            raise RuntimeError("GitLab related MR enumeration timed out") from exc
 
     async def create_merge_request(
         self,
