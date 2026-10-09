@@ -14,6 +14,7 @@ from codex_web.action_intents import (
     ActionIntentClaimRequest,
     ActionIntentCreate,
     ActionIntentReconcileRequest,
+    ActionIntentRetryPolicy,
     ActionIntentRetryRequest,
     ActionIntentRollbackRequest,
     ActionIntentStatus,
@@ -210,6 +211,63 @@ class _NonIdempotentUnknownProvider:
 
     async def verify(self, result, *, binding):
         return ActionVerification(verified=False)
+
+    async def rollback(self, result, *, binding, credential=None):
+        raise AssertionError
+
+
+class _MergeReconciliationProvider:
+    contract_version = "1.0"
+    provider_type = "merge-reconciliation"
+    provider_instance = "test"
+
+    def __init__(self, *, merged: bool = True) -> None:
+        self.merged = merged
+        self.prepare_calls = 0
+        self.execute_calls = 0
+        self.verify_calls = 0
+
+    def actions(self):
+        return (
+            ActionDefinition(
+                action_id="code-host.pull-request.merge",
+                title="Merge pull request",
+                capabilities=ActionCapability(
+                    prepare=True,
+                    execute=True,
+                    idempotency=True,
+                    verification=True,
+                ),
+                required_resource_types=(ResourceType.OTHER,),
+                required_authority=("action.test.write",),
+                retry_max_attempts=1,
+            ),
+        )
+
+    async def prepare(self, request, *, binding):
+        del binding
+        self.prepare_calls += 1
+        return {
+            "operation": "pull-request-merge",
+            "repository": "owner/repository",
+            "pull_request_number": request.parameters["pull_request_number"],
+            "merge_method": request.parameters["merge_method"],
+            "expected_head_sha": request.parameters.get("expected_head_sha"),
+        }
+
+    async def execute(self, request, *, binding, credential=None):
+        del request, binding, credential
+        self.execute_calls += 1
+        raise RuntimeError("provider response lost after possible merge")
+
+    async def verify(self, result, *, binding, credential=None):
+        del binding, credential
+        self.verify_calls += 1
+        if result.output["pull_request_number"] != 42:
+            raise AssertionError("unexpected pull request")
+        if result.output["head_sha"] != "a" * 40:
+            raise AssertionError("unexpected pull request head")
+        return ActionVerification(verified=self.merged)
 
     async def rollback(self, result, *, binding, credential=None):
         raise AssertionError
@@ -509,6 +567,7 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         )
         intent = self._create(
             expected_evidence=(requirement,),
+            retry_policy=ActionIntentRetryPolicy(max_attempts=1),
             work_item_success=ActionIntentWorkItemSuccess(
                 current_stage="ready_for_validation",
             ),
@@ -533,7 +592,7 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         )
         reconciled = await self.service.reconcile(
             intent.id,
-            ActionIntentReconcileRequest(retry_if_idempotent=False),
+            ActionIntentReconcileRequest(retry_if_idempotent=True),
             actor=self.worker_actor,
         )
 
@@ -881,6 +940,198 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
                 actor=self.actor,
             )
 
+    async def test_unknown_merge_reconciles_by_verification_without_replay(self) -> None:
+        provider = _MergeReconciliationProvider()
+        self.registry.register(provider)
+        binding = self.registry.bind(
+            ActionProviderBindingCreate(
+                provider_type=provider.provider_type,
+                provider_instance=provider.provider_instance,
+                resource_ids=(self.resource.id,),
+            ),
+            actor=self.actor,
+            resources=self.resources,
+        )
+        intent = self.service.create(
+            ActionIntentCreate(
+                binding_id=binding.id,
+                request=ActionRequest(
+                    action_id="code-host.pull-request.merge",
+                    organization_id="local",
+                    workspace_id="default",
+                    project_id="home",
+                    resource_ids=(self.resource.id,),
+                    parameters={
+                        "pull_request_number": 42,
+                        "merge_method": "squash",
+                        "expected_head_sha": "a" * 40,
+                    },
+                ),
+                work_item_ref=self.work_item.ref,
+            ),
+            actor=self.actor,
+        )
+
+        uncertain = await self._execute(intent)
+        self.assertEqual(uncertain.status, ActionIntentStatus.UNCERTAIN)
+        self.assertEqual(provider.execute_calls, 1)
+
+        reconciled = await self.service.reconcile(
+            intent.id,
+            ActionIntentReconcileRequest(retry_if_idempotent=False),
+            actor=self.worker_actor,
+        )
+
+        self.assertEqual(reconciled.status, ActionIntentStatus.SUCCEEDED)
+        self.assertEqual(provider.execute_calls, 1)
+        self.assertEqual(provider.prepare_calls, 1)
+        self.assertEqual(provider.verify_calls, 1)
+        history = self.service.history(intent.id, self.actor)
+        self.assertEqual(history["receipts"][-1]["outcome"], "completed")
+        self.assertEqual(
+            history["receipts"][-1]["details"]["operation"],
+            "provider-state-reconciliation",
+        )
+        self.assertFalse(
+            history["receipts"][-1]["details"]["provider_mutation_replayed"]
+        )
+
+    async def test_unknown_unmerged_pull_request_remains_reconcilable(self) -> None:
+        provider = _MergeReconciliationProvider(merged=False)
+        self.registry.register(provider)
+        binding = self.registry.bind(
+            ActionProviderBindingCreate(
+                provider_type=provider.provider_type,
+                provider_instance=provider.provider_instance,
+                resource_ids=(self.resource.id,),
+            ),
+            actor=self.actor,
+            resources=self.resources,
+        )
+        intent = self.service.create(
+            ActionIntentCreate(
+                binding_id=binding.id,
+                request=ActionRequest(
+                    action_id="code-host.pull-request.merge",
+                    organization_id="local",
+                    workspace_id="default",
+                    resource_ids=(self.resource.id,),
+                    parameters={
+                        "pull_request_number": 42,
+                        "merge_method": "squash",
+                        "expected_head_sha": "a" * 40,
+                    },
+                ),
+            ),
+            actor=self.actor,
+        )
+        uncertain = await self._execute(intent)
+        self.assertEqual(uncertain.status, ActionIntentStatus.UNCERTAIN)
+
+        reconciled = await self.service.reconcile(
+            intent.id,
+            ActionIntentReconcileRequest(retry_if_idempotent=False),
+            actor=self.worker_actor,
+        )
+
+        self.assertEqual(
+            reconciled.status,
+            ActionIntentStatus.REQUIRES_RECONCILIATION,
+        )
+        self.assertEqual(provider.execute_calls, 1)
+        self.assertEqual(provider.verify_calls, 1)
+        self.assertIn("does not confirm", reconciled.last_error or "")
+
+    async def test_unstarted_merge_intent_cannot_synthesize_provider_success(self) -> None:
+        provider = _MergeReconciliationProvider()
+        self.registry.register(provider)
+        binding = self.registry.bind(
+            ActionProviderBindingCreate(
+                provider_type=provider.provider_type,
+                provider_instance=provider.provider_instance,
+                resource_ids=(self.resource.id,),
+            ),
+            actor=self.actor,
+            resources=self.resources,
+        )
+        intent = self.service.create(
+            ActionIntentCreate(
+                binding_id=binding.id,
+                request=ActionRequest(
+                    action_id="code-host.pull-request.merge",
+                    organization_id="local",
+                    workspace_id="default",
+                    resource_ids=(self.resource.id,),
+                    parameters={
+                        "pull_request_number": 42,
+                        "merge_method": "squash",
+                        "expected_head_sha": "a" * 40,
+                    },
+                ),
+            ),
+            actor=self.actor,
+        )
+
+        reconciled = await self.service.reconcile(
+            intent.id,
+            ActionIntentReconcileRequest(retry_if_idempotent=False),
+            actor=self.worker_actor,
+        )
+
+        self.assertEqual(
+            reconciled.status,
+            ActionIntentStatus.REQUIRES_RECONCILIATION,
+        )
+        self.assertEqual(provider.prepare_calls, 0)
+        self.assertEqual(provider.execute_calls, 0)
+        self.assertEqual(provider.verify_calls, 0)
+
+    async def test_unknown_merge_without_expected_head_remains_reconcilable(self) -> None:
+        provider = _MergeReconciliationProvider()
+        self.registry.register(provider)
+        binding = self.registry.bind(
+            ActionProviderBindingCreate(
+                provider_type=provider.provider_type,
+                provider_instance=provider.provider_instance,
+                resource_ids=(self.resource.id,),
+            ),
+            actor=self.actor,
+            resources=self.resources,
+        )
+        intent = self.service.create(
+            ActionIntentCreate(
+                binding_id=binding.id,
+                request=ActionRequest(
+                    action_id="code-host.pull-request.merge",
+                    organization_id="local",
+                    workspace_id="default",
+                    resource_ids=(self.resource.id,),
+                    parameters={
+                        "pull_request_number": 42,
+                        "merge_method": "squash",
+                    },
+                ),
+            ),
+            actor=self.actor,
+        )
+        uncertain = await self._execute(intent)
+        self.assertEqual(uncertain.status, ActionIntentStatus.UNCERTAIN)
+
+        reconciled = await self.service.reconcile(
+            intent.id,
+            ActionIntentReconcileRequest(retry_if_idempotent=False),
+            actor=self.worker_actor,
+        )
+
+        self.assertEqual(
+            reconciled.status,
+            ActionIntentStatus.REQUIRES_RECONCILIATION,
+        )
+        self.assertEqual(provider.execute_calls, 1)
+        self.assertEqual(provider.prepare_calls, 1)
+        self.assertEqual(provider.verify_calls, 0)
+        self.assertIn("exact expected head SHA", reconciled.last_error or "")
+
     async def test_idempotent_uncertain_action_requires_reconciliation_before_requeue(self) -> None:
         provider = _SlowProvider()
         self.registry.register(provider)
@@ -934,6 +1185,73 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             retried.request.idempotency_key,
             intent.request.idempotency_key,
+        )
+
+    async def test_reconciliation_does_not_requeue_exhausted_uncertain_action(self) -> None:
+        provider = _SlowProvider()
+        self.registry.register(provider)
+        binding = self.registry.bind(
+            ActionProviderBindingCreate(
+                provider_type=provider.provider_type,
+                provider_instance=provider.provider_instance,
+                resource_ids=(self.resource.id,),
+            ),
+            actor=self.actor,
+            resources=self.resources,
+        )
+        intent = self.service.create(
+            ActionIntentCreate(
+                binding_id=binding.id,
+                request=ActionRequest(
+                    action_id="slow.write",
+                    organization_id="local",
+                    workspace_id="default",
+                    resource_ids=(self.resource.id,),
+                ),
+                timeout_seconds=0.001,
+                retry_policy=ActionIntentRetryPolicy(max_attempts=1),
+            ),
+            actor=self.actor,
+        )
+        uncertain = await self._execute(intent)
+        self.assertEqual(uncertain.status, ActionIntentStatus.UNCERTAIN)
+        history_before = self.service.history(intent.id, self.actor)
+
+        reconciled = await self.service.reconcile(
+            intent.id,
+            ActionIntentReconcileRequest(retry_if_idempotent=True),
+            actor=self.worker_actor,
+        )
+
+        self.assertEqual(
+            reconciled.status,
+            ActionIntentStatus.REQUIRES_RECONCILIATION,
+        )
+        self.assertEqual(reconciled.attempt, 1)
+        self.assertIsNone(reconciled.lease)
+        self.assertIn("retry budget exhausted (1/1)", reconciled.last_error or "")
+        self.assertIn(
+            "newly authorized replacement ActionIntent",
+            reconciled.last_error or "",
+        )
+        self.assertIsNotNone(reconciled.failure)
+        self.assertEqual(reconciled.failure.reason_code.value, "unknown_outcome")
+        self.assertTrue(reconciled.failure.requires_reconciliation)
+        self.assertTrue(reconciled.failure.details["retry_budget_exhausted"])
+        self.assertEqual(reconciled.failure.details["attempt"], 1)
+        self.assertEqual(reconciled.failure.details["max_attempts"], 1)
+        history_after = self.service.history(intent.id, self.actor)
+        self.assertEqual(history_after["receipts"], history_before["receipts"])
+        self.assertEqual(
+            history_after["verifications"],
+            history_before["verifications"],
+        )
+        self.assertIsNone(
+            self.service.claim(
+                ActionIntentClaimRequest(worker_id="worker-1", lease_seconds=30),
+                actor=self.worker_actor,
+                intent_id=intent.id,
+            )
         )
 
     async def test_rollback_is_recorded_as_terminal_history(self) -> None:

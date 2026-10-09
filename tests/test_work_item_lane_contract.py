@@ -549,7 +549,15 @@ class WorkItemLaneContractTests(unittest.TestCase):
             )
 
         record_dispatch.assert_called_once()
-        dispatch.assert_awaited_once_with(binding, server._work_item_dispatch_text(state), "work-item-progress")
+        dispatch.assert_awaited_once_with(
+            binding,
+            server._work_item_dispatch_text(state),
+            "work-item-progress",
+            work_item_ref=state.ref,
+            repository_resource_id=None,
+            writable_repository_resource_ids=(),
+            require_idle=True,
+        )
         self.assertEqual(append_event.call_args.args[0]["type"], "work_item_owner_progress_dispatched")
 
     def test_actionable_owner_dispatch_skips_when_actor_is_current_owner(self) -> None:
@@ -616,7 +624,15 @@ class WorkItemLaneContractTests(unittest.TestCase):
 
         record_dispatch.assert_called_once()
         updated = server._work_item_state("veridataops/saas-app#271")
-        dispatch.assert_awaited_once_with(binding, server._work_item_dispatch_text(updated), "work-item-progress-continuity")
+        dispatch.assert_awaited_once_with(
+            binding,
+            server._work_item_dispatch_text(updated),
+            "work-item-progress-continuity",
+            work_item_ref=updated.ref,
+            repository_resource_id=None,
+            writable_repository_resource_ids=(),
+            require_idle=True,
+        )
         self.assertEqual(append_event.call_args.args[0]["type"], "work_item_owner_progress_dispatched")
 
     def test_progress_endpoint_schedules_actionable_owner_continuity_check(self) -> None:

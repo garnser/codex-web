@@ -4,6 +4,8 @@ import asyncio
 import io
 import os
 import threading
+import tempfile
+from pathlib import Path
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -40,6 +42,7 @@ class _Host:
         self.approval_requests: list[dict] = []
         self.handoff_threads: set[str] = set()
         self.active_threads: set[str] = set()
+        self.transcript_events: list[dict] = []
 
     def _approval_thread_id(self, message: dict) -> str:
         return "thread-1"
@@ -58,6 +61,9 @@ class _Host:
 
     def _record_thread_activity(self, message: dict) -> None:
         self.activity.append(message)
+
+    def _record_codex_runtime_transcript_event(self, message: dict) -> None:
+        self.transcript_events.append(message)
 
     def _record_terminal_turn_result(self, message: dict) -> bool:
         return False
@@ -176,10 +182,12 @@ class CodexRuntimeInstallationTests(unittest.TestCase):
         self.assertIs(host._codex_request_timeout, request_timeout)
 
     def test_request_timeout_contract_matches_runtime_expectations(self) -> None:
-        self.assertEqual(request_timeout("initialize"), 15)
-        self.assertEqual(request_timeout("thread/read"), 10)
+        self.assertEqual(request_timeout("initialize"), 60)
+        self.assertEqual(request_timeout("thread/read"), 60)
+        self.assertEqual(request_timeout("thread/list"), 60)
+        self.assertEqual(request_timeout("account/rateLimits/read"), 60)
         self.assertEqual(request_timeout("turn/start"), 60)
-        self.assertEqual(request_timeout("turn/interrupt"), 30)
+        self.assertEqual(request_timeout("turn/interrupt"), 10)
         self.assertEqual(request_timeout("unknown/method"), 20)
 
 
@@ -187,6 +195,149 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.host = _Host()
         self.runtime = CodexRuntime(self.host)
+
+    async def _authenticated_account(self, payload=None):
+        self.runtime.ensure_started = AsyncMock()
+        async def send(message):
+            await self.runtime._handle_message({"id": message["id"], "result": payload if payload is not None else {"account": {"type": "chatgpt", "email": "fixture@example.test", "planType": "plus"}}})
+        self.runtime._send = send
+        return await self.runtime.request("account/read", {"refreshToken": False})
+
+    async def test_real_account_rpc_proof_survives_readiness_clear_without_changing_health(self):
+        from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
+        from codex_web.agent_runtime import AgentRuntimeHealth
+        self.runtime.ready.set()
+        self.assertFalse(self.runtime.authenticated_account_available())
+        await self._authenticated_account()
+        self.assertTrue(self.runtime.authenticated_account_available())
+        self.runtime.ready.clear()
+        self.assertTrue(self.runtime.authenticated_account_available())
+        self.assertEqual(await CodexAgentRuntimeAdapter(self.runtime).health(), AgentRuntimeHealth.UNAVAILABLE)
+
+    async def test_account_proof_expires_and_process_identity_changes_invalidate_it(self):
+        await self._authenticated_account()
+        observed = self.runtime._authenticated_account_proof[0]
+        with patch("codex_web.runtime.codex.time.monotonic", return_value=observed + 119):
+            self.assertTrue(self.runtime.authenticated_account_available())
+        with patch("codex_web.runtime.codex.time.monotonic", return_value=observed + 120):
+            self.assertFalse(self.runtime.authenticated_account_available())
+        with patch("codex_web.runtime.codex.os.getpid", return_value=123456789):
+            self.assertFalse(self.runtime.authenticated_account_available())
+
+    async def test_positive_account_notification_refreshes_without_blocking_reader(self):
+        self.runtime.ensure_started = AsyncMock()
+        sent = []
+        self.runtime._send = AsyncMock(side_effect=lambda message: sent.append(message))
+        await self.runtime._handle_message({"method": "account/updated", "params": {"authMode": "chatgpt"}})
+        task = self.runtime._authenticated_account_refresh_task
+        await asyncio.sleep(0)
+        self.assertFalse(task.done())
+        self.assertFalse(self.runtime.authenticated_account_available())
+        self.assertEqual(sent[0]["method"], "account/read")
+        await self.runtime._handle_message({"id": sent[0]["id"], "result": {"account": {"type": "chatgpt"}}})
+        await task
+        self.assertTrue(self.runtime.authenticated_account_available())
+
+    async def test_positive_notification_burst_coalesces_and_rechecks_latest_epoch(self):
+        self.runtime.ensure_started = AsyncMock()
+        sent = []
+        self.runtime._send = AsyncMock(side_effect=lambda message: sent.append(message))
+        notification = {"method": "account/updated", "params": {"authMode": "chatgpt"}}
+        await self.runtime._handle_message(notification)
+        task = self.runtime._authenticated_account_refresh_task
+        await asyncio.sleep(0)
+        for _ in range(10):
+            await self.runtime._handle_message(notification)
+        self.assertIs(self.runtime._authenticated_account_refresh_task, task)
+        await self.runtime._handle_message({"id": sent[0]["id"], "result": {"account": {"type": "chatgpt"}}})
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        self.assertFalse(self.runtime.authenticated_account_available())
+        self.assertEqual(len(sent), 2)
+        await self.runtime._handle_message({"id": sent[1]["id"], "result": {"account": {"type": "chatgpt"}}})
+        await task
+        self.assertTrue(self.runtime.authenticated_account_available())
+
+    async def test_negative_notification_prevents_pending_read_from_republishing(self):
+        self.runtime.ensure_started = AsyncMock()
+        sent = []
+        self.runtime._send = AsyncMock(side_effect=lambda message: sent.append(message))
+        await self.runtime._handle_message({"method": "account/updated", "params": {"authMode": "chatgpt"}})
+        task = self.runtime._authenticated_account_refresh_task
+        await asyncio.sleep(0)
+        await self.runtime._handle_message({"method": "account/updated", "params": {"authMode": None}})
+        await self.runtime._handle_message({"id": sent[0]["id"], "result": {"account": {"type": "chatgpt"}}})
+        await task
+        self.assertFalse(self.runtime.authenticated_account_available())
+        self.assertEqual(len(sent), 1)
+
+    async def test_notification_refresh_failure_is_bounded_and_stop_retires_task(self):
+        failed = asyncio.Event()
+        async def unavailable(*args):
+            failed.set()
+            raise RuntimeError("transport unavailable")
+        self.runtime.request = AsyncMock(side_effect=unavailable)
+        await self.runtime._handle_message({"method": "account/login/completed", "params": {"success": True}})
+        await failed.wait()
+        self.assertEqual(self.runtime.request.await_count, 1)
+        self.assertFalse(self.runtime.authenticated_account_available())
+        blocked = asyncio.Event()
+        async def pending(*args):
+            await blocked.wait()
+        self.runtime.request = pending
+        await self.runtime._handle_message({"method": "account/updated", "params": {"authMode": "chatgpt"}})
+        task = self.runtime._authenticated_account_refresh_task
+        await asyncio.sleep(0)
+        await self.runtime.stop()
+        self.assertTrue(task.cancelled())
+        self.assertFalse(self.runtime.authenticated_account_available())
+
+    async def test_negative_login_notification_does_not_request_account_metadata(self):
+        self.runtime.request = AsyncMock()
+        await self.runtime._handle_message({"method": "account/login/completed", "params": {"success": False}})
+        self.runtime.request.assert_not_awaited()
+        self.assertFalse(self.runtime.authenticated_account_available())
+
+    async def test_account_source_metadata_change_invalidates_without_reading_contents(self):
+        with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"CODEX_HOME": home}):
+            await self._authenticated_account()
+            self.assertTrue(self.runtime.authenticated_account_available())
+            Path(home, "auth.json").write_text("fixture-only")
+            self.assertFalse(self.runtime.authenticated_account_available())
+
+    async def test_logout_invalidates_before_transport_failure_and_account_updates_invalidate(self):
+        await self._authenticated_account()
+        self.runtime.ensure_started = AsyncMock(side_effect=RuntimeError("transport unavailable"))
+        with self.assertRaises(RuntimeError):
+            await self.runtime.request("account/logout", {})
+        self.assertFalse(self.runtime.authenticated_account_available())
+        await self._authenticated_account()
+        await self.runtime._handle_message({"method": "account/updated", "params": {"authMode": None}})
+        self.assertFalse(self.runtime.authenticated_account_available())
+
+    async def test_account_response_started_before_logout_cannot_republish_stale_proof(self):
+        self.runtime.ensure_started = AsyncMock()
+        async def send(message):
+            await self.runtime._handle_message({"method": "account/updated", "params": {"authMode": None}})
+            await self.runtime._handle_message({"id": message["id"], "result": {"account": {"type": "apiKey"}}})
+        self.runtime._send = send
+        await self.runtime.request("account/read", {})
+        self.assertFalse(self.runtime.authenticated_account_available())
+
+    async def test_logged_out_or_malformed_account_response_clears_prior_proof(self):
+        for account in (None, {}, {"type": "unsupported"}):
+            await self._authenticated_account()
+            await self._authenticated_account({"account": account})
+            self.assertFalse(self.runtime.authenticated_account_available())
+
+    async def test_explicit_account_rpc_error_clears_prior_proof(self):
+        await self._authenticated_account()
+        async def send(message):
+            await self.runtime._handle_message({"id": message["id"], "error": {"code": 401, "message": "not authenticated"}})
+        self.runtime._send = send
+        with self.assertRaises(RuntimeError):
+            await self.runtime.request("account/read", {})
+        self.assertFalse(self.runtime.authenticated_account_available())
 
     async def test_process_launch_closes_unrelated_file_descriptors(self) -> None:
         captured = {}
@@ -361,7 +512,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         await runtime._read_loop()
 
         self.assertIsNone(runtime.proc)
-        self.assertEqual(runtime.last_error, "Codex app-server stopped")
+        self.assertIsNone(runtime.last_error)
 
     async def test_pipe_readers_do_not_starve_default_executor(self) -> None:
         runtime = CodexRuntime(self.host)
@@ -443,6 +594,26 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
             "thread_read_timeout_handoff_preserved",
         )
 
+    async def test_active_thread_read_timeout_preserves_process_generation(self) -> None:
+        process = SimpleNamespace(poll=lambda: None)
+        self.runtime.proc = process
+        self.runtime.ready.set()
+        self.runtime.ensure_started = AsyncMock()
+        self.runtime._send = AsyncMock()
+        self.runtime.stop = AsyncMock()
+        self.host._thread_is_active = lambda thread_id: thread_id == "thread-1"
+
+        with patch("codex_web.runtime.codex.request_timeout", return_value=0.001):
+            with self.assertRaises(HTTPException) as caught:
+                await self.runtime.request(
+                    "thread/read",
+                    {"threadId": "thread-1"},
+                )
+
+        self.assertEqual(caught.exception.status_code, 504)
+        self.assertTrue(self.runtime.ready.is_set())
+        self.runtime.stop.assert_not_awaited()
+
     async def test_dead_reader_restarts_even_if_stale_ready_flag_is_set(self) -> None:
         async def complete():
             return None
@@ -456,6 +627,73 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         await self.runtime.ensure_started()
 
         self.runtime.start.assert_awaited_once()
+
+    async def test_stop_timeout_kills_captured_process_after_reference_retirement(self) -> None:
+        from unittest.mock import Mock
+        process = SimpleNamespace(pid=41, poll=lambda: None, terminate=Mock(),
+                                  kill=Mock(), wait=Mock())
+        self.runtime.proc = process
+        self.runtime.ready.set()
+        async def timeout(awaitable, *, timeout):
+            await awaitable
+            self.runtime.proc = None
+            raise asyncio.TimeoutError()
+        with patch("codex_web.runtime.codex.asyncio.wait_for", side_effect=timeout):
+            await self.runtime.stop()
+        process.terminate.assert_called_once_with()
+        process.kill.assert_called_once_with()
+        self.assertEqual(process.wait.call_count, 2)
+        self.assertIsNone(self.runtime.proc)
+        self.assertFalse(self.runtime.ready.is_set())
+
+    async def test_concurrent_stops_terminate_one_process_and_clear_bookkeeping(self) -> None:
+        from unittest.mock import Mock
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        process = SimpleNamespace(pid=41, poll=lambda: None, terminate=Mock(),
+                                  kill=Mock(), wait=Mock())
+        self.runtime.proc = process
+        self.runtime.ready.set()
+        async def wait_for_exit(callback):
+            entered.set()
+            await release.wait()
+            return callback()
+        with patch("codex_web.runtime.codex.asyncio.to_thread", side_effect=wait_for_exit):
+            first = asyncio.create_task(self.runtime.stop())
+            await entered.wait()
+            second = asyncio.create_task(self.runtime.stop())
+            await asyncio.sleep(0)
+            release.set()
+            await asyncio.wait_for(asyncio.gather(first, second), timeout=2)
+        process.terminate.assert_called_once_with()
+        process.wait.assert_called_once_with()
+        process.kill.assert_not_called()
+        self.assertIsNone(self.runtime.proc)
+        self.assertFalse(self.runtime.ready.is_set())
+        self.assertIsNone(self.runtime.reader_task)
+        self.assertIsNone(self.runtime.stderr_task)
+
+    async def test_retired_reader_does_not_touch_replacement_process(self) -> None:
+        retired = SimpleNamespace(
+            stdout=io.StringIO(""),
+            pid=41,
+            poll=lambda: 0,
+        )
+        replacement = SimpleNamespace(
+            stdout=io.StringIO(""),
+            pid=42,
+            poll=lambda: None,
+        )
+        self.runtime.proc = replacement
+        self.runtime.ready.set()
+
+        await self.runtime._read_loop(retired)
+
+        self.assertIs(self.runtime.proc, replacement)
+        self.assertTrue(self.runtime.ready.is_set())
+        self.assertFalse(
+            any(event.get("type") == "codex.closed" for event in self.host.hub.events)
+        )
 
     async def test_approval_policy_never_auto_resolves_without_queueing(self) -> None:
         self.host.approval_policy = "never"
@@ -541,6 +779,7 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         await self.runtime._handle_message(message)
 
         self.assertEqual(self.host.activity, [message])
+        self.assertEqual(self.host.transcript_events, [message])
         self.assertEqual(self.host.queue_drains, ["thread-7"])
         self.assertEqual(self.host.outbound, [message])
         self.assertEqual(self.host.hub.events[-1], {"type": "codex.event", "message": message})
@@ -561,6 +800,23 @@ class CodexRuntimeProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.host.activity, [message])
         self.assertEqual(len(projection_threads), 1)
         self.assertNotEqual(projection_threads[0], event_loop_thread)
+
+    async def test_rpc_timeout_invalidates_live_process_generation(self) -> None:
+        process = SimpleNamespace(poll=lambda: None)
+        self.runtime.proc = process
+        self.runtime.ready.set()
+        self.runtime.ensure_started = AsyncMock()
+        self.runtime._send = AsyncMock()
+        self.runtime.stop = AsyncMock()
+
+        with patch("codex_web.runtime.codex.request_timeout", return_value=0.001):
+            with self.assertRaises(HTTPException) as caught:
+                await self.runtime.request("thread/read", {})
+
+        self.assertEqual(caught.exception.status_code, 504)
+        self.assertFalse(self.runtime.ready.is_set())
+        self.runtime.stop.assert_awaited_once()
+
 
 
 if __name__ == "__main__":

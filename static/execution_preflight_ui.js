@@ -137,7 +137,7 @@ export function createExecutionPreflightUi({
     if (error?.detail?.code !== "execution_preflight_blocked") {
       return false;
     }
-    await loadThread(threadId);
+    await loadThread(threadId, { force: true });
     scheduleRefresh(0);
     return true;
   }

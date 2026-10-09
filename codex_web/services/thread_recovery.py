@@ -275,8 +275,9 @@ class ThreadRecoveryService:
         binding: BotBinding,
         error: str,
     ) -> BotBinding:
-        # Serialize the same logical owner without blocking unrelated agents
-        # behind a slow provider bootstrap.
+        # A slow provider bootstrap must only serialize recovery of the same
+        # logical owner. Keep a strong reference while holding/waiting; weak
+        # entries disappear once the last recovery for this owner completes.
         key = (binding.provider, binding.project_id, self.logical_binding_name(binding))
         lock = self._replacement_locks.get(key)
         if lock is None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from unittest.mock import patch
 
 from codex_web.events import EventHub
 
@@ -28,6 +29,38 @@ class FakeWebSocket:
 
 
 class EventHubTests(unittest.IsolatedAsyncioTestCase):
+    async def test_filtered_observer_skips_executor_and_preserves_browser_fanout(self) -> None:
+        hub = EventHub()
+        observed = []
+        hub.subscribe_filtered(observed.append, event_types=("codex.event",))
+        client = FakeWebSocket()
+        await hub.connect(client)
+        with patch("codex_web.events.asyncio.to_thread", side_effect=AssertionError("unrelated observer dispatched")):
+            await hub.publish({"type": "rpc.response", "message": {"id": 1}})
+        await asyncio.wait_for(client.message_received.wait(), timeout=0.5)
+        self.assertEqual(observed, [])
+        self.assertEqual(client.messages[0]["type"], "rpc.response")
+        await hub.publish({"type": "codex.event", "message": {"method": "turn/completed"}})
+        self.assertEqual([event["type"] for event in observed], ["codex.event"])
+        hub.disconnect(client)
+        await asyncio.sleep(0)
+
+    async def test_filtered_and_default_subscriptions_retain_delivery_and_unsubscribe(self) -> None:
+        hub = EventHub()
+        filtered = []
+        unfiltered = []
+        filtered_listener = filtered.append
+        hub.subscribe_filtered(filtered_listener, event_types=("one",))
+        hub.subscribe(unfiltered.append)
+        await hub.publish({"type": "one"})
+        await hub.publish({"type": "two"})
+        self.assertEqual([event["type"] for event in filtered], ["one"])
+        self.assertEqual([event["type"] for event in unfiltered], ["one", "two"])
+        hub.unsubscribe(filtered_listener)
+        self.assertNotIn(filtered_listener, hub._listener_event_types)
+        hub.subscribe(filtered_listener)
+        await hub.publish({"type": "two"})
+        self.assertEqual([event["type"] for event in filtered], ["one", "two"])
     async def test_message_filter_skips_observer_without_dropping_browser_stream(self) -> None:
         hub = EventHub()
         browser = FakeWebSocket()

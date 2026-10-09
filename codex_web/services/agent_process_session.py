@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import socket
 import subprocess
 import threading
 import time
@@ -11,6 +13,7 @@ from typing import Any, Callable, Sequence
 
 from codex_web.execution_workspaces import ExecutionWorkspaceRelease
 from codex_web.execution_workers import (
+    AssignmentCancelRequest,
     AssignmentCompleteRequest,
     AssignmentRenewRequest,
     AssignmentStartRequest,
@@ -33,6 +36,8 @@ from codex_web.services.agent_worker_session import (
     AssignmentRuntimeCredentialProvider,
     AssignmentRuntimeLaunchInput,
     runtime_binding_identity_matches,
+    start_assignment_session,
+    bootstrap_cancellation_reason,
 )
 from codex_web.services.agent_model_egress import (
     AGENT_MODEL_EGRESS_RELAY_SCRIPT,
@@ -53,6 +58,16 @@ class AssignmentBoundAgentProcessSessionStaleError(
     AssignmentBoundAgentSessionStaleError,
 ):
     pass
+
+
+def _available_loopback_port(*, exclude: frozenset[int] = frozenset()) -> int:
+    """Select a relay port when the sandbox shares the host network namespace."""
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = int(listener.getsockname()[1])
+        if port not in exclude:
+            return port
 
 
 def _executable_mount_destination(command: tuple[str, ...]) -> Path | None:
@@ -77,6 +92,48 @@ def _merge_trusted_mounts(
             seen.add(destination)
             merged.append((source, destination))
     return tuple(merged)
+
+
+def _with_execution_python_environment(
+    command: tuple[str, ...],
+    environment: dict[str, str],
+) -> tuple[str, ...]:
+    """Project the worker venv into Codex's explicit child environment policy."""
+
+    path = environment.get("PATH")
+    virtual_env = environment.get("VIRTUAL_ENV")
+    if not path or not virtual_env:
+        return command
+    updated = list(command)
+    for index, argument in enumerate(updated):
+        prefix = "shell_environment_policy.set={"
+        if not argument.startswith(prefix) or not argument.endswith("}"):
+            continue
+        body = argument[len(prefix):-1]
+        managed = (
+            "PATH=",
+            "VIRTUAL_ENV=",
+            "PYTHONNOUSERSITE=",
+            "PIP_DISABLE_PIP_VERSION_CHECK=",
+            "PIP_REQUIRE_VIRTUALENV=",
+        )
+        entries = [
+            item
+            for item in body.split(",")
+            if not item.startswith(managed)
+        ]
+        entries.extend(
+            (
+                f"PATH={json.dumps(path)}",
+                f"VIRTUAL_ENV={json.dumps(virtual_env)}",
+                'PYTHONNOUSERSITE="1"',
+                'PIP_DISABLE_PIP_VERSION_CHECK="1"',
+                'PIP_REQUIRE_VIRTUALENV="1"',
+            )
+        )
+        updated[index] = prefix + ",".join(entries) + "}"
+        break
+    return tuple(updated)
 
 
 class _OneShotProcessFactory:
@@ -307,6 +364,22 @@ class AssignmentBoundAgentProcessSession:
         def launch(launch_input: AssignmentRuntimeLaunchInput):
             command = launch_input.command
             environment = dict(launch_input.environment)
+            python_environment_resolver = getattr(
+                self.local_worker,
+                "python_environment",
+                None,
+            )
+            python_environment = (
+                python_environment_resolver(assignment)
+                if callable(python_environment_resolver)
+                else None
+            )
+            if python_environment is not None:
+                environment.update(python_environment.environment)
+                command = _with_execution_python_environment(
+                    tuple(command),
+                    environment,
+                )
             repository_mount_resolver = getattr(
                 self.local_worker,
                 "repository_mounts",
@@ -332,6 +405,11 @@ class AssignmentBoundAgentProcessSession:
                 trusted_mounts,
                 tuple(getattr(launch_input, "trusted_mounts", ()) or ()),
             )
+            if python_environment is not None:
+                trusted_mounts = _merge_trusted_mounts(
+                    trusted_mounts,
+                    python_environment.readonly_mounts,
+                )
             trusted_writable_mounts = _merge_trusted_mounts(
                 trusted_writable_mounts,
                 tuple(
@@ -392,15 +470,24 @@ class AssignmentBoundAgentProcessSession:
                 environment["CODEX_WRITABLE_REPOSITORIES"] = ":".join(
                     str(destination) for destination in writable_destinations
                 )
+            model_egress_port: int | None = None
             if broker is not None:
+                model_egress_port = (
+                    _available_loopback_port()
+                    if assignment.network.enabled
+                    else 8787
+                )
+                model_proxy_url = broker.proxy_url.replace(
+                    ":8787", f":{model_egress_port}"
+                )
                 environment.update(
                     {
-                        "HTTP_PROXY": broker.proxy_url,
-                        "HTTPS_PROXY": broker.proxy_url,
+                        "HTTP_PROXY": model_proxy_url,
+                        "HTTPS_PROXY": model_proxy_url,
                         "ALL_PROXY": "",
                         "NO_PROXY": "",
-                        "http_proxy": broker.proxy_url,
-                        "https_proxy": broker.proxy_url,
+                        "http_proxy": model_proxy_url,
+                        "https_proxy": model_proxy_url,
                         "all_proxy": "",
                         "no_proxy": "",
                     }
@@ -411,24 +498,43 @@ class AssignmentBoundAgentProcessSession:
                     "-c",
                     AGENT_MODEL_EGRESS_RELAY_SCRIPT,
                     str(broker.sandbox_socket_path),
-                    "8787",
-                    *launch_input.command,
+                    str(model_egress_port),
+                    *command,
                 )
                 trusted_mounts = (
                     *trusted_mounts,
                     (broker.mount_source, broker.mount_destination),
                 )
             if control_broker is not None:
-                environment["CODEX_WEB_CONTROL_PLANE_URL"] = (
-                    control_broker.sandbox_url
+                control_plane_port = (
+                    _available_loopback_port(
+                        exclude=frozenset(
+                            (model_egress_port,)
+                            if model_egress_port is not None
+                            else ()
+                        )
+                    )
+                    if assignment.network.enabled
+                    else 8788
                 )
+                environment["CODEX_WEB_CONTROL_PLANE_URL"] = (
+                    f"http://127.0.0.1:{control_plane_port}"
+                )
+                if assignment.network.enabled:
+                    command = tuple(
+                        str(argument).replace(
+                            "http://127.0.0.1:8788",
+                            f"http://127.0.0.1:{control_plane_port}",
+                        )
+                        for argument in command
+                    )
                 command = (
                     "/usr/bin/python3",
                     "-u",
                     "-c",
                     CONTROL_PLANE_RELAY_SCRIPT,
                     str(control_broker.sandbox_socket_path),
-                    "8788",
+                    str(control_plane_port),
                     *command,
                 )
                 trusted_mounts = (
@@ -639,6 +745,19 @@ class AssignmentBoundAgentProcessSession:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session exceeded disk_bytes"
             )
+        runtime = self.runtime
+        process = runtime.proc if runtime is not None else None
+        if process is not None and process.poll() is None:
+            rss_reader = getattr(
+                self.local_worker.backend,
+                "process_tree_rss_bytes",
+                None,
+            )
+            rss_bytes = rss_reader(process.pid) if callable(rss_reader) else 0
+            if rss_bytes > assignment.limits.memory_bytes:
+                raise AssignmentBoundAgentProcessSessionStaleError(
+                    "assignment-bound agent runtime session exceeded memory_bytes"
+                )
 
     def validate_current(self) -> ExecutionAssignment:
         if self.delegation is None or self.fence is None:
@@ -924,6 +1043,26 @@ class AssignmentBoundAgentProcessSessionManager:
     def get(self, assignment_id: str) -> AssignmentBoundAgentProcessSession | None:
         return self.sessions.get(assignment_id)
 
+    async def cancel_bootstrap(self, assignment_id: str, *, reason: str) -> ExecutionAssignment:
+        async with self._assignment_lock(assignment_id):
+            session = self.sessions.get(assignment_id)
+            if session is None or session.fence is None:
+                raise AssignmentBoundAgentProcessSessionStaleError(
+                    "bootstrap cancellation requires the registered fenced session"
+                )
+            cancelled = await asyncio.to_thread(
+                self.local_worker.worker_service.cancel_bootstrap,
+                assignment_id,
+                AssignmentCancelRequest(
+                    expected_fence=session.fence,
+                    reason=bootstrap_cancellation_reason(reason),
+                ),
+                actor=self.local_worker.control_actor,
+            )
+            self.sessions.pop(assignment_id, None)
+            await session.stop()
+            return cancelled
+
     async def checkpoint(self, assignment_id: str):
         session = self.sessions.get(assignment_id)
         if session is None:
@@ -1004,26 +1143,3 @@ class AssignmentBoundAgentProcessSessionManager:
         for assignment_id in set(self.sessions) | set(self._assignment_locks):
             with contextlib.suppress(Exception):
                 await self.stop(assignment_id)
-
-    async def cancel_bootstrap(self, assignment_id: str, *, reason: str) -> ExecutionAssignment:
-        async with self._assignment_lock(assignment_id):
-            session = self.sessions.get(assignment_id)
-            if session is None or session.fence is None:
-                raise AssignmentBoundAgentProcessSessionStaleError(
-                    "bootstrap cancellation requires the registered fenced session"
-                )
-            cancelled = await asyncio.to_thread(
-                self.local_worker.worker_service.cancel_bootstrap,
-                assignment_id,
-                AssignmentCancelRequest(
-                    expected_fence=session.fence,
-                    reason=bootstrap_cancellation_reason(reason),
-                ),
-                actor=self.local_worker.control_actor,
-            )
-            self.sessions.pop(assignment_id, None)
-            await session.stop()
-            return cancelled
-
-from codex_web.execution_workers import AssignmentCancelRequest
-from codex_web.services.agent_worker_session import start_assignment_session, bootstrap_cancellation_reason

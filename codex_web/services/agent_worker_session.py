@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, TypeVar, runtime_checkable
 
-from codex_web.execution_workers import ExecutionAssignment, ExecutionRuntimeBinding
+from codex_web.execution_workers import (
+    AssignmentCancelRequest, AssignmentStatus, ExecutionAssignment, ExecutionRuntimeBinding,
+)
 from codex_web.identity import AuthenticationActor
 
 
@@ -234,7 +238,3 @@ async def start_assignment_session(session: Any, local_worker: Any, assignment_i
                 # Its unregistered process/watchdog must still be stopped.
                 await session.stop()
         raise
-
-import asyncio
-import contextlib
-from codex_web.execution_workers import AssignmentCancelRequest, AssignmentStatus

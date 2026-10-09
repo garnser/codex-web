@@ -1,7 +1,10 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { createActionProviderBindingControls } = await import(`${BASE}/static/action_provider_binding_controls.js`);
   const { secretLinks, referenceAttributes, focusReference, bindWhenReady } = await import(`${BASE}/static/reference_links.js`);
+  const state = { items: [], resources: [], projects: [], generation: 0 };
+  let bindingControls;
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -10,11 +13,9 @@
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;");
   }
-
   function listText(values) {
     return values?.length ? values.map(escapeHtml).join(", ") : "none";
   }
-
   function setStatus(message) {
     const status = document.getElementById("action-provider-status");
     if (status) {
@@ -22,15 +23,10 @@
       status.textContent = message;
     }
   }
-
   function capabilityText(capabilities) {
-    const names = [
-      "read", "prepare", "execute", "dry_run", "idempotency",
-      "rollback", "verification", "progress", "evidence",
-    ];
+    const names = ["read", "prepare", "execute", "dry_run", "idempotency", "rollback", "verification", "progress", "evidence"];
     return names.map((name) => `${name}=${capabilities?.[name] ? "yes" : "no"}`).join(" · ");
   }
-
   function resourceText(ids, resources) {
     if (!ids?.length) return "none";
     const byId = new Map(resources.map((item) => [item.id, item]));
@@ -39,13 +35,11 @@
       return item ? `${item.name} (${id})` : id;
     }).join(", ");
   }
-
   function projectText(id, projects) {
     if (!id) return "workspace-wide";
     const item = projects.find((project) => project.id === id);
     return item ? `${item.name} (${id})` : id;
   }
-
   function renderSecurity(policy) {
     const network = policy?.network || {};
     const filesystem = policy?.filesystem || {};
@@ -57,7 +51,6 @@
       <small>Process execution: ${process.allow_process_execution ? "allowed" : "blocked"} · shell: ${process.allow_shell ? "allowed" : "blocked"} · executables: ${listText(process.allowed_executables)}</small>
     </div>`;
   }
-
   function renderAction(action) {
     return `<details class="comm-entry">
       <summary><strong>${escapeHtml(action.title)} · ${escapeHtml(action.action_id)} · risk ${escapeHtml(action.risk_class)}</strong></summary>
@@ -70,18 +63,25 @@
     </details>`;
   }
 
-  function renderCatalog(items, resources, projects) {
+  function renderCatalog() {
     const list = document.getElementById("action-provider-list");
     if (!list) return;
-    list.innerHTML = items.map((entry) => {
+    list.innerHTML = state.items.map((entry) => {
       const binding = entry.binding || {};
       const actions = entry.actions || [];
       const status = entry.status || "unknown";
-      return `<div class="comm-entry" ${referenceAttributes("action_provider", binding.id)}>
+      const pending = bindingControls.pending.has(binding.id);
+      const refreshRequired = bindingControls.refreshRequired.has(binding.id);
+      const next = binding.enabled ? "Disable" : "Enable";
+      const buttonLabel = pending ? "Updating…" : (refreshRequired ? "Refresh required" : next);
+      return `<div class="comm-entry" ${referenceAttributes("action_provider", binding.id)} ${pending ? 'aria-busy="true"' : ""}>
         <strong>${escapeHtml(binding.provider_type)}/${escapeHtml(binding.provider_instance)} · ${escapeHtml(status)}</strong>
         <small>Binding: ${escapeHtml(binding.id)} · Enabled: ${binding.enabled ? "yes" : "no"} · Tenant: ${escapeHtml(binding.organization_id)}/${escapeHtml(binding.workspace_id)}</small>
-        <small>Project scope: ${escapeHtml(projectText(binding.project_id, projects))} · Resources: ${escapeHtml(resourceText(binding.resource_ids, resources))}</small>
+        <small>Project scope: ${escapeHtml(projectText(binding.project_id, state.projects))} · Resources: ${escapeHtml(resourceText(binding.resource_ids, state.resources))}</small>
         <small>Credential reference: ${secretLinks([binding.credential_ref])} · ${actions.length} action(s) advertised</small>
+        <div class="action-provider-binding-actions">
+          <button type="button" class="ghost-button" data-action-provider-toggle="${escapeHtml(binding.id)}" ${pending || refreshRequired ? "disabled" : ""} aria-label="${escapeHtml(refreshRequired ? "Refresh required for" : next)} ActionProvider binding ${escapeHtml(binding.id)}">${buttonLabel}</button>
+        </div>
         ${renderSecurity(binding.security_policy)}
         ${actions.length ? actions.map(renderAction).join("") : '<small>No action contracts currently available from this binding.</small>'}
       </div>`;
@@ -89,8 +89,8 @@
     focusReference(list);
   }
 
-  async function refresh() {
-    setStatus("Loading canonical ActionProvider state...");
+  async function refresh({ loadingMessage = "Loading canonical ActionProvider state..." } = {}) {
+    setStatus(loadingMessage);
     let resources = [];
     let projects = [];
     let resourceError = null;
@@ -106,7 +106,12 @@
           .catch((error) => { projectError = error.message; }),
       ]);
       const items = catalog.items || [];
-      renderCatalog(items, resources, projects);
+      state.items = items;
+      state.resources = resources;
+      state.projects = projects;
+      bindingControls.refreshRequired.clear();
+      state.generation += 1;
+      renderCatalog();
       const unavailable = items.filter((entry) => entry.status !== "available").length;
       const warnings = [
         resourceError ? `resource labels unavailable: ${resourceError}` : null,
@@ -120,18 +125,26 @@
       setStatus(`ActionProvider catalog unavailable: ${error.message}`);
       const list = document.getElementById("action-provider-list");
       if (list) list.innerHTML = "";
+      throw error;
     }
   }
 
   function bind() {
     const panel = document.getElementById("developer-panel");
-    document.getElementById("refresh-action-providers")?.addEventListener("click", refresh);
-    document.getElementById("refresh-developer")?.addEventListener("click", refresh);
+    document.getElementById("refresh-action-providers")?.addEventListener("click", () => refresh().catch(console.error));
+    document.getElementById("action-provider-list")?.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-action-provider-toggle]");
+      if (button) bindingControls.toggle(button).catch(console.error);
+    });
+    document.getElementById("refresh-developer")?.addEventListener("click", () => refresh().catch(console.error));
     panel?.addEventListener("toggle", () => {
       if (panel.open) refresh().catch(console.error);
     });
     if (panel?.open) refresh().catch(console.error);
   }
 
+  bindingControls = createActionProviderBindingControls({
+    state, apiRequest, setStatus, renderCatalog, refresh, projectText, resourceText,
+  });
   bindWhenReady(bind);
 })();

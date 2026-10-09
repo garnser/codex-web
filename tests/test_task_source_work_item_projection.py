@@ -5,7 +5,11 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from codex_web.models import TaskSourceIdentity, WorkItemState
+from codex_web.models import (
+    TaskSourceIdentity,
+    WorkItemArtifactRelation,
+    WorkItemState,
+)
 from codex_web.services.github_task_source import GitHubTaskSource
 from codex_web.services.gitlab_task_source import GitLabTaskSource
 from codex_web.services.task_source_work_items import TaskSourceWorkItemProjector
@@ -94,7 +98,12 @@ class TaskSourceWorkItemProjectionTests(unittest.TestCase):
             client=_Client(),
         )
 
-    def snapshot(self, *, revision: str = "2026-09-17T19:00:00Z") -> TaskSourceSnapshot:
+    def snapshot(
+        self,
+        *,
+        revision: str = "2026-09-17T19:00:00Z",
+        artifact_relations=None,
+    ) -> TaskSourceSnapshot:
         return TaskSourceSnapshot(
             identity=TaskSourceIdentity(
                 source_type="gitlab",
@@ -106,6 +115,25 @@ class TaskSourceWorkItemProjectionTests(unittest.TestCase):
             title="External issue",
             source_state="opened",
             labels=("owner::carl", "status::in progress", "priority::P1"),
+            artifact_relations=artifact_relations,
+        )
+
+    def relation(
+        self,
+        *,
+        ref: str = "group/project!287",
+        head: str = "a" * 40,
+        revision: str = "2026-09-17T19:05:00Z",
+        state: str = "opened",
+    ) -> WorkItemArtifactRelation:
+        return WorkItemArtifactRelation(
+            source_type="gitlab",
+            source_instance="https://gitlab.example/api/v4",
+            ref=ref,
+            url=f"https://gitlab.example/{ref.replace('!', '/-/merge_requests/')}",
+            head_revision=head,
+            source_revision=revision,
+            state=state,
         )
 
     def test_new_snapshot_creates_canonical_state_without_provider_payload(self) -> None:
@@ -123,6 +151,21 @@ class TaskSourceWorkItemProjectionTests(unittest.TestCase):
         )
         self.assertTrue(state.release_gate)
         self.assertEqual(self.host.states[state.ref].source_identity, state.source_identity)
+
+    def test_issue_refresh_preserves_implementation_attribution_during_operator_repair(self) -> None:
+        state = self.projector.upsert(self.source, self.snapshot(), project_id="home")
+        state.implementation_owner = "nora"
+        state.current_owner = "operator"
+        self.host.states[state.ref] = state
+
+        refreshed = self.projector.upsert(
+            self.source,
+            self.snapshot(revision="2026-09-17T19:10:00Z"),
+            project_id="home",
+        )
+
+        self.assertEqual(refreshed.current_owner, "carl")
+        self.assertEqual(refreshed.implementation_owner, "nora")
 
     def test_non_gitlab_projection_retains_project_resource_scope(self) -> None:
         self.assertEqual(
@@ -217,6 +260,145 @@ class TaskSourceWorkItemProjectionTests(unittest.TestCase):
         self.assertEqual(result.current_owner, "carl")
         self.assertEqual(result.current_stage, "implementation_active")
         self.assertEqual(result.last_gitlab_event_at, newer_timestamp)
+
+    def test_verified_open_mr_relation_survives_subsequent_issue_refresh(self) -> None:
+        identity = self.snapshot().identity
+        self.host.states[identity.external_id] = WorkItemState(
+            ref=identity.external_id,
+            project_id="home",
+            project_path="group/project",
+            source_identity=identity,
+            kind="issue",
+            current_owner="carl",
+            current_stage="ready_for_validation",
+            implementation_owner="carl",
+            validation_owner="quinn",
+            next_owner="quinn",
+            artifact_state="branch",
+            last_meaningful_update_at=1.0,
+            last_gitlab_event_at=1.0,
+            updated_at=1.0,
+            created_at=1.0,
+        )
+
+        verified = self.projector.upsert(
+            self.source,
+            self.snapshot(artifact_relations=(self.relation(),)),
+            project_id="home",
+        )
+        refreshed = self.projector.upsert(
+            self.source,
+            self.snapshot(
+                revision="2026-09-17T19:10:00Z",
+                artifact_relations=None,
+            ),
+            project_id="home",
+        )
+
+        for state in (verified, refreshed):
+            self.assertEqual(state.current_stage, "ready_for_validation")
+            self.assertEqual(state.current_owner, "carl")
+            self.assertEqual(state.next_owner, "quinn")
+            self.assertEqual(state.artifact_state, "merge_request")
+            self.assertEqual(state.mr_refs, ["group/project!287"])
+            self.assertEqual(
+                state.verified_artifact_relations[0].head_revision,
+                "a" * 40,
+            )
+
+    def test_fresh_missing_or_closed_relation_cannot_preserve_validation(self) -> None:
+        relation = self.relation()
+        state = self.projector.upsert(
+            self.source,
+            self.snapshot(artifact_relations=(relation,)),
+            project_id="home",
+        )
+        state.current_stage = "ready_for_validation"
+        state.current_owner = "carl"
+        state.implementation_owner = "carl"
+        state.validation_owner = "quinn"
+        state.next_owner = "quinn"
+        self.host.states[state.ref] = state
+
+        missing = self.projector.upsert(
+            self.source,
+            self.snapshot(
+                revision="2026-09-17T19:10:00Z",
+                artifact_relations=(),
+            ),
+            project_id="home",
+        )
+
+        self.assertEqual(missing.current_stage, "implementation_active")
+        self.assertIsNone(missing.next_owner)
+        self.assertEqual(missing.artifact_state, "branch")
+        self.assertEqual(missing.mr_refs, [])
+
+        missing.current_stage = "ready_for_validation"
+        missing.next_owner = "quinn"
+        self.host.states[missing.ref] = missing
+        closed = self.projector.upsert(
+            self.source,
+            self.snapshot(
+                revision="2026-09-17T19:20:00Z",
+                artifact_relations=(
+                    self.relation(
+                        revision="2026-09-17T19:20:00Z",
+                        state="closed",
+                    ),
+                ),
+            ),
+            project_id="home",
+        )
+        self.assertEqual(closed.current_stage, "implementation_active")
+        self.assertEqual(closed.artifact_state, "branch")
+        self.assertEqual(closed.mr_refs, [])
+
+    def test_cross_project_and_stale_relation_facts_fail_closed(self) -> None:
+        current = self.projector.upsert(
+            self.source,
+            self.snapshot(artifact_relations=(self.relation(),)),
+            project_id="home",
+        )
+        current.current_stage = "ready_for_validation"
+        current.next_owner = "quinn"
+        self.host.states[current.ref] = current
+
+        stale = self.projector.upsert(
+            self.source,
+            self.snapshot(
+                revision="2026-09-17T19:10:00Z",
+                artifact_relations=(
+                    self.relation(
+                        head="b" * 40,
+                        revision="2026-09-17T19:00:00Z",
+                    ),
+                ),
+            ),
+            project_id="home",
+        )
+        self.assertEqual(stale.current_stage, "ready_for_validation")
+        self.assertEqual(
+            stale.verified_artifact_relations[0].head_revision,
+            "a" * 40,
+        )
+
+        counterfeit = self.projector.upsert(
+            self.source,
+            self.snapshot(
+                revision="2026-09-17T19:20:00Z",
+                artifact_relations=(
+                    self.relation(
+                        ref="other/project!287",
+                        revision="2026-09-17T19:20:00Z",
+                    ),
+                ),
+            ),
+            project_id="home",
+        )
+        self.assertEqual(counterfeit.current_stage, "implementation_active")
+        self.assertEqual(counterfeit.artifact_state, "branch")
+        self.assertEqual(counterfeit.mr_refs, [])
 
     def test_issue_snapshot_repairs_newer_historical_artifact_collision(self) -> None:
         snapshot = self.snapshot(revision="2026-09-17T19:00:00Z")

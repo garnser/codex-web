@@ -57,7 +57,27 @@ On shutdown it:
 5. cancels continuity and native-recovery tasks,
 6. stops assignment-bound worker sessions, bot runtime, and Codex runtime.
 
+Existing-thread Codex bootstrap rebinding can bypass the normal routing quota
+probe. After superseded-session cleanup, it refreshes expired trusted-local
+account evidence with one real `account/read` before canonical bootstrap
+preflight. Fresh evidence and credential-backed or other runtimes do not add that
+RPC. When repository rebinding omits the authentication mode, the prior
+canonical assignment supplies it; an unknown mode never assumes operator
+authentication. A failed read prevents bootstrap preparation; returned
+account evidence still passes the existing authentication, actor, repository,
+worker and transport checks. This metadata read does not invoke a model or
+fabricate a session-availability result.
+
 Recovery scheduling is idempotent inside the configured cooldown window. Continuity checks capture the expected owner/handoff identity when scheduled and abort if the canonical work item changes before the check runs.
+
+Assignment-triggered owner steering reuses the same continuity owner rather
+than adding a second Thread mutation path. The broker supplies exact
+owner/Thread preconditions; continuity checks canonical actionable state,
+Project binding, active/queued state, and its stable dispatch key before using
+the normal event-dispatch seam. The dispatched turn retains the Work Item ref
+and singular canonical repository scope. The event seam resolves the recipient's
+published profile and removes repository scope for scratch-only profiles, so a
+wakeup cannot promote execution authority.
 
 Owner-work supervision also treats canonical actionable ownership as a durable
 wake condition. For each configured agent owner, an idle lane with no active or
@@ -186,3 +206,25 @@ acknowledgement. Interrupted turns retain the canonical handoff checks.
 Activity updates for an existing bot binding preserve its recovered thread ID.
 The thread list renders pending queue depth alongside busy status and refreshes
 that depth from canonical project binding snapshots.
+### Retained retry after stale-thread replacement
+
+A retained preflight attempt keeps its original thread, request, execution ID,
+Agent Profile revision and actor/tenant identity. Its optional replacement target
+records only a canonical recovery mapping, qualified under the current retry
+claim. Retry uses the ordinary admission path on that target, including repository,
+authentication, policy and capacity checks. A stale replacement response alone is
+not delivery: a web replacement bootstraps the exact admitted Agent Profile
+revision and actor before retry may continue once on the verified replacement and then stops
+with a retained failure if another replacement is needed. Started state still
+requires actual execution admission. Both original and current thread views can
+inspect the same attempt; the retry card displays original/current provenance and
+loads the actual target on success or a new preflight denial. Historical target
+index entries never authorize a different retained identity.
+
+A Project readiness request with missing or expired trusted-local account
+evidence performs a coalesced `account/read` metadata request and reevaluates
+readiness. Project scope and authentication policy are checked first. Fresh
+proof skips the read; failed or negative reads retain the authentication
+blocker. This is request-driven, consumes no model tokens, and creates no idle
+polling loop. Canonical readiness state reads and writes run off the event loop
+so large work-item collections cannot delay the account RPC response reader.

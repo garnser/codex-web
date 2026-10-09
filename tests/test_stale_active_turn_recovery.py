@@ -135,6 +135,7 @@ class StaleActiveTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.events: list[dict] = []
         self.drained: list[str] = []
         self.resumed: list[set[str]] = []
+        self.terminal_recoveries: list[tuple] = []
 
         async def resume(values: set[str]) -> None:
             self.resumed.append(set(values))
@@ -149,6 +150,12 @@ class StaleActiveTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 dict(event)
             ),
             resume_active_threads=resume,
+            record_terminal_recovery=(
+                lambda active, outcome, reason_code, resolved_at:
+                self.terminal_recoveries.append(
+                    (active, outcome, reason_code, resolved_at)
+                )
+            ),
             backup_directory=self.root / "recovery-backups",
             clock=lambda: NOW,
         )
@@ -178,6 +185,12 @@ class StaleActiveTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
             "orphaned_queued_turn",
         )
         self.assertEqual(record.action_state, "applied")
+        self.assertEqual(len(self.terminal_recoveries), 1)
+        self.assertEqual(self.terminal_recoveries[0][1], "interrupted")
+        self.assertEqual(
+            self.terminal_recoveries[0][2],
+            "orphaned_queued_turn",
+        )
         self.assertEqual(
             record.original.model_dump(mode="json"),
             active.model_dump(mode="json"),

@@ -45,7 +45,6 @@ def assignment_control_plane_instructions() -> str:
     ).rstrip()
 
 
-
 class WorkItemContractService:
     """Derive execution contracts from canonical work state + published definitions."""
 
@@ -259,6 +258,13 @@ class WorkItemContractService:
             f"{profile_text}"
             "Apply the resolved role below; do not create parallel ownership, definition or permission state.\n\n"
             f"{assignment_control_plane_instructions()}\n\n"
+            "Work-item reads include `assigned_scope`; when canonical "
+            "`next_action` is absent it carries the title, body/acceptance criteria, and provenance read through the "
+            "configured TaskSource without exposing provider credentials. Orchestrators may wake only the exact "
+            "current owner with the catalogued `work_item.steer` operation. Supply the canonical expected owner and "
+            "owner-thread ID plus a bounded idempotency key; never call arbitrary `/api/threads` mutations. Active, "
+            "queued, stale-owner, stale-thread, cross-Project, and duplicate requests return explicit outcomes or "
+            "denials.\n\n"
             f"{execution_contract_prompt(role, catalog=catalog)}"
         )
 

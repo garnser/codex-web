@@ -88,11 +88,23 @@ second provider mutation path.
 
 ## Persistence and retention
 
-Canonical events are stored in the shared SQLite state store under the
-`canonical_events` namespace. The initial local deployment keeps a bounded
-history and prunes idempotency entries together with pruned events. Future
-distributed ownership/retention changes must preserve idempotency and replay
-semantics and are coordinated with replicated ownership and replay/evaluation semantics.
+Canonical events use the versioned `canonical-event-records` keyed collection.
+Event/idempotency aliases, pending-outbox readiness indexes, and inbox receipts
+are separate bounded records. Exact event reads, inbox dedupe, outbox outcome
+updates, and pending delivery pages therefore do not deserialize or rewrite the
+retained event history. A collection-scoped transaction keeps each event,
+idempotency alias, and pending index change atomic on both SQLite and
+PostgreSQL. Event-plus-domain commits continue to use the StateStore
+cross-namespace transaction boundary.
+
+The first access migrates the legacy `canonical_events` v1/v2 document into
+record schema v3 idempotently. The legacy document remains a rollback
+checkpoint rather than a second authority. `flush_legacy_mirror()` explicitly
+refreshes it before rollback to a release that predates keyed event records;
+normal point mutations intentionally do not rewrite the multi-megabyte mirror.
+Unknown record versions fail visibly. Retention still prunes idempotency,
+event, order, and published-outbox records together, while pending and
+dead-letter delivery evidence is preserved.
 
 ## UI impact
 

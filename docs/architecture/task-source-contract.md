@@ -68,16 +68,57 @@ Creation is resolved from the canonical project's singular `TaskSourceConfigurat
 
 Creating an external task is a privileged side effect. Product flows such as Goal decomposition must not expose `create_authoritative(...)` as a direct user mutation or call provider transports themselves. The code-owned `task-source/authoritative` ActionProvider now supplies that bridge: `task-source.create` is prepared and persisted as an ActionIntent before execution delegates to this seam. The action accepts only provider-neutral creation facts, returns the real projected Work Item ref/source identity, and intentionally does not claim cross-provider idempotency or rollback semantics. Provider identity/receipt/evidence therefore remains attributable to the durable action.
 
+GitLab READ accepts both repository-qualified issue identities (`project#iid`)
+and merge-request identities (`project!iid`). They use distinct native endpoints
+even when their IIDs match. MR reads preserve the requested provenance and
+reject mismatched provider identities. Discovery and task mutation/writeback
+remain issue-specific; MR READ does not grant issue mutation or bypass canonical
+actor, tenant, repository, or credential authorization.
+
 ## Normalized facts
 
 `TaskSourceSnapshot` intentionally contains a small provider-neutral fact set:
 
 - identity/provenance;
 - title;
+- provider-neutral body text, including issue scope and acceptance criteria;
 - source-native state string;
 - zero or more owners;
 - zero or more labels/tags;
 - zero or more artifact links.
+
+An adapter read may additionally return provider-verified artifact relations.
+Each relation retains the provider instance, repository-qualified artifact
+identity, exact head revision, provider revision, native state, and URL. `None`
+means the read did not query relations; an empty collection is fresh evidence
+that no supported relation exists. GitLab issue reads obtain merge-request
+relations from the native related-MR endpoint and accept only same-project
+source/target MRs with an exact commit head. Discovery does not add one provider
+request per issue merely to populate these relations.
+
+GitLab relation reads enumerate numeric pages on the same credential-bound
+endpoint, with limits of ten pages, 1,000 items, 512 KiB per page, 4 MiB total,
+and sixty seconds overall. Missing pagination headers require an empty page
+before enumeration is complete. Invalid continuations, repeated items,
+inconsistent totals, malformed pages, provider errors, and exhausted limits
+fail the read visibly before projection. Partial collections must never become
+fresh absence or remove a previously verified MR/reviewer lane. This leaves
+the existing snapshot contract unchanged: a returned relation collection is
+complete; a failed read returns no snapshot to reconcile.
+
+Assignment-bound Work Item reads expose this normalized body through the
+credential-free TaskSource read boundary. When canonical `next_action` is
+absent, the broker's `assigned_scope` points the worker to the authoritative
+title/body and source identity instead of requiring direct provider access.
+Task text remains untrusted data and cannot grant authority or change execution
+policy.
+
+GitLab reads route provider-qualified issue (`project#iid`) and merge-request
+(`project!iid`) identities to their respective native endpoints. Merge-request
+normalization is read-only: issue write-back continues to require an issue
+identity, and neither identity form broadens the canonical tenant, Project,
+actor, secret-binding, or assignment repository checks. Missing or malformed
+identities fail with a typed, sanitized error rather than provider-path guessing.
 
 Provider-specific mapping into canonical work-item semantics is explicit. Keeping `source_state` provider-native at the adapter boundary avoids pretending all providers share one state vocabulary.
 
@@ -99,6 +140,13 @@ The projection contains only canonical fields needed at the boundary, currently 
 Event idempotency prefers a provider event cursor when one is available. Otherwise codex-web hashes normalized provider-neutral event facts. Raw provider payload bytes are not part of core idempotency semantics.
 
 Provider revisions and event cursors are intentionally treated as opaque strings unless an adapter provides deterministic ordering semantics. Core reconciliation must not guess ordering from provider-specific revision formats. When an event has no usable provider timestamp, the core does not invent staleness; adapters or later conflict policy may provide stronger evidence.
+
+Provider-verified artifact relations are persisted separately from legacy branch
+or prose hints. A fresh open relation may preserve a truthful nonterminal
+validation handoff across later issue-only discovery snapshots. A fresh empty,
+closed, cross-project, malformed, or older conflicting relation cannot create or
+retain that proof. Merge, approval, successful acceptance, and terminal closure
+remain independent facts and are never inferred from the relationship alone.
 
 `task_source_projection_drift` reports provider-neutral stage/owner differences as structured findings. Reporting drift is separate from deciding whether to apply it because canonical state can legitimately preserve a handoff or another internal invariant. Reconciliation policy therefore remains deterministic without treating every difference as an automatic overwrite.
 

@@ -643,7 +643,7 @@ class AutonomyController:
                 last_error=str(error)[:1000] if error else None,
             )
             await self._storage_call(self._persist_cycle, cycle, event, actor)
-            await self._storage_call(self._record_dead_letter, 
+            await self._storage_call(self._record_dead_letter,
                 cycle,
                 reason=cycle.reason,
                 error=cycle.last_error,

@@ -317,7 +317,6 @@ class GitLabActionProvider:
             raise ValueError("ready merge-request title must contain content after its Draft marker")
         return remaining
 
-
     async def execute(
         self,
         request: ActionRequest,
@@ -621,7 +620,6 @@ class GitLabActionProvider:
             ),
         )
 
-
     async def verify(
         self,
         result: ActionResult,
@@ -705,6 +703,10 @@ class GitLabActionProvider:
                 not result.output.get("merge_commit_sha")
                 or str(item.get("merge_commit_sha") or "")
                 == str(result.output["merge_commit_sha"])
+            ) and (
+                not result.output.get("head_sha")
+                or str(item.get("sha") or "").casefold()
+                == str(result.output["head_sha"]).casefold()
             )
         else:
             raise ValueError("unsupported GitLab action result")

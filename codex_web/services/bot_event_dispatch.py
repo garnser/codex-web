@@ -167,6 +167,7 @@ class BotEventDispatchService:
         repository_resource_id: str | None = None,
         writable_repository_resource_ids: tuple[str, ...] = (),
         read_only_repository_resource_ids: tuple[str, ...] = (),
+        require_idle: bool = False,
     ) -> dict[str, Any]:
         project = self.projects.get(binding.project_id)
         settings = self.settings.get(binding.thread_id)
@@ -189,7 +190,7 @@ class BotEventDispatchService:
                 agent_profile,
                 "execution_profile_id",
                 None,
-            ),
+            ) or getattr(settings, "execution_profile_id", None),
             "agent_profile_id": getattr(agent_profile, "profile_id", None),
             "agent_profile_revision": getattr(agent_profile, "revision", None),
             "agent_profile_actor_id": getattr(profile_actor, "identity_id", None),
@@ -206,10 +207,29 @@ class BotEventDispatchService:
                 workspace_id=project.workspace_id,
                 project_id=project.id,
             )
+            profile_kwargs["execution_profile_id"] = getattr(
+                execution_profile,
+                "id",
+                profile_kwargs["execution_profile_id"],
+            )
             if execution_profile.repository_access == "none":
                 repository_resource_id = None
                 writable_repository_resource_ids = ()
                 read_only_repository_resource_ids = ()
+
+        dispatch_scope = {
+            "work_item_ref": work_item_ref,
+            "execution_profile_id": profile_kwargs[
+                "execution_profile_id"
+            ],
+            "repository_resource_id": repository_resource_id,
+            "writable_repository_resource_ids": list(
+                writable_repository_resource_ids
+            ),
+            "read_only_repository_resource_ids": list(
+                read_only_repository_resource_ids
+            ),
+        }
 
         async def queue_turn(
             event_type: str,
@@ -244,6 +264,7 @@ class BotEventDispatchService:
                     "duplicate": True,
                     "threadId": binding.thread_id,
                     "queuedId": duplicate.id,
+                    "dispatchScope": dispatch_scope,
                 }
 
             queued = self.execution.enqueue_turn(
@@ -302,16 +323,28 @@ class BotEventDispatchService:
                 "queued": True,
                 "threadId": binding.thread_id,
                 "queuedId": queued.id,
+                "dispatchScope": dispatch_scope,
             }
 
         self.recovery.release_stale_active_turn(
             binding.thread_id,
             f"{source}:dispatch",
         )
-        if (
-            self.execution.thread_is_active(binding.thread_id)
-            or self.queue_policy.depth(binding.thread_id)
-        ):
+        thread_active = self.execution.thread_is_active(binding.thread_id)
+        queue_depth = self.queue_policy.depth(binding.thread_id)
+        if thread_active or queue_depth:
+            if require_idle:
+                return {
+                    "ok": True,
+                    "queued": False,
+                    "skipped": (
+                        "already_active"
+                        if thread_active
+                        else "already_queued"
+                    ),
+                    "threadId": binding.thread_id,
+                    "dispatchScope": dispatch_scope,
+                }
             return await queue_turn("event_turn_queued")
 
         try:
@@ -387,6 +420,7 @@ class BotEventDispatchService:
             "queued": False,
             "threadId": binding.thread_id,
             "turn": turn,
+            "dispatchScope": dispatch_scope,
         }
 
 
@@ -406,6 +440,7 @@ class BotEventDispatchCompatibilityFacade:
         repository_resource_id: str | None = None,
         writable_repository_resource_ids: tuple[str, ...] = (),
         read_only_repository_resource_ids: tuple[str, ...] = (),
+        require_idle: bool = False,
     ) -> dict[str, Any]:
         host = self.host
         project = host._project(binding.project_id)
@@ -514,10 +549,20 @@ class BotEventDispatchCompatibilityFacade:
             binding.thread_id,
             f"{source}:dispatch",
         )
-        if (
-            host._thread_is_active(binding.thread_id)
-            or host._thread_queue_depth(binding.thread_id)
-        ):
+        thread_active = host._thread_is_active(binding.thread_id)
+        queue_depth = host._thread_queue_depth(binding.thread_id)
+        if thread_active or queue_depth:
+            if require_idle:
+                return {
+                    "ok": True,
+                    "queued": False,
+                    "skipped": (
+                        "already_active"
+                        if thread_active
+                        else "already_queued"
+                    ),
+                    "threadId": binding.thread_id,
+                }
             return await queue_binding_turn("event_turn_queued")
 
         try:

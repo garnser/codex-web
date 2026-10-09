@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from codex_web.canonical_events import CanonicalEventType
 from codex_web.identity import (
@@ -19,6 +20,7 @@ from codex_web.provider_capacity import (
     ProviderCapacityWaitStatus,
 )
 from codex_web.services.provider_capacity import ProviderCapacityService
+from codex_web.services.runtime import RuntimeService
 from codex_web.storage.provider_capacity import ProviderCapacityStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
@@ -174,6 +176,132 @@ class ProviderCapacityServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(stored.status, ProviderCapacityWaitStatus.RESUMED)
         self.assertEqual(calls, [wait.id])
+
+    async def test_fresh_operator_read_reconciles_capacity_and_resumes_wait(self) -> None:
+        old_reset = self.now + 86_400
+        self.service.report(
+            ProviderCapacityReport(
+                provider_id="openai",
+                runtime_id="codex",
+                status=ProviderCapacityStatus.DEPLETED,
+                retry_at=old_reset,
+                reason="weekly usage exhausted",
+                source="test",
+                observed_at=self.now,
+            ),
+            actor=self.actor,
+        )
+        resumed_calls = []
+        self.service.register_resume_handler(
+            lambda wait: resumed_calls.append(wait.id)
+        )
+        wait = self.service.wait_for_capacity(
+            ProviderCapacityWaitCreate(
+                execution_id="execution-a",
+                provider_keys=("openai/codex",),
+                retry_at=old_reset,
+                reason="weekly usage exhausted",
+            ),
+            actor=self.actor,
+        )
+        snapshot = {
+            "ordinaryUsageAllowed": True,
+            "rateLimits": {
+                "primary": {"usedPercent": 0, "resetsAt": old_reset},
+                "secondary": {"usedPercent": 0, "resetsAt": old_reset},
+            },
+        }
+        codex = SimpleNamespace(request=AsyncMock(return_value=snapshot))
+        runtime = RuntimeService(codex=codex, provider_capacity=self.service)
+
+        result = await runtime.rate_limits(actor=self.actor)
+
+        codex.request.assert_awaited_once_with("account/rateLimits/read")
+        self.assertEqual(
+            result["provider_capacity"]["status"],
+            ProviderCapacityStatus.AVAILABLE.value,
+        )
+        self.assertEqual(result["resumed_capacity_wait_ids"], [wait.id])
+        self.assertEqual(resumed_calls, [wait.id])
+        self.assertEqual(
+            self.scheduler.cancelled,
+            [(wait.schedule_id, self.actor.identity_id)],
+        )
+        stored = self.service.get("openai", "codex", actor=self.actor)
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored.status, ProviderCapacityStatus.AVAILABLE)
+        self.assertIsNone(stored.retry_at)
+
+        self.now = old_reset
+        await self.service.handle_schedule_event(
+            SimpleNamespace(
+                event_type=CanonicalEventType.SCHEDULE.value,
+                payload={
+                    "trigger_type": self.service.RESUME_TRIGGER_TYPE,
+                    "payload": {"capacity_wait_id": wait.id},
+                },
+            )
+        )
+        self.assertEqual(resumed_calls, [wait.id])
+
+    async def test_failed_or_cross_tenant_read_preserves_existing_blocker(self) -> None:
+        retry_at = self.now + 86_400
+        original = self.service.report(
+            ProviderCapacityReport(
+                provider_id="openai",
+                runtime_id="codex",
+                status=ProviderCapacityStatus.DEPLETED,
+                retry_at=retry_at,
+                reason="weekly usage exhausted",
+                source="test",
+                observed_at=self.now,
+            ),
+            actor=self.actor,
+        )
+        wait = self.service.wait_for_capacity(
+            ProviderCapacityWaitCreate(
+                execution_id="execution-a",
+                provider_keys=("openai/codex",),
+                retry_at=retry_at,
+                reason="weekly usage exhausted",
+            ),
+            actor=self.actor,
+        )
+        failing = RuntimeService(
+            codex=SimpleNamespace(
+                request=AsyncMock(side_effect=RuntimeError("transport unavailable"))
+            ),
+            provider_capacity=self.service,
+        )
+        with self.assertRaisesRegex(RuntimeError, "transport unavailable"):
+            await failing.rate_limits(actor=self.actor)
+
+        other_actor = self.actor.model_copy(
+            update={
+                "identity_id": "other-admin",
+                "organization_id": "org-b",
+                "workspace_id": "ws-b",
+            }
+        )
+        snapshot = {
+            "ordinaryUsageAllowed": True,
+            "rateLimits": {"primary": {"usedPercent": 0}},
+        }
+        other_runtime = RuntimeService(
+            codex=SimpleNamespace(request=AsyncMock(return_value=snapshot)),
+            provider_capacity=self.service,
+        )
+        result = await other_runtime.rate_limits(actor=other_actor)
+
+        self.assertEqual(result["resumed_capacity_wait_ids"], [])
+        retained = self.service.get("openai", "codex", actor=self.actor)
+        self.assertIsNotNone(retained)
+        self.assertEqual(retained.status, original.status)
+        self.assertEqual(retained.retry_at, retry_at)
+        retained_wait = next(
+            item for item in self.service.list_waits(self.actor) if item.id == wait.id
+        )
+        self.assertEqual(retained_wait.status, ProviderCapacityWaitStatus.WAITING)
 
     async def test_probe_refreshes_expired_codex_capacity_before_routing(self) -> None:
         reset_at = self.now + 10

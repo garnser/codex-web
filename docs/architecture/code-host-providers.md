@@ -50,6 +50,14 @@ read/discovery service. Branch publication, issue mutation, and pull/merge
 request upsert therefore retain ActionIntent authority, policy, idempotency,
 receipt, verification, Evidence, and SecretBroker semantics regardless of host.
 
+GitLab merge-request upserts map canonical draft state to the documented native
+title markers (`Draft:`, `[Draft]`, or `(Draft)`), rather than an unsupported REST
+`draft` parameter. Ready requests remove leading draft markers while preserving
+title content. Receipts attest the resulting native title, and verification still
+requires the exact title, draft state, ownership marker, body, branches, and IID.
+The existing ActionIntent and provider-result views expose these outcomes; this
+mapping adds no operator control or independent reconciliation path.
+
 ## Canonical events
 
 Provider webhooks are normalized into `CodeHostWebhookFact` before orchestration. The fact identifies provider instance, durable delivery/event identity, canonical event type, repository/subject external identities, action/state, and bounded provider metadata.
@@ -77,3 +85,31 @@ Knowing an external repository ID, provider URL, object key, or provider-side pe
 No provider-specific settings island should be created. The shared Integrations/Providers and Resource workspaces tracked by #125/#127 should expose provider instance/health, declared/effective capabilities, canonical Resource binding/provenance, secret reference metadata (never values), webhook/event provenance, reconciliation state, and explicit unsupported/denied/degraded states.
 
 Source-control mutations shown in the UI must still create canonical ActionIntents and display their authority/approval/result evidence rather than invoking a code-host read adapter directly.
+
+## Bounded CI artifacts
+
+Artifact discovery and download share `ARTIFACTS_READ`, canonical repository
+Resource scope, assignment broker authority, and the existing SecretBroker
+credential reference. GitLab maps a run ID to a native pipeline ID and an artifact
+ID to the job ID owning its archive. Discovery checks project/pipeline identities,
+fetches at most ten pages of 100 jobs, and fails explicitly if that bound is
+reached rather than silently returning a partial collection. Downloads verify the
+job and canonical numeric project identity and reject missing/expired archives.
+Metadata follows the [GitLab Jobs API](https://docs.gitlab.com/api/jobs/);
+archive/member reads follow the
+[Job Artifacts API](https://docs.gitlab.com/api/job_artifacts/).
+
+The assignment endpoint
+`GET /api/repository-facts/artifacts/{artifact_id}/download` accepts an optional
+`member_path` query value for providers implementing native member reads. GitLab
+streams that member directly; it does not fetch or unpack the whole ZIP locally.
+Paths must be relative, at most 1024 characters, and contain no empty/dot/traversal
+segments, backslashes, colons, percent escapes, or control characters. The same
+320 KiB byte ceiling applies to both archive and member reads. Results preserve
+binary base64, returned media type, byte count, and explicit truncation. Providers
+without native member support reject that option before resolving credentials;
+GitHub whole-archive behavior remains unchanged. GitLab download redirects never
+forward the private token to a different origin and reject HTTPS downgrades.
+
+UI impact: the existing artifact fact and download views remain the contract;
+this adds no new first-class object or provider-specific settings surface.

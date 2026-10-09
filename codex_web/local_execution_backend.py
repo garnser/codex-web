@@ -53,7 +53,10 @@ class LocalIsolationStatus:
         ]
         if self.ready:
             values.append(WorkerCapability.COMMAND_EXECUTION)
-        if self.ready and self.supports_network_allowlist:
+        # The local worker can provide unrestricted host networking only to an
+        # explicitly danger-full-access assignment.  Host allowlists remain
+        # unsupported by Bubblewrap and are rejected separately.
+        if self.ready:
             values.append(WorkerCapability.NETWORK)
         return tuple(values)
 
@@ -104,6 +107,12 @@ class BubblewrapExecutionBackend:
         Path("/etc/nsswitch.conf"),
     )
 
+    DEFAULT_TRUST_STORE_MOUNTS = (
+        (Path("/etc/ssl/certs"), Path("/etc/ssl/certs")),
+        (Path("/etc/pki"), Path("/etc/pki")),
+    )
+    SYSTEM_NETWORK_FILES = (Path("/etc/hosts"), Path("/etc/nsswitch.conf"), Path("/etc/resolv.conf"))
+
     def __init__(
         self,
         *,
@@ -112,12 +121,24 @@ class BubblewrapExecutionBackend:
         popen=subprocess.Popen,
         poll_interval_seconds: float = 0.05,
         max_output_bytes: int = 2 * 1024 * 1024,
+        trust_store_mounts: Sequence[tuple[Path, Path]] | None = None,
     ) -> None:
         self.executable = executable or shutil.which("bwrap") or ""
         self._probe_runner = probe_runner
         self._popen = popen
         self.poll_interval_seconds = max(0.01, poll_interval_seconds)
         self.max_output_bytes = max(1024, max_output_bytes)
+        self._trust_store_override = trust_store_mounts is not None
+        configured_trust_mounts = (
+            tuple((path, path) for path in self.SYSTEM_TRUST_DIRECTORIES)
+            if trust_store_mounts is None
+            else tuple(trust_store_mounts)
+        )
+        self.trust_store_mounts = tuple(
+            (source.resolve(), destination)
+            for source, destination in configured_trust_mounts
+            if source.is_dir()
+        )
         self._status: LocalIsolationStatus | None = None
 
     @staticmethod
@@ -289,7 +310,6 @@ class BubblewrapExecutionBackend:
                 continue
         return total
 
-
     @classmethod
     def _execution_disk_usage(
         cls,
@@ -358,6 +378,36 @@ class BubblewrapExecutionBackend:
 
         return apply
 
+    @staticmethod
+    def process_tree_rss_bytes(pid: int) -> int:
+        """Return resident bytes for a process and its current descendants."""
+
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        pending = [int(pid)]
+        seen: set[int] = set()
+        total = 0
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            try:
+                statm = Path(f"/proc/{current}/statm").read_text(
+                    encoding="utf-8"
+                ).split()
+                if len(statm) > 1:
+                    total += int(statm[1]) * page_size
+            except (OSError, ValueError):
+                pass
+            try:
+                children = Path(
+                    f"/proc/{current}/task/{current}/children"
+                ).read_text(encoding="utf-8")
+                pending.extend(int(value) for value in children.split())
+            except (OSError, ValueError):
+                pass
+        return total
+
     @classmethod
     def minimal_environment(
         cls,
@@ -400,9 +450,6 @@ class BubblewrapExecutionBackend:
             raise LocalExecutionPolicyError(
                 "local bubblewrap worker cannot enforce host allowlists"
             )
-        raise LocalExecutionPolicyError(
-            "local worker does not advertise unrestricted network execution"
-        )
 
     @staticmethod
     def _directory_creation_args(path: Path) -> list[str]:
@@ -489,7 +536,6 @@ class BubblewrapExecutionBackend:
             "--unshare-pid",
             "--unshare-uts",
             "--unshare-ipc",
-            "--unshare-net",
             "--ro-bind",
             "/usr",
             "/usr",
@@ -500,6 +546,8 @@ class BubblewrapExecutionBackend:
             "usr/lib",
             "/lib",
         ]
+        if not assignment.network.enabled:
+            command.insert(command.index("--ro-bind"), "--unshare-net")
         if Path("/usr/lib64").exists():
             command.extend(("--symlink", "usr/lib64", "/lib64"))
         command.extend(
@@ -514,21 +562,42 @@ class BubblewrapExecutionBackend:
                 "/tmp/codex-worker-home",
             )
         )
+        if assignment.network.enabled:
+            for network_file in self.SYSTEM_NETWORK_FILES:
+                if not network_file.is_file():
+                    continue
+                command.extend(self._directory_creation_args(network_file.parent))
+                command.extend(
+                    ("--ro-bind", str(network_file), str(network_file))
+                )
+            runtime_directory = Path(f"/run/user/{os.getuid()}")
+            container_socket = runtime_directory / "podman" / "podman.sock"
+            if container_socket.is_socket():
+                command.extend(self._directory_creation_args(container_socket.parent))
+                command.extend(
+                    ("--bind", str(container_socket), str(container_socket))
+                )
+                command.extend(
+                    ("--setenv", "XDG_RUNTIME_DIR", str(runtime_directory))
+                )
+                command.extend(
+                    (
+                        "--setenv",
+                        "CONTAINER_HOST",
+                        f"unix://{container_socket}",
+                    )
+                )
         # The assignment-bound model runtime reaches its allowlisted HTTPS
         # endpoints through a fixed-destination broker. Keep the broader host
         # /etc tree private, but provide the platform CA roots required to
         # authenticate those TLS endpoints.
-        for trust_directory in self.SYSTEM_TRUST_DIRECTORIES:
-            if not trust_directory.is_dir():
-                continue
-            command.extend(self._directory_creation_args(trust_directory))
-            command.extend(
-                (
-                    "--ro-bind",
-                    str(trust_directory),
-                    str(trust_directory),
-                )
-            )
+        trust_mounts = (self.trust_store_mounts if self._trust_store_override else
+                        tuple((path, path) for path in self.SYSTEM_TRUST_DIRECTORIES if path.is_dir()))
+        for source, destination in trust_mounts:
+            if not destination.is_absolute():
+                raise LocalExecutionPolicyError("trust-store mount destination must be absolute")
+            command.extend(self._directory_creation_args(destination))
+            command.extend(("--ro-bind", str(source), str(destination)))
         # Keep UID/GID lookup functional without exposing the broader host
         # /etc tree. Git and SSH resolve the current uid before transport, so
         # an empty /etc blocks publication even when broker auth is valid.

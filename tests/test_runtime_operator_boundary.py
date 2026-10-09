@@ -34,8 +34,12 @@ class _RuntimeStub:
     async def recovery_resume(self):
         return {"ok": True, "resumingStaleThreads": []}
 
-    async def rate_limits(self):
-        return {"primary": {}}
+    async def rate_limits(self, *, actor):
+        return {
+            "primary": {},
+            "organization_id": actor.organization_id,
+            "workspace_id": actor.workspace_id,
+        }
 
     async def models(self, *, include_hidden=False):
         return {"data": [], "includeHidden": include_hidden}
@@ -125,6 +129,10 @@ class RuntimeOperatorBoundaryTests(unittest.TestCase):
         self.assertEqual(ready.status_code, 200)
         self.assertEqual(live.json()["status"], "alive")
         self.assertEqual(ready.json()["status"], "ready")
+        limits = self.client.get("/api/account/rate-limits")
+        self.assertEqual(limits.status_code, 200)
+        self.assertEqual(limits.json()["organization_id"], "org-a")
+        self.assertEqual(limits.json()["workspace_id"], "ws-a")
 
     def test_human_admin_can_read_but_recovery_requires_mfa(self) -> None:
         self.actor = self.actor.model_copy(

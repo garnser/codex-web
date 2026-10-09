@@ -6,9 +6,13 @@ import tempfile
 import threading
 import time
 import unittest
+import base64
+import httpx
+from contextlib import ExitStack
+from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from urllib.parse import quote
 
 from codex_web.code_hosts import CodeHostPullRequestFact
@@ -45,6 +49,7 @@ from codex_web.services.authority_roles import install_authority_roles
 from codex_web.services.control_plane_broker import (
     AssignmentBoundControlPlaneBroker,
     ControlPlaneBrokerDeniedError,
+    ControlPlaneBrokerRequestError,
     ControlPlaneBrokerService,
     DeferredControlPlaneBrokerFactory,
 )
@@ -130,8 +135,11 @@ class _WorkItems:
         stage,
         release_gate,
         scope,
+        q=None,
+        limit=None,
+        cursor=None,
     ):
-        del owner, stage, release_gate
+        del owner, stage, release_gate, q, limit, cursor
         items = [
             {
                 "ref": state.ref,
@@ -167,6 +175,9 @@ class _WorkItems:
 
 
 class _Operator:
+    def __init__(self):
+        self.steers = []
+
     async def source_detail(self, ref):
         return {
             "snapshot": {"identity": {"external_id": ref}, "body_text": "Acceptance criteria"},
@@ -178,6 +189,33 @@ class _Operator:
 
     async def reconcile(self, ref, *, actor, reason):
         return {"ok": True, "item": {"ref": ref, "actor": actor, "reason": reason}}
+
+    async def steer(
+        self,
+        ref,
+        *,
+        expected_owner,
+        expected_thread_id,
+        idempotency_key,
+        actor,
+    ):
+        self.steers.append(
+            (
+                ref,
+                expected_owner,
+                expected_thread_id,
+                idempotency_key,
+                actor,
+            )
+        )
+        return {
+            "status": "dispatched",
+            "dispatched": True,
+            "work_item_ref": ref,
+            "owner": expected_owner,
+            "thread_id": expected_thread_id,
+            "idempotency_key": idempotency_key,
+        }
 
 
 class _CodeHostRegistry:
@@ -255,13 +293,14 @@ class _ExecutingActionIntents:
     def __init__(self, registry) -> None:
         self.execution = SimpleNamespace(registry=registry)
         self.created = []
+        self.claimed = []
 
     def create(self, payload, *, actor):
         self.created.append((payload, actor))
         return SimpleNamespace(id="action-intent-gitlab")
 
     def claim(self, payload, *, actor, intent_id):
-        del payload, actor
+        self.claimed.append((payload, actor, intent_id))
         return SimpleNamespace(id=intent_id)
 
     async def execute_claimed(self, intent_id, worker_id, *, actor):
@@ -337,11 +376,12 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             ),
         }
         self.work_items = _WorkItems(self.states)
+        self.operator = _Operator()
         self.service = ControlPlaneBrokerService(
             identity=self.identity,
             authority=self.authority,
             work_items=self.work_items,
-            operator=_Operator(),
+            operator=self.operator,
             audit=ControlPlaneBrokerAuditStore(self.sqlite),
             limits=ControlPlaneBrokerLimits(
                 max_request_bytes=1024,
@@ -362,11 +402,75 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         )
         await self.broker.start()
 
+    async def test_authoritative_mr_read_through_real_operator_adapter_and_scoped_broker(self):
+        import httpx
+        from codex_web.integrations.gitlab_client import GitLabClient
+        from codex_web.models import Project, TaskSourceIdentity, WorkItemState
+        from codex_web.services.gitlab_task_source import GitLabTaskSource
+        from codex_web.services.task_source_runtime import TaskSourceRegistry
+        from codex_web.services.task_source_work_items import TaskSourceWorkItemProjector
+        from codex_web.services.work_item_operator import WorkItemOperatorService
+        from codex_web.services.work_item_state import WorkItemStateMachine
+        from tests.test_work_item_operator import _Host, _WorkItems as OperatorWorkItems
+        calls = []
+        def respond(request):
+            calls.append(request.url.raw_path.decode())
+            return httpx.Response(200, json={"iid":42, "title":"actual MR",
+                "description":"source body", "references":{"full":"group/app!42"}})
+        source = GitLabTaskSource("https://gitlab.example/api/v4", "test", client=
+            GitLabClient(transport=httpx.MockTransport(respond)))
+        registry = TaskSourceRegistry()
+        registry.register("gitlab", lambda state: source)
+        host = _Host(Path(self.temp.name), Project(id="project-a", name="A", path=self.temp.name))
+        machine = WorkItemStateMachine(host)
+        mr_ref = "group/app!42"
+        host.states[mr_ref] = WorkItemState(ref=mr_ref, organization_id="local",
+            workspace_id="default", project_id="project-a", last_meaningful_update_at=1.0,
+            updated_at=1.0, created_at=1.0, source_identity=
+            TaskSourceIdentity(source_type="gitlab", source_instance=source.api_base,
+                               external_id=mr_ref))
+        self.states[mr_ref] = host.states[mr_ref]
+        self.service.operator = WorkItemOperatorService(OperatorWorkItems(host, machine,
+            registry, TaskSourceWorkItemProjector(host, machine)))
+        status, _, body = await self._request("GET", "/api/work-items/"+quote(mr_ref,safe=""))
+        self.assertEqual(status, 200)
+        self.assertEqual(body["authoritative_source"]["snapshot"]["identity"]["external_id"], mr_ref)
+        self.assertEqual(body["assigned_scope"]["body_text"], "source body")
+        self.assertEqual(calls, ["/api/v4/projects/group%2Fapp/merge_requests/42"])
+        for field, value in (("project_id", "project-b"), ("workspace_id", "foreign"),
+                             ("organization_id", "foreign")):
+            self.states[mr_ref] = host.states[mr_ref].model_copy(update={field:value})
+            status, _, _ = await self._request("GET", "/api/work-items/"+quote(mr_ref,safe=""))
+            self.assertEqual(status, 403)
+        self.assertEqual(len(calls), 1)
+
+    async def test_operator_audit_actor_is_authenticated_assignment_identity(self):
+        for operation in ("retry", "reconcile"):
+            with self.subTest(operation=operation):
+                path = "/api/work-items/" + quote(self.ref, safe="") + "/" + operation
+                status, _, body = await self._request("POST", path,
+                    payload={"actor": "spoofed-admin", "reason": "verified operation"})
+                self.assertEqual(status, 200)
+                self.assertEqual(body["item"]["actor"], self.worker_actor.identity_id)
+                self.assertEqual(body["item"]["reason"], "verified operation")
+                foreign = "/api/work-items/" + quote(self.other_ref, safe="") + "/" + operation
+                status, _, _ = await self._request("POST", foreign, payload={})
+                self.assertEqual(status, 403)
+
+    async def test_operator_mutations_still_require_execute_grant(self):
+        self._publish_worker_authority(operator_grants=False)
+        for operation in ("retry", "reconcile"):
+            path = "/api/work-items/" + quote(self.ref, safe="") + "/" + operation
+            status, _, body = await self._request("POST", path,
+                payload={"actor": "local-admin"})
+            self.assertEqual(status, 403)
+            self.assertNotIn("item", body)
+
     async def asyncTearDown(self) -> None:
         await self.broker.stop()
         self.temp.cleanup()
 
-    def _publish_worker_authority(self) -> None:
+    def _publish_worker_authority(self, *, operator_grants=True) -> None:
         active = self.registry.resolve(
             definition_id=AUTHORITY_ROLE_CATALOG_ID,
             kind=AUTHORITY_ROLE_CATALOG_KIND,
@@ -374,7 +478,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         active_catalog = AuthorityRoleCatalogDefinition.model_validate(active.payload)
         catalog = AuthorityRoleCatalogDefinition(
             roles=(
-                *active_catalog.roles,
+                *(role for role in active_catalog.roles if role.id != "orchestration-worker"),
                 AuthorityRoleDefinition(
                     id="orchestration-worker",
                     name="Orchestration worker",
@@ -392,6 +496,35 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                             level=AuthorityLevel.EXECUTE,
                             project_ids=("project-a",),
                         ),
+                        *(
+                            (
+                                AuthorityGrant(
+                                    id="orchestration.reconcile",
+                                    capability="work_item.reconcile",
+                                    level=AuthorityLevel.EXECUTE,
+                                    project_ids=("project-a",),
+                                ),
+                                AuthorityGrant(
+                                    id="orchestration.retry",
+                                    capability="work_item.retry",
+                                    level=AuthorityLevel.EXECUTE,
+                                    project_ids=("project-a",),
+                                ),
+                            )
+                            if operator_grants else ()
+                        ),
+                        AuthorityGrant(
+                            id="orchestration.steer",
+                            capability="work_item.steer",
+                            level=AuthorityLevel.EXECUTE,
+                            project_ids=("project-a",),
+                        ),
+                        AuthorityGrant(
+                            id="repository.checks.read",
+                            capability="repository.checks.read",
+                            level=AuthorityLevel.READ,
+                            project_ids=("project-a",),
+                        ),
                         AuthorityGrant(
                             id="repository.pull-request.read",
                             capability="repository.pull-request.read",
@@ -402,7 +535,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             bindings=(
-                *active_catalog.bindings,
+                *(binding for binding in active_catalog.bindings if binding.id != "worker-binding"),
                 AuthorityRoleBinding(
                     id="worker-binding",
                     role_id="orchestration-worker",
@@ -518,6 +651,38 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 parsed_headers[key.casefold()] = value.strip()
         return status, parsed_headers, json.loads(raw_body or b"{}")
 
+    async def test_work_item_list_continues_cursor_with_unchanged_filters(self) -> None:
+        pages = [
+            {"items": [{"ref": "group/app#42"}], "nextCursor": "opaque-cursor"},
+            {"items": [{"ref": "group/app#43"}], "nextCursor": None},
+        ]
+        with patch.object(self.work_items, "list", new=AsyncMock(side_effect=pages)) as listing:
+            target = "/api/work-items?owner=james&stage=implementation_active&q=scope%20proof&limit=1"
+            first_status, _, first = await self._request("GET", target)
+            second_status, _, second = await self._request(
+                "GET", target + "&cursor=" + first["nextCursor"]
+            )
+            self.assertEqual((first_status, second_status), (200, 200))
+            self.assertNotEqual(first["items"], second["items"])
+            for call in listing.await_args_list:
+                self.assertEqual(call.kwargs["project_id"], "project-a")
+                self.assertEqual(call.kwargs["scope"], self.scope)
+                self.assertEqual(call.kwargs["owner"], "james")
+                self.assertEqual(call.kwargs["stage"], "implementation_active")
+                self.assertEqual(call.kwargs["q"], "scope proof")
+                self.assertEqual(call.kwargs["limit"], 1)
+            self.assertIsNone(listing.await_args_list[0].kwargs["cursor"])
+            self.assertEqual(listing.await_args_list[1].kwargs["cursor"], "opaque-cursor")
+
+    async def test_work_item_list_rejects_non_integer_limit_before_listing(self) -> None:
+        with patch.object(self.work_items, "list", new=AsyncMock()) as listing:
+            status, _, response = await self._request(
+                "GET", "/api/work-items?limit=invalid"
+            )
+            self.assertEqual(status, 400)
+            self.assertIn("limit must be an integer", response["error"]["message"])
+            listing.assert_not_awaited()
+
     async def test_assignment_can_list_its_broker_operation_catalog(self) -> None:
         with patch.object(
             self.service,
@@ -544,6 +709,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("repository.check.rerun", operation_ids)
         self.assertIn("repository.workspace.refresh", operation_ids)
         self.assertIn("action_intent.reconcile", operation_ids)
+        self.assertIn("work_item.steer", operation_ids)
         self.assertIn("deployment.local.status", operation_ids)
         self.assertIn("deployment.local.install", operation_ids)
         self.assertNotIn("lease_token", json.dumps(payload))
@@ -551,6 +717,83 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             payload["_broker"]["operation"],
             "control_plane.operations.list",
         )
+
+    async def test_dispatch_scope_reads_yield_with_context_and_original_order(self):
+        context = ContextVar("broker_scope_authority")
+        marker = object()
+        loop_thread = threading.get_ident()
+        names = ("_actor", "_requester_actor", "_state_for_target", "_authorize")
+        for blocked_name in names:
+            with self.subTest(blocked_name=blocked_name):
+                entered, release = threading.Event(), threading.Event()
+                observations, timeouts = [], []
+                originals = {name: getattr(self.service, name) for name in names}
+                def wrapper(name):
+                    def read(*args, **kwargs):
+                        observations.append((name, threading.get_ident(), context.get()))
+                        if name == blocked_name:
+                            entered.set()
+                            if not release.wait(2):
+                                timeouts.append(name)
+                        return originals[name](*args, **kwargs)
+                    return read
+                target = (
+                    "/api/control-plane-broker/operations"
+                    if blocked_name == "_requester_actor"
+                    else "/api/work-items/" + quote(self.ref, safe="")
+                )
+                token = context.set(marker)
+                with ExitStack() as patches:
+                    for name in names:
+                        patches.enter_context(patch.object(self.service, name, wrapper(name)))
+                    task = asyncio.create_task(self.service.dispatch(
+                        assignment=self.assignment, worker_actor=self.worker_actor,
+                        method="GET", raw_target=target, body=b"",
+                    ))
+                    try:
+                        self.assertTrue(await asyncio.to_thread(entered.wait, 3))
+                        await asyncio.sleep(0)
+                        self.assertFalse(task.done())
+                        self.assertEqual(timeouts, [])
+                    finally:
+                        release.set()
+                        result = await task
+                        context.reset(token)
+                self.assertEqual(result[0], 200)
+                expected = (
+                    ["_actor", "_requester_actor", "_authorize"]
+                    if blocked_name == "_requester_actor"
+                    else ["_actor", "_state_for_target", "_authorize"]
+                )
+                self.assertEqual([row[0] for row in observations], expected)
+                for _, thread, value in observations:
+                    self.assertNotEqual(thread, loop_thread)
+                    self.assertIs(value, marker)
+
+    async def test_http_actor_lookup_runs_off_event_loop(self):
+        loop_thread = threading.get_ident()
+        threads = []
+        original = self.service._actor
+        def actor(*args, **kwargs):
+            threads.append(threading.get_ident())
+            return original(*args, **kwargs)
+        with patch.object(self.service, "_actor", actor):
+            status, _, payload = await self._request("GET", "/api/work-items")
+        self.assertEqual(status, 200, payload)
+        # Both HTTP audit attribution and canonical dispatch resolve identities.
+        self.assertEqual(len(threads), 2)
+        self.assertTrue(all(thread != loop_thread for thread in threads))
+
+    async def test_scope_denial_precedes_authority_and_work_item_read(self):
+        with patch.object(self.service, "_authorize", wraps=self.service._authorize) as authority:
+            with patch.object(self.work_items, "get", new=AsyncMock()) as read:
+                with self.assertRaises(ControlPlaneBrokerDeniedError):
+                    await self.service.dispatch(
+                        assignment=self.assignment, worker_actor=self.worker_actor,
+                        method="GET", raw_target="/api/work-items/" + quote(self.other_ref, safe=""), body=b"",
+                    )
+                authority.assert_not_called()
+                read.assert_not_awaited()
 
     async def test_assignment_validation_runs_off_event_loop(self) -> None:
         event_loop_thread = threading.get_ident()
@@ -620,6 +863,14 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(payload["ref"], self.ref)
+        self.assertEqual(
+            payload["assigned_scope"]["source"],
+            "authoritative_task_source",
+        )
+        self.assertEqual(
+            payload["assigned_scope"]["body_text"],
+            "Acceptance criteria",
+        )
         self.assertEqual(headers["x-correlation-id"], "corr-read-1")
         self.assertEqual(payload["_broker"]["operation"], "work_item.read")
 
@@ -643,6 +894,49 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(audit[0].actor_identity_id, self.worker_actor.identity_id)
         self.assertIsNotNone(audit[0].authority_definition)
         self.assertEqual(audit[0].authority_decision_id.startswith("authority-"), True)
+
+    async def test_owner_steer_uses_bounded_preconditions_and_exact_authority(self) -> None:
+        encoded = quote(self.ref, safe="")
+        status, _, payload = await self._request(
+            "POST",
+            f"/api/work-items/{encoded}/steer",
+            payload={
+                "expected_owner": "james",
+                "expected_thread_id": "thread-james",
+                "idempotency_key": "owner-wakeup:42:1",
+            },
+        )
+
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(payload["dispatched"])
+        self.assertEqual(payload["_broker"]["operation"], "work_item.steer")
+        self.assertEqual(
+            self.operator.steers,
+            [
+                (
+                    self.ref,
+                    "james",
+                    "thread-james",
+                    "owner-wakeup:42:1",
+                    self.worker_actor.identity_id,
+                )
+            ],
+        )
+
+    async def test_owner_steer_rejects_unbounded_payload_before_dispatch(self) -> None:
+        status, _, payload = await self._request(
+            "POST",
+            f"/api/work-items/{quote(self.ref, safe='')}/steer",
+            payload={
+                "expected_owner": "james",
+                "expected_thread_id": "thread-james",
+                "idempotency_key": "owner-wakeup:42:1",
+                "message": "mutate an arbitrary thread",
+            },
+        )
+
+        self.assertEqual(status, 422, payload)
+        self.assertEqual(self.operator.steers, [])
 
     async def test_non_allowlisted_arbitrary_localhost_and_method_mismatch_fail_closed(self) -> None:
         status, _, payload = await self._request(
@@ -869,6 +1163,133 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             "secret-github",
         )
 
+    async def test_gitlab_artifacts_use_assignment_resource_and_credential_boundary(self) -> None:
+        from codex_web.code_hosts import CodeHostError, CodeHostUnsupportedCapabilityError
+        from codex_web.resources import ResourceCreate, ResourceProvenance, ResourceType
+        from codex_web.services.resources import ResourceCatalogService
+        from codex_web.storage.resource_catalog import ResourceCatalogStore
+        from codex_web.services.code_hosts import CodeHostService, CodeHostRegistry
+        from codex_web.services.gitlab_code_host import GitLabCodeHostProvider
+        from codex_web.services.github_code_host import GitHubCodeHostProvider
+        from codex_web.integrations.gitlab_client import GitLabClient
+        from codex_web.integrations.github_client import GitHubClient
+        from tests.test_code_hosts import _SecretBroker
+
+        resources = ResourceCatalogService(ResourceCatalogStore(self.sqlite))
+        resource = resources.create(
+            ResourceCreate(
+                name="acme/widgets", resource_type=ResourceType.REPOSITORY,
+                provenance=ResourceProvenance(
+                    provider="gitlab", provider_instance="gitlab.example", external_id="42",
+                ),
+            ), actor=self.identity.local_trusted_actor(),
+        )
+        self.authority.resources = resources
+        calls = []
+        job = {
+            "id": 19025, "pipeline": {"id": 3394, "project_id": 42},
+            "artifacts_file": {"filename": "preview.zip", "size": 400000},
+        }
+        def transport(request):
+            calls.append(request)
+            self.assertEqual(request.headers["PRIVATE-TOKEN"], "provider-secret")
+            path = request.url.path
+            if path == "/api/v4/projects/42":
+                return httpx.Response(200, json={"id": 42, "name": "widgets"})
+            if path == "/api/v4/projects/42/pipelines/3394/jobs":
+                return httpx.Response(200, json=[job])
+            if path == "/api/v4/projects/42/jobs/19025":
+                return httpx.Response(200, json=job)
+            if path == "/api/v4/projects/42/jobs/19025/artifacts":
+                return httpx.Response(200, content=b"PK\x03\x04archive", headers={"content-type": "application/zip"})
+            if path == "/api/v4/projects/42/jobs/19025/artifacts/html/index.html":
+                return httpx.Response(200, content=b"<html>preview</html>", headers={"content-type": "text/html"})
+            return httpx.Response(404)
+        registry = CodeHostRegistry()
+        registry.register_provider(GitLabCodeHostProvider(GitLabClient(transport=httpx.MockTransport(transport))))
+        secret_broker = _SecretBroker()
+        code_hosts = CodeHostService(registry, resources, secrets=secret_broker)
+        action_registry = _ActionRegistry("gitlab")
+        original_bindings = action_registry.list_bindings
+        def bindings(actor):
+            items = original_bindings(actor)
+            items[0].resource_ids = (resource.id,)
+            return items
+        action_registry.list_bindings = bindings
+        service = ControlPlaneBrokerService(
+            identity=self.identity, authority=self.authority, work_items=self.work_items,
+            operator=_Operator(), audit=ControlPlaneBrokerAuditStore(self.sqlite),
+            action_intents=SimpleNamespace(execution=SimpleNamespace(registry=action_registry)),
+            code_hosts=code_hosts,
+        )
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "repository-write", "resource_ids": (resource.id,),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default", project_id="project-a",
+                writable_repository_ids=(resource.id,), source=RepositoryTargetSource.SINGLE_REPOSITORY,
+                source_ref=resource.id,
+            ),
+        })
+        async def read(path, selected=assignment):
+            return await service.dispatch(
+                assignment=selected, worker_actor=self.worker_actor,
+                method="GET", raw_target=path, body=b"",
+            )
+        status, payload, *_ = await read("/api/repository-facts/runs/3394/artifacts")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["items"][0]["external_id"], "19025")
+        status, payload, *_ = await read("/api/repository-facts/artifacts/19025/download?max_bytes=327680")
+        self.assertEqual(base64.b64decode(payload["item"]["content_base64"]), b"PK\x03\x04archive")
+        status, payload, *_ = await read("/api/repository-facts/artifacts/19025/download?max_bytes=8&member_path=html%2Findex.html")
+        self.assertEqual(base64.b64decode(payload["item"]["content_base64"]), b"<html>pr")
+        self.assertEqual(payload["item"]["media_type"], "text/html")
+        self.assertTrue(payload["item"]["truncated"])
+        self.assertEqual([call[0] for call in secret_broker.calls], ["secret-gitlab"] * 3)
+        self.assertTrue(all(call[1] == self.worker_actor.identity_id for call in secret_broker.calls))
+        self.assertNotIn("provider-secret", json.dumps(payload))
+        self.assertNotIn("provider-secret", json.dumps(service.audit.load().model_dump(mode="json")))
+        observed = len(calls)
+        for path, error in (
+            ("?member_path=../index.html", CodeHostError),
+            ("?member_path=%2Findex.html", CodeHostError),
+            ("?member_path=html%5Cindex.html", CodeHostError),
+            ("?member_path=html%00index.html", CodeHostError),
+            ("?member_path=", CodeHostError),
+            ("?member_path=a&member_path=b", ControlPlaneBrokerRequestError),
+            ("?max_bytes=327681", ControlPlaneBrokerRequestError),
+        ):
+            with self.assertRaises(error):
+                await read("/api/repository-facts/artifacts/19025/download" + path)
+        self.assertEqual(len(calls), observed)
+        denied = assignment.model_copy(update={"execution_profile_id": "orchestration-only"})
+        with self.assertRaises(ControlPlaneBrokerDeniedError):
+            await read("/api/repository-facts/artifacts/19025/download", denied)
+        cross_tenant = assignment.model_copy(update={"workspace_id": "other"})
+        with self.assertRaises(ControlPlaneBrokerDeniedError):
+            await read("/api/repository-facts/artifacts/19025/download", cross_tenant)
+        # Unsupported optional member reads fail before secret resolution; whole-archive
+        # behavior remains exercised by the existing GitHub adapter regressions.
+        github = GitHubCodeHostProvider(GitHubClient(transport=httpx.MockTransport(lambda r: httpx.Response(404))))
+        registry.register_provider(github)
+        from codex_web.code_hosts import CodeHostProviderBinding, CodeHostCapability
+        github_resource = resources.create(
+            ResourceCreate(
+                name="acme/widgets", resource_type=ResourceType.REPOSITORY,
+                provenance=ResourceProvenance(provider="github", provider_instance="github.com", external_id="42"),
+            ), actor=self.identity.local_trusted_actor(),
+        )
+        registry.register_binding(CodeHostProviderBinding(
+            id="github-read", organization_id="local", workspace_id="default",
+            provider_type="github", provider_instance="github.com", base_url="https://api.github.com",
+            credential_ref="secret-github", capabilities=tuple(CodeHostCapability),
+        ))
+        with self.assertRaises(CodeHostUnsupportedCapabilityError):
+            await code_hosts.artifact_download(
+                "github-read", github_resource.id, 19025, actor=self.worker_actor,
+                max_bytes=327680, member_path="html/index.html",
+            )
+        self.assertEqual(len(secret_broker.calls), 3)
+
     async def test_gitlab_assignment_can_read_merge_request_fact(self) -> None:
         code_hosts = _CodeHosts()
         self.authority.resources = SimpleNamespace(
@@ -972,6 +1393,151 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         created, _actor = action_intents.created[0]
         self.assertEqual(created.binding_id, "gitlab-action-binding")
         self.assertEqual(created.request.resource_ids, ("repository-a",))
+        self.assertEqual(created.timeout_seconds, 120)
+        self.assertEqual(action_intents.claimed[0][0].lease_seconds, 180)
+
+    async def test_repository_action_deadlines_are_operation_bound(self) -> None:
+        action_intents = _ExecutingActionIntents(_ActionRegistry("gitlab"))
+        service = ControlPlaneBrokerService(
+            identity=self.identity,
+            authority=self.authority,
+            work_items=self.work_items,
+            operator=_Operator(),
+            audit=ControlPlaneBrokerAuditStore(self.sqlite),
+            action_intents=action_intents,
+        )
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "repository-write",
+            "execution_workspace_id": "workspace-a",
+            "resource_ids": ("repository-a",),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default",
+                project_id="project-a", writable_repository_ids=("repository-a",),
+                source=RepositoryTargetSource.SINGLE_REPOSITORY,
+                source_ref="repository-a",
+            ),
+        })
+        actor = self.identity.actor_for_identity(assignment.created_by, scope=self.scope)
+        cases = (
+            ("branch/publish", {"branch": "work", "head_revision": "a" * 40}, 120, 180),
+            ("pull-request/merge", {"pull_request_number": 33, "expected_head_sha": "a" * 40}, 120, 180),
+            ("pull-request/upsert", {"head": "work", "base": "main", "title": "Work"}, 120, 180),
+            ("issue/update", {"issue_number": 33, "labels": ["progress"]}, None, 120),
+        )
+        for path, parameters, timeout, lease in cases:
+            with self.subTest(operation=path):
+                operation = service._resolve_operation(
+                    "POST", f"/api/repository-actions/{path}"
+                ).operation
+                await service._execute_repository_action(
+                    assignment=assignment, worker_actor=self.worker_actor,
+                    requester_actor=actor, operation=operation,
+                    payload={"parameters": parameters},
+                )
+                created = action_intents.created[-1][0]
+                self.assertEqual(created.timeout_seconds, timeout)
+                self.assertEqual(action_intents.claimed[-1][0].lease_seconds, lease)
+                self.assertEqual(created.policy_decision.source, "policy:assignment-control-plane")
+                self.assertEqual(created.request.resource_ids, ("repository-a",))
+                for field, value in parameters.items():
+                    self.assertEqual(created.request.parameters[field], value)
+                if path == "branch/publish":
+                    self.assertEqual(created.request.parameters["execution_workspace_id"], "workspace-a")
+
+                for override in ("timeout_seconds", "lease_seconds"):
+                    with self.assertRaisesRegex(ControlPlaneBrokerRequestError, "unsupported fields"):
+                        await service._execute_repository_action(
+                            assignment=assignment, worker_actor=self.worker_actor,
+                            requester_actor=actor, operation=operation,
+                            payload={"parameters": parameters, override: 3600},
+                        )
+
+    async def test_repository_intent_catalog_calls_do_not_block_event_loop(self) -> None:
+        context = ContextVar("broker_request_context")
+        marker = object()
+        loop_thread = threading.get_ident()
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "repository-write",
+            "execution_workspace_id": "workspace-a",
+            "resource_ids": ("repository-a",),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default",
+                project_id="project-a", writable_repository_ids=("repository-a",),
+                source=RepositoryTargetSource.SINGLE_REPOSITORY,
+                source_ref="repository-a",
+            ),
+        })
+        actor = self.identity.actor_for_identity(assignment.created_by, scope=self.scope)
+
+        for blocked_call in ("create", "claim", "get"):
+            with self.subTest(blocked_call=blocked_call):
+                entered = threading.Event()
+                release = threading.Event()
+                calls = []
+                observations = []
+                timed_out = []
+
+                class BlockingIntents(_ExecutingActionIntents):
+                    def observe(inner, name, call_actor):
+                        calls.append(name)
+                        observations.append((name, threading.get_ident(), context.get(), call_actor))
+                        if name == blocked_call:
+                            entered.set()
+                            if not release.wait(timeout=2):
+                                timed_out.append(name)
+
+                    def create(inner, payload, *, actor):
+                        inner.observe("create", actor)
+                        return super().create(payload, actor=actor)
+
+                    def claim(inner, payload, *, actor, intent_id):
+                        inner.observe("claim", actor)
+                        result = super().claim(payload, actor=actor, intent_id=intent_id)
+                        return None if blocked_call == "get" else result
+
+                    def get(inner, intent_id, actor):
+                        inner.observe("get", actor)
+                        return SimpleNamespace(model_dump=lambda mode: {
+                            "id": intent_id, "status": "succeeded",
+                        })
+
+                    async def execute_claimed(inner, intent_id, worker_id, *, actor):
+                        calls.append("execute")
+                        return await super().execute_claimed(intent_id, worker_id, actor=actor)
+
+                intents = BlockingIntents(_ActionRegistry("gitlab"))
+                service = ControlPlaneBrokerService(
+                    identity=self.identity, authority=self.authority,
+                    work_items=self.work_items, operator=_Operator(),
+                    audit=ControlPlaneBrokerAuditStore(self.sqlite), action_intents=intents,
+                )
+                operation = service._resolve_operation(
+                    "POST", "/api/repository-actions/pull-request/merge"
+                ).operation
+                token = context.set(marker)
+                task = asyncio.create_task(service._execute_repository_action(
+                    assignment=assignment, worker_actor=self.worker_actor,
+                    requester_actor=actor, operation=operation,
+                    payload={"parameters": {"pull_request_number": 33,
+                        "expected_head_sha": "a" * 40}},
+                ))
+                try:
+                    self.assertTrue(await asyncio.to_thread(entered.wait, 3))
+                    # This checkpoint must run while the catalog call is still
+                    # waiting at its barrier; no latency threshold is involved.
+                    await asyncio.sleep(0)
+                    self.assertFalse(task.done())
+                    self.assertEqual(timed_out, [])
+                finally:
+                    release.set()
+                    result = await task
+                    context.reset(token)
+                self.assertEqual(result["item"]["status"], "succeeded")
+                self.assertEqual(calls, ["create", "claim", "get" if blocked_call == "get" else "execute"])
+                for name, thread, value, call_actor in observations:
+                    self.assertNotEqual(thread, loop_thread)
+                    self.assertIs(value, marker)
+                    self.assertIs(call_actor, self.worker_actor if name == "claim" else actor)
 
     def test_repository_binding_resolution_fails_closed_when_ambiguous(self) -> None:
         registry = _ActionRegistry()
@@ -1054,6 +1620,8 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             id="action-intent-deadbeef",
             action_id="code-host.branch.publish",
             execution_id=assignment.execution_id,
+            organization_id=assignment.organization_id,
+            workspace_id=assignment.workspace_id,
             project_id=assignment.project_id,
             resource_ids=("repository-a",),
             requested_by=assignment.created_by,
@@ -1106,6 +1674,8 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             id="action-intent-historical",
             action_id="code-host.branch.publish",
             execution_id="superseded-thread-bootstrap",
+            organization_id=assignment.organization_id,
+            workspace_id=assignment.workspace_id,
             project_id=assignment.project_id,
             resource_ids=("repository-a",),
             requested_by=assignment.created_by,
@@ -1143,6 +1713,130 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 raw_target=f"/api/action-intents/{intent.id}/reconcile",
                 body=b'{"retry_if_idempotent":true}',
             )
+
+    async def test_recovered_assignment_can_verify_historical_merge_without_retry(self) -> None:
+        self.authority.resources = SimpleNamespace(
+            get=lambda resource_id, actor: SimpleNamespace(
+                id=resource_id,
+                lifecycle="active",
+                resource_type="repository",
+                risk="medium",
+                sensitivity="internal",
+            )
+        )
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "repository-write",
+            "resource_ids": ("repository-a",),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default", project_id="project-a",
+                writable_repository_ids=("repository-a",),
+                source=RepositoryTargetSource.SINGLE_REPOSITORY, source_ref="repository-a",
+            ),
+        })
+        intent = SimpleNamespace(
+            id="action-intent-00000000000000000000000000000001",
+            action_id="code-host.pull-request.merge",
+            execution_id="superseded-thread-bootstrap",
+            organization_id=assignment.organization_id,
+            workspace_id=assignment.workspace_id,
+            project_id=assignment.project_id,
+            resource_ids=("repository-a",),
+            requested_by=assignment.created_by,
+        )
+        action_intents = _ActionIntents(intent)
+        service = ControlPlaneBrokerService(
+            identity=self.identity,
+            authority=self.authority,
+            work_items=self.work_items,
+            operator=_Operator(),
+            audit=ControlPlaneBrokerAuditStore(self.sqlite),
+            action_intents=action_intents,
+        )
+
+        status, payload, *_ = await service.dispatch(
+            assignment=assignment,
+            worker_actor=self.worker_actor,
+            method="POST",
+            raw_target=f"/api/action-intents/{intent.id}/reconcile",
+            body=b'{"retry_if_idempotent":false}',
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["item"]["status"], "requires_reconciliation")
+        self.assertFalse(action_intents.reconciled[0][1].retry_if_idempotent)
+
+        with self.assertRaisesRegex(
+            ControlPlaneBrokerDeniedError,
+            "may reconcile but not retry",
+        ):
+            await service.dispatch(
+                assignment=assignment,
+                worker_actor=self.worker_actor,
+                method="POST",
+                raw_target=f"/api/action-intents/{intent.id}/reconcile",
+                body=b'{"retry_if_idempotent":true}',
+            )
+
+    async def test_repository_reconciliation_scope_mismatches_fail_closed(self) -> None:
+        self.authority.resources = SimpleNamespace(
+            get=lambda resource_id, actor: SimpleNamespace(
+                id=resource_id,
+                lifecycle="active",
+                resource_type="repository",
+                risk="medium",
+                sensitivity="internal",
+            )
+        )
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "repository-write",
+            "resource_ids": ("repository-a",),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default", project_id="project-a",
+                writable_repository_ids=("repository-a",),
+                source=RepositoryTargetSource.SINGLE_REPOSITORY, source_ref="repository-a",
+            ),
+        })
+        baseline = {
+            "id": "action-intent-00000000000000000000000000000002",
+            "action_id": "code-host.pull-request.merge",
+            "execution_id": assignment.execution_id,
+            "organization_id": assignment.organization_id,
+            "workspace_id": assignment.workspace_id,
+            "project_id": assignment.project_id,
+            "resource_ids": ("repository-a",),
+            "requested_by": assignment.created_by,
+        }
+        mismatches = {
+            "organization_id": "other-org",
+            "workspace_id": "other-workspace",
+            "project_id": "project-b",
+            "resource_ids": ("repository-b",),
+            "requested_by": "other-requester",
+            "action_id": "code-host.issue.comment",
+        }
+
+        for field, value in mismatches.items():
+            with self.subTest(field=field):
+                intent = SimpleNamespace(**{**baseline, field: value})
+                service = ControlPlaneBrokerService(
+                    identity=self.identity,
+                    authority=self.authority,
+                    work_items=self.work_items,
+                    operator=_Operator(),
+                    audit=ControlPlaneBrokerAuditStore(self.sqlite),
+                    action_intents=_ActionIntents(intent),
+                )
+                with self.assertRaisesRegex(
+                    ControlPlaneBrokerDeniedError,
+                    "outside the assignment delivery scope",
+                ):
+                    await service.dispatch(
+                        assignment=assignment,
+                        worker_actor=self.worker_actor,
+                        method="POST",
+                        raw_target=f"/api/action-intents/{intent.id}/reconcile",
+                        body=b'{"retry_if_idempotent":false}',
+                    )
 
 
 if __name__ == "__main__":

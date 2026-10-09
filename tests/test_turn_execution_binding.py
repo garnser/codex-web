@@ -205,6 +205,7 @@ class TurnExecutionBindingTests(unittest.TestCase):
                 capabilities=(
                     WorkerCapability.GIT,
                     WorkerCapability.COMMAND_EXECUTION,
+                    WorkerCapability.NETWORK,
                     WorkerCapability.ARTIFACT_UPLOAD,
                 ),
                 supported_execution_contract_versions=(
@@ -687,6 +688,7 @@ class TurnExecutionBindingTests(unittest.TestCase):
         self.assertEqual(assignment.secret_refs, ("secret-codex-worker",))
         self.assertEqual(binding.secret_ref, "secret-codex-worker")
         self.assertFalse(assignment.network.enabled)
+        self.assertNotIn(WorkerCapability.NETWORK, assignment.required_capabilities)
         self.assertEqual(binding.deadline_at, self.clock + 900)
         self.assertEqual(len(self.backend.provisioned), 1)
 
@@ -723,6 +725,7 @@ class TurnExecutionBindingTests(unittest.TestCase):
         )
         self.assertNotIn(WorkerCapability.GIT, assignment.required_capabilities)
         self.assertFalse(assignment.network.enabled)
+        self.assertNotIn(WorkerCapability.NETWORK, assignment.required_capabilities)
         self.assertEqual(assignment.execution_profile_id, "orchestration-only")
         self.assertEqual(
             assignment.execution_profile_definition,
@@ -747,7 +750,8 @@ class TurnExecutionBindingTests(unittest.TestCase):
         self.assertEqual(assignment.sandbox, "danger-full-access")
         self.assertIsNotNone(inspection.lease)
         self.assertEqual(inspection.lease.mode, LeaseMode.WRITE)
-        self.assertFalse(assignment.network.enabled)
+        self.assertTrue(assignment.network.enabled)
+        self.assertIn(WorkerCapability.NETWORK, assignment.required_capabilities)
         self.assertEqual(assignment.execution_workspace_id, binding.workspace_id)
 
     def test_prepares_long_lived_thread_bootstrap_without_fake_thread_or_work_item(self) -> None:
@@ -1802,6 +1806,56 @@ class TurnExecutionBindingTests(unittest.TestCase):
         self.assertNotIn("access_token", payload)
         self.assertNotIn("auth_json", payload)
         self.assertNotIn("CODEX_HOME", payload)
+
+    def test_prepares_concurrent_bootstraps_in_isolated_worktrees(self) -> None:
+        self._publish_secret()
+
+        first = self.service.prepare_bootstrap(
+            bootstrap_id="bootstrap-concurrent-1",
+            execution_id="bootstrap-concurrent-exec-1",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+        second = self.service.prepare_bootstrap(
+            bootstrap_id="bootstrap-concurrent-2",
+            execution_id="bootstrap-concurrent-exec-2",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        first_workspace = self.workspaces.get(first.workspace_id, self.actor)
+        second_workspace = self.workspaces.get(second.workspace_id, self.actor)
+        self.assertNotEqual(first_workspace.path, second_workspace.path)
+        self.assertNotEqual(
+            first_workspace.branch_name,
+            second_workspace.branch_name,
+        )
+
+    def test_isolated_write_workspaces_create_distinct_assignments(self) -> None:
+        self._publish_secret()
+        first = self.service.prepare(
+            thread_id="thread-first",
+            execution_id="exec-first",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        second = self.service.prepare(
+            thread_id="thread-second",
+            execution_id="exec-second",
+            project_id=self.project.id,
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        self.assertNotEqual(first.workspace_id, second.workspace_id)
+        self.assertNotEqual(first.assignment_id, second.assignment_id)
+        self.assertEqual(len(self.workspaces.list(self.actor)), 2)
+        self.assertEqual(len(self.workers.list_assignments(self.actor)), 2)
+
 
 
 if __name__ == "__main__":

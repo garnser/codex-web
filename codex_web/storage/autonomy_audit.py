@@ -39,7 +39,6 @@ class AutonomyAuditStore:
     ) -> AutonomyAuditState:
         return self._decode(self._persist_update(updater))
 
-
     def _persist_update(
         self,
         updater: Callable[[AutonomyAuditState], AutonomyAuditState],
@@ -49,7 +48,6 @@ class AutonomyAuditStore:
             lambda raw: updater(self._decode(raw)).model_dump(mode="json"),
             default=AutonomyAuditState().model_dump(mode="json"),
         )
-
 
     def append(
         self,
@@ -86,7 +84,6 @@ class AutonomyAuditStore:
         # needs no second reconstruction of the entire persisted state.
         self._persist_update(apply)
         return appended[0]
-
 
     def add_checkpoint(
         self,

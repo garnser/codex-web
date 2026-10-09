@@ -205,6 +205,35 @@ class ActionProviderRegistry:
             raise ActionResolutionError("action provider binding is disabled")
         return binding
 
+    def set_enabled(
+        self,
+        binding_id: str,
+        enabled: bool,
+        *,
+        actor: AuthenticationActor,
+    ) -> ActionProviderBinding:
+        if not self._admin(actor):
+            raise AuthorizationError("action provider administration authority required")
+        updated: list[ActionProviderBinding] = []
+
+        def apply(state):
+            for index, item in enumerate(state.bindings):
+                if (
+                    item.id == binding_id
+                    and item.organization_id == actor.organization_id
+                    and item.workspace_id == actor.workspace_id
+                ):
+                    replacement = item.model_copy(
+                        update={"enabled": enabled, "updated_at": time.time()}
+                    )
+                    state.bindings[index] = replacement
+                    updated.append(replacement)
+                    return state
+            raise ActionBindingNotFoundError("action provider binding not found")
+
+        self.store.update(apply)
+        return updated[0]
+
     def catalog(self, actor: AuthenticationActor) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         for binding in self.list_bindings(actor):

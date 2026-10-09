@@ -4,11 +4,24 @@ import asyncio
 import unittest
 from types import SimpleNamespace
 
+from fastapi import HTTPException
+
 from codex_web import application
 from codex_web.models import Project
 from codex_web.runtime import core
 from codex_web.services.project_runtime import ProjectRuntimeService
 from codex_web.services.thread_resume import ThreadResumeService
+
+
+class MissingProfileRecoveryTests(unittest.TestCase):
+    def test_only_explicitly_unbound_profile_conflict_is_recoverable(self):
+        detail = {"code": "thread_agent_profile_immutable", "effectiveAgentProfile": None,
+                  "requestedAgentProfileId": "veridataops-carl"}
+        self.assertTrue(ThreadResumeService.is_stale_thread_error(HTTPException(409, detail)))
+        detail["effectiveAgentProfile"] = {"profile_id": "different-profile"}
+        self.assertFalse(ThreadResumeService.is_stale_thread_error(HTTPException(409, detail)))
+        detail.pop("effectiveAgentProfile")
+        self.assertFalse(ThreadResumeService.is_stale_thread_error(HTTPException(409, detail)))
 
 
 class _Projects:
@@ -56,6 +69,10 @@ class ThreadProjectTurnExtractionTests(unittest.TestCase):
             application.thread_recovery_service,
         )
         self.assertIs(
+            application.app.state.thread_recovery_compatibility_service.thread_creator.__self__,
+            application.thread_service,
+        )
+        self.assertIs(
             core._thread_run_settings.__self__,
             application.thread_execution_settings_service,
         )
@@ -87,6 +104,9 @@ class ThreadProjectTurnExtractionTests(unittest.TestCase):
 
 
 class ThreadResumeExtractionTests(unittest.IsolatedAsyncioTestCase):
+    def test_bare_async_timeout_is_classified(self) -> None:
+        self.assertTrue(ThreadResumeService.is_timeout_error(TimeoutError()))
+
     async def test_resume_schedule_coalesces_concurrent_requests_and_cleans_task(self) -> None:
         gate = asyncio.Event()
         calls = []

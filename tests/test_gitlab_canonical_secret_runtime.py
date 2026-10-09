@@ -47,6 +47,7 @@ class _Identity:
 class _GitLab:
     def __init__(self) -> None:
         self.tokens = []
+        self.reads = []
 
     async def project_issue(
         self,
@@ -57,6 +58,7 @@ class _GitLab:
         token,
     ):
         self.tokens.append(token)
+        self.reads.append(("issue", project_path, iid))
         return {
             "id": 1001,
             "iid": iid,
@@ -66,6 +68,31 @@ class _GitLab:
             "assignees": [],
             "web_url": f"https://gitlab.example/{project_path}/-/issues/{iid}",
             "updated_at": "2026-09-21T00:00:00Z",
+        }
+
+    async def merge_request(
+        self,
+        api_base,
+        project_path,
+        iid,
+        *,
+        token,
+    ):
+        self.tokens.append(token)
+        self.reads.append(("merge_request", project_path, iid))
+        return {
+            "id": 2001,
+            "iid": iid,
+            "title": "Canonical credential MR read",
+            "description": "MR acceptance criteria",
+            "state": "opened",
+            "labels": [],
+            "assignees": [],
+            "references": {"full": f"{project_path}!{iid}"},
+            "web_url": (
+                f"https://gitlab.example/{project_path}/-/merge_requests/{iid}"
+            ),
+            "updated_at": "2026-09-21T01:00:00Z",
         }
 
 
@@ -136,9 +163,37 @@ class GitLabCanonicalSecretRuntimeTests(unittest.TestCase):
             snapshot.identity.external_id,
             "group/app#1",
         )
+        merge_request = asyncio.run(
+            source.read(
+                TaskSourceIdentity(
+                    source_type="gitlab",
+                    source_instance="https://gitlab.example/api/v4",
+                    external_id="group/app!1",
+                )
+            )
+        )
+        self.assertEqual(
+            merge_request.identity.external_id,
+            "group/app!1",
+        )
+        self.assertEqual(
+            merge_request.title,
+            "Canonical credential MR read",
+        )
+        self.assertEqual(
+            merge_request.body_text,
+            "MR acceptance criteria",
+        )
         self.assertEqual(
             service.gitlab.tokens,
-            ["CANONICAL_GITLAB_TOKEN"],
+            ["CANONICAL_GITLAB_TOKEN", "CANONICAL_GITLAB_TOKEN"],
+        )
+        self.assertEqual(
+            service.gitlab.reads,
+            [
+                ("issue", "group/app", 1),
+                ("merge_request", "group/app", 1),
+            ],
         )
         self.assertNotIn(
             "CANONICAL_GITLAB_TOKEN",

@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 from codex_web.autonomy import (
     AutonomyControl,
@@ -133,6 +135,72 @@ class AutonomyAuditTests(unittest.IsolatedAsyncioTestCase):
             reason=reason,
             started_at=100.0,
             completed_at=101.0,
+        )
+
+    def test_append_validates_existing_state_once_and_retains_chain_receipt(self):
+        first = self.service.record_cycle(
+            self.cycle("cycle-first", "evt-first"),
+            self.event("evt-first"),
+            actor=self.actor,
+        )
+        with patch.object(
+            self.audit_store, "_decode", wraps=self.audit_store._decode
+        ) as decode:
+            second = self.audit_store.append(
+                first.payload.model_copy(update={"cycle_id": "cycle-second"})
+            )
+        self.assertEqual(decode.call_count, 1)
+        self.assertEqual(second.sequence, first.sequence + 1)
+        self.assertEqual(second.previous_hash, first.record_hash)
+        self.assertEqual(self.audit_store.load().records[-1], second)
+        self.assertEqual(
+            self.service.verify(organization_id="org-a", workspace_id="ws-a").status,
+            AuditIntegrityStatus.VERIFIED,
+        )
+
+    def test_public_update_still_validates_and_returns_persisted_state(self):
+        with patch.object(
+            self.audit_store, "_decode", wraps=self.audit_store._decode
+        ) as decode:
+            result = self.audit_store.update(lambda state: state)
+        self.assertEqual(decode.call_count, 2)
+        self.assertEqual(result, self.audit_store.load())
+
+    def test_append_rejects_invalid_existing_state_without_writing(self):
+        first = self.service.record_cycle(
+            self.cycle("cycle-first", "evt-first"),
+            self.event("evt-first"),
+            actor=self.actor,
+        )
+        invalid = self.sqlite.get("autonomy_audit")
+        invalid["records"][0]["payload"]["model_tokens"] = -1
+        self.sqlite.put("autonomy_audit", invalid)
+        with self.assertRaises(ValueError):
+            self.audit_store.append(first.payload)
+        self.assertEqual(self.sqlite.get("autonomy_audit"), invalid)
+
+    def test_concurrent_appends_keep_unique_sequences_and_durable_receipts(self):
+        first = self.service.record_cycle(
+            self.cycle("cycle-first", "evt-first"),
+            self.event("evt-first"),
+            actor=self.actor,
+        )
+
+        def append(number):
+            writer = AutonomyAuditStore(self.sqlite)
+            return writer.append(
+                first.payload.model_copy(update={"cycle_id": f"cycle-{number}"})
+            )
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            receipts = list(pool.map(append, range(16)))
+        self.assertEqual(sorted(row.sequence for row in receipts), list(range(2, 18)))
+        persisted = self.audit_store.load().records
+        self.assertEqual(persisted[0], first)
+        self.assertEqual(set(row.id for row in persisted[1:]), set(row.id for row in receipts))
+        self.assertEqual(
+            self.service.verify(organization_id="org-a", workspace_id="ws-a").status,
+            AuditIntegrityStatus.VERIFIED,
         )
 
     def test_chain_verification_detects_historical_payload_mutation(self):

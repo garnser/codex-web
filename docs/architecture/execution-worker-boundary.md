@@ -52,6 +52,14 @@ canonical assignment state. The worker cannot select the provider, override
 those values, or receive the provider credential. Zero or multiple matching
 bindings fail closed.
 
+Storage-backed broker identity, target-scope and authority checks run in one
+awaited worker-thread boundary, preserving their original order and the caller's
+ContextVars. Paginated Work Item reads and exact-item reads likewise execute
+existing synchronous state/index construction off the shared event loop. Slow
+canonical storage must not prevent the loop from receiving worker completion
+notifications. This scheduling boundary does not alter tenant/resource checks,
+cursor revision/filter validation, response schemas or side-effect authority.
+
 ### Execution subject and v1.1 compatibility
 
 Worker assignments and execution workspaces use one shared typed execution
@@ -186,9 +194,13 @@ assigned execution workspace writable for `workspace-write` and
 additionally receive the canonical
 target repository's shared Git metadata directory required by that worktree;
 unrelated control-plane data, application state, key/secret directories and
-the operator's home are absent. The backend unshares process/user/IPC/UTS/network
-namespaces and starts the command in a new process session. POSIX rlimits constrain CPU time, address space,
-processes and individual file size. The parent worker monitors total workspace
+the operator's home are absent. Code-owned public system CA trust-store
+directories are mounted read-only so the trusted Codex process can authenticate
+the exact HTTPS model-provider endpoints admitted by its assignment-bound
+CONNECT broker; the host `/etc` directory remains absent. The backend unshares process/user/IPC/UTS/network
+namespaces and starts the command in a new process session. POSIX rlimits
+constrain CPU time, address space, processes and individual file size. The
+parent worker monitors total workspace
 disk usage and wall time and kills the complete process group on breach.
 
 Linux charges `RLIMIT_NPROC` to the host UID rather than the Bubblewrap PID
@@ -201,6 +213,13 @@ consume that headroom. One-shot CPU, address-space and file-size limits retain
 the assignment's exact values. Operator limits inspection reports the requested
 headroom, while execution output records launch failures at the effective
 kernel ceiling.
+
+Filesystem executions also receive a writable, workspace-local Python virtual
+environment. If the canonical Project has an operator-maintained `.venv`, only
+that exact environment is additionally mounted read-only as a baseline package
+layer. The execution-local environment remains first on `PATH`, so installs do
+not mutate a shared Project environment. This targeted mount does not expose the
+Project root and does not imply package-registry or generic network access.
 
 `danger-full-access` is deliberately scoped to the assigned worker environment.
 The sandbox value is passed through to Codex so its inner command sandbox is
@@ -272,20 +291,42 @@ authority denial, and an ambiguous mutation must reconcile its existing
 ActionIntent before retrying. Client deadlines never extend server-side
 assignment leases, operation deadlines or authorization.
 
-
 Initial reachability is limited to scoped Work Item operations:
 
 - list/read;
 - progress;
 - handoff;
 - acknowledgement;
+- exact-owner steering;
 - retry;
 - reconciliation.
 
+`work_item.steer` is not a general Thread API. Its request carries only the
+expected canonical owner, the exact current owner-binding Thread, and a bounded
+idempotency key. Tenant/workspace/Project and Work Item scope are checked before
+Role authority. Continuity then revalidates actionable state and the same-Project
+owner binding, refuses unrelated or stale Threads, and reports active, queued,
+duplicate, or dispatched outcomes without launching duplicate work. The stable
+canonical dispatch key remains the deduplication authority; changing a caller
+key cannot bypass it. Dispatch uses the existing event path, which resolves the
+recipient's published Agent/Execution Profile and strips repository scope from
+profiles that do not permit it. A singular canonical Work Item repository is
+attached as execution context, not as a grant.
+
+`work_item.read` returns both canonical state and the configured TaskSource read
+projection. Its `assigned_scope` selects canonical `next_action` when present;
+otherwise it exposes the authoritative title, body/acceptance criteria, and
+source identity already available through that credential-free boundary. Raw
+provider credentials never enter the assignment.
+
 Repository-write assignments may also reconcile only their own branch-publish
-ActionIntents. The broker requires the same execution, Project, requester and
-single writable repository and reuses `repository.branch.publish` authority;
-it does not expose a tenant-wide ActionIntent administration surface.
+and pull-request-merge ActionIntents. The broker requires the same tenant,
+Project, requester and single writable repository. An exact originating
+execution may request only retries that remain eligible under the canonical
+ActionIntent policy; a recovered assignment may perform verification-only
+reconciliation but cannot retry a historical mutation. Merge verification
+reads provider state and never replays the merge. This boundary does not expose
+a tenant-wide ActionIntent administration surface.
 
 Reachability is distinct from authority. Every request re-resolves the current
 worker service identity and evaluates the requested capability through the
@@ -614,3 +655,53 @@ process is associated with canonical assignment/workspace/lease state and uses
 this delegation contract. Until that migration is complete, new untrusted
 command/tool execution paths must use the isolated worker backend rather than
 introducing direct `subprocess` execution in the control plane.
+
+### Trusted operator authentication evidence and transport health
+
+The trusted-local credential-availability probe uses an actual successful
+`account/read` response from the canonical operator Codex runtime, retained for
+at most 120 monotonic seconds. Readiness alone never establishes authenticated
+account evidence. A transient shared RPC subprocess restart does not log the
+operator out: proof remains bounded to the same host process, effective UID,
+Codex command, working directory, auth-source location and environment, and
+credential/config file metadata. Credential contents and account email are not
+stored in this proof or exposed in diagnostics.
+
+Logout/login requests, account-change/login/refresh notifications, explicit
+account-read RPC errors, logged-out/malformed account responses, expiry, and
+operator/auth-context changes invalidate the evidence. An account-read started
+before an invalidation cannot restore old evidence. The existing bounded quota
+probe verifies account metadata once before reading quota; no model sampling or
+additional polling loop is introduced.
+
+Authentication evidence remains separate from RPC transport health and execution
+preflight. A runtime with cleared readiness is unavailable even when its recent
+authenticated-account evidence is still fresh. Worker-scoped delegation, actor,
+policy, credential rotation/expiry, lease/fence and assignment checks remain
+authoritative and unchanged.
+
+Positive Codex `account/updated` or successful login-completed notifications
+invalidate prior account evidence and schedule a real `account/read` outside the
+stdout reader. One in-flight task coalesces bursts; it performs at most two
+metadata reads, including one follow-up when account changes race the first
+response. Negative auth modes/login results do not request a refresh. Logout or
+a newer account change still prevents older responses from publishing proof.
+Transport stop retires the refresh task, without weakening readiness or execution
+authority checks. Continuous changes remain unavailable until a later ordinary
+quota refresh or notification; no polling loop or model call is introduced.
+
+Assignment-bound thread startup and turn continuation include the shared HTTP
+control-plane broker discovery guidance, even when a Slack or bootstrap turn has
+no work-item reference. Work-item contracts reuse that same guidance; an existing
+copy is delivered once. This explains the current assignment channel and its
+catalogued operations, without changing actor, repository, route, or policy
+permissions. Trusted local execution without a worker assignment does not receive
+an assignment-channel claim. A mutation timeout still requires reconciliation of
+its existing ActionIntent before a retry.
+
+Worker disk accounting iterates directory entries and reads each regular file's
+size without repeating path metadata lookups. Nested symlink entries are skipped;
+hidden files, hardlinks by path, shared Git metadata, and configured read-only
+resources retain their existing accounting. Vanished or inaccessible entries keep
+the existing filesystem-error behavior. This traversal optimization adds no cross-scan cache
+and does not change disk limits, validation intervals, or assignment enforcement.

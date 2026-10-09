@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -8,6 +9,7 @@ from codex_web.api.identity import request_actor
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.execution_workers import (
     AssignmentClaimRequest,
+    AssignmentCancelRequest,
     AssignmentCompleteRequest,
     AssignmentRenewRequest,
     AssignmentStartRequest,
@@ -477,6 +479,3 @@ def build_execution_workers_router(
             raise
 
     return router
-
-import asyncio
-from codex_web.execution_workers import AssignmentCancelRequest

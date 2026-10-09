@@ -21,6 +21,20 @@ An ActionIntent snapshots the information needed to reconstruct why and how an e
 
 A denied authority/policy decision is still persisted for audit, but the intent is created as `cancelled` and is never claimable.
 
+The assignment broker gives branch publication, pull-request creation or update,
+and pull-request merge a bounded
+120-second provider execution deadline and a 180-second claim lease, leaving
+time to record receipts and verification. Other repository operations retain
+their ActionIntent defaults. These bounds are selected by the broker operation;
+callers cannot override either value. Timeout uncertainty and retry authority
+remain unchanged.
+
+The async repository broker offloads synchronous intent creation, claim, and
+fallback lookup to worker threads so catalog and store reads do not block the
+control-plane event loop. Calls retain sequential ordering, propagated request
+context and actors, and the canonical service transaction and authority guards;
+claimed execution still uses the asynchronous ActionIntent executor.
+
 ## Outbox lifecycle
 
 The primary states are:
@@ -37,10 +51,19 @@ This creates a safe crash boundary:
 - worker/process disappears after `executing` but before a durable receipt -> `uncertain`;
 - provider timeout/transport exception after execution starts -> durable unknown receipt + `uncertain`;
 - explicit provider failure -> `failed`;
+- a GitLab change-request upsert rejected by its pure local request contract,
+  before the first MR API call, raises the existing typed
+  `ActionRequirementError` and records a known `failed` receipt; the diagnostic
+  lists the supported canonical fields without echoing rejected values;
 - provider success without required verification/evidence -> `requires_reconciliation`;
 - required provider verification + Evidence gate satisfied -> canonical success transition, then `succeeded`.
 
 The application performs stale-claim recovery on startup.
+
+This local classification is confined to the first-party parser invocation.
+It does not classify arbitrary `ValueError` exceptions as safe: errors from a
+provider read, write, or response normalization still record an unknown outcome
+and retain the existing reconciliation and duplicate-prevention requirements.
 
 ## Idempotency and retries
 
@@ -97,6 +120,15 @@ Reconciliation can:
 - complete a verified Work Item transition;
 - requeue an action only when provider idempotency makes replay safe;
 - retain `requires_reconciliation` when no trustworthy result exists.
+
+Provider idempotency makes a replay technically safe; it does not grant more
+retry authority. When the immutable attempt budget is exhausted, reconciliation
+must not return the intent to `pending`. A known provider failure remains
+`failed`; an unknown outcome remains `requires_reconciliation`, with the
+exhausted/nonclaimable condition visible in the existing operator surface. If
+delivery is still required after the provider outcome is established, an
+authorized caller creates a replacement ActionIntent that passes current
+authority, policy, security, provider, and resource checks.
 
 A rolled-back provider result is canonicalized as `rolled_back`.
 
@@ -156,5 +188,15 @@ Side-effect-free provider `prepare` remains available for previews.
 - `POST /api/action-intents/{intent_id}/rollback`
 - `POST /api/action-intents/inbox`
 - `POST /api/action-intents/recover-stale`
+
+Reconciliation never treats an ambiguous mutation as permission to replay it.
+When an already-started pull-request merge is uncertain or requires
+reconciliation and has no durable provider result, a verification-only
+reconciliation reconstructs the expected result shape from the original
+canonical request, calls the provider's side-effect-free prepare contract, and
+reads provider state through verification. It records a reconciled receipt only
+when the exact pull request and mandatory expected head are confirmed merged.
+An unstarted intent or a missing, different, or unreadable provider result
+remains visibly reconcilable.
 
 #141 should display durable intent state, receipts, uncertainty, verification, and reconciliation requirements rather than inferring external success from request logs.

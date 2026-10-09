@@ -54,7 +54,9 @@ Each discovered normalized snapshot is passed through `TaskSourceWorkItemProject
 
 ## Reconcile and retry
 
-`POST /api/work-items/{ref}/reconcile` requires a resolvable authoritative adapter and its `read` capability. It re-reads the external task and projects the normalized snapshot through the shared projector. An attributed `operator_reconciled` event records the explicit action.
+`POST /api/work-items/{ref}/reconcile` requires a resolvable authoritative adapter and its `read` capability. It re-reads the external task and projects the normalized snapshot through the shared projector. The returned source identity must exactly match the Work Item's persisted source type, instance, and external ID; a mismatched repository or item fails closed before mutation. The authenticated canonical identity, rather than a caller-supplied actor string, attributes the action.
+
+This explicit reconciliation is also the bounded repair path for implementation attribution. A fresh, exact-identity snapshot with a known implementation-capable provider owner may replace a stale or corrupted `implementation_owner`. The current action owner, accepted handoff, validation owner, release owner, source timestamps, and provider history remain separate and are not rewritten by the repair. An `implementation_owner_reconciled` event retains the prior/new attribution, actor, reason, tenant-scoped Project/resources, and exact provider identity/revision; `operator_reconciled` records completion of the encompassing action. Ordinary progress, handoff, and source-sync paths do not grant an operator implementation authorship.
 
 `POST /api/work-items/{ref}/retry` is allowed only while the item is non-terminal, has an actionable owner, and has retry budget remaining. It increments the structured retry attempt through `WorkItemExecutionLifecycleService`, clears the previous failure classification, and enters the existing actionable-owner dispatch seam. It does not directly execute an agent or bypass dispatch policy.
 

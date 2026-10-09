@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -16,6 +17,7 @@ from codex_web.execution_workers import (
     AssignmentClaimRequest,
     AssignmentCompleteRequest,
     AssignmentStartRequest,
+    AssignmentRenewRequest,
     AssignmentStatus,
     ExecutionAssignmentCreate,
     ExecutionWorkerEnroll,
@@ -133,6 +135,58 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
             ExecutionAssignmentCreate(**payload),
             actor=self.admin,
         )
+
+    def test_heartbeat_and_renew_only_touch_current_keyed_records(self) -> None:
+        assignment = self._assignment()
+        other = self._assignment(execution_id="other")
+        claimed = self.service.claim(self.worker.id, AssignmentClaimRequest(lease_seconds=30), actor=self.worker_actor)
+        before = self.service.store.load()
+        with patch.object(self.service.store, "_load_unlocked", side_effect=AssertionError("catalog scan")):
+            worker = self.service.heartbeat(self.worker.id, WorkerHeartbeatRequest(version="new"), actor=self.worker_actor)
+            renewed = self.service.renew(self.worker.id, assignment.id,
+                AssignmentRenewRequest(lease_token=claimed.lease.lease_token, fence=claimed.fence, lease_seconds=120),
+                actor=self.worker_actor)
+        after = self.service.store.load()
+        self.assertEqual(worker.version, "new")
+        self.assertGreater(renewed.lease.expires_at, claimed.lease.expires_at)
+        self.assertEqual(renewed.fence, claimed.fence)
+        self.assertEqual(after.events, before.events)
+        self.assertEqual(next(item for item in after.assignments if item.id == other.id), other)
+
+    def test_keyed_heartbeat_preserves_actor_scope_and_revocation_checks(self) -> None:
+        with self.assertRaises(AuthorizationError):
+            self.service.heartbeat(self.worker.id, WorkerHeartbeatRequest(), actor=self.admin)
+        self.service.set_lifecycle(self.worker.id, WorkerLifecycle.REVOKED, actor=self.admin)
+        with self.assertRaises(WorkerConflictError):
+            self.service.heartbeat(self.worker.id, WorkerHeartbeatRequest(), actor=self.worker_actor)
+
+    def test_keyed_renew_preserves_token_fence_and_worker_trust_checks(self) -> None:
+        assignment = self._assignment()
+        claimed = self.service.claim(self.worker.id, AssignmentClaimRequest(), actor=self.worker_actor)
+        for token, fence in (("wrong-token-0000000000", claimed.fence), (claimed.lease.lease_token, claimed.fence + 1)):
+            with self.assertRaises(WorkerLeaseError):
+                self.service.renew(self.worker.id, assignment.id,
+                    AssignmentRenewRequest(lease_token=token, fence=fence), actor=self.worker_actor)
+        self.service.set_lifecycle(self.worker.id, WorkerLifecycle.QUARANTINED, actor=self.admin)
+        with self.assertRaises(WorkerLeaseError):
+            self.service.renew(self.worker.id, assignment.id,
+                AssignmentRenewRequest(lease_token=claimed.lease.lease_token, fence=claimed.fence), actor=self.worker_actor)
+        self.assertEqual(self.service.store.assignment(assignment.id).lease, claimed.lease)
+
+    def test_renew_rechecks_expiry_inside_keyed_transaction(self) -> None:
+        assignment = self._assignment()
+        claimed = self.service.claim(self.worker.id, AssignmentClaimRequest(), actor=self.worker_actor)
+        update = self.service.store.store.record_update
+
+        def delayed_update(*args, **kwargs):
+            with patch("codex_web.services.execution_workers.time.time", return_value=claimed.lease.expires_at + 1):
+                return update(*args, **kwargs)
+
+        with patch.object(self.service.store.store, "record_update", side_effect=delayed_update):
+            with self.assertRaises(WorkerLeaseError):
+                self.service.renew(self.worker.id, assignment.id,
+                    AssignmentRenewRequest(lease_token=claimed.lease.lease_token, fence=claimed.fence), actor=self.worker_actor)
+        self.assertEqual(self.service.store.assignment(assignment.id).lease, claimed.lease)
 
     def test_thread_subject_assignment_does_not_require_fake_work_item(self) -> None:
         assignment = self._assignment(
@@ -455,6 +509,25 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
         )
         self.assertIsNotNone(claimed)
         self.assertEqual(claimed.assigned_worker_id, compatible.id)
+
+    def test_local_worker_capacity_honored_on_registration_and_reconciliation(self):
+        self.identity.bootstrap_service_actor(
+            identity_id="new-local-worker", name="New Local Worker",
+            scope=self.admin.tenant, service_scopes=("execution-worker:run",),
+        )
+        first = self.service.ensure_local_worker(
+            service_identity_id="new-local-worker", version="1.0.0",
+            capabilities=self.worker.capabilities, actor=self.admin,
+            max_concurrency=16,
+        )
+        self.assertEqual(first.max_concurrency, 16)
+        second = self.service.ensure_local_worker(
+            service_identity_id="new-local-worker", version="1.0.0",
+            capabilities=self.worker.capabilities, actor=self.admin,
+            max_concurrency=12,
+        )
+        self.assertEqual(second.id, first.id)
+        self.assertEqual(second.max_concurrency, 12)
 
     def test_execution_readiness_reports_missing_capability(self) -> None:
         self.service.ensure_local_worker(
@@ -791,13 +864,14 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
         observed_statuses = []
         release_requests = []
 
-        def release(workspace_id, payload, *, actor):
+        def release(workspace_id, payload, *, actor, preserve_files):
             current = next(
                 item
                 for item in self.service.store.load().assignments
                 if item.id == expired.id
             )
             observed_statuses.append(current.status)
+            self.assertTrue(preserve_files)
             release_requests.append((workspace_id, payload, actor))
 
         self.service.workspaces = SimpleNamespace(release=release)
@@ -843,13 +917,14 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
         observed_statuses = []
         release_requests = []
 
-        def release(workspace_id, payload, *, actor):
+        def release(workspace_id, payload, *, actor, preserve_files):
             current = next(
                 item
                 for item in self.service.store.load().assignments
                 if item.id == assignment.id
             )
             observed_statuses.append(current.status)
+            self.assertTrue(preserve_files)
             release_requests.append((workspace_id, payload, actor))
 
         self.service.workspaces = SimpleNamespace(release=release)

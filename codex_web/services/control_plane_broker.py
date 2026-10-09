@@ -39,6 +39,7 @@ from codex_web.control_plane_broker import (
     ControlPlaneBrokerDecision,
     ControlPlaneBrokerLimits,
     ControlPlaneBrokerOperation,
+    WorkItemOwnerDispatchRequest,
 )
 from codex_web.code_hosts import CodeHostCapability, CodeHostProviderBinding
 from codex_web.execution_workers import ExecutionAssignment
@@ -148,6 +149,13 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
         method="POST",
         path_template="/api/work-items/{ref}/progress",
         capability="work_item.progress",
+        authority_level=AuthorityLevel.EXECUTE,
+    ),
+    ControlPlaneBrokerOperation(
+        id="work_item.steer",
+        method="POST",
+        path_template="/api/work-items/{ref}/steer",
+        capability="work_item.steer",
         authority_level=AuthorityLevel.EXECUTE,
     ),
     ControlPlaneBrokerOperation(
@@ -334,6 +342,7 @@ _MUTATION_SUFFIXES = {
     "handoff": "work_item.handoff",
     "ack": "work_item.acknowledge",
     "progress": "work_item.progress",
+    "steer": "work_item.steer",
     "retry": "work_item.retry",
     "reconcile": "work_item.reconcile",
 }
@@ -368,6 +377,12 @@ _REPOSITORY_ACTIONS = {
         CODE_HOST_JOB_RERUN_ACTION_ID,
     ),
 }
+_RECONCILABLE_REPOSITORY_ACTION_IDS = frozenset(
+    {
+        CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
+        CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+    }
+)
 
 # These profiles execute different workloads but share the same narrow broker
 # boundary. The broker never grants generic network or localhost access: every
@@ -1134,6 +1149,7 @@ class ControlPlaneBrokerService:
         )
 
         return actor, requester_actor, state, authority_decision
+
     async def dispatch(
         self,
         *,
@@ -1247,7 +1263,9 @@ class ControlPlaneBrokerService:
                 payload
             )
             if (
-                intent.action_id != CODE_HOST_BRANCH_PUBLISH_ACTION_ID
+                intent.action_id not in _RECONCILABLE_REPOSITORY_ACTION_IDS
+                or intent.organization_id != assignment.organization_id
+                or intent.workspace_id != assignment.workspace_id
                 or intent.project_id != assignment.project_id
                 or tuple(intent.resource_ids) != (repository_id,)
                 or intent.requested_by != requester_actor.identity_id
@@ -1256,7 +1274,7 @@ class ControlPlaneBrokerService:
                     "action intent is outside the assignment delivery scope"
                 )
             # A recovered thread receives a fresh execution assignment. It must
-            # still be able to verify and settle an uncertain branch publish
+            # still be able to verify and settle an uncertain repository action
             # from its superseded assignment, otherwise a service restart
             # permanently strands the governed delivery. Historical intents
             # remain non-retryable here: only the exact originating execution
@@ -1305,9 +1323,25 @@ class ControlPlaneBrokerService:
         elif operation.id == "work_item.read":
             assert resolved.target_ref is not None
             result = await self.work_items.get(resolved.target_ref)
-            result["authoritative_source"] = await self.operator.source_detail(
+            authoritative_source = await self.operator.source_detail(
                 resolved.target_ref
             )
+            result["authoritative_source"] = authoritative_source
+            snapshot = authoritative_source.get("snapshot") or {}
+            next_action = result.get("next_action")
+            result["assigned_scope"] = {
+                "source": (
+                    "canonical_next_action"
+                    if next_action
+                    else "authoritative_task_source"
+                ),
+                "next_action": next_action,
+                "title": snapshot.get("title"),
+                "body_text": (
+                    None if next_action else snapshot.get("body_text")
+                ),
+                "source_identity": snapshot.get("identity"),
+            }
         elif operation.id == "work_item.handoff":
             assert resolved.target_ref is not None
             result = await self.work_items.handoff(
@@ -1325,6 +1359,16 @@ class ControlPlaneBrokerService:
             result = await self.work_items.progress(
                 resolved.target_ref,
                 WorkItemProgressUpdate.model_validate(payload),
+            )
+        elif operation.id == "work_item.steer":
+            assert resolved.target_ref is not None
+            request = WorkItemOwnerDispatchRequest.model_validate(payload)
+            result = await self.operator.steer(
+                resolved.target_ref,
+                expected_owner=request.expected_owner,
+                expected_thread_id=request.expected_thread_id,
+                idempotency_key=request.idempotency_key,
+                actor=actor.identity_id,
             )
         elif operation.id == "work_item.retry":
             assert resolved.target_ref is not None

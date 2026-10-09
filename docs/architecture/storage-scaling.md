@@ -75,6 +75,23 @@ a key prefix plus cursor. They are the read-side primitive for provider,
 conversation, Project, or tenant scoped indexes; callers should encode those
 scope dimensions into domain keys rather than loading the full collection.
 
+`record_mutate()` is the conditional keyed-write primitive. It acquires the
+collection transaction lock, reads only the named records, and applies one
+bounded upsert/delete delta. The updater may emit derived index keys, allowing
+the canonical event store to change an outbox record and its readiness index in
+the same transaction. PostgreSQL uses the namespace advisory lock plus row
+locks; SQLite uses `BEGIN IMMEDIATE`. This primitive must not be used to bypass
+cross-domain `update_many` transactions where a domain document and event must
+commit atomically.
+
+Canonical event storage uses a dedicated versioned keyed collection. Stable
+event and idempotency aliases provide point reads, pending-outbox keys are
+ordered by `not_before`, and inbox receipts are exact-key dedupe records. The
+legacy monolithic event document is migrated once and retained only as an
+explicitly refreshed rollback checkpoint. This keeps outbox dispatch cost
+bounded as retained event history grows without changing event identity,
+delivery ordering, or replay semantics.
+
 ### Bot routing read indexes
 
 Bot binding routing maintains a process-local index over canonical binding state
@@ -408,3 +425,14 @@ Before replicated mode is considered supported, tests must demonstrate:
 - two instances transfer ownership deterministically without double execution
 - transport and coordination backends can be replaced independently at their contracts
 - a single-instance deployment continues to work without any external broker
+
+PostgreSQL canonical state uses the official psycopg connection pool so keyed
+operations reuse authenticated connections instead of reopening them for each
+statement. Each checkout retains its own transaction; normal exits commit and
+exceptional exits roll back before reuse. Pool resources are shared only across stores with identical DSN/TLS and pool
+bounds. Closing a short-lived store releases its lease; application shutdown and
+process exit close the shared pools after runtime owners stop. Its default bounds are one retained
+connection, at most sixteen concurrent connections, and a five-second acquisition
+wait; backend construction can supply tighter deployment bounds. Custom injected
+connection factories retain the existing one-operation connection behavior.
+Pool limits and counters are exposed through existing state-storage diagnostics.

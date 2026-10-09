@@ -715,7 +715,7 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         self.assertEqual(workspace.actual_disk_bytes, 256)
         self.assertEqual(len(self.backend.provisioned), 2)
 
-    def test_read_only_member_lease_can_coexist_but_write_conflicts(self) -> None:
+    def test_read_only_members_coexist_but_overlapping_writer_fails_closed(self) -> None:
         self.service.acquire(
             ExecutionWorkspaceAcquire(
                 work_item_ref=self.work_item.ref,
@@ -1241,6 +1241,30 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         self.assertEqual(contract.target.workspace.branch_name, workspace.branch_name)
         self.assertEqual(contract.target.workspace.base_revision, "base-revision")
         self.assertEqual(contract.target.workspace.resource_ids, (self.repo.id,))
+
+    def test_parallel_writes_to_same_repository_get_isolated_worktrees(self) -> None:
+        first = self._acquire("same-repo-exec-1", self.repo.id)
+        second = self._acquire("same-repo-exec-2", self.repo.id)
+
+        self.assertEqual(first.status, ExecutionWorkspaceStatus.ACTIVE)
+        self.assertEqual(second.status, ExecutionWorkspaceStatus.ACTIVE)
+        self.assertNotEqual(first.id, second.id)
+        self.assertNotEqual(first.path, second.path)
+        self.assertNotEqual(first.branch_name, second.branch_name)
+
+    def test_conflicting_non_git_write_lease_fails_closed(self) -> None:
+        self._acquire(
+            "exec-1",
+            self.database.id,
+            repository_resource_id=None,
+        )
+        with self.assertRaises(ExecutionWorkspaceConflictError):
+            self._acquire(
+                "exec-2",
+                self.database.id,
+                repository_resource_id=None,
+            )
+
 
 
 if __name__ == "__main__":

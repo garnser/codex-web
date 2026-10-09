@@ -268,6 +268,32 @@ class ExecutionPreflightService:
         self._authorize(updated, actor, require_admin=True)
         return updated, updated.retry_claim_id, claimed
 
+    def bind_replacement(
+        self,
+        attempt_id: str,
+        *,
+        actor: AuthenticationActor,
+        claim_id: str,
+        previous_thread_id: str,
+        replacement_thread_id: str,
+    ) -> ExecutionPreflightAttempt:
+        current = self.get(attempt_id, actor=actor)
+        self._authorize(current, actor, require_admin=True)
+
+        def update(value: ExecutionPreflightAttempt) -> ExecutionPreflightAttempt:
+            if (
+                value.status != "retrying"
+                or value.retry_claim_id != claim_id
+                or (value.replacement_thread_id or value.thread_id) != previous_thread_id
+            ):
+                raise HTTPException(status_code=409, detail="preflight retry target changed")
+            return value.model_copy(update={
+                "replacement_thread_id": replacement_thread_id,
+                "updated_at": float(self.clock()),
+            })
+
+        return self.store.update(attempt_id, update)
+
     def mark_started(
         self,
         attempt_id: str,
@@ -391,29 +417,3 @@ class ExecutionPreflightService:
             agent_profile_id=attempt.agent_profile_id,
             agent_profile_revision=attempt.agent_profile_revision,
         )
-
-    def bind_replacement(
-        self,
-        attempt_id: str,
-        *,
-        actor: AuthenticationActor,
-        claim_id: str,
-        previous_thread_id: str,
-        replacement_thread_id: str,
-    ) -> ExecutionPreflightAttempt:
-        current = self.get(attempt_id, actor=actor)
-        self._authorize(current, actor, require_admin=True)
-
-        def update(value: ExecutionPreflightAttempt) -> ExecutionPreflightAttempt:
-            if (
-                value.status != "retrying"
-                or value.retry_claim_id != claim_id
-                or (value.replacement_thread_id or value.thread_id) != previous_thread_id
-            ):
-                raise HTTPException(status_code=409, detail="preflight retry target changed")
-            return value.model_copy(update={
-                "replacement_thread_id": replacement_thread_id,
-                "updated_at": float(self.clock()),
-            })
-
-        return self.store.update(attempt_id, update)

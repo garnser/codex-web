@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import resource
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -126,6 +127,7 @@ class _FakeExecutionBackend:
                 tuple(trusted_readonly_mounts),
                 tuple(trusted_writable_mounts),
                 additional_disk_bytes,
+                dict(environment or {}),
             )
         )
         if poll_hook is not None:
@@ -200,8 +202,179 @@ def _assignment(**overrides) -> ExecutionAssignment:
     return ExecutionAssignment(**values)
 
 
+class WorkerDiskAccountingTests(unittest.TestCase):
+    def test_nested_hidden_and_hardlinked_files_count_without_symlink_targets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "workspace"
+            root.mkdir()
+            (root / ".hidden").write_bytes(b"h" * 11)
+            (root / "nested").mkdir()
+            regular = root / "nested" / "regular"
+            regular.write_bytes(b"r" * 17)
+            os.link(regular, root / "hardlink")
+            (root / "file-link").symlink_to(regular)
+            external = Path(temporary) / "external"
+            external.mkdir()
+            (external / "large").write_bytes(b"e" * 1000)
+            (root / "directory-link").symlink_to(external, target_is_directory=True)
+            (root / "dangling-link").symlink_to(external / "missing")
+            (root / "empty").touch()
+            os.mkfifo(root / "pipe")
+            self.assertEqual(BubblewrapExecutionBackend._tree_disk_usage(root), 45)
+            self.assertEqual(BubblewrapExecutionBackend._tree_disk_usage(root / "missing"), 0)
+            self.assertEqual(BubblewrapExecutionBackend._tree_disk_usage(regular), 0)
+
+    def test_file_accounting_uses_one_size_lookup_per_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            file_count = 40
+            for number in range(file_count):
+                (root / str(number)).write_bytes(b"x" * (number + 1))
+            real_scandir, real_stat, real_lstat = os.scandir, os.stat, os.lstat
+            metadata_calls = []
+
+            class Entry:
+                def __init__(self, actual):
+                    self.actual = actual
+
+                def __getattr__(self, name):
+                    return getattr(self.actual, name)
+
+                def stat(self, *args, **kwargs):
+                    metadata_calls.append(self.actual.path)
+                    return self.actual.stat(*args, **kwargs)
+
+            class Entries:
+                def __init__(self, path):
+                    self.actual = real_scandir(path)
+
+                def __enter__(self):
+                    return (Entry(entry) for entry in self.actual)
+
+                def __exit__(self, *args):
+                    self.actual.close()
+
+            def file_stat(path, *args, **kwargs):
+                metadata_calls.append(str(path))
+                return real_stat(path, *args, **kwargs)
+
+            def file_lstat(path, *args, **kwargs):
+                metadata_calls.append(str(path))
+                return real_lstat(path, *args, **kwargs)
+
+            with (
+                patch("os.scandir", side_effect=Entries),
+                patch("os.stat", side_effect=file_stat),
+                patch("os.lstat", side_effect=file_lstat),
+            ):
+                actual = BubblewrapExecutionBackend._tree_disk_usage(root)
+            self.assertEqual(actual, sum(range(1, file_count + 1)))
+            self.assertEqual(len(metadata_calls), file_count)
+
+    def test_unavailable_directory_does_not_hide_accessible_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "visible").write_bytes(b"visible")
+            blocked = root / "blocked"
+            blocked.mkdir()
+            (blocked / "unavailable").write_bytes(b"unavailable")
+            real_scandir = os.scandir
+
+            def scandir(path):
+                if Path(path) == blocked:
+                    raise PermissionError("unavailable directory")
+                return real_scandir(path)
+
+            with patch("os.scandir", side_effect=scandir):
+                self.assertEqual(BubblewrapExecutionBackend._tree_disk_usage(root), 7)
+
+    def test_vanished_entry_does_not_abort_remaining_file_accounting(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "retained").write_bytes(b"retained")
+            vanished = root / "vanished"
+            vanished.write_bytes(b"gone")
+            real_scandir = os.scandir
+
+            class Entry:
+                def __init__(self, actual):
+                    self.actual = actual
+
+                def __getattr__(self, name):
+                    return getattr(self.actual, name)
+
+                def stat(self, *args, **kwargs):
+                    if self.actual.name == "vanished":
+                        vanished.unlink()
+                    return self.actual.stat(*args, **kwargs)
+
+            class Entries:
+                def __init__(self, path):
+                    self.actual = real_scandir(path)
+
+                def __enter__(self):
+                    return (Entry(entry) for entry in self.actual)
+
+                def __exit__(self, *args):
+                    self.actual.close()
+
+            with patch("os.scandir", side_effect=Entries):
+                self.assertEqual(BubblewrapExecutionBackend._tree_disk_usage(root), 8)
+
+    def test_file_replaced_by_symlink_before_size_lookup_is_not_accounted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "workspace"
+            root.mkdir()
+            regular = root / "regular"
+            regular.write_bytes(b"before")
+            external = Path(temporary) / "outside"
+            external.write_bytes(b"outside" * 100)
+            real_scandir = os.scandir
+
+            class Entry:
+                def __init__(self, actual):
+                    self.actual = actual
+
+                def __getattr__(self, name):
+                    return getattr(self.actual, name)
+
+                def stat(self, *args, **kwargs):
+                    regular.unlink()
+                    regular.symlink_to(external)
+                    return self.actual.stat(*args, **kwargs)
+
+            class Entries:
+                def __init__(self, path):
+                    self.actual = real_scandir(path)
+
+                def __enter__(self):
+                    return (Entry(entry) for entry in self.actual)
+
+                def __exit__(self, *args):
+                    self.actual.close()
+
+            with patch("os.scandir", side_effect=Entries):
+                self.assertEqual(BubblewrapExecutionBackend._tree_disk_usage(root), 0)
+
+    def test_shared_git_metadata_remains_in_execution_disk_limit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / "source").write_bytes(b"source")
+            metadata = root / "shared-git"
+            metadata.mkdir()
+            (metadata / "pack").write_bytes(b"pack" * 4)
+            self.assertEqual(
+                BubblewrapExecutionBackend._execution_disk_usage(workspace, metadata), 22
+            )
+            self.assertEqual(
+                BubblewrapExecutionBackend._execution_disk_usage(workspace, workspace), 6
+            )
+
+
 class BubblewrapExecutionBackendTests(unittest.TestCase):
-    def test_successful_probe_advertises_command_execution_without_network(self) -> None:
+    def test_successful_probe_advertises_command_execution_and_unrestricted_network(self) -> None:
         backend = BubblewrapExecutionBackend(
             executable="/usr/bin/bwrap",
             probe_runner=_probe_success,
@@ -211,7 +384,7 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
 
         self.assertTrue(status.ready)
         self.assertIn(WorkerCapability.COMMAND_EXECUTION, status.capabilities)
-        self.assertNotIn(WorkerCapability.NETWORK, status.capabilities)
+        self.assertIn(WorkerCapability.NETWORK, status.capabilities)
         self.assertTrue(status.supports_network_disabled)
         self.assertFalse(status.supports_network_allowlist)
 
@@ -231,14 +404,17 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
         self.assertIn("user namespaces disabled", status.reason)
 
     def test_command_is_namespaced_and_workspace_write_is_the_only_writable_repo_mount(self) -> None:
-        backend = BubblewrapExecutionBackend(
-            executable="/usr/bin/bwrap",
-            probe_runner=_probe_success,
-        )
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             workspace = root / "workspace"
+            trust_store = root / "trust-store"
             workspace.mkdir()
+            trust_store.mkdir()
+            backend = BubblewrapExecutionBackend(
+                executable="/usr/bin/bwrap",
+                probe_runner=_probe_success,
+                trust_store_mounts=((trust_store, Path("/etc/pki")),),
+            )
 
             command = backend.build_command(
                 _assignment(),
@@ -255,6 +431,15 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
         ])
         self.assertNotIn("/app/data", command)
         self.assertIn("/tmp/codex-worker-home", command)
+        mounts = [
+            command[index:index + 3]
+            for index in range(max(0, len(command) - 2))
+        ]
+        self.assertIn(
+            ["--ro-bind", str(trust_store.resolve()), "/etc/pki"],
+            mounts,
+        )
+        self.assertNotIn(["--ro-bind", "/etc", "/etc"], mounts)
         write_index = command.index("--bind")
         self.assertEqual(command[write_index + 1], str(workspace.resolve()))
         self.assertEqual(command[write_index + 2], str(workspace.resolve()))
@@ -373,6 +558,44 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
         )
         self.assertIn("--unshare-net", command)
         self.assertNotIn(["--ro-bind", "/", "/"], mounts)
+
+    def test_network_enabled_danger_full_access_uses_host_network_namespace(self) -> None:
+        backend = BubblewrapExecutionBackend(
+            executable="/usr/bin/bwrap",
+            probe_runner=_probe_success,
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = Path(raw) / "workspace"
+            workspace.mkdir()
+            command = backend.build_command(
+                _assignment(
+                    sandbox="danger-full-access",
+                    network=NetworkPolicy(enabled=True),
+                    required_capabilities=(
+                        WorkerCapability.GIT,
+                        WorkerCapability.COMMAND_EXECUTION,
+                        WorkerCapability.NETWORK,
+                    ),
+                ),
+                argv=("python", "-m", "pip", "--version"),
+                workspace_path=workspace,
+            )
+
+        self.assertNotIn("--unshare-net", command)
+        mounts = [
+            command[index:index + 3]
+            for index in range(max(0, len(command) - 2))
+        ]
+        for network_file in backend.SYSTEM_NETWORK_FILES:
+            if network_file.is_file():
+                self.assertIn(
+                    ["--ro-bind", str(network_file), str(network_file)],
+                    mounts,
+                )
+        self.assertNotIn(["--ro-bind", "/", "/"], [
+            command[index:index + 3]
+            for index in range(max(0, len(command) - 2))
+        ])
 
     def test_danger_full_access_cannot_make_read_only_sibling_repository_writable(self) -> None:
         backend = BubblewrapExecutionBackend(
@@ -599,6 +822,21 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
             [call.args for call in setrlimit.call_args_list],
         )
 
+    def test_command_process_headroom_accounts_for_shared_uid_and_hard_limit(self):
+        limits = _assignment().limits
+        for baseline, hard, expected in [(520, 4096, 520 + limits.process_count), (520, 530, 530)]:
+            with patch.object(BubblewrapExecutionBackend, "_host_uid_task_count", return_value=baseline), patch(
+                "resource.getrlimit", return_value=(hard, hard)
+            ):
+                apply = BubblewrapExecutionBackend._limits_preexec(limits)
+            with patch("resource.setrlimit") as setrlimit:
+                apply()
+            calls = [call.args for call in setrlimit.call_args_list]
+            self.assertIn((resource.RLIMIT_NPROC, (expected, expected)), calls)
+            self.assertIn((resource.RLIMIT_CPU, (limits.cpu_seconds, limits.cpu_seconds)), calls)
+            self.assertIn((resource.RLIMIT_AS, (limits.memory_bytes, limits.memory_bytes)), calls)
+            self.assertIn((resource.RLIMIT_FSIZE, (limits.disk_bytes, limits.disk_bytes)), calls)
+
     def test_one_shot_commands_keep_assignment_address_space_limit(self) -> None:
         limits = _assignment().limits
         preexec_fn = BubblewrapExecutionBackend._limits_preexec(limits)
@@ -612,6 +850,13 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
                 (limits.memory_bytes, limits.memory_bytes),
             ),
             [call.args for call in setrlimit.call_args_list],
+        )
+
+
+    def test_process_tree_rss_reports_current_process(self) -> None:
+        self.assertGreater(
+            BubblewrapExecutionBackend.process_tree_rss_bytes(os.getpid()),
+            0,
         )
 
     def test_minimal_environment_does_not_inherit_ambient_secrets(self) -> None:
@@ -643,6 +888,13 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
         root = Path(self.temp.name)
         self.workspace_path = root / "workspace"
         self.workspace_path.mkdir()
+        execution_venv = self.workspace_path / ".venv"
+        (execution_venv / "bin").mkdir(parents=True)
+        (execution_venv / "bin" / "python").touch()
+        (execution_venv / "lib" / "python3.14" / "site-packages").mkdir(
+            parents=True
+        )
+        (execution_venv / ".codex-web-execution-venv").write_text("test\n")
         sqlite = SQLiteStateStore(root / "state.sqlite3")
         self.identity = IdentityService(IdentityStateStore(sqlite))
         self.identity.bootstrap_local()
@@ -896,6 +1148,11 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
         self.assertEqual(completion.assignment.status, AssignmentStatus.SUCCEEDED)
         self.assertEqual(backend.validated, [assignment.id])
         self.assertEqual(backend.calls[0][2], self.workspace_path)
+        self.assertEqual(
+            backend.calls[0][6]["VIRTUAL_ENV"],
+            str(self.workspace_path / ".venv"),
+        )
+        self.assertTrue((self.workspace_path / ".venv" / "bin" / "python").exists())
         persisted = next(
             item
             for item in self.worker_service.store.load().assignments
@@ -910,6 +1167,73 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
                 for item in events
             )
         )
+
+    def test_python_environment_layers_project_venv_read_only(self) -> None:
+        project_path = Path(self.temp.name) / "project"
+        project_site_packages = (
+            project_path / ".venv" / "lib" / "python3.14" / "site-packages"
+        )
+        project_site_packages.mkdir(parents=True)
+        (project_path / ".venv" / "bin").mkdir()
+        self.workspaces.workspace.repository_members = (
+            SimpleNamespace(
+                resource_id="repo-1",
+                source_path=str(project_path),
+            ),
+        )
+        runtime, _backend = self._runtime(
+            LocalExecutionResult(
+                executable="python",
+                command_digest="sha256:" + "b" * 64,
+                exit_code=0,
+                stdout="ok",
+                stderr="",
+                duration_seconds=0.01,
+            )
+        )
+
+        result = runtime.python_environment(_assignment())
+
+        execution_venv = self.workspace_path / ".venv"
+        self.assertEqual(result.environment["VIRTUAL_ENV"], str(execution_venv))
+        self.assertEqual(
+            result.readonly_mounts,
+            ((project_path / ".venv", project_path / ".venv"),),
+        )
+        baseline = next(
+            (execution_venv / "lib").glob(
+                "python*/site-packages/codex_web_project_baseline.pth"
+            )
+        )
+        self.assertEqual(baseline.read_text(), f"{project_site_packages}\n")
+        self.assertTrue(result.environment["PATH"].startswith(
+            f"{execution_venv}/bin:{project_path}/.venv/bin:"
+        ))
+
+    def test_python_environment_provisions_missing_venv(self) -> None:
+        shutil.rmtree(self.workspace_path / ".venv")
+        runtime, _backend = self._runtime(
+            LocalExecutionResult(
+                executable="python",
+                command_digest="sha256:" + "c" * 64,
+                exit_code=0,
+                stdout="ok",
+                stderr="",
+                duration_seconds=0.01,
+            )
+        )
+
+        result = runtime.python_environment(_assignment())
+
+        execution_venv = self.workspace_path / ".venv"
+        self.assertTrue((execution_venv / ".codex-web-execution-venv").is_file())
+        self.assertTrue((execution_venv / "bin" / "python").exists())
+        self.assertTrue((execution_venv / "bin" / "pip").exists())
+        self.assertIn(
+            "include-system-site-packages = true",
+            (execution_venv / "pyvenv.cfg").read_text(),
+        )
+        self.assertEqual(result.environment["VIRTUAL_ENV"], str(execution_venv))
 
     def test_runtime_passes_canonical_read_only_repository_mounts_to_backend(self) -> None:
         readonly_path = Path(self.temp.name) / "readonly-repo"

@@ -4,10 +4,14 @@ import asyncio
 import json
 import logging
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
+from starlette.responses import JSONResponse
+from codex_web.api.authorization import (ApiAuthorizationError, ApiAuthorizationService,
+    ApiAccessMode, install_api_authorization, policy_for_operation)
 
 from codex_web.events import EventHub
 from codex_web.identity import (
@@ -368,6 +372,61 @@ class RuntimeMetricsTests(unittest.TestCase):
                 update={"service_scopes": ("observability:read",)}
             )
             self.assertEqual(client.get("/api/metrics").status_code, 200)
+
+
+class ComposedObservabilityAuthorizationTests(unittest.TestCase):
+    paths = ("/api/health", "/api/traces/recent", "/api/logs/recent", "/api/observability")
+
+    def test_complete_server_composition_and_exact_policy_metadata(self):
+        import server
+
+        ApiAuthorizationService.validate_app(server.app)
+        schema = server.app.openapi()
+        for path in self.paths:
+            policy = policy_for_operation("GET", path)
+            self.assertEqual(policy.access, ApiAccessMode.ADMIN)
+            self.assertEqual(policy.service_scopes, ("observability:read",))
+            self.assertIsNone(policy.required_assurance)
+            operation = schema["paths"][path]["get"]
+            self.assertEqual(operation["x-codex-authorization"]["access"], "admin")
+            self.assertIn("403", operation["responses"])
+            self.assertIsNone(policy_for_operation("POST", path))
+        self.assertIsNone(policy_for_operation("GET", "/api/traces/other"))
+        self.assertIsNone(policy_for_operation("GET", "/api/health/other"))
+        self.assertEqual(policy_for_operation("GET", "/api/livez").access, ApiAccessMode.PUBLIC)
+
+    def test_late_nested_routes_preserve_member_admin_and_service_reader_semantics(self):
+        app = FastAPI()
+        authorization = install_api_authorization(app, SimpleNamespace())
+        install_observability(app, _Host())
+        authorization.validate_app(app)
+        current = {"actor": AuthenticationActor(identity_id="member",
+            principal_kind=PrincipalKind.HUMAN, organization_id="org-a", workspace_id="ws-a",
+            roles=(MembershipRole.MEMBER,), assurance=AuthenticationAssurance.PRIMARY)}
+
+        @app.middleware("http")
+        async def authenticated_boundary(request, call_next):
+            request.state.identity_actor = current["actor"]
+            try:
+                authorization.authorize_request(request, current["actor"])
+            except ApiAuthorizationError as exc:
+                return JSONResponse({"detail": str(exc)}, status_code=exc.status_code)
+            return await call_next(request)
+
+        with TestClient(app) as client:
+            for path in self.paths:
+                self.assertEqual(client.get(path).status_code, 403)
+            current["actor"] = current["actor"].model_copy(update={"roles": (MembershipRole.ADMIN,)})
+            for path in self.paths:
+                self.assertEqual(client.get(path).status_code, 200)
+            current["actor"] = AuthenticationActor(identity_id="observer-service",
+                principal_kind=PrincipalKind.SERVICE, organization_id="org-a", workspace_id="ws-a",
+                assurance=AuthenticationAssurance.SERVICE_TOKEN, service_scopes=())
+            for path in self.paths:
+                self.assertEqual(client.get(path).status_code, 403)
+            current["actor"] = current["actor"].model_copy(update={"service_scopes": ("observability:read",)})
+            for path in self.paths:
+                self.assertEqual(client.get(path).status_code, 200)
 
 
 class RuntimeLogApiTests(unittest.TestCase):

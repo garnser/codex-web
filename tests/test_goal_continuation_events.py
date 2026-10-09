@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import ast
+import asyncio
+from pathlib import Path
 import unittest
+from unittest.mock import Mock
 from types import SimpleNamespace
 
 from codex_web.agent_runtime import AgentRuntimeEvent, AgentSessionStatus
@@ -239,6 +243,28 @@ class GoalContinuationEventServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.reason, "continuation_lease_not_owned")
         self.assertEqual(continuation.resolved, [])
         self.assertEqual(continuation.dispatched, [])
+
+    async def test_application_observer_filters_streams_before_registry_access(self):
+        # Load only the composition function: importing application would open
+        # deployment state and start unrelated integration dependencies.
+        tree = ast.parse((Path(__file__).parents[1] / "codex_web/application.py").read_text())
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                        and node.name == "_subscribe_goal_continuation_events")
+        store = Mock()
+        store.list.return_value = []
+        namespace = {"agent_session_store": store, "asyncio": asyncio,
+                     "goal_continuation_event_service": GoalContinuationEventService,
+                     "TenantScope": TenantScope}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "observer", "exec"), namespace)
+        adapter = Mock()
+        namespace[function.name](adapter, provider_id="openai", runtime_id="codex")
+        listener = adapter.subscribe_events.call_args.args[0]
+        for event_type in ("item.started", "item/agentMessage/delta", "thread/status/changed"):
+            listener(_event(event_type))
+        store.list.assert_not_called()
+        for event_type in ("turn.completed", "turn/failed", "turn.interrupted"):
+            listener(_event(event_type))
+        self.assertEqual(store.list.call_count, 3)
 
     async def test_wrong_turn_and_non_terminal_events_are_ignored(self):
         bindings = _Bindings(_binding())

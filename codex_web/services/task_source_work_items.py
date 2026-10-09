@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from codex_web.models import WorkItemEvent, WorkItemState
+from codex_web.models import WorkItemArtifactRelation, WorkItemEvent, WorkItemState
 from codex_web.services.task_source_conformance import TaskSourceConformanceSuite
 from codex_web.services.work_item_dependencies import WorkItemRuntimeDependencies
 from codex_web.services.task_source_reconciliation import same_task_source_identity
@@ -58,7 +58,12 @@ class TaskSourceWorkItemProjector:
 
     @staticmethod
     def _revision_timestamp(snapshot: TaskSourceSnapshot) -> float | None:
-        value = snapshot.identity.revision
+        return TaskSourceWorkItemProjector._parse_timestamp(
+            snapshot.identity.revision
+        )
+
+    @staticmethod
+    def _parse_timestamp(value: Any) -> float | None:
         if not value:
             return None
         text = str(value).strip()
@@ -72,6 +77,67 @@ class TaskSourceWorkItemProjector:
                 parsed = parsed.replace(tzinfo=timezone.utc)
             return parsed.timestamp()
         return None
+
+    @classmethod
+    def _reconcile_artifact_relations(
+        cls,
+        snapshot: TaskSourceSnapshot,
+        state: WorkItemState | None,
+    ) -> list[WorkItemArtifactRelation] | None:
+        if snapshot.artifact_relations is None:
+            return (
+                list(state.verified_artifact_relations)
+                if state is not None
+                and state.verified_artifact_relations is not None
+                else None
+            )
+        project_path = snapshot.identity.external_id.partition("#")[0].strip()
+        source_type = snapshot.identity.source_type.strip().casefold()
+        source_instance = snapshot.identity.source_instance.strip().rstrip("/")
+        previous = {
+            item.ref: item
+            for item in (
+                state.verified_artifact_relations
+                if state is not None and state.verified_artifact_relations
+                else []
+            )
+        }
+        reconciled: list[WorkItemArtifactRelation] = []
+        for relation in snapshot.artifact_relations:
+            relation_project, separator, relation_iid = relation.ref.partition("!")
+            if (
+                relation.source_type.strip().casefold() != source_type
+                or relation.source_instance.strip().rstrip("/") != source_instance
+                or relation_project.strip() != project_path
+                or not separator
+                or not relation_iid.isdigit()
+            ):
+                continue
+            prior = previous.get(relation.ref)
+            prior_timestamp = (
+                cls._parse_timestamp(prior.source_revision) if prior else None
+            )
+            incoming_timestamp = cls._parse_timestamp(relation.source_revision)
+            if (
+                prior is not None
+                and prior_timestamp is not None
+                and incoming_timestamp is not None
+                and incoming_timestamp < prior_timestamp
+            ):
+                reconciled.append(prior)
+            else:
+                reconciled.append(relation)
+        return sorted(reconciled, key=lambda item: item.ref)
+
+    @staticmethod
+    def _open_verified_mr_refs(
+        relations: list[WorkItemArtifactRelation] | None,
+    ) -> list[str]:
+        return sorted(
+            relation.ref
+            for relation in relations or []
+            if relation.kind == "merge_request" and relation.state == "opened"
+        )
 
     @staticmethod
     def _first_prefixed(labels: tuple[str, ...], prefix: str) -> str | None:
@@ -183,6 +249,17 @@ class TaskSourceWorkItemProjector:
         projected_stage = projection.stage or (state.current_stage if state is not None else "implementation_active")
         projected_owner = None if projected_stage == "closed" else projection.owner
         projected_status_label = None if projected_stage == "closed" else status_label
+        artifact_relations = self._reconcile_artifact_relations(snapshot, state)
+        verified_mr_refs = self._open_verified_mr_refs(artifact_relations)
+        if (
+            state is not None
+            and state.current_stage == "ready_for_validation"
+            and projected_stage == "implementation_active"
+            and verified_mr_refs
+            and (snapshot.source_state or "").strip().casefold()
+            not in {"closed", "merged"}
+        ):
+            projected_stage = "ready_for_validation"
 
         if state is None:
             state = WorkItemState(
@@ -218,7 +295,8 @@ class TaskSourceWorkItemProjector:
                 release_gate=priority == "priority::P1",
                 status_label=projected_status_label,
                 labels=labels,
-                mr_refs=[],
+                mr_refs=verified_mr_refs,
+                verified_artifact_relations=artifact_relations,
                 created_at=now,
                 updated_at=now,
                 closed_at=(source_timestamp or now) if projected_stage == "closed" else None,
@@ -373,6 +451,25 @@ class TaskSourceWorkItemProjector:
             state.labels = labels
             state.status_label = projected_status_label
             state.release_gate = priority == "priority::P1" or state.release_gate
+            if snapshot.artifact_relations is not None:
+                previous_relations = state.verified_artifact_relations
+                state.verified_artifact_relations = artifact_relations
+                state.mr_refs = verified_mr_refs
+                if previous_relations != artifact_relations:
+                    self.state_machine._append_work_item_event(
+                        self.state_machine._work_item_event(
+                            ref,
+                            "task_source_artifact_relations_reconciled",
+                            payload={
+                                "source_type": snapshot.identity.source_type,
+                                "mr_refs": verified_mr_refs,
+                                "relation_states": {
+                                    item.ref: item.state
+                                    for item in artifact_relations or []
+                                },
+                            },
+                        )
+                    )
             state = self.state_machine._transition_work_item_stage(
                 state,
                 projected_stage,

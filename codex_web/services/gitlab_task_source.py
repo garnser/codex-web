@@ -7,7 +7,11 @@ from typing import Any, get_args
 
 from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.compatibility import TASK_SOURCE_CONTRACT
-from codex_web.models import TaskSourceIdentity, WorkItemStage
+from codex_web.models import (
+    TaskSourceIdentity,
+    WorkItemArtifactRelation,
+    WorkItemStage,
+)
 from codex_web.services.task_sources import (
     InvalidTaskSourceIdentity,
     TaskSourceCanonicalProjection,
@@ -21,7 +25,7 @@ from codex_web.services.task_sources import (
 
 
 class GitLabTaskSource:
-    """Provider-neutral authoritative-task adapter backed by GitLab issues.
+    """Provider-neutral task adapter for GitLab issues and merge-request reads.
 
     This adapter owns GitLab-native discovery/read/event/label semantics. It
     returns only normalized TaskSource objects to callers and performs
@@ -168,7 +172,6 @@ class GitLabTaskSource:
                 "Task-source identity belongs to another GitLab instance"
             )
 
-
     async def create(
         self,
         request: TaskSourceCreateRequest,
@@ -212,7 +215,6 @@ class GitLabTaskSource:
             )
         return project_path, int(iid_text)
 
-
     @staticmethod
     def _issue_external_id(issue: dict[str, Any], *, project_path: str | None = None) -> str:
         full_ref = str((issue.get("references") or {}).get("full") or "").strip()
@@ -228,6 +230,7 @@ class GitLabTaskSource:
         issue: dict[str, Any],
         *,
         project_path: str | None = None,
+        artifact_relations: tuple[WorkItemArtifactRelation, ...] | None = None,
     ) -> TaskSourceSnapshot:
         external_id = self._issue_external_id(issue, project_path=project_path)
         revision_value = issue.get("updated_at") or issue.get("closed_at") or issue.get("created_at")
@@ -244,7 +247,51 @@ class GitLabTaskSource:
             source_state=str(issue.get("state") or "").strip().lower() or None,
             owners=self._normalize_assignees(issue.get("assignees")),
             labels=self._normalize_labels(issue.get("labels")),
+            artifact_relations=artifact_relations,
         )
+
+    def _related_merge_request_relations(
+        self,
+        issue: dict[str, Any],
+        merge_requests: list[dict[str, Any]],
+        *,
+        project_path: str,
+    ) -> tuple[WorkItemArtifactRelation, ...]:
+        project_id = issue.get("project_id")
+        if type(project_id) is not int or project_id < 1:
+            return ()
+        relations: list[WorkItemArtifactRelation] = []
+        for merge_request in merge_requests:
+            iid = merge_request.get("iid")
+            head_revision = str(merge_request.get("sha") or "").strip()
+            source_revision = str(
+                merge_request.get("updated_at")
+                or merge_request.get("created_at")
+                or ""
+            ).strip()
+            state = str(merge_request.get("state") or "").strip().lower()
+            if (
+                type(iid) is not int
+                or iid < 1
+                or merge_request.get("source_project_id") != project_id
+                or merge_request.get("target_project_id") != project_id
+                or re.fullmatch(r"[0-9a-fA-F]{40}", head_revision) is None
+                or not source_revision
+                or state not in {"opened", "closed", "merged"}
+            ):
+                continue
+            relations.append(
+                WorkItemArtifactRelation(
+                    source_type=self.source_type,
+                    source_instance=self.source_instance,
+                    ref=f"{project_path}!{iid}",
+                    url=str(merge_request.get("web_url") or "").strip() or None,
+                    head_revision=head_revision.lower(),
+                    source_revision=source_revision,
+                    state=state,
+                )
+            )
+        return tuple(sorted(relations, key=lambda item: item.ref))
 
     async def discover(self, *, scope: str) -> list[TaskSourceSnapshot]:
         self.capabilities.require(TaskSourceCapability.DISCOVERY)
@@ -316,7 +363,6 @@ class GitLabTaskSource:
             labels=self._normalize_labels(merge_request.get("labels")),
         )
 
-
     async def read(self, identity: TaskSourceIdentity) -> TaskSourceSnapshot:
         self.capabilities.require(TaskSourceCapability.READ)
         self._validate_identity(identity)
@@ -329,7 +375,29 @@ class GitLabTaskSource:
             iid,
             token=self.token,
         )
-        return self._snapshot_from_issue(issue, project_path=project_path)
+        relation_reader = getattr(
+            self.client,
+            "issue_related_merge_requests",
+            None,
+        )
+        artifact_relations = None
+        if callable(relation_reader):
+            related = await relation_reader(
+                self.api_base,
+                project_path,
+                iid,
+                token=self.token,
+            )
+            artifact_relations = self._related_merge_request_relations(
+                issue,
+                related,
+                project_path=project_path,
+            )
+        return self._snapshot_from_issue(
+            issue,
+            project_path=project_path,
+            artifact_relations=artifact_relations,
+        )
 
     async def normalize_event(self, payload: object) -> TaskSourceEvent | None:
         self.capabilities.require(TaskSourceCapability.EVENTS)

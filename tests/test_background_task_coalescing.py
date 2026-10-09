@@ -4,6 +4,8 @@ import asyncio
 import unittest
 from types import SimpleNamespace
 
+from fastapi import HTTPException
+
 from codex_web.models import WorkItemState
 from codex_web.services.keyed_background_tasks import (
     KeyedTaskCoordinator,
@@ -266,6 +268,7 @@ class ContinuityCoalescingTests(unittest.IsolatedAsyncioTestCase):
         *,
         replace=None,
         dispatches: list[tuple[str, str, str]] | None = None,
+        dispatch_scopes: list[dict[str, object]] | None = None,
     ) -> WorkItemContinuityService:
         dispatches = dispatches if dispatches is not None else []
         recorded: set[str] = set()
@@ -273,8 +276,10 @@ class ContinuityCoalescingTests(unittest.IsolatedAsyncioTestCase):
         async def replace_default(binding, _source):
             return binding
 
-        async def dispatch(binding, text, source):
+        async def dispatch(binding, text, source, **kwargs):
             dispatches.append((binding.thread_id, text, source))
+            if dispatch_scopes is not None:
+                dispatch_scopes.append(kwargs)
             return {"ok": True}
 
         return WorkItemContinuityService(
@@ -285,7 +290,8 @@ class ContinuityCoalescingTests(unittest.IsolatedAsyncioTestCase):
             ),
             binding_for_agent=lambda owner, project_id, **_kwargs: (
                 SimpleNamespace(
-                    thread_id=f"thread-{project_id}-{owner}"
+                    thread_id=f"thread-{project_id}-{owner}",
+                    project_id=project_id,
                 )
             ),
             replace_nonperforming_thread=(
@@ -305,6 +311,100 @@ class ContinuityCoalescingTests(unittest.IsolatedAsyncioTestCase):
             record_watchdog_dispatch=recorded.add,
             coordination_channel="coord",
         )
+
+    async def test_governed_steer_dispatches_exact_owner_scope_once(self) -> None:
+        state = _state()
+        state.resource_ids = ["repository-a"]
+        states = {state.ref: state.model_copy(deep=True)}
+        dispatches: list[tuple[str, str, str]] = []
+        scopes: list[dict[str, object]] = []
+        service = self._service(
+            states,
+            dispatches=dispatches,
+            dispatch_scopes=scopes,
+        )
+
+        first = await service.steer_actionable_owner(
+            state,
+            expected_owner="James",
+            expected_thread_id="thread-project-a-james",
+            idempotency_key="steer:work-1:1",
+            actor="orchestrator-worker",
+            source="assignment-control-plane",
+        )
+        second = await service.steer_actionable_owner(
+            state,
+            expected_owner="james",
+            expected_thread_id="thread-project-a-james",
+            idempotency_key="steer:work-1:1",
+            actor="orchestrator-worker",
+            source="assignment-control-plane",
+        )
+
+        self.assertEqual(first["status"], "dispatched")
+        self.assertEqual(first["idempotency_key"], "steer:work-1:1")
+        self.assertEqual(second["status"], "duplicate")
+        self.assertEqual(len(dispatches), 1)
+        self.assertEqual(scopes, [{
+            "work_item_ref": "work-1",
+            "repository_resource_id": "repository-a",
+            "writable_repository_resource_ids": ("repository-a",),
+            "require_idle": True,
+        }])
+
+    async def test_governed_steer_rejects_unrelated_owner_thread(self) -> None:
+        state = _state()
+        service = self._service({state.ref: state})
+
+        with self.assertRaises(HTTPException) as owner_error:
+            await service.steer_actionable_owner(
+                state,
+                expected_owner="quinn",
+                expected_thread_id="thread-project-a-quinn",
+                idempotency_key="steer:work-1:1",
+                actor="orchestrator-worker",
+                source="assignment-control-plane",
+            )
+        self.assertEqual(
+            owner_error.exception.detail["code"],
+            "work_item_owner_changed",
+        )
+
+        with self.assertRaises(HTTPException) as thread_error:
+            await service.steer_actionable_owner(
+                state,
+                expected_owner="james",
+                expected_thread_id="thread-other-owner",
+                idempotency_key="steer:work-1:2",
+                actor="orchestrator-worker",
+                source="assignment-control-plane",
+            )
+        self.assertEqual(
+            thread_error.exception.detail["code"],
+            "work_item_owner_thread_changed",
+        )
+
+    async def test_governed_steer_does_not_launch_when_owner_is_active(self) -> None:
+        state = _state()
+        dispatches: list[tuple[str, str, str]] = []
+        service = self._service(
+            {state.ref: state},
+            dispatches=dispatches,
+        )
+        service.thread_is_active = lambda _thread_id: True
+
+        result = await service.steer_actionable_owner(
+            state,
+            expected_owner="james",
+            expected_thread_id="thread-project-a-james",
+            idempotency_key="steer:work-1:1",
+            actor="orchestrator-worker",
+            source="assignment-control-plane",
+        )
+
+        self.assertEqual(result["status"], "already_active")
+        self.assertFalse(result["dispatched"])
+        self.assertEqual(dispatches, [])
 
     async def test_100_owner_updates_coalesce_to_latest_dispatch(self) -> None:
         initial = _state()

@@ -91,9 +91,14 @@ export function targetState({
 } = {}) {
   policy = policy || project?.repository_selection_policy || "deterministic";
   repositories = repositories || activeRepositories(resources);
-  selectedId = selectedId ?? settings.repositoryResourceId ?? "";
   boundId = boundId ?? threadSettings.repository_resource_id ?? "";
-  const storedIds = storedWritableIds(project, settings);
+  selectedId = selectedId ?? (boundId || settings.repositoryResourceId || "");
+  const threadWritableIds = Array.isArray(threadSettings.writable_repository_resource_ids)
+    ? threadSettings.writable_repository_resource_ids.filter(Boolean)
+    : [];
+  const storedIds = threadWritableIds.length
+    ? threadWritableIds
+    : storedWritableIds(project, settings);
   const writableControl = typeof document === "undefined"
     ? null
     : document.getElementById("repository-write-targets");
@@ -101,24 +106,16 @@ export function targetState({
     writableControl?.selectedOptions || [],
     (option) => option.value,
   );
-  const writableIds = controlIds.length
+  let writableIds = controlIds.length
     ? controlIds
     : (storedIds.length || policy !== "coordinated"
       ? storedIds
       : repositories.map((item) => item.id));
+  if (selectedId && !writableIds.includes(selectedId)) {
+    writableIds = [selectedId, ...writableIds];
+  }
   const byId = new Map(repositories.map((item) => [item.id, item]));
   const requestedIds = writableIds.length ? writableIds : (selectedId ? [selectedId] : []);
-
-  if (selectedId && writableIds.length && !writableIds.includes(selectedId)) {
-    return {
-      status: "conflict",
-      blocked: true,
-      code: "repository_target_conflict",
-      message: `Repository conflict: ${selectedId} is selected as the primary target but is not in the writable set.`,
-      id: selectedId,
-      provenance: "explicit primary selection conflicts with coordinated writable set",
-    };
-  }
 
   if (boundId && requestedIds.length && !requestedIds.includes(boundId)) {
     return {
@@ -217,6 +214,7 @@ export function renderControls({
   const policy = project?.repository_selection_policy || "deterministic";
   const repositories = activeRepositories(resources);
   const boundId = threadSettings.repository_resource_id || "";
+  const selectedPrimary = boundId || settings.repositoryResourceId || "";
   const explicit = policy === "explicit";
 
   mutable.innerHTML = [
@@ -225,14 +223,20 @@ export function renderControls({
       `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)} · ${escapeHtml(item.id)}</option>`
     )),
   ].join("");
-  mutable.value = settings.repositoryResourceId || "";
+  mutable.value = selectedPrimary;
 
-  const storedWritable = storedWritableIds(project, settings);
+  const threadWritable = Array.isArray(threadSettings.writable_repository_resource_ids)
+    ? threadSettings.writable_repository_resource_ids.filter(Boolean)
+    : [];
+  const storedWritable = threadWritable.length
+    ? threadWritable
+    : storedWritableIds(project, settings);
   const selectedWritable = new Set(
     storedWritable.length || policy !== "coordinated"
       ? storedWritable
       : repositories.map((item) => item.id),
   );
+  if (selectedPrimary) selectedWritable.add(selectedPrimary);
   writable.innerHTML = repositories
     .map((item) => (
       `<option value="${escapeHtml(item.id)}" ${selectedWritable.has(item.id) ? "selected" : ""}>${escapeHtml(item.name)}</option>`

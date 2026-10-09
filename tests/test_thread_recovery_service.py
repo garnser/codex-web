@@ -270,6 +270,51 @@ class ThreadRecoveryReplacementTests(unittest.IsolatedAsyncioTestCase):
         archive.assert_awaited_once_with("old-thread", "new-thread")
         self.assertEqual(host.THREAD_REPLACEMENTS["old-thread"], "new-thread")
 
+    async def test_replacement_bootstrap_preserves_resolved_profile_and_actor(self):
+        creator = AsyncMock(return_value={"thread": {"id": "new-thread"}})
+        service = recovery_service(SimpleNamespace(), thread_creator=creator)
+        binding = BotBinding(
+            id="b", provider="slack", external_conversation_id="C1",
+            thread_id="old", project_id="home", route_prefix="Carl",
+            created_at=1, updated_at=1,
+        )
+        profile = SimpleNamespace(profile_id="veridataops-carl", revision=4)
+        actor = object()
+        resolver = Mock(return_value=(profile, actor))
+        service.agent_profile_resolver = resolver
+        result = await service._create_replacement_thread(
+            project=service.projects.get("home"), settings=ThreadRunSettings(),
+            sandbox="workspace-write", approval_policy="never", binding=binding,
+        )
+        self.assertEqual(result, "new-thread")
+        resolver.assert_called_once_with(binding)
+        args = creator.await_args.kwargs
+        self.assertEqual(args["agent_profile_id"], profile.profile_id)
+        self.assertEqual(args["agent_profile_revision"], profile.revision)
+        self.assertIs(args["actor"], actor)
+
+    async def test_web_replacement_bootstrap_preserves_requested_profile_and_authority(self):
+        creator = AsyncMock(return_value={"thread": {"id": "new-thread"}})
+        service = recovery_service(SimpleNamespace(), thread_creator=creator)
+        actor = object()
+        result = await service._create_replacement_thread(
+            project=service.projects.get("home"), settings=ThreadRunSettings(repository_resource_id="repo-saas"),
+            sandbox="danger-full-access", approval_policy="never",
+            agent_profile_id="james-saml", agent_profile_revision=2, actor=actor)
+        self.assertEqual(result, "new-thread")
+        args = creator.await_args.kwargs
+        self.assertEqual(args["agent_profile_id"], "james-saml")
+        self.assertEqual(args["agent_profile_revision"], 2)
+        self.assertIs(args["actor"], actor)
+        self.assertEqual(args["repository_resource_id"], "repo-saas")
+        self.assertEqual(args["sandbox"], "danger-full-access")
+        self.assertEqual(args["approval_policy"], "never")
+        with self.assertRaises(HTTPException):
+            await service._create_replacement_thread(project=service.projects.get("home"),
+                settings=ThreadRunSettings(), sandbox="danger-full-access", approval_policy="never",
+                agent_profile_id="james-saml", agent_profile_revision=2)
+        self.assertEqual(creator.await_count, 1)
+
     async def test_replacement_fails_closed_without_assignment_bound_creator(self) -> None:
         binding = BotBinding(
             id="binding-1",

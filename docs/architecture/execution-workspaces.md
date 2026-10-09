@@ -69,6 +69,24 @@ If assignment-bound bootstrap is unavailable or returns no canonical thread
 identity, replacement fails visibly and leaves the existing logical binding in
 place.
 
+### Periodic assignment lease recovery
+
+The runtime supervisor invokes canonical expired-assignment recovery independently
+of thread queues, using the existing local control actor and configurable queue
+recovery cadence. The synchronous callback runs off the event loop; callback
+failure emits `execution_assignment_recovery_failed` and retries next cycle.
+Bounded assignment pages prefilter same-tenant expiry without loading worker/event
+history or rewriting state when no expiry exists. The existing atomic transition
+rechecks current status and lease expiry, records `WORKER_LEASE_LOST`/`lost`, clears
+the lease and preserves the fence. Renewed and foreign-tenant assignments are not
+lost from a stale prefilter snapshot.
+
+Expiry release always retains the entire worktree/scratch directory and branches,
+including ignored and untracked artifacts, even if ordinary Git status looks clean.
+Assignment loss and workspace release remain separate commits. Existing suppressed
+workspace-release failures require supported operator reconciliation; this periodic
+callback does not claim durable retry of that second write.
+
 ### Failed bootstrap cancellation
 
 Failed pre-registration process startup and failed provider session creation
@@ -83,6 +101,11 @@ a competing claimant cannot be revoked using the prior fence. Startup is
 shielded while an executor claim/spawn settles: request cancellation or timeout
 then cancels the observed owned bootstrap and stops an unregistered session,
 rather than letting an abandoned executor claim a new lease after cleanup.
+After session registration, cancellation while awaiting native thread creation
+settles the existing manager's fenced bootstrap completion before propagating
+the original cancellation. Cleanup runs in a shielded task so repeated caller
+cancellation cannot abandon the registered session. A cleanup failure is chained
+to the original cancellation for diagnosis and supported release reconciliation.
 
 Cancellation then releases the canonical workspace reservation with explicit
 retained-files semantics. It preserves the entire Git worktree or scratch
@@ -162,6 +185,26 @@ Repository resources use `LocalGitWorkspaceBackend`:
 
 The backend never uses shell interpolation.
 
+## Python environments
+
+Every filesystem execution workspace receives a codex-web-managed, writable
+`.venv` before its worker process starts. The worker launches with that
+environment first on `PATH`, sets `VIRTUAL_ENV`, and disables user-site package
+leakage. `pip` is configured to require an active virtual environment, so
+package installs remain scoped to one execution workspace and are removed with
+it.
+
+When the canonical repository has an operator-maintained `.venv`, that
+environment is mounted read-only as a baseline layer. Its site-packages and
+console scripts are available to the execution-local environment, while the
+worker cannot mutate the Project checkout's dependency environment. A Project
+without a baseline still receives an execution-local venv with `pip` and the
+worker image's code-owned system packages. User-site packages remain excluded.
+
+This environment contract does not grant generic network access. Dependency
+downloads remain subject to the assignment's brokered network policy; already
+installed baseline dependencies work without network access.
+
 Cleanup removes the worktree. Normal/expired cleanup keeps the branch so crash recovery does not destroy unmerged work; an explicit discard may delete the branch.
 
 An active repository-write assignment may request an exact-revision refresh
@@ -240,3 +283,13 @@ This makes every executing agent able to identify its isolated mutable workspace
 - `POST /api/execution-workspaces/recover`
 
 #141 may project these lifecycle records into Operations UI. The UI must not infer workspace ownership or merge status from terminal logs.
+
+## Deployment workspace capacity
+
+`CODEX_WEB_MAX_ACTIVE_WORKSPACES_PER_IDENTITY` and
+`CODEX_WEB_MAX_ACTIVE_WORKSPACES_PER_TENANT` configure the existing workspace
+quota at service construction. Unset values retain the defaults (8 and 20).
+Values must be positive integers; invalid deployment configuration fails startup
+rather than disabling enforcement. An explicitly supplied service quota takes
+precedence. These limits bound retained isolated sessions as well as active turns;
+operators must account for all owner sessions when choosing deployment capacity.

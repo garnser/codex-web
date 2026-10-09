@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -57,7 +58,57 @@ class _CountingKeyedStore(SQLiteStateStore):
         return super().record_items(namespace)
 
 
+class _NoWaitStore(SQLiteStateStore):
+    def _connect(self):
+        connection = super()._connect()
+        connection.execute("PRAGMA busy_timeout=0")
+        return connection
+
+
 class SQLiteStateStoreTests(unittest.TestCase):
+    def test_concurrent_writes_are_serialized_before_sqlite_locking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _NoWaitStore(Path(tmp) / "codex-web.db")
+            first_started = threading.Event()
+            release_first = threading.Event()
+            second_done = threading.Event()
+            errors: list[BaseException] = []
+
+            def hold_first(current):
+                first_started.set()
+                release_first.wait(2)
+                return {"first": True}
+
+            def run_first() -> None:
+                try:
+                    store.update("first", hold_first, default={})
+                except BaseException as exc:  # pragma: no cover - assertion aid
+                    errors.append(exc)
+
+            def run_second() -> None:
+                try:
+                    store.put("second", {"second": True})
+                except BaseException as exc:  # pragma: no cover - assertion aid
+                    errors.append(exc)
+                finally:
+                    second_done.set()
+
+            first = threading.Thread(target=run_first)
+            second = threading.Thread(target=run_second)
+            first.start()
+            self.assertTrue(first_started.wait(1))
+            second.start()
+            self.assertFalse(second_done.wait(0.05))
+            release_first.set()
+            first.join(2)
+            second.join(2)
+
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(store.get("first"), {"first": True})
+            self.assertEqual(store.get("second"), {"second": True})
+
     def test_imports_legacy_json_once_and_uses_sqlite_as_primary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

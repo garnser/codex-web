@@ -448,6 +448,10 @@ class RuntimeSupervisor:
                 )
             await asyncio.sleep(interval)
 
+    async def _recover_expired_assignments_once(self) -> None:
+        if self.recover_expired_assignments is not None:
+            await asyncio.to_thread(self.recover_expired_assignments)
+
     async def _heartbeat_local_worker_once(self) -> None:
         if self.local_worker_heartbeat is None:
             return
@@ -800,10 +804,6 @@ class RuntimeSupervisor:
                 }
             )
         self.started = False
-
-    async def _recover_expired_assignments_once(self) -> None:
-        if self.recover_expired_assignments is not None:
-            await asyncio.to_thread(self.recover_expired_assignments)
 
 
 def _replace_lifecycle_handler(

@@ -49,6 +49,13 @@ class AssignmentStatus(StrEnum):
     LOST = "lost"
 
 
+class AssignmentCancelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    expected_fence: int = Field(ge=0)
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class WorkerCapability(StrEnum):
     GIT = "git"
     COMMAND_EXECUTION = "command_execution"
@@ -501,12 +508,3 @@ class ExecutionWorkerState(BaseModel):
     assignments: list[ExecutionAssignment] = Field(default_factory=list)
     events: list[WorkerEvent] = Field(default_factory=list)
     enrollments: list[ExecutionWorkerEnrollmentGrant] = Field(default_factory=list)
-
-
-class AssignmentCancelRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    expected_fence: int = Field(ge=0)
-    reason: str = Field(min_length=1, max_length=500)
-
-

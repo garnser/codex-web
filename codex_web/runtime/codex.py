@@ -6,7 +6,9 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import re
+import shutil
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -98,6 +100,63 @@ CODEX_MINIMUM_ADDRESS_SPACE_BYTES = 2 * 1024**4
 CODEX_MINIMUM_PROCESS_COUNT = 4096
 
 
+def _npm_native_codex_executable(launcher: Path) -> Path | None:
+    """Resolve an npm Codex launcher to its co-installed native executable."""
+
+    resolved = launcher.resolve()
+    scope = next(
+        (parent for parent in resolved.parents if parent.name == "@openai"),
+        None,
+    )
+    if scope is None:
+        return None
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    architecture = {
+        "x86_64": "x64",
+        "amd64": "x64",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+    }.get(machine)
+    if system not in {"linux", "darwin", "windows"} or architecture is None:
+        return None
+    package = scope / f"codex-{system}-{architecture}"
+    candidates = tuple(package.glob("vendor/*/bin/codex"))
+    if len(candidates) != 1:
+        return None
+    native = candidates[0]
+    return native if native.is_file() and os.access(native, os.X_OK) else None
+
+
+def resolve_codex_executable() -> str | None:
+    """Resolve the deployment-managed Codex binary deterministically.
+
+    The service PATH is the deployment contract. A personal standalone install
+    is only a fallback, so an unrelated desktop upgrade cannot silently change
+    the execution-worker version on the next service restart.
+    """
+
+    configured = os.environ.get("CODEX_WEB_CODEX_EXECUTABLE", "").strip()
+    if configured:
+        candidate = Path(configured).expanduser()
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            raise RuntimeError(
+                "CODEX_WEB_CODEX_EXECUTABLE must name an executable file"
+            )
+        return str(candidate.resolve())
+
+    managed = shutil.which("codex")
+    if managed:
+        managed_path = Path(managed)
+        native = _npm_native_codex_executable(managed_path)
+        return str((native or managed_path).resolve())
+
+    standalone = Path.home() / ".local" / "bin" / "codex"
+    if standalone.is_file() and os.access(standalone, os.X_OK):
+        return str(standalone.resolve())
+    return None
+
+
 def trusted_local_codex_command(
     *,
     executable: str = "codex",
@@ -120,7 +179,6 @@ def request_timeout(method: str) -> float | None:
     if method == "turn/interrupt":
         return 10
     return 20
-
 
 
 class CodexRuntime:
@@ -600,6 +658,13 @@ class CodexRuntime:
         # Activity projection reads and updates durable runtime state. Keep
         # that work off the app-server reader's event loop so a large state
         # catalog cannot stall RPC responses and HTTP readiness together.
+        transcript_recorder = getattr(
+            self.host,
+            "_record_codex_runtime_transcript_event",
+            None,
+        )
+        if callable(transcript_recorder):
+            await asyncio.to_thread(transcript_recorder, message)
         method = message.get("method")
         params = message.get("params") or {}
         thread_id = params.get("threadId") or (params.get("turn") or {}).get("threadId")
@@ -794,7 +859,7 @@ class CodexRuntime:
             await self.start()
         elif not self.ready.is_set():
             try:
-                await asyncio.wait_for(self.ready.wait(), timeout=15)
+                await asyncio.wait_for(self.ready.wait(), timeout=60)
             except asyncio.TimeoutError:
                 if self.metrics:
                     self.metrics.increment("codex.readiness_timeouts")

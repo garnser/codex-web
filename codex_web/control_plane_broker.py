@@ -44,6 +44,20 @@ class ControlPlaneBrokerLimits(BaseModel):
     max_requests_per_minute: int = Field(default=60, ge=1, le=10000)
 
 
+class WorkItemOwnerDispatchRequest(BaseModel):
+    """Bounded preconditions for waking one canonical work-item owner."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    expected_owner: str = Field(min_length=1, max_length=200)
+    expected_thread_id: str = Field(min_length=1, max_length=200)
+    idempotency_key: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+
+
 class ControlPlaneBrokerAuditEvent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 

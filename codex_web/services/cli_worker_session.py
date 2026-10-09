@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from codex_web.execution_workspaces import (
     ExecutionWorkspaceStatus,
 )
 from codex_web.execution_workers import (
+    AssignmentCancelRequest,
     AssignmentCompleteRequest,
     AssignmentRenewRequest,
     AssignmentStartRequest,
@@ -25,6 +27,8 @@ from codex_web.services.agent_worker_session import (
     AssignmentBoundAgentSessionStaleError,
     AssignmentBoundAgentSessionStatus,
     runtime_binding_identity_matches,
+    start_assignment_session,
+    bootstrap_cancellation_reason,
 )
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
 
@@ -48,6 +52,8 @@ class AssignmentBoundCliSession:
     and exposes the isolated repository worktree as the only CLI cwd. The
     provider CLI process itself is owned by the AgentRuntime adapter.
     """
+
+    RESOURCE_USAGE_CHECK_INTERVAL_SECONDS = 30.0
 
     def __init__(
         self,
@@ -78,10 +84,13 @@ class AssignmentBoundCliSession:
         self.workspace_path: Path | None = None
         self.started_monotonic: float | None = None
         self.last_heartbeat_monotonic: float | None = None
+        self.last_resource_check_monotonic: float | None = None
+        self.last_resource_disk_bytes: int | None = None
         self.last_error: str | None = None
         self.watchdog_task: asyncio.Task[None] | None = None
         self.runtime = SimpleNamespace(native_session_id=None)
         self._start_lock = asyncio.Lock()
+        self._resource_check_lock = threading.Lock()
         self._stopping = False
 
     @property
@@ -267,11 +276,23 @@ class AssignmentBoundCliSession:
             raise AssignmentBoundCliSessionStaleError(
                 "CLI assignment exceeded wall_seconds"
             )
-        disk_bytes = self.local_worker.backend.execution_disk_usage(
-            self.workspace_path,
-            None,
-        )
-        disk_bytes += self.local_worker.readonly_disk_bytes(assignment)
+        now_monotonic = self._monotonic()
+        with self._resource_check_lock:
+            last_checked = self.last_resource_check_monotonic
+            disk_bytes = self.last_resource_disk_bytes
+            if (
+                disk_bytes is None
+                or last_checked is None
+                or now_monotonic - last_checked
+                >= self.RESOURCE_USAGE_CHECK_INTERVAL_SECONDS
+            ):
+                disk_bytes = self.local_worker.backend.execution_disk_usage(
+                    self.workspace_path,
+                    None,
+                )
+                disk_bytes += self.local_worker.readonly_disk_bytes(assignment)
+                self.last_resource_disk_bytes = disk_bytes
+                self.last_resource_check_monotonic = now_monotonic
         if disk_bytes > assignment.limits.disk_bytes:
             raise AssignmentBoundCliSessionStaleError(
                 "CLI assignment exceeded disk_bytes"
@@ -370,8 +391,11 @@ class AssignmentBoundCliSession:
             if self._stopping:
                 return
             try:
-                assignment = self.validate_current()
-                self._heartbeat_and_renew(assignment)
+                # Keep recursive workspace accounting and worker-state persistence
+                # off the web server's event loop.  Large execution workspaces can
+                # otherwise block unrelated API and static-asset responses.
+                assignment = await asyncio.to_thread(self.validate_current)
+                await asyncio.to_thread(self._heartbeat_and_renew, assignment)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -380,14 +404,14 @@ class AssignmentBoundCliSession:
 
     async def request(self, method: str, params=None) -> dict:
         del method, params
-        self.validate_current()
+        await asyncio.to_thread(self.validate_current)
         raise AssignmentBoundCliSessionError(
             "CLI assignment has no app-server request transport"
         )
 
     async def notify(self, method: str, params=None) -> None:
         del method, params
-        self.validate_current()
+        await asyncio.to_thread(self.validate_current)
         raise AssignmentBoundCliSessionError(
             "CLI assignment has no app-server notification transport"
         )
@@ -398,7 +422,7 @@ class AssignmentBoundCliSession:
         result: dict,
     ) -> None:
         del request_id, result
-        self.validate_current()
+        await asyncio.to_thread(self.validate_current)
         raise AssignmentBoundCliSessionError(
             "CLI assignment does not support interactive server requests"
         )
@@ -550,6 +574,3 @@ class AssignmentBoundCliSessionManager:
         for session in sessions:
             with contextlib.suppress(Exception):
                 await session.stop()
-
-from codex_web.execution_workers import AssignmentCancelRequest
-from codex_web.services.agent_worker_session import start_assignment_session, bootstrap_cancellation_reason

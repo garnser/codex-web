@@ -192,6 +192,12 @@ class ActionProviderBindingCreate(BaseModel):
         return self
 
 
+class ActionProviderBindingUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+
+
 class ActionProviderState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

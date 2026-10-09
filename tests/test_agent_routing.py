@@ -15,7 +15,10 @@ from codex_web.agent_routing_definitions import (
     AGENT_ROUTING_POLICY_KIND,
     AGENT_ROUTING_POLICY_SCHEMA_VERSION,
 )
-from codex_web.agent_runtime import AgentRuntimeHealth
+from codex_web.agent_runtime import (
+    AgentRuntimeAccountingMode,
+    AgentRuntimeHealth,
+)
 from codex_web.configuration import (
     ConfigurationDraftCreate,
     ConfigurationPublishRequest,
@@ -190,6 +193,9 @@ class AgentRoutingServiceTests(unittest.IsolatedAsyncioTestCase):
         network_profiles: tuple[str, ...] = (),
         residency_tags: tuple[str, ...] = (),
         compliance_tags: tuple[str, ...] = (),
+        accounting_mode: AgentRuntimeAccountingMode = (
+            AgentRuntimeAccountingMode.MONETARY
+        ),
         max_session_cost_usd: float | None = None,
     ) -> None:
         self.runtimes.register(
@@ -204,6 +210,7 @@ class AgentRoutingServiceTests(unittest.IsolatedAsyncioTestCase):
             network_profiles=network_profiles,
             residency_tags=residency_tags,
             compliance_tags=compliance_tags,
+            accounting_mode=accounting_mode,
             max_session_cost_usd=max_session_cost_usd,
         )
 
@@ -534,6 +541,31 @@ class AgentRoutingServiceTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 actor=self.actor,
             )
+
+    async def test_allocation_runtime_uses_capacity_instead_of_usd_pricing(self) -> None:
+        capabilities = (
+            AgentProviderCapability.AGENT_EXECUTION,
+            AgentProviderCapability.USAGE_PARTIAL,
+        )
+        self._provider("openai", capabilities)
+        self._runtime(
+            "openai",
+            "codex",
+            capabilities,
+            accounting_mode=AgentRuntimeAccountingMode.ALLOCATION,
+        )
+        service = AgentRoutingService(self.providers, self.runtimes)
+
+        result = await service.route(
+            AgentRoutingRequest(
+                project_id="project-a",
+                max_runtime_cost_usd=1.0,
+            ),
+            actor=self.actor,
+        )
+
+        self.assertEqual(result.selected_runtime.runtime_id, "codex")
+        self.assertIsNone(result.selected_runtime.estimated_session_cost_usd)
 
     async def test_live_runtime_capability_loss_fails_closed(self) -> None:
         capabilities = (

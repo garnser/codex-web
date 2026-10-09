@@ -17,6 +17,15 @@ The canonical lifecycle is intentionally richer than a simple `created` → `rea
 | `ready_to_close` | Validation is complete and the lane is ready for successful closure. |
 | `closed` | Persisted terminal lifecycle lane. The semantic result is carried by `terminal_outcome`. |
 
+Automatic owner dispatch for `failed_with_action_owner` selects the canonical
+`next_owner`, falling back to `current_owner` when no next action owner is set.
+Other stages retain current-owner precedence. Binding selection, queued dispatch,
+post-recovery revalidation and prompt addressees use the same rule. An accepted
+handoff is described as live only when its recipient matches the actionable owner. This does not change the
+implementation/validation owners or accepted handoffs, and pending handoffs
+remain ineligible for automatic owner dispatch. Issue and merge-request refs
+remain distinct; selecting an owner does not grant provider writeback capability.
+
 `failed_with_action_owner` is intentionally resumable because the canonical stage describes ownership/lane state, while execution retry/failure metadata is persisted separately inside the same `WorkItemState`.
 
 ## Terminal outcomes
@@ -138,6 +147,15 @@ New work-item construction may set its initial stage directly because initializa
 
 External authoritative task-source reconciliation is deliberately distinct from the manual/API transition policy. An upstream item can close or reopen and codex-web must reconcile that authoritative event, subject to stale-event and handoff-preservation checks.
 
+Implementation attribution is distinct from the actor performing a repair and from the owner of the current lifecycle lane. Operational coordination identities such as `operator` and `orchestrator`, plus the configured validation and release owners, are never inferred as `implementation_owner` from progress or handoff state. Existing attribution survives operator coordination and handoff expiry. An explicit operator reconciliation may correct it only from fresh, exact-resource provider assignment evidence and records the correction without claiming validation, closure, or external-source ownership.
+
+An issue already at `ready_for_validation` may retain that stage, its
+implementation owner, and its next validation owner when canonical state holds
+a fresh provider-verified open merge-request relation. Ordinary issue refreshes
+that did not query relations preserve the proof; fresh evidence that the
+relation is absent or no longer open returns the issue to implementation. The
+relation does not prove CI, approval, merge, acceptance, or closure.
+
 Provider adapters normalize into the provider-neutral TaskSource contract and use the same `WorkItemTransitionService` mutation primitive with `external_projection=True`. This permits upstream close/reopen reconciliation without weakening the manual transition matrix or creating a second mutation implementation.
 
 ## Failure contract
@@ -164,3 +182,14 @@ Execution lifecycle validation also fails deterministically. A retry attempt abo
 ## Tests
 
 The transition-policy tests evaluate every source/target pair in the canonical stage matrix. Transition-service tests cover completed, cancelled, failed, unclassified external closure, and external reopen behavior. Execution-lifecycle tests cover safe migration defaults, retry-policy enforcement, structured failure/deadline state, compact checkpoints, attributed history, and additive usage accounting.
+
+## Artifact event repository associations
+
+GitLab MR and pipeline projections resolve the Project tenant and exact GitLab
+repository alias through the same canonical dependencies as issue projections.
+Creation and update persist these associations. A stale event or an accepted
+handoff may repair routing metadata without changing the protected lifecycle,
+owner, or artifact fields. Missing aliases remain unresolved and visible in
+Project readiness; projections never substitute unrelated Project Resources.
+Artifact projection uses keyed state reads and writes when available so one MR
+event does not scan or rewrite the complete work-item collection.

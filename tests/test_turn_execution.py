@@ -31,6 +31,7 @@ from codex_web.services.agent_worker_session import (
     AssignmentBoundAgentSessionStaleError,
 )
 from codex_web.services.turns import TurnService
+from codex_web.services.work_item_contracts import assignment_control_plane_instructions
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingNotFoundError,
 )
@@ -157,6 +158,12 @@ class _Host:
 
     def _append_bot_event(self, event):
         self.events.append(event)
+
+    @staticmethod
+    def _is_codex_timeout_error(exc):
+        return isinstance(exc, (TimeoutError, asyncio.TimeoutError)) or (
+            "timed out" in str(exc).casefold()
+        )
 
 
 class _RoutingFailure:
@@ -352,6 +359,35 @@ class TurnExecutionQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(active.assignment_id, "assignment-1")
         self.assertEqual(active.execution_workspace_id, "workspace-1")
 
+    def test_stale_nonterminal_event_cannot_replace_or_renew_new_active_turn(self) -> None:
+        host = _Host()
+        service = TurnExecutionService(host)
+        original = ActiveThreadTurn(
+            thread_id="t1", turn_id="new-turn", assignment_id="assignment-1",
+            execution_workspace_id="workspace-1", started_at=100.0, updated_at=100.0,
+        )
+        host.active["t1"] = original
+        for method in ("item/completed", "item/agentMessage/delta", "thread/tokenUsage/updated"):
+            with self.subTest(method=method), patch("codex_web.runtime.execution.time.time", return_value=200.0):
+                service.record_thread_activity({"method": method, "params": {
+                    "threadId": "t1", "turnId": "completed-old-turn",
+                }})
+            self.assertIs(host.active["t1"], original)
+            self.assertNotIn("t1", service.activity_heartbeat_at)
+
+    def test_turnless_nonterminal_event_preserves_current_turn_and_renews_heartbeat(self) -> None:
+        host = _Host()
+        service = TurnExecutionService(host)
+        host.active["t1"] = ActiveThreadTurn(
+            thread_id="t1", turn_id="new-turn", assignment_id="assignment-1",
+            started_at=100.0, updated_at=100.0,
+        )
+        with patch("codex_web.runtime.execution.time.time", return_value=200.0):
+            service.record_thread_activity({"method": "item/completed", "params": {"threadId": "t1"}})
+        self.assertEqual(host.active["t1"].turn_id, "new-turn")
+        self.assertEqual(host.active["t1"].assignment_id, "assignment-1")
+        self.assertEqual(host.active["t1"].updated_at, 200.0)
+
     def test_streaming_heartbeat_avoids_per_chunk_storage_work(self) -> None:
         host = _Host()
         service = TurnExecutionService(host)
@@ -481,6 +517,31 @@ class TurnExecutionQueueTests(unittest.IsolatedAsyncioTestCase):
         service.start_thread_turn_now = AsyncMock(return_value={"ok": True})
         await service.drain_thread_queue("t1")
         self.assertEqual(host._thread_queue_depth("t1"), 0)
+
+    async def test_stale_queued_web_thread_uses_canonical_replacement(self) -> None:
+        host = _Host()
+        project = Project(id="p1", name="Project", path="/workspace/project")
+        host._project = lambda _project_id: project
+        host._is_stale_thread_error = lambda _exc: True
+        host._bindings_for_thread = lambda _thread_id: []
+        host._replace_stale_web_thread = AsyncMock(return_value="t2")
+        host._truncate_text = lambda value, limit: str(value)[:limit]
+        service = TurnExecutionService(host)
+        service.start_thread_turn_now = AsyncMock(side_effect=RuntimeError("thread not found"))
+        service.publish_queue_status = AsyncMock()
+        service.schedule_queue_drain = MagicMock()
+        queued = service.enqueue_turn(thread_id="t1", project_id="p1", message="delivery", source="web",
+                                      repository_resource_id="repo-1", execution_profile_id="repository-write")
+        await service.drain_thread_queue("t1")
+        await asyncio.sleep(0)
+        host._replace_stale_web_thread.assert_awaited_once_with("t1", project, "thread not found")
+        moved = host._thread_queue("t2")
+        self.assertEqual(len(moved), 1)
+        self.assertEqual(moved[0].id, queued.id)
+        self.assertEqual(moved[0].repository_resource_id, "repo-1")
+        self.assertEqual(moved[0].execution_profile_id, "repository-write")
+        self.assertEqual(moved[0].attempts, 0)
+        service.schedule_queue_drain.assert_called_once_with("t2")
 
     async def test_repeated_bot_resume_timeout_replaces_thread(self) -> None:
         host = _Host()
@@ -621,6 +682,25 @@ class _CredentialMissingBindingService(_BindingService):
         raise TurnExecutionBindingError(
             "worker credential reference configuration is unavailable for openai/codex",
             code="credential_reference_missing",
+        )
+
+
+class _ExpiredBootstrapBindingService(_BindingService):
+    def prepare_bootstrap(self, **kwargs):
+        self.calls.append({"kind": "bootstrap", **kwargs})
+        raise TurnExecutionBindingError(
+            "Runtime authentication for mammouth-ai/mammouth-cli is expired.",
+            code="authentication_expired",
+            blocker={
+                "code": "authentication_expired",
+                "message": (
+                    "Runtime authentication for mammouth-ai/mammouth-cli "
+                    "is expired."
+                ),
+                "retryable": False,
+                "target_type": "agent_runtime",
+                "target_id": "mammouth-ai/mammouth-cli",
+            },
         )
 
 
@@ -814,6 +894,44 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         )
         return host, binding, sessions, service
 
+    async def test_supersede_bootstrap_auth_failure_is_structured_preflight(self) -> None:
+        host = _Host()
+        binding = _ExpiredBootstrapBindingService()
+        service = TurnExecutionService(
+            host,
+            binding_service=binding,
+            session_manager=_SessionManager(),
+            bootstrap_bindings=_BootstrapBindings(),
+            control_actor=SimpleNamespace(identity_id="control"),
+        )
+        project = Project(id="p1", name="Project", path="/workspace/project")
+
+        with self.assertRaises(HTTPException) as caught:
+            await service._supersede_thread_bootstrap(
+                thread_id="t1",
+                project=project,
+                runtime_binding=ExecutionRuntimeBinding(
+                    provider_id="mammouth-ai",
+                    runtime_id="mammouth-cli",
+                    capability_revision=1,
+                ),
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                execution_profile_id="repository-write",
+                agent_profile=None,
+                explicit_repository_id="repo-1",
+                previous_assignment_id=None,
+            )
+
+        self.assertEqual(caught.exception.status_code, 503)
+        detail = caught.exception.detail
+        self.assertEqual(detail["code"], "execution_preflight_blocked")
+        self.assertEqual(
+            detail["blockers"][0]["code"],
+            "authentication_expired",
+        )
+        self.assertFalse(detail["retryable"])
+
     async def test_explicit_trusted_local_web_turn_uses_authenticated_app_server(self) -> None:
         host, binding, sessions, service = self._credential_missing_service()
         project = Project(
@@ -853,6 +971,10 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call.args[0] for call in calls], ["thread/resume", "turn/start"])
         self.assertEqual(calls[0].args[1]["cwd"], "/workspace/project")
         self.assertEqual(calls[1].args[1]["cwd"], "/workspace/project")
+        self.assertNotIn(
+            "ASSIGNMENT CONTROL-PLANE ACCESS",
+            calls[1].args[1].get("developerInstructions") or "",
+        )
         self.assertEqual(
             calls[1].args[1]["sandboxPolicy"],
             {"type": "danger-full-access"},
@@ -1110,6 +1232,51 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(binding.calls, [])
         self.assertEqual(sessions.started, [])
+
+    def test_shared_broker_guidance_does_not_advertise_work_item_only_operations(self) -> None:
+        guidance = assignment_control_plane_instructions()
+        self.assertIn("GET /api/control-plane-broker/operations", guidance)
+        self.assertNotIn("assigned_scope", guidance)
+        self.assertNotIn("work_item.steer", guidance)
+
+    async def test_null_work_item_assignment_delivers_broker_discovery(self) -> None:
+        for source, bootstrap in (("slack", None), ("autonomy-watchdog", "t1")):
+            with self.subTest(source=source, bootstrap=bootstrap):
+                resolved_refs = []
+                _host, _binding, sessions, service = self._service(
+                    bootstrap_thread_id=bootstrap,
+                    work_item_context_resolver=lambda ref: resolved_refs.append(ref),
+                )
+                project = Project(id="p1", name="Project", path="/workspace/project")
+                await service.start_thread_turn_now(
+                    "t1", project=project, message="inspect canonical work",
+                    sandbox="workspace-write", approval_policy="on-request",
+                    source=source, execution_id="exec-no-work-item",
+                )
+                self.assertEqual(resolved_refs, [])
+                for _method, request in sessions.session.requests:
+                    instructions = request["developerInstructions"]
+                    self.assertEqual(instructions.count("ASSIGNMENT CONTROL-PLANE ACCESS"), 1)
+                    self.assertIn("GET /api/control-plane-broker/operations", instructions)
+                    self.assertIn("existing ActionIntent before retrying", instructions)
+                    self.assertIn("absence of MCP tools", instructions)
+                self.assertEqual(sessions.session.requests[1][0], "turn/start")
+
+    async def test_existing_work_item_broker_guidance_is_not_duplicated(self) -> None:
+        guidance = assignment_control_plane_instructions()
+        _host, _binding, sessions, service = self._service()
+        service._work_item_continuation_context = MagicMock(
+            return_value=("Canonical work context\n" + guidance, None, None)
+        )
+        project = Project(id="p1", name="Project", path="/workspace/project")
+        await service.start_thread_turn_now(
+            "t1", project=project, message="continue issue",
+            sandbox="workspace-write", approval_policy="never",
+            work_item_ref="group/app#531",
+        )
+        instructions = sessions.session.requests[1][1]["developerInstructions"]
+        self.assertIn("Canonical work context", instructions)
+        self.assertEqual(instructions.count(guidance), 1)
 
     async def test_work_item_delta_is_delivered_and_recorded_after_turn_start(self) -> None:
         recorded = []
@@ -1798,6 +1965,56 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         )
         host.codex.request.assert_not_awaited()
 
+    async def test_offloop_terminal_bootstrap_projection_clears_active_and_checkpoints(self):
+        host, _binding, sessions, service = self._service(bootstrap_thread_id="t1")
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        async def checkpoint(assignment_id):
+            entered.set()
+            await release.wait()
+            return (SimpleNamespace(),)
+        sessions.checkpoint = checkpoint
+        service.mark_thread_active("t1", turn_id="turn-1", assignment_id="assignment-1")
+        await asyncio.to_thread(service.record_thread_activity, {
+            "method": "turn/completed",
+            "params": {"threadId": "t1", "turn": {"id": "turn-1"}},
+        })
+        await asyncio.wait_for(entered.wait(), 1)
+        self.assertNotIn("t1", host.active)
+        self.assertEqual(sessions.completed, [])
+        release.set()
+        await asyncio.gather(*list(service.assignment_completion_tasks.values()))
+        self.assertEqual(host.events[-1]["repository_checkpoint_count"], 1)
+        self.assertTrue(host.events[-1]["session_retained"])
+
+    async def test_offloop_terminal_projection_completes_exact_assignment(self):
+        host, _binding, sessions, service = self._service()
+        service.mark_thread_active("t1", turn_id="turn-1", assignment_id="assignment-1")
+        await asyncio.to_thread(service.record_thread_activity, {
+            "method": "turn/failed",
+            "params": {"threadId": "t1", "turn": {"id": "turn-1"}, "error": "provider failed"},
+        })
+        await asyncio.sleep(0)
+        await asyncio.gather(*list(service.assignment_completion_tasks.values()))
+        self.assertNotIn("t1", host.active)
+        self.assertEqual(len(sessions.completed), 1)
+        assignment_id, kwargs = sessions.completed[0]
+        self.assertEqual(assignment_id, "assignment-1")
+        self.assertFalse(kwargs["succeeded"])
+        self.assertEqual(kwargs["failure_code"], "codex_turn_failed")
+
+    async def test_offloop_old_terminal_event_cannot_complete_new_active_turn(self):
+        host, _binding, sessions, service = self._service()
+        service.mark_thread_active("t1", turn_id="new-turn", assignment_id="assignment-1")
+        await asyncio.to_thread(service.record_thread_activity, {
+            "method": "turn/completed",
+            "params": {"threadId": "t1", "turn": {"id": "old-turn"}},
+        })
+        await asyncio.sleep(0)
+        self.assertEqual(host.active["t1"].turn_id, "new-turn")
+        self.assertEqual(sessions.completed, [])
+        self.assertEqual(service.assignment_completion_tasks, {})
+
     async def test_terminal_bootstrap_turn_retains_session_assignment(self) -> None:
         host, _binding, sessions, service = self._service(
             bootstrap_thread_id="t1"
@@ -1960,6 +2177,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(kwargs["succeeded"])
         self.assertEqual(kwargs["failure_code"], "codex_thread_resume_failed")
 
+
     async def test_active_thread_request_never_falls_back_when_session_missing(self) -> None:
         host, _binding, _sessions, service = self._service()
         service.mark_thread_active(
@@ -2030,6 +2248,157 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(kwargs["succeeded"])
         self.assertEqual(kwargs["failure_code"], "codex_turn_failed")
         self.assertIn("provider failure", kwargs["failure_message"])
+
+    async def test_cli_binding_read_without_native_session_degrades(self) -> None:
+        host, _binding, sessions, service = self._service(
+            bootstrap_thread_id="t1"
+        )
+        sessions.session.runtime = SimpleNamespace(native_session_id=None)
+        sessions.session.validate_current = lambda: SimpleNamespace(
+            runtime_binding=ExecutionRuntimeBinding(
+                provider_id="mammouth-ai",
+                runtime_id="mammouth-cli",
+                capability_revision=1,
+            )
+        )
+        adapter = SimpleNamespace(
+            read_session=AsyncMock(),
+        )
+        service.runtime_adapter_factory = lambda binding, session: adapter
+
+        response = await service.request_for_thread(
+            "t1",
+            "thread/read",
+            {"threadId": "t1"},
+        )
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["thread"]["status"]["type"], "notLoaded")
+        self.assertTrue(response["thread"]["readTimedOut"])
+        adapter.read_session.assert_not_awaited()
+
+    async def test_sessionless_inactive_runtime_releases_active_turn(self) -> None:
+        binding = ExecutionRuntimeBinding(
+            provider_id="mammouth-ai",
+            runtime_id="mammouth-cli",
+            capability_revision=1,
+        )
+        host, _binding, sessions, service = self._service(
+            bootstrap_thread_id="t1"
+        )
+        sessions.session = _AlternateSession(binding)
+        sessions.session.runtime.native_session_id = None
+        adapter = SimpleNamespace(
+            read_session=AsyncMock(
+                return_value=AgentRuntimeResult(payload={"active": False})
+            )
+        )
+        service.runtime_adapter_factory = lambda _binding, _session: adapter
+        service.mark_thread_active(
+            "t1",
+            execution_id="bootstrap-exec",
+            assignment_id="assignment-1",
+        )
+
+        released = await service.release_unviable_active_turn("t1")
+
+        self.assertTrue(released)
+        self.assertNotIn("t1", host.active)
+        self.assertEqual(len(sessions.completed), 1)
+        self.assertEqual(
+            sessions.completed[0][1]["failure_code"],
+            "agent_runtime_session_not_started",
+        )
+        self.assertEqual(host.events[-1]["type"], "sessionless_active_turn_released")
+
+    async def test_terminal_runtime_start_timeout_does_not_orphan_active_turn(self) -> None:
+        binding = ExecutionRuntimeBinding(
+            provider_id="mammouth-ai",
+            runtime_id="mammouth-cli",
+            capability_revision=1,
+        )
+        host, _binding, sessions, service = self._service(
+            bootstrap_thread_id="t1"
+        )
+        sessions.session = _AlternateSession(binding)
+        sessions.session.runtime.native_session_id = None
+        adapter = SimpleNamespace(
+            resume_session=AsyncMock(
+                return_value=AgentRuntimeResult(
+                    provider_native_session_id="t1",
+                    payload={"resumed": True},
+                )
+            ),
+            start_turn=AsyncMock(
+                side_effect=TimeoutError("Mammouth Code start timed out")
+            ),
+            read_session=AsyncMock(
+                return_value=AgentRuntimeResult(payload={"active": False})
+            ),
+        )
+        service.runtime_adapter_factory = lambda _binding, _session: adapter
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+
+        with self.assertRaisesRegex(TimeoutError, "start timed out"):
+            await service.start_thread_turn_now(
+                "t1",
+                project=project,
+                message="continue work",
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                model="mammouth-ai/gpt-6-astra",
+                execution_id="queued-turn-exec",
+            )
+
+        self.assertNotIn("t1", host.active)
+        self.assertEqual(len(sessions.completed), 1)
+        self.assertEqual(
+            sessions.completed[0][1]["failure_code"],
+            "agent_runtime_session_not_started",
+        )
+
+    async def test_startup_resume_retires_persisted_active_marker_before_start(self) -> None:
+        host, _binding, _sessions, service = self._service()
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            sandbox="workspace-write",
+            approval_policy="on-request",
+        )
+        host._project = lambda project_id: project if project_id == "p1" else None
+        host._project_for_cwd = lambda _cwd: project
+        service.mark_thread_active(
+            "t1",
+            turn_id="dead-turn",
+            project_id="p1",
+            source="web",
+            execution_id="bootstrap-exec",
+            assignment_id="assignment-1",
+            execution_workspace_id="workspace-1",
+            worker_id="worker-1",
+            fence=7,
+        )
+
+        async def resumed_start(thread_id, **_kwargs):
+            self.assertEqual(thread_id, "t1")
+            self.assertNotIn("t1", host.active)
+            return {"turn": {"id": "replacement-turn"}}
+
+        service.start_thread_turn_now = AsyncMock(side_effect=resumed_start)
+
+        await service.resume_active_threads_after_startup({"t1"})
+
+        self.assertEqual(host.active["t1"].turn_id, "replacement-turn")
+        self.assertEqual(host.active["t1"].source, "restart-recovery:web")
+        self.assertEqual(host.events[-1]["type"], "active_thread_resumed")
+
 
 
 class TurnServiceConcurrentStartTests(unittest.IsolatedAsyncioTestCase):
@@ -2171,6 +2540,108 @@ class TurnExecutionInstallationTests(unittest.TestCase):
             host.THREAD_ASSIGNMENT_COMPLETION_TASKS,
             first.thread_completion_tasks,
         )
+
+
+
+
+class BootstrapAuthenticationEvidenceTests(unittest.IsolatedAsyncioTestCase):
+    async def _rebind(self, *, fresh=False, mode=None, provider="openai", runtime="codex", read_error=None):
+        host = _Host()
+        order = []
+        available = [fresh]
+        host.codex.authenticated_account_available = lambda: available[0]
+
+        async def read(method, params):
+            order.append(("read", method, params))
+            if read_error is not None:
+                raise read_error
+            available[0] = True
+            return {"account": {"type": "chatgpt"}}
+
+        host.codex.request = AsyncMock(side_effect=read)
+        manager = SimpleNamespace(get=lambda assignment_id: object())
+
+        async def complete(*args, **kwargs):
+            order.append(("cleanup",))
+
+        manager.complete = AsyncMock(side_effect=complete)
+        binding_service = SimpleNamespace()
+
+        def prepare(**kwargs):
+            order.append(("prepare", available[0]))
+            return SimpleNamespace(execution_id="replacement", assignment_id="new", workspace_id="workspace")
+
+        binding_service.prepare_bootstrap = prepare
+        bindings = SimpleNamespace(rebind=lambda **kwargs: order.append(("rebind",)))
+        service = TurnExecutionService(host, binding_service=binding_service, bootstrap_bindings=bindings,
+                                       session_managers={(provider, runtime): manager})
+        service._bootstrap_binding_for_thread = lambda thread_id: SimpleNamespace(assignment_id="new")
+        service._assignment_record = lambda assignment_id: SimpleNamespace(runtime_binding=ExecutionRuntimeBinding(
+            provider_id=provider, runtime_id=runtime, capability_revision=1,
+            authentication_mode=mode or "trusted_local_session"))
+        binding = ExecutionRuntimeBinding(provider_id=provider, runtime_id=runtime, capability_revision=1,
+                                          authentication_mode=mode)
+        kwargs = dict(thread_id="t1", project=Project(id="p1", name="P", path="/workspace/project"),
+                      runtime_binding=binding, sandbox="danger-full-access", approval_policy="never",
+                      execution_profile_id=None, agent_profile=None, explicit_repository_id="repository",
+                      previous_assignment_id="old")
+        return service, host, manager, order, available, kwargs
+
+    async def test_expired_evidence_refreshes_after_cleanup_before_preflight(self):
+        service, host, manager, order, available, kwargs = await self._rebind(mode="trusted_local_session")
+        await service._supersede_thread_bootstrap(**kwargs)
+        self.assertEqual(order, [("cleanup",), ("read", "account/read", {"refreshToken": False}),
+                                 ("prepare", True), ("rebind",)])
+
+    async def test_cleanup_expiration_is_checked_at_preparation_boundary(self):
+        service, host, manager, order, available, kwargs = await self._rebind(fresh=True)
+
+        async def expire(*args, **kwargs):
+            order.append(("cleanup",))
+            available[0] = False
+
+        manager.complete.side_effect = expire
+        await service._supersede_thread_bootstrap(**kwargs)
+        host.codex.request.assert_awaited_once_with("account/read", {"refreshToken": False})
+        self.assertEqual(order[-2:], [("prepare", True), ("rebind",)])
+
+    async def test_fresh_evidence_does_not_add_rpc(self):
+        service, host, manager, order, available, kwargs = await self._rebind(fresh=True)
+        await service._supersede_thread_bootstrap(**kwargs)
+        host.codex.request.assert_not_awaited()
+
+    async def test_account_rpc_failure_never_prepares_or_rebinds(self):
+        service, host, manager, order, available, kwargs = await self._rebind(read_error=RuntimeError("account unavailable"))
+        with self.assertRaisesRegex(RuntimeError, "account unavailable"):
+            await service._supersede_thread_bootstrap(**kwargs)
+        self.assertFalse(available[0])
+        self.assertEqual([item[0] for item in order], ["cleanup", "read"])
+
+    async def test_other_runtime_does_not_use_operator_account(self):
+        service, host, manager, order, available, kwargs = await self._rebind(provider="anthropic", runtime="claude-code")
+        await service._supersede_thread_bootstrap(**kwargs)
+        host.codex.request.assert_not_awaited()
+
+    async def test_explicit_credential_modes_do_not_read_local_account(self):
+        for mode in ("api_key", "delegated_worker_token"):
+            with self.subTest(mode=mode):
+                service, host, manager, order, available, kwargs = await self._rebind(mode=mode)
+                await service._supersede_thread_bootstrap(**kwargs)
+                host.codex.request.assert_not_awaited()
+
+
+    async def test_mode_omitted_for_repository_drift_preserves_api_authentication(self):
+        service, host, manager, order, available, kwargs = await self._rebind()
+        service._assignment_record = lambda assignment_id: SimpleNamespace(runtime_binding=ExecutionRuntimeBinding(
+            provider_id="openai", runtime_id="codex", capability_revision=1, authentication_mode="api_key"))
+        await service._supersede_thread_bootstrap(**kwargs)
+        host.codex.request.assert_not_awaited()
+
+    async def test_missing_previous_authentication_mode_does_not_assume_operator(self):
+        service, host, manager, order, available, kwargs = await self._rebind()
+        service._assignment_record = lambda assignment_id: None
+        await service._supersede_thread_bootstrap(**kwargs)
+        host.codex.request.assert_not_awaited()
 
 
 if __name__ == "__main__":

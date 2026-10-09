@@ -254,7 +254,6 @@ class BotTargetService:
                     ))
         return max(captured, key=lambda item: item[:3])[3] if captured else None
 
-
     def remember_reply_target(self, binding: BotBinding, message: BotInboundMessage) -> BotReplyTarget | None:
         if not message.external_thread_id and not message.message_id:
             return None
@@ -584,7 +583,6 @@ class BotTargetService:
         self.save_delivery_targets(rewrite(self.load_delivery_targets()))
 
 
-
 def install_bot_target_service(
     app: Any,
     host: Any,
@@ -750,4 +748,3 @@ def install_bot_target_service(
     host._forget_bot_reply_target = service.forget_reply_target
     host._retarget_bot_targets = service.retarget
     return service
-

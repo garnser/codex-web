@@ -93,6 +93,23 @@ class ThreadExecutionSettingsService:
                     if value and value.strip()
                 )
             )
+        # The primary target is the mutable checkout by definition. Keep this
+        # invariant canonical even when UI/profile updates arrive as separate
+        # partial settings requests.
+        if current.repository_resource_id:
+            current.writable_repository_resource_ids = (
+                current.repository_resource_id,
+                *(
+                    value
+                    for value in current.writable_repository_resource_ids
+                    if value != current.repository_resource_id
+                ),
+            )
+            current.read_only_repository_resource_ids = tuple(
+                value
+                for value in current.read_only_repository_resource_ids
+                if value != current.repository_resource_id
+            )
         if execution_profile_id is not None:
             current.execution_profile_id = execution_profile_id or None
         if skill_refs is not None:
@@ -208,7 +225,9 @@ class ThreadExecutionSettingsService:
                     "",
                     "Orchestrator-specific rules:",
                     "- For every open GitLab work item you touch, ensure there is always a current owner, an exact next action, and a follow-up path until the item is closed.",
-                    "- When an owner stalls, issue a direct follow-up to the named agent thread and record the reassignment or escalation through `/progress` or `/handoff` in the same turn.",
+                    "- In an assignment sandbox, wake a stalled owner only through the broker catalog's `work_item.steer` operation with the exact canonical owner/thread preconditions and a bounded idempotency key; do not mutate arbitrary `/api/threads` routes.",
+                    "- Read the assigned Work Item first. Its broker `assigned_scope` returns authoritative TaskSource body/acceptance criteria when canonical `next_action` is absent.",
+                    "- Record any reassignment or escalation through `/progress` or `/handoff` in the same turn.",
                     "- If a handoff expires or validation stalls, do not just restate the blocker. Push the next owner and update the structured state so the watchdog loop can continue.",
                 ]
             )

@@ -130,6 +130,7 @@ from codex_web.identity import TenantScope
 from codex_web.model_providers import AnthropicModelProviderAdapter, OpenAIModelProviderAdapter
 from codex_web.key_backends import LocalFileKeyBackend
 from codex_web.execution_workspace_backend import LocalGitWorkspaceBackend
+from codex_web.execution_workspaces import WorkspaceQuota
 from codex_web.local_execution_backend import BubblewrapExecutionBackend
 from codex_web.execution_workers import (
     ExecutionRuntimeBinding,
@@ -176,6 +177,7 @@ from codex_web.services.skill_scanners import SkillScannerRegistry, SkillSpector
 from codex_web.services.skill_security import SkillSecurityService
 from codex_web.services.agent_providers import AgentProviderService
 from codex_web.agent_providers import AgentProviderHealth, AgentProviderUpsert
+from codex_web.agent_runtime import AgentRuntimeAccountingMode
 from codex_web.services.agent_routing import AgentRoutingService
 from codex_web.services.agent_routing_configuration import install_agent_routing_configuration
 from codex_web.services.agent_routing_definitions import install_agent_routing_definitions
@@ -410,6 +412,7 @@ from codex_web.services.task_source_sync_jobs import GitLabSyncJobService
 from codex_web.services.thread_recovery import install_thread_recovery_service
 from codex_web.services.thread_execution_settings import install_thread_execution_settings_service
 from codex_web.services.thread_resume import ThreadResumeService
+from codex_web.services.thread_transcript import ThreadTranscriptService
 from codex_web.services.thread_naming import ThreadNamingService
 from codex_web.services.thread_bot_collaboration import ThreadBotCollaborationService
 from codex_web.services.thread_compatibility import install_thread_compatibility_facade
@@ -1134,6 +1137,14 @@ execution_workspace_service = ExecutionWorkspaceService(
     resource_catalog_service,
     project_service.get,
     work_item_host=core,
+    quota=WorkspaceQuota(
+        max_active_per_tenant=int(
+            os.environ.get("CODEX_WEB_MAX_ACTIVE_WORKSPACES_PER_TENANT", "20")
+        ),
+        max_active_per_identity=int(
+            os.environ.get("CODEX_WEB_MAX_ACTIVE_WORKSPACES_PER_IDENTITY", "8")
+        ),
+    ),
 )
 app.include_router(build_execution_workspaces_router(execution_workspace_service))
 app.state.execution_workspace_state_store = execution_workspace_state_store
@@ -1788,14 +1799,9 @@ app.state.codex_auth_delegation_service = codex_auth_delegation_service
 app.state.anthropic_auth_delegation_service = anthropic_auth_delegation_service
 
 _ambient_codex_home = Path.home() / ".codex"
-_standalone_codex_executable = Path.home() / ".local" / "bin" / "codex"
-if _standalone_codex_executable.is_file() and os.access(
-    _standalone_codex_executable,
-    os.X_OK,
-):
-    _ambient_codex_executable = str(_standalone_codex_executable.resolve())
-else:
-    _ambient_codex_executable = shutil.which("codex")
+from codex_web.runtime.codex import resolve_codex_executable
+
+_ambient_codex_executable = resolve_codex_executable()
 trusted_local_codex_delegation = None
 if (
     _ambient_codex_home.is_dir()
@@ -2788,6 +2794,7 @@ agent_runtime_registry.register(
     capability_revision=1,
     sandbox_profiles=("read-only", "workspace-write", "danger-full-access"),
     network_profiles=("brokered-model-egress",),
+    accounting_mode=AgentRuntimeAccountingMode.ALLOCATION,
 )
 app.state.codex_agent_runtime_adapter = agent_runtime_registry.get("openai", "codex")
 provider_capacity_service.register_probe(
@@ -2810,6 +2817,7 @@ agent_runtime_registry.register(
     capability_revision=1,
     sandbox_profiles=("read-only", "workspace-write", "danger-full-access"),
     network_profiles=("direct-provider-egress",),
+    accounting_mode=AgentRuntimeAccountingMode.ALLOCATION,
 )
 app.state.codex_cli_agent_runtime_adapter = agent_runtime_registry.get(
     "openai",
@@ -3149,6 +3157,9 @@ project_bootstrap_service.readiness_probe = (
 )
 app.include_router(build_project_bootstrap_router(project_bootstrap_service))
 
+thread_transcript_service = ThreadTranscriptService(state_store)
+app.state.thread_transcript_service = thread_transcript_service
+
 turn_execution_service = install_turn_execution_service(
     app,
     core,
@@ -3187,6 +3198,7 @@ turn_execution_service = install_turn_execution_service(
         work_item_execution_lifecycle_service.record_continuation_outcome
     ),
     thread_history=thread_history_repository,
+    transcript=thread_transcript_service,
 )
  
 def _codex_cli_thread_event(event):
@@ -3392,6 +3404,7 @@ thread_service = ThreadService(
     thread_history=thread_history_repository,
     active_turn_loader=runtime_state.active_turns.load,
     active_turn_getter=runtime_state.active_turns.get,
+    transcript=thread_transcript_service,
 )
 thread_recovery_service.bind_thread_creator(thread_service.create)
 execution_preflight_service = ExecutionPreflightService(
@@ -3503,6 +3516,7 @@ install_thread_compatibility_facade(
     core,
     canonical_settings=thread_execution_settings_service,
     canonical_recovery=thread_recovery_service,
+    thread_creator=thread_service.create,
 )
 
 async def _resume_provider_capacity_wait(wait):
@@ -4072,6 +4086,16 @@ stale_active_turn_recovery_service = StaleActiveTurnRecoveryService(
         turn_execution_service.resume_active_threads_after_startup
     ),
     resume_live_on_startup=deployment_mode in {"local", "single"},
+    record_terminal_recovery=(
+        lambda active, outcome, reason_code, resolved_at:
+        thread_transcript_service.reconcile_terminal(
+            active.thread_id,
+            active.execution_id,
+            outcome,
+            reason_code,
+            completed_at=resolved_at,
+        )
+    ),
     backup_directory=DATA_DIR / "active-turn-recovery-backups",
 )
 thread_recovery_service.stale_active_turn_reconciler = (
@@ -4138,6 +4162,9 @@ def _autonomy_health():
         and not task_status[name].get("running", False)
     ]
     states = runtime_state.work_item_states.load().values()
+    canonical_project_ids = {
+        project.id for project in project_repository.load()
+    }
     idle_actionable_owners = []
     for owner in OWNER_QUEUE_AGENTS:
         actionable_projects = {
@@ -4301,6 +4328,7 @@ runtime_service = RuntimeService(
     codex=codex_runtime,
     static_version=static_asset_version_service.version,
     extra_model_sources=(_mammouth_model_entries,),
+    provider_capacity=provider_capacity_service,
     runtime_health=runtime_health_service.health,
     load_active_turns=runtime_state.active_turns.load,
     load_turn_queues=turn_queue_repository.load,

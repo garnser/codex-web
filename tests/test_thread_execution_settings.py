@@ -115,6 +115,26 @@ class ThreadExecutionSettingsServiceTests(unittest.TestCase):
         self.assertEqual(host.bindings[0].sandbox, "workspace-write")
         self.assertEqual(host.bindings[0].approval_policy, "never")
 
+    def test_primary_repository_is_always_writable(self) -> None:
+        host = Host()
+        service = service_for(host)
+
+        settings = service.remember(
+            "t1",
+            repository_resource_id="repo-primary",
+            writable_repository_resource_ids=("repo-secondary",),
+            read_only_repository_resource_ids=("repo-primary", "repo-docs"),
+        )
+
+        self.assertEqual(
+            settings.writable_repository_resource_ids,
+            ("repo-primary", "repo-secondary"),
+        )
+        self.assertEqual(
+            settings.read_only_repository_resource_ids,
+            ("repo-docs",),
+        )
+
     def test_effective_instructions_add_contract_once_and_base_strips_it(self) -> None:
         host = Host()
         host.bindings = [binding(is_master=True)]

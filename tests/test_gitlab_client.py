@@ -57,6 +57,43 @@ class GitLabClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen[0].headers["PRIVATE-TOKEN"], "secret")
         self.assertEqual(seen[0].read(), b'{"body":"Canonical update"}')
 
+    async def test_existing_merge_request_issue_relation_is_brokered_and_encoded(self):
+        seen = []
+        async def handler(request):
+            seen.append(request)
+            return httpx.Response(200, json=[{"iid": 289, "project_id": 5}, None])
+        client = GitLabClient(transport=httpx.MockTransport(handler))
+        result = await client.merge_request_closes_issues(
+            "https://gitlab.example/api/v4", "group/project", 258, token="secret",
+        )
+        self.assertEqual(result, [{"iid": 289, "project_id": 5}])
+        self.assertEqual(seen[0].method, "GET")
+        self.assertIn("/projects/group%2Fproject/merge_requests/258/closes_issues", str(seen[0].url))
+        self.assertEqual(seen[0].headers["PRIVATE-TOKEN"], "secret")
+
+    async def test_issue_related_merge_requests_are_brokered_and_encoded(self):
+        seen = []
+
+        async def handler(request):
+            seen.append(request)
+            return httpx.Response(200, json=[{"iid": 287}], headers={"X-Next-Page": ""})
+
+        client = GitLabClient(transport=httpx.MockTransport(handler))
+        result = await client.issue_related_merge_requests(
+            "https://gitlab.example/api/v4",
+            "group/project",
+            380,
+            token="secret",
+        )
+
+        self.assertEqual(result, [{"iid": 287}])
+        self.assertEqual(seen[0].method, "GET")
+        self.assertIn(
+            "/projects/group%2Fproject/issues/380/related_merge_requests",
+            str(seen[0].url),
+        )
+        self.assertEqual(seen[0].headers["PRIVATE-TOKEN"], "secret")
+
     async def test_http_error_becomes_contextual_runtime_error(self) -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(503, json={"message": "unavailable"})

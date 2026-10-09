@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence, TypeVar
+from typing import Any, Callable, Mapping, Sequence, TypeVar
 
 from codex_web.artifact_evidence import EvidenceCreate, EvidenceResult, EvidenceType
 from codex_web.execution_workers import (
@@ -61,6 +66,12 @@ class LocalExecutionCompletion:
     evidence_id: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutionPythonEnvironment:
+    environment: Mapping[str, str]
+    readonly_mounts: tuple[tuple[Path, Path], ...] = ()
+
+
 class LocalExecutionWorkerRuntime:
     """Execute a canonical worker assignment through the local sandbox backend."""
 
@@ -96,6 +107,7 @@ class LocalExecutionWorkerRuntime:
         self.playwright_browser_root = playwright_browser_root
         self.heartbeat_interval_seconds = max(5.0, heartbeat_interval_seconds)
         self.renew_margin_seconds = max(10.0, renew_margin_seconds)
+        self._python_environment_lock = threading.Lock()
 
     def runtime_tool_mounts(self) -> tuple[tuple[Path, Path], ...]:
         """Return optional, read-only validation tools exposed to workers."""
@@ -208,6 +220,115 @@ class LocalExecutionWorkerRuntime:
                 "local command execution requires a filesystem execution workspace"
             )
         return Path(workspace.path)
+
+    @staticmethod
+    def _site_packages(venv_path: Path) -> Path:
+        candidates = sorted((venv_path / "lib").glob("python*/site-packages"))
+        if len(candidates) != 1 or not candidates[0].is_dir():
+            raise LocalExecutionWorkerRuntimeError(
+                f"virtual environment has no unambiguous site-packages directory: {venv_path}"
+            )
+        return candidates[0]
+
+    @staticmethod
+    def _project_venv(workspace) -> Path | None:
+        primary = getattr(workspace, "repository_resource_id", None)
+        for member in getattr(workspace, "repository_members", ()):
+            if member.resource_id != primary:
+                continue
+            source_path = getattr(member, "source_path", None)
+            if not source_path:
+                continue
+            candidate = Path(source_path) / ".venv"
+            if candidate.is_dir():
+                return candidate.resolve(strict=True)
+        return None
+
+    def python_environment(
+        self,
+        assignment: ExecutionAssignment,
+    ) -> ExecutionPythonEnvironment:
+        """Provide an execution-local venv with an optional project baseline.
+
+        The writable venv always lives inside the isolated execution workspace.
+        A project-maintained venv is exposed read-only and added as a baseline
+        package layer, so parallel executions cannot mutate shared dependencies.
+        """
+
+        workspace = self._workspace(assignment)
+        if not workspace.path:
+            raise LocalExecutionWorkerRuntimeError(
+                "Python execution requires a filesystem execution workspace"
+            )
+        workspace_path = Path(workspace.path).resolve(strict=True)
+        execution_venv = workspace_path / ".venv"
+        marker = execution_venv / ".codex-web-execution-venv"
+        with self._python_environment_lock:
+            if execution_venv.exists() and not marker.is_file():
+                raise LocalExecutionWorkerRuntimeError(
+                    "execution workspace .venv exists but is not managed by codex-web"
+                )
+            if not execution_venv.exists():
+                temporary = workspace_path / f".venv.provisioning-{uuid.uuid4().hex}"
+                try:
+                    completed = subprocess.run(
+                        [
+                            "/usr/bin/python3",
+                            "-m",
+                            "venv",
+                            "--system-site-packages",
+                            str(temporary),
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                        env={
+                            "PATH": "/usr/local/bin:/usr/bin:/bin",
+                            "PYTHONNOUSERSITE": "1",
+                        },
+                    )
+                    if completed.returncode != 0:
+                        detail = (completed.stderr or completed.stdout).strip()
+                        raise LocalExecutionWorkerRuntimeError(
+                            "failed to provision execution Python environment"
+                            + (f": {detail[:500]}" if detail else "")
+                        )
+                    (temporary / ".codex-web-execution-venv").write_text(
+                        "managed by codex-web; safe to discard with this execution workspace\n",
+                        encoding="utf-8",
+                    )
+                    os.replace(temporary, execution_venv)
+                finally:
+                    if temporary.exists():
+                        shutil.rmtree(temporary, ignore_errors=True)
+
+        path_entries = [str(execution_venv / "bin")]
+        readonly_mounts: tuple[tuple[Path, Path], ...] = ()
+        project_venv = self._project_venv(workspace)
+        if project_venv is not None and project_venv != execution_venv:
+            project_site_packages = self._site_packages(project_venv)
+            execution_site_packages = self._site_packages(execution_venv)
+            baseline_file = execution_site_packages / "codex_web_project_baseline.pth"
+            expected = f"{project_site_packages}\n"
+            if not baseline_file.exists() or baseline_file.read_text(
+                encoding="utf-8"
+            ) != expected:
+                baseline_file.write_text(expected, encoding="utf-8")
+            readonly_mounts = ((project_venv, project_venv),)
+            path_entries.append(str(project_venv / "bin"))
+
+        path_entries.extend(("/usr/local/bin", "/usr/bin", "/bin"))
+        return ExecutionPythonEnvironment(
+            environment={
+                "PATH": ":".join(path_entries),
+                "VIRTUAL_ENV": str(execution_venv),
+                "PYTHONNOUSERSITE": "1",
+                "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+                "PIP_REQUIRE_VIRTUALENV": "1",
+            },
+            readonly_mounts=readonly_mounts,
+        )
 
     def repository_mounts(
         self,
@@ -604,6 +725,8 @@ class LocalExecutionWorkerRuntime:
         assignment = self._pending_assignment(assignment_id)
         workspace_path = self._workspace_path(assignment)
         readonly_mounts, writable_mounts = self.repository_mounts(assignment)
+        python_environment = self.python_environment(assignment)
+        readonly_mounts = (*readonly_mounts, *python_environment.readonly_mounts)
         readonly_disk_bytes = self.readonly_disk_bytes(assignment)
         self.backend.validate_assignment(assignment)
 
@@ -670,6 +793,7 @@ class LocalExecutionWorkerRuntime:
                 "argv": argv,
                 "workspace_path": workspace_path,
                 "poll_hook": poll,
+                "environment": python_environment.environment,
             }
             if readonly_mounts:
                 run_kwargs["trusted_readonly_mounts"] = readonly_mounts

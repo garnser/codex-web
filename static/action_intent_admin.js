@@ -71,6 +71,8 @@
       intent.action_id, intent.requested_by, intent.correlation_id, intent.causation_id,
       intent.idempotency_key, intent.credential_ref, intent.last_error,
       intent.last_receipt_id, intent.last_verification_id,
+      intent.failure?.reason_code, intent.failure?.summary,
+      intent.failure?.remediation_key,
       ...(intent.resource_ids || []), ...parameterKeys,
       intent.authority_decision?.source, intent.authority_decision?.reason,
       intent.policy_decision?.source, intent.policy_decision?.reason,
@@ -104,6 +106,20 @@
     return `<small>Worker lease: owner ${escapeHtml(lease.owner)} · acquired ${timeText(lease.acquired_at)} · renewed ${timeText(lease.renewed_at)} · expires ${timeText(lease.expires_at)}</small>`;
   }
 
+  function failureHtml(failure) {
+    if (!failure) return "";
+    return `<small>Canonical failure: ${escapeHtml(failure.reason_code || "unclassified")} · outcome ${escapeHtml(failure.outcome || "unknown")} · retry ${escapeHtml(failure.retryability || "unknown")} · remediation ${escapeHtml(failure.remediation_key || "failure.inspect")} · ${escapeHtml(failure.summary || "No summary recorded.")}</small>`;
+  }
+
+  function recoveryHtml(intent, retry) {
+    const attempt = Number(intent.attempt);
+    const maxAttempts = Number(retry.max_attempts);
+    const exhausted = Number.isFinite(attempt) && Number.isFinite(maxAttempts)
+      && attempt >= maxAttempts;
+    if (!exhausted || !["failed", "uncertain", "requires_reconciliation"].includes(intent.status)) return "";
+    return "<small>Recovery: retry authority is exhausted and this intent is not claimable. Reconcile the provider outcome, then create a newly authorized replacement ActionIntent if delivery is still required; the replacement must pass current policy and provider gates.</small>";
+  }
+
   function renderIntent(intent) {
     const definition = intent.action_definition || {};
     const request = intent.request || {};
@@ -126,6 +142,8 @@
       <small>Execution started: ${timeText(intent.execution_started_at)} · completed: ${timeText(intent.completed_at)} · not before: ${timeText(intent.not_before)}</small>
       <small>Correlation: ${escapeHtml(intent.correlation_id)} · causation: ${escapeHtml(intent.causation_id || "none")} · last receipt: ${escapeHtml(intent.last_receipt_id || "none")} · last verification: ${escapeHtml(intent.last_verification_id || "none")}</small>
       ${intent.last_error ? `<small>Last error: ${escapeHtml(intent.last_error)}</small>` : ""}
+      ${failureHtml(intent.failure)}
+      ${recoveryHtml(intent, retry)}
       <button type="button" class="ghost-button" data-action-intent-history="${escapeHtml(intent.id)}">Load side-effect timeline</button>
       <div id="action-intent-history-${escapeHtml(intent.id)}"></div>
     </details>`;

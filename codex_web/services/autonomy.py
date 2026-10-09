@@ -17,6 +17,7 @@ from codex_web.action_providers import ActionRequest
 from codex_web.autonomy import AutonomyCycleOutcome, AutonomyObservation, AutonomyReasoningResult
 from codex_web.canonical_events import CanonicalEventType
 from codex_web.identity import AuthenticationActor
+from codex_web.services.work_item_dependencies import actionable_owner_value
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.action_providers import ActionExecutionService
 from codex_web.services.autonomy_controller import AutonomyController
@@ -227,7 +228,7 @@ class AutonomyService:
                         and state.handoff.status == "pending"
                     )
                     and d.coerce_owner(
-                        state.current_owner or state.next_owner
+                        actionable_owner_value(state)
                     )
                     == owner
                 ]
@@ -354,7 +355,6 @@ class AutonomyService:
                     }
                 )
 
-
     async def run_release_gate_cycle(self) -> None:
         d = self.runtime
         settings = d.load_gitlab_routing_settings()
@@ -381,7 +381,7 @@ class AutonomyService:
                 state
                 for state in states.values()
                 if state.project_id == project_id
-                and d.coerce_owner(state.current_owner or state.next_owner) == "release manager"
+                and d.coerce_owner(actionable_owner_value(state)) == "release manager"
                 and state.current_stage in {"ready_for_validation", "validation_running", "ready_to_close"}
                 and (now - d.owner_activity_timestamp(state)) >= d.release_validation_sla_seconds()
             ]
@@ -569,6 +569,7 @@ class AutonomyService:
                                 "work-item-sla",
                                 cycle_key=dispatch_key,
                                 payload={
+                                    "project_id": state.project_id,
                                     "ref": ref,
                                     "agent": recipient,
                                     "stage": state.current_stage,
@@ -586,7 +587,7 @@ class AutonomyService:
                             )
                 continue
 
-            owner = d.coerce_owner(state.current_owner or state.next_owner)
+            owner = d.coerce_owner(actionable_owner_value(state))
             if not owner:
                 continue
             age = now - d.owner_activity_timestamp(state)
@@ -613,6 +614,7 @@ class AutonomyService:
                 "work-item-sla",
                 cycle_key=dispatch_key,
                 payload={
+                    "project_id": state.project_id,
                     "ref": ref,
                     "agent": owner,
                     "stage": state.current_stage,

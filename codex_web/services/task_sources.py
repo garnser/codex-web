@@ -5,7 +5,11 @@ from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 from codex_web.compatibility import TASK_SOURCE_CONTRACT
-from codex_web.models import TaskSourceIdentity, WorkItemStage
+from codex_web.models import (
+    TaskSourceIdentity,
+    WorkItemArtifactRelation,
+    WorkItemStage,
+)
 
 
 class TaskSourceCapability(StrEnum):
@@ -52,8 +56,6 @@ class InvalidTaskSourceIdentity(ValueError):
     """A provider identity cannot be routed without guessing its resource."""
 
 
-
-
 @dataclass(frozen=True, slots=True)
 class TaskSourceUserReference:
     """Provider-native user reference that is never canonical authorization truth."""
@@ -89,6 +91,9 @@ class TaskSourceSnapshot:
     category: str | None = None
     parent_external_id: str | None = None
     artifact_links: tuple[str, ...] = ()
+    # ``None`` means this snapshot did not query provider relations. An empty
+    # tuple is fresh provider evidence that no supported relation exists.
+    artifact_relations: tuple[WorkItemArtifactRelation, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)

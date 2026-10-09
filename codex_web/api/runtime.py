@@ -86,8 +86,8 @@ def build_runtime_router(service: RuntimeService) -> APIRouter:
         return await service.recovery_resume()
 
     @router.get("/api/account/rate-limits")
-    async def account_rate_limits() -> dict[str, Any]:
-        return await service.rate_limits()
+    async def account_rate_limits(request: Request) -> dict[str, Any]:
+        return await service.rate_limits(actor=request_actor(request))
 
     @router.get("/api/models")
     async def list_models(include_hidden: bool = False) -> dict[str, Any]:

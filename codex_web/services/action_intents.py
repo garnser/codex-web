@@ -58,6 +58,9 @@ from codex_web.services.action_providers import (
     ActionProviderError,
     ActionRequirementError,
 )
+from codex_web.services.code_host_action_contract import (
+    CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+)
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
 from codex_web.services.capacity import CapacityDeferredError, CapacityService
 from codex_web.services.authority_roles import AuthorityRoleService
@@ -1581,6 +1584,8 @@ class ActionIntentService:
         intent: ActionIntent,
         payload: ActionIntentRetryRequest,
     ) -> ActionIntent:
+        if intent.attempt >= intent.retry_policy.max_attempts:
+            raise ActionIntentConflictError("action intent retry limit reached")
         not_before = time.time() + intent.retry_policy.backoff_seconds
 
         def apply(state):
@@ -1842,7 +1847,53 @@ class ActionIntentService:
                 error="reconciliation verification is not satisfied",
             )
 
+        # Merge actions are deliberately single-attempt mutations.  When a
+        # provider response is lost after the possible write, reconstruct only
+        # the result shape from the already-authorized canonical request and
+        # run the provider's read-only verification path.  Preparing an action
+        # is contractually side-effect free; execute is never called here.
+        if (
+            latest_result is None
+            and not payload.retry_if_idempotent
+            and intent.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID
+            and intent.status
+            in {
+                ActionIntentStatus.UNCERTAIN,
+                ActionIntentStatus.REQUIRES_RECONCILIATION,
+            }
+            and intent.attempt > 0
+        ):
+            return await self._reconcile_pull_request_merge(intent, actor=actor)
+
         if payload.retry_if_idempotent and intent.provider_idempotency_supported:
+            if intent.attempt >= intent.retry_policy.max_attempts:
+                error = (
+                    "reconciliation cannot requeue action: retry budget exhausted "
+                    f"({intent.attempt}/{intent.retry_policy.max_attempts}); "
+                    "confirm the provider outcome and create a newly authorized "
+                    "replacement ActionIntent if delivery is still required"
+                )
+                if latest_result is not None and latest_result.status == "failed":
+                    return self._set_status(
+                        intent.id,
+                        ActionIntentStatus.FAILED,
+                        error=error,
+                    )
+                return self._set_status(
+                    intent.id,
+                    ActionIntentStatus.REQUIRES_RECONCILIATION,
+                    error=error,
+                    failure=self._failure(
+                        intent,
+                        FailureReason.UNKNOWN_OUTCOME,
+                        summary=error,
+                        details={
+                            "retry_budget_exhausted": True,
+                            "attempt": intent.attempt,
+                            "max_attempts": intent.retry_policy.max_attempts,
+                        },
+                    ),
+                )
             return self._schedule_retry(
                 intent,
                 ActionIntentRetryRequest(
@@ -1857,6 +1908,94 @@ class ActionIntentService:
                 "no durable provider result is available; manual/provider reconciliation required"
             ),
         )
+
+    async def _reconcile_pull_request_merge(
+        self,
+        intent: ActionIntent,
+        *,
+        actor: AuthenticationActor,
+    ) -> ActionIntent:
+        try:
+            preparation = await self.execution.prepare(
+                intent.binding_id,
+                intent.request,
+                actor=actor,
+            )
+            plan = preparation.provider_plan
+            if plan.get("operation") != "pull-request-merge":
+                raise ValueError("provider returned an unexpected merge plan")
+            repository = str(plan.get("repository") or "").strip()
+            number = int(plan.get("pull_request_number") or 0)
+            if not repository or number < 1 or len(intent.resource_ids) != 1:
+                raise ValueError("provider merge plan is incomplete")
+            expected_head_sha = str(plan.get("expected_head_sha") or "").strip()
+            if len(expected_head_sha) != 40 or any(
+                character not in "0123456789abcdef"
+                for character in expected_head_sha.casefold()
+            ):
+                raise ValueError(
+                    "provider merge plan requires an exact expected head SHA"
+                )
+            now = time.time()
+            result = ActionResult(
+                provider_binding_id=intent.binding_id,
+                action_id=intent.action_id,
+                status="succeeded",
+                started_at=intent.execution_started_at or now,
+                completed_at=now,
+                idempotency_key=intent.idempotency_key,
+                external_id=str(number),
+                output={
+                    "resource_id": intent.resource_ids[0],
+                    "repository": repository,
+                    "pull_request_number": number,
+                    "head_sha": expected_head_sha,
+                    "merge_commit_sha": "",
+                },
+            )
+        except Exception as exc:
+            return self._set_status(
+                intent.id,
+                ActionIntentStatus.REQUIRES_RECONCILIATION,
+                error=(
+                    "merge reconciliation preparation failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            )
+
+        verified = await self._verify_completion(intent, result, actor=actor)
+        if not verified:
+            return self._set_status(
+                intent.id,
+                ActionIntentStatus.REQUIRES_RECONCILIATION,
+                error="provider does not confirm the exact pull request merge",
+                failure=self._failure(
+                    intent,
+                    FailureReason.VERIFICATION_FAILED,
+                ),
+            )
+        self._append_receipt(
+            intent,
+            result=result,
+            outcome="completed",
+            details={
+                "operation": "provider-state-reconciliation",
+                "provider_mutation_replayed": False,
+            },
+        )
+        current = self._intent(intent.id, actor)
+        try:
+            self._advance_work_item(current)
+        except Exception as exc:
+            return self._set_status(
+                intent.id,
+                ActionIntentStatus.REQUIRES_RECONCILIATION,
+                error=(
+                    "merge verification succeeded but canonical state advance failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            )
+        return self._set_status(intent.id, ActionIntentStatus.SUCCEEDED)
 
     async def rollback(
         self,

@@ -163,3 +163,10 @@ unacknowledged handoff and updating typed canonical state, remain model-free.
 ## UI follow-up
 
 The unified Autonomy Control Center and explain-action UI should consume canonical autonomy policy/cycle, ApprovalRequest, ActionIntent, Evidence and readiness state rather than inventing browser-local safety or authorization truth.
+
+Project tenant/workspace resolution remains the existing synchronous canonical
+lookup contract, executed off the event loop before watchdog event ingestion.
+The resolved scope and context attribution feed the same idempotency key and
+controller gates. Lookup failures or cancellation before completion do not
+ingest an event or dispatch reasoning; an already-started read may finish in
+the executor without continuing the cancelled dispatch.

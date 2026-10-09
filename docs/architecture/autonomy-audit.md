@@ -38,6 +38,12 @@ partition tail and appends the next record under the same SQLite writer
 transaction. Concurrent writers cannot independently claim the same next
 sequence.
 
+Append validates the existing state and serializes the updated document within
+that transaction, then returns its newly created immutable record. It does not
+reconstruct the full persisted state solely to discard it. The general update
+operation continues returning validated persisted state; inspection and integrity
+verification retain their existing validation contract.
+
 Verification recomputes payload hashes, record hashes, previous-hash links and
 sequences. Missing, reordered or rewritten records fail integrity verification
 deterministically.

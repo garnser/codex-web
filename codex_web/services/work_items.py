@@ -835,6 +835,7 @@ class WorkItemService:
             limit=limit,
             cursor=cursor,
         )
+
     def _list_sync(
         self,
         *,
@@ -1286,6 +1287,7 @@ class WorkItemService:
 
     async def get(self, ref: str) -> dict[str, Any]:
         return await asyncio.to_thread(self._get_sync, ref)
+
     def _get_sync(self, ref: str) -> dict[str, Any]:
         return self.state_machine._work_item_state_public(
             self.state_machine._work_item_state(ref)

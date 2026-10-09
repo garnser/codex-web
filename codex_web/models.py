@@ -51,6 +51,22 @@ class TaskSourceIdentity(BaseModel):
     event_cursor: str | None = None
 
 
+class WorkItemArtifactRelation(BaseModel):
+    """Provider-verified relation between an authoritative item and an artifact."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    kind: Literal["merge_request"] = "merge_request"
+    relation: Literal["related"] = "related"
+    source_type: str = Field(min_length=1)
+    source_instance: str = Field(min_length=1)
+    ref: str = Field(min_length=1)
+    url: str | None = None
+    head_revision: str = Field(min_length=1)
+    source_revision: str = Field(min_length=1)
+    state: Literal["opened", "closed", "merged"]
+
+
 class JiraTaskSourceSettings(BaseModel):
     """Typed non-secret Jira adapter settings."""
 
@@ -281,6 +297,7 @@ class WorkItemState(BaseModel):
     status_label: str | None = None
     labels: list[str] = Field(default_factory=list)
     mr_refs: list[str] = Field(default_factory=list)
+    verified_artifact_relations: list[WorkItemArtifactRelation] | None = None
     notes: list[str] = Field(default_factory=list)
     closed_at: float | None = None
     updated_at: float
