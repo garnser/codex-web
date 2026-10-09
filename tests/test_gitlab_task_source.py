@@ -49,6 +49,7 @@ class _FakeGitLabClient:
         self.group_calls: list[tuple[str, str, str]] = []
         self.read_calls: list[tuple[str, int]] = []
         self.merge_request_calls: list[tuple[str, int]] = []
+        self.merge_request_updates: list[dict[str, object]] = []
         self.update_payloads: list[dict[str, object]] = []
         self.create_payloads: list[tuple[str, dict[str, object]]] = []
         self.notes: list[tuple[str, int, str]] = []
@@ -65,6 +66,12 @@ class _FakeGitLabClient:
 
     async def merge_request(self, api_base, project, iid, *, token):
         self.merge_request_calls.append((project, iid))
+        return deepcopy(self.merge_request_row)
+
+    async def update_merge_request(self, api_base, project, iid, *, token, payload):
+        self.merge_request_updates.append(dict(payload))
+        if "labels" in payload:
+            self.merge_request_row["labels"] = str(payload["labels"]).split(",")
         return deepcopy(self.merge_request_row)
 
     async def issue_related_merge_requests(
@@ -114,6 +121,88 @@ class GitLabTaskSourceTests(unittest.IsolatedAsyncioTestCase):
             client=self.client,
         )
         self.conformance = TaskSourceConformanceSuite()
+
+    async def test_mr_projection_writes_only_labels_and_preserves_lifecycle(self):
+        for lifecycle in ("opened", "closed", "merged"):
+            with self.subTest(lifecycle=lifecycle):
+                self.client.merge_request_row.update(state=lifecycle,
+                    labels=["priority::P1", "custom", "owner::sally", "status::in progress"])
+                identity = self.source._identity("group/project!42")
+                current = await self.source.read(identity)
+                result = await self.source.write_projection(identity, current,
+                    owner="quinn", stage="ready_for_validation")
+                self.assertTrue(result.mutated)
+                self.assertEqual(result.snapshot.source_state, lifecycle)
+                self.assertEqual(result.snapshot.identity.external_id, "group/project!42")
+                self.assertEqual(self.client.merge_request_updates[-1], {"labels":
+                    "custom,priority::P1,owner::quinn,status::awaiting confirmation"})
+        self.assertEqual(self.client.update_payloads, [])
+        self.assertEqual(self.client.read_calls, [])
+
+    async def test_mr_projection_noop_never_mutates_provider(self):
+        identity = self.source._identity("group/project!42")
+        current = await self.source.read(identity)
+        result = await self.source.write_projection(identity, current,
+            owner="sally", stage="implementation_active")
+        self.assertFalse(result.mutated)
+        self.assertEqual(self.client.merge_request_updates, [])
+        self.assertEqual(self.client.update_payloads, [])
+
+    async def test_mr_canonical_closed_stage_does_not_close_or_merge_mr(self):
+        identity = self.source._identity("group/project!42")
+        current = await self.source.read(identity)
+        result = await self.source.write_projection(identity, current,
+            owner="sally", stage="closed")
+        self.assertEqual(self.client.merge_request_updates, [{"labels": "owner::sally"}])
+        self.assertEqual(result.snapshot.source_state, "opened")
+
+    async def test_mr_projection_rejects_mismatched_current_identity_before_write(self):
+        current = await self.source.read(self.source._identity("group/project!42"))
+        with self.assertRaises(InvalidTaskSourceIdentity):
+            await self.source.write_projection(self.source._identity("other/project!42"),
+                current, owner="quinn", stage="ready_for_validation")
+        self.assertEqual(self.client.merge_request_updates, [])
+
+    async def test_mr_projection_rejects_mismatched_provider_response(self):
+        identity = self.source._identity("group/project!42")
+        current = await self.source.read(identity)
+        self.client.merge_request_row["iid"] = 99
+        with self.assertRaises(InvalidTaskSourceIdentity):
+            await self.source.write_projection(identity, current,
+                owner="quinn", stage="ready_for_validation")
+        self.assertEqual(self.client.update_payloads, [])
+
+    async def test_mr_projection_rejects_malformed_identity_before_write(self):
+        current = await self.source.read(self.source._identity("group/project!42"))
+        for ref in ("group/project!0", "group/project!-1", "group/project!42!1",
+                    "group/project#42!1", "group/project!１２"):
+            with self.subTest(ref=ref), self.assertRaises(InvalidTaskSourceIdentity):
+                await self.source.write_projection(self.source._identity(ref), current,
+                    owner="quinn", stage="ready_for_validation")
+        self.assertEqual(self.client.merge_request_updates, [])
+
+    async def test_mr_projection_uses_real_mr_put_endpoint_with_labels_only(self):
+        requests = []
+        def respond(request):
+            import json
+            body = json.loads(request.content) if request.content else None
+            requests.append((request.method, request.url.raw_path.decode(), body))
+            row = deepcopy(self.client.merge_request_row)
+            if body:
+                row["labels"] = body["labels"].split(",")
+            return httpx.Response(200, json=row)
+        source = GitLabTaskSource(self.source.api_base, "test", client=GitLabClient(
+            transport=httpx.MockTransport(respond)))
+        identity = source._identity("group/project!42")
+        current = await source.read(identity)
+        result = await source.write_projection(identity, current,
+            owner="quinn", stage="ready_for_validation")
+        self.assertTrue(result.mutated)
+        self.assertEqual(requests, [
+            ("GET", "/api/v4/projects/group%2Fproject/merge_requests/42", None),
+            ("PUT", "/api/v4/projects/group%2Fproject/merge_requests/42",
+             {"labels": "owner::quinn,status::awaiting confirmation"}),
+        ])
 
     async def test_merge_request_read_uses_real_mr_endpoint_and_preserves_identity(self):
         requests = []
