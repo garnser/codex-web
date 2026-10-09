@@ -29,6 +29,7 @@ from codex_web.services.gitlab_dependencies import (
 from codex_web.services.autonomy_controller import AutonomyController
 from codex_web.services.gitlab_task_source_events import GitLabWebhookTaskSource
 from codex_web.services.gitlab_code_host import GitLabCodeHostProvider
+from codex_web.services.gitlab_event_presentation import GitLabEventPresentationService
 from codex_web.services.work_item_dependencies import (
     gitlab_project_issue_ref,
     gitlab_token_for_project,
@@ -818,15 +819,7 @@ class GitLabService:
         return None, None
 
     def reference(self, payload: dict[str, Any]) -> str:
-        attrs = payload.get("object_attributes") or {}
-        project = payload.get("project") or {}
-        kind = str(payload.get("object_kind") or payload.get("event_name") or "event").replace("_", " ")
-        project_name = project.get("path_with_namespace") or project.get("name") or "unknown project"
-        iid = attrs.get("iid")
-        title = attrs.get("title") or attrs.get("name") or attrs.get("ref") or attrs.get("status") or ""
-        if iid:
-            return f"{project_name} {kind} !/#{iid}: {title}".strip()
-        return f"{project_name} {kind}: {title}".strip()
+        return GitLabEventPresentationService.reference(payload)
 
     def url(self, payload: dict[str, Any]) -> str | None:
         attrs = payload.get("object_attributes") or {}

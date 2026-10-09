@@ -104,3 +104,16 @@ Non-issue GitLab events remain outside the issue-task adapter boundary until the
 Representative create, discovery, read, event, projection, and mutation behavior must pass the shared `TaskSourceConformanceSuite` and provider-neutral runtime tests. GitLab-specific tests add transport/label/lifecycle assertions on top of that shared gate; `ReferenceTaskSource` separately proves that the runtime is not dependent on GitLab semantics.
 
 Runtime migration must preserve stale-event handling, accepted-handoff protection, canonical transition authority, and existing GitLab-backed work references while callers are switched from special-case GitLab helpers to this adapter.
+
+### Typed event presentation
+
+Agent prompts and Slack notices distinguish issue `#IID`, merge request `!IID`,
+and pipeline global `id`/project-local `iid`. Pipeline identifiers remain CI
+facts (`@pipeline:IID` in existing canonical projection); they never substitute
+for an issue or merge request. A pipeline prompt may display an explicit webhook
+`merge_request.iid` only when its positive `target_project_id` matches the positive
+webhook project ID. Missing, malformed, or cross-project associations are omitted.
+This presentation does not grant resource authority, infer an owning issue from a
+branch/name/number, or change canonical event/projection identities. Work-item
+lookup or progress requires confirming the actual associated task through the
+existing scoped contracts. See the [GitLab webhook payload contract](https://docs.gitlab.com/user/project/integrations/webhook_events/#pipeline-events).
