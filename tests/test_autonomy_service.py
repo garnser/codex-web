@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import asyncio
+import contextvars
+import threading
 import time
 import unittest
 from types import SimpleNamespace
@@ -209,6 +212,102 @@ class AutonomyBoundedDispatchTests(unittest.IsolatedAsyncioTestCase):
             first_key,
             canonical_events.ingest.await_args.kwargs["idempotency_key"],
         )
+
+    @staticmethod
+    def _scope_test_service(resolver):
+        runtime = SimpleNamespace(
+            project_scope=resolver,
+            dispatch_event=AsyncMock(return_value={"ok": True}),
+        )
+        events = SimpleNamespace(ingest=AsyncMock(return_value=SimpleNamespace(
+            inserted=True, event=SimpleNamespace(event_id="scope-event")
+        )))
+
+        async def process(_event, _observation, *, reasoner, **_kwargs):
+            await reasoner()
+            return SimpleNamespace(
+                outcome=AutonomyCycleOutcome.COMPLETED,
+                id="scope-cycle", reason="completed",
+            )
+
+        controller = SimpleNamespace(process=AsyncMock(side_effect=process))
+        return AutonomyService(runtime=runtime, controller=controller,
+                               canonical_events=events), runtime, events, controller
+
+    @staticmethod
+    async def _scope_test_dispatch(service):
+        return await service._bounded_reasoning_dispatch(
+            SimpleNamespace(thread_id="scope-thread"), "bounded review", "scope-test",
+            cycle_key="scope-test:project-a", payload={"project_id": "project-a"},
+        )
+
+    async def test_blocking_project_scope_keeps_loop_responsive_and_context(self):
+        started, release = threading.Event(), threading.Event()
+        tenant = contextvars.ContextVar("scope_test_tenant", default=None)
+        tenant.set(("org-scope", "workspace-scope"))
+        loop_thread = threading.get_ident()
+        observed = []
+
+        def resolve(project_id):
+            observed.append((project_id, threading.get_ident(), tenant.get()))
+            started.set()
+            release.wait(1.0)
+            return tenant.get()
+
+        service, runtime, events, _controller = self._scope_test_service(resolve)
+        task = asyncio.create_task(self._scope_test_dispatch(service))
+        try:
+            self.assertTrue(await asyncio.to_thread(started.wait, 2.0))
+            # This coroutine runs while the database-style resolver is blocked.
+            await asyncio.sleep(0)
+            self.assertFalse(task.done())
+            self.assertEqual(events.ingest.await_count, 0)
+            self.assertNotEqual(observed[0][1], loop_thread)
+            self.assertEqual(observed[0][0], "project-a")
+            self.assertEqual(observed[0][2], tenant.get())
+        finally:
+            release.set()
+            result = await task
+        self.assertTrue(result["ok"])
+        self.assertEqual(events.ingest.await_args.kwargs["tenant_id"], "org-scope")
+        self.assertEqual(events.ingest.await_args.kwargs["workspace_id"], "workspace-scope")
+        runtime.dispatch_event.assert_awaited_once()
+
+    async def test_project_scope_failure_does_not_ingest_or_dispatch(self):
+        def unavailable(_project_id):
+            raise LookupError("project unavailable")
+
+        service, runtime, events, controller = self._scope_test_service(unavailable)
+        with self.assertRaisesRegex(LookupError, "project unavailable"):
+            await self._scope_test_dispatch(service)
+        events.ingest.assert_not_awaited()
+        controller.process.assert_not_awaited()
+        runtime.dispatch_event.assert_not_awaited()
+
+    async def test_cancelled_project_scope_wait_does_not_dispatch_after_read(self):
+        started, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+        def resolve(_project_id):
+            started.set()
+            release.wait(1.0)
+            finished.set()
+            return "org-scope", "workspace-scope"
+
+        service, runtime, events, controller = self._scope_test_service(resolve)
+        task = asyncio.create_task(self._scope_test_dispatch(service))
+        try:
+            self.assertTrue(await asyncio.to_thread(started.wait, 2.0))
+            self.assertFalse(task.done())
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        finally:
+            release.set()
+            await asyncio.to_thread(finished.wait, 2.0)
+        await asyncio.sleep(0)
+        events.ingest.assert_not_awaited()
+        controller.process.assert_not_awaited()
+        runtime.dispatch_event.assert_not_awaited()
 
 
 class AutonomyStateTests(unittest.IsolatedAsyncioTestCase):

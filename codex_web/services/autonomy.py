@@ -94,8 +94,10 @@ class AutonomyService:
         if self.controller is None or self.canonical_events is None:
             return await self.runtime.dispatch_event(binding, text, source)
 
-        organization_id, workspace_id = self.runtime.project_scope(
-            str(payload.get("project_id") or "")
+        # Project scope may read canonical PostgreSQL state. Resolve it before
+        # ingestion without blocking runtime RPC or changing the scoped result.
+        organization_id, workspace_id = await asyncio.to_thread(
+            self.runtime.project_scope, str(payload.get("project_id") or "")
         )
         normalized = json.dumps(
             {
