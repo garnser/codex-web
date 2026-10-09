@@ -71,3 +71,15 @@ canonical update creates a fresh reconciliation opportunity.
 
 The coordinator is lifecycle-owned and cancelled during controlled application
 shutdown.
+
+GitLab MR owner and status projection supports both combined adapters and the
+individual `write_owner`/`write_state` routes used by `SecretBoundTaskSource`.
+Each individual operation obtains a fresh credential through the existing
+secret-use boundary, reads the exact MR, preserves the partner and unrelated
+labels, and sends a labels-only PUT only when its projected value differs.
+The private MR label helper shares exact identity/current-snapshot/provider
+response validation across all three routes. MR lifecycle, draft and branches
+remain governed separately. The secret-bound facade does not acquire a new
+combined capability; rotation/revocation and existing issue behavior remain
+unchanged. Operation counters on the individual writeback path are not proof
+of actual HTTP mutations; verification checks the exact provider calls.
