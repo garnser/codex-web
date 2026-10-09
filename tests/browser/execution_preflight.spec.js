@@ -84,3 +84,11 @@ for (const outcome of ['resolve', 'reject']) {
     await expect(page.locator('#messages')).not.toContainText('Old retry failed');
   });
 }
+
+ test('replacement retry follows canonical current target and exposes original provenance', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?replacement');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+  await expect(page.locator('.message.tool')).toContainText('Original thread: thread-1; current thread: replacement-thread');
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__reloadCalls)).toEqual(['replacement-thread']);
+});

@@ -197,3 +197,17 @@ item/turn/thread metadata match, preserving all text and lifecycle ordering.
 Observers apply native-message filters before worker scheduling; browser fan-out
 retains the stream. Usage projection reads its canonical record by ID instead of
 loading the complete usage history for each measurement.
+
+### Retained retry after stale-thread replacement
+
+A retained preflight attempt keeps its original thread, request, execution ID,
+Agent Profile revision and actor/tenant identity. Its optional replacement target
+records only a canonical recovery mapping, qualified under the current retry
+claim. Retry uses the ordinary admission path on that target, including repository,
+authentication, policy and capacity checks. A stale replacement response alone is
+not delivery: retry may continue once on the verified replacement and then stops
+with a retained failure if another replacement is needed. Started state still
+requires actual execution admission. Both original and current thread views can
+inspect the same attempt; the retry card displays original/current provenance and
+loads the actual target on success or a new preflight denial. Historical target
+index entries never authorize a different retained identity.

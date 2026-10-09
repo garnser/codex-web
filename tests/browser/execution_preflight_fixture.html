@@ -51,6 +51,7 @@
       correlation_id: "thread-turn-1",
       execution_id: "thread-turn-1",
       thread_id: "thread-1",
+      replacement_thread_id: new URLSearchParams(location.search).has("replacement") ? "replacement-thread" : null,
       message: "make the requested change",
       status: "blocked",
       attempt_number: 2,
@@ -73,7 +74,7 @@
         if (new URLSearchParams(location.search).has("holdRetry")) {
           return new Promise((resolve, reject) => { window.__finishRetry = { resolve, reject }; });
         }
-        return { ok: true };
+        return { ok: true, threadId: new URLSearchParams(location.search).has("replacement") ? "replacement-thread" : "thread-1" };
       }
       throw new Error(`unexpected path: ${path}`);
     };
