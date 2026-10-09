@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 import subprocess
 import tempfile
 import time
@@ -7,6 +9,9 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
+
+from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.action_providers import ActionProviderBindingCreate, ActionRequest
 from codex_web.action_intents import (
     ActionIntentClaimRequest, ActionIntentCreate, ActionIntentStatus,
@@ -391,6 +396,105 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
                 )
             ).verified
         )
+
+    def _title_only_rest_client(self):
+        rows, writes = [], []
+
+        def respond(request):
+            if request.method == "GET":
+                return httpx.Response(200, json=rows if request.url.path.endswith("/merge_requests") else rows[0])
+            payload = json.loads(request.content)
+            writes.append((request.method, payload))
+            if request.method == "POST":
+                rows.append({"id": 42, "iid": 9, "state": "opened"})
+            rows[0].update(payload)
+            # Model the real documented title semantics, ignoring any
+            # unsupported draft REST parameter sent by the caller.
+            rows[0]["draft"] = bool(re.match(r"^(?:Draft:|\[Draft\]|\(Draft\))", rows[0]["title"], re.I))
+            return httpx.Response(200, json=rows[0])
+
+        return GitLabClient(transport=httpx.MockTransport(respond)), rows, writes
+
+    async def test_draft_create_ready_update_and_retry_use_native_titles(self):
+        client, rows, writes = self._title_only_rest_client()
+        self.provider.client = client
+        request = self._request(CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID, {
+            "title": "Delivery", "body": "Closes #890",
+            "head": "feature/890", "base": "main", "draft": True,
+        })
+        first = await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.assertEqual(rows[0]["title"], "Draft: Delivery")
+        self.assertTrue(rows[0]["draft"])
+        self.assertTrue((await self.execution.verify(self.binding.id, first, actor=self.actor)).verified)
+        await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.assertEqual(len(writes), 1)
+        ready = request.model_copy(update={"parameters": {**request.parameters, "draft": False}})
+        result = await self.execution.execute(self.binding.id, ready, actor=self.actor)
+        self.assertEqual(rows[0]["title"], "Delivery")
+        self.assertFalse(rows[0]["draft"])
+        self.assertTrue((await self.execution.verify(self.binding.id, result, actor=self.actor)).verified)
+        self.assertEqual([method for method, _ in writes], ["POST", "PUT"])
+        self.assertTrue(all("draft" not in payload for _, payload in writes))
+        self.assertEqual(first.output["change_request_number"], result.output["change_request_number"])
+
+    async def test_native_title_format_preserves_content_and_clears_only_leading_markers(self):
+        for title, draft, expected in (
+            ("[Draft] Delivery", True, "[Draft] Delivery"),
+            ("(Draft) Delivery", True, "(Draft) Delivery"),
+            ("draft: Delivery", True, "draft: Delivery"),
+            ("[Draft] Delivery", False, "Delivery"),
+            ("(Draft) Delivery", False, "Delivery"),
+            ("draft: Delivery", False, "Delivery"),
+            ("Draft: [Draft] Delivery", False, "Delivery"),
+            ("Review Draft: content", False, "Review Draft: content"),
+            ("Review [Draft] content", True, "Draft: Review [Draft] content"),
+        ):
+            with self.subTest(title=title, draft=draft):
+                client, rows, writes = self._title_only_rest_client()
+                self.provider.client = client
+                request = self._request(CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID, {
+                    "title": title, "body": "Closes #890", "head": "feature/890",
+                    "base": "main", "draft": draft,
+                })
+                result = await self.execution.execute(self.binding.id, request, actor=self.actor)
+                self.assertEqual(rows[0]["title"], expected)
+                self.assertEqual(rows[0]["draft"], draft)
+                self.assertNotIn("draft", writes[0][1])
+                self.assertTrue((await self.execution.verify(self.binding.id, result, actor=self.actor)).verified)
+
+    async def test_draft_normalization_does_not_hide_provider_drift_or_foreign_marker(self):
+        client, rows, writes = self._title_only_rest_client()
+        self.provider.client = client
+        request = self._request(CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID, {
+            "title": "Delivery", "body": "Closes #890", "head": "feature/890",
+            "base": "main", "draft": True,
+        })
+        result = await self.execution.execute(self.binding.id, request, actor=self.actor)
+        original = dict(rows[0])
+        for field, value in (("title", "[Draft] Delivery"), ("description", "changed"),
+                             ("source_branch", "foreign"), ("target_branch", "other"),
+                             ("draft", False), ("iid", 8)):
+            rows[0].clear()
+            rows[0].update({**original, field: value})
+            with self.subTest(field=field):
+                self.assertFalse((await self.execution.verify(self.binding.id, result, actor=self.actor)).verified)
+        rows[0].clear()
+        rows[0].update({**original, "description": "another action owns this MR"})
+        with self.assertRaises(ValueError):
+            await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.assertEqual(len(writes), 1)
+
+    async def test_empty_ready_title_after_marker_is_known_invalid_before_rest(self):
+        client, _, writes = self._title_only_rest_client()
+        self.provider.client = client
+        request = self._request(CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID, {
+            "title": "Draft: [Draft]", "body": "body", "head": "feature/890",
+            "base": "main", "draft": False,
+        })
+        from codex_web.services.action_providers import ActionRequirementError
+        with self.assertRaises(ActionRequirementError):
+            await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.assertEqual(writes, [])
 
     async def test_merge_request_is_created_then_reconciled_and_verified(self) -> None:
         request = self._request(
