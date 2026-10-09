@@ -83,6 +83,11 @@ a competing claimant cannot be revoked using the prior fence. Startup is
 shielded while an executor claim/spawn settles: request cancellation or timeout
 then cancels the observed owned bootstrap and stops an unregistered session,
 rather than letting an abandoned executor claim a new lease after cleanup.
+After session registration, cancellation while awaiting native thread creation
+settles the existing manager's fenced bootstrap completion before propagating
+the original cancellation. Cleanup runs in a shielded task so repeated caller
+cancellation cannot abandon the registered session. A cleanup failure is chained
+to the original cancellation for diagnosis and supported release reconciliation.
 
 Cancellation then releases the canonical workspace reservation with explicit
 retained-files semantics. It preserves the entire Git worktree or scratch
