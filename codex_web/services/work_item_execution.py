@@ -86,6 +86,8 @@ class WorkItemExecutionLifecycleService:
                     for line in handle:
                         try:
                             raw = json.loads(line)
+                            if not isinstance(raw, dict) or raw.get("ref") != ref:
+                                continue
                             event = WorkItemEvent.model_validate(raw)
                         except (json.JSONDecodeError, ValueError, TypeError):
                             continue

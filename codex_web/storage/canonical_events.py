@@ -491,6 +491,18 @@ class CanonicalEventStore:
             )
         return self._decode_entry(raw)[1]
 
+    def outbox(self, event_id: str) -> CanonicalEventOutboxRecord | None:
+        """Read transport state for one event without reconstructing the journal."""
+        record_key = self._record_key_for_event(event_id)
+        if record_key is None:
+            return None
+        raw = self.store.record_get(self.records_namespace, record_key)
+        if raw is None:
+            raise CanonicalEventConflictError(
+                "canonical event alias points to missing event"
+            )
+        return self._decode_entry(raw)[2]
+
     def pending_outbox(
         self,
         *,

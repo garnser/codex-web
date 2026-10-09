@@ -1,5 +1,13 @@
 # Bounded autonomy controller
 
+Autonomy control/policy reads use the keyed `control` field of the existing
+`autonomy` StateStore namespace. First access transactionally converts the legacy
+mapping into keyed top-level fields and applies existing schema migrations;
+control and break-glass grant checks do not deserialize historical cycles or dead letters. Full-state
+inspection and cycle accounting retain their existing contracts. The shared
+StateStore's mapping compatibility keeps `get`/`update` readable by older
+binaries; no cached or second control authority is introduced.
+
 ## Status
 
 **Controlled-production-autonomy policy over the canonical event-driven control plane.** The autonomy controller consumes canonical event facts, separates deterministic observation/reasoning/execution, and applies one persisted effective autonomy policy before any autonomous external side effect.

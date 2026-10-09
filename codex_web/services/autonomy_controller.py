@@ -81,7 +81,7 @@ class AutonomyController:
         *,
         actor_id: str,
     ) -> AutonomyControl:
-        current = self.store.load().control
+        current = self.store.control()
         updates = {
             key: value
             for key, value in payload.model_dump(mode="python").items()
@@ -99,7 +99,7 @@ class AutonomyController:
         *,
         actor_id: str,
     ) -> AutonomyScopedPause:
-        current = self.store.load().control
+        current = self.store.control()
         now = time.time()
         active = tuple(
             item
@@ -130,7 +130,7 @@ class AutonomyController:
         *,
         actor_id: str,
     ) -> bool:
-        current = self.store.load().control
+        current = self.store.control()
         remaining = tuple(
             item for item in current.scoped_pauses if item.id != pause_id
         )
@@ -171,7 +171,7 @@ class AutonomyController:
         *,
         actor_id: str,
     ) -> AutonomyControl:
-        current = self.store.load().control
+        current = self.store.control()
         control = current.model_copy(update={"exclusive_goal_scope": scope})
         self.store.set_control(control, actor_id=actor_id)
         return control
@@ -181,7 +181,7 @@ class AutonomyController:
         *,
         actor_id: str,
     ) -> AutonomyControl:
-        current = self.store.load().control
+        current = self.store.control()
         control = current.model_copy(update={"exclusive_goal_scope": None})
         self.store.set_control(control, actor_id=actor_id)
         return control
@@ -403,7 +403,7 @@ class AutonomyController:
         if existing is not None:
             return existing
 
-        control = (await self._storage_call(self.store.load)).control
+        control = await self._storage_call(self.store.control)
         started_at = time.time()
         project_value = event.payload.get("project_id") if isinstance(event.payload, dict) else None
         event_project_id = (

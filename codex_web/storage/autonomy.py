@@ -12,7 +12,7 @@ from codex_web.autonomy import (
 )
 from codex_web.autonomy_policy import AutonomyBreakGlassGrant
 from codex_web.compatibility import MigrationRegistry
-from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.storage.state_store import StateStore
 
 
 AUTONOMY_STATE_MIGRATIONS = MigrationRegistry("autonomy-state")
@@ -44,7 +44,7 @@ class AutonomyStateStore:
     max_cycles = 5000
     max_dead_letters = 1000
 
-    def __init__(self, store: SQLiteStateStore) -> None:
+    def __init__(self, store: StateStore) -> None:
         self.store = store
 
     def _decode(self, payload: Any) -> AutonomyState:
@@ -62,10 +62,31 @@ class AutonomyStateStore:
         AUTONOMY_STATE_CONTRACT.require(payload.get("schema_version", ""))
         return AutonomyState.model_validate(payload)
 
+    def _ensure_records(self) -> None:
+        if self.store.record_collection_exists(self.namespace):
+            return
+
+        def migrate(current):
+            payload = {key: value for key, value in current.items() if value is not None}
+            return self._decode(payload).model_dump(mode="json")
+
+        # record_mutate converts the legacy mapping and migrates its fields
+        # under the same namespace transaction lock, preserving concurrent writes.
+        self.store.record_mutate(self.namespace, tuple(AutonomyState.model_fields), migrate)
+
+    def control(self) -> AutonomyControl:
+        self._ensure_records()
+        version = self.store.record_get(self.namespace, "schema_version")
+        if version != AUTONOMY_STATE_CONTRACT.current:
+            return self.load().control
+        return AutonomyControl.model_validate(self.store.record_get(self.namespace, "control"))
+
     def load(self) -> AutonomyState:
+        self._ensure_records()
         return self._decode(self.store.get(self.namespace))
 
     def update(self, updater: Callable[[AutonomyState], AutonomyState]) -> AutonomyState:
+        self._ensure_records()
         def apply(raw: Any) -> dict[str, Any]:
             state = updater(self._decode(raw))
             state.cycles = state.cycles[-self.max_cycles :]
@@ -124,10 +145,15 @@ class AutonomyStateStore:
         now: float,
         project_id: str | None = None,
     ) -> tuple[AutonomyBreakGlassGrant, ...]:
-        state = self.load()
+        self._ensure_records()
+        if self.store.record_get(self.namespace, "schema_version") != AUTONOMY_STATE_CONTRACT.current:
+            grants = self.load().break_glass_grants
+        else:
+            raw = self.store.record_get(self.namespace, "break_glass_grants")
+            grants = [AutonomyBreakGlassGrant.model_validate(item) for item in (raw or [])]
         return tuple(
             item
-            for item in state.break_glass_grants
+            for item in grants
             if item.organization_id == organization_id
             and item.workspace_id == workspace_id
             and item.expires_at > now

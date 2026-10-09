@@ -1,5 +1,24 @@
 # Canonical Work-Item Lifecycle
 
+The canonical work-item audit window uses `work_item_events.records.v1` with
+versioned metadata and transactionally assigned sequence keys. Each append writes
+one event, advances the sequence and removes at most one expired row, retaining
+the existing latest-10,000-event window without rewriting unrelated history.
+Concurrent replicas share the namespace transaction lock. First access migrates
+the old `work_item_events` list once. Retention changes require an explicit
+migration. The JSONL forensic mirror and its existing history/checkpoint API
+semantics remain available.
+Forensic history reads filter the requested work-item ref before validating an
+event model. They still scan JSONL to preserve the complete historical watermark;
+unrelated events must not incur model validation cost.
+
+The old StateStore list is a rollback checkpoint, refreshed on controlled
+shutdown; it is not a second active audit authority. Stop older writers before
+upgrading. After a rollback has produced new legacy writes, reconcile that
+checkpoint before rebuilding/re-entering keyed storage. Older and keyed audit
+writers must not run concurrently. The JSONL mirror is still appended after the
+canonical commit, with the same failure ordering as the historical implementation.
+
 ## Status
 
 **Canonical work-item lifecycle contract.** This document defines the canonical work-item stages already used by codex-web, the legal manual/API transition policy, semantic terminal outcomes, and the structured execution lifecycle carried by each work item.

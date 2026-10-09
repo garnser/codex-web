@@ -74,7 +74,7 @@ class AutonomyPolicyService:
         self.clock = clock
 
     def policy(self) -> AutonomyPolicy:
-        return self.store.load().control.policy
+        return self.store.control().policy
 
     @staticmethod
     def _merge_budget(
@@ -424,7 +424,7 @@ class AutonomyPolicyService:
             *resource_reasons,
         ]
         allowed = self._risk_allowed(effective.level, effective_risk)
-        control = self.store.load().control
+        control = self.store.control()
         scoped_pause = next(
             (
                 item

@@ -113,9 +113,11 @@ class SharedCanonicalStateTests(unittest.TestCase):
             )
             machine._append_work_item_event(event)
 
-            rows = store.get("work_item_events")
+            rows = machine.event_store.load()
             self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0]["ref"], "work-1")
+            self.assertEqual(rows[0].ref, "work-1")
+            machine.event_store.flush_legacy_mirror()
+            self.assertEqual(store.get("work_item_events")[0]["ref"], "work-1")
             self.assertTrue(host.WORK_ITEM_EVENTS_FILE.exists())
 
     def test_concurrent_project_updates_delta_merge(self) -> None:
@@ -626,7 +628,7 @@ class DurableOutboxTests(unittest.IsolatedAsyncioTestCase):
             loop_thread = threading.get_ident()
             calls = []
             with ExitStack() as patches:
-                for name in ("load", "mark_outbox_published", "mark_outbox_failed"):
+                for name in ("outbox", "mark_outbox_published", "mark_outbox_failed"):
                     original = getattr(events, name)
                     def checked(*args, _name=name, _original=original, **kwargs):
                         self.assertNotEqual(threading.get_ident(), loop_thread,
@@ -641,7 +643,7 @@ class DurableOutboxTests(unittest.IsolatedAsyncioTestCase):
                 transport.fail_publish = False
                 recovered = await bus.dispatch_outbox_once(now=10_000_000_000.0)
                 self.assertEqual(recovered["published"], 1)
-            self.assertIn("load", calls)
+            self.assertIn("outbox", calls)
             self.assertIn("mark_outbox_failed", calls)
             self.assertIn("mark_outbox_published", calls)
             self.assertEqual(events.outbox_status()["published"], 1)

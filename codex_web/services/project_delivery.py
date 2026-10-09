@@ -139,7 +139,7 @@ class ProjectDeliveryService:
         if self._lock.locked():
             return
         async with self._lock:
-            control = await asyncio.to_thread(lambda: self.controller.store.load().control)
+            control = await asyncio.to_thread(self.controller.store.control)
             if control.mode != AutonomyMode.ACTIVE or control.dry_run or control.simulation:
                 return
             projects = await asyncio.to_thread(self.projects.list)

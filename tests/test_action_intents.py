@@ -411,6 +411,7 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         backend.put(ActionIntentStore.namespace, state.model_dump(mode="json"))
         store = ActionIntentStore(backend)
         self.assertEqual(store.get(intent.id), intent)
+        self.assertTrue(backend.record_collection_exists(store.records_namespace))
         def change(current):
             current.intents[0] = current.intents[0].model_copy(update={"status": ActionIntentStatus.FAILED})
             return current
