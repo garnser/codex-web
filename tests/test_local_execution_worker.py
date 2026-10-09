@@ -202,6 +202,177 @@ def _assignment(**overrides) -> ExecutionAssignment:
     return ExecutionAssignment(**values)
 
 
+class WorkerDiskAccountingTests(unittest.TestCase):
+    def test_nested_hidden_and_hardlinked_files_count_without_symlink_targets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "workspace"
+            root.mkdir()
+            (root / ".hidden").write_bytes(b"h" * 11)
+            (root / "nested").mkdir()
+            regular = root / "nested" / "regular"
+            regular.write_bytes(b"r" * 17)
+            os.link(regular, root / "hardlink")
+            (root / "file-link").symlink_to(regular)
+            external = Path(temporary) / "external"
+            external.mkdir()
+            (external / "large").write_bytes(b"e" * 1000)
+            (root / "directory-link").symlink_to(external, target_is_directory=True)
+            (root / "dangling-link").symlink_to(external / "missing")
+            (root / "empty").touch()
+            os.mkfifo(root / "pipe")
+            self.assertEqual(BubblewrapExecutionBackend._tree_disk_usage(root), 45)
+            self.assertEqual(BubblewrapExecutionBackend._tree_disk_usage(root / "missing"), 0)
+            self.assertEqual(BubblewrapExecutionBackend._tree_disk_usage(regular), 0)
+
+    def test_file_accounting_uses_one_size_lookup_per_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            file_count = 40
+            for number in range(file_count):
+                (root / str(number)).write_bytes(b"x" * (number + 1))
+            real_scandir, real_stat, real_lstat = os.scandir, os.stat, os.lstat
+            metadata_calls = []
+
+            class Entry:
+                def __init__(self, actual):
+                    self.actual = actual
+
+                def __getattr__(self, name):
+                    return getattr(self.actual, name)
+
+                def stat(self, *args, **kwargs):
+                    metadata_calls.append(self.actual.path)
+                    return self.actual.stat(*args, **kwargs)
+
+            class Entries:
+                def __init__(self, path):
+                    self.actual = real_scandir(path)
+
+                def __enter__(self):
+                    return (Entry(entry) for entry in self.actual)
+
+                def __exit__(self, *args):
+                    self.actual.close()
+
+            def file_stat(path, *args, **kwargs):
+                metadata_calls.append(str(path))
+                return real_stat(path, *args, **kwargs)
+
+            def file_lstat(path, *args, **kwargs):
+                metadata_calls.append(str(path))
+                return real_lstat(path, *args, **kwargs)
+
+            with (
+                patch("os.scandir", side_effect=Entries),
+                patch("os.stat", side_effect=file_stat),
+                patch("os.lstat", side_effect=file_lstat),
+            ):
+                actual = BubblewrapExecutionBackend._tree_disk_usage(root)
+            self.assertEqual(actual, sum(range(1, file_count + 1)))
+            self.assertEqual(len(metadata_calls), file_count)
+
+    def test_unavailable_directory_does_not_hide_accessible_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "visible").write_bytes(b"visible")
+            blocked = root / "blocked"
+            blocked.mkdir()
+            (blocked / "unavailable").write_bytes(b"unavailable")
+            real_scandir = os.scandir
+
+            def scandir(path):
+                if Path(path) == blocked:
+                    raise PermissionError("unavailable directory")
+                return real_scandir(path)
+
+            with patch("os.scandir", side_effect=scandir):
+                self.assertEqual(BubblewrapExecutionBackend._tree_disk_usage(root), 7)
+
+    def test_vanished_entry_does_not_abort_remaining_file_accounting(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "retained").write_bytes(b"retained")
+            vanished = root / "vanished"
+            vanished.write_bytes(b"gone")
+            real_scandir = os.scandir
+
+            class Entry:
+                def __init__(self, actual):
+                    self.actual = actual
+
+                def __getattr__(self, name):
+                    return getattr(self.actual, name)
+
+                def stat(self, *args, **kwargs):
+                    if self.actual.name == "vanished":
+                        vanished.unlink()
+                    return self.actual.stat(*args, **kwargs)
+
+            class Entries:
+                def __init__(self, path):
+                    self.actual = real_scandir(path)
+
+                def __enter__(self):
+                    return (Entry(entry) for entry in self.actual)
+
+                def __exit__(self, *args):
+                    self.actual.close()
+
+            with patch("os.scandir", side_effect=Entries):
+                self.assertEqual(BubblewrapExecutionBackend._tree_disk_usage(root), 8)
+
+    def test_file_replaced_by_symlink_before_size_lookup_is_not_accounted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "workspace"
+            root.mkdir()
+            regular = root / "regular"
+            regular.write_bytes(b"before")
+            external = Path(temporary) / "outside"
+            external.write_bytes(b"outside" * 100)
+            real_scandir = os.scandir
+
+            class Entry:
+                def __init__(self, actual):
+                    self.actual = actual
+
+                def __getattr__(self, name):
+                    return getattr(self.actual, name)
+
+                def stat(self, *args, **kwargs):
+                    regular.unlink()
+                    regular.symlink_to(external)
+                    return self.actual.stat(*args, **kwargs)
+
+            class Entries:
+                def __init__(self, path):
+                    self.actual = real_scandir(path)
+
+                def __enter__(self):
+                    return (Entry(entry) for entry in self.actual)
+
+                def __exit__(self, *args):
+                    self.actual.close()
+
+            with patch("os.scandir", side_effect=Entries):
+                self.assertEqual(BubblewrapExecutionBackend._tree_disk_usage(root), 0)
+
+    def test_shared_git_metadata_remains_in_execution_disk_limit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / "source").write_bytes(b"source")
+            metadata = root / "shared-git"
+            metadata.mkdir()
+            (metadata / "pack").write_bytes(b"pack" * 4)
+            self.assertEqual(
+                BubblewrapExecutionBackend._execution_disk_usage(workspace, metadata), 22
+            )
+            self.assertEqual(
+                BubblewrapExecutionBackend._execution_disk_usage(workspace, workspace), 6
+            )
+
+
 class BubblewrapExecutionBackendTests(unittest.TestCase):
     def test_successful_probe_advertises_command_execution_and_unrestricted_network(self) -> None:
         backend = BubblewrapExecutionBackend(

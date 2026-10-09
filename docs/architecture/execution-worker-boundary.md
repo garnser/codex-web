@@ -698,3 +698,10 @@ catalogued operations, without changing actor, repository, route, or policy
 permissions. Trusted local execution without a worker assignment does not receive
 an assignment-channel claim. A mutation timeout still requires reconciliation of
 its existing ActionIntent before a retry.
+
+Worker disk accounting iterates directory entries and reads each regular file's
+size without repeating path metadata lookups. Nested symlink entries are skipped;
+hidden files, hardlinks by path, shared Git metadata, and configured read-only
+resources retain their existing accounting. Vanished or inaccessible entries keep
+the existing filesystem-error behavior. This traversal optimization adds no cross-scan cache
+and does not change disk limits, validation intervals, or assignment enforcement.
