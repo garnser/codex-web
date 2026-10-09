@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from codex_web.identity import AuthenticationActor
 from codex_web.models import BotBinding, IndexedThread, Project, ThreadRunSettings
 from codex_web.services.project_runtime import ProjectRuntimeService
 from codex_web.services.thread_execution_settings import ThreadExecutionSettingsService
@@ -84,6 +85,9 @@ class ThreadRecoveryService:
         sandbox: str,
         approval_policy: str,
         binding: BotBinding | None = None,
+        agent_profile_id: str | None = None,
+        agent_profile_revision: int | None = None,
+        actor: AuthenticationActor | None = None,
     ) -> str:
         if self.thread_creator is None:
             raise HTTPException(
@@ -97,7 +101,15 @@ class ThreadRecoveryService:
                 },
             )
         profile_kwargs: dict[str, Any] = {}
-        if binding is not None and self.agent_profile_resolver is not None:
+        if agent_profile_id is not None:
+            if actor is None or agent_profile_revision is None:
+                raise HTTPException(status_code=403, detail="replacement profile requires its actor and revision")
+            profile_kwargs = {
+                "agent_profile_id": agent_profile_id,
+                "agent_profile_revision": agent_profile_revision,
+                "actor": actor,
+            }
+        elif binding is not None and self.agent_profile_resolver is not None:
             context = self.agent_profile_resolver(binding)
             if context is not None:
                 profile, actor = context
@@ -370,7 +382,12 @@ class ThreadRecoveryService:
         )
         return replacement
 
-    async def replace_stale_web_thread(self, thread_id: str, project: Project, error: str) -> str:
+    async def replace_stale_web_thread(
+        self, thread_id: str, project: Project, error: str, *,
+        agent_profile_id: str | None = None,
+        agent_profile_revision: int | None = None,
+        actor: AuthenticationActor | None = None,
+    ) -> str:
         h = self.host
         settings = self.settings.get(thread_id)
         sandbox = settings.sandbox or project.sandbox
@@ -380,6 +397,9 @@ class ThreadRecoveryService:
             settings=settings,
             sandbox=sandbox,
             approval_policy=approval_policy,
+            agent_profile_id=agent_profile_id,
+            agent_profile_revision=agent_profile_revision,
+            actor=actor,
         )
         self.settings.remember(
             new_thread_id,

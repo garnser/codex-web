@@ -622,6 +622,11 @@ class TurnService:
                         thread_id,
                         project,
                         str(exc),
+                        **({
+                            "agent_profile_id": agent_profile_id,
+                            "agent_profile_revision": agent_profile_revision,
+                            "actor": actor,
+                        } if profile is not None else {}),
                     )
                 return {
                     "ok": False,
@@ -666,15 +671,14 @@ class TurnService:
                 status_code=503,
                 detail="execution preflight retry is unavailable",
             )
+        attempt = self.preflight.get(attempt_id, actor=actor)
+        if thread_id not in {attempt.thread_id, attempt.replacement_thread_id}:
+            raise HTTPException(status_code=404, detail="preflight attempt not found")
         attempt, claim_id, claimed = self.preflight.claim_retry(
             attempt_id,
             actor=actor,
         )
-        if attempt.thread_id != thread_id:
-            raise HTTPException(
-                status_code=404,
-                detail="preflight attempt not found",
-            )
+        thread_id = attempt.replacement_thread_id or attempt.thread_id
         if (
             self.execution.active_execution_id(thread_id)
             == attempt.execution_id
@@ -709,15 +713,34 @@ class TurnService:
 
         payload = self.preflight.retry_payload(attempt)
         try:
-            result = await self.start(
-                thread_id,
-                payload,
-                actor=actor,
-                execution_id=attempt.execution_id,
-                retry_claim_id=claim_id,
-            )
+            replacement = self.recovery.replacement_thread_id(thread_id)
+            if replacement:
+                attempt = self.preflight.bind_replacement(
+                    attempt.id, actor=actor, claim_id=claim_id,
+                    previous_thread_id=thread_id, replacement_thread_id=replacement,
+                )
+                thread_id = replacement
+            for continuation in range(2):
+                result = await self.start(
+                    thread_id, payload, actor=actor,
+                    execution_id=attempt.execution_id, retry_claim_id=claim_id,
+                )
+                if not result.get("staleThreadReplaced"):
+                    break
+                replacement = self.recovery.replacement_thread_id(thread_id)
+                if not replacement or replacement != result.get("threadId"):
+                    raise HTTPException(status_code=409, detail="canonical preflight replacement mismatch")
+                attempt = self.preflight.bind_replacement(
+                    attempt.id, actor=actor, claim_id=claim_id,
+                    previous_thread_id=thread_id, replacement_thread_id=replacement,
+                )
+                thread_id = replacement
+                if continuation:
+                    raise HTTPException(status_code=409, detail="preflight replacement continuation exhausted")
         except Exception as exc:
-            if not self.preflight.is_preflight_http_error(exc):
+            if self.preflight.is_preflight_http_error(exc):
+                exc.detail = {**exc.detail, "threadId": thread_id}
+            else:
                 self.preflight.mark_failed(
                     attempt.id,
                     actor=actor,

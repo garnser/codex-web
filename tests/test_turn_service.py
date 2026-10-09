@@ -578,6 +578,140 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(execution.start_calls), 1)
         self.assertEqual(queue.queued, [])
 
+    async def _replacement_retry(self, *, existing=False, blocked=False, endless=False, mismatch=False):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        preflight = ExecutionPreflightService(ExecutionPreflightStore(
+            SQLiteStateStore(Path(temp.name) / "state.sqlite3")))
+        service, _queue, execution, _events, _settings = self._service()
+        service.preflight = preflight
+        mappings = {"original": "replacement"} if existing else {}
+        service.recovery.replacement_thread_id = mappings.get
+        actor = _admin_actor()
+        payload = TurnCreate(message="unchanged correction", project_id="home",
+            sandbox="danger-full-access", approval_policy="never",
+            agent_profile_id="james-saml", agent_profile_revision=2,
+            repository_resource_id="repo-saas", writable_repository_resource_ids=("repo-saas",))
+        retained = preflight.record_blocked(actor=actor, thread_id="original",
+            project_id="home", execution_id="same-execution", payload=payload,
+            effective=payload.model_dump(), detail={"message": "quota"})
+        calls = []
+        async def start(thread_id, value, **kwargs):
+            calls.append((thread_id, value, kwargs))
+            if thread_id == "original" or endless:
+                target = "replacement" if thread_id == "original" else "second"
+                mappings[thread_id] = target
+                return {"staleThreadReplaced": True, "threadId": "wrong" if mismatch else target}
+            if blocked:
+                detail = {"code": "execution_preflight_blocked", "message": "capacity"}
+                preflight.record_blocked(actor=actor, thread_id=thread_id,
+                    project_id="home", execution_id="same-execution", payload=value,
+                    effective=value.model_dump(), detail=detail)
+                raise HTTPException(status_code=503, detail=detail)
+            preflight.mark_started_for_execution("same-execution", actor=actor,
+                claim_id=kwargs["retry_claim_id"])
+            return {"turn": {"id": "actually-started"}}
+        service.start = start
+        execution.active_execution_id = lambda _thread: None
+        return service, preflight, retained, actor, calls
+
+    async def test_retry_follows_verified_new_replacement_once_and_deduplicates(self):
+        service, preflight, retained, actor, calls = await self._replacement_retry()
+        result = await service.retry_preflight("original", retained.id, actor=actor)
+        self.assertEqual([item[0] for item in calls], ["original", "replacement"])
+        self.assertEqual(result["threadId"], "replacement")
+        self.assertEqual(result["attempt"]["thread_id"], "original")
+        self.assertEqual(result["attempt"]["replacement_thread_id"], "replacement")
+        self.assertEqual(result["attempt"]["status"], "started")
+        self.assertEqual(calls[0][1], calls[1][1])
+        self.assertEqual(calls[1][1].agent_profile_revision, 2)
+        self.assertEqual(calls[1][1].repository_resource_id, "repo-saas")
+        self.assertIs(calls[1][2]["actor"], actor)
+        self.assertEqual(calls[1][2]["execution_id"], retained.execution_id)
+        self.assertEqual(preflight.for_thread("replacement", actor=actor)[0].id, retained.id)
+        self.assertIn("/replacement/", result["attempt"]["retry_href"])
+        duplicate = await service.retry_preflight("replacement", retained.id, actor=actor)
+        self.assertTrue(duplicate["alreadyStarted"])
+        self.assertEqual(len(calls), 2)
+
+    async def test_retry_existing_replacement_keeps_denial_and_request_inspectable(self):
+        service, preflight, retained, actor, calls = await self._replacement_retry(existing=True, blocked=True)
+        with self.assertRaises(HTTPException) as error:
+            await service.retry_preflight("original", retained.id, actor=actor)
+        self.assertEqual(error.exception.status_code, 503)
+        updated = preflight.get(retained.id, actor=actor)
+        self.assertEqual(updated.status, "blocked")
+        self.assertEqual(updated.message, retained.message)
+        self.assertEqual(updated.thread_id, "original")
+        self.assertEqual(updated.replacement_thread_id, "replacement")
+        self.assertIsNone(updated.started_at)
+        self.assertEqual([item[0] for item in calls], ["replacement"])
+        self.assertEqual(preflight.for_thread("replacement", actor=actor)[0].id, retained.id)
+
+    async def test_retry_rejects_unverified_replacement_and_bounds_repeated_replacements(self):
+        for options, expected_calls in (({"mismatch": True}, 1), ({"endless": True}, 2)):
+            with self.subTest(options=options):
+                service, preflight, retained, actor, calls = await self._replacement_retry(**options)
+                with self.assertRaises(HTTPException) as error:
+                    await service.retry_preflight("original", retained.id, actor=actor)
+                self.assertEqual(error.exception.status_code, 409)
+                self.assertEqual(len(calls), expected_calls)
+                self.assertEqual(preflight.get(retained.id, actor=actor).status, "failed")
+                self.assertIsNone(preflight.get(retained.id, actor=actor).started_at)
+
+    async def test_stale_web_replacement_bootstraps_exact_admitted_profile(self):
+        from unittest.mock import AsyncMock
+        service, queue, execution, _events, _settings = self._service()
+        queue.queued = []
+        execution.active = False
+        execution.start_thread_turn_now = AsyncMock(side_effect=RuntimeError("native thread not found"))
+        service.resume_runtime.is_stale_thread_error = lambda _error: True
+        profile = SimpleNamespace(profile_id="james-saml", revision=2,
+            sandbox_requirement="danger-full-access", execution_profile_id="repo-write")
+        service.agent_profiles = SimpleNamespace(resolve_for_execution=lambda *args, **kwargs: (profile, None))
+        replacement = AsyncMock(return_value="replacement")
+        service.recovery.replace_stale_web_thread = replacement
+        actor = _admin_actor()
+        result = await service.start("original", TurnCreate(message="retained correction",
+            project_id="home", agent_profile_id=profile.profile_id,
+            agent_profile_revision=profile.revision, repository_resource_id="repo-saas"), actor=actor)
+        self.assertTrue(result["staleThreadReplaced"])
+        self.assertEqual(replacement.await_args.kwargs["agent_profile_id"], "james-saml")
+        self.assertEqual(replacement.await_args.kwargs["agent_profile_revision"], 2)
+        self.assertIs(replacement.await_args.kwargs["actor"], actor)
+
+    async def test_existing_replacement_still_enforces_real_profile_admission(self):
+        from codex_web.services.agent_profiles import AgentProfileAccessDenied
+        service, preflight, retained, actor, calls = await self._replacement_retry(existing=True)
+        del service.start  # Exercise actual ordinary admission, not the retry stub.
+        resolved = []
+        def deny(profile_id, **kwargs):
+            resolved.append((profile_id, kwargs))
+            raise AgentProfileAccessDenied("profile does not grant repository scope")
+        service.agent_profiles = SimpleNamespace(resolve_for_execution=deny)
+        with self.assertRaises(HTTPException) as error:
+            await service.retry_preflight("original", retained.id, actor=actor)
+        self.assertEqual(error.exception.status_code, 403)
+        self.assertEqual(error.exception.detail["code"], "agent_profile_access_denied")
+        self.assertEqual(resolved[0][0], "james-saml")
+        self.assertIs(resolved[0][1]["actor"], actor)
+        self.assertEqual(resolved[0][1]["revision"], 2)
+        self.assertEqual(preflight.get(retained.id, actor=actor).status, "failed")
+        self.assertIsNone(preflight.get(retained.id, actor=actor).started_at)
+        self.assertEqual(calls, [])
+        other_workspace = actor.model_copy(update={"workspace_id": "other"})
+        with self.assertRaises(HTTPException):
+            await service.retry_preflight("replacement", retained.id, actor=other_workspace)
+        self.assertEqual(len(resolved), 1)
+
+    async def test_wrong_retry_thread_does_not_claim_retained_attempt(self):
+        service, preflight, retained, actor, calls = await self._replacement_retry()
+        with self.assertRaises(HTTPException) as error:
+            await service.retry_preflight("unrelated", retained.id, actor=actor)
+        self.assertEqual(error.exception.status_code, 404)
+        self.assertIsNone(preflight.get(retained.id, actor=actor).retry_claim_id)
+        self.assertEqual(calls, [])
+
     def test_preflight_routes_are_owned_by_turn_domain(self) -> None:
         self.assertIn(
             "turns",

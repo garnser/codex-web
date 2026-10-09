@@ -97,7 +97,13 @@ class ExecutionPreflightStore:
             update_raw,
             default=None,
         )
-        return ExecutionPreflightAttempt.model_validate(payload)
+        updated = ExecutionPreflightAttempt.model_validate(payload)
+        if updated.replacement_thread_id:
+            target = updated.model_copy(update={"thread_id": updated.replacement_thread_id})
+            self.store.record_apply(self.NAMESPACE, upserts={
+                self._thread_key(target): {"attemptId": updated.id},
+            })
+        return updated
 
 
     def for_thread(
@@ -121,7 +127,7 @@ class ExecutionPreflightStore:
             if not attempt_id:
                 continue
             attempt = self.get(attempt_id)
-            if attempt is not None:
+            if attempt is not None and thread_id in {attempt.thread_id, attempt.replacement_thread_id}:
                 result.append(attempt)
         return result
 

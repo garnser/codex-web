@@ -187,6 +187,28 @@ class ExecutionPreflightServiceTests(unittest.TestCase):
         self.assertNotEqual(recovered_claim, first_claim)
         self.assertEqual(recovered.attempt_number, 3)
 
+    def test_replacement_binding_requires_current_claim_and_retains_original_identity(self):
+        attempt = self._record()
+        claimed, old_claim, _ = self.service.claim_retry(attempt.id, actor=self.admin)
+        self.clock_value += self.service.RETRY_CLAIM_TTL_SECONDS + 1
+        current, claim, _ = self.service.claim_retry(attempt.id, actor=self.admin)
+        for denied_actor, denied_claim in ((self.admin, old_claim), (self.member, claim)):
+            with self.assertRaises(HTTPException):
+                self.service.bind_replacement(attempt.id, actor=denied_actor,
+                    claim_id=denied_claim, previous_thread_id="thread-1",
+                    replacement_thread_id="replacement")
+        self.assertIsNone(self.service.get(attempt.id, actor=self.admin).replacement_thread_id)
+        updated = self.service.bind_replacement(attempt.id, actor=self.admin,
+            claim_id=claim, previous_thread_id="thread-1", replacement_thread_id="replacement")
+        self.assertEqual(updated.thread_id, attempt.thread_id)
+        self.assertEqual(updated.message, attempt.message)
+        self.assertEqual(updated.execution_id, attempt.execution_id)
+        reloaded = ExecutionPreflightService(ExecutionPreflightStore(SQLiteStateStore(self.db)))
+        self.assertEqual(reloaded.for_thread("replacement", actor=self.admin)[0].id, attempt.id)
+        with self.assertRaises(HTTPException):
+            self.service.bind_replacement(attempt.id, actor=self.admin,
+                claim_id=claim, previous_thread_id="thread-1", replacement_thread_id="unrelated")
+
     def test_started_attempt_is_terminal_for_retry_deduplication(self) -> None:
         attempt = self._record()
         claimed, claim_id, acquired = self.service.claim_retry(
