@@ -299,3 +299,12 @@ Values must be positive integers; invalid deployment configuration fails startup
 rather than disabling enforcement. An explicitly supplied service quota takes
 precedence. These limits bound retained isolated sessions as well as active turns;
 operators must account for all owner sessions when choosing deployment capacity.
+
+Native process failure and session completion retain worker authority for the
+fenced assignment transition. Workspace reservation release then uses the existing
+owner-side control actor, with retained-files semantics: tracked, untracked and
+ignored files, scratch contents and Git branches remain intact. This does not add
+workspace administration to the worker identity. The two durable writes remain
+separate; a suppressed release failure still requires supported reconciliation.
+Terminal-assignment retention is not proof that an unreferenced workspace is safe
+to release, and this lifecycle repair does not retire historical orphan leases.

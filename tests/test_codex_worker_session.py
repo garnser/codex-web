@@ -4,10 +4,11 @@ import asyncio
 import dataclasses
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import HTTPException
 
@@ -24,7 +25,10 @@ from codex_web.execution_workers import (
     WorkerLifecycle,
     WorkerResourceLimits,
 )
-from codex_web.execution_workspaces import ExecutionWorkspaceStatus, LeaseMode
+from codex_web.execution_workspaces import (
+    ExecutionWorkspace, ExecutionWorkspaceLease, ExecutionWorkspaceKind,
+    ExecutionWorkspaceStatus, LeaseMode,
+)
 from codex_web.resources import (
     RepositoryExecutionScope,
     RepositoryTargetSource,
@@ -48,7 +52,9 @@ from codex_web.services.codex_worker_session import (
 )
 from codex_web.services.codex_model_egress import CodexModelEgressEndpoint
 from codex_web.services.execution_workers import ExecutionWorkerService, WorkerConflictError
-from codex_web.services.identity import IdentityService
+from codex_web.services.identity import AuthorizationError, IdentityService
+from codex_web.services.execution_workspaces import ExecutionWorkspaceService
+from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
 from codex_web.storage.execution_workers import ExecutionWorkerStore
 from codex_web.storage.identity_state import IdentityStateStore
@@ -1219,6 +1225,94 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.backend.processes[0].terminated)
         self.assertEqual(released[0][1]["actor"], self.admin)
         self.assertTrue(released[0][1]["preserve_files"])
+
+    def _install_real_owner_workspace(self):
+        store = ExecutionWorkspaceStateStore(self.worker_service.store.store)
+        now = time.time()
+        workspace = ExecutionWorkspace(
+            id="execws-codex", organization_id=self.admin.organization_id,
+            workspace_id=self.admin.workspace_id, work_item_ref="group/app#codex",
+            execution_id="exec-codex", project_id="home", owner_identity_id=self.admin.identity_id,
+            kind=ExecutionWorkspaceKind.GIT_WORKTREE, resource_ids=("repo-1",),
+            repository_resource_id="repo-1", writable_repository_ids=("repo-1",),
+            lease_id="lease-codex", path=str(self.workspace_path),
+            branch_name="retained-branch", base_revision="abc123", head_revision="abc123",
+            status=ExecutionWorkspaceStatus.ACTIVE, created_at=now, updated_at=now)
+        lease = ExecutionWorkspaceLease(
+            id=workspace.lease_id, execution_workspace_id=workspace.id,
+            organization_id=self.admin.organization_id, workspace_id=self.admin.workspace_id,
+            work_item_ref=workspace.work_item_ref, execution_id=workspace.execution_id,
+            owner_identity_id=self.admin.identity_id, resource_ids=workspace.resource_ids,
+            mode=LeaseMode.WRITE, acquired_at=now, expires_at=now+3600)
+        def insert(state):
+            state.workspaces.append(workspace)
+            state.leases.append(lease)
+            return state
+        store.update(insert)
+        service = ExecutionWorkspaceService(store, SimpleNamespace(), None, lambda _: None)
+        service._cleanup_git_workspace = Mock(side_effect=AssertionError("lifecycle must retain every file"))
+        self.workspaces = service
+        self.local_worker.workspace_service = service
+        self.worker_service.workspaces = service
+        for name, body in (("untracked.txt", b"uncommitted evidence\x00"),
+                           (".ignored-artifact", b"ignored evidence\xff")):
+            (self.workspace_path/name).write_bytes(body)
+        (self.workspace_path/".gitignore").write_text(".ignored-artifact\n")
+        return service, {path.relative_to(self.workspace_path):path.read_bytes()
+                         for path in self.workspace_path.rglob("*") if path.is_file()}
+
+    def _assert_owner_release_preserved_files(self, service, before):
+        state = service.store.load()
+        workspace = next(w for w in state.workspaces if w.id=="execws-codex")
+        lease = next(l for l in state.leases if l.id=="lease-codex")
+        self.assertEqual(workspace.status, ExecutionWorkspaceStatus.RELEASED)
+        self.assertIsNotNone(lease.released_at)
+        self.assertIsNone(workspace.cleaned_at)
+        self.assertEqual((workspace.branch_name, workspace.head_revision), ("retained-branch", "abc123"))
+        service._cleanup_git_workspace.assert_not_called()
+        event = next(e for e in state.events if e.event_type=="workspace_released")
+        self.assertEqual(event.actor_identity_id, self.admin.identity_id)
+        self.assertEqual(event.details, {"discard":False, "preserve_files":True})
+        self.assertEqual(before, {path.relative_to(self.workspace_path):path.read_bytes()
+                                for path in self.workspace_path.rglob("*") if path.is_file()})
+        self.assertNotIn("execution-workspace:admin", self.worker_actor.service_scopes)
+
+    async def test_completion_releases_owner_workspace_with_real_authorization_and_retains_files(self):
+        service, before = self._install_real_owner_workspace()
+        with self.assertRaises(AuthorizationError):
+            service._authorized(service.get("execws-codex", self.admin), self.worker_actor)
+        assignment = self._create_assignment()
+        manager = AssignmentBoundCodexSessionManager(
+            self.local_worker, SimpleNamespace(), runtime_factory=_FakeCodexRuntime,
+            watchdog_interval_seconds=60)
+        await manager.start(assignment.id)
+        # Isolate the unrelated Git checkpoint machinery; authorization,
+        # assignment completion, lease transition and workspace audit are real.
+        with patch.object(manager, "checkpoint", new_callable=AsyncMock) as checkpoint:
+            with patch.object(self.worker_service, "complete", wraps=self.worker_service.complete) as completed_call:
+                completed = await manager.complete(assignment.id, succeeded=True)
+            checkpoint.assert_awaited_once_with(assignment.id)
+        self.assertIs(completed_call.call_args.kwargs["actor"], self.worker_actor)
+        self.assertEqual(completed.status, AssignmentStatus.SUCCEEDED)
+        self.assertIsNone(completed.lease)
+        self._assert_owner_release_preserved_files(service, before)
+
+    async def test_runtime_failure_releases_owner_workspace_and_keeps_worker_completion_identity(self):
+        service, before = self._install_real_owner_workspace()
+        assignment = self._create_assignment()
+        session = await self._session(assignment)
+        try:
+            with patch.object(self.worker_service, "complete", wraps=self.worker_service.complete) as completed_call:
+                session._record_runtime_failure(
+                    failure_code="agent_runtime_process_exited", failure_message="actual process ended",
+                    release_reason="agent runtime process exited")
+            self.assertIs(completed_call.call_args.kwargs["actor"], self.worker_actor)
+            completed = self.worker_service.store.assignment(assignment.id)
+            self.assertEqual(completed.status, AssignmentStatus.FAILED)
+            self.assertIsNone(completed.lease)
+            self._assert_owner_release_preserved_files(service, before)
+        finally:
+            await session.stop()
 
     async def test_manager_completes_exact_fenced_assignment_and_stops_session(self) -> None:
         assignment = self._create_assignment()

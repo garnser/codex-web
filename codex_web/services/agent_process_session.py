@@ -888,7 +888,8 @@ class AssignmentBoundAgentProcessSession:
                         discard=False,
                         reason=release_reason,
                     ),
-                    actor=self.local_worker.worker_actor,
+                    actor=self.local_worker.control_actor,
+                    preserve_files=True,
                 )
 
     def _record_unexpected_process_exit(self) -> None:
@@ -1129,7 +1130,8 @@ class AssignmentBoundAgentProcessSessionManager:
                         discard=False,
                         reason="assignment completed",
                     ),
-                    actor=self.local_worker.worker_actor,
+                    actor=self.local_worker.control_actor,
+                    preserve_files=True,
                 )
         return completed
 
