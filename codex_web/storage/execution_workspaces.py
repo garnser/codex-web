@@ -6,7 +6,11 @@ import threading
 from typing import Any, Callable
 
 from codex_web.compatibility import ContractSpec, MigrationRegistry
-from codex_web.execution_workspaces import ExecutionWorkspaceState, ExecutionWorkspace, ExecutionWorkspaceLease
+from codex_web.execution_workspaces import (
+    ExecutionWorkspace,
+    ExecutionWorkspaceLease,
+    ExecutionWorkspaceState,
+)
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
@@ -275,16 +279,23 @@ class ExecutionWorkspaceStateStore:
             return self._load_unlocked()
 
     def workspace(self, workspace_id: str) -> ExecutionWorkspace | None:
+        """Read one canonical workspace without decoding lease or event history."""
         with self._lock:
             self._ensure_records()
             raw = self.store.record_get(self.workspace_namespace, workspace_id)
-            return ExecutionWorkspace.model_validate(raw) if raw is not None else None
+            if raw is None:
+                return None
+            workspace = ExecutionWorkspace.model_validate(raw)
+            if workspace.id != workspace_id:
+                raise ValueError("execution workspace record key does not match its id")
+            return workspace
 
     def lease(self, lease_id: str) -> ExecutionWorkspaceLease | None:
         with self._lock:
             self._ensure_records()
             raw = self.store.record_get(self.lease_namespace, lease_id)
             return ExecutionWorkspaceLease.model_validate(raw) if raw is not None else None
+
 
     def _apply_records(
         self,

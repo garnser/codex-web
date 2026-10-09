@@ -26,6 +26,12 @@ The canonical record includes:
 - lifecycle/error state;
 - structured integration outcome.
 
+Single-workspace retrieval uses the canonical keyed workspace record rather than
+loading unrelated workspace, lease, or event history. It validates the selected
+record and its key/ID agreement before applying the same tenant and owner/admin
+authorization checks. Existing legacy-state migration still runs before the first
+record lookup; list and lifecycle transactions retain their full-state semantics.
+
 ## Thread bootstrap identity
 
 The pinned Codex app-server generates the canonical thread ID during `thread/start`. Isolated execution therefore cannot honestly use a `thread:<thread-id>` subject before that RPC completes.
