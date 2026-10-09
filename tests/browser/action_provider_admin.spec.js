@@ -6,9 +6,11 @@ const fixture = `<!doctype html><html><head><meta name="viewport" content="width
 <div id="action-provider-status" class="form-result" aria-live="polite"></div><div id="action-provider-list" class="comm-log"></div></section></details>
 <script type="module" src="/static/action_provider_admin.js"></script></body></html>`;
 
-async function mount(page, { patchStatus = 200, patchDelay = 0, patchAbort = false } = {}) {
+async function mount(page, { patchStatus = 200, holdPatch = false, patchAbort = false } = {}) {
   let enabled = false;
   const patches = [];
+  let releasePatch;
+  const patchGate = holdPatch ? new Promise(resolve => { releasePatch = resolve; }) : Promise.resolve();
   await page.route('**/action-provider-admin-fixture', route => route.fulfill({ contentType: 'text/html', body: fixture }));
   await page.route('**/api/**', async route => {
     const request = route.request();
@@ -35,7 +37,7 @@ async function mount(page, { patchStatus = 200, patchDelay = 0, patchAbort = fal
     if (path === '/api/action-providers/bindings/binding-a' && request.method() === 'PATCH') {
       const body = request.postDataJSON();
       patches.push(body);
-      if (patchDelay) await new Promise(resolve => setTimeout(resolve, patchDelay));
+      await patchGate;
       if (patchAbort) return route.abort('failed');
       if (patchStatus !== 200) return route.fulfill({ status: patchStatus, json: { detail: `provider update ${patchStatus}` } });
       enabled = body.enabled;
@@ -45,7 +47,7 @@ async function mount(page, { patchStatus = 200, patchDelay = 0, patchAbort = fal
   });
   await page.goto('http://127.0.0.1:18766/action-provider-admin-fixture');
   await expect(page.getByRole('button', { name: 'Enable ActionProvider binding binding-a' })).toBeVisible();
-  return { patches };
+  return { patches, releasePatch: () => releasePatch?.() };
 }
 
 async function acceptToggle(page, label = 'Enable ActionProvider binding') {
@@ -68,6 +70,9 @@ test('binding toggle reviews exact canonical target, supports keyboard cancellat
   await expect(dialog).toContainText('Primary repository (repository-a)');
   await expect(dialog).toContainText('does not prepare or execute an action');
   await page.keyboard.press('Escape');
+  // Native focus restoration can precede the asynchronous close handler.
+  // Wait for cancellation cleanup before asking for a fresh confirmation.
+  await expect(page.locator('dialog.action-confirmation')).toHaveCount(0);
   await expect(button).toBeFocused();
   expect(patches).toEqual([]);
 
@@ -81,13 +86,17 @@ test('binding toggle reviews exact canonical target, supports keyboard cancellat
 });
 
 test('binding toggle exposes a disabled pending state until canonical refresh completes', async ({ page }) => {
-  await mount(page, { patchDelay: 500 });
-  await page.getByRole('button', { name: 'Enable ActionProvider binding binding-a' }).click();
-  await acceptToggle(page);
-  await expect(page.locator('#action-provider-status')).toContainText('Enable pending');
-  const card = page.locator('[data-reference-kind="action_provider"][data-reference-id="binding-a"]');
-  await expect(card).toHaveAttribute('aria-busy', 'true');
-  await expect(card.getByRole('button', { name: 'Enable ActionProvider binding binding-a' })).toBeDisabled();
+  const { releasePatch } = await mount(page, { holdPatch: true });
+  try {
+    await page.getByRole('button', { name: 'Enable ActionProvider binding binding-a' }).click();
+    await acceptToggle(page);
+    await expect(page.locator('#action-provider-status')).toContainText('Enable pending');
+    const card = page.locator('[data-reference-kind="action_provider"][data-reference-id="binding-a"]');
+    await expect(card).toHaveAttribute('aria-busy', 'true');
+    await expect(card.getByRole('button', { name: 'Enable ActionProvider binding binding-a' })).toBeDisabled();
+  } finally {
+    releasePatch();
+  }
   await expect(page.locator('#action-provider-status')).toContainText('Enable succeeded');
 });
 
