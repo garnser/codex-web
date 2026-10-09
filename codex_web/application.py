@@ -388,6 +388,7 @@ from codex_web.services.runtime_diagnostics import (
     RuntimeDiagnosticsService,
     RuntimeHealthService,
     StaticAssetVersionService,
+    actionable_owner_projects,
 )
 from codex_web.services.operator_ui import OperatorUiService
 from codex_web.services.scheduler import SchedulerService
@@ -4163,28 +4164,15 @@ def _autonomy_health():
         if name in task_status
         and not task_status[name].get("running", False)
     ]
-    states = runtime_state.work_item_states.load().values()
-    canonical_project_ids = {
-        project.id for project in project_repository.load()
-    }
+    actionable_projects_by_owner = actionable_owner_projects(
+        runtime_state.work_item_states,
+        owners=OWNER_QUEUE_AGENTS,
+        coerce_owner=work_item_state_machine._coerce_owner,
+        actionable_stages=AutonomyService.ACTIONABLE_OWNER_STAGES,
+    )
     idle_actionable_owners = []
     for owner in OWNER_QUEUE_AGENTS:
-        actionable_projects = {
-            state.project_id
-            for state in states
-            if state.project_id
-            and work_item_state_machine._coerce_owner(
-                state.current_owner or state.next_owner
-            )
-            == owner
-            and state.current_stage
-            in AutonomyService.ACTIONABLE_OWNER_STAGES
-            and not state.closed_at
-            and not (
-                state.handoff
-                and state.handoff.status == "pending"
-            )
-        }
+        actionable_projects = actionable_projects_by_owner.get(owner, set())
         if not actionable_projects:
             continue
         owner_is_active_or_queued = False

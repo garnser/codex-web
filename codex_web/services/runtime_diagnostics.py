@@ -11,6 +11,86 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict
+
+from codex_web.models import HandoffStatus, WorkItemStage
+
+
+class _WorkItemHealthHandoff(BaseModel):
+    """Only the handoff state needed by autonomous readiness."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    status: HandoffStatus = "pending"
+
+
+class _WorkItemHealthProjection(BaseModel):
+    """Bounded read-only projection of canonical Work Item state."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    project_id: str | None = None
+    current_owner: str | None = None
+    next_owner: str | None = None
+    current_stage: WorkItemStage = "implementation_active"
+    handoff: _WorkItemHealthHandoff | None = None
+    closed_at: float | None = None
+
+
+def actionable_owner_projects(
+    repository: Any,
+    *,
+    owners: tuple[str, ...],
+    coerce_owner: Callable[[str | None], str | None],
+    actionable_stages: frozenset[str],
+    page_size: int = 1000,
+) -> dict[str, set[str]]:
+    """Project actionable Work Items without reconstructing full records.
+
+    Runtime health needs six fields from each canonical Work Item. Reading
+    bounded keyed-record pages avoids the legacy aggregate load, deep copy,
+    and validation of unrelated payload fields. Fields that determine the
+    health result remain validated and therefore fail the refresh visibly.
+    """
+
+    normalized_owners = tuple(
+        owner
+        for owner in dict.fromkeys(coerce_owner(value) for value in owners)
+        if owner is not None
+    )
+    projects = {owner: set() for owner in normalized_owners}
+    if not projects:
+        return projects
+
+    cursor: str | None = None
+    bounded_page_size = max(1, min(int(page_size), 1000))
+    while True:
+        raw, next_cursor = repository.raw_page(
+            after=cursor,
+            limit=bounded_page_size,
+        )
+        for value in raw.values():
+            state = _WorkItemHealthProjection.model_validate(value)
+            owner = coerce_owner(state.current_owner or state.next_owner)
+            if (
+                owner not in projects
+                or not state.project_id
+                or state.current_stage not in actionable_stages
+                or bool(state.closed_at)
+                or (
+                    state.handoff is not None
+                    and state.handoff.status == "pending"
+                )
+            ):
+                continue
+            projects[owner].add(state.project_id)
+
+        if next_cursor is None:
+            return projects
+        if next_cursor == cursor:
+            raise RuntimeError("Work Item health pagination did not advance")
+        cursor = next_cursor
+
 
 class StaticAssetVersionService:
     """Generate a stable cache-busting version once, outside hot paths."""
