@@ -299,6 +299,20 @@ class GitLabClient:
         )
         return [item for item in response if isinstance(item, dict)] if isinstance(response, list) else []
 
+    async def issue_related_merge_requests(
+        self, api_base: str, project: str, iid: int, *, token: str,
+    ) -> list[dict[str, Any]]:
+        response = await self.get_json(
+            api_base,
+            f"projects/{quote(project, safe='')}/issues/{iid}/related_merge_requests",
+            token=token,
+        )
+        return (
+            [item for item in response if isinstance(item, dict)]
+            if isinstance(response, list)
+            else []
+        )
+
     async def create_merge_request(
         self,
         api_base: str,

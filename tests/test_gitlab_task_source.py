@@ -18,6 +18,7 @@ class _FakeGitLabClient:
     def __init__(self) -> None:
         self.issue = {
             "id": 9001,
+            "project_id": 501,
             "iid": 42,
             "title": "Implement adapter",
             "state": "opened",
@@ -32,6 +33,8 @@ class _FakeGitLabClient:
         self.update_payloads: list[dict[str, object]] = []
         self.create_payloads: list[tuple[str, dict[str, object]]] = []
         self.notes: list[tuple[str, int, str]] = []
+        self.related_merge_requests: list[dict[str, object]] = []
+        self.related_calls: list[tuple[str, int]] = []
 
     async def group_issues(self, api_base, group, *, token, labels=None, state="opened"):
         self.group_calls.append((api_base, group, state))
@@ -40,6 +43,12 @@ class _FakeGitLabClient:
     async def project_issue(self, api_base, project, iid, *, token):
         self.read_calls.append((project, iid))
         return deepcopy(self.issue)
+
+    async def issue_related_merge_requests(
+        self, api_base, project, iid, *, token
+    ):
+        self.related_calls.append((project, iid))
+        return deepcopy(self.related_merge_requests)
 
     async def create_project_issue(self, api_base, project, *, token, payload):
         self.create_payloads.append((project, dict(payload)))
@@ -143,6 +152,52 @@ class GitLabTaskSourceTests(unittest.IsolatedAsyncioTestCase):
         self.conformance.validate_snapshot(self.source, read)
         self.assertEqual(read.identity.external_id, snapshot.identity.external_id)
         self.assertEqual(self.client.read_calls[-1], ("group/project", 42))
+        self.assertEqual(self.client.related_calls[-1], ("group/project", 42))
+        self.assertEqual(read.artifact_relations, ())
+
+    async def test_read_normalizes_only_same_project_exact_head_relations(self) -> None:
+        head = "a" * 40
+        self.client.related_merge_requests = [
+            {
+                "iid": 287,
+                "source_project_id": 501,
+                "target_project_id": 501,
+                "sha": head,
+                "state": "opened",
+                "updated_at": "2026-09-17T20:05:00Z",
+                "web_url": "https://gitlab.example/group/project/-/merge_requests/287",
+            },
+            {
+                "iid": 288,
+                "source_project_id": 999,
+                "target_project_id": 501,
+                "sha": "b" * 40,
+                "state": "opened",
+                "updated_at": "2026-09-17T20:06:00Z",
+            },
+            {
+                "iid": 289,
+                "source_project_id": 501,
+                "target_project_id": 501,
+                "sha": "not-an-exact-head",
+                "state": "opened",
+                "updated_at": "2026-09-17T20:07:00Z",
+            },
+        ]
+
+        snapshot = await self.source.read(
+            TaskSourceIdentity(
+                source_type="gitlab",
+                source_instance="https://gitlab.example/api/v4",
+                external_id="group/project#42",
+            )
+        )
+
+        self.assertEqual(len(snapshot.artifact_relations), 1)
+        relation = snapshot.artifact_relations[0]
+        self.assertEqual(relation.ref, "group/project!287")
+        self.assertEqual(relation.head_revision, head)
+        self.assertEqual(relation.state, "opened")
 
     async def test_description_survives_discovery_read_and_both_webhook_paths(self) -> None:
         from codex_web.services.gitlab_task_source_events import GitLabWebhookTaskSource
