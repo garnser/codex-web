@@ -23,6 +23,19 @@ def actionable_owner_value(state: WorkItemState) -> str | None:
     return state.current_owner or state.next_owner
 
 
+def work_item_repository_scope(state: WorkItemState) -> tuple[str | None, tuple[str, ...]]:
+    """Carry canonical task context through the existing scoped turn boundary."""
+    execution = getattr(state, "execution", None)
+    writable = tuple(dict.fromkeys(
+        getattr(execution, "writable_repository_resource_ids", ())
+    ))
+    resource_ids = tuple(getattr(state, "resource_ids", ()))
+    if not writable and len(resource_ids) == 1:
+        writable = (resource_ids[0],)
+    primary = writable[0] if len(writable) == 1 else None
+    return primary, writable
+
+
 def work_item_progress_evidence(state: WorkItemState) -> dict[str, Any]:
     """Canonical evidence without receipt, provider-observation or activity clocks."""
     return state.model_dump(

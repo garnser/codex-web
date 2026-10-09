@@ -178,3 +178,20 @@ The resolved scope and context attribution feed the same idempotency key and
 controller gates. Lookup failures or cancellation before completion do not
 ingest an event or dispatch reasoning; an already-started read may finish in
 the executor without continuing the cancelled dispatch.
+
+### Owner watchdog repository context
+
+For a selected canonical work item, owner watchdog dispatch carries its exact
+work-item reference and the same repository context used by owner continuity
+through the ordinary scoped turn API, including the bounded-controller reasoner.
+Published execution profiles and assignment/lease validation remain authoritative:
+this context does not grant repository access. Explicit writable execution
+resources take precedence; a singular associated resource is the existing fallback.
+Multiple historical resource associations are not guessed into a writable scope.
+Scratch-only profiles keep the work-item context without gaining repositories.
+
+The idle guard is rechecked by dispatch, so intervening active work or queued FIFO
+items prevent a watchdog continuation from starting or enqueueing duplicate work.
+Scope/preflight failures retain their ordinary visible error and cannot fall back
+to executing in the recipient's prior repository. Legacy discovery without a
+selected canonical item keeps its existing dispatch contract.

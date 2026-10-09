@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from codex_web.models import WorkItemState
-from codex_web.services.work_item_dependencies import actionable_owner_value
+from codex_web.services.work_item_dependencies import actionable_owner_value, work_item_repository_scope
 from codex_web.services.keyed_background_tasks import KeyedTaskCoordinator
 from codex_web.services.runtime_policy import RuntimePolicy
 
@@ -237,17 +237,7 @@ class WorkItemContinuityService:
     def _dispatch_repository_scope(
         state: WorkItemState,
     ) -> tuple[str | None, tuple[str, ...]]:
-        execution = getattr(state, "execution", None)
-        writable = tuple(
-            dict.fromkeys(
-                getattr(execution, "writable_repository_resource_ids", ())
-            )
-        )
-        resource_ids = tuple(getattr(state, "resource_ids", ()))
-        if not writable and len(resource_ids) == 1:
-            writable = (resource_ids[0],)
-        primary = writable[0] if len(writable) == 1 else None
-        return primary, writable
+        return work_item_repository_scope(state)
 
     async def dispatch_structured_handoff(
         self,

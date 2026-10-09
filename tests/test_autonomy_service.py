@@ -616,7 +616,9 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(selected[0], state)
         runtime.dispatch_event.assert_awaited_once_with(
             SimpleNamespace(thread_id="thread-james", thread_name="James"),
-            "dispatch:example/project#1", "owner-work-watchdog")
+            "dispatch:example/project#1", "owner-work-watchdog",
+            work_item_ref="example/project#1", repository_resource_id=None,
+            writable_repository_resource_ids=(), require_idle=True)
         runtime.gitlab_group_issues.assert_not_awaited()
 
     async def test_owner_snapshot_failure_does_not_dispatch_or_query_provider(self):
@@ -701,6 +703,8 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
             ),
             "dispatch:example/project#2",
             "owner-work-watchdog",
+            work_item_ref="example/project#2", repository_resource_id=None,
+            writable_repository_resource_ids=(), require_idle=True,
         )
         runtime.gitlab_group_issues.assert_not_awaited()
 
