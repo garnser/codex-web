@@ -1022,6 +1022,11 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
 
         service._start_thread_turn_now_admitted = admitted_start
         project = Project(id="p1", name="Project", path="/workspace/project")
+        service._assignment_record = lambda assignment_id: SimpleNamespace(
+            id=assignment_id,
+            organization_id=project.organization_id,
+            workspace_id=project.workspace_id,
+        )
         first = asyncio.create_task(
             service.start_thread_turn_now(
                 "t1",
@@ -1069,6 +1074,11 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         )
         service._start_thread_turn_now_admitted = AsyncMock()
         project = Project(id="p1", name="Project", path="/workspace/project")
+        service._assignment_record = lambda assignment_id: SimpleNamespace(
+            id=assignment_id,
+            organization_id=project.organization_id,
+            workspace_id=project.workspace_id,
+        )
 
         with self.assertRaises(HTTPException) as caught:
             await service.start_thread_turn_now(
@@ -1084,6 +1094,49 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             caught.exception.detail["code"],
             "upgrade_maintenance_active",
         )
+        service._start_thread_turn_now_admitted.assert_not_awaited()
+
+    async def test_upgrade_admission_uses_bound_assignment_scope(self) -> None:
+        coordinator = UpgradeAdmissionCoordinator()
+        checked = []
+
+        def admission(organization_id, workspace_id):
+            checked.append((organization_id, workspace_id))
+            return coordinator.admit(
+                organization_id,
+                workspace_id,
+                lambda: organization_id != "org-bound",
+            )
+
+        _host, _binding, _sessions, service = self._service(
+            bootstrap_thread_id="t1",
+            maintenance_admission=admission,
+        )
+        service._assignment_record = lambda assignment_id: SimpleNamespace(
+            id=assignment_id,
+            organization_id="org-bound",
+            workspace_id="ws-bound",
+        )
+        service._start_thread_turn_now_admitted = AsyncMock()
+        project = Project(
+            id="p1",
+            name="Project",
+            path="/workspace/project",
+            organization_id="org-caller",
+            workspace_id="ws-caller",
+        )
+
+        with self.assertRaises(HTTPException) as caught:
+            await service.start_thread_turn_now(
+                "t1",
+                project=project,
+                message="must use bound scope",
+                sandbox="workspace-write",
+                approval_policy="on-request",
+            )
+
+        self.assertEqual(caught.exception.detail["code"], "upgrade_maintenance_active")
+        self.assertEqual(checked, [("org-bound", "ws-bound")])
         service._start_thread_turn_now_admitted.assert_not_awaited()
 
     async def test_supersede_bootstrap_auth_failure_is_structured_preflight(self) -> None:

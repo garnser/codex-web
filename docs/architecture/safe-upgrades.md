@@ -105,6 +105,10 @@ Upgrade maintenance is canonical plan state. While maintenance is active:
 - ordinary ActionIntent claims are not admitted;
 - new execution-worker assignments are rejected;
 - execution-worker assignment claims are paused;
+- native turns on existing bound sessions resolve their canonical assignment
+  scope before admission; scope cannot be replaced by the caller or Project;
+- queued native turns rejected by maintenance retain FIFO position and failure
+  attempts, with delayed deterministic admission retries and no model call;
 - incident/recovery/rollback/reconciliation ActionIntents remain eligible.
 
 Already-running operations are not killed by entering maintenance. Preflight
