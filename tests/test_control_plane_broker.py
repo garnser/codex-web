@@ -1404,6 +1404,8 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             id="action-intent-deadbeef",
             action_id="code-host.branch.publish",
             execution_id=assignment.execution_id,
+            organization_id=assignment.organization_id,
+            workspace_id=assignment.workspace_id,
             project_id=assignment.project_id,
             resource_ids=("repository-a",),
             requested_by=assignment.created_by,
@@ -1456,6 +1458,8 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             id="action-intent-historical",
             action_id="code-host.branch.publish",
             execution_id="superseded-thread-bootstrap",
+            organization_id=assignment.organization_id,
+            workspace_id=assignment.workspace_id,
             project_id=assignment.project_id,
             resource_ids=("repository-a",),
             requested_by=assignment.created_by,
@@ -1493,6 +1497,130 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 raw_target=f"/api/action-intents/{intent.id}/reconcile",
                 body=b'{"retry_if_idempotent":true}',
             )
+
+    async def test_recovered_assignment_can_verify_historical_merge_without_retry(self) -> None:
+        self.authority.resources = SimpleNamespace(
+            get=lambda resource_id, actor: SimpleNamespace(
+                id=resource_id,
+                lifecycle="active",
+                resource_type="repository",
+                risk="medium",
+                sensitivity="internal",
+            )
+        )
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "repository-write",
+            "resource_ids": ("repository-a",),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default", project_id="project-a",
+                writable_repository_ids=("repository-a",),
+                source=RepositoryTargetSource.SINGLE_REPOSITORY, source_ref="repository-a",
+            ),
+        })
+        intent = SimpleNamespace(
+            id="action-intent-00000000000000000000000000000001",
+            action_id="code-host.pull-request.merge",
+            execution_id="superseded-thread-bootstrap",
+            organization_id=assignment.organization_id,
+            workspace_id=assignment.workspace_id,
+            project_id=assignment.project_id,
+            resource_ids=("repository-a",),
+            requested_by=assignment.created_by,
+        )
+        action_intents = _ActionIntents(intent)
+        service = ControlPlaneBrokerService(
+            identity=self.identity,
+            authority=self.authority,
+            work_items=self.work_items,
+            operator=_Operator(),
+            audit=ControlPlaneBrokerAuditStore(self.sqlite),
+            action_intents=action_intents,
+        )
+
+        status, payload, *_ = await service.dispatch(
+            assignment=assignment,
+            worker_actor=self.worker_actor,
+            method="POST",
+            raw_target=f"/api/action-intents/{intent.id}/reconcile",
+            body=b'{"retry_if_idempotent":false}',
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["item"]["status"], "requires_reconciliation")
+        self.assertFalse(action_intents.reconciled[0][1].retry_if_idempotent)
+
+        with self.assertRaisesRegex(
+            ControlPlaneBrokerDeniedError,
+            "may reconcile but not retry",
+        ):
+            await service.dispatch(
+                assignment=assignment,
+                worker_actor=self.worker_actor,
+                method="POST",
+                raw_target=f"/api/action-intents/{intent.id}/reconcile",
+                body=b'{"retry_if_idempotent":true}',
+            )
+
+    async def test_repository_reconciliation_scope_mismatches_fail_closed(self) -> None:
+        self.authority.resources = SimpleNamespace(
+            get=lambda resource_id, actor: SimpleNamespace(
+                id=resource_id,
+                lifecycle="active",
+                resource_type="repository",
+                risk="medium",
+                sensitivity="internal",
+            )
+        )
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "repository-write",
+            "resource_ids": ("repository-a",),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default", project_id="project-a",
+                writable_repository_ids=("repository-a",),
+                source=RepositoryTargetSource.SINGLE_REPOSITORY, source_ref="repository-a",
+            ),
+        })
+        baseline = {
+            "id": "action-intent-00000000000000000000000000000002",
+            "action_id": "code-host.pull-request.merge",
+            "execution_id": assignment.execution_id,
+            "organization_id": assignment.organization_id,
+            "workspace_id": assignment.workspace_id,
+            "project_id": assignment.project_id,
+            "resource_ids": ("repository-a",),
+            "requested_by": assignment.created_by,
+        }
+        mismatches = {
+            "organization_id": "other-org",
+            "workspace_id": "other-workspace",
+            "project_id": "project-b",
+            "resource_ids": ("repository-b",),
+            "requested_by": "other-requester",
+            "action_id": "code-host.issue.comment",
+        }
+
+        for field, value in mismatches.items():
+            with self.subTest(field=field):
+                intent = SimpleNamespace(**{**baseline, field: value})
+                service = ControlPlaneBrokerService(
+                    identity=self.identity,
+                    authority=self.authority,
+                    work_items=self.work_items,
+                    operator=_Operator(),
+                    audit=ControlPlaneBrokerAuditStore(self.sqlite),
+                    action_intents=_ActionIntents(intent),
+                )
+                with self.assertRaisesRegex(
+                    ControlPlaneBrokerDeniedError,
+                    "outside the assignment delivery scope",
+                ):
+                    await service.dispatch(
+                        assignment=assignment,
+                        worker_actor=self.worker_actor,
+                        method="POST",
+                        raw_target=f"/api/action-intents/{intent.id}/reconcile",
+                        body=b'{"retry_if_idempotent":false}',
+                    )
 
 
 if __name__ == "__main__":
