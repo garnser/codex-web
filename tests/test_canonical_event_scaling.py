@@ -149,9 +149,12 @@ class CanonicalEventScalingTests(unittest.TestCase):
 
     def test_concurrent_replay_inserts_one_canonical_event(self):
         event = _event(1)
+        stores = [
+            CanonicalEventStore(SQLiteStateStore(self.path))
+            for _ in range(2)
+        ]
 
-        def insert() -> bool:
-            store = CanonicalEventStore(SQLiteStateStore(self.path))
+        def insert(store: CanonicalEventStore) -> bool:
             return store.record_if_new(
                 event,
                 idempotency_key="same-key",
@@ -159,7 +162,7 @@ class CanonicalEventScalingTests(unittest.TestCase):
             )[1]
 
         with ThreadPoolExecutor(max_workers=2) as pool:
-            inserted = list(pool.map(lambda _: insert(), range(2)))
+            inserted = list(pool.map(insert, stores))
 
         self.assertEqual(sorted(inserted), [False, True])
         restarted = CanonicalEventStore(SQLiteStateStore(self.path))
