@@ -1645,7 +1645,10 @@ class ExecutionWorkspaceService:
         request: ExecutionWorkspaceRelease,
         *,
         actor: AuthenticationActor,
+        preserve_files: bool = False,
     ) -> ExecutionWorkspace:
+        if preserve_files and request.discard:
+            raise ExecutionWorkspaceConflictError("retaining files cannot discard a workspace")
         workspace = self.get(workspace_id, actor)
         self._authorized(workspace, actor)
         now = time.time()
@@ -1680,12 +1683,19 @@ class ExecutionWorkspaceService:
                     workspace_id=workspace_id,
                     event_type="workspace_released",
                     actor_identity_id=actor.identity_id,
-                    details={"discard": request.discard},
+                    details={"discard": request.discard, "preserve_files": preserve_files},
                 ),
             )
             return state
 
         self.store.update(mark_released)
+
+        # Cancellation revokes quota/lease ownership without erasing recovery
+        # evidence, including ignored files that a Git checkpoint cannot cover.
+        if preserve_files:
+            updated = self.get(workspace_id, actor)
+            self._sync_work_item(updated)
+            return updated
 
         if workspace.kind == ExecutionWorkspaceKind.GIT_WORKTREE:
             self._cleanup_git_workspace(

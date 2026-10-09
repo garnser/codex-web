@@ -19,11 +19,10 @@ from codex_web.agent_runtime import (
 )
 from codex_web.agent_routing import AgentRoutingRequest
 from codex_web.execution_workers import (
-    AssignmentCompleteRequest,
+    AssignmentCancelRequest,
     AssignmentStatus,
     ExecutionRuntimeBinding,
 )
-from codex_web.execution_workspaces import ExecutionWorkspaceRelease
 from codex_web.identity import AuthenticationActor
 from codex_web.models import ActiveThreadTurn, BotBinding, BotReplyTarget, Project, QueuedTurn
 from codex_web.paths import SLACK_RELAY_NOTICE
@@ -3419,15 +3418,14 @@ class TurnExecutionService:
             released = False
             for manager in dict(self.session_managers or {}).values():
                 if manager.get(previous_assignment_id) is not None:
-                    with contextlib.suppress(Exception):
-                        await manager.complete(
-                            previous_assignment_id,
-                            succeeded=False,
-                            failure_code="thread_runtime_switched",
-                            failure_message=(
-                                "thread superseded onto a different agent runtime"
-                            ),
-                        )
+                    await manager.complete(
+                        previous_assignment_id,
+                        succeeded=False,
+                        failure_code="thread_runtime_switched",
+                        failure_message=(
+                            "thread superseded onto a different agent runtime"
+                        ),
+                    )
                     released = True
                     break
             if not released:
@@ -3438,57 +3436,31 @@ class TurnExecutionService:
                 )
                 if local_worker is not None:
                     def release_superseded() -> None:
-                        with contextlib.suppress(Exception):
-                            local_worker.worker_service.recover_expired(
-                                actor=self.control_actor
+                        assignment = local_worker._pending_assignment(previous_assignment_id)
+                        # No registered session means this process cannot attest
+                        # ownership of a live claim. Only unclaimed/lost records
+                        # may be cancelled here; an active foreign claim fails.
+                        if assignment.status in (AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING):
+                            raise HTTPException(
+                                status_code=409,
+                                detail="superseded bootstrap has an unowned live worker claim",
                             )
-                        with contextlib.suppress(Exception):
-                            local_worker.workspace_service.recover_expired()
-                        with contextlib.suppress(Exception):
-                            superseded_assignment = (
-                                local_worker._pending_assignment(
-                                    previous_assignment_id
-                                )
-                            )
-                            superseded_workspace_id = (
-                                superseded_assignment.execution_workspace_id
-                            )
-                            if superseded_workspace_id:
-                                local_worker.workspace_service.release(
-                                    superseded_workspace_id,
-                                    ExecutionWorkspaceRelease(
-                                        discard=True,
-                                        reason=(
-                                            "thread superseded onto a different "
-                                            "agent runtime"
-                                        ),
+                        if assignment.status in (
+                            AssignmentStatus.PENDING, AssignmentStatus.LOST,
+                            AssignmentStatus.CANCELLED,
+                        ):
+                            local_worker.worker_service.cancel_bootstrap(
+                                assignment.id,
+                                AssignmentCancelRequest(
+                                    expected_fence=(
+                                        assignment.fence - 1
+                                        if assignment.status == AssignmentStatus.CANCELLED
+                                        else assignment.fence
                                     ),
-                                    actor=self.control_actor,
-                                )
-                        with contextlib.suppress(Exception):
-                            assignment = local_worker._pending_assignment(
-                                previous_assignment_id
+                                    reason="thread superseded onto a different agent runtime",
+                                ),
+                                actor=local_worker.control_actor,
                             )
-                            lease = assignment.lease
-                            if lease is not None and assignment.status in (
-                                AssignmentStatus.CLAIMED,
-                                AssignmentStatus.RUNNING,
-                            ):
-                                local_worker.worker_service.complete(
-                                    assignment.assigned_worker_id,
-                                    assignment.id,
-                                    AssignmentCompleteRequest(
-                                        lease_token=lease.lease_token,
-                                        fence=assignment.fence,
-                                        succeeded=False,
-                                        failure_code="thread_runtime_switched",
-                                        failure_message=(
-                                            "thread superseded onto a different "
-                                            "agent runtime"
-                                        ),
-                                    ),
-                                    actor=local_worker.worker_actor,
-                                )
 
                     await asyncio.to_thread(release_superseded)
         h._append_bot_event(
@@ -3547,14 +3519,25 @@ class TurnExecutionService:
                 execution_profile_id=execution_profile_id,
                 agent_profile=agent_profile,
             )
-            self.bootstrap_bindings.rebind(
-                bootstrap_id=f"bootstrap-{token}",
-                thread_id=thread_id,
-                execution_id=binding.execution_id,
-                assignment_id=binding.assignment_id,
-                execution_workspace_id=binding.workspace_id,
-                actor=self.control_actor,
-            )
+            try:
+                self.bootstrap_bindings.rebind(
+                    bootstrap_id=f"bootstrap-{token}",
+                    thread_id=thread_id,
+                    execution_id=binding.execution_id,
+                    assignment_id=binding.assignment_id,
+                    execution_workspace_id=binding.workspace_id,
+                    actor=self.control_actor,
+                )
+            except Exception:
+                self.binding_service.workers.cancel_bootstrap(
+                    binding.assignment_id,
+                    AssignmentCancelRequest(
+                        expected_fence=0,
+                        reason="bootstrap replacement could not be durably bound",
+                    ),
+                    actor=self.binding_service.control_actor,
+                )
+                raise
             return self._bootstrap_binding_for_thread(thread_id)
 
         try:

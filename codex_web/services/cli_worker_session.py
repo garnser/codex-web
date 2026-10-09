@@ -12,6 +12,7 @@ from codex_web.execution_workspaces import (
     ExecutionWorkspaceStatus,
 )
 from codex_web.execution_workers import (
+    AssignmentCancelRequest,
     AssignmentCompleteRequest,
     AssignmentRenewRequest,
     AssignmentStartRequest,
@@ -26,6 +27,8 @@ from codex_web.services.agent_worker_session import (
     AssignmentBoundAgentSessionStaleError,
     AssignmentBoundAgentSessionStatus,
     runtime_binding_identity_matches,
+    start_assignment_session,
+    bootstrap_cancellation_reason,
 )
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
 
@@ -211,6 +214,7 @@ class AssignmentBoundCliSession:
             raise AssignmentBoundCliSessionStaleError(
                 "CLI assignment requires a live worker lease"
             )
+        self.fence = lease.fence
         if assignment.status == AssignmentStatus.CLAIMED:
             assignment = self.local_worker.worker_service.start(
                 self.worker_id,
@@ -470,7 +474,7 @@ class AssignmentBoundCliSessionManager:
                     self.allow_coordinated_repository_layouts
                 ),
             )
-            await session.start()
+            await start_assignment_session(session, self.local_worker, assignment_id)
             self.sessions[assignment_id] = session
             return session
 
@@ -504,6 +508,21 @@ class AssignmentBoundCliSessionManager:
             raise AssignmentBoundCliSessionStaleError(
                 "CLI assignment session is not registered"
             )
+        current = await asyncio.to_thread(self.local_worker._pending_assignment, assignment_id)
+        if not succeeded and current.subject.kind == "thread_bootstrap":
+            if session.fence is None:
+                raise AssignmentBoundCliSessionStaleError("bootstrap session has no fence")
+            cancelled = await asyncio.to_thread(
+                self.local_worker.worker_service.cancel_bootstrap,
+                assignment_id,
+                AssignmentCancelRequest(
+                    expected_fence=session.fence,
+                    reason=bootstrap_cancellation_reason(failure_message or failure_code),
+                ),
+                actor=self.local_worker.control_actor,
+            )
+            await self.stop(assignment_id)
+            return cancelled
         assignment = session.validate_current()
         lease = assignment.lease
         if lease is None or session.fence is None:

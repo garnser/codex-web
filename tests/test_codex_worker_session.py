@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
+from codex_web.execution_subjects import ExecutionSubject
 from codex_web.execution_workers import (
     AssignmentClaimRequest,
     AssignmentStartRequest,
@@ -1096,6 +1097,32 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(self.backend.processes[0].terminated)
         self.assertIn("credential expired", session.last_error)
+
+    async def test_manager_runtime_start_failure_cancels_unregistered_bootstrap(self) -> None:
+        subject = ExecutionSubject(kind="thread_bootstrap", ref="bootstrap-failure")
+        self.workspaces.workspace.subject = subject
+        self.workspaces.workspace.work_item_ref = None
+        released = []
+        self.workspaces.release = lambda key, request, **kwargs: released.append((key, kwargs))
+        assignment = self._create_assignment(subject=subject, work_item_ref=None)
+        class FailedRuntime(_FakeCodexRuntime):
+            async def start(self):
+                await super().start()
+                raise RuntimeError("runtime handshake failed")
+        manager = AssignmentBoundCodexSessionManager(
+            self.local_worker, SimpleNamespace(), runtime_factory=FailedRuntime,
+            watchdog_interval_seconds=60,
+        )
+        with self.assertRaisesRegex(RuntimeError, "runtime handshake failed"):
+            await manager.start(assignment.id)
+        current = self.worker_service.store.assignment(assignment.id)
+        self.assertEqual(current.status, AssignmentStatus.CANCELLED)
+        self.assertIsNone(current.lease)
+        self.assertEqual(current.fence, 2)
+        self.assertIsNone(manager.get(assignment.id))
+        self.assertTrue(self.backend.processes[0].terminated)
+        self.assertEqual(released[0][1]["actor"], self.admin)
+        self.assertTrue(released[0][1]["preserve_files"])
 
     async def test_manager_completes_exact_fenced_assignment_and_stops_session(self) -> None:
         assignment = self._create_assignment()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -8,6 +9,7 @@ from codex_web.api.identity import request_actor
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.execution_workers import (
     AssignmentClaimRequest,
+    AssignmentCancelRequest,
     AssignmentCompleteRequest,
     AssignmentRenewRequest,
     AssignmentStartRequest,
@@ -427,6 +429,21 @@ def build_execution_workers_router(
             if isinstance(exc, (ExecutionWorkerError, AuthorizationError)):
                 raise _error(exc) from exc
             raise
+
+    @router.post("/assignments/{assignment_id}/cancel-bootstrap")
+    async def cancel_bootstrap(
+        assignment_id: str, payload: AssignmentCancelRequest, request: Request,
+    ) -> dict[str, Any]:
+        def cancel_and_project() -> dict[str, Any]:
+            item = service.cancel_bootstrap(
+                assignment_id, payload, actor=_control_actor(request),
+            )
+            return {"item": _operator_assignment(item, control_plane_broker_factory)}
+
+        try:
+            return await asyncio.to_thread(cancel_and_project)
+        except (ExecutionWorkerError, AuthorizationError) as exc:
+            raise _error(exc) from exc
 
     @router.post("/assignments/recover-expired")
     async def recover_expired(request: Request) -> dict[str, Any]:
