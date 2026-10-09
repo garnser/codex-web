@@ -34,10 +34,11 @@ class ThreadNamingService:
             "thread/name/set",
             {"threadId": thread_id, "name": name},
         )
-        indexed = IndexedThread(
-            id=thread_id,
-            name=name,
-            updatedAt=time.time(),
+        existing = self.thread_index.get(thread_id)
+        indexed = (
+            existing.model_copy(update={"name": name, "updatedAt": time.time()})
+            if existing is not None
+            else IndexedThread(id=thread_id, name=name, updatedAt=time.time())
         )
         with contextlib.suppress(Exception):
             thread_response = await self.runtime_request(
@@ -49,13 +50,11 @@ class ThreadNamingService:
                 if isinstance(thread_response, dict)
                 else {}
             )
-            indexed = IndexedThread(
-                id=thread_id,
-                name=name,
-                cwd=thread.get("cwd"),
-                path=thread.get("path"),
-                updatedAt=thread.get("updatedAt") or time.time(),
-            )
+            indexed = indexed.model_copy(update={
+                "cwd": thread.get("cwd") or indexed.cwd,
+                "path": thread.get("path") or indexed.path,
+                "updatedAt": thread.get("updatedAt") or time.time(),
+            })
         self.thread_index.upsert(indexed)
         return response
 

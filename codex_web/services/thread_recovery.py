@@ -240,7 +240,18 @@ class ThreadRecoveryService:
 
     async def archive_replaced_bot_thread(self, old_thread_id: str, new_thread_id: str) -> bool:
         h = self.host
-        self.thread_index.remove(old_thread_id)
+        indexed = self.thread_index.get(old_thread_id)
+        replacement = self.thread_index.get(new_thread_id)
+        if indexed is None:
+            indexed = IndexedThread(
+                id=old_thread_id,
+                name=replacement.name if replacement else "Archived thread",
+                project_id=replacement.project_id if replacement else None,
+                cwd=replacement.cwd if replacement else None,
+            )
+        # Provider archival can fail after recovery. Retain the canonical
+        # archived projection so discovery cannot resurrect this predecessor.
+        self.thread_index.upsert(indexed.model_copy(update={"archived": True}))
         try:
             await self.runtime_request("thread/archive", {"threadId": old_thread_id})
         except Exception as exc:
@@ -345,6 +356,7 @@ class ThreadRecoveryService:
                     name=thread_name,
                     cwd=project.path,
                     path=project.path,
+                    project_id=project.id,
                     updatedAt=time.time(),
                 )
             )
@@ -429,6 +441,7 @@ class ThreadRecoveryService:
                     name=thread_name,
                     cwd=project.path,
                     path=project.path,
+                    project_id=project.id,
                     updatedAt=time.time(),
                 )
             )
