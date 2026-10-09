@@ -11,6 +11,7 @@ from codex_web.models import TaskSourceIdentity
 from codex_web.services.gitlab_task_source import GitLabTaskSource
 from codex_web.services.task_source_conformance import TaskSourceConformanceSuite
 from codex_web.services.task_sources import (
+    InvalidTaskSourceIdentity,
     TaskSource,
     TaskSourceCapability,
     TaskSourceCapabilities,
@@ -33,8 +34,21 @@ class _FakeGitLabClient:
             "labels": ["priority::P1", "owner::james", "status::in progress"],
             "assignees": [{"username": "provider-user"}],
         }
+        self.merge_request_row = {
+            "id": 9101,
+            "iid": 42,
+            "title": "Merge adapter",
+            "description": "Native merge-request body",
+            "state": "opened",
+            "web_url": "https://gitlab.example/group/project/-/merge_requests/42",
+            "updated_at": "2026-09-17T21:00:00Z",
+            "references": {"full": "group/project!42"},
+            "labels": ["owner::sally", "status::in progress"],
+            "assignees": [{"username": "merge-owner"}],
+        }
         self.group_calls: list[tuple[str, str, str]] = []
         self.read_calls: list[tuple[str, int]] = []
+        self.merge_request_calls: list[tuple[str, int]] = []
         self.update_payloads: list[dict[str, object]] = []
         self.create_payloads: list[tuple[str, dict[str, object]]] = []
         self.notes: list[tuple[str, int, str]] = []
@@ -48,6 +62,10 @@ class _FakeGitLabClient:
     async def project_issue(self, api_base, project, iid, *, token):
         self.read_calls.append((project, iid))
         return deepcopy(self.issue)
+
+    async def merge_request(self, api_base, project, iid, *, token):
+        self.merge_request_calls.append((project, iid))
+        return deepcopy(self.merge_request_row)
 
     async def issue_related_merge_requests(
         self, api_base, project, iid, *, token
@@ -281,6 +299,40 @@ class GitLabTaskSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(relation.ref, "group/project!287")
         self.assertEqual(relation.head_revision, head)
         self.assertEqual(relation.state, "opened")
+
+    async def test_read_rejects_missing_or_ambiguous_identity_without_provider_call(self) -> None:
+        for external_id in (
+            "group/project",
+            "group/project!",
+            "!42",
+            "group/project!not-a-number",
+            "group/project#42!42",
+        ):
+            with self.subTest(external_id=external_id):
+                with self.assertRaises(InvalidTaskSourceIdentity):
+                    await self.source.read(
+                        TaskSourceIdentity(
+                            source_type="gitlab",
+                            source_instance="https://gitlab.example/api/v4",
+                            external_id=external_id,
+                        )
+                    )
+
+        self.assertEqual(self.client.read_calls, [])
+        self.assertEqual(self.client.merge_request_calls, [])
+
+    async def test_merge_request_read_rejects_mismatched_provider_identity(self) -> None:
+        self.client.merge_request_row["references"] = {
+            "full": "other/project!42"
+        }
+        with self.assertRaises(InvalidTaskSourceIdentity):
+            await self.source.read(
+                TaskSourceIdentity(
+                    source_type="gitlab",
+                    source_instance="https://gitlab.example/api/v4",
+                    external_id="group/project!42",
+                )
+            )
 
     async def test_description_survives_discovery_read_and_both_webhook_paths(self) -> None:
         from codex_web.services.gitlab_task_source_events import GitLabWebhookTaskSource

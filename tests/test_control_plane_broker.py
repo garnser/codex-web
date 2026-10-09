@@ -411,7 +411,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         from codex_web.services.task_source_work_items import TaskSourceWorkItemProjector
         from codex_web.services.work_item_operator import WorkItemOperatorService
         from codex_web.services.work_item_state import WorkItemStateMachine
-        from test_work_item_operator import _Host, _WorkItems as OperatorWorkItems
+        from tests.test_work_item_operator import _Host, _WorkItems as OperatorWorkItems
         calls = []
         def respond(request):
             calls.append(request.url.raw_path.decode())

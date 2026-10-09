@@ -21,7 +21,10 @@ from codex_web.models import (
 from codex_web.services.reference_task_source import ReferenceTaskSource
 from codex_web.services.task_source_runtime import TaskSourceRegistry
 from codex_web.services.task_source_work_items import TaskSourceWorkItemProjector
-from codex_web.services.task_sources import TaskSourceSnapshot
+from codex_web.services.task_sources import (
+    InvalidTaskSourceIdentity,
+    TaskSourceSnapshot,
+)
 from codex_web.services.work_item_operator import WorkItemOperatorService
 from codex_web.services.work_item_state import WorkItemStateMachine
 from codex_web.work_item_execution_models import WorkItemFailureReason
@@ -190,6 +193,45 @@ class WorkItemOperatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail["snapshot"]["title"], "External title")
         self.assertEqual(len(resolution_threads), 1)
         self.assertNotEqual(resolution_threads[0], event_loop_thread)
+
+    async def test_source_detail_sanitizes_missing_and_malformed_identity(self) -> None:
+        state = self.host.states["TASK-42"]
+        self.host.states[state.ref] = state.model_copy(
+            update={"source_identity": None}
+        )
+        with self.assertRaises(HTTPException) as missing:
+            await self.service.source_detail("TASK-42")
+        self.assertEqual(missing.exception.status_code, 409)
+        self.assertEqual(
+            missing.exception.detail,
+            {
+                "code": "task_source_unavailable",
+                "message": "Authoritative task source is unavailable",
+            },
+        )
+
+        self.host.states[state.ref] = state
+
+        async def invalid_read(_identity):
+            raise InvalidTaskSourceIdentity(
+                "raw/provider/path!credential-shaped-detail"
+            )
+
+        self.source.read = invalid_read
+        with self.assertRaises(HTTPException) as malformed:
+            await self.service.source_detail("TASK-42")
+        self.assertEqual(malformed.exception.status_code, 422)
+        self.assertEqual(
+            malformed.exception.detail,
+            {
+                "code": "task_source_identity_invalid",
+                "message": "Authoritative task-source identity is malformed",
+            },
+        )
+        self.assertNotIn(
+            "credential-shaped-detail",
+            str(malformed.exception.detail),
+        )
 
     async def test_retry_uses_canonical_execution_state_and_dispatch_seam(self) -> None:
         result = await self.service.retry("TASK-42", actor="operator", reason="try again")
