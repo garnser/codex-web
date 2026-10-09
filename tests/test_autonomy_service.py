@@ -523,6 +523,96 @@ class AutonomyOwnerWorkTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+    async def test_owner_snapshot_keeps_loop_responsive_context_and_selection(self):
+        state = WorkItemState(ref="example/project#1", project_id="project-a",
+            current_owner="james", current_stage="implementation_active",
+            created_at=1.0, updated_at=10.0, last_meaningful_update_at=10.0)
+        excluded = state.model_copy(update={"ref": "other/project#1", "project_id": "other-project"})
+        states = {state.ref: state, excluded.ref: excluded}
+        runtime = self._runtime(states)
+        started, release = threading.Event(), threading.Event()
+        scope = contextvars.ContextVar("owner_snapshot_scope")
+        token = scope.set(("organization-a", "workspace-a"))
+        caller = threading.get_ident()
+        observed, selected = [], []
+        def read():
+            observed.append((threading.get_ident(), scope.get()))
+            started.set()
+            release.wait(2)
+            return states
+        runtime.load_work_item_states = read
+        runtime.work_item_dispatch_text = lambda item: selected.append(item) or f"dispatch:{item.ref}"
+        task = asyncio.create_task(AutonomyService(runtime=runtime).run_owner_work_cycle())
+        try:
+            for _ in range(100):
+                if started.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            self.assertTrue(started.is_set())
+            self.assertFalse(task.done())
+            runtime.dispatch_event.assert_not_awaited()
+            runtime.gitlab_group_issues.assert_not_awaited()
+            self.assertEqual(selected, [])
+            self.assertNotEqual(observed[0][0], caller)
+            self.assertEqual(observed[0][1], ("organization-a", "workspace-a"))
+        finally:
+            release.set()
+            await task
+            scope.reset(token)
+        self.assertEqual(selected, [state])
+        self.assertIs(selected[0], state)
+        runtime.dispatch_event.assert_awaited_once_with(
+            SimpleNamespace(thread_id="thread-james", thread_name="James"),
+            "dispatch:example/project#1", "owner-work-watchdog")
+        runtime.gitlab_group_issues.assert_not_awaited()
+
+    async def test_owner_snapshot_failure_does_not_dispatch_or_query_provider(self):
+        runtime = self._runtime({})
+        def read():
+            raise RuntimeError("snapshot unavailable")
+        runtime.load_work_item_states = read
+        with self.assertRaisesRegex(RuntimeError, "snapshot unavailable"):
+            await AutonomyService(runtime=runtime).run_owner_work_cycle()
+        runtime.dispatch_event.assert_not_awaited()
+        runtime.gitlab_group_issues.assert_not_awaited()
+
+    async def test_cancelled_owner_snapshot_never_dispatches_after_read_returns(self):
+        runtime = self._runtime({})
+        started, release, finished = threading.Event(), threading.Event(), threading.Event()
+        def read():
+            started.set()
+            try:
+                if not release.wait(5):
+                    raise RuntimeError("snapshot test release missing")
+                return {}
+            finally:
+                finished.set()
+        runtime.load_work_item_states = read
+        task = asyncio.create_task(AutonomyService(runtime=runtime).run_owner_work_cycle())
+        try:
+            for _ in range(100):
+                if started.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            self.assertTrue(started.is_set())
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        finally:
+            release.set()
+            await asyncio.to_thread(finished.wait, 5)
+        self.assertTrue(finished.is_set())
+        await asyncio.sleep(0)
+        runtime.dispatch_event.assert_not_awaited()
+        runtime.gitlab_group_issues.assert_not_awaited()
+
+    async def test_disabled_owner_cycle_does_not_load_snapshot(self):
+        runtime = self._runtime({})
+        runtime.load_gitlab_routing_settings = lambda: SimpleNamespace(enabled=False)
+        runtime.load_work_item_states = lambda: self.fail("disabled cycle read snapshot")
+        await AutonomyService(runtime=runtime).run_owner_work_cycle()
+        runtime.dispatch_event.assert_not_awaited()
+
     async def test_idle_owner_with_canonical_actionable_work_is_woken(self) -> None:
         implementation = WorkItemState(
             ref="example/project#1",
