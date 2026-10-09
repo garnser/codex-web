@@ -15,6 +15,7 @@ from codex_web.models import (
     Project,
     TaskSourceConfiguration,
     TaskSourceIdentity,
+    WorkItemHandoff,
     WorkItemState,
 )
 from codex_web.services.reference_task_source import ReferenceTaskSource
@@ -221,6 +222,127 @@ class WorkItemOperatorTests(unittest.IsolatedAsyncioTestCase):
         events = self.service.lifecycle.history("TASK-42")["items"]
         self.assertEqual(events[-1]["event_type"], "operator_reconciled")
         self.assertEqual(events[-1]["reason"], "refresh external truth")
+
+    async def test_reconcile_repairs_attribution_without_reassigning_handoff_lane(self) -> None:
+        state = self.host.states["TASK-42"]
+        state.current_owner = "orchestrator"
+        state.current_stage = "validation_running"
+        state.implementation_owner = "operator"
+        state.handoff = WorkItemHandoff(
+            from_agent="quinn",
+            to_agent="orchestrator",
+            reason="repair canonical scope",
+            requested_at=2.0,
+            acknowledged_at=3.0,
+            status="accepted",
+            stage="validation_running",
+        )
+        self.host.states[state.ref] = state
+        self.source._snapshots["TASK-42"] = TaskSourceSnapshot(
+            identity=self.snapshot.identity.model_copy(update={"revision": "2"}),
+            title="External title",
+            source_state="open",
+            owners=("nora",),
+            labels=("priority::P1", "status::implementing"),
+        )
+
+        result = await self.service.reconcile(
+            "TASK-42",
+            actor="local-admin",
+            reason="restore provider-verified attribution",
+        )
+
+        self.assertEqual(result["item"]["current_owner"], "orchestrator")
+        self.assertEqual(result["item"]["validation_owner"], "quinn")
+        self.assertEqual(result["item"]["implementation_owner"], "nora")
+        self.assertEqual(result["item"]["handoff"]["status"], "accepted")
+        events = self.service.lifecycle.history("TASK-42")["items"]
+        correction = next(
+            item
+            for item in events
+            if item["event_type"] == "implementation_owner_reconciled"
+        )
+        self.assertEqual(correction["actor"], "local-admin")
+        self.assertEqual(
+            correction["reason"],
+            "restore provider-verified attribution",
+        )
+        self.assertEqual(
+            correction["payload"]["previous_implementation_owner"],
+            "operator",
+        )
+        self.assertEqual(correction["payload"]["implementation_owner"], "nora")
+        self.assertEqual(correction["payload"]["source_revision"], "2")
+
+    async def test_reconcile_rejects_wrong_authoritative_resource(self) -> None:
+        self.source._snapshots["TASK-42"] = TaskSourceSnapshot(
+            identity=self.snapshot.identity.model_copy(
+                update={"external_id": "OTHER-99", "revision": "2"}
+            ),
+            title="Wrong task",
+            source_state="open",
+            owners=("nora",),
+        )
+
+        with self.assertRaises(HTTPException) as raised:
+            await self.service.reconcile(
+                "TASK-42",
+                actor="local-admin",
+                reason="repair",
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(
+            raised.exception.detail["code"],
+            "task_source_identity_mismatch",
+        )
+        self.assertEqual(
+            self.host.states["TASK-42"].implementation_owner,
+            "james",
+        )
+
+    async def test_reconcile_requires_known_implementation_capable_assignment(self) -> None:
+        for owners in [(), ("quinn",), ("operator",), ("orchestrator",)]:
+            with self.subTest(owners=owners):
+                state = self.host.states["TASK-42"]
+                state.implementation_owner = "james"
+                self.host.states[state.ref] = state
+                self.source._snapshots["TASK-42"] = TaskSourceSnapshot(
+                    identity=self.snapshot.identity.model_copy(
+                        update={"revision": f"revision-{owners!r}"}
+                    ),
+                    title="External title",
+                    source_state="open",
+                    owners=owners,
+                )
+
+                result = await self.service.reconcile(
+                    "TASK-42",
+                    actor="local-admin",
+                    reason="verify attribution",
+                )
+
+                self.assertEqual(
+                    result["item"]["implementation_owner"],
+                    "james",
+                )
+
+    async def test_reconcile_applies_verified_implementation_reassignment(self) -> None:
+        self.source._snapshots["TASK-42"] = TaskSourceSnapshot(
+            identity=self.snapshot.identity.model_copy(update={"revision": "2"}),
+            title="External title",
+            source_state="open",
+            owners=("nora",),
+        )
+
+        result = await self.service.reconcile(
+            "TASK-42",
+            actor="local-admin",
+            reason="provider reassigned implementation",
+        )
+
+        self.assertEqual(result["item"]["implementation_owner"], "nora")
+        self.assertEqual(result["item"]["current_owner"], "nora")
 
     async def test_project_sync_consumes_canonical_project_source_configuration(self) -> None:
         second = TaskSourceSnapshot(

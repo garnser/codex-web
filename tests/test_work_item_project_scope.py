@@ -27,6 +27,9 @@ class WorkItemProjectScopeTests(unittest.TestCase):
         @app.middleware("http")
         async def tenant_scope(request, call_next):
             request.state.tenant_scope = SimpleNamespace(organization_id="org-a", workspace_id="workspace-a")
+            request.state.identity_actor = SimpleNamespace(
+                identity_id="canonical-operator"
+            )
             return await call_next(request)
 
         with patch("codex_web.api.work_items.WorkItemOperatorService", return_value=operator):
@@ -60,3 +63,16 @@ class WorkItemProjectScopeTests(unittest.TestCase):
         response = self.client.get("/api/work-items/item-a", params={"project_id": "project-a"})
         self.assertEqual(response.status_code, 404)
         self.service.get.assert_not_called()
+
+    def test_reconcile_uses_authenticated_actor_not_caller_attribution(self):
+        response = self.client.post(
+            "/api/work-items/item-a/reconcile",
+            json={"actor": "spoofed-operator", "reason": "repair attribution"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.operator.reconcile.assert_awaited_once_with(
+            "item-a",
+            actor="canonical-operator",
+            reason="repair attribution",
+        )

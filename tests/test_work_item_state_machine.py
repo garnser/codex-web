@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import httpx
 
 from codex_web.integrations.gitlab_client import GitLabClient
-from codex_web.models import WorkItemHandoffCreate, WorkItemState
+from codex_web.models import WorkItemHandoffCreate, WorkItemProgressUpdate, WorkItemState
 from codex_web.services.work_item_state import WorkItemStateMachine, install_work_item_state_machine
 
 
@@ -106,6 +106,40 @@ class WorkItemStateMachineTests(unittest.TestCase):
         state.status_label = "status::in progress"
         findings = self.machine._work_item_split_brain_findings(state)
         self.assertFalse(any("owner drift" in finding for finding in findings))
+
+    def test_operator_progress_never_claims_implementation_attribution(self) -> None:
+        state = self.state.model_copy(deep=True)
+        state.current_owner = "operator"
+        state.implementation_owner = None
+        self.host.states[state.ref] = state
+
+        progressed = self.machine._structured_progress(
+            state.ref,
+            WorkItemProgressUpdate(
+                actor="operator",
+                current_owner="operator",
+                note="repairing canonical routing",
+            ),
+        )
+
+        self.assertIsNone(progressed.implementation_owner)
+
+    def test_operator_progress_preserves_existing_implementation_owner(self) -> None:
+        state = self.state.model_copy(deep=True)
+        state.implementation_owner = "nora"
+        self.host.states[state.ref] = state
+
+        progressed = self.machine._structured_progress(
+            state.ref,
+            WorkItemProgressUpdate(
+                actor="operator",
+                current_owner="operator",
+                note="coordinating recovery",
+            ),
+        )
+
+        self.assertEqual(progressed.current_owner, "operator")
+        self.assertEqual(progressed.implementation_owner, "nora")
 
     def test_installer_rebinds_only_canonical_entrypoints(self) -> None:
         app = SimpleNamespace(state=SimpleNamespace())

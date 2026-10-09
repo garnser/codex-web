@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from codex_web.models import WorkItemArtifactRelation, WorkItemState
+from codex_web.models import WorkItemArtifactRelation, WorkItemEvent, WorkItemState
 from codex_web.services.task_source_conformance import TaskSourceConformanceSuite
 from codex_web.services.work_item_dependencies import WorkItemRuntimeDependencies
 from codex_web.services.task_source_reconciliation import same_task_source_identity
@@ -231,6 +231,9 @@ class TaskSourceWorkItemProjector:
         snapshot: TaskSourceSnapshot,
         *,
         project_id: str,
+        reconcile_implementation_owner: bool = False,
+        reconciliation_actor: str | None = None,
+        reconciliation_reason: str | None = None,
     ) -> WorkItemState:
         self.conformance.validate_snapshot(source, snapshot)
         external_ref = snapshot.identity.external_id.strip()
@@ -356,6 +359,7 @@ class TaskSourceWorkItemProjector:
                     now=now,
                 )
         else:
+            implementation_owner_reconciled = False
             previous_stage = state.current_stage
             previous_owner = state.current_owner
             previous_status_label = state.status_label
@@ -403,6 +407,57 @@ class TaskSourceWorkItemProjector:
                     self._persist(state, states)
                 return state
 
+            if (
+                reconcile_implementation_owner
+                and projection.owner_known
+                and projected_owner
+                and self.state_machine._coerce_owner(projected_owner)
+                not in self.dependencies.non_implementation_owners
+            ):
+                previous_implementation_owner = self.state_machine._coerce_owner(
+                    state.implementation_owner
+                )
+                reconciled_implementation_owner = self.state_machine._coerce_owner(
+                    projected_owner
+                )
+                if (
+                    reconciled_implementation_owner
+                    and reconciled_implementation_owner
+                    != previous_implementation_owner
+                ):
+                    state.implementation_owner = reconciled_implementation_owner
+                    state.updated_at = now
+                    implementation_owner_reconciled = True
+                    self.state_machine._append_work_item_event(
+                        WorkItemEvent(
+                            ref=ref,
+                            event_type="implementation_owner_reconciled",
+                            created_at=now,
+                            actor=reconciliation_actor,
+                            source="operator-ui",
+                            reason=(
+                                reconciliation_reason
+                                or "operator reconcile from authoritative assignment"
+                            ),
+                            payload={
+                                "previous_implementation_owner": (
+                                    previous_implementation_owner
+                                ),
+                                "implementation_owner": (
+                                    reconciled_implementation_owner
+                                ),
+                                "project_id": project_id,
+                                "resource_ids": resource_ids,
+                                "source_type": snapshot.identity.source_type,
+                                "source_instance": (
+                                    snapshot.identity.source_instance
+                                ),
+                                "external_id": snapshot.identity.external_id,
+                                "source_revision": snapshot.identity.revision,
+                            },
+                        )
+                    )
+
             if self.state_machine._preserve_accepted_handoff_recipient(
                 state,
                 incoming_owner=projected_owner,
@@ -420,7 +475,7 @@ class TaskSourceWorkItemProjector:
                         },
                     )
                 )
-                if routing_metadata_changed:
+                if routing_metadata_changed or implementation_owner_reconciled:
                     state.updated_at = now
                     self._persist(state, states)
                 return state
