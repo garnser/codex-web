@@ -164,6 +164,14 @@ recency rather than marking old captures as newly received. Existing conversatio
 single-target outbound delivery show the resulting attribution without a new
 operator control or model call.
 
+Outbound workflow-claim verification parses qualified and bare issue references
+before reading canonical Work Item state. Text with no issue reference performs
+no Work Item catalog I/O. Messages that do require verification evaluate the
+synchronous canonical policy outside the web event loop while preserving request
+context, per-binding ordering, cancellation, correction, and delivery semantics.
+Fully qualified references remain exact; a bare issue number is usable only when
+it identifies one canonical Work Item globally.
+
 Consequential external mutations—messages, replies, reactions, subscription
 changes or other provider writes—must use the existing ActionIntent /
 ActionProvider authority/evidence path.

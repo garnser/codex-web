@@ -9,6 +9,11 @@ from codex_web.models import WorkItemState
 class WorkflowClaimPolicy:
     """Validate outbound workflow claims against canonical work-item state."""
 
+    _QUALIFIED_REF = re.compile(
+        r"\b[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#\d+\b"
+    )
+    _BARE_REF = re.compile(r"(?<![A-Za-z0-9_./-])#(\d+)\b")
+
     def __init__(
         self,
         *,
@@ -23,20 +28,13 @@ class WorkflowClaimPolicy:
         self.owner_names = owner_names
 
     def mentioned_states(self, text: str) -> list[WorkItemState]:
+        refs = set(self._QUALIFIED_REF.findall(text))
+        bare_iids = set(self._BARE_REF.findall(text))
+        if not refs and not bare_iids:
+            return []
         states = self.load_states()
-        refs = set(
-            re.findall(
-                r"\b[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#\d+\b",
-                text,
-            )
-        )
         mentioned = [states[ref] for ref in refs if ref in states]
-        for iid in set(
-            re.findall(
-                r"(?<![A-Za-z0-9_./-])#(\d+)\b",
-                text,
-            )
-        ):
+        for iid in bare_iids:
             matches = [
                 state
                 for ref, state in states.items()

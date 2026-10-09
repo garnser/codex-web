@@ -318,8 +318,9 @@ class BotDeliveryService:
             )
             if not outbound_text:
                 continue
-            workflow_findings, mentioned_states = (
-                self.workflow_claim_findings(outbound_text)
+            workflow_findings, mentioned_states = await asyncio.to_thread(
+                self.workflow_claim_findings,
+                outbound_text,
             )
             workflow_verification: dict[str, Any] | None = None
             if workflow_findings:
