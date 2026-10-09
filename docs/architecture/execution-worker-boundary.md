@@ -705,3 +705,12 @@ hidden files, hardlinks by path, shared Git metadata, and configured read-only
 resources retain their existing accounting. Vanished or inaccessible entries keep
 the existing filesystem-error behavior. This traversal optimization adds no cross-scan cache
 and does not change disk limits, validation intervals, or assignment enforcement.
+
+Bootstrap recovery retains the historical assignment's immutable agent profile
+even when restarting its native session fails. A requested profile that conflicts
+with that binding fails before replacement. When a generic bootstrap has no
+profile, scope supersession or failed-session healing resolves the explicit
+requested profile through the normal actor-aware runtime router. Recovery retains
+that canonical runtime binding and refuses an implicit change from the inherited
+or explicitly requested runtime. The actual turn repository and writable scope
+remain subject to normal resource, assignment and workspace validation.

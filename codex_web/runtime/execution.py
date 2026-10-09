@@ -1824,6 +1824,65 @@ class TurnExecutionService:
                         if assignment is not None
                         else None
                     )
+                # Recovery may clear the historical assignment variable after
+                # a failed start. Its immutable profile must survive that loss.
+                recovered_profile = getattr(assignment, "agent_profile", None)
+                if agent_profile_id and recovered_profile is not None and (
+                    recovered_profile.profile_id != agent_profile_id
+                    or (
+                        agent_profile_revision is not None
+                        and recovered_profile.profile_revision != agent_profile_revision
+                    )
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "thread_agent_profile_immutable",
+                            "threadId": thread_id,
+                            "requestedAgentProfileId": agent_profile_id,
+                            "requestedAgentProfileRevision": agent_profile_revision,
+                            "effectiveAgentProfile": recovered_profile.model_dump(mode="json"),
+                        },
+                    )
+
+                async def resolve_recovery_profile():
+                    nonlocal runtime_binding, recovered_profile
+                    if not agent_profile_id or recovered_profile is not None:
+                        return
+                    selected_runtime, selected_profile = await self._select_runtime_binding(
+                        project_id=project.id,
+                        sandbox=effective_sandbox,
+                        trusted_local_codex_session=False,
+                        actor=actor,
+                        agent_profile_id=agent_profile_id,
+                        agent_profile_revision=agent_profile_revision,
+                    )
+                    expected_runtime = desired_runtime or (
+                        (runtime_binding.provider_id, runtime_binding.runtime_id)
+                        if runtime_binding is not None else None
+                    )
+                    if (
+                        selected_runtime is None
+                        or selected_profile is None
+                        or (
+                            expected_runtime is not None
+                            and (selected_runtime.provider_id, selected_runtime.runtime_id)
+                            != expected_runtime
+                        )
+                    ):
+                        # Resolving a missing profile cannot implicitly change
+                        # an inherited or explicitly requested runtime.
+                        raise HTTPException(
+                            status_code=409,
+                            detail={
+                                "code": "execution_preflight_blocked",
+                                "message": "requested agent profile has no compatible recovery runtime",
+                                "retryable": False,
+                            },
+                        )
+                    runtime_binding = selected_runtime
+                    recovered_profile = selected_profile
+
                 if (
                     session is None
                     and assignment is None
@@ -1883,6 +1942,7 @@ class TurnExecutionService:
                     if target_drift or scope_drift:
                         switch_needed = True
                 if switch_needed:
+                    await resolve_recovery_profile()
                     switch_runtime = desired_runtime or (
                         (
                             runtime_binding.provider_id,
@@ -1902,15 +1962,16 @@ class TurnExecutionService:
                     bootstrap = await self._supersede_thread_bootstrap(
                         thread_id=thread_id,
                         project=project,
-                        runtime_binding=ExecutionRuntimeBinding(
-                            provider_id=switch_runtime[0],
-                            runtime_id=switch_runtime[1],
-                            capability_revision=1,
-                            sandbox_profiles=(
-                                "read-only",
-                                "workspace-write",
-                                "danger-full-access",
-                            ),
+                        runtime_binding=(
+                            runtime_binding
+                            if recovered_profile is not None and runtime_binding is not None
+                            and (runtime_binding.provider_id, runtime_binding.runtime_id) == switch_runtime
+                            else ExecutionRuntimeBinding(
+                                provider_id=switch_runtime[0],
+                                runtime_id=switch_runtime[1],
+                                capability_revision=1,
+                                sandbox_profiles=("read-only", "workspace-write", "danger-full-access"),
+                            )
                         ),
                         sandbox=effective_sandbox,
                         approval_policy=effective_approval_policy,
@@ -1956,11 +2017,15 @@ class TurnExecutionService:
                         ),
                         previous_assignment_id=bootstrap.assignment_id,
                     )
-                    runtime_binding = ExecutionRuntimeBinding(
-                        provider_id=switch_runtime[0],
-                        runtime_id=switch_runtime[1],
-                        capability_revision=1,
-                    )
+                    if not (
+                        recovered_profile is not None and runtime_binding is not None
+                        and (runtime_binding.provider_id, runtime_binding.runtime_id) == switch_runtime
+                    ):
+                        runtime_binding = ExecutionRuntimeBinding(
+                            provider_id=switch_runtime[0],
+                            runtime_id=switch_runtime[1],
+                            capability_revision=1,
+                        )
                     session_manager = None
                     session = None
                     assignment = None
@@ -1991,6 +2056,7 @@ class TurnExecutionService:
                     # workspace was discarded after a restart): heal the
                     # thread by superseding onto the bound or desired runtime
                     # with a fresh assignment and workspace.
+                    await resolve_recovery_profile()
                     heal_runtime = desired_runtime or (
                         (
                             runtime_binding.provider_id,
@@ -2012,7 +2078,11 @@ class TurnExecutionService:
                         project=project,
                         runtime_binding=(
                             runtime_binding
-                            if desired_runtime is None
+                            if desired_runtime is None or (
+                                recovered_profile is not None
+                                and runtime_binding is not None
+                                and (runtime_binding.provider_id, runtime_binding.runtime_id) == desired_runtime
+                            )
                             else ExecutionRuntimeBinding(
                                 provider_id=desired_runtime[0],
                                 runtime_id=desired_runtime[1],
@@ -2046,7 +2116,11 @@ class TurnExecutionService:
                     )
                     session_manager = self._manager_for_binding(
                         runtime_binding
-                        if desired_runtime is None
+                        if desired_runtime is None or (
+                            recovered_profile is not None
+                            and runtime_binding is not None
+                            and (runtime_binding.provider_id, runtime_binding.runtime_id) == desired_runtime
+                        )
                         else ExecutionRuntimeBinding(
                             provider_id=desired_runtime[0],
                             runtime_id=desired_runtime[1],
