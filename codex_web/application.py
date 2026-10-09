@@ -4265,6 +4265,12 @@ def _heartbeat_local_execution_worker() -> None:
     app.state.local_execution_worker = refreshed
 
 
+def _recover_expired_execution_assignments() -> list[str]:
+    return execution_worker_service.recover_expired(
+        actor=identity_service.local_trusted_actor(),
+    )
+
+
 runtime_supervisor = install_runtime_supervisor(
     app,
     core,
@@ -4291,6 +4297,7 @@ runtime_supervisor = install_runtime_supervisor(
     release_stale_active_turn=thread_recovery_service.release_stale_active_turn,
     schedule_queue_drain=turn_execution_service.schedule_queue_drain,
     local_worker_heartbeat=_heartbeat_local_execution_worker,
+    recover_expired_assignments=_recover_expired_execution_assignments,
     flush_compatibility_state=_flush_compatibility_state,
 )
 

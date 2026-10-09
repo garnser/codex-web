@@ -864,13 +864,14 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
         observed_statuses = []
         release_requests = []
 
-        def release(workspace_id, payload, *, actor):
+        def release(workspace_id, payload, *, actor, preserve_files):
             current = next(
                 item
                 for item in self.service.store.load().assignments
                 if item.id == expired.id
             )
             observed_statuses.append(current.status)
+            self.assertTrue(preserve_files)
             release_requests.append((workspace_id, payload, actor))
 
         self.service.workspaces = SimpleNamespace(release=release)
@@ -916,13 +917,14 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
         observed_statuses = []
         release_requests = []
 
-        def release(workspace_id, payload, *, actor):
+        def release(workspace_id, payload, *, actor, preserve_files):
             current = next(
                 item
                 for item in self.service.store.load().assignments
                 if item.id == assignment.id
             )
             observed_statuses.append(current.status)
+            self.assertTrue(preserve_files)
             release_requests.append((workspace_id, payload, actor))
 
         self.service.workspaces = SimpleNamespace(release=release)

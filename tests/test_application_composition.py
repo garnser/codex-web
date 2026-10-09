@@ -39,6 +39,16 @@ def _path_tags(path: str) -> set[str]:
 
 
 class ApplicationCompositionTests(unittest.TestCase):
+    def test_supervisor_expiry_callback_uses_composed_worker_service_and_control_actor(self) -> None:
+        callback = application.runtime_supervisor.recover_expired_assignments
+        self.assertIs(callback, application._recover_expired_execution_assignments)
+        actor = application.identity_service.local_trusted_actor()
+        with patch.object(application.execution_worker_service, "recover_expired", return_value=["lost-assignment"]) as recover:
+            self.assertEqual(callback(), ["lost-assignment"])
+        recover.assert_called_once()
+        observed = recover.call_args.kwargs["actor"]
+        self.assertEqual(observed.model_dump(exclude={"authenticated_at"}), actor.model_dump(exclude={"authenticated_at"}))
+
     def test_queue_actor_resolver_uses_current_identity_in_project_scope(self) -> None:
         project = SimpleNamespace(organization_id="org-queue", workspace_id="ws-queue")
         actor = object()

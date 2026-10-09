@@ -1503,6 +1503,25 @@ class ExecutionWorkerService:
     ) -> list[str]:
         self._require_admin(actor)
         current = time.time() if now is None else now
+        # Periodic recovery must not rewrite retained state when nothing has
+        # expired. The atomic update below rechecks the authoritative current
+        # lease/status after this bounded read-only prefilter.
+        cursor = None
+        while True:
+            assignments, cursor = self.store.assignment_page(after=cursor)
+            expired = any(
+                self._same_scope(item, actor) and (
+                    (item.status == AssignmentStatus.PENDING
+                     and item.deadline_at is not None and item.deadline_at <= current)
+                    or (item.status in {AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING}
+                        and item.lease is not None and item.lease.expires_at <= current)
+                )
+                for item in assignments
+            )
+            if expired:
+                break
+            if cursor is None:
+                return []
         lost: list[str] = []
         expired_workspace_ids: list[str] = []
 
@@ -1614,6 +1633,7 @@ class ExecutionWorkerService:
                         reason="worker lease expired",
                     ),
                     actor=actor,
+                    preserve_files=True,
                 )
         if lost:
             current = self.store.load()

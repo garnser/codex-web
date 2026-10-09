@@ -179,6 +179,7 @@ class RuntimeSupervisor:
         release_stale_active_turn: Callable[[str, str], Any] | None = None,
         schedule_queue_drain: Callable[[str], Any] | None = None,
         local_worker_heartbeat: Callable[[], Any] | None = None,
+        recover_expired_assignments: Callable[[], Any] | None = None,
         flush_compatibility_state: Callable[[], Any] | None = None,
     ) -> None:
         self.app = app
@@ -253,6 +254,7 @@ class RuntimeSupervisor:
             _noop,
         )
         self.local_worker_heartbeat = local_worker_heartbeat
+        self.recover_expired_assignments = recover_expired_assignments
         self.flush_compatibility_state = (
             flush_compatibility_state
             or getattr(host, "_flush_compatibility_state", _noop)
@@ -446,6 +448,10 @@ class RuntimeSupervisor:
                 )
             await asyncio.sleep(interval)
 
+    async def _recover_expired_assignments_once(self) -> None:
+        if self.recover_expired_assignments is not None:
+            await asyncio.to_thread(self.recover_expired_assignments)
+
     async def _heartbeat_local_worker_once(self) -> None:
         if self.local_worker_heartbeat is None:
             return
@@ -551,6 +557,16 @@ class RuntimeSupervisor:
             self._spawn(
                 "local-worker-heartbeat",
                 self._local_worker_heartbeat_loop(),
+            )
+
+        if self.recover_expired_assignments is not None:
+            self._spawn(
+                "execution-assignment-recovery",
+                self._cycle_loop(
+                    self.queue_recovery_interval_seconds,
+                    self._recover_expired_assignments_once,
+                    failure_event="execution_assignment_recovery_failed",
+                ),
             )
 
         telemetry = getattr(
