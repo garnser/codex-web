@@ -299,6 +299,24 @@ class GitLabActionProvider:
             }
         raise ValueError("unsupported GitLab action")
 
+    @staticmethod
+    def _merge_request_title(title: str, draft: bool) -> str:
+        # GitLab's REST interface represents Draft state through the title.
+        # Only documented leading markers are formatting; mid-title words
+        # remain user content and exact verification still checks the result.
+        prefixes = ("Draft:", "[Draft]", "(Draft)")
+        if draft:
+            return title if any(title.casefold().startswith(p.casefold()) for p in prefixes) else f"Draft: {title}"
+        remaining = title
+        while True:
+            prefix = next((p for p in prefixes if remaining.casefold().startswith(p.casefold())), None)
+            if prefix is None:
+                break
+            remaining = remaining[len(prefix):].lstrip()
+        if not remaining:
+            raise ValueError("ready merge-request title must contain content after its Draft marker")
+        return remaining
+
     async def execute(
         self,
         request: ActionRequest,
@@ -378,6 +396,7 @@ class GitLabActionProvider:
             # A ValueError from a later provider read/write is still ambiguous.
             try:
                 payload = self.contract.change_request(request)
+                desired_title = self._merge_request_title(payload["title"], payload["draft"])
             except ValueError as exc:
                 raise ActionRequirementError(
                     f"{exc}; supported change request parameters: "
@@ -405,11 +424,10 @@ class GitLabActionProvider:
                     "an existing merge request for head/base is not owned by this ActionIntent"
                 )
             api_payload = {
-                "title": payload["title"],
+                "title": desired_title,
                 "description": desired_body,
                 "source_branch": payload["head"],
                 "target_branch": payload["base"],
-                "draft": payload["draft"],
             }
             if owned is None:
                 item = await self.client.create_merge_request(
@@ -422,7 +440,7 @@ class GitLabActionProvider:
                 iid = self._positive_iid(owned, field="merge request")
                 changed = any(
                     (
-                        str(owned.get("title") or "") != payload["title"],
+                        str(owned.get("title") or "") != desired_title,
                         str(owned.get("description") or "") != desired_body,
                         str(owned.get("target_branch") or "") != payload["base"],
                         bool(owned.get("draft")) != payload["draft"],
@@ -438,7 +456,6 @@ class GitLabActionProvider:
                             "title": api_payload["title"],
                             "description": api_payload["description"],
                             "target_branch": api_payload["target_branch"],
-                            "draft": api_payload["draft"],
                         },
                     )
                     if changed
@@ -455,7 +472,7 @@ class GitLabActionProvider:
                     "base": payload["base"],
                     "draft": payload["draft"],
                     "title_sha256": hashlib.sha256(
-                        payload["title"].encode()
+                        desired_title.encode()
                     ).hexdigest(),
                     "body_sha256": hashlib.sha256(
                         desired_body.encode()

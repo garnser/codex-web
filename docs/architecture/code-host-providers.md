@@ -50,6 +50,14 @@ read/discovery service. Branch publication, issue mutation, and pull/merge
 request upsert therefore retain ActionIntent authority, policy, idempotency,
 receipt, verification, Evidence, and SecretBroker semantics regardless of host.
 
+GitLab merge-request upserts map canonical draft state to the documented native
+title markers (`Draft:`, `[Draft]`, or `(Draft)`), rather than an unsupported REST
+`draft` parameter. Ready requests remove leading draft markers while preserving
+title content. Receipts attest the resulting native title, and verification still
+requires the exact title, draft state, ownership marker, body, branches, and IID.
+The existing ActionIntent and provider-result views expose these outcomes; this
+mapping adds no operator control or independent reconciliation path.
+
 ## Canonical events
 
 Provider webhooks are normalized into `CodeHostWebhookFact` before orchestration. The fact identifies provider instance, durable delivery/event identity, canonical event type, repository/subject external identities, action/state, and bounded provider metadata.
