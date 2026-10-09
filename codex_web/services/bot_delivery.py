@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 from collections.abc import Awaitable, Callable
@@ -233,7 +234,7 @@ class BotDeliveryService:
         return {"sent": False, "reason": "unsupported_provider"}
 
     async def send_details(self, binding: BotBinding) -> dict[str, Any]:
-        detail = self.details.latest(binding.thread_id)
+        detail = await asyncio.to_thread(self.details.latest, binding.thread_id)
         if not detail:
             return await self.send_outbound(
                 binding,
@@ -256,7 +257,8 @@ class BotDeliveryService:
             return
         detail = self.presentation.format_detail_item(item)
         if detail:
-            self.details.record(
+            await asyncio.to_thread(
+                self.details.record,
                 thread_id,
                 item.get("type") or "detail",
                 detail["title"],
