@@ -212,3 +212,11 @@ requires actual execution admission. Both original and current thread views can
 inspect the same attempt; the retry card displays original/current provenance and
 loads the actual target on success or a new preflight denial. Historical target
 index entries never authorize a different retained identity.
+
+A Project readiness request with missing or expired trusted-local account
+evidence performs a coalesced `account/read` metadata request and reevaluates
+readiness. Project scope and authentication policy are checked first. Fresh
+proof skips the read; failed or negative reads retain the authentication
+blocker. This is request-driven, consumes no model tokens, and creates no idle
+polling loop. Canonical readiness state reads and writes run off the event loop
+so large work-item collections cannot delay the account RPC response reader.

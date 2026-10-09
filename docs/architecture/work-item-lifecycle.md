@@ -173,3 +173,14 @@ Execution lifecycle validation also fails deterministically. A retry attempt abo
 ## Tests
 
 The transition-policy tests evaluate every source/target pair in the canonical stage matrix. Transition-service tests cover completed, cancelled, failed, unclassified external closure, and external reopen behavior. Execution-lifecycle tests cover safe migration defaults, retry-policy enforcement, structured failure/deadline state, compact checkpoints, attributed history, and additive usage accounting.
+
+## Artifact event repository associations
+
+GitLab MR and pipeline projections resolve the Project tenant and exact GitLab
+repository alias through the same canonical dependencies as issue projections.
+Creation and update persist these associations. A stale event or an accepted
+handoff may repair routing metadata without changing the protected lifecycle,
+owner, or artifact fields. Missing aliases remain unresolved and visible in
+Project readiness; projections never substitute unrelated Project Resources.
+Artifact projection uses keyed state reads and writes when available so one MR
+event does not scan or rewrite the complete work-item collection.

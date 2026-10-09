@@ -164,51 +164,14 @@ class TaskSourceWorkItemProjector:
         return None
 
     def _project_tenant(self, project_id: str) -> tuple[str, str]:
-        for project in self.dependencies.load_projects():
-            if getattr(project, "id", None) == project_id:
-                return (
-                    str(
-                        getattr(project, "organization_id", "local")
-                        or "local"
-                    ),
-                    str(
-                        getattr(project, "workspace_id", "default")
-                        or "default"
-                    ),
-                )
-        return ("local", "default")
+        return self.dependencies.project_tenant(project_id)
 
     def _project_resource_ids(
-        self,
-        project_id: str,
-        *,
-        source_type: str,
-        project_path: str | None,
+        self, project_id: str, *, source_type: str, project_path: str | None,
     ) -> list[str]:
-        try:
-            if source_type.strip().casefold() == "gitlab" and project_path:
-                return list(
-                    dict.fromkeys(
-                        str(item)
-                        for item in self.dependencies.resource_ids_for_project(
-                            project_id,
-                            alias_value=project_path,
-                            provider="gitlab",
-                        )
-                        if str(item).strip()
-                    )
-                )
-            return list(
-                dict.fromkeys(
-                    str(item)
-                    for item in self.dependencies.resource_ids_for_project(
-                        project_id
-                    )
-                    if str(item).strip()
-                )
-            )
-        except Exception:
-            return []
+        return self.dependencies.project_resource_ids(
+            project_id, source_type=source_type, project_path=project_path,
+        )
 
     def _persist(
         self,
@@ -277,7 +240,7 @@ class TaskSourceWorkItemProjector:
         labels = sorted(dict.fromkeys(str(label).strip() for label in snapshot.labels if str(label).strip()))
         status_label = self._first_prefixed(tuple(labels), "status::")
         priority = self._first_prefixed(tuple(labels), "priority::")
-        project_path = external_ref.split("#", 1)[0] if "#" in external_ref else None
+        project_path = external_ref.split("!", 1)[0].split("#", 1)[0] if "#" in external_ref or "!" in external_ref else None
         resource_ids = self._project_resource_ids(
             project_id,
             source_type=snapshot.identity.source_type,

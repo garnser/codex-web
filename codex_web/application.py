@@ -1340,6 +1340,19 @@ def _local_codex_session_available() -> bool:
     return bool(callable(probe) and probe())
 
 
+_local_codex_session_refresh_lock = asyncio.Lock()
+
+
+async def _refresh_local_codex_session() -> None:
+    # Read account metadata only on a readiness request with missing/expired
+    # evidence. Coalesce concurrent readers; never sample a model or poll idle.
+    async with _local_codex_session_refresh_lock:
+        if not _local_codex_session_available():
+            runtime = getattr(app.state, "codex_runtime", None)
+            if runtime is not None:
+                await runtime.request("account/read", {"refreshToken": False})
+
+
 def _project_readiness_environment(project, actor):
     del actor
     supported = project.sandbox in {
@@ -1379,6 +1392,7 @@ project_readiness_service = ProjectReadinessService(
     configuration=configuration_service,
     runtime_binding=codex_execution_runtime_binding,
     local_session_probe=_local_codex_session_available,
+    local_session_refresh=_refresh_local_codex_session,
 )
 app.state.project_bootstrap_store = project_bootstrap_store
 app.state.project_readiness_store = project_readiness_store
