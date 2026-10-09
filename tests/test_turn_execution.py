@@ -6,13 +6,13 @@ import unittest
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from fastapi import FastAPI, HTTPException
 
 from codex_web.agent_runtime import AgentRuntimeResult
 from codex_web.agent_profiles import AgentProfileExecutionBinding
-from codex_web.execution_workers import ExecutionRuntimeBinding
+from codex_web.execution_workers import AssignmentStatus, ExecutionRuntimeBinding
 from codex_web.models import (
     ActiveThreadTurn,
     Project,
@@ -27,7 +27,11 @@ from codex_web.runtime.execution import (
     install_turn_execution_service,
 )
 from codex_web.services.agent_routing import AgentRoutingError
-from codex_web.services.local_execution_worker import LocalExecutionWorkerCapacityError
+from codex_web.services.local_execution_worker import (
+    LocalExecutionWorkerCapacityError,
+    LocalExecutionWorkerRuntime,
+    LocalExecutionWorkerRuntimeError,
+)
 from codex_web.services.agent_worker_session import (
     AssignmentBoundAgentSessionStaleError,
 )
@@ -2736,6 +2740,48 @@ class TurnExecutionInstallationTests(unittest.TestCase):
 
 
 class BootstrapAuthenticationEvidenceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pruned_predecessor_recovers_but_foreign_claim_and_scope_fail_closed(self):
+        for scenario in ("missing", "live", "foreign_scope", "storage_error"):
+            with self.subTest(scenario=scenario):
+                service, host, manager, order, available, kwargs = await self._rebind(fresh=True)
+                manager.get = lambda assignment_id: None
+                record = None if scenario == "missing" else SimpleNamespace(
+                    id="old", organization_id="local", workspace_id="default",
+                    status=AssignmentStatus.RUNNING,
+                )
+                def lookup(assignment_id):
+                    if scenario == "storage_error":
+                        raise RuntimeError("storage unavailable")
+                    return record
+                worker = object.__new__(LocalExecutionWorkerRuntime)
+                worker.control_actor = SimpleNamespace(
+                    organization_id="foreign" if scenario == "foreign_scope" else "local",
+                    workspace_id="default",
+                )
+                worker.worker_service = SimpleNamespace(
+                    store=SimpleNamespace(assignment=lookup),
+                    cancel_bootstrap=Mock(),
+                )
+                manager.local_worker = worker
+                if scenario == "missing":
+                    await service._supersede_thread_bootstrap(**kwargs)
+                    self.assertEqual([item[0] for item in order], ["prepare", "rebind"])
+                elif scenario == "live":
+                    with self.assertRaises(HTTPException) as caught:
+                        await service._supersede_thread_bootstrap(**kwargs)
+                    self.assertEqual(caught.exception.status_code, 409)
+                    self.assertIn("unowned live worker claim", caught.exception.detail)
+                elif scenario == "foreign_scope":
+                    with self.assertRaisesRegex(LocalExecutionWorkerRuntimeError, "assignment not found"):
+                        await service._supersede_thread_bootstrap(**kwargs)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "storage unavailable"):
+                        await service._supersede_thread_bootstrap(**kwargs)
+                worker.worker_service.cancel_bootstrap.assert_not_called()
+                manager.complete.assert_not_awaited()
+                if scenario != "missing":
+                    self.assertEqual(order, [])
+
     async def _rebind(self, *, fresh=False, mode=None, provider="openai", runtime="codex", read_error=None):
         host = _Host()
         order = []
