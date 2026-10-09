@@ -80,6 +80,19 @@ class BotBindingChangeEventTests(unittest.TestCase):
         self.assertEqual(events[0]["bindingId"], saved.id)
         self.assertTrue(events[0]["removed"])
 
+    def test_stale_activity_update_preserves_recovered_thread(self) -> None:
+        service, stored, events = self._service()
+        stale = _binding()
+        service.upsert(stale.model_copy(deep=True))
+        stored[0].thread_id = "recovered-thread"
+        stale.updated_at = 10.0
+        result = service.upsert(stale)
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(result.thread_id, "recovered-thread")
+        self.assertEqual(stored[0].thread_id, "recovered-thread")
+        self.assertEqual(events[-1]["threadId"], "recovered-thread")
+
+
 
 class BotBindingDeleteTests(unittest.IsolatedAsyncioTestCase):
     async def test_delete_binding_removes_and_syncs_runtime(self) -> None:

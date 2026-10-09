@@ -48,6 +48,10 @@ class LocalExecutionWorkerRuntimeError(RuntimeError):
     pass
 
 
+class LocalExecutionWorkerCapacityError(LocalExecutionWorkerRuntimeError):
+    """Compatible work must wait for a canonical worker concurrency slot."""
+
+
 class RepositoryCheckpointBlockedError(LocalExecutionWorkerRuntimeError):
     pass
 
@@ -660,6 +664,12 @@ class LocalExecutionWorkerRuntime:
                 assignment_id=assignment.id,
             )
             if claimed is None:
+                state = self.worker_service.store.load()
+                worker = next((item for item in state.workers if item.id == self.worker.id), None)
+                if worker is not None:
+                    _eligible, reason = self.worker_service._eligible(worker, assignment, state, time.time())
+                    if reason == "worker_concurrency_exhausted":
+                        raise LocalExecutionWorkerCapacityError("local worker concurrency exhausted")
                 raise LocalExecutionWorkerRuntimeError(
                     "local worker is not eligible to claim assignment"
                 )

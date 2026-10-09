@@ -6,7 +6,7 @@ import{saveIntegrationDraft}from"./integration_mutation.js";
 import{projectCreationEditor}from"./project_creation.js";
 import{installThreadCommands}from"./object_commands.js";
 import*as ep from"./execution_profile_controls.js";
-import{loadProjectUiStateForRefresh}from"./project_ui_state.js";
+import{loadProjectUiStateForRefresh,refreshBindingQueueDepth}from"./project_ui_state.js";
 import{connectProjectUiEventStream,createProjectUiEventReconciler}from"./project_ui_events.js";
 import{activateProject,createProjectNavigator,initialProjectId,publishProjectsRendered}from"./project_context.js";
 import{createLoggedApi}from"./frontend_api.js";
@@ -507,9 +507,9 @@ function renderThreads() {
       :"";
     const waiting=isThreadBusy(thread.id);
     const depth=queuedDepth(thread.id);
-    const threadStatus=waiting
+    const threadStatus=(waiting
       ?`<span class="thread-state waiting"><span class="thread-state-dot"></span>Waiting for Codex</span>`
-      :(depth>0?`<span class="thread-state queued">Queued ${depth}</span>`:"");
+      :"")+(depth>0?`<span class="thread-state queued">Queued ${depth}</span>`:"");
 
     let actionMarkup="";
     if(expanded){
@@ -1013,6 +1013,7 @@ async function refresh({ reloadProjects = false } = {}) {
     state.models=snapshot.models;
     state.projectResources=snapshot.resources;
     state.botBindings=snapshot.bindings;
+    refreshBindingQueueDepth(state.queuedDepthByThread,snapshot.bindings);
     state.threadSettings=snapshot.threadSettings;
     state.botChannels=snapshot.channels;
     state.threads=snapshot.threads;

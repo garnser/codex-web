@@ -399,6 +399,7 @@ test("Project coordinated policy submits all repositories without per-turn selec
 
 test("retryable steering failure preserves the queued message and reconciles canonical state", async ({ page }) => {
   await mirrorProductionStaticMount(page);
+  await page.routeWebSocket("**/ws", () => {});
   let queueReads = 0;
   let threadReads = 0;
   const project = {
@@ -497,6 +498,9 @@ test("retryable steering failure preserves the queued message and reconciles can
   await expect.poll(() => threadReads).toBeGreaterThanOrEqual(1);
   await page.locator("#prompt").fill("Deliver this exactly once");
   await page.locator("#prompt").press("Enter");
+
+  await expect(page.locator("#threads .thread-state.waiting")).toContainText("Waiting for Codex");
+  await expect(page.locator("#threads .thread-state.queued")).toContainText("Queued 1");
 
   const queuedMessage = page.locator(".message.user.queued-message");
   const steer = queuedMessage.locator("[data-action='steer']");

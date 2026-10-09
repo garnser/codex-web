@@ -44,6 +44,16 @@ class BotBindingLifecycleService:
 
     def upsert(self, new_binding: BotBinding) -> BotBinding:
         bindings = self.load_bindings()
+        # Runtime/event callbacks can hold a binding across an awaited RPC.
+        # A completed owner recovery may have moved that same binding meanwhile.
+        # Updating its activity must not restore the old native thread.
+        current = next((item for item in bindings if item.id == new_binding.id), None)
+        if current is not None and (
+            current.provider == new_binding.provider
+            and current.project_id == new_binding.project_id
+            and current.external_conversation_id == new_binding.external_conversation_id
+        ):
+            new_binding.thread_id = current.thread_id
         updated = False
         for index, binding in enumerate(bindings):
             if (

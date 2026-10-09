@@ -149,3 +149,11 @@ export async function loadProjectUiStateForRefresh({
     return null;
   }
 }
+
+export function refreshBindingQueueDepth(depthByThread, bindings) {
+  for (const binding of bindings || []) {
+    if (binding.thread_id && Number.isFinite(binding.queueDepth)) {
+      depthByThread.set(binding.thread_id, Math.max(0, binding.queueDepth));
+    }
+  }
+}
