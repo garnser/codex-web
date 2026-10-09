@@ -1251,7 +1251,7 @@ class ActionIntentService:
                 evidence_ok = False
                 findings.append("required evidence cannot be evaluated")
             else:
-                evidence_evaluation = self.artifact_evidence.evaluate(
+                evidence_evaluation = await asyncio.to_thread(self.artifact_evidence.evaluate,
                     intent.work_item_ref,
                     intent.expected_evidence,
                     actor=actor,
@@ -1307,7 +1307,7 @@ class ActionIntentService:
         pending = await asyncio.to_thread(self._intent, intent_id, actor)
         try:
             requester = await asyncio.to_thread(self._requester_actor, pending)
-            _, _, current_definition, current_request = self.execution.resolve_contract(
+            _, _, current_definition, current_request = await asyncio.to_thread(self.execution.resolve_contract,
                 pending.binding_id,
                 pending.request,
                 actor=actor,
@@ -1366,7 +1366,7 @@ class ActionIntentService:
             )
         if self.entitlements is not None:
             try:
-                self.entitlements.consume(
+                await asyncio.to_thread(self.entitlements.consume,
                     CAPABILITY_EXTERNAL_ACTIONS,
                     UsageEventCreate(
                         idempotency_key=(
@@ -1396,7 +1396,7 @@ class ActionIntentService:
         component_key = self._capacity_component(pending)
         if self.capacity is not None:
             try:
-                capacity_lease = self.capacity.acquire(
+                capacity_lease = await asyncio.to_thread(self.capacity.acquire,
                     organization_id=pending.organization_id,
                     workspace_id=pending.workspace_id,
                     workload=WorkloadKind.ACTION,
@@ -1415,7 +1415,7 @@ class ActionIntentService:
             intent = await asyncio.to_thread(self._mark_executing, intent_id, worker_id, actor)
         except Exception:
             if self.capacity is not None and capacity_lease is not None:
-                self.capacity.release(capacity_lease.id)
+                await asyncio.to_thread(self.capacity.release, capacity_lease.id)
             raise
         with correlated(
             correlation_id=intent.correlation_id,
@@ -1437,14 +1437,14 @@ class ActionIntentService:
                 )
             except asyncio.TimeoutError:
                 if self.capacity is not None:
-                    self.capacity.record_failure(
+                    await asyncio.to_thread(self.capacity.record_failure,
                         organization_id=intent.organization_id,
                         workspace_id=intent.workspace_id,
                         component_key=component_key,
                         reason="provider_timeout",
                     )
                     if capacity_lease is not None:
-                        self.capacity.release(capacity_lease.id)
+                        await asyncio.to_thread(self.capacity.release, capacity_lease.id)
                         capacity_lease = None
                 await asyncio.to_thread(self._append_receipt,
                     intent,
@@ -1464,12 +1464,12 @@ class ActionIntentService:
                 )
             except asyncio.CancelledError:
                 if self.capacity is not None and capacity_lease is not None:
-                    self.capacity.release(capacity_lease.id)
+                    await asyncio.to_thread(self.capacity.release, capacity_lease.id)
                     capacity_lease = None
                 raise
             except ActionRequirementError as exc:
                 if self.capacity is not None and capacity_lease is not None:
-                    self.capacity.release(capacity_lease.id)
+                    await asyncio.to_thread(self.capacity.release, capacity_lease.id)
                     capacity_lease = None
                 await asyncio.to_thread(self._append_receipt,
                     intent,
@@ -1489,14 +1489,14 @@ class ActionIntentService:
                 )
             except Exception as exc:
                 if self.capacity is not None:
-                    self.capacity.record_failure(
+                    await asyncio.to_thread(self.capacity.record_failure,
                         organization_id=intent.organization_id,
                         workspace_id=intent.workspace_id,
                         component_key=component_key,
                         reason=type(exc).__name__,
                     )
                     if capacity_lease is not None:
-                        self.capacity.release(capacity_lease.id)
+                        await asyncio.to_thread(self.capacity.release, capacity_lease.id)
                         capacity_lease = None
                 await asyncio.to_thread(self._append_receipt,
                     intent,
@@ -1529,7 +1529,7 @@ class ActionIntentService:
                 )
 
         if self.capacity is not None and capacity_lease is not None:
-            self.capacity.release(capacity_lease.id)
+            await asyncio.to_thread(self.capacity.release, capacity_lease.id)
             capacity_lease = None
         await asyncio.to_thread(self._append_receipt,
             intent,
@@ -1539,7 +1539,7 @@ class ActionIntentService:
         current = await asyncio.to_thread(self._intent, intent.id, actor)
         if result.status == "failed":
             if self.capacity is not None:
-                self.capacity.record_failure(
+                await asyncio.to_thread(self.capacity.record_failure,
                     organization_id=intent.organization_id,
                     workspace_id=intent.workspace_id,
                     component_key=component_key,
@@ -1559,7 +1559,7 @@ class ActionIntentService:
                 ),
             )
         if self.capacity is not None:
-            self.capacity.record_success(
+            await asyncio.to_thread(self.capacity.record_success,
                 organization_id=intent.organization_id,
                 workspace_id=intent.workspace_id,
                 component_key=component_key,
