@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
+
+import httpx
+from codex_web.integrations.gitlab_client import GitLabClient
 from copy import deepcopy
 
 from codex_web.models import TaskSourceIdentity
@@ -9,6 +13,7 @@ from codex_web.services.task_source_conformance import TaskSourceConformanceSuit
 from codex_web.services.task_sources import (
     TaskSource,
     TaskSourceCapability,
+    TaskSourceCapabilities,
     TaskSourceCreateRequest,
     UnsupportedTaskSourceCapability,
 )
@@ -91,6 +96,84 @@ class GitLabTaskSourceTests(unittest.IsolatedAsyncioTestCase):
             client=self.client,
         )
         self.conformance = TaskSourceConformanceSuite()
+
+    async def test_merge_request_read_uses_real_mr_endpoint_and_preserves_identity(self):
+        requests = []
+        def respond(request):
+            requests.append(request.url.raw_path.decode())
+            return httpx.Response(200, json={
+                "iid": 42, "references": {"full": "group/project!42"},
+                "title": "MR title", "description": "MR body", "state": "merged",
+                "updated_at": "revision", "web_url": "https://gitlab.example/mr/42",
+                "labels": ["owner::james"], "assignees": [{"username": "quinn"}],
+            })
+        source = GitLabTaskSource(self.source.api_base, "test", client=GitLabClient(
+            transport=httpx.MockTransport(respond)))
+        identity = self.source._identity("group/project!42")
+        snapshot = await source.read(identity)
+        self.assertEqual(requests, ["/api/v4/projects/group%2Fproject/merge_requests/42"])
+        self.assertEqual(snapshot.identity.external_id, "group/project!42")
+        self.assertEqual(snapshot.identity.revision, "revision")
+        self.assertEqual((snapshot.title, snapshot.body_text, snapshot.source_state),
+                         ("MR title", "MR body", "merged"))
+        self.assertEqual(snapshot.owners, ("quinn",))
+        self.assertEqual(snapshot.labels, ("owner::james",))
+        issue = await self.source.read(self.source._identity("group/project#42"))
+        self.assertEqual(issue.identity.external_id, "group/project#42")
+        self.assertEqual(self.client.read_calls, [("group/project", 42)])
+
+    async def test_merge_request_read_supports_pre_relation_snapshot_schema(self):
+        from dataclasses import make_dataclass
+        legacy = make_dataclass("LegacySnapshot", ["identity", "title", "body_text",
+            "source_state", "owners", "labels"], frozen=True)
+        async def read(*args, **kwargs):
+            return {"iid": 42, "title": "old schema"}
+        self.client.merge_request = read
+        with patch("codex_web.services.gitlab_task_source.TaskSourceSnapshot", legacy):
+            snapshot = await self.source.read(self.source._identity("group/project!42"))
+        self.assertEqual(snapshot.title, "old schema")
+        self.assertEqual(snapshot.identity.external_id, "group/project!42")
+
+    async def test_merge_request_malformed_or_foreign_source_rejected_before_transport(self):
+        calls = []
+        async def read(*args, **kwargs):
+            calls.append(args)
+            return {"iid": 42}
+        self.client.merge_request = read
+        for ref in ("!42", "group/project!0", "group/project!-1", "group/project!４２",
+                    "group/project!42!7", "group/project#42!7"):
+            with self.subTest(ref=ref), self.assertRaises(ValueError):
+                await self.source.read(self.source._identity(ref))
+        for field, value in (("source_type", "github"),
+                             ("source_instance", "https://foreign.example/api/v4")):
+            identity = self.source._identity("group/project!42").model_copy(update={field:value})
+            with self.assertRaises(ValueError):
+                await self.source.read(identity)
+        self.source.capabilities = TaskSourceCapabilities(frozenset())
+        with self.assertRaises(UnsupportedTaskSourceCapability):
+            await self.source.read(self.source._identity("group/project!42"))
+        self.assertEqual(calls, [])
+
+    async def test_merge_request_response_must_match_project_and_iid(self):
+        for response in ({"iid": 7}, {"iid": True},
+                         {"iid":42,"references":{"full":"foreign/project!42"}}):
+            async def read(*args, **kwargs):
+                return response
+            self.client.merge_request = read
+            with self.subTest(response=response), self.assertRaises(ValueError):
+                await self.source.read(self.source._identity("group/project!42"))
+
+    async def test_merge_request_read_does_not_enable_issue_mutation(self):
+        async def read(*args, **kwargs):
+            return {"iid": 42}
+        self.client.merge_request = read
+        identity = self.source._identity("group/project!42")
+        with self.assertRaises(ValueError):
+            await self.source.write_owner(identity, "quinn")
+        with self.assertRaises(ValueError):
+            await self.source.add_comment(identity, "review")
+        self.assertEqual(self.client.update_payloads, [])
+        self.assertEqual(self.client.notes, [])
 
     def test_adapter_declares_provider_neutral_contract_and_capabilities(self) -> None:
         self.assertIsInstance(self.source, TaskSource)

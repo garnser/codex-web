@@ -402,6 +402,48 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         )
         await self.broker.start()
 
+    async def test_authoritative_mr_read_through_real_operator_adapter_and_scoped_broker(self):
+        import httpx
+        from codex_web.integrations.gitlab_client import GitLabClient
+        from codex_web.models import Project, TaskSourceIdentity, WorkItemState
+        from codex_web.services.gitlab_task_source import GitLabTaskSource
+        from codex_web.services.task_source_runtime import TaskSourceRegistry
+        from codex_web.services.task_source_work_items import TaskSourceWorkItemProjector
+        from codex_web.services.work_item_operator import WorkItemOperatorService
+        from codex_web.services.work_item_state import WorkItemStateMachine
+        from test_work_item_operator import _Host, _WorkItems as OperatorWorkItems
+        calls = []
+        def respond(request):
+            calls.append(request.url.raw_path.decode())
+            return httpx.Response(200, json={"iid":42, "title":"actual MR",
+                "description":"source body", "references":{"full":"group/app!42"}})
+        source = GitLabTaskSource("https://gitlab.example/api/v4", "test", client=
+            GitLabClient(transport=httpx.MockTransport(respond)))
+        registry = TaskSourceRegistry()
+        registry.register("gitlab", lambda state: source)
+        host = _Host(Path(self.temp.name), Project(id="project-a", name="A", path=self.temp.name))
+        machine = WorkItemStateMachine(host)
+        mr_ref = "group/app!42"
+        host.states[mr_ref] = WorkItemState(ref=mr_ref, organization_id="local",
+            workspace_id="default", project_id="project-a", last_meaningful_update_at=1.0,
+            updated_at=1.0, created_at=1.0, source_identity=
+            TaskSourceIdentity(source_type="gitlab", source_instance=source.api_base,
+                               external_id=mr_ref))
+        self.states[mr_ref] = host.states[mr_ref]
+        self.service.operator = WorkItemOperatorService(OperatorWorkItems(host, machine,
+            registry, TaskSourceWorkItemProjector(host, machine)))
+        status, _, body = await self._request("GET", "/api/work-items/"+quote(mr_ref,safe=""))
+        self.assertEqual(status, 200)
+        self.assertEqual(body["authoritative_source"]["snapshot"]["identity"]["external_id"], mr_ref)
+        self.assertEqual(body["assigned_scope"]["body_text"], "source body")
+        self.assertEqual(calls, ["/api/v4/projects/group%2Fapp/merge_requests/42"])
+        for field, value in (("project_id", "project-b"), ("workspace_id", "foreign"),
+                             ("organization_id", "foreign")):
+            self.states[mr_ref] = host.states[mr_ref].model_copy(update={field:value})
+            status, _, _ = await self._request("GET", "/api/work-items/"+quote(mr_ref,safe=""))
+            self.assertEqual(status, 403)
+        self.assertEqual(len(calls), 1)
+
     async def test_operator_audit_actor_is_authenticated_assignment_identity(self):
         for operation in ("retry", "reconcile"):
             with self.subTest(operation=operation):
