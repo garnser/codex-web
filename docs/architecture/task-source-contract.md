@@ -80,6 +80,15 @@ Creating an external task is a privileged side effect. Product flows such as Goa
 - zero or more labels/tags;
 - zero or more artifact links.
 
+An adapter read may additionally return provider-verified artifact relations.
+Each relation retains the provider instance, repository-qualified artifact
+identity, exact head revision, provider revision, native state, and URL. `None`
+means the read did not query relations; an empty collection is fresh evidence
+that no supported relation exists. GitLab issue reads obtain merge-request
+relations from the native related-MR endpoint and accept only same-project
+source/target MRs with an exact commit head. Discovery does not add one provider
+request per issue merely to populate these relations.
+
 Assignment-bound Work Item reads expose this normalized body through the
 credential-free TaskSource read boundary. When canonical `next_action` is
 absent, the broker's `assigned_scope` points the worker to the authoritative
@@ -107,6 +116,13 @@ The projection contains only canonical fields needed at the boundary, currently 
 Event idempotency prefers a provider event cursor when one is available. Otherwise codex-web hashes normalized provider-neutral event facts. Raw provider payload bytes are not part of core idempotency semantics.
 
 Provider revisions and event cursors are intentionally treated as opaque strings unless an adapter provides deterministic ordering semantics. Core reconciliation must not guess ordering from provider-specific revision formats. When an event has no usable provider timestamp, the core does not invent staleness; adapters or later conflict policy may provide stronger evidence.
+
+Provider-verified artifact relations are persisted separately from legacy branch
+or prose hints. A fresh open relation may preserve a truthful nonterminal
+validation handoff across later issue-only discovery snapshots. A fresh empty,
+closed, cross-project, malformed, or older conflicting relation cannot create or
+retain that proof. Merge, approval, successful acceptance, and terminal closure
+remain independent facts and are never inferred from the relationship alone.
 
 `task_source_projection_drift` reports provider-neutral stage/owner differences as structured findings. Reporting drift is separate from deciding whether to apply it because canonical state can legitimately preserve a handoff or another internal invariant. Reconciliation policy therefore remains deterministic without treating every difference as an automatic overwrite.
 

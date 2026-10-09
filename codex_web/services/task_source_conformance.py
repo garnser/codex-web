@@ -131,6 +131,17 @@ class TaskSourceConformanceSuite:
                 "Adapter discovery/read output must be TaskSourceSnapshot.",
             )
         self.validate_identity(source, snapshot.identity)
+        for relation in snapshot.artifact_relations or ():
+            if (
+                relation.source_type.strip().casefold()
+                != snapshot.identity.source_type.strip().casefold()
+                or relation.source_instance.strip().rstrip("/")
+                != snapshot.identity.source_instance.strip().rstrip("/")
+            ):
+                raise TaskSourceConformanceError(
+                    "artifact_relation_source_mismatch",
+                    "Artifact relation provenance must match the authoritative snapshot source.",
+                )
         return snapshot
 
     def validate_event(

@@ -138,6 +138,13 @@ New work-item construction may set its initial stage directly because initializa
 
 External authoritative task-source reconciliation is deliberately distinct from the manual/API transition policy. An upstream item can close or reopen and codex-web must reconcile that authoritative event, subject to stale-event and handoff-preservation checks.
 
+An issue already at `ready_for_validation` may retain that stage, its
+implementation owner, and its next validation owner when canonical state holds
+a fresh provider-verified open merge-request relation. Ordinary issue refreshes
+that did not query relations preserve the proof; fresh evidence that the
+relation is absent or no longer open returns the issue to implementation. The
+relation does not prove CI, approval, merge, acceptance, or closure.
+
 Provider adapters normalize into the provider-neutral TaskSource contract and use the same `WorkItemTransitionService` mutation primitive with `external_projection=True`. This permits upstream close/reopen reconciliation without weakening the manual transition matrix or creating a second mutation implementation.
 
 ## Failure contract

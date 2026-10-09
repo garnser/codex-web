@@ -196,6 +196,14 @@ class WorkItemStateMachine:
             state.artifact_state,
             fallback="branch",
         )
+        if state.kind == "issue" and state.verified_artifact_relations is not None:
+            has_open_verified_mr = any(
+                relation.kind == "merge_request"
+                and relation.state == "opened"
+                for relation in state.verified_artifact_relations
+            )
+            if state.current_stage == "ready_for_validation":
+                return "merge_request" if has_open_verified_mr else "branch"
         if current_owner == self._coerce_owner(state.release_owner):
             if current_artifact == "tag_pipeline":
                 return "tag_pipeline"
