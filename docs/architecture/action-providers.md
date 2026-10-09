@@ -205,7 +205,16 @@ The administration API exposes provider/binding catalogs and prepare previews:
 - `GET /api/action-providers`
 - `GET/POST /api/action-providers/bindings`
 - `GET /api/action-providers/bindings/{binding_id}`
+- `PATCH /api/action-providers/bindings/{binding_id}` for the canonical
+  enabled state, with the existing tenant-scoped admin/MFA or scoped-service
+  authorization checks
 - `POST /api/action-providers/bindings/{binding_id}/prepare`
+
+The operator binding surface projects the canonical enabled state and requires
+an explicit target-and-impact review before changing it. After a PATCH it
+reloads canonical state rather than treating a local UI update as authoritative.
+Disabling a binding prevents new resolution through it; it does not rewrite or
+cancel existing durable ActionIntents or provider outcomes.
 
 External execution is admitted only through canonical ActionIntent authority,
 policy, security, worker-lease, receipt, and reconciliation handling. The direct
