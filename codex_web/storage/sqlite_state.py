@@ -422,6 +422,47 @@ class SQLiteStateStore:
                 success=success,
             )
 
+    def record_mutate(
+        self,
+        namespace: str,
+        keys: tuple[str, ...],
+        updater: Callable[[dict[str, Any | None]], dict[str, Any | None]],
+    ) -> dict[str, Any | None]:
+        """Atomically inspect selected records and apply a bounded record delta."""
+        selected = tuple(dict.fromkeys(str(key) for key in keys))
+        started = time.perf_counter()
+        success = False
+        try:
+            with self._write_connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._ensure_record_collection_in_connection(connection, namespace)
+                current: dict[str, Any | None] = {}
+                for key in selected:
+                    row = connection.execute(
+                        "SELECT payload FROM state_documents WHERE namespace = ?",
+                        (state_record_storage_key(namespace, key),),
+                    ).fetchone()
+                    current[key] = self._decode(row)
+                changes = updater(current)
+                if not isinstance(changes, dict):
+                    raise TypeError("record_mutate updater must return a mapping")
+                for key, payload in changes.items():
+                    storage_key = state_record_storage_key(namespace, str(key))
+                    if payload is None:
+                        connection.execute(
+                            "DELETE FROM state_documents WHERE namespace = ?",
+                            (storage_key,),
+                        )
+                    else:
+                        self._upsert(connection, storage_key, payload)
+            success = True
+            return changes
+        finally:
+            self._keyed_mutation_metrics.observe(
+                time.perf_counter() - started,
+                success=success,
+            )
+
     def record_replace(
         self,
         namespace: str,

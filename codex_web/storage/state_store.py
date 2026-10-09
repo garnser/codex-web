@@ -130,6 +130,12 @@ class StateStore(Protocol):
         *,
         default: Any,
     ) -> Any: ...
+    def record_mutate(
+        self,
+        namespace: str,
+        keys: tuple[str, ...],
+        updater: Callable[[dict[str, Any | None]], dict[str, Any | None]],
+    ) -> dict[str, Any | None]: ...
     def record_replace(
         self,
         namespace: str,
