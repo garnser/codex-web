@@ -207,7 +207,8 @@ class AutonomyService:
         settings = d.load_gitlab_routing_settings()
         if not settings.enabled:
             return
-        states = d.load_work_item_states()
+        # The canonical snapshot can require database IO and full catalog decoding.
+        states = await asyncio.to_thread(d.load_work_item_states)
         for project_id, project_settings in settings.projects.items():
             if not project_settings.enabled:
                 continue
