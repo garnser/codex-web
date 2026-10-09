@@ -13,6 +13,7 @@ from typing import Any, Callable, Sequence
 
 from codex_web.execution_workspaces import ExecutionWorkspaceRelease
 from codex_web.execution_workers import (
+    AssignmentCancelRequest,
     AssignmentCompleteRequest,
     AssignmentRenewRequest,
     AssignmentStartRequest,
@@ -35,6 +36,8 @@ from codex_web.services.agent_worker_session import (
     AssignmentRuntimeCredentialProvider,
     AssignmentRuntimeLaunchInput,
     runtime_binding_identity_matches,
+    start_assignment_session,
+    bootstrap_cancellation_reason,
 )
 from codex_web.services.agent_model_egress import (
     AGENT_MODEL_EGRESS_RELAY_SCRIPT,
@@ -285,6 +288,10 @@ class AssignmentBoundAgentProcessSession:
 
     def _prepare_assignment(self) -> tuple[ExecutionAssignment, Path]:
         assignment = self.local_worker._pending_assignment(self.assignment_id)
+        if getattr(self, "require_new_claim", False) and assignment.status != AssignmentStatus.PENDING:
+            raise AssignmentBoundAgentProcessSessionStaleError(
+                "bootstrap startup lost its pending assignment to another claim"
+            )
         if not runtime_binding_identity_matches(
             assignment.runtime_binding,
             self.runtime_binding,
@@ -310,6 +317,9 @@ class AssignmentBoundAgentProcessSession:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session requires a live worker lease"
             )
+        # Capture ownership before start() can fail, so failure cleanup cannot
+        # revoke a later claimant or a session this attempt never claimed.
+        self.fence = lease.fence
 
         if assignment.status == AssignmentStatus.CLAIMED:
             assignment = self.local_worker.worker_service.start(
@@ -1026,12 +1036,32 @@ class AssignmentBoundAgentProcessSessionManager:
                 credential_provider=self.credential_provider,
                 runtime_binding=self.runtime_binding,
             )
-            await session.start()
+            await start_assignment_session(session, self.local_worker, assignment_id)
             self.sessions[assignment_id] = session
             return session
 
     def get(self, assignment_id: str) -> AssignmentBoundAgentProcessSession | None:
         return self.sessions.get(assignment_id)
+
+    async def cancel_bootstrap(self, assignment_id: str, *, reason: str) -> ExecutionAssignment:
+        async with self._assignment_lock(assignment_id):
+            session = self.sessions.get(assignment_id)
+            if session is None or session.fence is None:
+                raise AssignmentBoundAgentProcessSessionStaleError(
+                    "bootstrap cancellation requires the registered fenced session"
+                )
+            cancelled = await asyncio.to_thread(
+                self.local_worker.worker_service.cancel_bootstrap,
+                assignment_id,
+                AssignmentCancelRequest(
+                    expected_fence=session.fence,
+                    reason=bootstrap_cancellation_reason(reason),
+                ),
+                actor=self.local_worker.control_actor,
+            )
+            self.sessions.pop(assignment_id, None)
+            await session.stop()
+            return cancelled
 
     async def checkpoint(self, assignment_id: str):
         session = self.sessions.get(assignment_id)
@@ -1060,6 +1090,15 @@ class AssignmentBoundAgentProcessSessionManager:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session is not registered"
             )
+        if not succeeded:
+            current = await asyncio.to_thread(
+                self.local_worker._pending_assignment, assignment_id,
+            )
+            if current.subject.kind == "thread_bootstrap":
+                return await self.cancel_bootstrap(
+                    assignment_id,
+                    reason=failure_message or failure_code or "bootstrap failed",
+                )
         assignment = session.validate_current()
         lease = assignment.lease
         if lease is None or session.fence is None:

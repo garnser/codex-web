@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
+from codex_web.execution_subjects import ExecutionSubject
 from codex_web.execution_workers import (
     AssignmentClaimRequest,
     AssignmentStartRequest,
@@ -45,7 +47,7 @@ from codex_web.services.codex_worker_session import (
     AssignmentBoundCodexSessionStaleError,
 )
 from codex_web.services.codex_model_egress import CodexModelEgressEndpoint
-from codex_web.services.execution_workers import ExecutionWorkerService
+from codex_web.services.execution_workers import ExecutionWorkerService, WorkerConflictError
 from codex_web.services.identity import IdentityService
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
 from codex_web.storage.execution_workers import ExecutionWorkerStore
@@ -1096,6 +1098,115 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(self.backend.processes[0].terminated)
         self.assertIn("credential expired", session.last_error)
+
+    async def test_manager_pending_bootstrap_cannot_resume_and_cancel_a_raced_same_worker_claim(self) -> None:
+        subject = ExecutionSubject(kind="thread_bootstrap", ref="bootstrap-raced")
+        self.workspaces.workspace.subject = subject
+        self.workspaces.workspace.work_item_ref = None
+        self.workspaces.release = lambda *args, **kwargs: self.fail("must not release raced claim")
+        assignment = self._create_assignment(subject=subject, work_item_ref=None)
+        lookup = self.local_worker._pending_assignment
+        calls = 0
+        def racing_lookup(key):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                self.worker_service.claim(
+                    self.worker.id, AssignmentClaimRequest(),
+                    actor=self.worker_actor, assignment_id=key,
+                )
+            return lookup(key)
+        manager = AssignmentBoundCodexSessionManager(
+            self.local_worker, SimpleNamespace(), runtime_factory=_FakeCodexRuntime,
+            watchdog_interval_seconds=60,
+        )
+        with patch.object(self.local_worker, "_pending_assignment", side_effect=racing_lookup):
+            with self.assertRaisesRegex(WorkerConflictError, "fence changed") as caught:
+                await manager.start(assignment.id)
+        self.assertIn("another claim", str(caught.exception.__cause__))
+        current = self.worker_service.store.assignment(assignment.id)
+        self.assertEqual(current.status, AssignmentStatus.CLAIMED)
+        self.assertEqual(current.fence, 1)
+        self.assertIsNotNone(current.lease)
+        self.assertEqual(self.backend.processes, [])
+
+    async def test_atomic_claim_rejects_same_and_foreign_worker_races_after_pending_snapshot(self) -> None:
+        other_actor = self.identity.bootstrap_service_actor(
+            identity_id="raced-worker", name="Raced worker", scope=self.admin.tenant,
+            service_scopes=("execution-worker:run",),
+        )
+        other_worker = self.worker_service.register(
+            ExecutionWorkerRegister(service_identity_id=other_actor.identity_id,
+                                    pool="local", version="test",
+                                    capabilities=self.worker.capabilities),
+            actor=self.admin,
+        )
+        for label, worker, actor in [("same", self.worker, self.worker_actor), ("foreign", other_worker, other_actor)]:
+            with self.subTest(claimant=label):
+                subject = ExecutionSubject(kind="thread_bootstrap", ref=f"bootstrap-atomic-{label}")
+                self.workspaces.workspace.subject = subject
+                self.workspaces.workspace.work_item_ref = None
+                self.workspaces.workspace.execution_id = f"exec-atomic-{label}"
+                self.workspaces.release = lambda *args, **kwargs: self.fail("must retain the raced claimant reservation")
+                assignment = self._create_assignment(subject=subject, work_item_ref=None,
+                                                     execution_id=self.workspaces.workspace.execution_id)
+                entered = threading.Event()
+                release = threading.Event()
+                original_claim = self.local_worker._claim_or_resume
+                def paused_claim(snapshot):
+                    self.assertEqual(snapshot.status, AssignmentStatus.PENDING)
+                    entered.set()
+                    if not release.wait(10):
+                        raise RuntimeError("claim race barrier timed out")
+                    return original_claim(snapshot)
+                manager = AssignmentBoundCodexSessionManager(
+                    self.local_worker, SimpleNamespace(), runtime_factory=_FakeCodexRuntime,
+                    watchdog_interval_seconds=60,
+                )
+                with patch.object(self.local_worker, "_claim_or_resume", side_effect=paused_claim):
+                    task = asyncio.create_task(manager.start(assignment.id))
+                    try:
+                        self.assertTrue(await asyncio.to_thread(entered.wait, 5))
+                        winner = await asyncio.to_thread(
+                            self.worker_service.claim, worker.id, AssignmentClaimRequest(),
+                            actor=actor, assignment_id=assignment.id,
+                        )
+                        self.assertIsNotNone(winner)
+                        release.set()
+                        with self.assertRaisesRegex(WorkerConflictError, "fence changed"):
+                            await task
+                    finally:
+                        release.set()
+                        await asyncio.gather(task, return_exceptions=True)
+                self.assertEqual(self.worker_service.store.assignment(assignment.id), winner)
+                self.assertEqual(self.backend.processes, [])
+                self.assertIsNone(manager.get(assignment.id))
+
+    async def test_manager_runtime_start_failure_cancels_unregistered_bootstrap(self) -> None:
+        subject = ExecutionSubject(kind="thread_bootstrap", ref="bootstrap-failure")
+        self.workspaces.workspace.subject = subject
+        self.workspaces.workspace.work_item_ref = None
+        released = []
+        self.workspaces.release = lambda key, request, **kwargs: released.append((key, kwargs))
+        assignment = self._create_assignment(subject=subject, work_item_ref=None)
+        class FailedRuntime(_FakeCodexRuntime):
+            async def start(self):
+                await super().start()
+                raise RuntimeError("runtime handshake failed")
+        manager = AssignmentBoundCodexSessionManager(
+            self.local_worker, SimpleNamespace(), runtime_factory=FailedRuntime,
+            watchdog_interval_seconds=60,
+        )
+        with self.assertRaisesRegex(RuntimeError, "runtime handshake failed"):
+            await manager.start(assignment.id)
+        current = self.worker_service.store.assignment(assignment.id)
+        self.assertEqual(current.status, AssignmentStatus.CANCELLED)
+        self.assertIsNone(current.lease)
+        self.assertEqual(current.fence, 2)
+        self.assertIsNone(manager.get(assignment.id))
+        self.assertTrue(self.backend.processes[0].terminated)
+        self.assertEqual(released[0][1]["actor"], self.admin)
+        self.assertTrue(released[0][1]["preserve_files"])
 
     async def test_manager_completes_exact_fenced_assignment_and_stops_session(self) -> None:
         assignment = self._create_assignment()

@@ -21,6 +21,7 @@ from codex_web.execution_workers import (
 from codex_web.execution_workspaces import (
     ExecutionWorkspace,
     ExecutionWorkspaceAcquire,
+    ExecutionWorkspaceRelease,
     LeaseMode,
 )
 from codex_web.execution_profiles import ExecutionProfileContract
@@ -1393,40 +1394,51 @@ class TurnExecutionBindingService:
             ) from exc
 
         try:
-            assignment = self.workers.create_assignment(
-                ExecutionAssignmentCreate(
-                    subject=subject,
-                    execution_id=normalized_execution_id,
-                    project_id=project.id,
-                    resource_ids=workspace.resource_ids,
-                    base_revision=workspace.base_revision,
-                    execution_contract_version=execution_contract_version,
-                    required_capabilities=required_capabilities,
-                    sandbox=sandbox,
-                    approval_policy=approval_policy,
-                    network=network,
-                    limits=effective_limits,
-                    secret_refs=((secret_ref,) if secret_ref else ()),
-                    deadline_at=deadline_at,
-                    execution_workspace_id=workspace.id,
-                    runtime_binding=effective_runtime_binding,
-                    repository_target=repository_target,
-                    repository_scope=repository_scope,
-                    execution_profile_id=effective_profile_id,
-                    execution_profile_definition=execution_profile_definition,
-                    agent_profile=agent_profile,
-                    skill_refs=effective_skill_refs,
-                    skill_assignment_sources={
-                        ref.record_id: (
-                            f"agent_profile:{agent_profile.profile_id}"
-                            if agent_profile is not None and ref in agent_profile.skill_refs
-                            else "thread_explicit"
-                        )
-                        for ref in effective_skill_refs
-                    },
-                ),
-                actor=self.control_actor,
-            )
+            try:
+                assignment = self.workers.create_assignment(
+                    ExecutionAssignmentCreate(
+                        subject=subject,
+                        execution_id=normalized_execution_id,
+                        project_id=project.id,
+                        resource_ids=workspace.resource_ids,
+                        base_revision=workspace.base_revision,
+                        execution_contract_version=execution_contract_version,
+                        required_capabilities=required_capabilities,
+                        sandbox=sandbox,
+                        approval_policy=approval_policy,
+                        network=network,
+                        limits=effective_limits,
+                        secret_refs=((secret_ref,) if secret_ref else ()),
+                        deadline_at=deadline_at,
+                        execution_workspace_id=workspace.id,
+                        runtime_binding=effective_runtime_binding,
+                        repository_target=repository_target,
+                        repository_scope=repository_scope,
+                        execution_profile_id=effective_profile_id,
+                        execution_profile_definition=execution_profile_definition,
+                        agent_profile=agent_profile,
+                        skill_refs=effective_skill_refs,
+                        skill_assignment_sources={
+                            ref.record_id: (
+                                f"agent_profile:{agent_profile.profile_id}"
+                                if agent_profile is not None and ref in agent_profile.skill_refs
+                                else "thread_explicit"
+                            )
+                            for ref in effective_skill_refs
+                        },
+                    ),
+                    actor=self.control_actor,
+                )
+            except Exception:
+                # Preparation has reserved a workspace but has no assignment to
+                # cancel yet. Revoke only its reservation, retaining all files.
+                self.workspaces.release(
+                    workspace.id,
+                    ExecutionWorkspaceRelease(reason="worker assignment creation failed"),
+                    actor=self.control_actor,
+                    preserve_files=True,
+                )
+                raise
         except WorkerConflictError as exc:
             raise TurnExecutionBindingError(
                 str(exc),

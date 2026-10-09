@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, TypeVar, runtime_checkable
 
-from codex_web.execution_workers import ExecutionAssignment, ExecutionRuntimeBinding
+from codex_web.execution_workers import (
+    AssignmentCancelRequest, AssignmentStatus, ExecutionAssignment, ExecutionRuntimeBinding,
+)
 from codex_web.identity import AuthenticationActor
 
 
@@ -173,3 +177,64 @@ class AssignmentRuntimeCredentialProvider(Protocol):
         *,
         actor: AuthenticationActor,
     ) -> None: ...
+
+
+def bootstrap_cancellation_reason(reason: str | None) -> str:
+    """Keep internal failure metadata within the strict cancellation contract."""
+    return (str(reason or "").strip() or "bootstrap failed")[:500]
+
+
+async def start_assignment_session(session: Any, local_worker: Any, assignment_id: str) -> None:
+    """Settle an owned bootstrap start before fencing failed/cancelled startup.
+
+    Cancellation cannot interrupt a synchronous claim or spawn already running
+    in an executor. Shield that ownership boundary, then revoke only the fence
+    captured by this attempt and retain the complete recovery workspace.
+    """
+    if local_worker is None:
+        await session.start()
+        return
+    original_task = asyncio.create_task(
+        asyncio.to_thread(local_worker._pending_assignment, assignment_id)
+    )
+    original = None
+    startup_task = None
+    try:
+        original = await asyncio.shield(original_task)
+        if original.subject.kind != "thread_bootstrap" or original.status != AssignmentStatus.PENDING:
+            await session.start()
+            return
+        # A same-worker lease can otherwise be resumed by _claim_or_resume.
+        # This pending bootstrap attempt owns only a new claim it actually wins.
+        session.require_new_claim = True
+        startup_task = asyncio.create_task(session.start())
+        await asyncio.shield(startup_task)
+    except (Exception, asyncio.CancelledError) as startup_error:
+        # A cancelled await leaves its executor operation running. Resolve its
+        # result before deciding which fence this attempt actually owns.
+        if original is None:
+            try:
+                original = await original_task
+            except Exception as lookup_error:
+                raise lookup_error from startup_error
+        if startup_task is not None and not startup_task.done():
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await startup_task
+        if original.subject.kind == "thread_bootstrap" and original.status == AssignmentStatus.PENDING:
+            try:
+                await asyncio.to_thread(
+                    local_worker.worker_service.cancel_bootstrap,
+                    assignment_id,
+                    AssignmentCancelRequest(
+                        expected_fence=session.fence if session.fence is not None else original.fence,
+                        reason="assignment-bound bootstrap session startup failed or cancelled",
+                    ),
+                    actor=local_worker.control_actor,
+                )
+            except Exception as cleanup_error:
+                raise cleanup_error from startup_error
+            finally:
+                # A shielded start can succeed after its caller times out.
+                # Its unregistered process/watchdog must still be stopped.
+                await session.stop()
+        raise
