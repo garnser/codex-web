@@ -289,15 +289,9 @@ class ExecutionWorkspaceService:
         return f"/mnt/codex-context/{safe or 'repository'}"
 
     def _existing(self, workspace_id: str, actor: AuthenticationActor) -> ExecutionWorkspace | None:
-        item = next(
-            (
-                workspace
-                for workspace in self.store.load().workspaces
-                if workspace.id == workspace_id
-                and self._scope_matches(workspace, actor.tenant)
-            ),
-            None,
-        )
+        item = self.store.workspace(workspace_id)
+        if item is not None and not self._scope_matches(item, actor.tenant):
+            return None
         if item is not None:
             self._authorized(item, actor)
         return item
