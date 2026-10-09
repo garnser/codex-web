@@ -475,3 +475,25 @@ connection, at most sixteen concurrent connections, and a five-second acquisitio
 wait; backend construction can supply tighter deployment bounds. Custom injected
 connection factories retain the existing one-operation connection behavior.
 Pool limits and counters are exposed through existing state-storage diagnostics.
+
+### Recovery and archived thread projections
+
+Recovery archives the predecessor in the canonical thread index before asking
+its provider to archive it. Provider failure remains visible in recovery events;
+subsequent active discovery cannot re-import a known archived row. Explicit
+unarchive is the operation that clears local archival. Historical transcripts
+and provider session identities are retained, rather than concatenated into a
+new provider conversation.
+
+Replacement rows carry their canonical Project ID. Naming retains Project and
+archive metadata when provider metadata is partial. First-page discovery repairs
+missing Project index metadata for the current canonical bot bindings using the
+Project binding index, unique thread IDs and existing tenant/Project ownership
+checks; it does not merge arbitrary conversations just because names match.
+
+An explicit archive request may archive an unavailable assignment-bound
+predecessor locally only when no active turn or current bot binding references
+it and its canonical assignment is absent or terminal without a lease. A live
+or pending claim and provider authority denials remain failures. The response
+and event distinguish canonical archival from pending provider archival. These
+projections do not release workspaces or alter worker authority.

@@ -17,6 +17,7 @@ from codex_web.execution_workers import ExecutionRuntimeBinding
 from codex_web.identity import AuthenticationActor
 from codex_web.runtime.execution import _runtime_for_model
 from codex_web.models import (
+    BotBinding,
     IndexedThread,
     ThreadPrimaryChannelUpdate,
     ThreadPrimaryUpdate,
@@ -30,6 +31,7 @@ from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
 from codex_web.services.agent_worker_session import AssignmentBoundAgentSessionManager
 from codex_web.services.thread_bootstrap_bindings import (
     ThreadBootstrapBindingService,
+    ThreadBootstrapBindingNotFoundError,
 )
 from codex_web.services.project_runtime import (
     ProjectRuntimeService,
@@ -106,6 +108,7 @@ class ThreadService:
         active_turn_loader: Callable[[], dict[str, Any]] | None = None,
         active_turn_getter: Callable[[str], Any | None] | None = None,
         transcript: Any | None = None,
+        project_bindings: Callable[[str], list[BotBinding]] | None = None,
     ) -> None:
         self.runtime_transport = runtime_transport
         self.runtime_request_for_thread = runtime_request_for_thread
@@ -133,6 +136,7 @@ class ThreadService:
         self.active_turn_loader = active_turn_loader
         self.active_turn_getter = active_turn_getter
         self.transcript = transcript
+        self.project_bindings = project_bindings
 
     def _transcript_response(
         self,
@@ -614,6 +618,35 @@ class ThreadService:
             if cursor
             else None
         )
+        if cursor_payload is None and project is not None and self.project_bindings is not None:
+            def repair_bound_project_rows() -> None:
+                repaired: dict[str, IndexedThread] = {}
+                seen: set[str] = set()
+                for binding in self.project_bindings(project.id):
+                    if binding.project_id != project.id or binding.thread_id in seen:
+                        continue
+                    seen.add(binding.thread_id)
+                    if not belongs(binding.thread_id):
+                        continue
+                    indexed = self._index().get(binding.thread_id)
+                    if indexed is not None and indexed.project_id is not None:
+                        continue
+                    if indexed is None:
+                        name = binding.thread_name or binding.route_prefix
+                        if not name:
+                            continue
+                        indexed = IndexedThread(
+                            id=binding.thread_id, name=name,
+                            updatedAt=binding.updated_at,
+                        )
+                    repaired[binding.thread_id] = indexed.model_copy(update={
+                        "project_id": project.id,
+                        "cwd": indexed.cwd or project.path,
+                        "path": indexed.path or project.path,
+                    })
+                if repaired:
+                    self._index().upsert_many(list(repaired.values()))
+            await asyncio.to_thread(repair_bound_project_rows)
         expected_revision = (
             cursor_payload.get("revision")
             if cursor_payload is not None
@@ -672,6 +705,11 @@ class ThreadService:
                     continue
                 candidate_id = str(item.get("id") or item.get("threadId") or "").strip()
                 if not candidate_id or not belongs(candidate_id):
+                    continue
+                existing = self._index().get(candidate_id)
+                if existing is not None and existing.archived and not archived:
+                    # Local archival survives a stale or unavailable provider.
+                    # Explicit unarchive clears this canonical flag separately.
                     continue
                 indexed = self._compact_runtime_thread(
                     item,
@@ -1441,10 +1479,43 @@ class ThreadService:
         }
 
     async def archive(self, thread_id: str) -> dict[str, Any]:
-        response = (
-            await self._codex_adapter(thread_id).close_session(thread_id)
-        ).payload
         indexed = self._index().get(thread_id)
+        try:
+            response = (
+                await self._codex_adapter(thread_id).close_session(thread_id)
+            ).payload
+        except HTTPException as exc:
+            if (
+                exc.status_code != 503 or indexed is None
+                or indexed.project_id is None or self.project_bindings is None
+                or self.binding_service is None or self.bootstrap_bindings is None
+                or self.control_actor is None
+                or self._active_turn_for_list(thread_id) is not None
+            ):
+                raise
+            bindings = await asyncio.to_thread(self.project_bindings, indexed.project_id)
+            if any(binding.thread_id == thread_id for binding in bindings):
+                raise
+            try:
+                bootstrap = await asyncio.to_thread(
+                    self.bootstrap_bindings.get_by_thread, thread_id, self.control_actor,
+                )
+            except ThreadBootstrapBindingNotFoundError:
+                raise exc
+            assignment = await asyncio.to_thread(
+                self.binding_service.workers.store.assignment, bootstrap.assignment_id,
+            )
+            if assignment is not None and (
+                assignment.status not in {"failed", "succeeded", "cancelled", "lost"}
+                or assignment.lease is not None
+            ):
+                raise
+            # An inactive, unbound predecessor with no viable assignment can
+            # be archived canonically without reviving its unavailable runtime.
+            response = {"ok": True, "threadId": thread_id, "archived": True,
+                        "providerArchived": False, "archivePending": True}
+            self.event_sink({"type": "thread_archived_locally", "thread_id": thread_id,
+                             "project_id": indexed.project_id, "provider_archived": False})
         if indexed is not None:
             self._index().upsert(
                 indexed.model_copy(
