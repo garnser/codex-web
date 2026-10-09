@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, routing
 from fastapi.openapi.utils import get_openapi
 from fastapi.routing import APIRoute
 from starlette.routing import Match
@@ -196,6 +197,46 @@ API_DOMAINS: dict[str, ApiDomainPolicy] = {
 }
 
 
+# Explicit classifications for existing included-router domains. Domain
+# handlers retain their tenant/resource/owner/service-scope checks; these entries
+# do not introduce a fallback for newly added or unknown API domains.
+API_DOMAINS.update({
+    "schedules": ApiDomainPolicy(read_access=ApiAccessMode.ADMIN,
+        write_access=ApiAccessMode.ADMIN, write_assurance=AuthenticationAssurance.MFA),
+    "execution-profiles": ApiDomainPolicy(),
+    "automations": ApiDomainPolicy(),
+    "crypto": ApiDomainPolicy(read_access=ApiAccessMode.ADMIN,
+        write_access=ApiAccessMode.ADMIN, write_assurance=AuthenticationAssurance.MFA),
+    "automation-runs": ApiDomainPolicy(write_access=ApiAccessMode.ADMIN,
+        write_assurance=AuthenticationAssurance.MFA),
+    "artifact-content": ApiDomainPolicy(),
+    "evidence": ApiDomainPolicy(),
+    "verifications": ApiDomainPolicy(),
+    "evidence-requirements": ApiDomainPolicy(write_access=ApiAccessMode.ADMIN,
+        write_assurance=AuthenticationAssurance.MFA),
+    "evidence-evaluations": ApiDomainPolicy(),
+    "artifact-evidence": ApiDomainPolicy(read_access=ApiAccessMode.ADMIN,
+        write_access=ApiAccessMode.ADMIN, write_assurance=AuthenticationAssurance.MFA),
+    "agent-runtime-usage": ApiDomainPolicy(),
+    "agent-profiles": ApiDomainPolicy(),
+    "agent-teams": ApiDomainPolicy(),
+    "agent-routing": ApiDomainPolicy(),
+    "control-plane-broker": ApiDomainPolicy(read_access=ApiAccessMode.ADMIN,
+        write_access=ApiAccessMode.ADMIN),
+    "ux-telemetry": ApiDomainPolicy(),
+    "legacy-migration": ApiDomainPolicy(read_access=ApiAccessMode.ADMIN,
+        write_access=ApiAccessMode.ADMIN),
+    "operational-state": ApiDomainPolicy(read_access=ApiAccessMode.ADMIN,
+        write_access=ApiAccessMode.ADMIN),
+    "conversation-channels": ApiDomainPolicy(),
+    "active-turn-recovery": ApiDomainPolicy(read_access=ApiAccessMode.ADMIN,
+        write_access=ApiAccessMode.ADMIN),
+    "readyz": ApiDomainPolicy(),
+    "home": ApiDomainPolicy(),
+    "version": ApiDomainPolicy(),
+})
+
+
 # Exact overrides are deliberately small and security-significant. Work-item
 # retry/reconcile were previously only tenant-visible at the HTTP layer; they
 # now require canonical operational authority while ordinary progress/handoff
@@ -235,6 +276,19 @@ def _domain_for(path: str) -> str | None:
     remainder = path[len("/api/") :]
     return remainder.split("/", 1)[0] or None
 
+# Definition/schedule mutations remain administrative; an authenticated manual
+# trigger still uses the canonical AutomationTriggerService and launch guards.
+for _path in (
+    "/api/automations/drafts",
+    "/api/automations/drafts/{record_id}/publish",
+    "/api/automations/{automation_id}/schedule/reconcile",
+):
+    EXACT_POLICIES[("POST", _path)] = ApiAuthorizationPolicy(
+        capability="api.automations.write", level=AuthorityLevel.EXECUTE,
+        access=ApiAccessMode.ADMIN, required_assurance=AuthenticationAssurance.MFA,
+    )
+
+
 
 def policy_for_operation(method: str, path: str) -> ApiAuthorizationPolicy | None:
     method = method.upper()
@@ -265,14 +319,28 @@ def policy_for_operation(method: str, path: str) -> ApiAuthorizationPolicy | Non
     )
 
 
-def _match_api_route(app: FastAPI, request: Request) -> APIRoute | None:
+def _route_contexts(app: FastAPI) -> Iterator[Any]:
+    # Newer FastAPI keeps included routers nested. Its public route contexts
+    # preserve effective prefixes and order; older releases already flatten
+    # included routes and can use the original APIRoute objects directly.
+    iterate = getattr(routing, "iter_route_contexts", None)
+    if iterate is not None:
+        yield from iterate(app.router.routes)
+    else:
+        yield from app.router.routes
+
+
+def _is_api_route(route: Any) -> bool:
+    return isinstance(getattr(route, "original_route", route), APIRoute)
+
+
+def _match_api_route(app: FastAPI, request: Request) -> Any | None:
     scope = dict(request.scope)
-    for route in app.router.routes:
-        if not isinstance(route, APIRoute):
-            continue
+    for route in _route_contexts(app):
         match, _ = route.matches(scope)
         if match == Match.FULL:
-            return route
+            # Respect an earlier non-API route/mount which owns this request.
+            return route if _is_api_route(route) else None
     return None
 
 
@@ -346,8 +414,8 @@ class ApiAuthorizationService:
     @staticmethod
     def validate_app(app: FastAPI) -> None:
         missing: list[str] = []
-        for route in app.routes:
-            if not isinstance(route, APIRoute) or not route.path.startswith("/api/"):
+        for route in _route_contexts(app):
+            if not _is_api_route(route) or not route.path.startswith("/api/"):
                 continue
             for method in sorted(route.methods or ()):
                 if method in {"HEAD", "OPTIONS"}:
@@ -391,8 +459,8 @@ def _install_openapi_metadata(app: FastAPI) -> None:
             },
         )
 
-        for route in app.routes:
-            if not isinstance(route, APIRoute) or not route.path.startswith("/api/"):
+        for route in _route_contexts(app):
+            if not _is_api_route(route) or not route.path.startswith("/api/"):
                 continue
             path_item = schema.get("paths", {}).get(route.path_format, {})
             for method in sorted(route.methods or ()):

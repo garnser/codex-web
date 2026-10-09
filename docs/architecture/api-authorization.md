@@ -2,7 +2,7 @@
 
 Codex Web applies authorization at a canonical HTTP boundary after authentication and tenant resolution and before an API handler runs.
 
-Every operation under `/api/` must resolve to an explicit API authorization policy. Unknown API domains fail closed during application composition and request handling.
+Every operation under `/api/` must resolve to an explicit API authorization policy. Matching, composition validation and OpenAPI authorization metadata use the same effective FastAPI route contexts, including nested routers and combined include prefixes. Request matching follows route order and HTTP methods; an earlier non-API route or mount retains ownership of its request. Unknown API domains fail closed during application composition and request handling.
 
 ## Policy modes
 
