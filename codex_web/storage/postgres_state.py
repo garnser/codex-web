@@ -521,6 +521,50 @@ class PostgresStateStore:
                 success=success,
             )
 
+    def record_mutate(
+        self,
+        namespace: str,
+        keys: tuple[str, ...],
+        updater: Callable[[dict[str, Any | None]], dict[str, Any | None]],
+    ) -> dict[str, Any | None]:
+        """Atomically inspect selected records and apply a bounded record delta."""
+        selected = tuple(dict.fromkeys(str(key) for key in keys))
+        started = time.perf_counter()
+        success = False
+        try:
+            with self._connection() as connection:
+                with connection.cursor() as cursor:
+                    # The namespace lock protects dynamic keys returned by the
+                    # updater as well as the selected records.
+                    self._lock(cursor, namespace)
+                    self._ensure_record_collection_in_cursor(cursor, namespace)
+                    current: dict[str, Any | None] = {}
+                    for key in selected:
+                        cursor.execute(
+                            "SELECT payload FROM codex_state_documents WHERE namespace = %s FOR UPDATE",
+                            (state_record_storage_key(namespace, key),),
+                        )
+                        current[key] = self._decode(cursor.fetchone())
+                    changes = updater(current)
+                    if not isinstance(changes, dict):
+                        raise TypeError("record_mutate updater must return a mapping")
+                    for key, payload in changes.items():
+                        storage_key = state_record_storage_key(namespace, str(key))
+                        if payload is None:
+                            cursor.execute(
+                                "DELETE FROM codex_state_documents WHERE namespace = %s",
+                                (storage_key,),
+                            )
+                        else:
+                            self._upsert(cursor, storage_key, payload)
+            success = True
+            return changes
+        finally:
+            self._keyed_mutation_metrics.observe(
+                time.perf_counter() - started,
+                success=success,
+            )
+
     def record_replace(
         self,
         namespace: str,
