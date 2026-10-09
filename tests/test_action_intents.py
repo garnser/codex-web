@@ -6,6 +6,8 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 
 from codex_web.action_intents import (
     ActionDecisionOutcome,
@@ -361,6 +363,83 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
             actor=self.actor,
             resources=self.resources,
         )
+
+    def _large_history(self):
+        seed = self._create()
+        history = [seed.model_copy(update={
+            "id": f"historical-{i}", "idempotency_key": f"historical-key-{i}",
+            "status": ActionIntentStatus.SUCCEEDED,
+            "request": seed.request.model_copy(update={"parameters": {"payload": "x" * 6000}}),
+        }) for i in range(550)]
+        def populate(state):
+            state.intents = history
+            return state
+        self.service.store.update(populate)
+        return seed
+
+    async def test_point_updates_and_empty_claim_do_not_read_historical_collections(self):
+        self._large_history()
+        store = self.service.store
+        before = self.sqlite.namespace_revision(store.records_namespace)
+        with patch.object(self.sqlite, "record_items", side_effect=AssertionError("whole collection read")), \
+             patch.object(self.sqlite, "get", side_effect=AssertionError("legacy document read")):
+            result = self.service.claim(ActionIntentClaimRequest(worker_id="worker"), actor=self.worker_actor)
+            self.assertIsNone(result)
+            self.assertEqual(self.sqlite.namespace_revision(store.records_namespace), before)
+            target = self.service.get("historical-1", self.actor)
+            self.service._set_status(target.id, ActionIntentStatus.FAILED, error="test failure")
+            self.service._append_receipt(target, result=None, outcome="failed")
+            self.assertEqual(len(self.service.history(target.id, self.actor)["receipts"]), 1)
+            self.assertEqual(self.service.get(target.id, self.actor).status, ActionIntentStatus.FAILED)
+
+    async def test_concurrent_claims_have_one_owner_and_recheck_stale_candidates(self):
+        intent = self._create()
+        def claim(number):
+            return self.service.claim(ActionIntentClaimRequest(worker_id=f"worker-{number}"),
+                                      actor=self.worker_actor, intent_id=intent.id)
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(claim, range(16)))
+        claimed = [item for item in results if item is not None]
+        self.assertEqual(len(claimed), 1)
+        self.assertEqual(self.service.get(intent.id, self.actor).lease.owner, claimed[0].lease.owner)
+
+    async def test_legacy_intents_migrate_once_and_checkpoint_includes_keyed_changes(self):
+        intent = self._create()
+        state = self.service.store.load()
+        path = Path(self.temp.name) / "legacy.sqlite3"
+        backend = SQLiteStateStore(path)
+        backend.put(ActionIntentStore.namespace, state.model_dump(mode="json"))
+        store = ActionIntentStore(backend)
+        self.assertEqual(store.get(intent.id), intent)
+        def change(current):
+            current.intents[0] = current.intents[0].model_copy(update={"status": ActionIntentStatus.FAILED})
+            return current
+        store.update(change, intent_ids=(intent.id,))
+        store.flush_legacy_mirror()
+        checkpoint = backend.get(store.namespace)
+        self.assertEqual(checkpoint["intents"][0]["status"], "failed")
+        restarted = ActionIntentStore(backend)
+        with patch.object(backend, "get", side_effect=AssertionError("checkpoint replayed")):
+            self.assertEqual(restarted.get(intent.id).status, ActionIntentStatus.FAILED)
+
+    async def test_slow_action_storage_does_not_block_event_loop(self):
+        intent = self._create()
+        claimed = self.service.claim(ActionIntentClaimRequest(worker_id="worker"),
+                                     actor=self.worker_actor, intent_id=intent.id)
+        entered = asyncio.Event()
+        original = self.service._append_receipt
+        loop = asyncio.get_running_loop()
+        def slow_receipt(*args, **kwargs):
+            loop.call_soon_threadsafe(entered.set)
+            time.sleep(0.15)
+            return original(*args, **kwargs)
+        with patch.object(self.service, "_append_receipt", side_effect=slow_receipt):
+            task = asyncio.create_task(self.service.execute_claimed(claimed.id, worker_id="worker",
+                                                                    actor=self.worker_actor))
+            await asyncio.wait_for(entered.wait(), 2)
+            self.assertFalse(task.done())
+            await asyncio.wait_for(asyncio.sleep(0.01), 0.08)
+            self.assertEqual((await task).status, ActionIntentStatus.SUCCEEDED)
 
     async def asyncTearDown(self) -> None:
         self.temp.cleanup()

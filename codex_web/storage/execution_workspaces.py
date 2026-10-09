@@ -6,7 +6,7 @@ import threading
 from typing import Any, Callable
 
 from codex_web.compatibility import ContractSpec, MigrationRegistry
-from codex_web.execution_workspaces import ExecutionWorkspaceState
+from codex_web.execution_workspaces import ExecutionWorkspaceState, ExecutionWorkspace, ExecutionWorkspaceLease
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
@@ -273,6 +273,18 @@ class ExecutionWorkspaceStateStore:
     def load(self) -> ExecutionWorkspaceState:
         with self._lock:
             return self._load_unlocked()
+
+    def workspace(self, workspace_id: str) -> ExecutionWorkspace | None:
+        with self._lock:
+            self._ensure_records()
+            raw = self.store.record_get(self.workspace_namespace, workspace_id)
+            return ExecutionWorkspace.model_validate(raw) if raw is not None else None
+
+    def lease(self, lease_id: str) -> ExecutionWorkspaceLease | None:
+        with self._lock:
+            self._ensure_records()
+            raw = self.store.record_get(self.lease_namespace, lease_id)
+            return ExecutionWorkspaceLease.model_validate(raw) if raw is not None else None
 
     def _apply_records(
         self,

@@ -4247,6 +4247,7 @@ def _flush_compatibility_state() -> None:
         turn_queue_repository,
         bot_state.reply_targets,
         bot_state.delivery_targets,
+        action_intent_store,
     )
     for repository in repositories:
         if repository is not None:

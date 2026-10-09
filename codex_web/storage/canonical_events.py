@@ -131,6 +131,17 @@ class CanonicalEventStore:
             ),
         }
 
+    @staticmethod
+    def _change_outbox_counts(meta, before=None, after=None):
+        counts = dict(meta.get("outbox_counts") or {
+            status.value: 0 for status in CanonicalEventOutboxStatus
+        })
+        if before is not None:
+            counts[before.status.value] -= 1
+        if after is not None:
+            counts[after.status.value] += 1
+        meta["outbox_counts"] = counts
+
     def _records_from_legacy(self, state: CanonicalEventState) -> dict[str, Any]:
         by_event = {event_id: key for key, event_id in state.idempotency.items()}
         records: dict[str, Any] = {
@@ -140,6 +151,11 @@ class CanonicalEventStore:
                 "inbox_count": len(state.inbox),
             }
         }
+        for outbox in state.outbox.values():
+            self._change_outbox_counts(records[self._meta_key], after=outbox)
+        records[self._meta_key].setdefault("outbox_counts", {
+            status.value: 0 for status in CanonicalEventOutboxStatus
+        })
         for offset, event in enumerate(state.events):
             key = by_event.get(event.event_id, f"legacy-event:{event.event_id}")
             record_key = self._idempotency_record_key(key)
@@ -172,6 +188,19 @@ class CanonicalEventStore:
             CANONICAL_EVENT_RECORDS_CONTRACT.require(
                 str(meta.get("schema_version") or "")
             )
+            if "outbox_counts" not in meta:
+                def upgrade(documents):
+                    records = dict(documents[self.records_namespace])
+                    updated = dict(records[self._meta_key])
+                    if "outbox_counts" not in updated:
+                        counts = {status.value: 0 for status in CanonicalEventOutboxStatus}
+                        for key, raw in records.items():
+                            if key.startswith("idempotency:") and raw.get("outbox") is not None:
+                                counts[raw["outbox"]["status"]] += 1
+                        updated["outbox_counts"] = counts
+                        records[self._meta_key] = updated
+                    return {self.records_namespace: records}
+                self.store.update_many({self.records_namespace: {}}, upgrade)
             return
         legacy = self._decode(self.store.get(self.namespace))
         migrated = self._records_from_legacy(legacy)
@@ -308,6 +337,9 @@ class CanonicalEventStore:
                     updated["outbox_index_key"] = self._pending_key(outbox)
                     changes[record_key] = updated
                     changes[updated["outbox_index_key"]] = updated["outbox"]
+                    meta = dict(current[self._meta_key])
+                    self._change_outbox_counts(meta, after=outbox)
+                    changes[self._meta_key] = meta
                 result.update(event=existing, inserted=False)
                 return changes
             if alias_raw is not None:
@@ -327,6 +359,7 @@ class CanonicalEventStore:
                 schema_version=self.records_schema_version,
                 event_count=int(meta.get("event_count") or 0) + 1,
             )
+            self._change_outbox_counts(meta, after=outbox)
             changes = {
                 self._meta_key: meta,
                 record_key: entry,
@@ -393,6 +426,9 @@ class CanonicalEventStore:
                     updated["outbox_index_key"] = self._pending_key(outbox)
                     records[record_key] = updated
                     records[updated["outbox_index_key"]] = updated["outbox"]
+                    meta = dict(records[self._meta_key])
+                    self._change_outbox_counts(meta, after=outbox)
+                    records[self._meta_key] = meta
                 result["domain"] = documents[namespace]
                 result["event"] = existing
                 result["inserted"] = False
@@ -418,6 +454,7 @@ class CanonicalEventStore:
                 schema_version=self.records_schema_version,
                 event_count=int(meta.get("event_count") or 0) + 1,
             )
+            self._change_outbox_counts(meta, after=outbox)
             records[self._meta_key] = meta
             records[record_key] = entry
             records[alias_key] = {"record_key": record_key}
@@ -505,7 +542,9 @@ class CanonicalEventStore:
             )
             updated["outbox"] = updated_outbox.model_dump(mode="json")
             updated["outbox_index_key"] = new_index
-            changes: dict[str, Any | None] = {record_key: updated}
+            meta = dict(current[self._meta_key])
+            self._change_outbox_counts(meta, before=outbox, after=updated_outbox)
+            changes: dict[str, Any | None] = {record_key: updated, self._meta_key: meta}
             if old_index is not None and old_index != new_index:
                 changes[old_index] = None
             if new_index is not None:
@@ -513,7 +552,7 @@ class CanonicalEventStore:
             result.append(updated_outbox)
             return changes
 
-        self.store.record_mutate(self.records_namespace, (record_key,), apply)
+        self.store.record_mutate(self.records_namespace, (self._meta_key, record_key), apply)
         return result[0]
 
     def mark_outbox_published(
@@ -612,19 +651,25 @@ class CanonicalEventStore:
         self._prune_inbox(max(1, int(max_receipts)))
         return receipt
 
+    def _order_records(self):
+        after = None
+        while True:
+            page, after = self.store.record_page(
+                self.records_namespace, key_prefix="order:", after=after, limit=100,
+            )
+            yield from page.items()
+            if after is None:
+                return
+
     def _prune_events(self) -> None:
         while True:
             meta = self.store.record_get(self.records_namespace, self._meta_key) or {}
             if int(meta.get("event_count") or 0) <= self.max_events:
                 return
-            records = self.store.record_items(self.records_namespace)
             deleted = False
-            for order_key in sorted(
-                key for key in records if key.startswith("order:")
-            ):
-                alias = records.get(order_key)
+            for order_key, alias in self._order_records():
                 record_key = str(alias.get("record_key") or "") if isinstance(alias, dict) else ""
-                raw = records.get(record_key)
+                raw = self.store.record_get(self.records_namespace, record_key) if record_key else None
                 if not record_key or not isinstance(raw, dict):
                     continue
                 _, event, outbox = self._decode_entry(raw)
@@ -648,6 +693,7 @@ class CanonicalEventStore:
                     current_meta["event_count"] = max(
                         0, int(current_meta.get("event_count") or 0) - 1
                     )
+                    self._change_outbox_counts(current_meta, before=current_outbox)
                     changes: dict[str, Any | None] = {
                         self._meta_key: current_meta,
                         record_key: None,
@@ -705,17 +751,8 @@ class CanonicalEventStore:
 
     def outbox_status(self) -> dict[str, int]:
         self._ensure_records()
-        counts = {
-            status.value: 0
-            for status in CanonicalEventOutboxStatus
-        }
-        for key, raw in self.store.record_items(self.records_namespace).items():
-            if not key.startswith("idempotency:"):
-                continue
-            _, _, item = self._decode_entry(raw)
-            if item is not None:
-                counts[item.status.value] += 1
-        return counts
+        meta = self.store.record_get(self.records_namespace, self._meta_key)
+        return dict(meta["outbox_counts"])
 
     def recent(self, *, limit: int = 100) -> list[CanonicalEventEnvelope]:
         count = max(0, min(int(limit), self.max_events))

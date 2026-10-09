@@ -214,6 +214,14 @@ class ExecutionWorkspaceTests(unittest.TestCase):
             actor=self.actor,
         )
 
+    def test_workspace_get_and_reference_use_keyed_reads_without_history(self):
+        workspace = self._acquire("point-read")
+        store = self.service.store
+        with patch.object(store, "load", side_effect=AssertionError("whole workspace state loaded")):
+            self.assertEqual(self.service.get(workspace.id, self.actor).id, workspace.id)
+            reference = self.service._workspace_reference(workspace)
+            self.assertEqual(reference.workspace_id, workspace.id)
+
     def test_exact_revision_refresh_requires_clean_active_workspace(self) -> None:
         workspace = self._acquire("refresh-exec", self.repo.id)
         checkout = Path(workspace.path)

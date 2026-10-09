@@ -182,15 +182,8 @@ class ActionIntentService:
         )
 
     def _intent(self, intent_id: str, actor: AuthenticationActor) -> ActionIntent:
-        intent = next(
-            (
-                item
-                for item in self.store.load().intents
-                if item.id == intent_id and self._same_scope(item, actor)
-            ),
-            None,
-        )
-        if intent is None:
+        intent = self.store.get(intent_id)
+        if intent is None or not self._same_scope(intent, actor):
             raise ActionIntentNotFoundError("action intent not found")
         return intent
 
@@ -217,7 +210,7 @@ class ActionIntentService:
 
     def history(self, intent_id: str, actor: AuthenticationActor) -> dict[str, Any]:
         intent = self._intent(intent_id, actor)
-        state = self.store.load()
+        state = self.store.load(intent_id=intent.id)
         return {
             "intent": intent.model_dump(mode="json"),
             "receipts": [
@@ -418,7 +411,7 @@ class ActionIntentService:
                     break
             return state
 
-        updated = self.store.update(apply)
+        updated = self.store.update(apply, intent_ids=(intent_id,))
         return next(item for item in updated.intents if item.id == intent_id)
 
     def _security_decision(
@@ -524,7 +517,7 @@ class ActionIntentService:
                     break
             return state
 
-        self.store.update(apply)
+        self.store.update(apply, intent_ids=(intent.id,))
         if decision.outcome != SecurityDecisionOutcome.ALLOW:
             return False, "; ".join(decision.reasons) or "security trust boundary denied action"
         return True, None
@@ -635,18 +628,9 @@ class ActionIntentService:
         # attribution. Reusing a key for another repository/resource must never
         # return an intent for the wrong target.
         if request.idempotency_key:
-            existing = next(
-                (
-                    item
-                    for item in self.store.load().intents
-                    if item.organization_id == actor.organization_id
-                    and item.workspace_id == actor.workspace_id
-                    and item.binding_id == binding.id
-                    and item.action_id == request.action_id
-                    and item.idempotency_key == request.idempotency_key
-                    and item.status != ActionIntentStatus.CANCELLED
-                ),
-                None,
+            existing = self.store.find_idempotent(
+                actor.organization_id, actor.workspace_id, binding.id,
+                request.action_id, request.idempotency_key,
             )
             if existing is not None:
                 same_request = (
@@ -803,12 +787,17 @@ class ActionIntentService:
             work_item_success=payload.work_item_success,
         )
 
-        def apply(state):
-            state.intents.append(intent)
-            return state
-
-        self.store.update(apply)
-        return intent
+        persisted = self.store.insert(intent)
+        if persisted.id != intent.id and (
+            self._idempotency_request_identity(persisted.request)
+            != self._idempotency_request_identity(request)
+            or persisted.work_item_ref != payload.work_item_ref
+            or persisted.execution_id != payload.execution_id
+        ):
+            raise ActionIntentConflictError(
+                "idempotency key is already bound to a different action target or execution context"
+            )
+        return persisted
 
     @staticmethod
     def _failure(
@@ -895,7 +884,7 @@ class ActionIntentService:
                 return state
             raise ActionIntentNotFoundError("action intent not found")
 
-        updated = self.store.update(apply)
+        updated = self.store.update(apply, intent_ids=(intent_id,))
         return next(item for item in updated.intents if item.id == intent_id)
 
     def recover_stale_claims(
@@ -953,7 +942,10 @@ class ActionIntentService:
                 recovered.append(intent.id)
             return state
 
-        self.store.update(apply)
+        for item in self.store.indexed_intents(
+            "lease", organization_id=organization_id, workspace_id=workspace_id, now=current,
+        ):
+            self.store.update(apply, intent_ids=(item.id,))
         return recovered
 
     def claim(
@@ -1009,7 +1001,15 @@ class ActionIntentService:
                     break
             return state
 
-        self.store.update(apply)
+        candidates = ([self.store.get(intent_id)] if intent_id is not None else
+                      self.store.indexed_intents("pending", organization_id=actor.organization_id,
+                                                 workspace_id=actor.workspace_id))
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            self.store.update(apply, intent_ids=(candidate.id,))
+            if claimed:
+                break
         return claimed[0] if claimed else None
 
     def renew_claim(
@@ -1043,13 +1043,17 @@ class ActionIntentService:
         def apply(state):
             for index, item in enumerate(state.intents):
                 if item.id == intent.id:
+                    if (item.lease is None or item.lease.owner != worker_id
+                            or item.lease.expires_at <= time.time()
+                            or item.status not in {ActionIntentStatus.CLAIMED, ActionIntentStatus.EXECUTING}):
+                        raise ActionIntentLeaseError("action intent lease is not active for worker")
                     state.intents[index] = item.model_copy(
                         update={"lease": renewed, "updated_at": now}
                     )
                     break
             return state
 
-        updated = self.store.update(apply)
+        updated = self.store.update(apply, intent_ids=(intent.id,))
         return next(item for item in updated.intents if item.id == intent.id)
 
     def _mark_executing(
@@ -1073,6 +1077,12 @@ class ActionIntentService:
         def apply(state):
             for index, item in enumerate(state.intents):
                 if item.id == intent.id:
+                    if (item.lease is None or item.lease.owner != worker_id
+                            or item.lease.expires_at <= time.time()
+                            or item.status not in {ActionIntentStatus.CLAIMED, ActionIntentStatus.EXECUTING}):
+                        raise ActionIntentLeaseError("action intent lease is not active for worker")
+                    if item.status != ActionIntentStatus.CLAIMED or item.attempt >= item.retry_policy.max_attempts:
+                        raise ActionIntentLeaseError("action intent claim is no longer executable")
                     state.intents[index] = item.model_copy(
                         update={
                             "status": ActionIntentStatus.EXECUTING,
@@ -1085,7 +1095,7 @@ class ActionIntentService:
                     break
             return state
 
-        updated = self.store.update(apply)
+        updated = self.store.update(apply, intent_ids=(intent.id,))
         return next(item for item in updated.intents if item.id == intent.id)
 
     def _append_receipt(
@@ -1123,7 +1133,7 @@ class ActionIntentService:
                     break
             return state
 
-        self.store.update(apply)
+        self.store.update(apply, intent_ids=(intent.id,))
         return receipt
 
     def _append_verification(
@@ -1163,7 +1173,7 @@ class ActionIntentService:
                     break
             return state
 
-        self.store.update(apply)
+        self.store.update(apply, intent_ids=(intent.id,))
         return receipt
 
     def _set_status(
@@ -1200,7 +1210,7 @@ class ActionIntentService:
                     break
             return state
 
-        updated = self.store.update(apply)
+        updated = self.store.update(apply, intent_ids=(intent_id,))
         result = next(item for item in updated.intents if item.id == intent_id)
         if self.status_notifier is not None:
             try:
@@ -1255,7 +1265,7 @@ class ActionIntentService:
                     )
 
         verified = provider_ok and evidence_ok
-        self._append_verification(
+        await asyncio.to_thread(self._append_verification,
             intent,
             provider_verification=provider_verification,
             evidence_evaluation=evidence_evaluation,
@@ -1294,15 +1304,15 @@ class ActionIntentService:
         actor: AuthenticationActor,
     ) -> ActionIntent:
         self._require_worker(actor)
-        pending = self._intent(intent_id, actor)
+        pending = await asyncio.to_thread(self._intent, intent_id, actor)
         try:
-            requester = self._requester_actor(pending)
+            requester = await asyncio.to_thread(self._requester_actor, pending)
             _, _, current_definition, current_request = self.execution.resolve_contract(
                 pending.binding_id,
                 pending.request,
                 actor=actor,
             )
-            authority_recheck = self._canonical_authority_snapshot(
+            authority_recheck = await asyncio.to_thread(self._canonical_authority_snapshot,
                 definition=current_definition,
                 request=current_request,
                 actor=requester,
@@ -1322,12 +1332,12 @@ class ActionIntentService:
                 ),
                 evaluated_at=time.time(),
             )
-        pending = self._persist_authority_recheck(
+        pending = await asyncio.to_thread(self._persist_authority_recheck,
             pending.id,
             authority_recheck,
         )
         if authority_recheck.outcome != ActionDecisionOutcome.ALLOW:
-            return self._set_status(
+            return await asyncio.to_thread(self._set_status,
                 intent_id,
                 ActionIntentStatus.CANCELLED,
                 error=(
@@ -1339,13 +1349,13 @@ class ActionIntentService:
                     FailureReason.AUTHORITY_DENIED,
                 ),
             )
-        allowed, reason = self._recheck_security(
+        allowed, reason = await asyncio.to_thread(self._recheck_security,
             pending,
             actor=actor,
             authority_decision=authority_recheck,
         )
         if not allowed:
-            return self._set_status(
+            return await asyncio.to_thread(self._set_status,
                 intent_id,
                 ActionIntentStatus.CANCELLED,
                 error=reason or "security trust boundary denied action",
@@ -1372,7 +1382,7 @@ class ActionIntentService:
                     actor=actor,
                 )
             except EntitlementDeniedError as exc:
-                return self._set_status(
+                return await asyncio.to_thread(self._set_status,
                     intent_id,
                     ActionIntentStatus.FAILED,
                     error=f"entitlement/quota denied before provider execution: {exc}",
@@ -1396,13 +1406,13 @@ class ActionIntentService:
                     lease_seconds=pending.timeout_seconds + 30.0,
                 )
             except CapacityDeferredError as exc:
-                return self._defer_for_capacity(
+                return await asyncio.to_thread(self._defer_for_capacity,
                     pending.id,
                     reason=exc.reason,
                     retry_at=exc.retry_at,
                 )
         try:
-            intent = self._mark_executing(intent_id, worker_id, actor)
+            intent = await asyncio.to_thread(self._mark_executing, intent_id, worker_id, actor)
         except Exception:
             if self.capacity is not None and capacity_lease is not None:
                 self.capacity.release(capacity_lease.id)
@@ -1436,13 +1446,13 @@ class ActionIntentService:
                     if capacity_lease is not None:
                         self.capacity.release(capacity_lease.id)
                         capacity_lease = None
-                self._append_receipt(
+                await asyncio.to_thread(self._append_receipt,
                     intent,
                     result=None,
                     outcome="unknown",
                     details={"reason": "timeout"},
                 )
-                return self._set_status(
+                return await asyncio.to_thread(self._set_status,
                     intent.id,
                     ActionIntentStatus.UNCERTAIN,
                     error="provider execution timed out; external outcome unknown",
@@ -1461,13 +1471,13 @@ class ActionIntentService:
                 if self.capacity is not None and capacity_lease is not None:
                     self.capacity.release(capacity_lease.id)
                     capacity_lease = None
-                self._append_receipt(
+                await asyncio.to_thread(self._append_receipt,
                     intent,
                     result=None,
                     outcome="failed",
                     details={"reason": type(exc).__name__},
                 )
-                return self._set_status(
+                return await asyncio.to_thread(self._set_status,
                     intent.id,
                     ActionIntentStatus.FAILED,
                     error=f"provider precondition failed: {exc}",
@@ -1488,13 +1498,13 @@ class ActionIntentService:
                     if capacity_lease is not None:
                         self.capacity.release(capacity_lease.id)
                         capacity_lease = None
-                self._append_receipt(
+                await asyncio.to_thread(self._append_receipt,
                     intent,
                     result=None,
                     outcome="unknown",
                     details={"reason": type(exc).__name__},
                 )
-                return self._set_status(
+                return await asyncio.to_thread(self._set_status,
                     intent.id,
                     ActionIntentStatus.UNCERTAIN,
                     error=(
@@ -1521,12 +1531,12 @@ class ActionIntentService:
         if self.capacity is not None and capacity_lease is not None:
             self.capacity.release(capacity_lease.id)
             capacity_lease = None
-        self._append_receipt(
+        await asyncio.to_thread(self._append_receipt,
             intent,
             result=result,
             outcome="failed" if result.status == "failed" else "completed",
         )
-        current = self._intent(intent.id, actor)
+        current = await asyncio.to_thread(self._intent, intent.id, actor)
         if result.status == "failed":
             if self.capacity is not None:
                 self.capacity.record_failure(
@@ -1537,7 +1547,7 @@ class ActionIntentService:
                 )
             native_code = result.error_code or "provider_failed"
             reason_code = action_failure_reason(native_code)
-            return self._set_status(
+            return await asyncio.to_thread(self._set_status,
                 intent.id,
                 ActionIntentStatus.FAILED,
                 error=result.error_message or native_code,
@@ -1555,11 +1565,11 @@ class ActionIntentService:
                 component_key=component_key,
             )
         if result.status == "rolled_back":
-            return self._set_status(intent.id, ActionIntentStatus.ROLLED_BACK)
+            return await asyncio.to_thread(self._set_status, intent.id, ActionIntentStatus.ROLLED_BACK)
 
         verified = await self._verify_completion(current, result, actor=actor)
         if not verified:
-            return self._set_status(
+            return await asyncio.to_thread(self._set_status,
                 intent.id,
                 ActionIntentStatus.REQUIRES_RECONCILIATION,
                 error="required provider/evidence verification is not satisfied",
@@ -1568,16 +1578,16 @@ class ActionIntentService:
                     FailureReason.VERIFICATION_FAILED,
                 ),
             )
-        current = self._intent(intent.id, actor)
+        current = await asyncio.to_thread(self._intent, intent.id, actor)
         try:
-            self._advance_work_item(current)
+            await asyncio.to_thread(self._advance_work_item, current)
         except Exception as exc:
-            return self._set_status(
+            return await asyncio.to_thread(self._set_status,
                 intent.id,
                 ActionIntentStatus.REQUIRES_RECONCILIATION,
                 error=f"external action verified but canonical state advance failed: {type(exc).__name__}: {exc}",
             )
-        return self._set_status(intent.id, ActionIntentStatus.SUCCEEDED)
+        return await asyncio.to_thread(self._set_status, intent.id, ActionIntentStatus.SUCCEEDED)
 
     def _schedule_retry(
         self,
@@ -1604,7 +1614,7 @@ class ActionIntentService:
                     break
             return state
 
-        updated = self.store.update(apply)
+        updated = self.store.update(apply, intent_ids=(intent.id,))
         return next(item for item in updated.intents if item.id == intent.id)
 
     def retry(
@@ -1813,8 +1823,8 @@ class ActionIntentService:
         actor: AuthenticationActor,
     ) -> ActionIntent:
         self._require_worker(actor)
-        intent = self._intent(intent_id, actor)
-        state = self.store.load()
+        intent = await asyncio.to_thread(self._intent, intent_id, actor)
+        state = await asyncio.to_thread(self.store.load, intent_id=intent.id)
         results = [
             receipt.result
             for receipt in state.receipts
@@ -1823,7 +1833,7 @@ class ActionIntentService:
         latest_result = results[-1] if results else None
 
         if latest_result is not None and latest_result.status == "rolled_back":
-            return self._set_status(intent.id, ActionIntentStatus.ROLLED_BACK)
+            return await asyncio.to_thread(self._set_status, intent.id, ActionIntentStatus.ROLLED_BACK)
         if latest_result is not None and latest_result.status in {"succeeded", "dry_run"}:
             verified = await self._verify_completion(
                 intent,
@@ -1831,17 +1841,17 @@ class ActionIntentService:
                 actor=actor,
             )
             if verified:
-                current = self._intent(intent.id, actor)
+                current = await asyncio.to_thread(self._intent, intent.id, actor)
                 try:
-                    self._advance_work_item(current)
+                    await asyncio.to_thread(self._advance_work_item, current)
                 except Exception as exc:
-                    return self._set_status(
+                    return await asyncio.to_thread(self._set_status,
                         intent.id,
                         ActionIntentStatus.REQUIRES_RECONCILIATION,
                         error=f"verification succeeded but canonical state advance failed: {type(exc).__name__}: {exc}",
                     )
-                return self._set_status(intent.id, ActionIntentStatus.SUCCEEDED)
-            return self._set_status(
+                return await asyncio.to_thread(self._set_status, intent.id, ActionIntentStatus.SUCCEEDED)
+            return await asyncio.to_thread(self._set_status,
                 intent.id,
                 ActionIntentStatus.REQUIRES_RECONCILIATION,
                 error="reconciliation verification is not satisfied",
@@ -1874,12 +1884,12 @@ class ActionIntentService:
                     "replacement ActionIntent if delivery is still required"
                 )
                 if latest_result is not None and latest_result.status == "failed":
-                    return self._set_status(
+                    return await asyncio.to_thread(self._set_status,
                         intent.id,
                         ActionIntentStatus.FAILED,
                         error=error,
                     )
-                return self._set_status(
+                return await asyncio.to_thread(self._set_status,
                     intent.id,
                     ActionIntentStatus.REQUIRES_RECONCILIATION,
                     error=error,
@@ -1894,14 +1904,14 @@ class ActionIntentService:
                         },
                     ),
                 )
-            return self._schedule_retry(
+            return await asyncio.to_thread(self._schedule_retry,
                 intent,
                 ActionIntentRetryRequest(
                     reason="reconciliation retry using provider idempotency"
                 ),
             )
 
-        return self._set_status(
+        return await asyncio.to_thread(self._set_status,
             intent.id,
             ActionIntentStatus.REQUIRES_RECONCILIATION,
             error=(
@@ -1954,7 +1964,7 @@ class ActionIntentService:
                 },
             )
         except Exception as exc:
-            return self._set_status(
+            return await asyncio.to_thread(self._set_status,
                 intent.id,
                 ActionIntentStatus.REQUIRES_RECONCILIATION,
                 error=(
@@ -1965,7 +1975,7 @@ class ActionIntentService:
 
         verified = await self._verify_completion(intent, result, actor=actor)
         if not verified:
-            return self._set_status(
+            return await asyncio.to_thread(self._set_status,
                 intent.id,
                 ActionIntentStatus.REQUIRES_RECONCILIATION,
                 error="provider does not confirm the exact pull request merge",
@@ -1974,7 +1984,7 @@ class ActionIntentService:
                     FailureReason.VERIFICATION_FAILED,
                 ),
             )
-        self._append_receipt(
+        await asyncio.to_thread(self._append_receipt,
             intent,
             result=result,
             outcome="completed",
@@ -1983,11 +1993,11 @@ class ActionIntentService:
                 "provider_mutation_replayed": False,
             },
         )
-        current = self._intent(intent.id, actor)
+        current = await asyncio.to_thread(self._intent, intent.id, actor)
         try:
-            self._advance_work_item(current)
+            await asyncio.to_thread(self._advance_work_item, current)
         except Exception as exc:
-            return self._set_status(
+            return await asyncio.to_thread(self._set_status,
                 intent.id,
                 ActionIntentStatus.REQUIRES_RECONCILIATION,
                 error=(
@@ -1995,7 +2005,7 @@ class ActionIntentService:
                     f"{type(exc).__name__}: {exc}"
                 ),
             )
-        return self._set_status(intent.id, ActionIntentStatus.SUCCEEDED)
+        return await asyncio.to_thread(self._set_status, intent.id, ActionIntentStatus.SUCCEEDED)
 
     async def rollback(
         self,
@@ -2005,10 +2015,10 @@ class ActionIntentService:
         actor: AuthenticationActor,
     ) -> ActionIntent:
         self._require_worker(actor)
-        intent = self._intent(intent_id, actor)
+        intent = await asyncio.to_thread(self._intent, intent_id, actor)
         if not intent.rollback_required and not intent.action_definition.capabilities.rollback:
             raise ActionIntentConflictError("action intent does not support rollback")
-        state = self.store.load()
+        state = await asyncio.to_thread(self.store.load, intent_id=intent.id)
         results = [
             receipt.result
             for receipt in state.receipts
@@ -2026,21 +2036,21 @@ class ActionIntentService:
                 actor=actor,
             )
         except Exception as exc:
-            return self._set_status(
+            return await asyncio.to_thread(self._set_status,
                 intent.id,
                 ActionIntentStatus.REQUIRES_RECONCILIATION,
                 error=f"rollback failed: {type(exc).__name__}",
             )
-        self._append_receipt(
+        await asyncio.to_thread(self._append_receipt,
             intent,
             result=rolled_back,
             outcome="completed",
             details={"operation": "rollback", "reason": payload.reason},
         )
         if rolled_back.status != "rolled_back":
-            return self._set_status(
+            return await asyncio.to_thread(self._set_status,
                 intent.id,
                 ActionIntentStatus.REQUIRES_RECONCILIATION,
                 error="provider rollback did not return rolled_back outcome",
             )
-        return self._set_status(intent.id, ActionIntentStatus.ROLLED_BACK)
+        return await asyncio.to_thread(self._set_status, intent.id, ActionIntentStatus.ROLLED_BACK)

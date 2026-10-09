@@ -200,3 +200,30 @@ An unstarted intent or a missing, different, or unreadable provider result
 remains visibly reconcilable.
 
 #141 should display durable intent state, receipts, uncertainty, verification, and reconciliation requirements rather than inferring external success from request logs.
+
+## Keyed persistence and rollback
+
+Action execution uses the versioned `action_intents.records.v1` collection.
+Intent rows, per-intent receipts/verification/inbox history, provider-idempotency
+aliases, tenant-scoped pending indexes, and active-lease indexes share the same
+StateStore transaction lock. Claims recheck the selected current intent under
+that lock; a stale page cannot authorize a second claimant. Lease renewal and
+execution admission recheck current ownership, status, expiry and attempt bounds
+inside the transaction. Empty claims and recovery cycles do not rewrite state.
+
+The first access migrates the legacy v1.2 document transactionally and
+idempotently. Unknown keyed schema versions fail closed. The legacy document is
+an explicit rollback checkpoint; normal keyed writes do not refresh it. Controlled
+shutdown calls `flush_legacy_mirror()` after runtime owners stop. Before downgrading
+to a pre-keyed binary, stop execution and capture that checkpoint. Do not run old
+and keyed binaries concurrently against the same state, or resume a keyed binary
+following old-binary writes without reconciling/restoring a compatible snapshot.
+Backups retain both namespaces; isolated restore disables pending/leased intent
+execution in the keyed records as well as the legacy document.
+
+Async execution offloads storage-bearing synchronous helpers through the bounded
+asyncio executor, retaining sequential transition ordering and actor/context
+propagation. Workspace/session point reads fetch only the workspace and lease;
+turn admission fetches only the referenced Work Item execution metadata. Bulk
+administrative snapshots remain explicit bulk operations, separate from claim,
+execution, receipt and status hot paths.

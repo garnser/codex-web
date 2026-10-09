@@ -47,6 +47,7 @@ from codex_web.services.canonical_events import CanonicalEventIngestionService
 from codex_web.services.crypto_keys import CryptoKeyService
 from codex_web.services.scheduler import SchedulerService
 from codex_web.storage.recovery import RecoveryStore
+from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.state_store import StateStore, state_documents_checksum
 
 
@@ -588,8 +589,17 @@ class RecoveryService:
                         item["lease_expires_at"] = None
 
         intents = restored.get("action_intents")
-        if isinstance(intents, dict):
-            for item in intents.get("intents") or []:
+        intent_records = restored.get(ActionIntentStore.records_namespace)
+        candidates = list(intents.get("intents") or []) if isinstance(intents, dict) else []
+        if isinstance(intent_records, dict):
+            candidates.extend(raw for key, raw in intent_records.items() if key.startswith("intents:"))
+            # Restored execution is suspended; readiness/lease aliases cannot
+            # make historical work claimable before canonical reconciliation.
+            for key in list(intent_records):
+                if key.startswith(("pending:", "lease:")):
+                    intent_records.pop(key)
+        if candidates:
+            for item in candidates:
                 if not isinstance(item, dict):
                     continue
                 if item.get("status") in {
