@@ -51,10 +51,19 @@ This creates a safe crash boundary:
 - worker/process disappears after `executing` but before a durable receipt -> `uncertain`;
 - provider timeout/transport exception after execution starts -> durable unknown receipt + `uncertain`;
 - explicit provider failure -> `failed`;
+- a GitLab change-request upsert rejected by its pure local request contract,
+  before the first MR API call, raises the existing typed
+  `ActionRequirementError` and records a known `failed` receipt; the diagnostic
+  lists the supported canonical fields without echoing rejected values;
 - provider success without required verification/evidence -> `requires_reconciliation`;
 - required provider verification + Evidence gate satisfied -> canonical success transition, then `succeeded`.
 
 The application performs stale-claim recovery on startup.
+
+This local classification is confined to the first-party parser invocation.
+It does not classify arbitrary `ValueError` exceptions as safe: errors from a
+provider read, write, or response normalization still record an unknown outcome
+and retain the existing reconciliation and duplicate-prevention requirements.
 
 ## Idempotency and retries
 
