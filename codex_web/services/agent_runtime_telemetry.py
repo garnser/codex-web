@@ -159,16 +159,11 @@ class AgentRuntimeTelemetryService:
     ) -> AgentSession | None:
         if not native_session_id:
             return None
-        matches = [
-            session
-            for session in self.sessions.list()
-            if session.provider_id == provider_id
-            and session.runtime_id == runtime_id
-            and session.provider_native_session_id == native_session_id
-        ]
-        # A provider-native id is compatibility data, not canonical identity.
-        # If it is ambiguous across tenants, do not guess.
-        return matches[0] if len(matches) == 1 else None
+        return self.sessions.find_unique_by_native_id(
+            native_session_id,
+            provider_id=provider_id,
+            runtime_id=runtime_id,
+        )
 
     @staticmethod
     def _fingerprint(
