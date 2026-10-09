@@ -446,6 +446,14 @@ class ThreadDeveloperInstructionsTests(unittest.TestCase):
                 "_select_runtime_binding",
                 new=AsyncMock(return_value=(None, None)),
             ),
+            patch.object(
+                execution_service, "_assignment_record",
+                return_value=SimpleNamespace(
+                    id=binding.assignment_id,
+                    organization_id=project.organization_id,
+                    workspace_id=project.workspace_id,
+                ),
+            ),
             patch.object(execution_service.binding_service, "prepare", return_value=binding),
             patch.object(execution_service.session_manager, "start", new=AsyncMock(return_value=session)),
             patch.object(execution_service, "mark_thread_active"),

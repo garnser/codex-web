@@ -191,6 +191,7 @@ class TurnExecutionService:
         self.work_item_outcome_recorder = work_item_outcome_recorder
         self.thread_history = thread_history
         self.transcript = transcript
+        self.upgrade_turn_admission_guard = None
         self.turn_start_lock = asyncio.Lock()
         self._turn_start_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
             weakref.WeakValueDictionary()
@@ -1653,6 +1654,63 @@ class TurnExecutionService:
             # assignment and discard its dirty workspace while work is live.
             self.mark_thread_active(thread_id, turn_id=turn_id)
 
+    async def _require_upgrade_turn_admission(
+        self, thread_id: str, project: Project, assignment_id: str | None = None,
+        *, allow_bootstrap_recovery: bool = False,
+    ) -> None:
+        guard = self.upgrade_turn_admission_guard
+        if guard is None:
+            return
+        # A bound assignment owns its scope independently of the HTTP caller.
+        # Read through the existing canonical assignment boundary, never infer
+        # tenancy from a repository path or trust caller-supplied scope.
+        owner = project
+        if assignment_id is not None:
+            owner = await asyncio.to_thread(self._assignment_record, assignment_id)
+            if owner is None and allow_bootstrap_recovery:
+                # Retention can prune the old row after its native session is
+                # gone. Let the existing authorized bootstrap/profile recovery
+                # run in the canonical project's scope; a still-bound runtime
+                # with missing scope is not allowed this fallback.
+                try:
+                    _manager, old_session = self._session_for_assignment(assignment_id)
+                except HTTPException as exc:
+                    if (exc.status_code == 503 and exc.detail ==
+                            "thread bootstrap binding has no live agent runtime session"):
+                        owner = project
+                    else:
+                        raise
+                else:
+                    # A stale validation result is not process-exit evidence:
+                    # a live process can lose its row or delegation. Only an
+                    # observed exit permits ordinary bootstrap healing here.
+                    proc = getattr(getattr(old_session, "runtime", None), "proc", None)
+                    poll = getattr(proc, "poll", None)
+                    if callable(poll):
+                        try:
+                            returncode = poll()
+                        except Exception:
+                            returncode = None
+                        if type(returncode) is int:
+                            owner = project
+            if owner is None or (owner is not project and getattr(owner, "id", None) != assignment_id):
+                raise HTTPException(status_code=409, detail={
+                    "code": "upgrade_turn_scope_unknown", "threadId": thread_id,
+                    "message": "Canonical assignment scope is unavailable",
+                })
+        organization_id = getattr(owner, "organization_id", None)
+        workspace_id = getattr(owner, "workspace_id", None)
+        if not organization_id or not workspace_id:
+            raise HTTPException(status_code=409, detail={
+                "code": "upgrade_turn_scope_unknown", "threadId": thread_id,
+                "message": "Canonical native turn scope is unavailable",
+            })
+        if not await asyncio.to_thread(guard, organization_id, workspace_id):
+            raise HTTPException(status_code=409, detail={
+                "code": "upgrade_maintenance", "threadId": thread_id,
+                "message": "Native turn admission is paused during upgrade maintenance",
+            })
+
     async def start_thread_turn_now(
         self,
         thread_id: str,
@@ -1678,6 +1736,13 @@ class TurnExecutionService:
         preserve_active_handoff: bool = False,
     ) -> dict[str, Any]:
         h = self.host
+        if self.upgrade_turn_admission_guard is not None:
+            current_bootstrap = self._bootstrap_binding_for_thread(thread_id)
+            await self._require_upgrade_turn_admission(
+                thread_id, project,
+                current_bootstrap.assignment_id if current_bootstrap is not None else None,
+                allow_bootstrap_recovery=True,
+            )
         binding_service, default_session_manager = self._require_worker_routing()
         settings = h._thread_run_settings(thread_id)
         effective_sandbox = sandbox or settings.sandbox or project.sandbox
@@ -2623,6 +2688,12 @@ class TurnExecutionService:
                             )
                     raise
 
+            # Recheck after bootstrap/session/resume awaits; scoped drain may
+            # have started while the provider was resuming the native session.
+            await self._require_upgrade_turn_admission(
+                thread_id, project, assignment_id,
+            )
+
             if not preserve_active_handoff:
                 self.mark_thread_active(
                     thread_id,
@@ -3117,6 +3188,27 @@ class TurnExecutionService:
                 }
             )
         except Exception as exc:
+            if (isinstance(exc, HTTPException) and isinstance(exc.detail, dict)
+                    and exc.detail.get("code") in {
+                        "upgrade_maintenance", "upgrade_turn_scope_unknown",
+                    }):
+                queued.attempts = max(0, queued.attempts - 1)
+                self.requeue_turn_front(queued)
+                reschedule_queue = False
+                h._append_bot_event({
+                    "type": "queued_turn_waiting_for_upgrade_admission",
+                    "thread_id": thread_id, "queued_id": queued.id,
+                    "code": exc.detail["code"],
+                })
+                # Reuse the existing delayed queue admission mechanism. This
+                # wait invokes no model and cannot immediately spin or charge
+                # failure attempts while maintenance remains in force.
+                if exc.detail["code"] == "upgrade_maintenance":
+                    asyncio.get_running_loop().call_later(
+                        30, self.schedule_queue_drain, thread_id,
+                    )
+                await self.publish_queue_status(thread_id)
+                return
             if isinstance(exc, LocalExecutionWorkerCapacityError):
                 queued.attempts = max(0, queued.attempts - 1)
                 self.requeue_turn_front(queued)

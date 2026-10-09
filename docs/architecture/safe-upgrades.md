@@ -105,6 +105,11 @@ Upgrade maintenance is canonical plan state. While maintenance is active:
 - ordinary ActionIntent claims are not admitted;
 - new execution-worker assignments are rejected;
 - execution-worker assignment claims are paused;
+- native turns on existing bound sessions are checked against their canonical
+  assignment scope before admission and again after provider resume/bootstrap
+  waits; scope cannot be replaced by the calling actor or project;
+- queued native turns rejected by maintenance retain FIFO position and failure
+  attempts, with delayed deterministic admission retries and no model call;
 - incident/recovery/rollback/reconciliation ActionIntents remain eligible.
 
 Already-running operations are not killed by entering maintenance. Preflight
@@ -113,6 +118,23 @@ uncertain/reconciliation activity has reached a safe state.
 
 This avoids a race where preflight succeeds and new ordinary work starts while a
 migration begins.
+
+### Local whole-service deployment qualification
+
+Scoped maintenance is not proof that an entire hosted service can restart.
+The native admission check above closes a scoped bound-session bypass; it does
+not produce an atomic host-wide admission fence or complete scope inventory.
+Unbound trusted local sessions and a concurrent admission after the last scoped
+check remain relevant to such a fence. Deployment tooling must not interpret one
+Upgrade Plan's zero counts as a complete hosted-scope drain receipt.
+
+The existing local deployment lock serializes installers only. A whole-service
+rollout needs complete authority-checked hosted scope coverage, a canonical
+admission fence shared with native starts, and fresh exact source/target and
+service-instance evidence immediately before restart. Operators must coordinate
+necessary restarts until that contract is implemented. Repository helper changes
+also require explicit adoption by separate operator scripts; privileged ad-hoc
+installers are outside that helper's protection.
 
 ## Migration phases
 
