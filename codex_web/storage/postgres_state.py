@@ -316,6 +316,24 @@ class PostgresStateStore:
                     namespace,
                 )
 
+    def record_collections_exist(self, namespaces: tuple[str, ...]) -> dict[str, bool]:
+        """Probe current collection markers in one bounded database query."""
+        if len(namespaces) > 1000:
+            raise ValueError("collection batch exceeds 1000 namespaces")
+        namespaces = tuple(dict.fromkeys(namespaces))
+        if not namespaces:
+            return {}
+        markers = tuple(state_record_marker(name) for name in namespaces)
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT namespace FROM codex_state_documents WHERE namespace = ANY(%s)",
+                    (list(markers),),
+                )
+                rows = cursor.fetchall()
+        present = {row[0] for row in rows}
+        return {name: marker in present for name, marker in zip(namespaces, markers)}
+
     def record_get(self, namespace: str, key: str) -> Any | None:
         with self._connection() as connection:
             with connection.cursor() as cursor:

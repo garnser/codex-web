@@ -272,6 +272,34 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
             )
         )
 
+    def test_execution_projection_is_fresh_and_does_not_read_history(self) -> None:
+        store = self.service.store
+        before = store.load()
+        backend = store.store
+        read = backend.record_items
+        def catalogs(namespace):
+            self.assertNotIn(namespace, (store.event_namespace, store.enrollment_namespace))
+            return read(namespace)
+        with patch.object(backend, "record_items", side_effect=catalogs):
+            projection = store.load_execution_state()
+        self.assertEqual(projection.workers, before.workers)
+        self.assertEqual(projection.assignments, before.assignments)
+        self.assertEqual(projection.events, [])
+        self.assertEqual(projection.enrollments, [])
+        worker = before.workers[0].model_copy(update={"version": "other-writer"})
+        backend.record_apply(store.worker_namespace, upserts={worker.id: worker.model_dump(mode="json")})
+        self.assertEqual(store.load_execution_state().workers[0].version, "other-writer")
+        self.assertEqual(store.load().events, before.events)
+
+    def test_current_worker_lookup_batches_collection_probes(self) -> None:
+        backend = self.service.store.store
+        worker = self.service.store.load().workers[0]
+        with patch.object(backend, "record_collections_exist", wraps=backend.record_collections_exist) as batch:
+            with patch.object(backend, "record_collection_exists", side_effect=AssertionError("individual probe")):
+                self.assertEqual(self.service.store.worker(worker.id).id, worker.id)
+        batch.assert_called_once()
+        self.assertEqual(len(batch.call_args.args[0]), 4)
+
     def test_late_legacy_document_reconciles_into_keyed_records(self) -> None:
         raw = self.service.store.load().model_dump(mode="json")
         raw["workers"][0]["version"] = "late-legacy-version"

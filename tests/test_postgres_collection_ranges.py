@@ -13,6 +13,20 @@ from tests import test_autonomy_append_scaling as fixtures
 
 
 class CollectionRangeContract:
+    def test_batch_collection_probe_is_fresh_and_handles_encoded_names(self):
+        names = ("worker/雪:%", "missing", "legacy", "worker/雪:%neighbor")
+        self.backend.record_replace(names[0], {})
+        self.backend.put("legacy", {"old": "document"})
+        expected = {name: name == names[0] for name in names}
+        self.assertEqual(self.backend.record_collections_exist(names + names[:1]), expected)
+        self.backend.record_replace("missing", {"new": 1})
+        self.backend.delete(names[0])
+        expected.update({names[0]: False, "missing": True})
+        self.assertEqual(self.backend.record_collections_exist(names), expected)
+        self.assertEqual(self.backend.record_collections_exist(()), {})
+        with self.assertRaises(ValueError):
+            self.backend.record_collections_exist(("missing",) * 1001)
+
     def test_encoded_namespace_and_unicode_key_neighbors_are_isolated(self):
         target = 'tenant/usage:%?雪'
         self.backend.record_replace(target, {'a/%?': 1, '雪': 2, '\U0001f680': 3})
@@ -41,6 +55,20 @@ class SQLiteCollectionRangeTests(CollectionRangeContract, unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.backend = SQLiteStateStore(Path(directory.name) / 'state.db')
+
+    def test_batch_probe_uses_one_query_and_connection(self):
+        from contextlib import contextmanager
+        self.backend.record_replace("workers", {})
+        queries = []
+        original = self.backend._connection
+        @contextmanager
+        def tracing():
+            with original() as connection:
+                connection.set_trace_callback(queries.append)
+                yield connection
+        with unittest.mock.patch.object(self.backend, "_connection", tracing):
+            self.backend.record_collections_exist(("workers", "assignments", "events", "enrollments"))
+        self.assertEqual(len(queries), 1, queries)
 
     def test_tracked_revision_reads_do_not_scan_history(self):
         from contextlib import contextmanager
