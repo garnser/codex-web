@@ -1404,7 +1404,53 @@ class ControlPlaneBrokerService:
         encoded = jsonable_encoder(result)
         if not isinstance(encoded, dict):
             encoded = {"result": encoded}
+        if operation.id.startswith("work_item."):
+            coordination_view = (
+                operation.id == "work_item.read"
+                and resolved.query.get("view") == ["coordination"]
+            )
+            # Retained history must not turn an already committed ACK into
+            # an apparent failure. Leave room for the HTTP/broker receipt.
+            oversized = len(json.dumps(encoded, ensure_ascii=False).encode()) > (
+                self.limits.max_response_bytes - 2048
+            )
+            if coordination_view or oversized:
+                encoded = self._coordination_response(encoded)
         return 200, encoded, operation, resolved.target_ref, authority_decision
+
+    @staticmethod
+    def _coordination_response(payload: dict[str, Any]) -> dict[str, Any]:
+        """Project existing canonical state; never trim live routing facts."""
+        result = dict(payload)
+        wrapped = isinstance(result.get("item"), dict)
+        state = dict(result["item"] if wrapped else result)
+        omitted = []
+        for field in ("notes", "execution", "handoff_history"):
+            if field in state:
+                omitted.append(field)
+                state.pop(field)
+        # Keep the latest actual handoff outcomes, including ACK timestamps,
+        # without replaying every prior handoff or checkpoint context.
+        history = (payload.get("item") if wrapped else payload).get(
+            "handoff_history", []
+        )
+        if history:
+            state["recent_handoffs"] = history[-3:]
+        source = state.get("authoritative_source")
+        if isinstance(source, dict) and "discussion" in source:
+            state["authoritative_source"] = {
+                key: value for key, value in source.items() if key != "discussion"
+            }
+            omitted.append("authoritative_source.discussion")
+        state["_projection"] = {
+            "view": "coordination",
+            "omitted_fields": omitted,
+            "history_retained_in_canonical_state": True,
+        }
+        if wrapped:
+            result["item"] = state
+            return result
+        return state
 
     @staticmethod
     def _local_deployment_paths() -> tuple[Path, Path, Path]:

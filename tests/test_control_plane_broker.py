@@ -508,6 +508,12 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                             level=AuthorityLevel.EXECUTE,
                             project_ids=("project-a",),
                         ),
+                        AuthorityGrant(
+                            id="orchestration.acknowledge",
+                            capability="work_item.acknowledge",
+                            level=AuthorityLevel.EXECUTE,
+                            project_ids=("project-a",),
+                        ),
                         *(
                             (
                                 AuthorityGrant(
@@ -958,6 +964,81 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(audit[0].actor_identity_id, self.worker_actor.identity_id)
         self.assertIsNotNone(audit[0].authority_definition)
         self.assertEqual(audit[0].authority_decision_id.startswith("authority-"), True)
+
+    async def test_large_read_keeps_live_coordination_and_owner_dispatch(self) -> None:
+        current = {
+            "ref": self.ref,
+            "current_owner": "nora",
+            "implementation_owner": "nora",
+            "validation_owner": "quinn",
+            "handoff": {"status": "pending", "to_agent": "orchestrator"},
+            "handoff_history": [{"status": "accepted", "acknowledged_at": 123}],
+            "notes": ["historical context" * 40000],
+            "execution": {"latest_checkpoint": {"context": "x" * 600000}},
+        }
+        with patch.object(self.work_items, "get", AsyncMock(return_value=current)):
+            status, _, payload = await self._request(
+                "GET", f"/api/work-items/{quote(self.ref, safe='')}"
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["handoff"], current["handoff"])
+        self.assertEqual(payload["implementation_owner"], "nora")
+        self.assertEqual(payload["validation_owner"], "quinn")
+        self.assertEqual(payload["recent_handoffs"][0]["acknowledged_at"], 123)
+        self.assertEqual(payload["owner_dispatch"]["expected_thread_id"], "thread-james")
+        self.assertIn("assigned_scope", payload)
+        self.assertIn("execution", payload["_projection"]["omitted_fields"])
+        self.assertNotIn("execution", payload)
+        self.assertLess(len(json.dumps(payload).encode()), self.service.limits.max_response_bytes)
+        # Projection does not delete canonical history.
+        self.assertIn("notes", current)
+
+    async def test_coordination_view_omits_small_history_explicitly(self) -> None:
+        current = {"ref": self.ref, "notes": ["old note"], "handoff": None}
+        with patch.object(self.work_items, "get", AsyncMock(return_value=current)):
+            status, _, payload = await self._request(
+                "GET", f"/api/work-items/{quote(self.ref, safe='')}?view=coordination"
+            )
+        self.assertEqual(status, 200)
+        self.assertNotIn("notes", payload)
+        self.assertIsNone(payload["handoff"])
+        self.assertEqual(payload["_projection"]["view"], "coordination")
+
+    async def test_large_committed_ack_preserves_success_and_actual_receipt(self) -> None:
+        receipt = {
+            "ok": True,
+            "item": {
+                "ref": self.ref,
+                "current_owner": "orchestrator",
+                "handoff": {"status": "accepted", "acknowledged_at": 456},
+                "notes": ["x" * 600000],
+            },
+        }
+        ack = AsyncMock(return_value=receipt)
+        with patch.object(self.work_items, "acknowledge", ack):
+            status, _, payload = await self._request(
+                "POST", f"/api/work-items/{quote(self.ref, safe='')}/ack",
+                payload={"actor": "orchestrator", "accepted": True},
+            )
+        self.assertEqual(status, 200)
+        ack.assert_awaited_once()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["item"]["handoff"]["acknowledged_at"], 456)
+        self.assertEqual(payload["_broker"]["operation"], "work_item.acknowledge")
+        self.assertNotIn("notes", payload["item"])
+
+    async def test_coordination_view_preserves_scope_denial_and_byte_limit(self) -> None:
+        denied, _, _ = await self._request(
+            "GET", f"/api/work-items/{quote(self.other_ref, safe='')}?view=coordination"
+        )
+        self.assertEqual(denied, 403)
+        current = {"ref": self.ref, "next_action": "x" * 20000}
+        with patch.object(self.work_items, "get", AsyncMock(return_value=current)):
+            status, _, payload = await self._request(
+                "GET", f"/api/work-items/{quote(self.ref, safe='')}?view=coordination"
+            )
+        self.assertEqual(status, 502)
+        self.assertEqual(payload["error"]["code"], "broker_response_too_large")
 
     async def test_owner_steer_uses_bounded_preconditions_and_exact_authority(self) -> None:
         encoded = quote(self.ref, safe="")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import contextlib
 import uuid
 from collections.abc import Callable
@@ -847,20 +848,33 @@ class TurnService:
                     }
                 )
             except Exception as exc:
-                self.execution.finish_thread_handoff(thread_id)
-                self.execution.requeue_turn_front(queued)
-                with contextlib.suppress(Exception):
-                    await self.execution.publish_queue_status(thread_id)
-                self.event_sink(
-                    {
-                        "type": "steering_turn_requeued",
-                        "thread_id": thread_id,
-                        "queued_id": queued.id,
-                        "stage": "interrupt",
-                        "error": self.truncate_text(str(exc), 500),
-                    }
-                )
-                raise self._steering_unavailable(queued, exc) from exc
+                if self._interrupt_already_terminal(exc):
+                    # The exact provider response proves that the persisted
+                    # marker outlived its turn. Keep the handoff fence until
+                    # replacement admission commits or rolls back.
+                    interrupted = True
+                    self.event_sink(
+                        {
+                            "type": "steering_turn_already_terminal",
+                            "thread_id": thread_id,
+                            "queued_id": queued.id,
+                        }
+                    )
+                else:
+                    self.execution.finish_thread_handoff(thread_id)
+                    self.execution.requeue_turn_front(queued)
+                    with contextlib.suppress(Exception):
+                        await self.execution.publish_queue_status(thread_id)
+                    self.event_sink(
+                        {
+                            "type": "steering_turn_requeued",
+                            "thread_id": thread_id,
+                            "queued_id": queued.id,
+                            "stage": "interrupt",
+                            "error": self.truncate_text(str(exc), 500),
+                        }
+                    )
+                    raise self._steering_unavailable(queued, exc) from exc
 
         if not queued.execution_id:
             queued.execution_id = f"steer-{queued.id}"
@@ -936,6 +950,27 @@ class TurnService:
                 else None
             ),
         }
+
+    @staticmethod
+    def _interrupt_already_terminal(exc: Exception) -> bool:
+        # Codex RPC errors are currently raised as RuntimeError(str(error)).
+        # Require the structured, exact terminal response, never a substring
+        # of a transport error or an unknown interrupt outcome.
+        if not isinstance(exc, RuntimeError) or len(exc.args) != 1:
+            return False
+        error = exc.args[0]
+        if isinstance(error, str):
+            if len(error) > 4096:
+                return False
+            try:
+                error = ast.literal_eval(error)
+            except (ValueError, SyntaxError):
+                return False
+        return (
+            isinstance(error, dict)
+            and error.get("code") == -32600
+            and error.get("message") == "no active turn to interrupt"
+        )
 
     @staticmethod
     def _steering_unavailable(

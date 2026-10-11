@@ -772,6 +772,53 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(execution.published, ["thread-1"])
         self.assertEqual(events[-1]["type"], "steering_turn_requeued")
 
+    async def test_terminal_interrupt_starts_same_queued_turn_under_fence(self) -> None:
+        service, queue, execution, events, _settings = self._service()
+        execution.interrupt_error = RuntimeError(
+            "{'code': -32600, 'message': 'no active turn to interrupt'}"
+        )
+
+        result = await service.steer("thread-1", "queued-1")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(queue.queued, [])
+        self.assertEqual(len(execution.start_calls), 1)
+        self.assertTrue(execution.start_calls[0][1]["preserve_active_handoff"])
+        self.assertEqual(execution.start_calls[0][1]["execution_id"], "steer-queued-1")
+        self.assertEqual(execution.handoffs, set())
+        self.assertIn("steering_turn_already_terminal", [e["type"] for e in events])
+
+    async def test_terminal_interrupt_failed_start_preserves_queue_for_retry(self) -> None:
+        service, queue, execution, _events, _settings = self._service()
+        queued = queue.queued[0]
+        execution.interrupt_error = RuntimeError(
+            "{'code': -32600, 'message': 'no active turn to interrupt'}"
+        )
+        execution.start_error = RuntimeError("provider unavailable")
+
+        with self.assertRaises(HTTPException):
+            await service.steer("thread-1", queued.id)
+
+        self.assertEqual(queue.queued, [queued])
+        self.assertEqual(queued.execution_id, "steer-queued-1")
+        self.assertFalse(execution.active)
+        self.assertEqual(execution.handoffs, set())
+
+    async def test_terminal_interrupt_requires_exact_provider_error(self) -> None:
+        for message in (
+            "no active turn to interrupt",
+            "{'code': -32000, 'message': 'no active turn to interrupt'}",
+            "{'code': -32600, 'message': 'interrupt timed out'}",
+        ):
+            with self.subTest(message=message):
+                service, queue, execution, _events, _settings = self._service()
+                execution.interrupt_error = RuntimeError(message)
+                with self.assertRaises(HTTPException):
+                    await service.steer("thread-1", "queued-1")
+                self.assertTrue(execution.active)
+                self.assertEqual(len(queue.queued), 1)
+                self.assertEqual(execution.start_calls, [])
+
     async def test_interrupt_failure_requeues_and_preserves_active_turn(self) -> None:
         service, queue, execution, events, _settings = self._service()
         queued = queue.queued[0]
