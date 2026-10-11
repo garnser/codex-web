@@ -2,6 +2,8 @@
 
 Long-lived process lifecycle is owned by `codex_web.services.runtime_supervisor.RuntimeSupervisor`. The supervisor is a composition root for lifecycle only; it does not implement autonomy, work-item continuity, or native recovery policy itself.
 
+The five autonomy watchdog tasks remain dormant when their effective policy interval is zero, including startup with `AUTONOMY_DISABLED` present. They recheck the interval every five seconds without dispatching work, so removing a maintenance pause resumes the same tasks without another restart. Effective intervals are refreshed before each cycle; normal configured cycle delays still apply. Other explicitly disabled periodic loops retain their existing exit behavior.
+
 ## Explicit owners
 
 Application composition supplies the supervisor with focused collaborators:

@@ -335,11 +335,17 @@ class RuntimeSupervisor:
         *,
         failure_event: str,
         responsibility: str | None = None,
+        resume_after_pause: bool = False,
     ) -> None:
-        interval = float(interval_getter())
-        if interval <= 0:
-            return
         while True:
+            interval = float(interval_getter())
+            if interval <= 0:
+                if not resume_after_pause:
+                    return
+                # Temporary maintenance must suspend the existing task rather
+                # than terminate it. Recheck without running work or an LLM.
+                await asyncio.sleep(5.0)
+                continue
             try:
                 ownership = self._ownership()
                 if responsibility is None or ownership is None:
@@ -610,6 +616,7 @@ class RuntimeSupervisor:
                 self.autonomy.run_owner_work_cycle,
                 failure_event="owner_work_watchdog_failed",
                 responsibility="owner-work",
+                resume_after_pause=True,
             ),
         )
         self._spawn(
@@ -619,6 +626,7 @@ class RuntimeSupervisor:
                 self.autonomy.run_release_gate_cycle,
                 failure_event="release_gate_watchdog_failed",
                 responsibility="release-gate",
+                resume_after_pause=True,
             ),
         )
         self._spawn(
@@ -628,6 +636,7 @@ class RuntimeSupervisor:
                 self.autonomy.run_work_item_sla_cycle,
                 failure_event="work_item_sla_watchdog_failed",
                 responsibility="work-item-sla",
+                resume_after_pause=True,
             ),
         )
         self._spawn(
@@ -637,6 +646,7 @@ class RuntimeSupervisor:
                 self.autonomy.run_orchestrator_cycle,
                 failure_event="orchestrator_watchdog_failed",
                 responsibility="orchestrator",
+                resume_after_pause=True,
             ),
         )
         self._spawn(
@@ -646,6 +656,7 @@ class RuntimeSupervisor:
                 self.autonomy.run_split_brain_cycle,
                 failure_event="split_brain_watchdog_failed",
                 responsibility="split-brain",
+                resume_after_pause=True,
             ),
         )
         delivery = getattr(self.app.state, "project_delivery_service", None)
