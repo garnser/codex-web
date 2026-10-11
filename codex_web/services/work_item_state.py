@@ -498,7 +498,35 @@ class WorkItemStateMachine:
         projected_owner: str | None,
         previous_owner: str | None,
         now: float,
+        previous_stage: str | None = None,
     ) -> WorkItemState:
+        owner = (
+            self._coerce_owner(projected_owner)
+            or self._coerce_owner(state.current_owner)
+            or self._coerce_owner(previous_owner)
+        )
+        next_owner = self._coerce_owner(state.next_owner)
+        pending_action_handoff = (
+            state.handoff is not None
+            and state.handoff.status == "pending"
+            and self._coerce_owner(state.handoff.to_agent) == next_owner
+        )
+        if (
+            previous_stage == "failed_with_action_owner"
+            and owner == self._coerce_owner(previous_owner)
+            and next_owner
+            and (
+                pending_action_handoff
+                or (
+                    not (state.handoff and state.handoff.status == "pending")
+                    and (state.blocker or "").strip()
+                    and (state.next_action or "").strip()
+                )
+            )
+        ):
+            # A repeated blocked label is not a new action-owner decision or
+            # recipient ACK. Preserve the existing explicit coordination lane.
+            return state
         if state.handoff and state.handoff.status == "pending":
             state = self._archive_active_handoff(
                 state,
@@ -506,11 +534,6 @@ class WorkItemStateMachine:
                 status="superseded",
                 reason_code="blocked_reconciled",
             )
-        owner = (
-            self._coerce_owner(projected_owner)
-            or self._coerce_owner(state.current_owner)
-            or self._coerce_owner(previous_owner)
-        )
         if owner:
             state.current_owner = owner
             state.next_owner = owner

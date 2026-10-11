@@ -8,6 +8,7 @@ from pathlib import Path
 from codex_web.models import (
     TaskSourceIdentity,
     WorkItemArtifactRelation,
+    WorkItemHandoff,
     WorkItemState,
 )
 from codex_web.services.github_task_source import GitHubTaskSource
@@ -151,6 +152,32 @@ class TaskSourceWorkItemProjectionTests(unittest.TestCase):
         )
         self.assertTrue(state.release_gate)
         self.assertEqual(self.host.states[state.ref].source_identity, state.source_identity)
+
+    def test_unchanged_blocked_snapshot_preserves_explicit_action_lane(self) -> None:
+        base = self.projector.upsert(self.source, self.snapshot(), project_id="home")
+        for pending in (True, False):
+            with self.subTest(pending=pending):
+                state = base.model_copy(deep=True)
+                state.current_stage = "failed_with_action_owner"
+                state.next_owner = "operator"
+                state.next_action = "Repair existing artifact delivery"
+                state.blocker = None if pending else "Artifact delivery failed"
+                state.handoff = WorkItemHandoff(
+                    from_agent="carl", to_agent="operator", status="pending",
+                    requested_at=180.0, expected_action=state.next_action,
+                ) if pending else None
+                self.host.states[state.ref] = state
+                snapshot = replace(
+                    self.snapshot(revision="2026-09-17T19:01:00Z"),
+                    labels=("owner::carl", "status::blocked", "priority::P1"),
+                )
+                updated = self.projector.upsert(self.source, snapshot, project_id="home")
+                self.assertEqual(updated.current_stage, "failed_with_action_owner")
+                self.assertEqual(updated.current_owner, "carl")
+                self.assertEqual(updated.next_owner, "operator")
+                self.assertEqual(updated.next_action, state.next_action)
+                self.assertEqual(updated.blocker, state.blocker)
+                self.assertEqual(updated.handoff, state.handoff)
 
     def test_issue_refresh_preserves_implementation_attribution_during_operator_repair(self) -> None:
         state = self.projector.upsert(self.source, self.snapshot(), project_id="home")
