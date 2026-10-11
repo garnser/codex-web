@@ -56,6 +56,12 @@ this state alongside the existing owner/stage/revision fields.
 
 ## Canonical-state safety
 
+A successful atomic SLA handoff expiry schedules the same coordinator using
+the current canonical record. Replaced, acknowledged or closed handoffs that
+fail the expiry comparison do not schedule expiry writeback. This removes stale
+awaiting-confirmation provider labels without creating recipient acceptance or
+extending handoff deadlines; timeout policy remains unchanged.
+
 Provider response metadata is merged into the latest canonical Work Item record.
 An older scheduled copy is never saved wholesale over newer canonical
 owner/stage state.

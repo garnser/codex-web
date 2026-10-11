@@ -52,10 +52,14 @@ class AutonomyRuntimeDependencies:
     work_item_dispatch_text: Callable[[Any], str]
     project_scope: Callable[[str], tuple[str | None, str | None]]
     update_work_item_state: Callable[..., Any] | None = None
+    schedule_current_work_item_writeback: Callable[[str], Any] | None = None
 
     @classmethod
     def from_host(cls, host: Any) -> "AutonomyRuntimeDependencies":
         return cls(
+            schedule_current_work_item_writeback=getattr(
+                host, "_schedule_current_work_item_writeback", None,
+            ),
             update_work_item_state=getattr(host, "_update_work_item_state", None),
             load_gitlab_routing_settings=getattr(
                 host,

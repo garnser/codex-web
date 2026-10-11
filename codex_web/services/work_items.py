@@ -712,6 +712,18 @@ class WorkItemService:
         """Compatibility entrypoint backed by keyed coalesced writeback."""
         return self.task_source_writeback.schedule(state)
 
+    def schedule_current_task_source_writeback(self, ref: str) -> Any:
+        """Project current state after a canonical atomic watchdog mutation."""
+        dependencies = self.state_machine.dependencies
+        state = (
+            dependencies.get_state(ref)
+            if dependencies.get_state is not None
+            else dependencies.load_states().get(ref)
+        )
+        if state is None:
+            return None
+        return self.schedule_task_source_writeback(state)
+
     @staticmethod
     def _list_cursor_payload(
         *,
@@ -1511,5 +1523,8 @@ def install_work_item_compatibility(
     )
     host._sync_gitlab_issue_labels_from_work_item = (
         service.schedule_task_source_writeback
+    )
+    host._schedule_current_work_item_writeback = (
+        service.schedule_current_task_source_writeback
     )
     return compatibility

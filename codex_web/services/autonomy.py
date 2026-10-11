@@ -579,6 +579,11 @@ class AutonomyService:
                             },
                         )
                     )
+                    if d.schedule_current_work_item_writeback is not None:
+                        # Resolve current canonical state after the atomic
+                        # mutation, not the detached SLA snapshot. Reuse the
+                        # bounded provider-neutral writeback coordinator.
+                        d.schedule_current_work_item_writeback(ref)
                 elif recipient:
                     binding = d.binding_for_agent(
                         recipient,

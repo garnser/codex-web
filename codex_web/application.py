@@ -3809,6 +3809,9 @@ def _autonomy_project_scope(
 
 
 autonomy_runtime_dependencies = AutonomyRuntimeDependencies(
+    schedule_current_work_item_writeback=(
+        work_item_service.schedule_current_task_source_writeback
+    ),
     update_work_item_state=_update_work_item_state_record,
     load_gitlab_routing_settings=configuration_state.gitlab_routing.load,
     load_work_item_states=runtime_state.work_item_states.load,
