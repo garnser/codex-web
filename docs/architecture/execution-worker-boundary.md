@@ -319,6 +319,17 @@ otherwise it exposes the authoritative title, body/acceptance criteria, and
 source identity already available through that credential-free boundary. Raw
 provider credentials never enter the assignment.
 
+The same read capability supports `?view=coordination`, retaining current
+ownership, live handoff, actual acknowledgement timestamps, assigned scope and
+exact `owner_dispatch` preconditions without replaying notes and checkpoint
+contexts. Oversized Work Item reads and mutation receipts automatically use
+this projection. `_projection.omitted_fields` explicitly identifies omitted
+history, and `recent_handoffs` retains the last three recorded outcomes.
+Canonical storage and the operator API remain unchanged. Successful committed
+mutations retain their success and broker correlation receipt; accumulated
+history alone must not turn an accepted acknowledgement into an apparent 502.
+The response byte limit still applies to current facts and scope.
+
 Repository-write assignments may also reconcile only their own branch-publish
 and pull-request-merge ActionIntents. The broker requires the same tenant,
 Project, requester and single writable repository. An exact originating

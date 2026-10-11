@@ -128,6 +128,14 @@ retryable unavailable/conflict result and the UI refreshes canonical queue and
 turn state before offering retry. Started, interrupted, requeued and resumed
 outcomes remain observable as distinct runtime events.
 
+If interrupt returns the exact structured Codex error `-32600` / `no active
+turn to interrupt`, the provider has established that the old turn is terminal.
+Steering retains its fence and admits the same queued turn once, recording
+`steering_turn_already_terminal`. A failed replacement start clears the stale
+active marker and restores the same queued item and execution identity.
+Transport failures, timeouts and other interrupt errors preserve the original
+active marker and queue; they do not establish terminal evidence.
+
 The current handoff fence is process-local. Restoring the queue after a caught
 exception and retaining an execution ID do not establish crash-safe delivery
 or runtime-level at-most-once semantics for an unknown start outcome. Those
