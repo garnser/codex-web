@@ -434,6 +434,65 @@ class ControlPlaneBrokerService:
     def operations() -> tuple[ControlPlaneBrokerOperation, ...]:
         return OPERATIONS
 
+    @staticmethod
+    def public_operation(item: ControlPlaneBrokerOperation) -> dict[str, Any]:
+        result = {
+            "id": item.id,
+            "method": item.method,
+            "path_template": item.path_template,
+            "capability": item.capability,
+            "authority_level": item.authority_level.value,
+        }
+        if item.id.startswith("repository.read."):
+            result["optional_query_parameters"] = ["repository_resource_id"]
+        if any(item.id == operation_id for operation_id, _ in _REPOSITORY_ACTIONS.values()):
+            result["request_body"] = {
+                "type": "object",
+                "allowed_fields": ["parameters", "idempotency_key"],
+                "parameters": {"type": "object"},
+                "idempotency_key": {"type": "string"},
+                "assignment_bound_parameters": (
+                    ["execution_workspace_id"]
+                    if item.id == "repository.branch.publish" else []
+                ),
+            }
+        return result
+
+    @staticmethod
+    def _public_assignment_context(assignment: ExecutionAssignment) -> dict[str, Any]:
+        scope = assignment.repository_scope
+        target = assignment.repository_target
+        writable = (
+            scope.writable_repository_ids if scope is not None else
+            ((target.mutable_repository_id,) if target and target.mutable_repository_id else ())
+        )
+        readonly = (
+            scope.read_only_repository_ids if scope is not None else
+            (target.read_only_repository_ids if target is not None else ())
+        )
+        profile = assignment.agent_profile
+        return {
+            "assignment_id": assignment.id,
+            "execution_id": assignment.execution_id,
+            "execution_workspace_id": assignment.execution_workspace_id,
+            "execution_profile_id": assignment.execution_profile_id,
+            "agent_profile": (
+                {
+                    "profile_id": profile.profile_id,
+                    "profile_revision": profile.profile_revision,
+                    "profile_record_id": profile.profile_record_id,
+                    "role_id": profile.role_id,
+                } if profile is not None else None
+            ),
+            "declared_repository_scope": {
+                "writable_repository_ids": list(writable),
+                "read_only_repository_ids": list(readonly),
+            },
+            # Declaration/provenance does not attest a live lease or grant
+            # effective authority. Every operation still crosses its guard.
+            "effective_authority_requires_operation_checks": True,
+        }
+
     def public_assignment_capability(
         self,
         assignment: ExecutionAssignment,
@@ -443,19 +502,10 @@ class ControlPlaneBrokerService:
             "enabled": enabled,
             "transport": "assignment-bound-unix-socket" if enabled else None,
             "project_id": assignment.project_id if enabled else None,
+            "assignment_context": self._public_assignment_context(assignment) if enabled else None,
             "operations": (
                 [
-                    {
-                        "id": item.id,
-                        "method": item.method,
-                        "path_template": item.path_template,
-                        "capability": item.capability,
-                        "authority_level": item.authority_level.value,
-                        **(
-                            {"optional_query_parameters": ["repository_resource_id"]}
-                            if item.id.startswith("repository.read.") else {}
-                        ),
-                    }
+                    self.public_operation(item)
                     for item in OPERATIONS
                 ]
                 if enabled
@@ -870,6 +920,8 @@ class ControlPlaneBrokerService:
         if unexpected:
             raise ControlPlaneBrokerRequestError(
                 "repository action contains unsupported fields: " + ", ".join(unexpected)
+                + ". Put action fields inside the parameters JSON object; "
+                "only parameters and idempotency_key are allowed at the top level."
             )
         parameters = payload.get("parameters", {})
         if not isinstance(parameters, dict):

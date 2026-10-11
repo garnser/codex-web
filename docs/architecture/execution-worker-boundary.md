@@ -295,6 +295,21 @@ metadata and scope, never credentials or lease material. Catalog discovery and
 repository actions evaluate the assignment requester through canonical Role
 authority; the fenced worker service identity remains the executing principal.
 
+The caller's catalog includes an additive `assignment_context` with only
+assignment/execution/workspace IDs, the execution profile, pinned agent profile
+ID/revision/record/role and declared writable/read-only repository IDs. This is
+immutable assignment provenance, not effective authority or live-lease proof;
+every operation still performs its own scope/authority/fencing checks. Disabled
+broker profiles redact that context. No lease material, credentials, secret
+references or filesystem paths are included.
+
+Both worker and operator catalogs share repository-action request metadata.
+Only `parameters` (a JSON object) and `idempotency_key` are accepted at the top
+level; action fields belong inside `parameters`. Branch publication derives
+`execution_workspace_id` from the current assignment and overrides caller
+values. Malformed flat envelopes fail before intent creation, with a bounded
+shape hint; metadata never changes action validation or publication authority.
+
 Repository fact reads accept an optional single, nonempty
 `repository_resource_id` query parameter. The default remains the assignment's
 singular writable repository. Explicit selectors may choose only that repository
