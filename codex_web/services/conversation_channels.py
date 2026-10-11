@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
@@ -368,6 +369,17 @@ class ConversationChannelService:
             nonlocal created
             existing = state.receipts.get(canonical_event_id)
             if existing is not None:
+                if not self._same_scope(existing, actor):
+                    raise ConversationChannelConflictError("retained conversation scope changed")
+                if existing.outcome == ConversationProjectionOutcome.PENDING:
+                    if existing.ingest_actor_id != actor.identity_id:
+                        raise ConversationChannelConflictError("retained conversation actor changed")
+                    existing = existing.model_copy(update={
+                        "outcome": ConversationProjectionOutcome.ROUTING,
+                        "updated_at": now,
+                    })
+                    state.receipts[canonical_event_id] = existing
+                    created = True
                 claimed.append(existing)
                 return state
             receipt = ConversationProjectionReceipt(
@@ -416,6 +428,19 @@ class ConversationChannelService:
                     "reason": reason,
                     "routing_result": routing_result or {},
                     "updated_at": now,
+                    "retained_event": (
+                        None if outcome in {
+                            ConversationProjectionOutcome.STALE,
+                            ConversationProjectionOutcome.UPDATED,
+                            ConversationProjectionOutcome.DELETED,
+                            ConversationProjectionOutcome.REACTION,
+                            ConversationProjectionOutcome.IGNORED,
+                        } or (
+                            outcome == ConversationProjectionOutcome.ROUTED
+                            and (routing_result or {}).get("ok") is True
+                            and not (routing_result or {}).get("ambiguous")
+                        ) else current.retained_event
+                    ),
                 }
             )
             state.receipts[canonical_event_id] = updated
@@ -430,12 +455,21 @@ class ConversationChannelService:
                     )
                 ] = message_state
             if len(state.receipts) > self.MAX_RECEIPTS:
+                protected = {
+                    key: item for key, item in state.receipts.items()
+                    if item.retained_event is not None
+                    or item.outcome in {
+                        ConversationProjectionOutcome.PENDING,
+                        ConversationProjectionOutcome.ROUTING,
+                        ConversationProjectionOutcome.REQUIRES_RECONCILIATION,
+                    }
+                }
                 rows = sorted(
-                    state.receipts.values(),
+                    (item for key, item in state.receipts.items() if key not in protected),
                     key=lambda item: (item.updated_at, item.canonical_event_id),
                     reverse=True,
                 )[: self.MAX_RECEIPTS]
-                state.receipts = {item.canonical_event_id: item for item in rows}
+                state.receipts = {**protected, **{item.canonical_event_id: item for item in rows}}
             if len(state.messages) > self.MAX_MESSAGES:
                 rows = sorted(
                     state.messages.values(),
@@ -480,7 +514,7 @@ class ConversationChannelService:
             updated_at=float(self.clock()),
         )
 
-    async def ingest(
+    async def retain(
         self,
         event: ConversationChannelEvent,
         *,
@@ -506,6 +540,47 @@ class ConversationChannelService:
             payload=self._event_payload(event),
         )
         canonical_id = delivery.event.event_id
+        saved: list[ConversationProjectionReceipt] = []
+
+        def apply(state: ConversationChannelState) -> ConversationChannelState:
+            existing = state.receipts.get(canonical_id)
+            if existing is not None:
+                if not self._same_scope(existing, actor):
+                    raise ConversationChannelConflictError("retained conversation scope changed")
+                if existing.ingest_actor_id is not None and existing.ingest_actor_id != actor.identity_id:
+                    raise ConversationChannelConflictError("retained conversation actor changed")
+                saved.append(existing)
+                return state
+            receipt = ConversationProjectionReceipt(
+                canonical_event_id=canonical_id,
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                message_key=event.message.stable_key(),
+                outcome=ConversationProjectionOutcome.PENDING,
+                retained_event=event,
+                ingest_actor_id=actor.identity_id,
+                retention_sequence=state.next_retention_sequence,
+                reason="durably retained; routing has not started",
+                created_at=float(self.clock()),
+                updated_at=float(self.clock()),
+            )
+            state.next_retention_sequence += 1
+            state.receipts[canonical_id] = receipt
+            saved.append(receipt)
+            return state
+
+        await asyncio.to_thread(self.store.update, apply)
+        return saved[0]
+
+    async def ingest(
+        self,
+        event: ConversationChannelEvent,
+        *,
+        actor: AuthenticationActor,
+    ) -> ConversationProjectionReceipt:
+        retained = await self.retain(event, actor=actor)
+        canonical_id = retained.canonical_event_id
+        provider = event.message.conversation.provider_type
         receipt, claimed = self._claim(
             canonical_event_id=canonical_id,
             event=event,
@@ -687,6 +762,58 @@ class ConversationChannelService:
                 for event in events
             ]
         )
+
+    async def retain_raw(
+        self, provider_type: str, provider_instance: str, payload: object,
+        *, actor: AuthenticationActor, connection_id: str | None = None,
+        project_id: str | None = None,
+    ) -> tuple[ConversationProjectionReceipt, ...]:
+        adapter = self.registry.resolve(provider_type, provider_instance)
+        events = await adapter.normalize_events(
+            payload, connection_id=connection_id, project_id=project_id,
+        )
+        return tuple([await self.retain(event, actor=actor) for event in events])
+
+    def pending_events(
+        self, *, actor: AuthenticationActor, connection_id: str,
+        project_id: str, limit: int = 100,
+        partition_count: int = 1,
+        partition_index: Callable[[ConversationChannelEvent], int] | None = None,
+    ) -> tuple[ConversationChannelEvent, ...]:
+        if limit < 1 or limit > 100:
+            raise ConversationChannelValidationError("pending event limit must be between 1 and 100")
+        if not 1 <= partition_count <= 32:
+            raise ConversationChannelValidationError("pending partition count must be between 1 and 32")
+        receipts = [
+            receipt for receipt in self.store.load().receipts.values()
+            if self._same_scope(receipt, actor)
+            and receipt.ingest_actor_id == actor.identity_id
+            and receipt.outcome == ConversationProjectionOutcome.PENDING
+            and receipt.retained_event is not None
+            and receipt.retained_event.connection_id == connection_id
+            and receipt.retained_event.project_id == project_id
+        ]
+        receipts.sort(key=lambda item: (item.retention_sequence, item.created_at, item.canonical_event_id))
+        counts = [0] * partition_count
+        selected = []
+        for receipt in receipts:
+            event = receipt.retained_event
+            index = partition_index(event) if partition_index else 0
+            if not isinstance(index, int) or not 0 <= index < partition_count:
+                raise ConversationChannelValidationError("invalid pending partition index")
+            if counts[index] < limit:
+                selected.append(event)
+                counts[index] += 1
+        return tuple(selected)
+
+    @staticmethod
+    def public_receipt(receipt: ConversationProjectionReceipt) -> dict[str, Any]:
+        return {
+            **receipt.model_dump(mode="json", exclude={"retained_event"}),
+            "input_retained": receipt.retained_event is not None,
+            "connection_id": receipt.retained_event.connection_id if receipt.retained_event else None,
+            "project_id": receipt.retained_event.project_id if receipt.retained_event else None,
+        }
 
     async def ingest_bot_message(
         self,

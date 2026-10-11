@@ -49,7 +49,7 @@ def build_conversation_channels_router(
         actor = request_actor(request)
         rows = service.receipts(actor=actor, limit=limit)
         return {
-            "items": [item.model_dump(mode="json") for item in rows],
+            "items": [service.public_receipt(item) for item in rows],
             "count": len(rows),
         }
 

@@ -4,13 +4,16 @@ from typing import Any, Callable
 
 from codex_web.compatibility import MigrationRegistry
 from codex_web.conversation_channels import (
-    CONVERSATION_CHANNEL_CONTRACT,
+    CONVERSATION_CHANNEL_STATE_CONTRACT,
     ConversationChannelState,
 )
 from codex_web.storage.state_store import StateStore
 
 
 CONVERSATION_CHANNEL_MIGRATIONS = MigrationRegistry("conversation-channel")
+CONVERSATION_CHANNEL_MIGRATIONS.register(
+    "1.0", "2.0", lambda payload: {**payload, "schema_version": "2.0"},
+)
 
 
 class ConversationChannelStore:
@@ -26,15 +29,15 @@ class ConversationChannelStore:
             raise ValueError("conversation channel state must be an object")
         version = str(
             payload.get("schema_version")
-            or CONVERSATION_CHANNEL_CONTRACT.current
+            or "1.0"
         )
-        if version != CONVERSATION_CHANNEL_CONTRACT.current:
+        if version != CONVERSATION_CHANNEL_STATE_CONTRACT.current:
             payload = CONVERSATION_CHANNEL_MIGRATIONS.migrate(
                 payload,
                 from_version=version,
-                to_version=CONVERSATION_CHANNEL_CONTRACT.current,
+                to_version=CONVERSATION_CHANNEL_STATE_CONTRACT.current,
             )
-        CONVERSATION_CHANNEL_CONTRACT.require(
+        CONVERSATION_CHANNEL_STATE_CONTRACT.require(
             payload.get("schema_version", "")
         )
         return ConversationChannelState.model_validate(payload)

@@ -205,3 +205,28 @@ routing provenance. It does not create shadow integration state.
 - routing exception after claim -> requires_reconciliation;
 - cross-tenant same external IDs -> independent state;
 - provider identity claim -> provenance only, no authority.
+
+## Durable Socket Mode ingress and state compatibility
+
+Conversation **event/provider contract 1.0 remains unchanged**. Persisted
+conversation projection state uses **2.0** and reads 1.0 through an additive
+migration. Existing messages and receipts retain their identity and outcome;
+legacy completed receipts acquire default metadata without becoming replayable.
+
+The existing receipt retains normalized input before Socket Mode ACK, with the
+original ingest identity and connection/project scope. A transaction-assigned
+sequence preserves local retained arrival order independently of provider or
+wall-clock timestamps. A PENDING receipt is claimed atomically before routing;
+restart recovery selects only never-started PENDING inputs. Claimed or uncertain
+outcomes preserve input for reconciliation instead of creating a second attempt.
+Completed successful receipts release the retained input, while pending and
+uncertain receipts are protected from the completed-history cap. This uses the
+existing scoped canonical conversation store; no second inbox or task catalog
+is introduced. Normalized conversation content follows its existing data policy;
+interaction response URLs and transport tokens are excluded.
+
+Deployments must fully drain old writers before the state transition. Once 2.0
+state is committed, old 1.0 writers are incompatible; automatic rollback to an
+older writer is unavailable without a separately qualified state restoration.
+The upgrade plan must declare this state migration and its compatibility boundary.
+Receipt APIs/UI show retention and provenance metadata without the stored body.
