@@ -4285,6 +4285,15 @@ def _recover_expired_execution_assignments() -> list[str]:
     )
 
 
+from codex_web.services.deferred_repository_actions import DeferredRepositoryActionRecovery
+
+deferred_repository_action_recovery = DeferredRepositoryActionRecovery(
+    intents=action_intent_service, workers=execution_worker_service,
+    broker=control_plane_broker_service, actor=local_worker_actor,
+    worker_id=local_execution_worker.id,
+)
+app.state.deferred_repository_action_recovery = deferred_repository_action_recovery
+
 runtime_supervisor = install_runtime_supervisor(
     app,
     core,
@@ -4312,6 +4321,7 @@ runtime_supervisor = install_runtime_supervisor(
     schedule_queue_drain=turn_execution_service.schedule_queue_drain,
     local_worker_heartbeat=_heartbeat_local_execution_worker,
     recover_expired_assignments=_recover_expired_execution_assignments,
+    recover_deferred_repository_actions=deferred_repository_action_recovery.run_once,
     flush_compatibility_state=_flush_compatibility_state,
 )
 

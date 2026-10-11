@@ -180,6 +180,7 @@ class RuntimeSupervisor:
         schedule_queue_drain: Callable[[str], Any] | None = None,
         local_worker_heartbeat: Callable[[], Any] | None = None,
         recover_expired_assignments: Callable[[], Any] | None = None,
+        recover_deferred_repository_actions: Callable[[], Awaitable[None]] | None = None,
         flush_compatibility_state: Callable[[], Any] | None = None,
     ) -> None:
         self.app = app
@@ -255,6 +256,7 @@ class RuntimeSupervisor:
         )
         self.local_worker_heartbeat = local_worker_heartbeat
         self.recover_expired_assignments = recover_expired_assignments
+        self.recover_deferred_repository_actions = recover_deferred_repository_actions
         self.flush_compatibility_state = (
             flush_compatibility_state
             or getattr(host, "_flush_compatibility_state", _noop)
@@ -563,6 +565,16 @@ class RuntimeSupervisor:
             self._spawn(
                 "local-worker-heartbeat",
                 self._local_worker_heartbeat_loop(),
+            )
+
+        if self.recover_deferred_repository_actions is not None:
+            self._spawn(
+                "deferred-repository-actions",
+                self._cycle_loop(
+                    self.queue_recovery_interval_seconds,
+                    self.recover_deferred_repository_actions,
+                    failure_event="deferred_repository_action_recovery_failed",
+                ),
             )
 
         if self.recover_expired_assignments is not None:

@@ -500,6 +500,77 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
             actor=self.worker_actor,
         )
 
+    async def test_real_deferred_intent_survives_maintenance_and_executes_once(self):
+        from codex_web.services.deferred_repository_actions import DeferredRepositoryActionRecovery
+        class PublicationProvider(_SlowProvider):
+            calls = 0
+            def actions(inner):
+                return (super().actions()[0].model_copy(update={"action_id": "code-host.branch.publish"}),)
+            async def execute(inner, request, **kwargs):
+                inner.calls += 1
+                return await super().execute(request, **kwargs)
+        provider = PublicationProvider()
+        self.registry.register(provider)
+        binding = self.registry.bind(ActionProviderBindingCreate(
+            provider_type=provider.provider_type, provider_instance=provider.provider_instance,
+            resource_ids=(self.resource.id,)), actor=self.actor, resources=self.resources)
+        intent = self.service.create(ActionIntentCreate(binding_id=binding.id,
+            request=self._request(action_id="code-host.branch.publish",
+                parameters={"execution_workspace_id": "workspace"}), execution_id="origin",
+            policy_decision=ActionDecisionSnapshot(outcome=ActionDecisionOutcome.ALLOW,
+                source="policy:assignment-control-plane", reason="fixture assignment policy")), actor=self.actor)
+        assignment = SimpleNamespace(status="running", assigned_worker_id="worker", fence=1,
+            lease=SimpleNamespace(worker_id="worker",fence=1,expires_at=time.time()+300),
+            deadline_at=None,organization_id="local",workspace_id="default",project_id="home",
+            created_by=self.actor.identity_id,execution_workspace_id="workspace")
+        workspace=SimpleNamespace(status="active",execution_id="origin",project_id="home",
+            owner_identity_id=self.actor.identity_id,writable_repository_ids=(self.resource.id,))
+        recovery=DeferredRepositoryActionRecovery(intents=self.service,
+            workers=SimpleNamespace(store=SimpleNamespace(load=lambda:SimpleNamespace(
+                workers=[SimpleNamespace(id="worker",lifecycle="active")])),
+                assignment_for_execution=lambda *a,**k:assignment),
+            broker=SimpleNamespace(_writable_repository_id=lambda a:self.resource.id,
+                _resolve_operation=lambda *a:None,
+                _dispatch_scope=lambda *a:(None,self.actor,None,None),
+                execution_workspaces=SimpleNamespace(get=lambda *a:workspace)),
+            actor=self.worker_actor,worker_id="worker")
+        self.service.maintenance_guard=lambda i:False
+        await recovery.run_once()
+        self.assertEqual(self.service.get(intent.id,self.actor).status,ActionIntentStatus.PENDING)
+        self.assertEqual(provider.calls,0)
+        self.service.maintenance_guard=lambda i:True
+        await asyncio.gather(recovery.run_once(), recovery.run_once())
+        completed=self.service.get(intent.id,self.actor)
+        self.assertEqual(completed.status,ActionIntentStatus.SUCCEEDED)
+        self.assertEqual(completed.attempt,1)
+        self.assertIsNotNone(completed.last_receipt_id)
+        self.assertEqual(provider.calls,1)
+
+    async def test_stale_deferral_is_visible_without_provider_execution(self):
+        intent = self._create()
+        recovered = self.service.require_recovery_if_unstarted(
+            intent.id, actor=self.worker_actor, reason="origin released; preserve commit",
+        )
+        self.assertEqual(recovered.status, ActionIntentStatus.REQUIRES_RECONCILIATION)
+        self.assertEqual(recovered.attempt, 0)
+        self.assertIn("preserve commit", recovered.last_error)
+        self.assertEqual(self.reference.values, {})
+
+    async def test_stale_deferral_cannot_overwrite_concurrent_claim_or_result(self):
+        intent = self._create()
+        self.service.claim(ActionIntentClaimRequest(worker_id="worker-1"),
+                           actor=self.worker_actor, intent_id=intent.id)
+        current = self.service.require_recovery_if_unstarted(
+            intent.id, actor=self.worker_actor, reason="stale snapshot",
+        )
+        self.assertEqual(current.status, ActionIntentStatus.CLAIMED)
+        completed = await self.service.execute_claimed(intent.id, "worker-1", actor=self.worker_actor)
+        current = self.service.require_recovery_if_unstarted(
+            intent.id, actor=self.worker_actor, reason="stale snapshot",
+        )
+        self.assertEqual(current.status, completed.status)
+        self.assertEqual(current.last_receipt_id, completed.last_receipt_id)
+
     async def test_enforced_entitlement_denies_intent_creation_without_capability(self) -> None:
         self.entitlements.set_mode(EntitlementMode.ENFORCED, actor=self.actor)
 

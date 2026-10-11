@@ -336,11 +336,18 @@ class _ActionIntents:
     async def reconcile(self, intent_id, payload, *, actor):
         self.reconciled.append((intent_id, payload, actor.identity_id))
         return SimpleNamespace(
+            status="pending" if payload.retry_if_idempotent else "requires_reconciliation",
             model_dump=lambda mode: {
                 "id": intent_id,
                 "status": "pending" if payload.retry_if_idempotent else "requires_reconciliation",
             }
         )
+
+    def claim(self, payload, *, actor, intent_id):
+        return SimpleNamespace(id=intent_id)
+
+    async def execute_claimed(self, intent_id, worker_id, *, actor):
+        return SimpleNamespace(model_dump=lambda mode: {"id": intent_id, "status": "succeeded"})
 
 
 class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
@@ -1859,7 +1866,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(operation.id, "action_intent.reconcile")
         self.assertEqual(target_ref, intent.id)
-        self.assertEqual(payload["item"]["status"], "pending")
+        self.assertEqual(payload["item"]["status"], "succeeded")
         self.assertEqual(action_intents.reconciled[0][0], intent.id)
         self.assertEqual(decision.outcome, AuthorityDecisionOutcome.ALLOW)
 

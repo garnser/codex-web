@@ -29,6 +29,7 @@ from codex_web.action_intents import (
     ActionIntentClaimRequest,
     ActionIntentCreate,
     ActionIntentReconcileRequest,
+    ActionIntentStatus,
 )
 from codex_web.action_providers import ActionRequest
 from codex_web.authority import (
@@ -935,6 +936,15 @@ class ControlPlaneBrokerService:
             ),
             actor=requester_actor,
         )
+        return await self._claim_and_execute_repository_intent(
+            intent.id, assignment=assignment, worker_actor=worker_actor,
+            requester_actor=requester_actor, extended_deadline=extended_deadline,
+        )
+
+    async def _claim_and_execute_repository_intent(
+        self, intent_id: str, *, assignment: ExecutionAssignment,
+        worker_actor, requester_actor, extended_deadline: bool = True,
+    ) -> dict[str, Any]:
         worker_id = f"control-plane-broker:{assignment.assigned_worker_id or 'worker'}"
         claimed = await asyncio.to_thread(
             self.action_intents.claim,
@@ -943,15 +953,15 @@ class ControlPlaneBrokerService:
                 **({"lease_seconds": 180} if extended_deadline else {}),
             ),
             actor=worker_actor,
-            intent_id=intent.id,
+            intent_id=intent_id,
         )
         if claimed is None:
             current = await asyncio.to_thread(
-                self.action_intents.get, intent.id, requester_actor
+                self.action_intents.get, intent_id, requester_actor
             )
             return {"item": current.model_dump(mode="json")}
         completed = await self.action_intents.execute_claimed(
-            intent.id,
+            intent_id,
             worker_id,
             actor=worker_actor,
         )
@@ -1347,6 +1357,15 @@ class ControlPlaneBrokerService:
                 actor=actor,
             )
             result = {"item": item.model_dump(mode="json")}
+            if (reconcile_request.retry_if_idempotent
+                    and intent.execution_id == assignment.execution_id
+                    and item.status == ActionIntentStatus.PENDING):
+                # Requeue alone has no provider effect. An explicitly authorized
+                # current-origin retry must cross the normal claim/execute path.
+                result = await self._claim_and_execute_repository_intent(
+                    intent.id, assignment=assignment, worker_actor=actor,
+                    requester_actor=requester_actor,
+                )
         elif operation.id == "work_item.list":
             requested_project = (
                 resolved.query.get("project_id", [assignment.project_id])[0]
