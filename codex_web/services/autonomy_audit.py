@@ -865,7 +865,7 @@ class AutonomyAuditService:
             organization_id=organization_id,
             workspace_id=workspace_id,
         )
-        policy = self.store.load().reliability_policy
+        policy = self.store.reliability_policy()
         reasons: list[str] = []
         if sample_count >= policy.minimum_samples:
             if failure_rate > policy.max_failure_rate:
@@ -982,7 +982,7 @@ class AutonomyAuditService:
     ) -> None:
         if self.autonomy_store is None:
             return
-        policy = self.store.load().reliability_policy
+        policy = self.store.reliability_policy()
         if not policy.auto_suspend:
             return
         metrics = self.metrics(
