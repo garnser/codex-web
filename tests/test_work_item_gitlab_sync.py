@@ -701,6 +701,66 @@ class WorkItemGitLabSyncTests(unittest.TestCase):
         self.assertEqual(updated.next_owner, "quinn")
         self.assertEqual(updated.handoff.status if updated.handoff else None, "pending")
 
+    def test_repeated_blocked_progress_preserves_pending_operator_handoff(self) -> None:
+        for status in (None, "status::blocked"):
+            with self.subTest(status=status):
+                handoff = WorkItemHandoff(
+                    from_agent="orchestrator", to_agent="operator",
+                    requested_at=180.0, status="pending",
+                    expected_action="Repair existing input delivery",
+                )
+                self._save(self._state(
+                    stage="failed_with_action_owner", owner="orchestrator",
+                    meaningful_at=20.0, gitlab_at=19.0, handoff=handoff,
+                    status_label="status::awaiting confirmation", next_owner="operator",
+                ))
+                server._structured_progress(
+                    "veridataops/platform#134",
+                    WorkItemProgressUpdate(
+                        actor="james", current_owner="orchestrator",
+                        current_stage="failed_with_action_owner", next_owner="operator",
+                        next_action="Operator: repair existing input delivery",
+                        status_label=status, note="Correct Worker binding verified",
+                    ),
+                )
+                updated = self._load()
+                self.assertEqual(updated.handoff, handoff)
+                self.assertEqual(updated.next_owner, "operator")
+                self.assertEqual(updated.status_label, "status::awaiting confirmation")
+                self.assertIsNone(updated.handoff.acknowledged_at)
+
+    def test_explicit_progress_recipient_change_archives_pending_handoff(self) -> None:
+        self._save(self._state(
+            stage="ready_for_validation", owner="james", meaningful_at=20.0,
+            gitlab_at=19.0, next_owner="quinn", status_label="status::awaiting confirmation",
+            handoff=WorkItemHandoff(from_agent="james", to_agent="quinn",
+                                   requested_at=180.0, status="pending"),
+        ))
+        server._structured_progress(
+            "veridataops/platform#134",
+            WorkItemProgressUpdate(actor="james", next_owner="operator",
+                                   next_action="Operator: repair inputs"),
+        )
+        updated = self._load()
+        self.assertIsNone(updated.handoff)
+        self.assertEqual(updated.next_owner, "operator")
+        self.assertEqual(updated.handoff_history[-1].reason_code, "new_canonical_progress")
+
+    def test_changed_progress_stage_still_resolves_pending_handoff(self) -> None:
+        self._save(self._state(
+            stage="ready_for_validation", owner="james", meaningful_at=20.0,
+            gitlab_at=19.0, next_owner="quinn", status_label="status::awaiting confirmation",
+            handoff=WorkItemHandoff(from_agent="james", to_agent="quinn",
+                                   requested_at=180.0, status="pending"),
+        ))
+        server._structured_progress(
+            "veridataops/platform#134",
+            WorkItemProgressUpdate(actor="james", current_stage="failed_with_action_owner"),
+        )
+        updated = self._load()
+        self.assertIsNone(updated.handoff)
+        self.assertEqual(updated.handoff_history[-1].reason_code, "new_canonical_progress")
+
     def test_progress_clears_pending_handoff_on_owner_transfer_outside_sender_recipient_pair(self) -> None:
         handoff = WorkItemHandoff(
             from_agent="james",
