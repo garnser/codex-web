@@ -163,11 +163,12 @@ class OrchestrationInspectorService:
         *,
         organization_id: str | None,
         workspace_id: str | None,
+        state: Any = None,
     ) -> tuple[list[dict[str, Any]], set[str]]:
         if self.action_intents is None:
             return [], set()
         wanted = {str(item) for item in intent_ids if item}
-        state = self.action_intents.load()
+        state = state if state is not None else self.action_intents.load()
         intents = [
             item
             for item in state.intents
@@ -214,10 +215,11 @@ class OrchestrationInspectorService:
         *,
         organization_id: str | None,
         workspace_id: str | None,
+        rows: Any = None,
     ) -> list[dict[str, Any]]:
         if self.approvals is None:
             return []
-        rows = self.approvals.list(
+        rows = rows if rows is not None else self.approvals.list(
             organization_id=organization_id,
             workspace_id=workspace_id,
         )
@@ -238,12 +240,13 @@ class OrchestrationInspectorService:
         *,
         organization_id: str | None,
         workspace_id: str | None,
+        records: Any = None,
     ) -> list[dict[str, Any]]:
         if self.attention is None:
             return []
         rows = [
             item
-            for item in self.attention.list()
+            for item in (records if records is not None else self.attention.list())
             if self._same_scope(item, organization_id, workspace_id)
         ]
         return [
@@ -262,10 +265,13 @@ class OrchestrationInspectorService:
         *,
         organization_id: str | None,
         workspace_id: str | None,
+        usage_records: Any = None,
+        session_records: Any = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         usage_rows = []
         if self.runtime_usage is not None:
-            for item in self.runtime_usage.list():
+            records = usage_records if usage_records is not None else self.runtime_usage.list()
+            for item in records:
                 if not self._same_scope(item, organization_id, workspace_id):
                     continue
                 related = {
@@ -285,7 +291,8 @@ class OrchestrationInspectorService:
         }
         sessions = []
         if self.agent_sessions is not None:
-            for item in self.agent_sessions.list():
+            records = session_records if session_records is not None else self.agent_sessions.list()
+            for item in records:
                 if not self._same_scope(item, organization_id, workspace_id):
                     continue
                 related = {
@@ -310,10 +317,11 @@ class OrchestrationInspectorService:
         *,
         organization_id: str | None,
         workspace_id: str | None,
+        state: Any = None,
     ) -> list[dict[str, Any]]:
         if self.model_gateway is None:
             return []
-        state = self.model_gateway.load()
+        state = state if state is not None else self.model_gateway.load()
         rows = []
         for item in reversed(state.invocations):
             if not self._same_scope(item, organization_id, workspace_id):
@@ -359,10 +367,11 @@ class OrchestrationInspectorService:
         *,
         organization_id: str | None,
         workspace_id: str | None,
+        state: Any = None,
     ) -> list[dict[str, Any]]:
         if self.artifact_evidence is None:
             return []
-        state = self.artifact_evidence.load()
+        state = state if state is not None else self.artifact_evidence.load()
         rows = []
         for item in reversed(state.evidence):
             if not self._same_scope(item, organization_id, workspace_id):
@@ -472,12 +481,13 @@ class OrchestrationInspectorService:
         *,
         organization_id: str | None,
         workspace_id: str | None,
+        rows: Any = None,
     ) -> list[dict[str, Any]]:
         if self.attention is None:
             return []
         return [
             item.model_dump(mode="json")
-            for item in self.attention.list()
+            for item in (rows if rows is not None else self.attention.list())
             if self._same_scope(item, organization_id, workspace_id)
         ][:100]
 
@@ -486,15 +496,16 @@ class OrchestrationInspectorService:
         *,
         organization_id: str | None,
         workspace_id: str | None,
+        rows: Any = None,
     ) -> list[dict[str, Any]]:
         if self.approvals is None:
             return []
         return [
             item.model_dump(mode="json")
-            for item in self.approvals.list(
+            for item in (rows if rows is not None else self.approvals.list(
                 organization_id=organization_id,
                 workspace_id=workspace_id,
-            )[:100]
+            ))[:100]
         ]
 
     @staticmethod
@@ -874,6 +885,37 @@ class OrchestrationInspectorService:
             scoped_cycles.append(cycle)
             cycles_by_event.setdefault(str(cycle["event_id"]), []).append(cycle)
 
+        # One request-local read per canonical domain, shared by every event.
+        # Never retain these snapshots across requests or scopes.
+        intent_state = (
+            self.action_intents.load()
+            if events and self.action_intents is not None else None
+        )
+        approval_rows = (
+            self.approvals.list(organization_id=organization_id, workspace_id=workspace_id)
+            if events and self.approvals is not None else None
+        )
+        attention_rows = (
+            self.attention.list()
+            if events and self.attention is not None else None
+        )
+        usage_rows = (
+            self.runtime_usage.list()
+            if events and self.runtime_usage is not None else None
+        )
+        session_rows = (
+            self.agent_sessions.list()
+            if events and self.agent_sessions is not None else None
+        )
+        model_state = (
+            self.model_gateway.load()
+            if events and self.model_gateway is not None else None
+        )
+        evidence_state = (
+            self.artifact_evidence.load()
+            if events and self.artifact_evidence is not None else None
+        )
+
         timeline = []
         for event in events:
             event_cycles = cycles_by_event.get(event.event_id, [])
@@ -891,32 +933,39 @@ class OrchestrationInspectorService:
                 action_intent_ids,
                 organization_id=organization_id,
                 workspace_id=workspace_id,
+                state=intent_state,
             )
             refs.update(intent_refs)
             approvals = self._approval_projection(
                 refs,
                 organization_id=organization_id,
                 workspace_id=workspace_id,
+                rows=approval_rows,
             )
             attention = self._attention_projection(
                 refs,
                 organization_id=organization_id,
                 workspace_id=workspace_id,
+                records=attention_rows,
             )
             sessions, usage = self._runtime_projection(
                 refs,
                 organization_id=organization_id,
                 workspace_id=workspace_id,
+                usage_records=usage_rows,
+                session_records=session_rows,
             )
             models = self._model_projection(
                 refs,
                 organization_id=organization_id,
                 workspace_id=workspace_id,
+                state=model_state,
             )
             evidence = self._evidence_projection(
                 refs,
                 organization_id=organization_id,
                 workspace_id=workspace_id,
+                state=evidence_state,
             )
             timeline.append(
                 {
@@ -1018,10 +1067,12 @@ class OrchestrationInspectorService:
             "attention_items": self._attention_summary(
                 organization_id=organization_id,
                 workspace_id=workspace_id,
+                rows=attention_rows,
             ),
             "approval_requests": self._approval_summary(
                 organization_id=organization_id,
                 workspace_id=workspace_id,
+                rows=approval_rows,
             ),
             "dependencies": dependencies,
         }

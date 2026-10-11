@@ -757,6 +757,27 @@ if __name__ == "__main__":
 
 
 class WatchdogCandidateResponsivenessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_release_gate_and_sla_store_reads_do_not_block_loop(self):
+        for kind in ("release_gate", "work_item_sla"):
+            with self.subTest(kind=kind):
+                started, release = threading.Event(), threading.Event()
+                loop_thread = threading.get_ident()
+                def load():
+                    self.assertNotEqual(threading.get_ident(), loop_thread)
+                    started.set()
+                    if not release.wait(5):
+                        raise RuntimeError("store read was not released")
+                    return {}
+                runtime = SimpleNamespace(load_work_item_states=load,
+                    load_gitlab_routing_settings=lambda: SimpleNamespace(enabled=True, projects={}))
+                task = asyncio.create_task(getattr(AutonomyService(runtime=runtime), "run_"+kind+"_cycle")())
+                try:
+                    self.assertTrue(await asyncio.to_thread(started.wait, 2))
+                    self.assertFalse(task.done())
+                finally:
+                    release.set()
+                await task
+
     async def test_candidate_snapshot_does_not_block_loop_and_keeps_dispatch(self):
         for kind in ("orchestrator", "split_brain"):
             with self.subTest(kind=kind):

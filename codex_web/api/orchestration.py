@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -46,7 +47,8 @@ def build_orchestration_router(service: OrchestrationInspectorService) -> APIRou
         source: str | None = None,
     ) -> dict[str, Any]:
         actor = require_reader(request)
-        return service.snapshot(
+        return await asyncio.to_thread(
+            service.snapshot,
             limit=limit,
             event_type=event_type,
             source=source,

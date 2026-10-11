@@ -12,6 +12,12 @@ CanonicalEventStore, AutonomyStateStore, SchedulerStore, EvaluationStore, Approv
 
 The inspector API is tenant/workspace scoped from the authenticated actor. Service accounts require the existing orchestration/autonomy read scopes; human readers require canonical administrator authority.
 
+The API builds its synchronous projection outside the ASGI event loop. Each
+refresh reads the correlated canonical domains once and reuses those
+request-local snapshots across timeline events and summaries. Tenant/workspace
+filters still apply to every projection. No snapshots are cached across requests
+or scopes, and refresh never invokes reasoning or advances domain state.
+
 ## Event-to-result pipeline
 
 Every displayed event projects the same canonical chain:
