@@ -12,6 +12,7 @@ from codex_web.execution_workspaces import (
     ExecutionWorkspaceState,
 )
 from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.identity import TenantScope
 
 
 EXECUTION_WORKSPACE_STATE_CONTRACT = ContractSpec(
@@ -224,9 +225,7 @@ class ExecutionWorkspaceStateStore:
             self.lease_namespace,
             self.event_namespace,
         )
-        collection_exists = {
-            item: self.store.record_collection_exists(item) for item in namespaces
-        }
+        collection_exists = self.store.record_collections_exist(namespaces)
         legacy_payload = self.store.get(self.namespace)
         if all(collection_exists.values()) and legacy_payload is None:
             return
@@ -277,6 +276,30 @@ class ExecutionWorkspaceStateStore:
     def load(self) -> ExecutionWorkspaceState:
         with self._lock:
             return self._load_unlocked()
+
+    def has_expired_leases(self, *, now: float, scope: TenantScope | None = None) -> bool:
+        """Read fresh canonical leases without loading workspace/event history.
+
+        Validate every lease, including released and out-of-scope rows, before
+        returning. A negative result is never cached across recovery calls.
+        """
+        with self._lock:
+            self._ensure_records()
+            expired = False
+            for key, raw in self.store.record_items(self.lease_namespace).items():
+                lease = ExecutionWorkspaceLease.model_validate(raw)
+                if lease.id != key:
+                    raise ValueError("execution workspace lease record key does not match its id")
+                if (
+                    lease.released_at is None
+                    and lease.expires_at <= now
+                    and (scope is None or (
+                        lease.organization_id == scope.organization_id
+                        and lease.workspace_id == scope.workspace_id
+                    ))
+                ):
+                    expired = True
+            return expired
 
     def workspace(self, workspace_id: str) -> ExecutionWorkspace | None:
         """Read one canonical workspace without decoding lease or event history."""

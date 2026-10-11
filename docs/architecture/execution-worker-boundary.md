@@ -153,6 +153,14 @@ Worker loss, lease expiry, capability mismatch, stale completion and resource
 limit breaches are explicit events. Limit breaches and execution failures
 should produce canonical Evidence and Verification records where applicable.
 
+Execution-workspace expiry recovery first reads and validates fresh canonical
+lease records for the requested tenant scope and recovery timestamp. If no
+unreleased lease has expired, recovery returns without loading or rewriting
+workspace or event history. Negative probes are not cached. When expiry is
+present, the existing recovery transition rechecks canonical state and retains
+the same cleanup and durable repository-checkpoint safeguards. This projection
+does not change persisted schemas, public APIs, lease authority or fencing.
+
 ## UI impact
 
 The platform administration UI and operator workspaces should expose worker pools, identity, capability set, version,

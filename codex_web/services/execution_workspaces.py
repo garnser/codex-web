@@ -740,6 +740,8 @@ class ExecutionWorkspaceService:
         scope: TenantScope | None = None,
     ) -> list[ExecutionWorkspace]:
         current = time.time() if now is None else now
+        if not self.store.has_expired_leases(now=current, scope=scope):
+            return []
         abandoned_ids: list[str] = []
 
         def apply(state):
@@ -750,8 +752,9 @@ class ExecutionWorkspaceService:
         self.store.update(apply)
         recovered: list[ExecutionWorkspace] = []
         for workspace_id in abandoned_ids:
-            state = self.store.load()
-            workspace = next(item for item in state.workspaces if item.id == workspace_id)
+            workspace = self.store.workspace(workspace_id)
+            if workspace is None:
+                raise ExecutionWorkspaceNotFoundError(workspace_id)
             if (
                 workspace.kind in {
                     ExecutionWorkspaceKind.GIT_WORKTREE,
