@@ -97,6 +97,15 @@ class AutonomyAuditStore:
         self._ensure_records()
         return self._decode(self.store.get(self.namespace))
 
+    def reliability_policy(self) -> AutonomyReliabilityPolicy:
+        """Read fresh policy and schema without reconstructing the audit chain."""
+        self._ensure_records()
+        raw = self.store.record_get_many(
+            self.namespace, ("schema_version", "reliability_policy"),
+        )
+        AUTONOMY_AUDIT_CONTRACT.require(str(raw.get("schema_version") or ""))
+        return AutonomyReliabilityPolicy.model_validate(raw.get("reliability_policy", {}))
+
     def update(
         self,
         updater: Callable[[AutonomyAuditState], AutonomyAuditState],

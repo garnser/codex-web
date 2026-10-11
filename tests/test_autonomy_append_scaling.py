@@ -13,6 +13,9 @@ from codex_web.autonomy_audit import AutonomyAuditPayload, AutonomyAuditRecord, 
 from codex_web.storage.autonomy import AutonomyStateStore
 from codex_web.storage.autonomy_audit import AutonomyAuditStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.services.autonomy_audit import AutonomyAuditService
+from codex_web.autonomy_audit import AutonomyReliabilityPolicy
+from unittest.mock import Mock
 
 
 def cycle(i):
@@ -132,11 +135,50 @@ class AutonomyAppendContract:
              patch.object(store, '_decode', side_effect=AssertionError('history validation')):
             appended = store.append(audit_payload(8000))
             other = store.append(audit_payload(8001, workspace='other'))
+            self.assertEqual(store.reliability_policy(), AutonomyReliabilityPolicy())
+            service = object.__new__(AutonomyAuditService)
+            service.store = store
+            service.autonomy_store = object()
+            service.metrics = Mock(side_effect=AssertionError('disabled reliability evaluation'))
+            service._auto_suspend_if_required('org', 'ws', actor=None)
         self.assertEqual(appended.sequence, 8001)
         self.assertEqual(appended.previous_hash, previous)
         self.assertEqual(other.sequence, 1)
         self.assertEqual(other.previous_hash, GENESIS_HASH)
         self.assertEqual(store.load().records[-2:], [appended, other])
+
+    def test_reliability_policy_is_fresh_and_enabled_checks_still_evaluate_metrics(self):
+        from types import SimpleNamespace
+        store = AutonomyAuditStore(self.backend)
+        store._ensure_records()
+        service = object.__new__(AutonomyAuditService)
+        service.store = store
+        service.autonomy_store = object()
+        service.metrics = Mock(return_value=SimpleNamespace(should_suspend=False))
+        service._auto_suspend_if_required('org', 'ws', actor=None)
+        service.metrics.assert_not_called()
+        other = AutonomyAuditStore(self.backend)
+        other.set_reliability_policy(AutonomyReliabilityPolicy(auto_suspend=True))
+        service._auto_suspend_if_required('org', 'ws', actor=None)
+        service.metrics.assert_called_once_with(organization_id='org', workspace_id='ws')
+        other.set_reliability_policy(AutonomyReliabilityPolicy(auto_suspend=False))
+        service.metrics.reset_mock()
+        service._auto_suspend_if_required('org', 'ws', actor=None)
+        service.metrics.assert_not_called()
+
+    def test_reliability_policy_preserves_validation_and_missing_field_default(self):
+        store = AutonomyAuditStore(self.backend)
+        store._ensure_records()
+        self.backend.record_apply(store.namespace, upserts={}, deletes=('reliability_policy',))
+        self.assertEqual(store.reliability_policy(), AutonomyReliabilityPolicy())
+        for raw in (None, {'minimum_samples': 0}, {'auto_suspend': {}}):
+            with self.subTest(raw=raw):
+                self.backend.record_apply(store.namespace, upserts={'reliability_policy': raw})
+                with self.assertRaises(ValueError):
+                    store.reliability_policy()
+        self.backend.record_apply(store.namespace, upserts={'reliability_policy': {}, 'schema_version': '99'})
+        with self.assertRaises(ValueError):
+            store.reliability_policy()
 
     def test_concurrent_audit_appends_have_one_unbroken_partition_chain(self):
         store = AutonomyAuditStore(self.backend)

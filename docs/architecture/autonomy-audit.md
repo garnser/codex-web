@@ -104,6 +104,12 @@ signals deterministically set the existing autonomy control to paused and append
 an auto_suspension audit record. This reduces autonomy only; it cannot grant
 authority or perform provider actions.
 
+The preliminary auto-suspension check reads and validates the current keyed
+policy and schema without loading audit history. This read is not cached. A
+disabled policy returns immediately; an enabled policy still evaluates the
+existing canonical metrics, integrity verification and safety signals. Explicit
+inspection and scheduled verification retain their full-history behavior.
+
 Reliability summaries can be published as canonical policy-evaluation Evidence.
 The effective autonomy policy includes reliability and audit_integrity as
 production-qualification gate types, so broader production autonomy can require
