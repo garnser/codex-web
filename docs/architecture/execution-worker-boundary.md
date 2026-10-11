@@ -295,6 +295,17 @@ metadata and scope, never credentials or lease material. Catalog discovery and
 repository actions evaluate the assignment requester through canonical Role
 authority; the fenced worker service identity remains the executing principal.
 
+Repository fact reads accept an optional single, nonempty
+`repository_resource_id` query parameter. The default remains the assignment's
+singular writable repository. Explicit selectors may choose only that repository
+or an existing declared read-only repository in the same canonical assignment
+scope; the selected resource receives tenant/project, Role authority, provider
+binding and secret-boundary checks. This permits immutable dependency artifacts
+to be retrieved without write authority. Orchestration-only profiles remain
+ineligible for repository facts. The selector is rejected on mutations and does
+not change publication targets, workspace leases, artifact byte limits or member
+path validation. The operation catalog advertises this optional query parameter.
+
 The channel is HTTP and does not require MCP tool registration. Task instructions
 include an explicit direct-loopback discovery example with a bounded client
 connection/read deadline. Proxy bypass is local to that broker request; it must
