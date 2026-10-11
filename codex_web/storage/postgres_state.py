@@ -231,10 +231,10 @@ class PostgresStateStore:
             """
             SELECT namespace, payload
             FROM codex_state_documents
-            WHERE LEFT(namespace, LENGTH(%s)) = %s
+            WHERE namespace >= %s AND namespace < %s
             ORDER BY namespace
             """,
-            (prefix, prefix),
+            (prefix, prefix + "\uffff"),
         )
         rows = cursor.fetchall()
         result: dict[str, Any] = {}
@@ -393,9 +393,9 @@ class PostgresStateStore:
                     """
                     SELECT COUNT(*)
                     FROM codex_state_documents
-                    WHERE LEFT(namespace, LENGTH(%s)) = %s
+                    WHERE namespace >= %s AND namespace < %s
                     """,
-                    (prefix, prefix),
+                    (prefix, prefix + "\uffff"),
                 )
                 row = cursor.fetchone()
         return int(row[0] or 0) if row else 0
@@ -738,8 +738,8 @@ class PostgresStateStore:
                 ):
                     prefix = state_record_prefix(namespace)
                     cursor.execute(
-                        "DELETE FROM codex_state_documents WHERE LEFT(namespace, LENGTH(%s)) = %s",
-                        (prefix, prefix),
+                        "DELETE FROM codex_state_documents WHERE namespace >= %s AND namespace < %s",
+                        (prefix, prefix + "\uffff"),
                     )
                 self._upsert(cursor, namespace, payload)
 
@@ -917,8 +917,8 @@ class PostgresStateStore:
                 direct_count = int(cursor.rowcount or 0)
                 prefix = state_record_prefix(namespace)
                 cursor.execute(
-                    "DELETE FROM codex_state_documents WHERE LEFT(namespace, LENGTH(%s)) = %s",
-                    (prefix, prefix),
+                    "DELETE FROM codex_state_documents WHERE namespace >= %s AND namespace < %s",
+                    (prefix, prefix + "\uffff"),
                 )
                 return bool(direct_count or cursor.rowcount)
 

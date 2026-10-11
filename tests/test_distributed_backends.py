@@ -146,6 +146,56 @@ class RealDistributedBackendTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "another tenant"):
                 usage.upsert(record.model_copy(update={"workspace_id": "other"}))
 
+    async def test_postgres_collection_ranges_preserve_unicode_and_unrelated_rows(self) -> None:
+        from codex_web.storage.state_store import state_record_storage_key
+
+        namespace = "distributed/\u96ea %?"
+        records = {
+            "\u96ea": {"value": 1},
+            "a/%?": {"value": 2},
+            "\u00e9": {"value": 3},
+        }
+        expected_keys = sorted(
+            records,
+            key=lambda key: state_record_storage_key(namespace, key),
+        )
+        self.postgres.record_replace(namespace, records)
+        for number in range(50):
+            self.postgres.record_replace(
+                f"unrelated-{number}",
+                {"untouched": number},
+            )
+        self.postgres.record_replace(
+            namespace + "extra",
+            {"untouched": True},
+        )
+
+        self.assertEqual(self.postgres.record_count(namespace), len(records))
+        self.assertEqual(
+            list(self.postgres.record_items(namespace)),
+            expected_keys,
+        )
+        first, cursor = self.postgres.record_page(namespace, limit=2)
+        self.assertEqual(list(first), expected_keys[:2])
+        second, cursor = self.postgres.record_page(
+            namespace,
+            after=cursor,
+            limit=2,
+        )
+        self.assertEqual(list(second), expected_keys[2:])
+        self.assertIsNone(cursor)
+
+        self.assertTrue(self.postgres.delete(namespace))
+        self.assertEqual(self.postgres.record_items(namespace), {})
+        self.assertEqual(
+            self.postgres.record_items(namespace + "extra"),
+            {"untouched": True},
+        )
+        self.assertEqual(
+            self.postgres.record_items("unrelated-49"),
+            {"untouched": 49},
+        )
+
     def _clear_postgres_documents(self) -> None:
         for namespace in tuple(self.postgres.documents()):
             self.postgres.delete(namespace)

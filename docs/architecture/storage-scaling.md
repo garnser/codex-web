@@ -74,6 +74,11 @@ Bounded `record_page()` reads use the physical primary-key ordering and accept
 a key prefix plus cursor. They are the read-side primitive for provider,
 conversation, Project, or tenant scoped indexes; callers should encode those
 scope dimensions into domain keys rather than loading the full collection.
+PostgreSQL full-collection reads, counts, replacements, and deletes use the
+same encoded namespace lower/upper bounds against the primary key. They do not
+apply a function to the indexed namespace column, and the encoded boundary
+keeps adjacent and Unicode logical namespaces isolated without a schema or
+index migration.
 
 `record_get_many()` reads at most 1,000 explicitly named keys through one
 connection and collection check. Empty input performs no storage I/O; reads
