@@ -457,6 +457,23 @@ class ControlPlaneBrokerService:
                     if item.id == "repository.branch.publish" else []
                 ),
             }
+            if item.id == "repository.branch.publish":
+                result["request_body"]["parameters"] = {
+                    "type": "object",
+                    "required": ["branch", "head_revision"],
+                    "properties": {
+                        "branch": {"type": "string"},
+                        "head_revision": {"type": "string"},
+                        "expected_remote_revision": {"type": "string"},
+                        "expected_remote_absent": {"type": "boolean"},
+                        "existing_change_request_number": {"type": "integer"},
+                    },
+                    "not": {"required": ["expected_remote_revision", "expected_remote_absent"]},
+                    "recovery_precondition": (
+                        "confirmed absent codex/ ref: expected_remote_absent=true; "
+                        "existing ref: expected_remote_revision=observed SHA"
+                    ),
+                }
         return result
 
     @staticmethod

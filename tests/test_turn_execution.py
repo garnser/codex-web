@@ -1544,6 +1544,9 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("GET /api/control-plane-broker/operations", guidance)
         self.assertNotIn("assigned_scope", guidance)
         self.assertNotIn("work_item.steer", guidance)
+        self.assertIn("expected_remote_absent: true", guidance)
+        self.assertIn("expected_remote_revision", guidance)
+        self.assertIn("do not rename it to the destination branch", guidance)
 
     async def test_null_work_item_assignment_delivers_broker_discovery(self) -> None:
         for source, bootstrap in (("slack", None), ("autonomy-watchdog", "t1")):
@@ -1566,6 +1569,8 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("GET /api/control-plane-broker/operations", instructions)
                     self.assertIn("existing ActionIntent before retrying", instructions)
                     self.assertIn("absence of MCP tools", instructions)
+                    self.assertIn("expected_remote_absent: true", instructions)
+                    self.assertIn("newly authorized", instructions)
                 self.assertEqual(sessions.session.requests[1][0], "turn/start")
 
     async def test_existing_work_item_broker_guidance_is_not_duplicated(self) -> None:

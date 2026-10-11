@@ -405,7 +405,9 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             audit=ControlPlaneBrokerAuditStore(self.sqlite),
             limits=ControlPlaneBrokerLimits(
                 max_request_bytes=1024,
-                max_response_bytes=8192,
+                # Discovery includes the publication parameter contract. Keep
+                # the fixture bounded while allowing that supported response.
+                max_response_bytes=16384,
                 max_concurrent_requests=2,
                 max_requests_per_minute=8,
             ),
@@ -735,6 +737,12 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         publication = next(item for item in payload["operations"] if item["id"] == "repository.branch.publish")
         self.assertEqual(publication["request_body"]["allowed_fields"], ["parameters", "idempotency_key"])
         self.assertEqual(publication["request_body"]["assignment_bound_parameters"], ["execution_workspace_id"])
+        parameters = publication["request_body"]["parameters"]
+        self.assertEqual(parameters["required"], ["branch", "head_revision"])
+        self.assertEqual(parameters["properties"]["expected_remote_absent"], {"type": "boolean"})
+        self.assertIn("expected_remote_revision", parameters["properties"])
+        self.assertEqual(parameters["not"]["required"], ["expected_remote_revision", "expected_remote_absent"])
+        self.assertIn("confirmed absent", parameters["recovery_precondition"])
         operation_ids = {item["id"] for item in payload["operations"]}
         self.assertIn("control_plane.operations.list", operation_ids)
         self.assertIn("repository.branch.publish", operation_ids)

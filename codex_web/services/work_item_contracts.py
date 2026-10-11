@@ -46,7 +46,21 @@ def assignment_control_plane_instructions() -> str:
         "merge-request upsert/merge, and check rerun operations exposed "
         "there are the supported access paths. Do not use direct GitLab API calls or direct git push when the "
         "broker provides the required operation. If the required operation is absent or the broker denies it, "
-        "record the exact broker operation, status, and denial as the blocker.\n\n"
+        "record the exact broker operation, status, and denial as the blocker. "
+        "For repository.branch.publish put branch and the exact current full head_revision inside parameters; "
+        "the broker supplies the current assignment's execution_workspace_id. A recovered workspace may have "
+        "a different attested local branch from the preserved publication destination. Read the destination "
+        "ref through the broker before creating a NEW publication intent: if the preserved codex/ ref is "
+        "confirmed absent, set expected_remote_absent: true; if it exists, set expected_remote_revision to "
+        "its observed full SHA. These preconditions are mutually exclusive. Never use an empty or all-zero "
+        "revision to mean absent, infer absence from a timeout/denial, or silently replace an existing ref. "
+        "Keep the local checkout on its currently attested branch with a clean tree and exact requested head; "
+        "do not rename it to the destination branch. A released assignment requires a newly authorized "
+        "assignment and active writable lease; historical authority cannot be reused. Preserve commits and "
+        "evidence before releasing workspaces. Reconcile failed/uncertain receipts and observed provider "
+        "state; never replay an attempted historical intent. Publication success requires a succeeded receipt "
+        "and verification of the exact remote head, followed by the existing MR and owner/validation handoff "
+        "process. Existing-MR recovery must use its observed head, not expected_remote_absent.\n\n"
     ).rstrip()
 
 
