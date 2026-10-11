@@ -1046,6 +1046,7 @@ class UpgradeService:
             "service_instance_id": service_instance_id,
             "source_revision": source_revision,
             "target_revision": target_revision,
+            "rollback_available": plan.rollback_available,
             "admission_epoch": plan.admission_epoch,
             "hosted_scope_fingerprint": fingerprint,
             "covered_scopes": [item.model_dump(mode="json") for item in scopes],

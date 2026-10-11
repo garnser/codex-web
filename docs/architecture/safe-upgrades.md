@@ -147,6 +147,16 @@ revalidation aborts without restarting. A receipt file is not authoritative.
 Root-capable tools can still bypass the helper; that explicit host-operator
 boundary remains visible and must not be described as universal protection.
 
+After the qualified switch, the local installer checks liveness, exact running
+revision metadata and the same source/target service-maintenance plan. Readiness
+remains deliberately false while workers and autonomy are drained; the operator
+must still verify the plan and restore those controls before claiming readiness.
+The fixed service revision override follows the installed checkout and any
+compatible rollback. Local overlays cannot change the immutable qualified
+candidate. Automatic rollback is allowed only when the canonical qualification
+and current plan both retain rollback availability; otherwise maintenance stays
+in place for operator recovery.
+
 ## Migration phases
 
 Steps are declared before execution and must be ordered:

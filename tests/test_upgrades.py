@@ -434,6 +434,7 @@ class UpgradeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(qualification["source_revision"], source)
         self.assertEqual(qualification["target_revision"], target)
+        self.assertEqual(qualification["rollback_available"], plan.rollback_available)
         self.assertEqual(len(qualification["covered_scopes"]), 2)
 
     async def test_service_drain_rejects_stale_instance_release_and_evidence(self):
