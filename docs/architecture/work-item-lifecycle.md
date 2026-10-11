@@ -51,6 +51,13 @@ recipient's published execution profile still controls repository access; a
 scratch-only coordinator receives task identity without repository grants.
 Queue admission does not acknowledge the handoff on the recipient's behalf.
 
+Archiving intake preserves its original `acknowledged_at`: unacknowledged
+pending intake remains unset, and accepted/rejected intake keeps the actual
+recipient receipt time. Expiry, supersession and closure use their attributed
+audit event times for resolution; they never synthesize a recipient ACK or
+overwrite an earlier one. Historical records are retained without guessing
+whether a legacy archive timestamp represented an actual receipt.
+
 A recognized pending handoff recipient retains its own execution role even
 when ownership or status drift requires reconciliation. Those findings remain
 in the contract and the separate Orchestrator reconciliation path; they do not

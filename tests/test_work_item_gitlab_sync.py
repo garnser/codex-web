@@ -487,6 +487,7 @@ class WorkItemGitLabSyncTests(unittest.TestCase):
         self.assertEqual(updated.next_owner, "james")
         self.assertIsNone(updated.handoff)
         self.assertEqual(updated.handoff_history[-1].reason_code, "blocked_reconciled")
+        self.assertIsNone(updated.handoff_history[-1].acknowledged_at)
 
     def test_new_blocked_stage_same_owner_still_reconciles_handoff(self) -> None:
         self._save(self._state(
