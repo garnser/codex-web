@@ -492,7 +492,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         await self.broker.stop()
         self.temp.cleanup()
 
-    def _publish_worker_authority(self, *, operator_grants=True) -> None:
+    def _publish_worker_authority(self, *, operator_grants=True, repository_evidence_read=False) -> None:
         active = self.registry.resolve(
             definition_id=AUTHORITY_ROLE_CATALOG_ID,
             kind=AUTHORITY_ROLE_CATALOG_KIND,
@@ -506,6 +506,9 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                     name="Orchestration worker",
                     description="Scoped broker authority for tests.",
                     grants=(
+                        *((AuthorityGrant(id="repository.evidence.read", capability="repository.read",
+                            level=AuthorityLevel.READ, project_ids=("project-a",)),)
+                          if repository_evidence_read else ()),
                         AuthorityGrant(
                             id="orchestration.read",
                             capability="work_item.read",
@@ -1939,6 +1942,73 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["item"]["status"], "succeeded")
         self.assertEqual(action_intents.reconciled[0][0], intent.id)
         self.assertEqual(decision.outcome, AuthorityDecisionOutcome.ALLOW)
+
+    async def test_recovered_assignment_reads_delivery_evidence_without_mutation(self) -> None:
+        self._publish_worker_authority(repository_evidence_read=True)
+        self.authority.resources = SimpleNamespace(get=lambda resource_id, actor:
+            SimpleNamespace(id=resource_id, lifecycle="active", resource_type="repository",
+                            risk="medium", sensitivity="internal"))
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "repository-write",
+            "resource_ids": ("repository-a",),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default", project_id="project-a",
+                writable_repository_ids=("repository-a",),
+                source=RepositoryTargetSource.SINGLE_REPOSITORY, source_ref="repository-a"),
+        })
+        intent = SimpleNamespace(id="action-intent-evidence", action_id="code-host.branch.publish",
+            organization_id="local", workspace_id="default", project_id="project-a",
+            resource_ids=("repository-a",), requested_by=assignment.created_by)
+        actions = _ActionIntents(intent)
+        history = {"intent": {"id":intent.id, "status":"succeeded", "work_item_ref":None,
+            "execution_id":"superseded", "request":{"parameters":{"head_revision":"head"},
+                                                       "credential_ref":"private-credential"}},
+            "receipts":[{"id":"receipt", "provider_external_id":"head", "outcome":"completed",
+                          "result":{"output":{"secret":"private-provider-output"}}}],
+            "verifications":[{"id":"verification", "verified":True}],
+            "inbox":[{"body":"private-inbox"}]}
+        actions.history = lambda intent_id, actor: history
+        service = ControlPlaneBrokerService(identity=self.identity, authority=self.authority,
+            work_items=self.work_items, operator=_Operator(),
+            audit=ControlPlaneBrokerAuditStore(self.sqlite), action_intents=actions)
+        status, payload, operation, _, decision = await service.dispatch(
+            assignment=assignment, worker_actor=self.worker_actor, method="GET",
+            raw_target=f"/api/action-intents/{intent.id}/delivery-evidence", body=b"")
+        self.assertEqual(status, 200)
+        self.assertEqual(operation.authority_level, AuthorityLevel.READ)
+        self.assertEqual(payload["intent"]["execution_id"], "superseded")
+        self.assertIsNone(payload["intent"]["work_item_ref"])
+        self.assertTrue(payload["verifications"][0]["verified"])
+        self.assertNotIn("private-", json.dumps(payload))
+        self.assertFalse(actions.reconciled)
+        for field, value in (("organization_id", "other"), ("workspace_id", "other"),
+                             ("project_id", "other"), ("resource_ids", ("repository-b",)),
+                             ("requested_by", "someone-else"), ("action_id", "secret.rotate")):
+            with self.subTest(field=field):
+                previous = getattr(intent, field)
+                setattr(intent, field, value)
+                try:
+                    with self.assertRaisesRegex(ControlPlaneBrokerDeniedError, "outside assignment scope"):
+                        await service.dispatch(assignment=assignment, worker_actor=self.worker_actor,
+                            method="GET", raw_target=f"/api/action-intents/{intent.id}/delivery-evidence", body=b"")
+                finally:
+                    setattr(intent, field, previous)
+        with self.assertRaises(ControlPlaneBrokerDeniedError):
+            await service.dispatch(assignment=assignment, worker_actor=self.worker_actor,
+                method="POST", raw_target=f"/api/action-intents/{intent.id}/delivery-evidence", body=b"{}")
+        history["receipts"] *= 20
+        history["verifications"] *= 20
+        _, bounded, *_ = await service.dispatch(assignment=assignment, worker_actor=self.worker_actor,
+            method="GET", raw_target=f"/api/action-intents/{intent.id}/delivery-evidence", body=b"")
+        self.assertEqual(len(bounded["receipts"]), 8)
+        self.assertEqual(bounded["omitted_receipts"], 12)
+        self.assertEqual(len(bounded["verifications"]), 8)
+        self.assertEqual(bounded["omitted_verifications"], 12)
+        self.assertFalse(actions.reconciled)
+        self._publish_worker_authority(repository_evidence_read=False)
+        with self.assertRaisesRegex(ControlPlaneBrokerDeniedError, "no assigned Role"):
+            await service.dispatch(assignment=assignment, worker_actor=self.worker_actor,
+                method="GET", raw_target=f"/api/action-intents/{intent.id}/delivery-evidence", body=b"")
 
     async def test_recovered_assignment_can_reconcile_historical_publish_without_retry(self) -> None:
         self.authority.resources = SimpleNamespace(

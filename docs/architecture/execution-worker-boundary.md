@@ -378,6 +378,17 @@ reconciliation but cannot retry a historical mutation. Merge verification
 reads provider state and never replays the merge. This boundary does not expose
 a tenant-wide ActionIntent administration surface.
 
+`GET /api/action-intents/{intent_id}/delivery-evidence` is a separate
+`repository.read`/READ operation for inspecting branch-publish and merge
+receipts, including from a superseded execution. Existing assignment, worker,
+fence, requester, tenant/workspace, Project, admitted repository and Role checks
+remain mandatory. It exposes only selected intent scope/destination metadata
+and the latest eight receipt/verification metadata rows, with omission counts.
+Arbitrary request/provider/inbox bodies and credential references are excluded.
+It performs no reconciliation, retry or provider action. Unset historical Work
+Item attribution remains unset; receipt inspection does not grant publication,
+acknowledge intake, establish independent acceptance or complete an issue.
+
 Reachability is distinct from authority. Every request re-resolves the current
 worker service identity and evaluates the requested capability through the
 canonical Role authority service for the assignment's tenant/workspace/project
