@@ -23,8 +23,12 @@ class _Host:
     def __init__(self) -> None:
         self.saved_states: dict[str, WorkItemState] | None = None
         self.events: list[dict] = []
+        self.writebacks: list[str] = []
         self.OWNER_QUEUE_AGENTS = ()
         self.HANDOFF_COORDINATION_CHANNEL = None
+
+    def _schedule_current_work_item_writeback(self, ref):
+        self.writebacks.append(ref)
 
     def _load_work_item_states(self) -> dict[str, WorkItemState]:
         return self.states
@@ -363,6 +367,7 @@ class AutonomyStateTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(host.states[second.ref].notes, ["Concurrent progress retained"])
                 self.assertIn("example/project#3", host.states)
                 self.assertEqual([event["ref"] for event in host.events], [first.ref])
+                self.assertEqual(host.writebacks, [first.ref])
                 self.assertEqual(host.states[second.ref].handoff.status,
                                  "accepted" if disposition == "acknowledged" else "pending")
 
@@ -403,6 +408,7 @@ class AutonomyStateTests(unittest.IsolatedAsyncioTestCase):
         # rejected by the typed state-machine model on the next read.
         WorkItemState.model_validate(current.model_dump())
         self.assertEqual(host.events[-1]["event_type"], "handoff_expired")
+        self.assertEqual(host.writebacks, [state.ref])
 
 
 class AutonomyWorkItemSlaScopeTests(unittest.IsolatedAsyncioTestCase):

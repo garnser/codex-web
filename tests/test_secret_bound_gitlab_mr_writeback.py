@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import unittest
 import tempfile
+import asyncio
+import time
+from types import SimpleNamespace
 from pathlib import Path
 from copy import deepcopy
 
@@ -22,9 +25,49 @@ from codex_web.services.task_sources import (
 from codex_web.services.work_items import WorkItemService
 from tests import test_builtin_task_source_runtime as secret_fixture
 from tests import test_task_source_writeback as writeback_fixture
+from tests import test_autonomy_service as autonomy_fixture
+from codex_web.services.autonomy import AutonomyService
 
 
 class SecretBoundGitLabMrWritebackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_atomic_expiry_projects_current_state_without_pending_provider_label(self):
+        source, _ = self.source()
+        state = writeback_fixture._state(owner='quinn').model_copy(update={
+            'ref': 'group/project!42', 'kind': 'merge_request',
+            'source_identity': self.identity,
+            'handoff': WorkItemHandoff(from_agent='quinn', to_agent='carl',
+                requested_at=time.time() - 60),
+        })
+        self.row['labels'] = ['custom', 'owner::quinn', 'status::awaiting confirmation']
+        dependencies = writeback_fixture._Dependencies(state)
+        writeback = TaskSourceWritebackService(None, writeback_fixture._registry(source),
+                                              dependencies=dependencies)
+        work_items = object.__new__(WorkItemService)
+        work_items.state_machine = SimpleNamespace(dependencies=dependencies)
+        work_items.task_source_writeback = writeback
+        host = autonomy_fixture._Host()
+        host.states = {state.ref: dependencies.state}
+        original_update = host._update_work_item_state
+        def update(ref, updater):
+            result = original_update(ref, updater)
+            dependencies.state = result
+            # A concurrent meaningful update after expiry must be retained,
+            # rather than writing the SLA's original detached snapshot.
+            result.notes.append('Concurrent consumer receipt retained')
+            return result
+        host._update_work_item_state = update
+        host._schedule_current_work_item_writeback = work_items.schedule_current_task_source_writeback
+        await AutonomyService(host).run_work_item_sla_cycle()
+        await asyncio.gather(*list(writeback._tasks.values()))
+        self.assertEqual([r[0] for r in self.requests], ['GET', 'PUT'])
+        self.assertIn('status::in progress', self.row['labels'])
+        self.assertNotIn('status::awaiting confirmation', self.row['labels'])
+        self.assertEqual(dependencies.state.current_owner, 'quinn')
+        self.assertIsNone(dependencies.state.handoff)
+        self.assertEqual(dependencies.state.handoff_history[-1].reason_code, 'handoff_expired')
+        self.assertEqual(dependencies.state.blocker, 'Structured handoff expired without acknowledgement.')
+        self.assertEqual(dependencies.state.notes, ['Concurrent consumer receipt retained'])
+
     def setUp(self):
         self.fixture = secret_fixture.BuiltInTaskSourceRuntimeTests()
         self.fixture.setUp()
