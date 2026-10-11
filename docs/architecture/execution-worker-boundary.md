@@ -149,6 +149,11 @@ grant when a concrete worker backend needs them.
 
 ## Recovery and evidence
 
+Worker readiness reads fresh validated worker records without loading assignment,
+event or enrollment catalogs. It retains tenant scope, lifecycle, capability,
+execution-contract and sandbox checks. Admission and concurrency decisions still
+consult canonical assignments; readiness does not reserve worker capacity.
+
 Worker loss, lease expiry, capability mismatch, stale completion and resource
 limit breaches are explicit events. Limit breaches and execution failures
 should produce canonical Evidence and Verification records where applicable.
