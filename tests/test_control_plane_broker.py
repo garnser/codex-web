@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, patch
 from urllib.parse import quote
 
 from codex_web.code_hosts import CodeHostPullRequestFact
+from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.authority import (
     AUTHORITY_ROLE_CATALOG_ID,
     AUTHORITY_ROLE_CATALOG_KIND,
@@ -725,6 +726,15 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["enabled"])
         self.assertEqual(payload["project_id"], "project-a")
         self.assertEqual(payload["transport"], "assignment-bound-unix-socket")
+        context = payload["assignment_context"]
+        self.assertEqual(context["assignment_id"], self.assignment.id)
+        self.assertEqual(context["execution_id"], self.assignment.execution_id)
+        self.assertEqual(context["execution_workspace_id"], self.assignment.execution_workspace_id)
+        self.assertEqual(context["execution_profile_id"], "orchestration-only")
+        self.assertTrue(context["effective_authority_requires_operation_checks"])
+        publication = next(item for item in payload["operations"] if item["id"] == "repository.branch.publish")
+        self.assertEqual(publication["request_body"]["allowed_fields"], ["parameters", "idempotency_key"])
+        self.assertEqual(publication["request_body"]["assignment_bound_parameters"], ["execution_workspace_id"])
         operation_ids = {item["id"] for item in payload["operations"]}
         self.assertIn("control_plane.operations.list", operation_ids)
         self.assertIn("repository.branch.publish", operation_ids)
@@ -1223,6 +1233,56 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+    async def test_discovery_exposes_declared_scope_and_pinned_profile_without_authority(self):
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "repository-write",
+            "execution_workspace_id": "workspace-own",
+            "resource_ids": ("worker-repository", "core-repository"),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default", project_id="project-a",
+                writable_repository_ids=("worker-repository",),
+                read_only_repository_ids=("core-repository",),
+                source=RepositoryTargetSource.SINGLE_REPOSITORY,
+                source_ref="worker-repository",
+            ),
+            "agent_profile": AgentProfileExecutionBinding(
+                profile_id="james", profile_revision=6,
+                profile_record_id="profile-record-james6", role_id="james",
+            ),
+            "secret_refs": ("must-never-be-disclosed",),
+        })
+        context = self.service.public_assignment_capability(assignment)["assignment_context"]
+        self.assertEqual(context["execution_workspace_id"], "workspace-own")
+        self.assertEqual(context["agent_profile"], {
+            "profile_id": "james", "profile_revision": 6,
+            "profile_record_id": "profile-record-james6", "role_id": "james",
+        })
+        self.assertEqual(context["declared_repository_scope"], {
+            "writable_repository_ids": ["worker-repository"],
+            "read_only_repository_ids": ["core-repository"],
+        })
+        self.assertTrue(context["effective_authority_requires_operation_checks"])
+        public = self.service.public_assignment_capability(assignment)
+        self.assertNotIn("must-never-be-disclosed", json.dumps(public))
+        self.assertNotIn(assignment.lease.lease_token, json.dumps(public))
+        disabled = self.service.public_assignment_capability(assignment.model_copy(
+            update={"execution_profile_id": "unsupported-profile"}))
+        self.assertFalse(disabled["enabled"])
+        self.assertIsNone(disabled["assignment_context"])
+        self.assertEqual(disabled["operations"], [])
+
+    async def test_operator_and_worker_catalogs_share_repository_request_metadata(self):
+        from fastapi import FastAPI
+        from codex_web.api.control_plane_broker import build_control_plane_broker_router
+        app = FastAPI()
+        app.include_router(build_control_plane_broker_router(self.service))
+        with patch("codex_web.api.control_plane_broker._operator_actor", return_value=self.worker_actor):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                result = await client.get("/api/control-plane-broker/operations")
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json()["items"], self.service.public_assignment_capability(self.assignment)["operations"])
+        self.assertNotIn("assignment_context", result.json())
+
     async def test_repository_write_assignment_receives_same_scoped_broker(self) -> None:
         assignment = self.assignment.model_copy(
             update={"execution_profile_id": "repository-write"}
@@ -1663,13 +1723,15 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 if path == "branch/publish":
                     self.assertEqual(created.request.parameters["execution_workspace_id"], "workspace-a")
 
-                for override in ("timeout_seconds", "lease_seconds"):
-                    with self.assertRaisesRegex(ControlPlaneBrokerRequestError, "unsupported fields"):
+                for override in ("timeout_seconds", "lease_seconds", "branch", "head_revision"):
+                    before = len(action_intents.created)
+                    with self.assertRaisesRegex(ControlPlaneBrokerRequestError, "Put action fields inside the parameters JSON object"):
                         await service._execute_repository_action(
                             assignment=assignment, worker_actor=self.worker_actor,
                             requester_actor=actor, operation=operation,
                             payload={"parameters": parameters, override: 3600},
                         )
+                    self.assertEqual(len(action_intents.created), before)
 
     async def test_repository_intent_catalog_calls_do_not_block_event_loop(self) -> None:
         context = ContextVar("broker_request_context")

@@ -31,13 +31,7 @@ def build_control_plane_broker_router(
         _operator_actor(request)
         return {
             "items": [
-                {
-                    "id": item.id,
-                    "method": item.method,
-                    "path_template": item.path_template,
-                    "capability": item.capability,
-                    "authority_level": item.authority_level.value,
-                }
+                service.public_operation(item)
                 for item in service.operations()
             ],
             "limits": service.limits.model_dump(mode="json"),
