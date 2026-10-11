@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 import os
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from codex_web.services.runtime_supervisor import RuntimeSupervisor, install_runtime_supervisor
+from codex_web.services.runtime_policy import RuntimePolicy
 
 
 class RuntimeSupervisorInstallTests(unittest.TestCase):
@@ -243,6 +246,59 @@ class RuntimeSupervisorAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(calls, 2)
         self.assertEqual(events[0]["type"], "test_cycle_failed")
         self.assertIn("boom", str(events[0]["error"]))
+
+    async def test_autonomy_loop_resumes_after_startup_and_runtime_maintenance(self) -> None:
+        with TemporaryDirectory() as directory:
+            flag = Path(directory) / "AUTONOMY_DISABLED"
+            flag.write_text("maintenance")
+            policy = RuntimePolicy(Path(directory))
+            calls: list[str] = []
+            sleeps: list[float] = []
+            service = RuntimeSupervisor(
+                SimpleNamespace(state=SimpleNamespace()), SimpleNamespace()
+            )
+
+            async def cycle() -> None:
+                self.assertFalse(flag.exists())
+                calls.append("cycle")
+
+            async def sleep(seconds: float) -> None:
+                sleeps.append(seconds)
+                if len(sleeps) in (1, 3):
+                    flag.unlink()
+                elif len(sleeps) == 2:
+                    flag.write_text("maintenance")
+                else:
+                    raise asyncio.CancelledError
+
+            with patch.dict(os.environ, {"CODEX_WEB_AUTONOMY_ENABLED": "1"}), patch(
+                "codex_web.services.runtime_supervisor.asyncio.sleep", side_effect=sleep
+            ):
+                with self.assertRaises(asyncio.CancelledError):
+                    await service._cycle_loop(
+                        policy.orchestrator_watchdog_interval,
+                        cycle,
+                        failure_event="test_cycle_failed",
+                        resume_after_pause=True,
+                    )
+            self.assertEqual(calls, ["cycle", "cycle"])
+            self.assertEqual(sleeps[::2], [5.0, 5.0])
+            self.assertGreater(sleeps[1], 0)
+            self.assertEqual(sleeps[1], sleeps[3])
+
+    async def test_disabled_non_autonomy_loop_still_exits_without_work(self) -> None:
+        service = RuntimeSupervisor(
+            SimpleNamespace(state=SimpleNamespace()), SimpleNamespace()
+        )
+
+        async def cycle() -> None:
+            self.fail("disabled loop ran work")
+
+        with patch("codex_web.services.runtime_supervisor.asyncio.sleep") as sleep:
+            await service._cycle_loop(
+                lambda: 0.0, cycle, failure_event="test_cycle_failed"
+            )
+        sleep.assert_not_called()
 
     async def test_stop_flushes_deferred_compatibility_state(self) -> None:
         calls: list[str] = []
