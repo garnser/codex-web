@@ -39,6 +39,21 @@ The same-number issue is never used as a substitute.
 Adapters without the combined capability continue through the provider-neutral
 owner/state write contracts while still benefiting from keyed task coalescing.
 
+Adapters may advertise the additive `delivery_state_write` capability and
+implement `write_delivery_projection`. It receives the canonical owner/business
+stage plus an independent `delivery_pending` flag. The GitLab adapter and its
+secret-bound facade support this extension through the same combined mutation
+and per-call secret-use boundary. Pending handoffs project awaiting-confirmation
+status even when the business stage remains failed; after acknowledgement, status
+reflects the business stage. Receipt delivery does not constitute validation.
+Incoming awaiting-confirmation feedback cannot promote a pending handoff's
+business stage. Legacy adapters retain their existing owner/state contracts.
+
+Delivery-pending state participates in coalescing and applied fingerprints, so
+creating or acknowledging a handoff cannot be suppressed merely because owner,
+business stage and provider revision are unchanged. Operations diagnostics expose
+this state alongside the existing owner/stage/revision fields.
+
 ## Canonical-state safety
 
 Provider response metadata is merged into the latest canonical Work Item record.

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from codex_web.models import GitLabRoutingSettings, WorkItemState
+from codex_web.models import GitLabRoutingSettings, WorkItemState, WorkItemHandoff
 from codex_web.services.gitlab_artifact_events import GitLabArtifactEventProjector
 from codex_web.services.work_item_state import WorkItemStateMachine
 from tests.test_task_source_work_item_projection import _Host
@@ -81,6 +81,23 @@ class GitLabArtifactResourceAssociationTests(unittest.TestCase):
         result = self.projector.project(self.payload, project_id='project-a')
         self.assert_associated(result)
         self.assertEqual(result.title, 'MR')
+
+    def test_pending_failed_mr_awaiting_feedback_retains_business_stage_and_handoff(self):
+        state = self.projector.project(self.payload, project_id='project-a')
+        state.current_owner = 'quinn'
+        state.implementation_owner = 'carl'
+        state.current_stage = 'failed_with_action_owner'
+        state.next_owner = 'carl'
+        state.handoff = WorkItemHandoff(from_agent='quinn', to_agent='carl', requested_at=180.0)
+        self.host.states[state.ref] = state
+        self.host._gitlab_label_names = lambda payload: ['owner::quinn', 'status::awaiting confirmation']
+        self.host._gitlab_owner_agents = lambda payload, settings: ['quinn']
+        self.payload['object_attributes']['updated_at'] = '2026-10-09T04:01:00Z'
+        result = self.projector.project(self.payload, project_id='project-a')
+        self.assertEqual(result.current_stage, 'failed_with_action_owner')
+        self.assertEqual(result.handoff, state.handoff)
+        self.assertEqual(result.current_owner, 'quinn')
+        self.assertEqual(result.next_owner, 'carl')
 
     def test_legacy_bulk_repository_fallback_keeps_associations(self):
         self.host._get_work_item_state_record = None

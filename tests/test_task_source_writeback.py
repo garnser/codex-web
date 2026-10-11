@@ -432,7 +432,7 @@ class GitLabCombinedWritebackTests(unittest.IsolatedAsyncioTestCase):
         payload = client.payloads[0]
         self.assertIn("owner::new", payload["labels"])
         self.assertIn(
-            "status::awaiting confirmation",
+            "status::in progress",
             payload["labels"],
         )
         self.assertIn("priority::P1", payload["labels"])

@@ -13,6 +13,7 @@ from codex_web.services.task_sources import (
     TaskSource,
     TaskSourceCapability,
     TaskSourceCombinedWriteCapable,
+    TaskSourceDeliveryWriteCapable,
     TaskSourceSnapshot,
 )
 
@@ -233,7 +234,7 @@ class TaskSourceWritebackService:
         ] = {}
         self._last_applied: dict[
             tuple[str, ...],
-            tuple[str | None, str, str | None],
+            tuple[str | None, str, bool, str | None],
         ] = {}
         self._stats: dict[str, int] = {
             "scheduled": 0,
@@ -251,11 +252,12 @@ class TaskSourceWritebackService:
     @staticmethod
     def _desired_fingerprint(
         state: WorkItemState,
-    ) -> tuple[str | None, str, str | None]:
+    ) -> tuple[str | None, str, bool, str | None]:
         identity = getattr(state, "source_identity", None)
         return (
             state.current_owner,
             state.current_stage,
+            bool(state.handoff and state.handoff.status == "pending"),
             getattr(identity, "revision", None),
         )
 
@@ -342,8 +344,14 @@ class TaskSourceWritebackService:
             if isinstance(source, TaskSourceCombinedWriteCapable)
             else None
         )
+        delivery = (
+            source
+            if source.capabilities.supports(TaskSourceCapability.DELIVERY_STATE_WRITE)
+            and isinstance(source, TaskSourceDeliveryWriteCapable)
+            else None
+        )
         if (
-            combined is not None
+            (combined is not None or delivery is not None)
             and source.capabilities.supports(TaskSourceCapability.READ)
             and source.capabilities.supports(
                 TaskSourceCapability.OWNER_WRITE
@@ -361,12 +369,17 @@ class TaskSourceWritebackService:
             ):
                 self._stats["coalesced"] += 1
                 return state
-            result = await combined.write_projection(
-                identity,
-                current,
-                owner=state.current_owner,
-                stage=state.current_stage,
-            )
+            if delivery is not None:
+                result = await delivery.write_delivery_projection(
+                    identity, current, owner=state.current_owner,
+                    stage=state.current_stage, delivery_pending=desired[2],
+                )
+            else:
+                assert combined is not None
+                result = await combined.write_projection(
+                    identity, current, owner=state.current_owner,
+                    stage=state.current_stage,
+                )
             if result.mutated:
                 self._stats["providerWrites"] += 1
                 self._stats["applied"] += 1
@@ -374,8 +387,7 @@ class TaskSourceWritebackService:
                 self._stats["skipped"] += 1
             if key is not None:
                 self._last_applied[key] = (
-                    state.current_owner,
-                    state.current_stage,
+                    *desired[:3],
                     result.snapshot.identity.revision,
                 )
             return self._save_snapshot(state, result.snapshot)
@@ -407,8 +419,7 @@ class TaskSourceWritebackService:
         self._stats["applied"] += 1
         if key is not None:
             self._last_applied[key] = (
-                state.current_owner,
-                state.current_stage,
+                *desired[:3],
                 snapshot.identity.revision,
             )
         return self._save_snapshot(state, snapshot)
@@ -557,6 +568,7 @@ class TaskSourceWritebackService:
                         {
                             "owner": desired.current_owner,
                             "stage": desired.current_stage,
+                            "deliveryPending": bool(desired.handoff and desired.handoff.status == "pending"),
                             "updatedAt": desired.updated_at,
                             "revision": (
                                 desired.source_identity.revision
@@ -571,7 +583,8 @@ class TaskSourceWritebackService:
                         {
                             "owner": applied[0],
                             "stage": applied[1],
-                            "revision": applied[2],
+                            "deliveryPending": applied[2],
+                            "revision": applied[3],
                         }
                         if (
                             applied := self._last_applied.get(key)

@@ -43,6 +43,7 @@ class GitLabTaskSource:
                 TaskSourceCapability.EVENTS,
                 TaskSourceCapability.OWNER_WRITE,
                 TaskSourceCapability.STATE_WRITE,
+                TaskSourceCapability.DELIVERY_STATE_WRITE,
                 TaskSourceCapability.COMMENTS,
             }
         )
@@ -562,6 +563,21 @@ class GitLabTaskSource:
             mutated=True,
         )
 
+    async def write_delivery_projection(
+        self,
+        identity: TaskSourceIdentity,
+        current: TaskSourceSnapshot,
+        *,
+        owner: str | None,
+        stage: WorkItemStage,
+        delivery_pending: bool,
+    ) -> TaskSourceWritebackResult:
+        self.capabilities.require(TaskSourceCapability.DELIVERY_STATE_WRITE)
+        return await self.write_projection(
+            identity, current, owner=owner, stage=stage,
+            delivery_pending=delivery_pending,
+        )
+
     async def write_projection(
         self,
         identity: TaskSourceIdentity,
@@ -569,6 +585,7 @@ class GitLabTaskSource:
         *,
         owner: str | None,
         stage: WorkItemStage,
+        delivery_pending: bool | None = None,
     ) -> TaskSourceWritebackResult:
         """Apply owner and lifecycle projection with at most one issue update.
 
@@ -594,6 +611,13 @@ class GitLabTaskSource:
             ),
         )
         desired_status = self._status_label_for_stage(stage)
+        if delivery_pending is not None and stage != "closed":
+            # Receipt delivery is separate from the retained business stage.
+            desired_status = (
+                "status::awaiting confirmation" if delivery_pending
+                else "status::blocked" if stage == "failed_with_action_owner"
+                else "status::in progress"
+            )
         labels = self._replace_prefixed_label(
             tuple(labels),
             "status::",
