@@ -192,6 +192,8 @@ External authoritative task-source reconciliation is deliberately distinct from 
 
 A source refresh that repeats the existing blocked stage and owner preserves the explicit next action owner, pending handoff, and recorded blocker. A repeated blocked label is neither a new routing decision nor recipient acknowledgement. Newly blocked transitions and changed source owners still reconcile and supersede obsolete pending handoffs; closure and reopening retain their existing rules.
 
+Canonical progress also preserves a pending handoff when the stage, current owner, and recipient are unchanged. Findings, artifact metadata, notes, or a repeated blocked status update the same lane without resolving intake; its derived status remains awaiting confirmation. An explicit next-owner change supersedes the old handoff, and existing resolution transitions, owner transfers and closure still archive it. Preservation never creates a recipient ACK.
+
 Implementation attribution is distinct from the actor performing a repair and from the owner of the current lifecycle lane. Operational coordination identities such as `operator` and `orchestrator`, plus the configured validation and release owners, are never inferred as `implementation_owner` from progress or handoff state. Existing attribution survives operator coordination and handoff expiry. An explicit operator reconciliation may correct it only from fresh, exact-resource provider assignment evidence and records the correction without claiming validation, closure, or external-source ownership.
 
 An issue already at `ready_for_validation` may retain that stage, its

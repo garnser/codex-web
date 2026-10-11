@@ -674,18 +674,33 @@ class WorkItemStateMachine:
             handoff_to = self._coerce_owner(state.handoff.to_agent)
             archive_resolved_handoff = False
             if state.handoff.status == "pending":
-                archive_resolved_handoff = incoming_stage in {
-                    "implementation_active",
-                    "failed_with_action_owner",
-                } or (
-                    status_label is not None
-                    and status_label != "status::awaiting confirmation"
+                unchanged_pending_lane = (
+                    state.current_stage == previous_stage
+                    and current_owner_normalized == previous_owner
+                    and current_owner_normalized in {handoff_from, handoff_to}
+                    and handoff_to is not None
+                    and self._coerce_owner(state.next_owner) == handoff_to
                 )
+                archive_resolved_handoff = not unchanged_pending_lane and (
+                    incoming_stage in {
+                        "implementation_active",
+                        "failed_with_action_owner",
+                    } or (
+                        status_label is not None
+                        and status_label != "status::awaiting confirmation"
+                    )
+                )
+                if next_owner_present and self._coerce_owner(state.next_owner) != handoff_to:
+                    archive_resolved_handoff = True
                 if (
                     current_owner_normalized
                     and current_owner_normalized not in {handoff_from, handoff_to}
                 ):
                     archive_resolved_handoff = True
+                if unchanged_pending_lane:
+                    # Repeating the existing stage/status while adding findings
+                    # is not resolution of the recipient's pending intake.
+                    state = self._sync_work_item_status_label(state)
             elif state.handoff.status == "accepted":
                 archive_resolved_handoff = bool(
                     current_owner_normalized
