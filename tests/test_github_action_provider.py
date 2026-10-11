@@ -371,6 +371,15 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
             idempotency_key="intent-stable-key",
         )
 
+    async def test_empty_action_parameters_fail_before_provider_calls(self):
+        for action in [CODE_HOST_ISSUE_COMMENT_ACTION_ID,CODE_HOST_ISSUE_UPDATE_ACTION_ID,
+                       CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID]:
+            with self.subTest(action=action), self.assertRaises(ActionRequirementError):
+                await self.execution.execute(self.binding.id,self._request(action,{}),actor=self.actor)
+        self.assertEqual(self.client.credentials,[])
+        self.assertEqual(self.client.pull_request_creates,0)
+        self.assertEqual(self.client.pull_request_merges,0)
+
     async def test_comment_uses_secret_boundary_and_replays_without_duplicate(self) -> None:
         request = self._request(
             CODE_HOST_ISSUE_COMMENT_ACTION_ID,
@@ -472,7 +481,7 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-        with self.assertRaisesRegex(ValueError, "not owned"):
+        with self.assertRaisesRegex(ActionRequirementError, "not owned"):
             await self.execution.execute(self.binding.id, request, actor=self.actor)
 
         self.assertEqual(self.client.pull_request_creates, 0)

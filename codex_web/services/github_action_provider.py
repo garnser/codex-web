@@ -271,7 +271,21 @@ class GitHubActionProvider:
         credential: str | None = None,
     ) -> ActionResult:
         if not credential:
-            raise ValueError("GitHub credential is required")
+            raise ActionRequirementError("GitHub credential is required")
+        # Preparation is side-effect free. Invalid inputs or workspace scope
+        # must fail before any provider mutation, never become unknown outcomes.
+        try:
+            await self.prepare(request, binding=binding)
+        except ValueError as exc:
+            prefix = (
+                "GitHub branch could not be attested"
+                if request.action_id == CODE_HOST_BRANCH_PUBLISH_ACTION_ID
+                else "GitHub action precondition failed"
+            )
+            if request.action_id == CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID:
+                prefix += "; supported change request parameters: title, body, head, base, draft"
+            raise ActionRequirementError(f"{prefix}: {exc}") from exc
+
         repository = self.contract.locator(request)
         started = time.time()
         output: dict[str, Any] = {
@@ -385,7 +399,7 @@ class GitHubActionProvider:
                 None,
             )
             if owned is None and conflicting_open is not None:
-                raise ValueError(
+                raise ActionRequirementError(
                     "an existing pull request for head/base is not owned by this ActionIntent"
                 )
             if owned is None:
@@ -398,7 +412,7 @@ class GitHubActionProvider:
             else:
                 number = self._positive_number(owned, field="pull request")
                 if bool(owned.get("draft")) != payload["draft"]:
-                    raise ValueError(
+                    raise ActionRequirementError(
                         "GitHub pull request draft transitions require a separate governed action"
                     )
                 update = {
@@ -494,14 +508,14 @@ class GitHubActionProvider:
             if expected_head_sha and str(
                 current_head.get("sha") or ""
             ).casefold() != expected_head_sha:
-                raise ValueError(
+                raise ActionRequirementError(
                     "GitHub pull request head no longer matches expected_head_sha"
                 )
             if not bool(current.get("merged")):
                 if current.get("mergeable") is not True or str(
                     current.get("mergeable_state") or ""
                 ) != "clean":
-                    raise ValueError(
+                    raise ActionRequirementError(
                         "GitHub pull request is not clean and mergeable; required checks may not be green"
                     )
                 merged = await self.client.merge_pull_request(
