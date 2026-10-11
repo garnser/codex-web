@@ -135,6 +135,30 @@ class WorkItemContinuityTests(unittest.IsolatedAsyncioTestCase):
             blocker="renderer prerequisite", created_at=1.0, updated_at=2.0,
             last_meaningful_update_at=2.0)
 
+    async def test_structured_handoff_carries_task_identity_and_repository_scope(self):
+        state = self._blocked_mr().model_copy(update={
+            "resource_ids": ["worker-repository"],
+            "handoff": WorkItemHandoff(from_agent="James", to_agent="Quinn",
+                requested_at=10.0, status="pending"),
+        })
+        service = self._service(states={state.ref: state}, events=[], deliveries=[])
+        calls = []
+
+        async def capture(binding, text, source, **kwargs):
+            calls.append((binding.thread_id, kwargs))
+            return {"queued": True}
+
+        service.dispatch_event = capture
+        before = state.model_dump()
+        await service.dispatch_structured_handoff(state, source="handoff-test")
+        self.assertEqual(calls, [("project-a:quinn", {
+            "work_item_ref": state.ref,
+            "repository_resource_id": "worker-repository",
+            "writable_repository_resource_ids": ("worker-repository",),
+        })])
+        self.assertEqual(state.model_dump(), before)
+        await service.stop()
+
     async def test_blocked_next_owner_and_normal_current_owner_are_distinct(self):
         for stage, next_owner, expected in [
             ("failed_with_action_owner", "Carl", "carl"),
