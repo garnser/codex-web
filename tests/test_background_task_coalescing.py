@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from fastapi import HTTPException
 
-from codex_web.models import WorkItemState
+from codex_web.models import WorkItemHandoff, WorkItemState
 from codex_web.services.keyed_background_tasks import (
     KeyedTaskCoordinator,
 )
@@ -381,6 +381,138 @@ class ContinuityCoalescingTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(
             thread_error.exception.detail["code"],
+            "work_item_owner_thread_changed",
+        )
+
+    def test_owner_dispatch_projection_uses_canonical_action_lane(self) -> None:
+        service = self._service({})
+        cases = (
+            (
+                _state(owner="James"),
+                "james",
+                "thread-project-a-james",
+            ),
+            (
+                _state(owner="James", stage="failed_with_action_owner").model_copy(
+                    update={"next_owner": "Operator"}
+                ),
+                "operator",
+                "thread-project-a-operator",
+            ),
+            (
+                _state(owner="Orchestrator").model_copy(
+                    update={"next_owner": "Sally"}
+                ),
+                "orchestrator",
+                "thread-project-a-orchestrator",
+            ),
+        )
+
+        for state, owner, thread_id in cases:
+            with self.subTest(stage=state.current_stage, owner=owner):
+                self.assertEqual(
+                    service.owner_dispatch_projection(state),
+                    {
+                        "eligible": True,
+                        "blocked_reason": None,
+                        "expected_owner": owner,
+                        "expected_thread_id": thread_id,
+                    },
+                )
+
+    def test_owner_dispatch_projection_redacts_blocked_bindings(self) -> None:
+        service = self._service({})
+        pending = WorkItemHandoff(
+            from_agent="james",
+            to_agent="quinn",
+            requested_at=9.0,
+        )
+        cases = (
+            (
+                _state().model_copy(update={"closed_at": 11.0}),
+                "work_item_closed",
+            ),
+            (
+                _state().model_copy(update={"handoff": pending}),
+                "work_item_handoff_pending",
+            ),
+        )
+        for state, reason in cases:
+            with self.subTest(reason=reason):
+                self.assertEqual(
+                    service.owner_dispatch_projection(state),
+                    {
+                        "eligible": False,
+                        "blocked_reason": reason,
+                        "expected_owner": None,
+                        "expected_thread_id": None,
+                    },
+                )
+
+        state = _state()
+        service.binding_for_agent = lambda *_args, **_kwargs: None
+        self.assertEqual(
+            service.owner_dispatch_projection(state)["blocked_reason"],
+            "work_item_owner_binding_unavailable",
+        )
+        service.binding_for_agent = lambda *_args, **_kwargs: SimpleNamespace(
+            thread_id="thread-project-b-james",
+            project_id="project-b",
+        )
+        foreign = service.owner_dispatch_projection(state)
+        self.assertEqual(
+            foreign,
+            {
+                "eligible": False,
+                "blocked_reason": "work_item_owner_project_mismatch",
+                "expected_owner": None,
+                "expected_thread_id": None,
+            },
+        )
+
+    def test_owner_dispatch_projection_is_read_only(self) -> None:
+        state = _state()
+        states = {state.ref: state.model_copy(deep=True)}
+        dispatches: list[tuple[str, str, str]] = []
+        service = self._service(states, dispatches=dispatches)
+        before = state.model_dump(mode="json")
+
+        projection = service.owner_dispatch_projection(state)
+
+        self.assertTrue(projection["eligible"])
+        self.assertEqual(state.model_dump(mode="json"), before)
+        self.assertEqual(states[state.ref].model_dump(mode="json"), before)
+        self.assertEqual(dispatches, [])
+        self.assertEqual(service.status()["dispatch"]["scheduled"], 0)
+
+    async def test_governed_steer_rejects_binding_changed_after_projection(self) -> None:
+        state = _state()
+        states = {state.ref: state.model_copy(deep=True)}
+        service = self._service(states)
+        thread_id = "thread-project-a-james"
+        service.binding_for_agent = lambda *_args, **_kwargs: SimpleNamespace(
+            thread_id=thread_id,
+            project_id="project-a",
+        )
+        projection = service.owner_dispatch_projection(state)
+        self.assertEqual(
+            projection["expected_thread_id"],
+            "thread-project-a-james",
+        )
+        thread_id = "thread-project-a-james-replacement"
+
+        with self.assertRaises(HTTPException) as error:
+            await service.steer_actionable_owner(
+                state,
+                expected_owner=projection["expected_owner"],
+                expected_thread_id=projection["expected_thread_id"],
+                idempotency_key="steer:work-1:binding-changed",
+                actor="orchestrator-worker",
+                source="assignment-control-plane",
+            )
+
+        self.assertEqual(
+            error.exception.detail["code"],
             "work_item_owner_thread_changed",
         )
 

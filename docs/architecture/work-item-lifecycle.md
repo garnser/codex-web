@@ -45,6 +45,18 @@ implementation/validation owners or accepted handoffs, and pending handoffs
 remain ineligible for automatic owner dispatch. Issue and merge-request refs
 remain distinct; selecting an owner does not grant provider writeback capability.
 
+After normal broker identity, tenant, Project, resource, execution-profile and
+operation authorization, the scoped work-item read includes a bounded
+`owner_dispatch` projection. It uses the same actionable-owner and responsible
+binding resolver as owner steering. Only an actionable, open item with no
+pending handoff and a same-Project owner binding exposes `expected_owner` and
+`expected_thread_id`; every other result redacts both values and returns a
+stable `blocked_reason`. The projection is read-only and does not expose thread
+lists, queues, messages or authority. It is a preflight observation, not a
+reservation: steering reloads canonical state under its per-item lock and
+revalidates the owner, lifecycle conditions, Project and exact thread before
+dispatch.
+
 An identical normalized progress update remains an attributed audit receipt and
 owner activity acknowledgement. It does not advance `last_meaningful_update_at`
 or schedule another owner dispatch/continuity check solely for the unchanged

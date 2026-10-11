@@ -83,6 +83,11 @@ class WorkItemOperatorService:
             "steer_actionable_owner",
             None,
         )
+        self.project_owner_dispatch = getattr(
+            continuity,
+            "owner_dispatch_projection",
+            None,
+        )
         self.schedule_owner_dispatch = getattr(
             continuity,
             "schedule_actionable_owner_dispatch",
@@ -97,6 +102,19 @@ class WorkItemOperatorService:
                 "_schedule_actionable_owner_dispatch",
                 None,
             )
+
+    def owner_dispatch_projection(
+        self,
+        state: WorkItemState,
+    ) -> dict[str, Any]:
+        if not callable(self.project_owner_dispatch):
+            return {
+                "eligible": False,
+                "blocked_reason": "work_item_owner_dispatch_unavailable",
+                "expected_owner": None,
+                "expected_thread_id": None,
+            }
+        return self.project_owner_dispatch(state)
 
     async def steer(
         self,

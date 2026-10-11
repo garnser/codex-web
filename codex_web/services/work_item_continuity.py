@@ -30,6 +30,9 @@ class DeferredWorkItemContinuityService:
     def responsible_binding(self, state: WorkItemState) -> Any | None:
         return self._require().responsible_binding(state)
 
+    def owner_dispatch_projection(self, state: WorkItemState) -> dict[str, Any]:
+        return self._require().owner_dispatch_projection(state)
+
     def schedule_structured_handoff_dispatch(
         self,
         state: WorkItemState,
@@ -232,6 +235,44 @@ class WorkItemContinuityService:
             state.project_id,
             preferred_conversation_id=self.coordination_channel,
         )
+
+    def _owner_dispatch_resolution(
+        self,
+        state: WorkItemState,
+    ) -> tuple[str | None, Any | None, str | None]:
+        """Resolve the bounded owner binding shared by reads and steering."""
+        owner = self.coerce_owner(actionable_owner_value(state))
+        if state.current_stage == "closed" or state.closed_at:
+            return owner, None, "work_item_closed"
+        if not self.actionable_owner_stage(state.current_stage):
+            return owner, None, "work_item_not_actionable"
+        if state.handoff and state.handoff.status == "pending":
+            return owner, None, "work_item_handoff_pending"
+        if not owner:
+            return None, None, "work_item_owner_unavailable"
+        binding = self.responsible_binding(state)
+        if binding is None or not str(getattr(binding, "thread_id", "")).strip():
+            return owner, None, "work_item_owner_binding_unavailable"
+        if getattr(binding, "project_id", None) != state.project_id:
+            return owner, None, "work_item_owner_project_mismatch"
+        return owner, binding, None
+
+    def owner_dispatch_projection(self, state: WorkItemState) -> dict[str, Any]:
+        """Expose only a currently eligible exact owner/thread pair."""
+        owner, binding, blocked_reason = self._owner_dispatch_resolution(state)
+        if blocked_reason is not None or binding is None:
+            return {
+                "eligible": False,
+                "blocked_reason": blocked_reason,
+                "expected_owner": None,
+                "expected_thread_id": None,
+            }
+        return {
+            "eligible": True,
+            "blocked_reason": None,
+            "expected_owner": owner,
+            "expected_thread_id": binding.thread_id,
+        }
 
     @staticmethod
     def _dispatch_repository_scope(
@@ -667,32 +708,31 @@ class WorkItemContinuityService:
                 "work_item_owner_changed",
                 "expected owner does not match the canonical current owner",
             )
-        if state.current_stage == "closed" or state.closed_at:
+        _, binding, blocked_reason = self._owner_dispatch_resolution(state)
+        if blocked_reason is not None:
+            messages = {
+                "work_item_closed": "closed work cannot be steered",
+                "work_item_not_actionable": (
+                    "work item is not in an actionable owner stage"
+                ),
+                "work_item_handoff_pending": (
+                    "pending handoff must be resolved before owner steering"
+                ),
+                "work_item_owner_unavailable": (
+                    "canonical current owner is unavailable"
+                ),
+                "work_item_owner_binding_unavailable": (
+                    "canonical owner has no same-project thread binding"
+                ),
+                "work_item_owner_project_mismatch": (
+                    "canonical owner thread is outside the work-item project"
+                ),
+            }
             raise self._steer_conflict(
-                "work_item_closed",
-                "closed work cannot be steered",
+                blocked_reason,
+                messages[blocked_reason],
             )
-        if not self.actionable_owner_stage(state.current_stage):
-            raise self._steer_conflict(
-                "work_item_not_actionable",
-                "work item is not in an actionable owner stage",
-            )
-        if state.handoff and state.handoff.status == "pending":
-            raise self._steer_conflict(
-                "work_item_handoff_pending",
-                "pending handoff must be resolved before owner steering",
-            )
-        binding = self.responsible_binding(state)
-        if binding is None:
-            raise self._steer_conflict(
-                "work_item_owner_binding_unavailable",
-                "canonical owner has no same-project thread binding",
-            )
-        if binding.project_id != state.project_id:
-            raise self._steer_conflict(
-                "work_item_owner_project_mismatch",
-                "canonical owner thread is outside the work-item project",
-            )
+        assert binding is not None
         if binding.thread_id != expected_thread_id:
             raise self._steer_conflict(
                 "work_item_owner_thread_changed",
