@@ -169,12 +169,14 @@ class BotEventDispatchScopeTests(unittest.IsolatedAsyncioTestCase):
             "validate veridataops/saas-app#379",
             "gitlab",
             work_item_ref="veridataops/saas-app#379",
+            handoff_requested_at=100,
             repository_resource_id="repo-saas-app",
             writable_repository_resource_ids=("repo-saas-app",),
         )
 
         kwargs = self.execution.enqueue_turn.call_args.kwargs
         self.assertEqual(kwargs["work_item_ref"], "veridataops/saas-app#379")
+        self.assertEqual(kwargs["handoff_requested_at"], 100)
         self.assertEqual(kwargs["repository_resource_id"], "repo-saas-app")
         self.assertEqual(
             kwargs["writable_repository_resource_ids"],

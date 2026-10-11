@@ -1,5 +1,38 @@
 # Runtime supervision
 
+## Handoff delivery and acknowledgement deadlines
+
+New structured handoffs persist `delivery.status=awaiting_dispatch`. Their
+recipient acknowledgement window begins only after a successful native turn
+start returns its actual turn ID under the admitted recipient profile. The
+existing execution service carries the original handoff `requested_at` through
+durable queue admission, drain, replacement and continuity dispatch. An atomic
+canonical update matches that nonce, recipient, tenant and Project, rejects
+closed or already acknowledged work, and stores the actual Thread, turn and
+execution IDs with `delivery.status=delivered` and `started_at`. Queue admission,
+an active marker, failed startup and unknown startup outcomes supply no delivery
+or acknowledgement evidence. Delivery does not change ownership or accept work.
+
+Undelivered handoffs have a separate bounded dispatch deadline configured by
+`CODEX_WEB_WORK_ITEM_HANDOFF_DELIVERY_TIMEOUT_SECONDS` (default 3600 seconds,
+minimum 60). Once delivered, the existing acknowledgement timeout applies from
+`started_at`. Expiry compares the complete current handoff atomically before
+archiving it, preserves its real acknowledgement evidence, and replaces the
+stale acknowledgement instruction with the sender's recovery action. Existing
+watchdog cooldowns, active/queued exclusions, scoped dispatch and reasoning gates
+remain authoritative; this change introduces no additional model polling.
+
+Compatibility is additive: handoff `delivery` and queued-turn
+`handoff_requested_at` are optional persisted fields. Historical missing delivery
+remains untracked and keeps its existing request-time expiry; timestamps are not
+retrofitted. Old queued entries without a nonce cannot establish delivery. New
+readers preserve original queue IDs, order, messages, scope and policy attribution;
+resaving may add null fields. Deployment qualification must compare every
+original field while allowing those declared additions. An older writer can
+discard delivery metadata, so rollback requires a canonical snapshot and drained
+admissions rather than mixed-version writers. The work-item detail UI displays
+delivery status and recipient start separately from handoff acceptance.
+
 Long-lived process lifecycle is owned by `codex_web.services.runtime_supervisor.RuntimeSupervisor`. The supervisor is a composition root for lifecycle only; it does not implement autonomy, work-item continuity, or native recovery policy itself.
 
 The five autonomy watchdog tasks remain dormant when their effective policy interval is zero, including startup with `AUTONOMY_DISABLED` present. They recheck the interval every five seconds without dispatching work, so removing a maintenance pause resumes the same tasks without another restart. Effective intervals are refreshed before each cycle; normal configured cycle delays still apply. Other explicitly disabled periodic loops retain their existing exit behavior.

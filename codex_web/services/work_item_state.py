@@ -11,6 +11,7 @@ from codex_web.models import (
     WorkItemEvent,
     WorkItemHandoff,
     WorkItemHandoffCreate,
+    WorkItemHandoffDelivery,
     WorkItemProgressUpdate,
     WorkItemState,
 )
@@ -956,6 +957,7 @@ class WorkItemStateMachine:
             reason=payload.reason,
             expected_action=payload.expected_action,
             requested_at=now,
+            delivery=WorkItemHandoffDelivery(),
             status="pending",
             artifact_state=artifact_state,
             stage=previous_stage,

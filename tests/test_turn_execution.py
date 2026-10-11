@@ -619,6 +619,7 @@ class TurnExecutionQueueTests(unittest.IsolatedAsyncioTestCase):
             thread_id="t1", project_id="p1", message="profiled work",
             agent_profile_id="reviewer", agent_profile_revision=4,
             agent_profile_actor_id="requesting-human",
+            work_item_ref="group/project#78", handoff_requested_at=100,
         )
         await service.drain_thread_queue("t1")
         resolver.assert_called_once_with("requesting-human", project)
@@ -627,6 +628,8 @@ class TurnExecutionQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(arguments["agent_profile_id"], "reviewer")
         self.assertEqual(arguments["agent_profile_revision"], 4)
         self.assertEqual(arguments["agent_profile_actor_id"], "requesting-human")
+        self.assertEqual(arguments["work_item_ref"], "group/project#78")
+        self.assertEqual(arguments["handoff_requested_at"], 100)
         self.assertEqual(host._thread_queue_depth("t1"), 0)
 
     async def test_worker_capacity_wait_does_not_exhaust_message_retries(self) -> None:
@@ -1025,6 +1028,47 @@ class _BootstrapBindings:
 
 
 class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
+    async def test_handoff_delivery_requires_successful_recipient_native_turn_start(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail):
+                host, _binding, sessions, service = self._service(bootstrap_thread_id="t1")
+                runtime = ExecutionRuntimeBinding(provider_id="openai", runtime_id="codex", capability_revision=1)
+                profile = AgentProfileExecutionBinding(
+                    profile_id="reviewer", profile_revision=4, profile_record_id="reviewer-r4",
+                    role_id="quinn", execution_profile_id="repository-write",
+                    selected_provider_id="openai", selected_runtime_id="codex")
+                assignment = sessions.session.validate_current()
+                assignment.runtime_binding = runtime
+                assignment.agent_profile = profile
+                sessions.session.validate_current = MagicMock(return_value=assignment)
+                service._select_runtime_binding = AsyncMock(return_value=(runtime, profile))
+                service.handoff_delivery_recorder = Mock(return_value=True)
+                if fail:
+                    original = sessions.session.request
+                    async def failed_request(method, params=None):
+                        if method == "turn/start":
+                            raise asyncio.TimeoutError("unknown start outcome")
+                        return await original(method, params)
+                    sessions.session.request = failed_request
+                kwargs = dict(project=Project(id="p1", organization_id="org", workspace_id="workspace",
+                    name="Project", path="/workspace/project"), message="review existing evidence",
+                    sandbox="workspace-write", approval_policy="on-request",
+                    work_item_ref="group/project#78", handoff_requested_at=100)
+                if fail:
+                    with self.assertRaises(asyncio.TimeoutError):
+                        await service.start_thread_turn_now("t1", **kwargs)
+                    service.handoff_delivery_recorder.assert_not_called()
+                else:
+                    await service.start_thread_turn_now("t1", **kwargs)
+                    service.handoff_delivery_recorder.assert_called_once()
+                    args, evidence = service.handoff_delivery_recorder.call_args
+                    self.assertEqual(args, ("group/project#78",))
+                    self.assertEqual(evidence["recipient"], "quinn")
+                    self.assertEqual(evidence["expected_requested_at"], 100)
+                    self.assertEqual(evidence["turn_id"], "turn-1")
+                    self.assertEqual(evidence["organization_id"], "org")
+                    self.assertEqual(evidence["execution_id"], "bootstrap-exec")
+
     def _service(
         self,
         *,

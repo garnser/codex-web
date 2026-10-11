@@ -3672,6 +3672,7 @@ app.state.bot_event_dispatch_compatibility = (
 
 canonical_work_item_continuity_service = WorkItemContinuityService(
     policy=runtime_policy,
+    update_state=_update_work_item_state_record,
     get_state=work_item_state_machine._work_item_state,
     coerce_owner=work_item_state_machine._coerce_owner,
     binding_for_agent=agent_channel_preference_service.binding_for_agent,
@@ -3692,6 +3693,7 @@ canonical_work_item_continuity_service = WorkItemContinuityService(
 work_item_continuity_service.bind(
     canonical_work_item_continuity_service
 )
+turn_execution_service.handoff_delivery_recorder = work_item_continuity_service.record_handoff_delivery
 app.state.canonical_work_item_continuity_service = (
     canonical_work_item_continuity_service
 )
@@ -3761,6 +3763,7 @@ work_item_watchdog_candidate_policy = (
         handoff_timeout_seconds=(
             work_item_timing_policy.handoff_timeout_seconds
         ),
+        handoff_delivery_timeout_seconds=work_item_timing_policy.handoff_delivery_timeout_seconds,
         coerce_owner=work_item_state_machine._coerce_owner,
         sla_threshold_seconds=(
             work_item_timing_policy.sla_threshold_seconds
@@ -3846,6 +3849,7 @@ autonomy_runtime_dependencies = AutonomyRuntimeDependencies(
     watchdog_dispatch_allowed=watchdog_dispatch_policy.allowed,
     record_watchdog_dispatch=watchdog_dispatch_policy.record,
     handoff_timeout_seconds=work_item_timing_policy.handoff_timeout_seconds,
+    handoff_delivery_timeout_seconds=work_item_timing_policy.handoff_delivery_timeout_seconds,
     release_validation_sla_seconds=(
         work_item_timing_policy.release_validation_sla_seconds
     ),

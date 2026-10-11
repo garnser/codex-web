@@ -735,5 +735,8 @@ class WorkItemLaneContractTests(unittest.TestCase):
 
         record_dispatch.assert_called_once()
         updated = server._work_item_state("veridataops/saas-app#271")
-        dispatch.assert_awaited_once_with(binding, server._work_item_dispatch_text(updated), "work-item-handoff-continuity")
+        dispatch.assert_awaited_once_with(binding, server._work_item_dispatch_text(updated),
+            "work-item-handoff-continuity", work_item_ref=updated.ref,
+            handoff_requested_at=updated.handoff.requested_at,
+            repository_resource_id=None, writable_repository_resource_ids=())
         self.assertEqual(append_event.call_args.args[0]["type"], "work_item_handoff_continuity_dispatched")

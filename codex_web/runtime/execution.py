@@ -167,6 +167,7 @@ class TurnExecutionService:
         maintenance_admission=None,
     ) -> None:
         self.host = host
+        self.handoff_delivery_recorder: Callable[..., Any] | None = None
         try:
             self._event_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -715,6 +716,7 @@ class TurnExecutionService:
         reply_target: BotReplyTarget | None = None,
         execution_id: str | None = None,
         work_item_ref: str | None = None,
+        handoff_requested_at: float | None = None,
         repository_resource_id: str | None = None,
         writable_repository_resource_ids: tuple[str, ...] = (),
         read_only_repository_resource_ids: tuple[str, ...] = (),
@@ -790,6 +792,7 @@ class TurnExecutionService:
                 message=message,
                 execution_id=execution_id or self._new_execution_id(),
                 work_item_ref=work_item_ref,
+                handoff_requested_at=handoff_requested_at,
                 sandbox=sandbox,
                 approval_policy=approval_policy,
                 model=model,
@@ -1729,6 +1732,7 @@ class TurnExecutionService:
         reply_target: BotReplyTarget | None = None,
         execution_id: str | None = None,
         work_item_ref: str | None = None,
+        handoff_requested_at: float | None = None,
         repository_resource_id: str | None = None,
         writable_repository_resource_ids: tuple[str, ...] = (),
         read_only_repository_resource_ids: tuple[str, ...] = (),
@@ -1781,6 +1785,7 @@ class TurnExecutionService:
                     reply_target=reply_target,
                     execution_id=execution_id,
                     work_item_ref=work_item_ref,
+                    handoff_requested_at=handoff_requested_at,
                     repository_resource_id=repository_resource_id,
                     writable_repository_resource_ids=writable_repository_resource_ids,
                     read_only_repository_resource_ids=read_only_repository_resource_ids,
@@ -1803,6 +1808,7 @@ class TurnExecutionService:
             reply_target=reply_target,
             execution_id=execution_id,
             work_item_ref=work_item_ref,
+            handoff_requested_at=handoff_requested_at,
             repository_resource_id=repository_resource_id,
             writable_repository_resource_ids=writable_repository_resource_ids,
             read_only_repository_resource_ids=read_only_repository_resource_ids,
@@ -1828,6 +1834,7 @@ class TurnExecutionService:
         reply_target: BotReplyTarget | None = None,
         execution_id: str | None = None,
         work_item_ref: str | None = None,
+        handoff_requested_at: float | None = None,
         repository_resource_id: str | None = None,
         writable_repository_resource_ids: tuple[str, ...] = (),
         read_only_repository_resource_ids: tuple[str, ...] = (),
@@ -3161,6 +3168,25 @@ class TurnExecutionService:
                 ),
             }
         )
+        if (
+            handoff_requested_at is not None and work_item_ref and turn_id
+            and agent_profile_binding is not None and self.handoff_delivery_recorder is not None
+        ):
+            try:
+                await asyncio.to_thread(
+                    self.handoff_delivery_recorder,
+                    work_item_ref, expected_requested_at=handoff_requested_at,
+                    recipient=agent_profile_binding.role_id,
+                    organization_id=project.organization_id, workspace_id=project.workspace_id,
+                    project_id=project.id, thread_id=thread_id, turn_id=turn_id,
+                    execution_id=canonical_execution_id, started_at=time.time(),
+                )
+            except Exception:
+                # The native turn already started; do not replay it because
+                # recording metadata failed or invent a delivery timestamp.
+                h._append_bot_event({"type":"handoff_delivery_record_failed",
+                    "thread_id":thread_id,"ref":work_item_ref,
+                    "expected_requested_at":handoff_requested_at})
         await self.publish_queue_status(thread_id)
         return response
 
@@ -3279,6 +3305,7 @@ class TurnExecutionService:
                 reply_target=queued.reply_target,
                 execution_id=queued.execution_id,
                 work_item_ref=queued.work_item_ref,
+                handoff_requested_at=queued.handoff_requested_at,
                 repository_resource_id=queued.repository_resource_id,
                 writable_repository_resource_ids=queued.writable_repository_resource_ids,
                 read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
