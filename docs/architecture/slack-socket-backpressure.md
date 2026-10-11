@@ -7,18 +7,19 @@ than creating one asyncio task for every received envelope.
 
 For each Slack connection:
 
-1. parse the Socket Mode envelope
-2. derive a bounded deduplication key from the canonical Slack event identity,
-   falling back to the envelope identity when needed
-3. derive an ordering key from the Slack channel/conversation
-4. map the ordering key to a stable worker shard
-5. admit the payload with `put_nowait()`
-6. acknowledge the Slack envelope only after admission succeeds, or when the
-   envelope/event is already safely deduplicated
+1. parse and normalize the Socket Mode envelope using the registered provider
+2. commit the canonical conversation event and a PENDING projection receipt
+   containing the normalized input, original ingest identity, tenant, connection,
+   project, and transaction-assigned retention sequence
+3. schedule pending receipts in that sequence through the bounded worker shards
+4. acknowledge the envelope after durable retention succeeds
 
-A queue-full admission is **not acknowledged**. Slack may therefore retry the
-envelope instead of codex-web claiming success and silently discarding a user
-message.
+Storage failure is not acknowledged, even when an in-memory deduplication key
+exists. A full memory shard leaves the receipt PENDING and is safe to acknowledge:
+the existing runtime synchronization recovers it after capacity returns or after
+restart. Live arrivals use the same recovery path, so they cannot bypass older
+retained inputs. Approval interactions run the existing canonical resolution
+handler before ACK; credential-bearing interaction response URLs are not retained.
 
 ## Worker and fairness model
 
@@ -40,31 +41,40 @@ The runtime does not create waiting tasks for queued payloads.
 
 ## Deduplication
 
-Accepted event/envelope identities are retained in a bounded in-memory set plus
-FIFO expiry order. Reconnect/replay of an already admitted event is acknowledged
-without creating duplicate downstream work.
+Accepted event identities are tracked in bounded in-memory history and a separate
+in-flight set. History alone cannot suppress a still-PENDING durable receipt after
+a pre-claim failure. Canonical event idempotency and atomic PENDING-to-ROUTING
+claims prevent duplicate routing. Recovery samples up to 100 pending inputs per
+configured shard (at most 32 shards), in retained arrival order; a hot shard does
+not exclude the sample for another shard.
 
-The retention limit is configuration-bounded. It is transport deduplication,
-not canonical business-state authority; downstream canonical ingestion remains
-responsible for its own durable idempotency.
+Recovery pins the original ingest identity, tenant/workspace, connection and
+project. Current provider lifecycle and routing authority are checked again.
+ROUTING and uncertain receipts are never blindly replayed; they require
+reconciliation. Pending and uncertain retained inputs are exempt from completed
+receipt history pruning. This retains input, but does not assert successful
+execution or exactly-once downstream effects.
 
 ## Overload behavior
 
 When one shard reaches capacity:
 
 - the payload is rejected from local admission
-- the Slack envelope remains unacknowledged
+- the Slack envelope is acknowledged only after canonical retention succeeds
+- pending routing remains recoverable in canonical conversation state
 - the runtime emits an overload telemetry event
 - bot/runtime status exposes the overloaded state and queue metrics
 
-There is no silent drop-after-ACK path.
+A retention failure emits a separate diagnostic and leaves the envelope unacknowledged.
 
 ## Shutdown
 
 Workers and queues are tracked explicitly. On controlled shutdown the runtime
 first allows queued work to drain for a bounded interval. Remaining queued and
 active work is cancelled explicitly, counted, and reported through telemetry.
-No orphan payload tasks are left outside the managed worker set.
+No orphan payload tasks are left outside the managed worker set. Never-started
+PENDING inputs survive cancellation; claimed inputs remain visible for
+reconciliation if the downstream outcome is unknown.
 
 ## Observability
 
@@ -78,6 +88,11 @@ Bot status exposes per Slack connection:
 - latest processing latency
 - current overload state and last overload time
 - current deduplication-retention size
+- durably retained envelope count and bounded canonical pending sample
+
+Conversation receipt APIs/UI expose outcome, original ingest identity, target
+project and whether input remains retained, without exposing retained message
+bodies. Recovery errors expose an exception class rather than raw provider input.
 
 These fields describe transport/runtime pressure only. They do not establish
 canonical message processing success.

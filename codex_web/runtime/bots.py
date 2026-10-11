@@ -24,6 +24,7 @@ from codex_web.services.bot_presentation import BotPresentationService
 from codex_web.services.bot_routing import BotRoutingService
 from codex_web.services.bot_runtime_telemetry import BotRuntimeTelemetry
 from codex_web.services.secrets import SecretBroker
+from codex_web.conversation_channels import ConversationChannelEvent
 
 
 @dataclass(slots=True)
@@ -32,6 +33,7 @@ class SlackPayloadWork:
     enqueued_at: float
     ordering_key: str
     dedupe_key: str | None = None
+    retained_event: ConversationChannelEvent | None = None
 
 
 class SlackSocketLifecycleError(RuntimeError):
@@ -84,6 +86,7 @@ class BotRuntime:
         ] = {}
         self.slack_payload_seen: dict[str, set[str]] = {}
         self.slack_payload_seen_order: dict[str, deque[str]] = {}
+        self.slack_payload_inflight: dict[str, set[str]] = {}
         self.slack_payload_stats: dict[str, dict[str, Any]] = {}
         self.slack_reconnect_counts: dict[str, int] = {}
         self.slack_reconnect_failures: dict[str, int] = {}
@@ -109,6 +112,7 @@ class BotRuntime:
                     self.fingerprints.get(connection.id) == fingerprint
                     and connection.id in self.tasks
                 ):
+                    await self._recover_retained_slack(connection)
                     continue
                 await self._stop_locked(connection.id)
                 self.tasks[connection.id] = asyncio.create_task(
@@ -118,6 +122,7 @@ class BotRuntime:
                     ),
                 )
                 self.fingerprints[connection.id] = fingerprint
+                await self._recover_retained_slack(connection)
             for connection_id in list(self.tasks):
                 if connection_id not in desired:
                     await self._stop_locked(connection_id)
@@ -537,6 +542,8 @@ class BotRuntime:
             slackPayloadDeduped=snapshot.get("deduped", 0),
             slackPayloadRejected=snapshot.get("rejected", 0),
             slackPayloadFailed=snapshot.get("failed", 0),
+            slackPayloadDurablyRetained=snapshot.get("durablyRetained", 0),
+            slackCanonicalPendingSample=snapshot.get("canonicalPendingSample", 0),
         )
         return dict(snapshot)
 
@@ -559,6 +566,8 @@ class BotRuntime:
         payload: dict[str, Any],
         *,
         envelope_id: str | None = None,
+        retained_retry: bool = False,
+        retained_event: ConversationChannelEvent | None = None,
     ) -> str:
         self._start_slack_payload_workers(connection)
         dedupe_key = self._slack_payload_dedupe_key(
@@ -566,7 +575,8 @@ class BotRuntime:
             payload,
         )
         seen = self.slack_payload_seen.setdefault(connection.id, set())
-        if dedupe_key and dedupe_key in seen:
+        inflight = self.slack_payload_inflight.setdefault(connection.id, set())
+        if dedupe_key and (dedupe_key in inflight or (dedupe_key in seen and not retained_retry)):
             stats = self.slack_payload_stats[connection.id]
             stats["deduped"] = int(stats.get("deduped", 0)) + 1
             self._update_slack_payload_status(connection)
@@ -604,8 +614,11 @@ class BotRuntime:
             enqueued_at=time.time(),
             ordering_key=ordering_key,
             dedupe_key=dedupe_key,
+            retained_event=retained_event,
         )
         queue.put_nowait(work)
+        if dedupe_key:
+            inflight.add(dedupe_key)
         self._remember_slack_payload_key(
             connection.id,
             dedupe_key,
@@ -614,6 +627,55 @@ class BotRuntime:
         stats["accepted"] = int(stats.get("accepted", 0)) + 1
         self._update_slack_payload_status(connection)
         return "accepted"
+
+    async def _recover_retained_slack(self, connection: BotConnection) -> None:
+        if connection.provider != "slack" or self.conversation_channels is None:
+            return
+        try:
+            actor = self.connections.runtime_actor(connection.project_id)
+            shard_count = self.slack_payload_worker_count()
+            events = await asyncio.to_thread(
+                self.conversation_channels.pending_events,
+                actor=actor, connection_id=connection.id,
+                project_id=connection.project_id, limit=100,
+                partition_count=shard_count,
+                partition_index=lambda event: self._slack_payload_shard(
+                    f"{connection.id}:{event.message.conversation.conversation_id}",
+                    shard_count,
+                ),
+            )
+            for event in events:
+                # Both live and recovered inputs enter in retained arrival order.
+                # A hot shard cannot exclude the pending sample for other shards.
+                self._admit_slack_payload(
+                    connection,
+                    {"event_id": event.delivery_id,
+                     "event": {"channel": event.message.conversation.conversation_id}},
+                    retained_retry=True,
+                    retained_event=event,
+                )
+            if connection.id in self.slack_payload_stats:
+                self.slack_payload_stats[connection.id]["canonicalPendingSample"] = len(events)
+                self._update_slack_payload_status(connection)
+        except Exception as exc:
+            # Retention is already committed. A recovery failure must neither
+            # prevent its ACK nor stop synchronization of unrelated connections.
+            self.telemetry.append({
+                "type": "slack_payload_recovery_failed", "provider": "slack",
+                "connection_id": connection.id, "error_class": type(exc).__name__,
+            })
+
+    def _normalized_slack_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(payload)
+        event = dict(payload.get("event") or {})
+        if event.get("text"):
+            event["text"] = self.presentation.strip_slack_mentions(event["text"])
+        if event.get("subtype") == "message_changed" and isinstance(event.get("message"), dict):
+            changed = dict(event["message"])
+            changed["text"] = self.presentation.strip_slack_mentions(changed.get("text") or "")
+            event["message"] = changed
+        normalized["event"] = event
+        return normalized
 
     async def _slack_payload_worker(
         self,
@@ -631,10 +693,24 @@ class BotRuntime:
             )
             self._update_slack_payload_status(connection)
             try:
-                await self._handle_slack_payload(
-                    connection,
-                    work.payload,
-                )
+                if work.retained_event is not None:
+                    self.conversation_channels.registry.resolve(
+                        work.retained_event.message.conversation.provider_type,
+                        work.retained_event.message.conversation.provider_instance,
+                    )
+                    receipt = await self.conversation_channels.ingest(
+                        work.retained_event,
+                        actor=self.connections.runtime_actor(connection.project_id),
+                    )
+                    result = self.conversation_channels.legacy_routing_result(receipt)
+                    await self._slack_routing_notice(
+                        connection, result,
+                        work.retained_event.message.conversation.conversation_id,
+                        work.retained_event.message.conversation.thread_id
+                        or work.retained_event.message.message_id,
+                    )
+                else:
+                    await self._handle_slack_payload(connection, work.payload)
                 stats = self.slack_payload_stats[connection.id]
                 stats["processed"] = (
                     int(stats.get("processed", 0)) + 1
@@ -661,6 +737,8 @@ class BotRuntime:
                     }
                 )
             finally:
+                if work.dedupe_key:
+                    self.slack_payload_inflight.setdefault(connection.id, set()).discard(work.dedupe_key)
                 elapsed = time.perf_counter() - started
                 stats = self.slack_payload_stats.get(
                     connection.id,
@@ -732,6 +810,7 @@ class BotRuntime:
         self.slack_payload_workers.pop(connection.id, None)
         self.slack_payload_seen.pop(connection.id, None)
         self.slack_payload_seen_order.pop(connection.id, None)
+        self.slack_payload_inflight.pop(connection.id, None)
         stats = self.slack_payload_stats.setdefault(connection.id, {})
         stats.update(
             {
@@ -1094,15 +1173,40 @@ class BotRuntime:
                 payload = envelope.get("payload") or {}
                 if not isinstance(payload, dict):
                     payload = {}
-                admission = self._admit_slack_payload(
-                    connection,
-                    payload,
-                    envelope_id=envelope_id,
-                )
-                if envelope_id and admission in {
-                    "accepted",
-                    "deduped",
-                }:
+                try:
+                    if payload.get("type") == "block_actions":
+                        # Approval interactions already have canonical pending
+                        # approval identity. Do not persist credential-bearing
+                        # response URLs; ACK only after the existing handler
+                        # establishes the resolution or known terminal state.
+                        await self.delivery.handle_slack_interaction(connection, payload)
+                        admission = "interaction_processed"
+                    else:
+                        if self.conversation_channels is None:
+                            raise RuntimeError("canonical conversation retention unavailable")
+                        receipts = await self.conversation_channels.retain_raw(
+                            "slack", connection.id,
+                            self._normalized_slack_payload(payload),
+                            actor=self.connections.runtime_actor(connection.project_id),
+                            connection_id=connection.id, project_id=connection.project_id,
+                        )
+                        admission = "durably_retained" if receipts else "ignored"
+                        if receipts:
+                            await self._recover_retained_slack(connection)
+                        # A full memory shard delays routing, not retention.
+                        # The existing runtime sync recovers PENDING inputs.
+                        if receipts:
+                            stats = self.slack_payload_stats.setdefault(connection.id, {})
+                            stats["durablyRetained"] = int(stats.get("durablyRetained", 0)) + 1
+                            self._update_slack_payload_status(connection)
+                except Exception as exc:
+                    self.telemetry.append({
+                        "type": "slack_payload_retention_failed", "provider": "slack",
+                        "connection_id": connection.id, "error_class": type(exc).__name__,
+                    })
+                    self.telemetry.set_status(connection, "connected", lastPayloadAdmission="retention_failed")
+                    continue
+                if envelope_id:
                     await websocket.send(
                         json.dumps({"envelope_id": envelope_id})
                     )
@@ -1164,30 +1268,7 @@ class BotRuntime:
             # lock object for every channel ever observed.
             async with contextlib.nullcontext():
                 if self.conversation_channels is not None:
-                    normalized_payload = dict(payload)
-                    normalized_event = dict(event)
-                    if normalized_event.get("text"):
-                        normalized_event["text"] = (
-                            self.presentation.strip_slack_mentions(
-                                normalized_event.get("text") or ""
-                            )
-                        )
-                    if (
-                        normalized_event.get("subtype")
-                        == "message_changed"
-                        and isinstance(
-                            normalized_event.get("message"),
-                            dict,
-                        )
-                    ):
-                        changed = dict(normalized_event["message"])
-                        changed["text"] = (
-                            self.presentation.strip_slack_mentions(
-                                changed.get("text") or ""
-                            )
-                        )
-                        normalized_event["message"] = changed
-                    normalized_payload["event"] = normalized_event
+                    normalized_payload = self._normalized_slack_payload(payload)
                     receipts = (
                         await self.conversation_channels.ingest_raw(
                             "slack",
@@ -1247,81 +1328,10 @@ class BotRuntime:
                             message_id=event.get("ts"),
                         )
                     )
-            if (
-                result.get("ambiguous")
-                and self._credential_identity(connection, "bot_token")
-            ):
-                binding = self.bindings.first_for_connection(
-                    "slack",
-                    channel,
-                )
-
-                async def send_ambiguous(token: str):
-                    return await self.slack.post_message(
-                        token,
-                        channel,
-                        self.presentation.ambiguous_route_message(
-                            result.get("availablePrefixes") or []
-                        ),
-                        username=(
-                            self.presentation.slack_reply_username(binding)
-                            if binding
-                            else None
-                        ),
-                        icon_emoji=(
-                            self.presentation.slack_reply_icon(binding)
-                            if binding
-                            else None
-                        ),
-                        thread_ts=(
-                            event.get("thread_ts") or event.get("ts")
-                        ),
-                    )
-
-                await self._with_credential(
-                    connection,
-                    "bot_token",
-                    "slack.post_message",
-                    send_ambiguous,
-                )
-            elif (
-                result.get("timedOut")
-                and self._credential_identity(connection, "bot_token")
-            ):
-                binding = self.bindings.first_for_connection(
-                    "slack",
-                    channel,
-                )
-
-                async def send_timeout(token: str):
-                    return await self.slack.post_message(
-                        token,
-                        channel,
-                        (
-                            "Codex is still busy starting that turn, "
-                            "so I could not steer it yet."
-                        ),
-                        username=(
-                            self.presentation.slack_reply_username(binding)
-                            if binding
-                            else None
-                        ),
-                        icon_emoji=(
-                            self.presentation.slack_reply_icon(binding)
-                            if binding
-                            else None
-                        ),
-                        thread_ts=(
-                            event.get("thread_ts") or event.get("ts")
-                        ),
-                    )
-
-                await self._with_credential(
-                    connection,
-                    "bot_token",
-                    "slack.post_message",
-                    send_timeout,
-                )
+            await self._slack_routing_notice(
+                connection, result, channel,
+                event.get("thread_ts") or event.get("ts"),
+            )
         except Exception as exc:
             event = payload.get("event") or {}
             channel = (
@@ -1505,6 +1515,83 @@ class BotRuntime:
                     telegram_update_offset=offset,
                 )
             await asyncio.sleep(10)
+
+
+    async def _slack_routing_notice(
+        self, connection: BotConnection, result: dict[str, Any],
+        channel: str, thread_ts: str | None,
+    ) -> None:
+        if (
+            result.get("ambiguous")
+            and self._credential_identity(connection, "bot_token")
+        ):
+            binding = self.bindings.first_for_connection(
+                "slack",
+                channel,
+            )
+
+            async def send_ambiguous(token: str):
+                return await self.slack.post_message(
+                    token,
+                    channel,
+                    self.presentation.ambiguous_route_message(
+                        result.get("availablePrefixes") or []
+                    ),
+                    username=(
+                        self.presentation.slack_reply_username(binding)
+                        if binding
+                        else None
+                    ),
+                    icon_emoji=(
+                        self.presentation.slack_reply_icon(binding)
+                        if binding
+                        else None
+                    ),
+                    thread_ts=thread_ts,
+                )
+
+            await self._with_credential(
+                connection,
+                "bot_token",
+                "slack.post_message",
+                send_ambiguous,
+            )
+        elif (
+            result.get("timedOut")
+            and self._credential_identity(connection, "bot_token")
+        ):
+            binding = self.bindings.first_for_connection(
+                "slack",
+                channel,
+            )
+
+            async def send_timeout(token: str):
+                return await self.slack.post_message(
+                    token,
+                    channel,
+                    (
+                        "Codex is still busy starting that turn, "
+                        "so I could not steer it yet."
+                    ),
+                    username=(
+                        self.presentation.slack_reply_username(binding)
+                        if binding
+                        else None
+                    ),
+                    icon_emoji=(
+                        self.presentation.slack_reply_icon(binding)
+                        if binding
+                        else None
+                    ),
+                    thread_ts=thread_ts,
+                )
+
+            await self._with_credential(
+                connection,
+                "bot_token",
+                "slack.post_message",
+                send_timeout,
+            )
 
 
 def install_bot_runtime(

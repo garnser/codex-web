@@ -5,7 +5,7 @@ import json
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from codex_web.models import BotConnection
 from codex_web.runtime.bots import BotRuntime, SlackSocketCleanClose
@@ -369,8 +369,11 @@ class SlackSocketBackpressureTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
 
-    async def test_socket_ack_is_sent_only_after_accept_or_safe_dedupe(self) -> None:
+    async def test_socket_ack_follows_retention_even_when_memory_shard_is_full(self) -> None:
         runtime = _runtime()
+        runtime.conversation_channels = SimpleNamespace(retain_raw=AsyncMock(
+            return_value=(SimpleNamespace(canonical_event_id="retained-1"),),
+        ))
         connection = _connection()
         socket = _Socket(
             [
@@ -388,10 +391,7 @@ class SlackSocketBackpressureTests(unittest.IsolatedAsyncioTestCase):
                 },
             ]
         )
-        admissions = iter(["accepted", "rejected", "deduped"])
-        runtime._admit_slack_payload = (
-            lambda *_args, **_kwargs: next(admissions)
-        )
+        runtime._recover_retained_slack = AsyncMock()
 
         with patch(
             "codex_web.runtime.bots.websockets.connect",
@@ -404,6 +404,7 @@ class SlackSocketBackpressureTests(unittest.IsolatedAsyncioTestCase):
             socket.sent,
             [
                 {"envelope_id": "ENV-1"},
+                {"envelope_id": "ENV-2"},
                 {"envelope_id": "ENV-3"},
             ],
         )

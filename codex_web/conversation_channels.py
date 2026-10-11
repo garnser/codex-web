@@ -19,6 +19,10 @@ CONVERSATION_CHANNEL_CONTRACT = ContractSpec(
     ("1.0",),
 )
 
+CONVERSATION_CHANNEL_STATE_CONTRACT = ContractSpec(
+    "conversation-channel-state", "2.0", ("1.0", "2.0"),
+)
+
 
 class ConversationChannelCapability(StrEnum):
     EVENTS = "events"
@@ -72,6 +76,7 @@ class ConversationSenderKind(StrEnum):
 
 
 class ConversationProjectionOutcome(StrEnum):
+    PENDING = "pending"
     ROUTING = "routing"
     ROUTED = "routed"
     DUPLICATE = "duplicate"
@@ -288,6 +293,9 @@ class ConversationProjectionReceipt(BaseModel):
     queued_id: str | None = None
     reason: str | None = None
     routing_result: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+    retained_event: ConversationChannelEvent | None = None
+    ingest_actor_id: str | None = None
+    retention_sequence: int = Field(default=0, ge=0)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
@@ -295,6 +303,7 @@ class ConversationProjectionReceipt(BaseModel):
 class ConversationChannelState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = CONVERSATION_CHANNEL_CONTRACT.current
+    schema_version: str = CONVERSATION_CHANNEL_STATE_CONTRACT.current
+    next_retention_sequence: int = Field(default=1, ge=1)
     messages: dict[str, ConversationMessageState] = Field(default_factory=dict)
     receipts: dict[str, ConversationProjectionReceipt] = Field(default_factory=dict)
