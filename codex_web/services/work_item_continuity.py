@@ -335,10 +335,16 @@ class WorkItemContinuityService:
         if not self.watchdog_dispatch_allowed(dispatch_key):
             return
         self.record_watchdog_dispatch(dispatch_key)
+        repository_resource_id, writable_repository_resource_ids = (
+            self._dispatch_repository_scope(state)
+        )
         result = await self.dispatch_event(
             binding,
             self.dispatch_text(state),
             source,
+            work_item_ref=state.ref,
+            repository_resource_id=repository_resource_id,
+            writable_repository_resource_ids=writable_repository_resource_ids,
         )
         self.append_event(
             {

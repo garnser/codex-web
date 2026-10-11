@@ -45,6 +45,12 @@ implementation/validation owners or accepted handoffs, and pending handoffs
 remain ineligible for automatic owner dispatch. Issue and merge-request refs
 remain distinct; selecting an owner does not grant provider writeback capability.
 
+Structured handoff dispatch carries the canonical work-item ref and repository
+scope through the same scoped turn boundary as actionable-owner dispatch. The
+recipient's published execution profile still controls repository access; a
+scratch-only coordinator receives task identity without repository grants.
+Queue admission does not acknowledge the handoff on the recipient's behalf.
+
 After normal broker identity, tenant, Project, resource, execution-profile and
 operation authorization, the scoped work-item read includes a bounded
 `owner_dispatch` projection. It uses the same actionable-owner and responsible
