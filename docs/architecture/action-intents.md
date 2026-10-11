@@ -21,6 +21,26 @@ An ActionIntent snapshots the information needed to reconstruct why and how an e
 
 A denied authority/policy decision is still persisted for audit, but the intent is created as `cancelled` and is never claimable.
 
+For `code-host.pull-request.upsert`, changed metadata can include an
+`origin_intent_id` parameter referencing the original successful creation,
+alongside a fresh idempotency key. The canonical service checks the original
+completed provider receipt and verified result, exact tenant/Project/resource,
+provider binding, head/base and Work Item attribution, and both immutable agent
+profile/role bindings. The current assignment must have a live matching fence,
+trusted active/draining worker and WRITE scope. The original historical lease
+is never reused; missing retained identity or receipt evidence fails closed.
+
+The claimed executor repeats these checks before invoking the provider and
+establishes ephemeral context bound to the exact request and provider binding.
+Direct provider calls cannot supply that context through request parameters.
+GitLab and GitHub require the original provider target ID/number, original
+ownership marker, open state and head/base to match before metadata update;
+continuation never creates a replacement or adopts a foreign request. The new
+intent and receipt retain their own key and include the origin reference.
+Original intents, receipts, failures and unknown outcomes remain unchanged.
+This is provider execution context derived from canonical evidence, not another
+ownership store, repository grant, validation result or merge authorization.
+
 The assignment broker gives branch publication, pull-request creation or update,
 and pull-request merge a bounded
 120-second provider execution deadline and a 180-second claim lease, leaving

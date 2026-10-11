@@ -123,8 +123,9 @@ class CodeHostActionContract:
                 action_id=CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID,
                 title="Create or reconcile change request",
                 description=(
-                    "Create or update one pull/merge request owned by the same "
-                    "ActionIntent idempotency key."
+                    "Create or update an owned pull/merge request. Changed "
+                    "metadata may reference a verified successful creation "
+                    "using origin_intent_id and a fresh idempotency key."
                 ),
                 required_authority=("repository.pull-request.create",),
                 expected_evidence=(CODE_HOST_CHANGE_REQUEST_EVIDENCE,),
@@ -356,6 +357,17 @@ class CodeHostActionContract:
     def marker(cls, request: ActionRequest) -> str:
         return cls.marker_from_key(request.idempotency_key)
 
+    @classmethod
+    def change_request_result_marker(cls, result: ActionResult) -> str:
+        if result.output.get("origin_intent_id") is None:
+            return cls.marker_from_key(result.idempotency_key)
+        marker = result.output.get("ownership_marker")
+        if not isinstance(marker, str) or not re.fullmatch(
+            r"<!-- codex-web-action:[0-9a-f]{64} -->", marker,
+        ):
+            raise ValueError("continued change request receipt lacks its verified ownership marker")
+        return marker
+
     @staticmethod
     def branch(value: Any, *, field: str) -> str:
         branch = str(value or "").strip()
@@ -374,8 +386,14 @@ class CodeHostActionContract:
 
     @classmethod
     def change_request(cls, request: ActionRequest) -> dict[str, Any]:
-        if set(request.parameters) - {"title", "body", "head", "base", "draft"}:
+        if set(request.parameters) - {"title", "body", "head", "base", "draft", "origin_intent_id"}:
             raise ValueError("unsupported change request parameters")
+        origin = request.parameters.get("origin_intent_id")
+        if origin is not None and (
+            not isinstance(origin, str) or not origin.startswith("action-intent-")
+            or len(origin) > 120
+        ):
+            raise ValueError("origin_intent_id must identify a canonical ActionIntent")
         title = request.parameters.get("title")
         body = request.parameters.get("body", "")
         draft = request.parameters.get("draft", False)

@@ -59,7 +59,12 @@ from codex_web.services.action_providers import (
     ActionRequirementError,
 )
 from codex_web.services.code_host_action_contract import (
+    CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+    CodeHostActionContract,
+)
+from codex_web.services.code_host_continuation import (
+    ChangeRequestContinuation, continuation_context, request_identity,
 )
 from codex_web.services.artifact_evidence import ArtifactEvidenceService
 from codex_web.services.capacity import CapacityDeferredError, CapacityService
@@ -574,6 +579,128 @@ class ActionIntentService:
                 + ", ".join(outside_scope)
             )
 
+    def _change_request_continuation(
+        self, request: ActionRequest, *, binding_id: str,
+        execution_id: str | None, work_item_ref: str | None,
+        actor: AuthenticationActor,
+    ) -> ChangeRequestContinuation | None:
+        origin_id = request.parameters.get("origin_intent_id")
+        if origin_id is None:
+            return None
+        def denied():
+            raise ActionIntentConflictError("change request origin or current execution ownership is not verified")
+        if (
+            request.action_id != CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID
+            or not isinstance(origin_id, str) or not origin_id.startswith("action-intent-")
+            or not execution_id or self.execution_workers is None
+        ):
+            denied()
+        origin = self.store.get(origin_id)
+        if (
+            origin is None or origin.status != ActionIntentStatus.SUCCEEDED
+            or origin.organization_id != actor.organization_id
+            or origin.workspace_id != actor.workspace_id
+            or origin.project_id != request.project_id
+            or origin.binding_id != binding_id
+            or origin.action_id != request.action_id
+            or origin.resource_ids != request.resource_ids
+            or origin.work_item_ref != work_item_ref
+            or not origin.execution_id
+            or origin.request.parameters.get("origin_intent_id") is not None
+            or origin.idempotency_key == request.idempotency_key
+        ):
+            denied()
+        new_payload = CodeHostActionContract.change_request(request)
+        old_payload = CodeHostActionContract.change_request(origin.request)
+        if any(new_payload[key] != old_payload[key] for key in ("head", "base")):
+            denied()
+        history = self.store.load(intent_id=origin.id)
+        receipt = next((x for x in history.receipts if x.id == origin.last_receipt_id), None)
+        verification = next((x for x in history.verifications if x.id == origin.last_verification_id), None)
+        if (
+            receipt is None or receipt.outcome != "completed"
+            or receipt.intent_id != origin.id
+            or receipt.provider_type != origin.provider_type
+            or receipt.provider_instance != origin.provider_instance
+            or receipt.action_id != origin.action_id
+            or receipt.idempotency_key != origin.idempotency_key
+            or receipt.result is None or receipt.result.status != "succeeded"
+            or receipt.result.provider_binding_id != binding_id
+            or receipt.result.action_id != request.action_id
+            or receipt.result.idempotency_key != origin.idempotency_key
+            or verification is None or not verification.verified
+            or verification.intent_id != origin.id
+        ):
+            denied()
+        output = receipt.result.output
+        number = output.get("change_request_number")
+        if (
+            not isinstance(number, int) or isinstance(number, bool) or number < 1
+            or not receipt.result.external_id
+            or receipt.provider_external_id != receipt.result.external_id
+            or output.get("resource_id") not in request.resource_ids
+            or any(output.get(key) != old_payload[key] for key in ("head", "base"))
+        ):
+            denied()
+        try:
+            previous = self.execution_workers.assignment_for_execution(origin.execution_id, actor=actor)
+            current = self.execution_workers.assignment_for_execution(execution_id, actor=actor)
+        except (AssignmentNotFoundError, WorkerConflictError):
+            denied()
+        now = time.time()
+        profile_fields = (
+            "profile_id", "profile_revision", "profile_record_id", "role_id",
+            "role_definition_ref", "authority_role_id", "authority_definition_ref",
+            "execution_profile_id", "sandbox_requirement", "instructions_ref", "skill_refs",
+        )
+        if (
+            previous.agent_profile is None or current.agent_profile is None
+            or any(getattr(previous.agent_profile, key) != getattr(current.agent_profile, key)
+                   for key in profile_fields)
+            or previous.project_id != request.project_id or current.project_id != request.project_id
+            or previous.created_by != current.created_by
+            or current.status not in {"claimed", "running"}
+            or current.lease is None or current.lease.expires_at <= now
+            or current.lease.fence != current.fence
+            or current.lease.worker_id != current.assigned_worker_id
+            or (current.deadline_at is not None and current.deadline_at <= now)
+        ):
+            denied()
+        worker = self.execution_workers.store.worker(current.assigned_worker_id)
+        if (
+            worker is None or worker.lifecycle not in {"active", "draining"}
+            or worker.organization_id != actor.organization_id
+            or worker.workspace_id != actor.workspace_id
+        ):
+            denied()
+        # Use the existing execution-scope guard; same requester identity or a
+        # historical lease is never authority for this new external write.
+        self._validate_execution_repository_scope(execution_id, request, actor)
+        return ChangeRequestContinuation(
+            origin_intent_id=origin.id, binding_id=binding_id,
+            request_identity=request_identity(request),
+            marker=CodeHostActionContract.marker_from_key(origin.idempotency_key),
+            external_id=receipt.result.external_id, number=number,
+        )
+
+    async def _execute_provider(self, intent: ActionIntent, *, actor: AuthenticationActor):
+        proof = None
+        if intent.request.parameters.get("origin_intent_id") is not None:
+            try:
+                requester = await asyncio.to_thread(self._requester_actor, intent)
+                proof = await asyncio.to_thread(
+                    self._change_request_continuation, intent.request,
+                    binding_id=intent.binding_id, execution_id=intent.execution_id,
+                    work_item_ref=intent.work_item_ref, actor=requester,
+                )
+            except Exception as exc:
+                # No provider invocation has begun. A stale/missing origin or
+                # unavailable canonical proof is a known precondition failure,
+                # never an uncertain external write requiring reconciliation.
+                raise ActionRequirementError("change request continuation proof unavailable before provider execution") from exc
+        with continuation_context(proof):
+            return await self.execution.execute(intent.binding_id, intent.request, actor=actor)
+
     def _work_item_requirements(
         self,
         work_item_ref: str | None,
@@ -613,6 +740,10 @@ class ActionIntentService:
             payload.execution_id,
             request,
             actor,
+        )
+        self._change_request_continuation(
+            request, binding_id=binding.id, execution_id=payload.execution_id,
+            work_item_ref=payload.work_item_ref, actor=actor,
         )
         if payload.work_item_success is not None and payload.work_item_ref is None:
             raise ActionIntentConflictError(
@@ -1460,11 +1591,7 @@ class ActionIntentService:
         ):
             try:
                 result = await asyncio.wait_for(
-                    self.execution.execute(
-                        intent.binding_id,
-                        intent.request,
-                        actor=actor,
-                    ),
+                    self._execute_provider(intent, actor=actor),
                     timeout=intent.timeout_seconds,
                 )
             except asyncio.TimeoutError:
