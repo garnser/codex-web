@@ -362,9 +362,11 @@ class WorkItemStateMachine:
                 state,
                 state.handoff,
                 status=status,
-                acknowledged_at=now,
                 reason_code=reason_code,
             )
+            # Resolution is not recipient receipt. Preserve a genuine ACK's
+            # original time, or None for an intake nobody acknowledged. The
+            # closure/expiry/supersession event records its own resolution time.
             state.handoff = None
         return state
 

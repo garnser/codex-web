@@ -282,6 +282,7 @@ class WorkItemLaneContractTests(unittest.TestCase):
         self.assertIsNone(updated.handoff)
         self.assertEqual(len(updated.handoff_history), 1)
         self.assertEqual(updated.handoff_history[0].status, "superseded")
+        self.assertEqual(updated.handoff_history[0].acknowledged_at, 95.0)
         self.assertEqual(updated.current_owner, "james")
         self.assertEqual(updated.current_stage, "failed_with_action_owner")
 
@@ -353,7 +354,23 @@ class WorkItemLaneContractTests(unittest.TestCase):
         self.assertIsNone(updated.current_owner)
         self.assertIsNone(updated.next_owner)
         self.assertIsNone(updated.handoff)
+        self.assertEqual(updated.handoff_history[-1].acknowledged_at, 95.0)
         self.assertIsNone(updated.status_label)
+
+    def test_closure_of_pending_intake_does_not_claim_recipient_ack(self) -> None:
+        self._save(self._state(
+            owner="james", stage="implementation_active", artifact_state="branch",
+            handoff=WorkItemHandoff(from_agent="james", to_agent="quinn",
+                                    requested_at=90.0, status="pending"),
+        ))
+        server._structured_progress(
+            "veridataops/connector#35",
+            WorkItemProgressUpdate(actor="Orchestrator", current_stage="closed"),
+        )
+        archived = self._load().handoff_history[-1]
+        self.assertEqual(archived.status, "superseded")
+        self.assertIsNone(archived.acknowledged_at)
+        self.assertIsNone(archived.model_dump(mode="json")["acknowledged_at"])
 
     def test_accepted_implementation_handoff_uses_short_owner_idle_sla(self) -> None:
         state = self._state(
