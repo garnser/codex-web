@@ -3297,6 +3297,15 @@ class TurnExecutionService:
                     "remaining": h._thread_queue_depth(thread_id),
                 }
             )
+        except asyncio.CancelledError:
+            # A shutdown can cancel admission after the durable queue pop.
+            # Restore the original item unless a durable active-turn marker
+            # already owns its execution (including an unknown start result).
+            reschedule_queue = False
+            if not self.thread_is_active(thread_id):
+                queued.attempts = max(0, queued.attempts - 1)
+                self.requeue_turn_front(queued)
+            raise
         except Exception as exc:
             if (
                 isinstance(exc, HTTPException)

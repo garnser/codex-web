@@ -44,6 +44,7 @@ from codex_web.services.turn_execution_binding import TurnExecutionBindingError
 from codex_web.services.upgrades import UpgradeAdmissionCoordinator
 from codex_web.storage.runtime_state import RuntimeStateRepositories
 from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.storage.turn_queue import TurnQueueRepository
 
 
 OBSERVED_WORK_ITEM_COUNT = 1_728
@@ -549,6 +550,62 @@ class TurnExecutionQueueTests(unittest.IsolatedAsyncioTestCase):
         )
         service.start_thread_turn_now.assert_awaited_once()
         self.assertEqual(host._thread_queue_depth("t1"), 0)
+
+    async def test_cancelled_admission_retains_durable_fifo_without_retry_charge(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "state.sqlite"
+            mirror = Path(directory) / "queue.json"
+            repository = TurnQueueRepository(SQLiteStateStore(database), mirror)
+            host = _Host()
+            host._project = lambda _id: Project(id="p1", name="Project", path="/workspace")
+            host._thread_queue_record = repository.get
+            host._update_thread_queue_record = repository.update
+            host._thread_queue = repository.get
+            host._thread_queue_depth = lambda thread: len(repository.get(thread))
+            service = TurnExecutionService(host)
+            first = service.enqueue_turn(thread_id="t1", project_id="p1", message="one")
+            second = service.enqueue_turn(thread_id="t1", project_id="p1", message="two")
+            original = [item.model_dump(mode="json") for item in repository.get("t1")]
+            entered = asyncio.Event()
+
+            async def pending_admission(*args, **kwargs):
+                entered.set()
+                await asyncio.Event().wait()
+
+            service.start_thread_turn_now = pending_admission
+            service.schedule_queue_drain = MagicMock()
+            task = asyncio.create_task(service.drain_thread_queue("t1"))
+            await entered.wait()
+            self.assertEqual([item.id for item in repository.get("t1")], [second.id])
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+            reopened = TurnQueueRepository(SQLiteStateStore(database), mirror)
+            self.assertEqual([item.model_dump(mode="json") for item in reopened.get("t1")], original)
+            self.assertEqual(reopened.get("t1")[0].id, first.id)
+            service.schedule_queue_drain.assert_not_called()
+
+    async def test_cancelled_started_turn_is_not_duplicated_in_queue(self) -> None:
+        for turn_id in (None, "native-turn"):
+            with self.subTest(turn_id=turn_id):
+                host = _Host()
+                host._project = lambda _id: Project(id="p1", name="Project", path="/workspace")
+                service = TurnExecutionService(host)
+                service.enqueue_turn(thread_id="t1", project_id="p1", message="one")
+                second = service.enqueue_turn(thread_id="t1", project_id="p1", message="two")
+
+                async def cancelled_start(*args, **kwargs):
+                    service.mark_thread_active("t1", turn_id=turn_id)
+                    raise asyncio.CancelledError()
+
+                service.start_thread_turn_now = cancelled_start
+                service.schedule_queue_drain = MagicMock()
+                with self.assertRaises(asyncio.CancelledError):
+                    await service.drain_thread_queue("t1")
+                self.assertTrue(service.thread_is_active("t1"))
+                self.assertEqual([item.id for item in host._thread_queue("t1")], [second.id])
+                service.schedule_queue_drain.assert_not_called()
 
     async def test_profiled_queue_drain_resolves_persisted_actor(self) -> None:
         host = _Host()
