@@ -46,18 +46,22 @@ export function createUsageRefresher({refresh, eventDelayMs = 5000,
   };
 }
 
-export function createHeaderUsageController({state, api, render, log}) {
+export function createHeaderUsageController({state, api, render, log, schedule, cancel}) {
+  let rateLimitGeneration = 0;
   async function refresh({includeRateLimits}) {
     const projectId = state.projectId;
+    const generation = rateLimitGeneration;
     try {
       const [limitsResult, usageResult] = await Promise.allSettled([
-        includeRateLimits ? api("/api/account/rate-limits") : Promise.resolve({usage_resources:
-          state.accountUsageResources.filter(resource => resource.kind === "rate_limit")}),
+        includeRateLimits ? api("/api/account/rate-limits") : Promise.resolve(null),
         api(`/api/agent-runtime-usage?include_items=false${projectId ? `&project_id=${encodeURIComponent(projectId)}` : ""}`),
       ]);
       if (projectId !== state.projectId) return;
+      const providerResources = !includeRateLimits || generation !== rateLimitGeneration
+        ? state.accountUsageResources.filter(resource => resource.kind === "rate_limit")
+        : limitsResult.status === "fulfilled" ? normalizeUsageResources(limitsResult.value) : [];
       const resources = [
-        ...(limitsResult.status === "fulfilled" ? normalizeUsageResources(limitsResult.value) : []),
+        ...providerResources,
         ...(usageResult.status === "fulfilled" && Array.isArray(usageResult.value.resources) ? usageResult.value.resources : []),
       ];
       const unique = new Map(resources.map(resource => [
@@ -72,12 +76,13 @@ export function createHeaderUsageController({state, api, render, log}) {
       render();
     }
   }
-  const refresher = createUsageRefresher({refresh});
+  const refresher = createUsageRefresher({refresh, schedule, cancel});
   return {
     request: () => refresher.request(),
     handleRateLimits(payload) {
       const resources = normalizeCodexRateLimitResources(payload);
       if (resources.length) {
+        rateLimitGeneration += 1;
         state.accountUsageResources = [
           ...state.accountUsageResources.filter(resource =>
             !(resource.provider_id === "openai" && resource.runtime_id === "codex" && resource.kind === "rate_limit")),

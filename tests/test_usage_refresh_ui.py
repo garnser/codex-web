@@ -14,7 +14,7 @@ import fs from 'node:fs';
 const resourceCode = fs.readFileSync(process.argv[1] + '/usage_resources.js');
 const resourceUrl = 'data:text/javascript;base64,' + Buffer.from(resourceCode).toString('base64');
 const load = async name => import('data:text/javascript;base64,' + Buffer.from(fs.readFileSync(process.argv[1] + '/' + name, 'utf8').replace('"./usage_resources.js"', JSON.stringify(resourceUrl))).toString('base64'));
-const {createUsageRefresher} = await load('usage_refresh.js');
+const {createUsageRefresher, createHeaderUsageController} = await load('usage_refresh.js');
 const {normalizeCodexRateLimitResources} = await load('usage_resources.js');
 let timers = [], calls = [], release;
 const scheduled = cb => { timers.push(cb); return cb; };
@@ -47,6 +47,17 @@ assert.equal(resources[0].reset_at, 99); assert.equal(resources[1].label, 'Weekl
 assert.deepEqual(normalizeCodexRateLimitResources({primary: {usedPercent: true}}), []);
 assert.deepEqual(normalizeCodexRateLimitResources({primary: {usedPercent: null}}), []);
 assert.equal(normalizeCodexRateLimitResources({rateLimitsByLimitId: {codex: {primary: {usedPercent: 30}}}})[0].consumed, 30);
+let finishUsage;
+const state = {projectId: 'p', accountUsageResources: []};
+const controller = createHeaderUsageController({state, schedule: scheduled, cancel: canceled, render() {}, log() {}, api: async path => {
+  if (path.includes('rate-limits')) return {usage_resources: [{kind: 'rate_limit', consumed: 1}]};
+  return new Promise(resolve => { finishUsage = resolve; });
+}});
+const initial = controller.request(); await tick();
+controller.handleRateLimits({rateLimits: {primary: {usedPercent: 70}}});
+finishUsage({resources: []}); await initial; await tick();
+assert.equal(state.accountUsageResources[0].consumed, 70, 'in-flight response must not overwrite a newer event');
+
 '''
         result = subprocess.run(['node', '--input-type=module', '-e', javascript, str(scripts)],
                                 capture_output=True, text=True, timeout=15)
