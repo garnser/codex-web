@@ -525,7 +525,6 @@ class AutonomyService:
         if not states:
             return
         now = time.time()
-        changed = False
         for ref, state in list(states.items()):
             if state.current_stage == "closed" or state.closed_at:
                 continue
@@ -537,21 +536,39 @@ class AutonomyService:
                 pending_age = now - handoff.requested_at
                 recipient = d.coerce_owner(handoff.to_agent)
                 if pending_age >= d.handoff_timeout_seconds():
-                    sender = d.coerce_owner(handoff.from_agent)
-                    state = d.archive_active_handoff(
-                        state,
-                        now=now,
-                        status="superseded",
-                        reason_code="handoff_expired",
-                    )
-                    state.current_owner = sender
-                    state.current_stage = "implementation_active"
-                    state.next_owner = sender
-                    state.next_action = state.next_action or "Resume ownership or escalate one exact blocker."
-                    state.blocker = "Structured handoff expired without acknowledgement."
-                    state.updated_at = now
-                    state.last_meaningful_update_at = now
-                    states[ref] = state
+                    if d.update_work_item_state is None:
+                        # Never expire from a detached snapshot without a
+                        # canonical atomic mutation collaborator.
+                        continue
+                    expired = False
+
+                    def expire_current(current):
+                        nonlocal expired
+                        expired = False
+                        if (
+                            current is None or current.closed_at
+                            or current.current_stage == "closed"
+                            or current.handoff != handoff
+                        ):
+                            return current
+                        sender = d.coerce_owner(handoff.from_agent)
+                        current = d.archive_active_handoff(
+                            current, now=now, status="superseded",
+                            reason_code="handoff_expired",
+                        )
+                        current.current_owner = sender
+                        current.current_stage = "implementation_active"
+                        current.next_owner = sender
+                        current.next_action = current.next_action or "Resume ownership or escalate one exact blocker."
+                        current.blocker = "Structured handoff expired without acknowledgement."
+                        current.updated_at = now
+                        current.last_meaningful_update_at = now
+                        expired = True
+                        return current
+
+                    await asyncio.to_thread(d.update_work_item_state, ref, expire_current)
+                    if not expired:
+                        continue
                     d.append_work_item_event(
                         d.work_item_event(
                             ref,
@@ -562,7 +579,6 @@ class AutonomyService:
                             },
                         )
                     )
-                    changed = True
                 elif recipient:
                     binding = d.binding_for_agent(
                         recipient,
@@ -642,8 +658,6 @@ class AutonomyService:
                     "result": result,
                 }
             )
-        if changed:
-            d.save_work_item_states(states)
 
 
 def install_autonomy_service(

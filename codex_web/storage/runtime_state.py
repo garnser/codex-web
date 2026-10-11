@@ -191,6 +191,22 @@ class ModelMapRepository(Generic[T]):
         self._snapshot.set(None)
         return value
 
+    def update(self, key: str, updater: Callable[[T | None], T | None]) -> T | None:
+        """Mutate one current model under the canonical record lock."""
+        key = str(key)
+        if not self._included(key):
+            raise ValueError(f"key is outside repository filter: {key}")
+        self._ensure_records()
+
+        def update_raw(raw):
+            current = self.model.model_validate(raw) if raw is not None else None
+            updated = updater(current)
+            return updated.model_dump(mode="json") if updated is not None else None
+
+        raw = self.store.record_update(self.namespace, key, update_raw, default=None)
+        self._snapshot.set(None)
+        return self.model.model_validate(raw) if raw is not None else None
+
     def delete(self, key: str) -> bool:
         key = str(key)
         if not self._included(key):

@@ -51,10 +51,12 @@ class AutonomyRuntimeDependencies:
     format_split_brain_watchdog_prompt: Callable[..., str]
     work_item_dispatch_text: Callable[[Any], str]
     project_scope: Callable[[str], tuple[str | None, str | None]]
+    update_work_item_state: Callable[..., Any] | None = None
 
     @classmethod
     def from_host(cls, host: Any) -> "AutonomyRuntimeDependencies":
         return cls(
+            update_work_item_state=getattr(host, "_update_work_item_state", None),
             load_gitlab_routing_settings=getattr(
                 host,
                 "_load_gitlab_routing_settings",

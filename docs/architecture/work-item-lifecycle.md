@@ -59,6 +59,12 @@ recipients and items without a recognized pending intake retain the
 Orchestrator fallback for drift. This does not grant repository access or
 acknowledge intake.
 
+The SLA expiry cycle mutates only the current matching pending handoff under
+the canonical per-record lock. It never saves its detached collection snapshot
+after awaited dispatch. Concurrent replacement, acknowledgement, closure and
+unrelated progress survive; an expiry event is emitted only after the matching
+current intake is actually archived.
+
 After normal broker identity, tenant, Project, resource, execution-profile and
 operation authorization, the scoped work-item read includes a bounded
 `owner_dispatch` projection. It uses the same actionable-owner and responsible

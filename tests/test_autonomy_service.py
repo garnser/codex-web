@@ -32,6 +32,13 @@ class _Host:
     def _save_work_item_states(self, states: dict[str, WorkItemState]) -> None:
         self.saved_states = states
 
+    def _update_work_item_state(self, ref, updater):
+        current = updater(self.states.get(ref))
+        if current is not None:
+            self.states[ref] = current
+        self.saved_states = self.states
+        return current
+
     @staticmethod
     def _coerce_owner(value: str | None) -> str | None:
         value = (value or "").strip().lower()
@@ -312,6 +319,53 @@ class AutonomyBoundedDispatchTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AutonomyStateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_expiry_preserves_replaced_or_acknowledged_handoff_and_other_progress(self):
+        for disposition in ("replacement", "acknowledged", "closed"):
+            with self.subTest(disposition=disposition):
+                host = _Host()
+                now = time.time()
+                def state(ref):
+                    return WorkItemState(
+                        ref=ref, project_id="project-a", current_owner="alice",
+                        current_stage="implementation_active",
+                        handoff=WorkItemHandoff(from_agent="alice", to_agent="bob",
+                                                requested_at=now - 60, status="pending"),
+                        created_at=now - 120, updated_at=now - 60,
+                        last_meaningful_update_at=now - 60,
+                    )
+                first, second = state("example/project#1"), state("example/project#2")
+                host.states = {first.ref: first, second.ref: second}
+                snapshot = {ref: item.model_copy(deep=True) for ref, item in host.states.items()}
+                host._load_work_item_states = lambda: snapshot
+                original_update = host._update_work_item_state
+                def update(ref, updater):
+                    result = original_update(ref, updater)
+                    if ref == first.ref:
+                        live = host.states[second.ref]
+                        live.notes.append("Concurrent progress retained")
+                        if disposition == "replacement":
+                            live.handoff = WorkItemHandoff(
+                                from_agent="operator", to_agent="james",
+                                requested_at=now, status="pending",
+                            )
+                        elif disposition == "acknowledged":
+                            live.handoff.status = "accepted"
+                            live.handoff.acknowledged_at = now
+                        else:
+                            live.current_stage = "closed"
+                            live.closed_at = now
+                        host.states["example/project#3"] = state("example/project#3")
+                    return result
+                host._update_work_item_state = update
+                host._save_work_item_states = lambda _: self.fail("SLA must not save its snapshot")
+                await AutonomyService(host).run_work_item_sla_cycle()
+                self.assertIsNone(host.states[first.ref].handoff)
+                self.assertEqual(host.states[second.ref].notes, ["Concurrent progress retained"])
+                self.assertIn("example/project#3", host.states)
+                self.assertEqual([event["ref"] for event in host.events], [first.ref])
+                self.assertEqual(host.states[second.ref].handoff.status,
+                                 "accepted" if disposition == "acknowledged" else "pending")
+
     async def test_expired_pending_handoff_is_archived_with_typed_status(self) -> None:
         host = _Host()
         now = time.time()

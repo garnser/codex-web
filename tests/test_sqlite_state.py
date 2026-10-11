@@ -130,6 +130,35 @@ class SQLiteStateStoreTests(unittest.TestCase):
             loaded_again = repository.load()
             self.assertEqual(loaded_again["thread-1"].sandbox, "read-only")
 
+    def test_atomic_model_update_preserves_parallel_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repository = ModelMapRepository(
+                SQLiteStateStore(root / "state.db"), namespace="settings",
+                legacy_path=root / "settings.json", model=ThreadRunSettings,
+            )
+            repository.put("thread", ThreadRunSettings(developer_instructions=""))
+            errors = []
+            def writer(marker):
+                try:
+                    for _ in range(20):
+                        def append(current):
+                            current.developer_instructions += marker
+                            return current
+                        repository.update("thread", append)
+                except Exception as exc:
+                    errors.append(exc)
+            threads = [threading.Thread(target=writer, args=(marker,)) for marker in "ab"]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(10)
+                self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+            result = repository.get("thread").developer_instructions
+            self.assertEqual(result.count("a"), 20)
+            self.assertEqual(result.count("b"), 20)
+
     def test_save_is_transactional_and_mirrors_legacy_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
