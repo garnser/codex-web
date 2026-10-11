@@ -20,6 +20,7 @@ from codex_web.action_providers import (
     ActionVerification,
 )
 from codex_web.integrations.gitlab_client import GitLabClient
+from codex_web.services.code_host_continuation import continuation_for
 from codex_web.services.code_host_action_contract import (
     CODE_HOST_BRANCH_EVIDENCE,
     CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
@@ -267,6 +268,7 @@ class GitLabActionProvider:
             }
         if request.action_id == CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID:
             payload = self.contract.change_request(request)
+            continuation_for(request, binding.id)
             return {
                 "operation": "change-request-upsert",
                 "repository": project,
@@ -417,7 +419,8 @@ class GitLabActionProvider:
                     f"{exc}; supported change request parameters: "
                     "title, body, head, base, draft"
                 ) from exc
-            marker = self.contract.marker(request)
+            proof = continuation_for(request, binding.id)
+            marker = proof.marker if proof else self.contract.marker(request)
             desired_body = self._owned_body(payload["body"], marker)
             merge_requests = await self.client.merge_requests(
                 self.api_base,
@@ -434,6 +437,14 @@ class GitLabActionProvider:
                 ),
                 None,
             )
+            if proof and (
+                owned is None or str(owned.get("id") or "") != proof.external_id
+                or self._positive_iid(owned, field="merge request") != proof.number
+                or owned.get("state") != "opened"
+                or owned.get("source_branch") != payload["head"]
+                or owned.get("target_branch") != payload["base"]
+            ):
+                raise ActionRequirementError("original owned merge request target is not verified")
             if owned is None and merge_requests:
                 raise ActionRequirementError(
                     "an existing merge request for head/base is not owned by this ActionIntent"
@@ -494,6 +505,9 @@ class GitLabActionProvider:
                     ).hexdigest(),
                 }
             )
+            if proof:
+                output["origin_intent_id"] = proof.origin_intent_id
+                output["ownership_marker"] = proof.marker
             summary = "GitLab merge request is owned and reconciled by this action."
         elif request.action_id == CODE_HOST_BRANCH_PUBLISH_ACTION_ID:
             try:
@@ -685,7 +699,7 @@ class GitLabActionProvider:
             item = await self.client.merge_request(
                 self.api_base, project, iid, token=credential
             )
-            marker = self.contract.marker_from_key(result.idempotency_key)
+            marker = self.contract.change_request_result_marker(result)
             verified = (
                 self._positive_iid(item, field="merge request") == iid
                 and marker in str(item.get("description") or "")

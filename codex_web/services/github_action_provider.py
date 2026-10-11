@@ -20,6 +20,7 @@ from codex_web.action_providers import (
     ActionVerification,
 )
 from codex_web.integrations.github_client import GitHubClient
+from codex_web.services.code_host_continuation import continuation_for
 from codex_web.services.code_host_action_contract import (
     CODE_HOST_BRANCH_EVIDENCE,
     CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
@@ -227,6 +228,7 @@ class GitHubActionProvider:
             }
         if request.action_id == CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID:
             payload = self.contract.change_request(request)
+            continuation_for(request, binding.id)
             return {
                 "operation": "change-request-upsert",
                 "repository": repository,
@@ -377,7 +379,8 @@ class GitHubActionProvider:
             summary = f"GitHub issue state is {state}."
         elif request.action_id == CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID:
             payload = self.contract.change_request(request)
-            marker = self.contract.marker(request)
+            proof = continuation_for(request, binding.id)
+            marker = proof.marker if proof else self.contract.marker(request)
             desired_body = self._owned_body(payload["body"], marker)
             pulls = await self.client.list_pull_requests(
                 self.api_base,
@@ -390,6 +393,14 @@ class GitHubActionProvider:
                 (row for row in pulls if marker in str(row.get("body") or "")),
                 None,
             )
+            if proof and (
+                owned is None or str(owned.get("id") or "") != proof.external_id
+                or self._positive_number(owned, field="pull request") != proof.number
+                or owned.get("state") != "open"
+                or self._ref(owned, "head") != payload["head"]
+                or self._ref(owned, "base") != payload["base"]
+            ):
+                raise ActionRequirementError("original owned pull request target is not verified")
             conflicting_open = next(
                 (
                     row
@@ -455,6 +466,9 @@ class GitHubActionProvider:
                     ).hexdigest(),
                 }
             )
+            if proof:
+                output["origin_intent_id"] = proof.origin_intent_id
+                output["ownership_marker"] = proof.marker
             summary = "GitHub pull request is owned and reconciled by this action."
         elif request.action_id == CODE_HOST_BRANCH_PUBLISH_ACTION_ID:
             try:
@@ -656,7 +670,7 @@ class GitHubActionProvider:
             item = await self.client.pull_request(
                 self.api_base, repository, number, token=credential
             )
-            marker = self.contract.marker_from_key(result.idempotency_key)
+            marker = self.contract.change_request_result_marker(result)
             verified = (
                 self._positive_number(item, field="pull request") == number
                 and marker in str(item.get("body") or "")
