@@ -197,9 +197,7 @@ class ExecutionWorkerStore:
             self.event_namespace,
             self.enrollment_namespace,
         )
-        collection_exists = {
-            item: self.store.record_collection_exists(item) for item in namespaces
-        }
+        collection_exists = self.store.record_collections_exist(namespaces)
         legacy_payload = self.store.get(self.namespace)
         if all(collection_exists.values()) and legacy_payload is None:
             return
@@ -225,7 +223,7 @@ class ExecutionWorkerStore:
                 self.store.record_replace(namespace, items)
         self.store.delete(self.namespace)
 
-    def _load_unlocked(self) -> ExecutionWorkerState:
+    def _load_unlocked(self, *, include_history: bool = True) -> ExecutionWorkerState:
         self._ensure_records()
         return self._decode(
             {
@@ -241,17 +239,26 @@ class ExecutionWorkerStore:
                 "events": sorted(
                     self.store.record_items(self.event_namespace).values(),
                     key=lambda item: (item.get("occurred_at", 0), item.get("id", "")),
-                ),
+                ) if include_history else [],
                 "enrollments": sorted(
                     self.store.record_items(self.enrollment_namespace).values(),
                     key=lambda item: (item.get("created_at", 0), item.get("id", "")),
-                ),
+                ) if include_history else [],
             }
         )
 
     def load(self) -> ExecutionWorkerState:
         with self._lock:
             return self._load_unlocked()
+
+    def load_execution_state(self) -> ExecutionWorkerState:
+        """Read fresh validated workers/assignments without retained history.
+
+        Recovery uses ownership, lifecycle, lease and fence state; event and
+        enrollment catalogs remain available through the full load method.
+        """
+        with self._lock:
+            return self._load_unlocked(include_history=False)
 
     def assignment(self, assignment_id: str) -> ExecutionAssignment | None:
         self._ensure_records()

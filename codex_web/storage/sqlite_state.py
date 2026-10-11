@@ -238,6 +238,23 @@ class SQLiteStateStore:
                 namespace,
             )
 
+    def record_collections_exist(self, namespaces: tuple[str, ...]) -> dict[str, bool]:
+        """Probe current collection markers in one bounded database query."""
+        if len(namespaces) > 1000:
+            raise ValueError("collection batch exceeds 1000 namespaces")
+        namespaces = tuple(dict.fromkeys(namespaces))
+        if not namespaces:
+            return {}
+        markers = tuple(state_record_marker(name) for name in namespaces)
+        placeholders = ",".join("?" for _ in markers)
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"SELECT namespace FROM state_documents WHERE namespace IN ({placeholders})",
+                markers,
+            ).fetchall()
+        present = {row[0] for row in rows}
+        return {name: marker in present for name, marker in zip(namespaces, markers)}
+
     def record_get(self, namespace: str, key: str) -> Any | None:
         with self._connection() as connection:
             if self._record_collection_exists_in_connection(
