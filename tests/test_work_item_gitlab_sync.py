@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import server
+from fastapi import HTTPException
 from codex_web.models import WorkItemHandoff, WorkItemProgressUpdate, WorkItemState
 
 
@@ -738,7 +739,7 @@ class WorkItemGitLabSyncTests(unittest.TestCase):
         ))
         server._structured_progress(
             "veridataops/platform#134",
-            WorkItemProgressUpdate(actor="james", next_owner="operator",
+            WorkItemProgressUpdate(actor="james", next_owner="operator", expected_handoff_requested_at=180.0,
                                    next_action="Operator: repair inputs"),
         )
         updated = self._load()
@@ -755,7 +756,8 @@ class WorkItemGitLabSyncTests(unittest.TestCase):
         ))
         server._structured_progress(
             "veridataops/platform#134",
-            WorkItemProgressUpdate(actor="james", current_stage="failed_with_action_owner"),
+            WorkItemProgressUpdate(actor="james", current_stage="failed_with_action_owner",
+                                   expected_handoff_requested_at=180.0),
         )
         updated = self._load()
         self.assertIsNone(updated.handoff)
@@ -784,6 +786,7 @@ class WorkItemGitLabSyncTests(unittest.TestCase):
             "veridataops/platform#134",
             WorkItemProgressUpdate(
                 actor="orchestrator",
+                expected_handoff_requested_at=180.0,
                 current_owner="sally",
                 current_stage="ready_for_validation",
                 next_action="lane moved elsewhere",
@@ -794,6 +797,84 @@ class WorkItemGitLabSyncTests(unittest.TestCase):
         self.assertEqual(updated.current_owner, "sally")
         self.assertIsNone(updated.handoff)
         self.assertEqual(updated.status_label, "status::in progress")
+
+    def test_stale_validation_progress_cannot_erase_corrective_review_handback(self) -> None:
+        original = self._state(
+            stage="failed_with_action_owner", owner="quinn", meaningful_at=20.0,
+            gitlab_at=19.0, next_owner="james", blocker="Group heartbeat isolation rejected",
+            status_label="status::awaiting confirmation",
+            handoff=WorkItemHandoff(from_agent="quinn", to_agent="james",
+                                   requested_at=180.0, status="pending"),
+        )
+        self._save(original)
+        before = self._load().model_dump(mode="json")
+        audit_before = self.events_file.read_bytes() if self.events_file.exists() else b""
+        for expected in (None, 179.0):
+            with self.subTest(expected=expected), self.assertRaises(HTTPException) as caught:
+                server._structured_progress(
+                    original.ref,
+                    WorkItemProgressUpdate(
+                        actor="James", current_owner="quinn", current_stage="validation_running",
+                        next_owner="quinn", blocker=None, next_action="Quinn: validate old head",
+                        expected_handoff_requested_at=expected,
+                    ),
+                )
+            self.assertEqual(caught.exception.status_code, 409)
+            self.assertEqual(caught.exception.detail["code"], "pending_handoff_conflict")
+            self.assertEqual(self._load().model_dump(mode="json"), before)
+            self.assertEqual(self.events_file.read_bytes() if self.events_file.exists() else b"", audit_before)
+
+    def test_replaced_or_resolved_intake_rejects_previous_progress_precondition(self) -> None:
+        for status in ("pending", "accepted", "superseded"):
+            with self.subTest(status=status):
+                self._save(self._state(
+                    stage="ready_for_validation", owner="james", meaningful_at=20.0,
+                    gitlab_at=19.0, next_owner="quinn",
+                    handoff=WorkItemHandoff(from_agent="james", to_agent="quinn",
+                                           requested_at=181.0, status=status),
+                ))
+                before = self._load().model_dump(mode="json")
+                with self.assertRaises(HTTPException) as caught:
+                    server._structured_progress(
+                        "veridataops/platform#134",
+                        WorkItemProgressUpdate(note="old intake evidence", expected_handoff_requested_at=180.0),
+                    )
+                self.assertEqual(caught.exception.status_code, 409)
+                self.assertEqual(self._load().model_dump(mode="json"), before)
+
+    def test_progress_cannot_change_pending_stage_without_identifying_intake(self) -> None:
+        self._save(self._state(
+            stage="failed_with_action_owner", owner="quinn", meaningful_at=20.0,
+            gitlab_at=19.0, next_owner="james", blocker="Group isolation rejection",
+            handoff=WorkItemHandoff(from_agent="quinn", to_agent="james",
+                                   requested_at=180.0, status="pending"),
+        ))
+        before = self._load().model_dump(mode="json")
+        with self.assertRaises(HTTPException) as caught:
+            server._structured_progress(
+                "veridataops/platform#134",
+                WorkItemProgressUpdate(actor="james", current_stage="validation_running", blocker=None),
+            )
+        self.assertEqual(caught.exception.detail["code"], "pending_handoff_conflict")
+        self.assertEqual(self._load().model_dump(mode="json"), before)
+
+    def test_deliberate_corrective_handback_supersession_does_not_ack_recipient(self) -> None:
+        self._save(self._state(
+            stage="failed_with_action_owner", owner="quinn", meaningful_at=20.0,
+            gitlab_at=19.0, next_owner="james", blocker="Runtime rejection",
+            status_label="status::awaiting confirmation",
+            handoff=WorkItemHandoff(from_agent="quinn", to_agent="james",
+                                   requested_at=180.0, status="pending"),
+        ))
+        updated = server._structured_progress(
+            "veridataops/platform#134",
+            WorkItemProgressUpdate(actor="orchestrator", next_owner="operator",
+                                   next_action="Operator: repair routing", expected_handoff_requested_at=180.0),
+        )
+        self.assertIsNone(updated.handoff)
+        self.assertEqual(updated.handoff_history[-1].status, "superseded")
+        self.assertEqual(updated.next_owner, "operator")
+        self.assertEqual(updated.status_label, "status::blocked")
 
     def test_gitlab_projection_clears_stale_next_owner_and_blocker_on_active_lane(self) -> None:
         self._save(

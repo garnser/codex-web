@@ -606,12 +606,23 @@ class WorkItemStateMachine:
         artifact_state: str | None = None,
         event_type: str = "progress_updated",
         note: str | None = None,
+        expected_handoff_requested_at: float | None = None,
     ) -> WorkItemState:
+        # Work on a detached candidate: a denied stale update must not mutate
+        # a caller's canonical object, append success audit, or reach writeback.
+        state = state.model_copy(deep=True)
+        if expected_handoff_requested_at is not None and (
+            not state.handoff
+            or state.handoff.status != "pending"
+            or state.handoff.requested_at != expected_handoff_requested_at
+        ):
+            self._raise_pending_handoff_conflict(state)
         previous_evidence = work_item_progress_evidence(state)
         state = self._ensure_work_item_lane_defaults(state)
         now = time.time()
         previous_owner = self._coerce_owner(state.current_owner)
         previous_stage = state.current_stage
+        previous_next_owner = self._coerce_owner(state.next_owner)
         incoming_stage = (
             self._normalize_work_item_stage(current_stage, fallback=state.current_stage)
             if current_stage is not None
@@ -662,6 +673,18 @@ class WorkItemStateMachine:
                 artifact_state,
                 fallback=state.artifact_state,
             )
+        if (
+            event_type == "progress_updated"
+            and state.handoff and state.handoff.status == "pending"
+            and state.current_stage != "closed"
+            and expected_handoff_requested_at != state.handoff.requested_at
+            and (
+                state.current_stage != previous_stage
+                or self._coerce_owner(state.current_owner) != previous_owner
+                or self._coerce_owner(state.next_owner) != previous_next_owner
+            )
+        ):
+            self._raise_pending_handoff_conflict(state)
         if (
             state.current_stage == "closed"
             and state.artifact_state in {"merged_main", "tag_pipeline"}
@@ -723,6 +746,12 @@ class WorkItemStateMachine:
             elif state.handoff.status == "rejected":
                 archive_resolved_handoff = True
             if archive_resolved_handoff:
+                if (
+                    event_type == "progress_updated"
+                    and state.handoff.status == "pending"
+                    and expected_handoff_requested_at != state.handoff.requested_at
+                ):
+                    self._raise_pending_handoff_conflict(state)
                 state = self._archive_active_handoff(
                     state,
                     now=now,
@@ -1081,6 +1110,25 @@ class WorkItemStateMachine:
         state = self._sync_work_item_status_label(state)
         return self._save_work_item_state(state)
 
+    @staticmethod
+    def _raise_pending_handoff_conflict(state: WorkItemState) -> None:
+        handoff = state.handoff
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "pending_handoff_conflict",
+                "message": (
+                    "Progress cannot supersede an unidentified current pending handoff. "
+                    "Read current coordination and use recipient ACK or a structured handoff; "
+                    "for deliberate progress supersession, supply its exact "
+                    "expected_handoff_requested_at."
+                ),
+                "ref": state.ref,
+                "handoff_requested_at": handoff.requested_at if handoff else None,
+                "handoff_status": handoff.status if handoff else None,
+            },
+        )
+
     def _structured_progress(
         self,
         ref: str,
@@ -1104,6 +1152,7 @@ class WorkItemStateMachine:
             status_label=payload.status_label,
             artifact_state=payload.artifact_state,
             note=payload.note,
+            expected_handoff_requested_at=payload.expected_handoff_requested_at,
         )
         state = self._sync_work_item_status_label(state)
         return self._save_work_item_state(state)
