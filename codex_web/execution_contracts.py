@@ -206,9 +206,6 @@ def execution_role_for_work_item(
 ) -> ExecutionRoleContract:
     resolved = _catalog(catalog)
     roles = resolved.role_map
-    if split_brain:
-        return roles["orchestrator"]
-
     handoff = getattr(state, "handoff", None)
     if handoff is not None and getattr(handoff, "status", None) == "pending":
         recipient_role = execution_role_for_agent(
@@ -217,6 +214,11 @@ def execution_role_for_work_item(
         )
         if recipient_role is not None:
             return recipient_role
+
+    # Reconciliation findings remain contract inputs, but must not instruct a
+    # named live recipient to impersonate Orchestrator in its own assignment.
+    if split_brain:
+        return roles["orchestrator"]
 
     owner = getattr(state, "current_owner", None) or getattr(state, "next_owner", None)
     owner_role = execution_role_for_agent(owner, catalog=resolved)

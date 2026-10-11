@@ -245,7 +245,49 @@ class ExecutionContractSchemaTests(unittest.TestCase):
         contract = service.contract_for_state(self._state())
 
         self.assertEqual(contract.inputs.split_brain_findings, ("owner drift",))
-        self.assertTrue(contract.role_id)
+        self.assertEqual(contract.role_id, "orchestrator")
+
+    def test_pending_handoff_keeps_recipient_role_despite_drift(self) -> None:
+        service = WorkItemContractService(
+            None,
+            lambda state: state.ref,
+            _ExecutionRoles(),
+            split_brain_findings=lambda state: ["owner drift"],
+        )
+        for recipient in ("james", "quinn", "carl"):
+            with self.subTest(recipient=recipient):
+                state = self._state(
+                    current_owner="orchestrator",
+                    current_stage="failed_with_action_owner",
+                    next_owner=recipient,
+                    handoff=WorkItemHandoff(
+                        from_agent="orchestrator", to_agent=recipient,
+                        requested_at=2.0, status="pending",
+                    ),
+                )
+                contract = service.contract_for_state(state)
+                self.assertEqual(contract.role_id, recipient)
+                self.assertEqual(contract.agent_id, recipient)
+                self.assertEqual(contract.inputs.split_brain_findings, ("owner drift",))
+                self.assertIn(
+                    f"EXECUTION ROLE\n- Name: {ROLE_CONTRACTS[recipient].name}",
+                    service.dispatch_text(state),
+                )
+                self.assertEqual(state.handoff.status, "pending")
+                self.assertIsNone(state.handoff.acknowledged_at)
+
+    def test_drift_with_terminal_or_unknown_handoff_keeps_reconciliation_role(self) -> None:
+        service = WorkItemContractService(
+            None, lambda state: state.ref, _ExecutionRoles(),
+            split_brain_findings=lambda state: ["owner drift"],
+        )
+        for recipient, status in (("james", "rejected"), ("unrecognized", "pending")):
+            with self.subTest(recipient=recipient, status=status):
+                state = self._state(handoff=WorkItemHandoff(
+                    from_agent="quinn", to_agent=recipient,
+                    requested_at=2.0, status=status,
+                ))
+                self.assertEqual(service.contract_for_state(state).role_id, "orchestrator")
 
 
 if __name__ == "__main__":
