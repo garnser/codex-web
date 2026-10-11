@@ -91,6 +91,11 @@ whole-service drain before invoking the governed installer:
 6. Verify health, exact installed revision, retained queues and owner
    continuation before completing post-upgrade verification.
 
+Cancelling a queue drain before an active-turn marker exists returns the original
+message to the queue front without consuming a retry or scheduling another drain
+during shutdown. Once a durable active-turn marker exists, normal active-turn
+recovery owns that execution; cancellation does not enqueue a duplicate request.
+
 Direct root/systemd commands and ad-hoc scripts can bypass this application
 boundary. Treat that as an explicit operator-policy violation; neither the
 helper nor a successful merge can technically constrain an unrestricted host
