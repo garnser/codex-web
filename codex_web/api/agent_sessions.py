@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -33,22 +34,44 @@ def build_agent_sessions_router(
 ) -> APIRouter:
     router = APIRouter(tags=["agent-sessions"])
 
-    async def project_session(item, actor) -> dict[str, Any]:
-        registration = runtimes.registration(item.provider_id, item.runtime_id)
-        try:
-            health = (
-                await runtimes.get(item.provider_id, item.runtime_id).health()
-            ).value
-        except Exception:
-            health = "unavailable"
-        usage = []
+    def session_usage(actor, visible_ids: set[str]) -> dict[str, Any]:
+        latest: dict[str, Any] = {}
         if telemetry is not None:
-            usage = telemetry.list(actor, agent_session_id=item.id)
-        latest_usage = usage[0].model_dump(mode="json") if usage else None
+            # The canonical service returns tenant-filtered records newest first.
+            # One fresh request snapshot replaces a full read per session.
+            for record in telemetry.list(actor):
+                session_id = record.agent_session_id
+                if session_id in visible_ids and session_id not in latest:
+                    latest[session_id] = record.model_dump(mode="json")
+        return latest
+
+    async def project_session(
+        item, actor, *,
+        usage_by_session: dict[str, Any] | None = None,
+        health_by_runtime: dict[tuple[str, str], str] | None = None,
+    ) -> dict[str, Any]:
+        registration = runtimes.registration(item.provider_id, item.runtime_id)
+        health_by_runtime = {} if health_by_runtime is None else health_by_runtime
+        runtime_key = (item.provider_id, item.runtime_id)
+        if runtime_key not in health_by_runtime:
+            try:
+                health_by_runtime[runtime_key] = (
+                    await runtimes.get(*runtime_key).health()
+                ).value
+            except Exception:
+                health_by_runtime[runtime_key] = "unavailable"
+        if usage_by_session is None:
+            usage = (
+                telemetry.list(actor, agent_session_id=item.id)
+                if telemetry is not None else []
+            )
+            latest_usage = usage[0].model_dump(mode="json") if usage else None
+        else:
+            latest_usage = usage_by_session.get(item.id)
         return {
             **item.model_dump(mode="json"),
             "runtime_registration": registration.model_dump(mode="json"),
-            "runtime_health": health,
+            "runtime_health": health_by_runtime[runtime_key],
             "latest_usage": latest_usage,
         }
 
@@ -77,9 +100,18 @@ def build_agent_sessions_router(
     @router.get("/api/agent-sessions")
     async def list_sessions(request: Request) -> dict[str, Any]:
         actor = request_actor(request)
+        sessions = service.list(actor)
+        visible_ids = {item.id for item in sessions}
+        usage_by_session: dict[str, Any] = {}
+        if sessions and telemetry is not None:
+            usage_by_session = await asyncio.to_thread(session_usage, actor, visible_ids)
+        health_by_runtime: dict[tuple[str, str], str] = {}
         items = [
-            await project_session(item, actor)
-            for item in service.list(actor)
+            await project_session(
+                item, actor, usage_by_session=usage_by_session,
+                health_by_runtime=health_by_runtime,
+            )
+            for item in sessions
         ]
         return {"items": items, "count": len(items)}
 
