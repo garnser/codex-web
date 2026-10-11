@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
+from codex_web.services.gitlab_action_provider import GitLabActionProvider
 from pathlib import Path
 from types import SimpleNamespace
 import subprocess
@@ -638,6 +640,54 @@ class GitHubActionProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.output["head_revision"], progressed_head)
         self.assertEqual(self.published_branches[0][3], progressed_head)
+
+    async def test_both_publishers_atomically_reject_concurrent_remote_creation(self):
+        original_run = subprocess.run
+        for provider_class in [GitHubActionProvider, GitLabActionProvider]:
+            with self.subTest(provider=provider_class.__name__), tempfile.TemporaryDirectory() as directory:
+                remote = Path(directory) / "remote.git"
+                original_run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+                branch = "codex/atomic-recovery"
+                def run(command, **kwargs):
+                    command = list(command)
+                    if command[:2] == ["git", "push"]:
+                        self.assertIn(f"--force-with-lease=refs/heads/{branch}:", command)
+                        command[-2] = str(remote)
+                    return original_run(command, **kwargs)
+                with patch("subprocess.run", side_effect=run):
+                    publish = provider_class._publish_branch_sync
+                    publish(self.provider, self.workspace_path, "repo", branch, self.workspace_head, "test", "")
+                    (self.workspace_path / "race.txt").write_text(provider_class.__name__)
+                    original_run(["git", "add", "race.txt"], cwd=self.workspace_path, check=True)
+                    original_run(["git", "commit", "-m", "Concurrent publication candidate"], cwd=self.workspace_path, check=True, capture_output=True)
+                    candidate = original_run(["git", "rev-parse", "HEAD"], cwd=self.workspace_path, check=True, capture_output=True, text=True).stdout.strip()
+                    with self.assertRaises(RuntimeError):
+                        publish(self.provider, self.workspace_path, "repo", branch, candidate, "test", "")
+                actual = original_run(["git", "--git-dir", str(remote), "rev-parse", f"refs/heads/{branch}"], check=True, capture_output=True, text=True).stdout.strip()
+                self.assertEqual(actual, self.workspace_head)
+
+    async def test_recovery_can_require_remote_branch_absence(self):
+        request = self._request(CODE_HOST_BRANCH_PUBLISH_ACTION_ID, {
+            "execution_workspace_id": "workspace-a",
+            "branch": "codex/preserved-recovery",
+            "head_revision": self.workspace_head,
+            "expected_remote_absent": True,
+        })
+        result = await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.assertEqual(self.published_branches[0][5], "")
+        self.assertTrue(result.output["expected_remote_absent"])
+
+    async def test_absence_precondition_rejects_invalid_and_conflicting_requests(self):
+        params = {"execution_workspace_id": "workspace-a", "branch": "codex/preserved-recovery",
+                  "head_revision": self.workspace_head, "expected_remote_absent": True}
+        for changes in [{"expected_remote_absent": "true"}, {"expected_remote_absent": 1},
+                        {"expected_remote_revision": self.workspace_head}, {"expected_remote_revision": ""},
+                        {"expected_remote_absent": False}, {"branch": "legacy/recovery"},
+                        {"existing_change_request_number": 258}]:
+            with self.subTest(changes=changes):
+                with self.assertRaises(ActionRequirementError):
+                    await self.execution.execute(self.binding.id,
+                        self._request(CODE_HOST_BRANCH_PUBLISH_ACTION_ID, {**params, **changes}), actor=self.actor)
 
     async def test_branch_recovery_can_fast_forward_an_attested_codex_branch(self) -> None:
         (self.workspace_path / "recovery.txt").write_text(

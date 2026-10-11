@@ -452,6 +452,7 @@ class CodeHostActionContract:
             "branch",
             "head_revision",
             "expected_remote_revision",
+            "expected_remote_absent",
             "existing_change_request_number",
         }:
             raise ValueError("unsupported branch publication parameters")
@@ -475,6 +476,17 @@ class CodeHostActionContract:
             raise ValueError(
                 "expected_remote_revision must be a full Git commit revision"
             )
+        expected_remote_absent = request.parameters.get("expected_remote_absent", False)
+        if not isinstance(expected_remote_absent, bool):
+            raise ValueError("expected_remote_absent must be a boolean")
+        if expected_remote_absent:
+            if "expected_remote_revision" in request.parameters:
+                raise ValueError("remote absence and revision preconditions are mutually exclusive")
+            if not branch.startswith("codex/"):
+                raise ValueError("absent-ref recovery requires a codex/ branch")
+            # An empty expected value means the ref must not exist. Preserve it
+            # through the publisher so Git enforces this atomically at push.
+            expected_remote_revision = ""
         state = self.workspaces.store.load()
         workspace = next(
             (
@@ -518,7 +530,7 @@ class CodeHostActionContract:
                 or isinstance(existing_number, bool)
                 or not isinstance(existing_number, int)
                 or existing_number < 1
-                or expected_remote_revision is None
+                or not expected_remote_revision
             ):
                 raise ValueError("existing GitLab change request requires a positive number and expected remote revision")
             if (
@@ -572,7 +584,7 @@ class CodeHostActionContract:
             member.base_revision,
             revision,
         )
-        if publishing_recovery_branch or existing_number is not None:
+        if expected_remote_revision and (publishing_recovery_branch or existing_number is not None):
             self.git(
                 workspace_path,
                 "merge-base",

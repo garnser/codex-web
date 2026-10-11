@@ -284,6 +284,7 @@ class GitLabActionProvider:
                 "execution_workspace_id": attested.workspace_id,
                 "branch": attested.branch,
                 "head_revision": attested.revision,
+                "expected_remote_absent": attested.expected_remote_revision == "",
                 "workspace_attested": attested.workspace_path.is_dir(),
                 "existing_change_request_number": attested.existing_change_request_number,
                 "work_item_issue_number": attested.work_item_issue_number,
@@ -538,6 +539,7 @@ class GitLabActionProvider:
                 {
                     "branch": attested.branch,
                     "head_revision": attested.revision,
+                    "expected_remote_absent": attested.expected_remote_revision == "",
                     "execution_workspace_id": attested.workspace_id,
                     "existing_change_request_number": attested.existing_change_request_number,
                     "work_item_issue_number": attested.work_item_issue_number,
