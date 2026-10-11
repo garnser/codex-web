@@ -637,6 +637,14 @@ def _get_work_item_state_by_source_identity(identity):
         return None
     return runtime_state.work_item_states.get(ref)
 
+def _update_work_item_state_record(ref, updater):
+    state = runtime_state.work_item_states.update(ref, updater)
+    if state is not None:
+        work_item_source_identity_index.upsert(state)
+        work_item_list_index.upsert(state)
+    return state
+
+
 def _put_work_item_state_record(state):
     previous = runtime_state.work_item_states.get(state.ref)
     runtime_state.work_item_states.put(state.ref, state)
@@ -3801,6 +3809,7 @@ def _autonomy_project_scope(
 
 
 autonomy_runtime_dependencies = AutonomyRuntimeDependencies(
+    update_work_item_state=_update_work_item_state_record,
     load_gitlab_routing_settings=configuration_state.gitlab_routing.load,
     load_work_item_states=runtime_state.work_item_states.load,
     save_work_item_states=runtime_state.work_item_states.save,
