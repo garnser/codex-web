@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -45,6 +46,26 @@ class GitLabArtifactResourceAssociationTests(unittest.TestCase):
         self.assertEqual(self.host.load_calls, 0)
         self.assertEqual(self.host.save_calls, 0)
         self.assertEqual(self.host.put_calls, 1)
+
+    def test_nonterminal_mr_feedback_preserves_actual_pending_handoff(self):
+        state = self.projector.project(self.payload, project_id='project-a')
+        state.current_owner = 'carl'
+        state.next_owner = 'quinn'
+        state.current_stage = 'failed_with_action_owner'
+        state.status_label = 'status::awaiting confirmation'
+        state.blocker = 'Independent review still required'
+        state.handoff = WorkItemHandoff(from_agent='carl', to_agent='quinn', requested_at=20)
+        self.host.states[state.ref] = state
+        self.projector.gitlab = replace(self.projector.gitlab,
+            label_names=lambda _: ['owner::carl', 'status::in progress'],
+            owner_agents=lambda *_: ['carl'])
+        updated = self.projector.project(self.payload, project_id='project-a')
+        self.assertEqual(updated.current_stage, 'failed_with_action_owner')
+        self.assertEqual(updated.status_label, 'status::awaiting confirmation')
+        self.assertEqual(updated.handoff, state.handoff)
+        self.assertIsNone(updated.handoff.acknowledged_at)
+        self.assertEqual(updated.current_owner, 'carl')
+        self.assertEqual(updated.next_owner, 'quinn')
 
     def test_update_repairs_legacy_associations_and_repeat_preserves_them(self):
         self.host.states['group/project!42'] = WorkItemState(

@@ -31,6 +31,7 @@ from codex_web.services.gitlab_task_source_events import GitLabWebhookTaskSource
 from codex_web.services.gitlab_code_host import GitLabCodeHostProvider
 from codex_web.services.gitlab_event_presentation import GitLabEventPresentationService
 from codex_web.services.work_item_dependencies import (
+    actionable_owner_value,
     gitlab_project_issue_ref,
     gitlab_token_for_project,
 )
@@ -147,6 +148,7 @@ class GitLabService:
                     "_load_projects",
                     lambda: [],
                 ),
+                get_state=getattr(host, "_work_item_state", None),
             )
         if operations is None:
             if host is None:
@@ -296,7 +298,7 @@ class GitLabService:
                 if recipient:
                     return [recipient]
             if projected_state.current_stage == "failed_with_action_owner":
-                owner = self.work_items.coerce_owner(projected_state.current_owner or projected_state.next_owner)
+                owner = self.work_items.coerce_owner(actionable_owner_value(projected_state))
                 if owner:
                     return [owner]
             owner = self.work_items.coerce_owner(projected_state.current_owner)
@@ -694,12 +696,118 @@ class GitLabService:
         attrs = payload.get("object_attributes") or {}
         kind = str(payload.get("object_kind") or payload.get("event_name") or "issue")
         state = str(attrs.get("state") or attrs.get("status") or "opened")
-        return self.semantic_key_for_state(
+        state_key = self.semantic_key_for_state(
             ref,
             kind=kind,
             labels=self.label_names(payload),
             state=state,
         )
+        # Equal workflow labels do not imply equal source content, head, CI,
+        # or action. Hash material facts without retaining their raw text in
+        # the dedupe index. Delivery/observation clocks are not material facts.
+        facts = {
+            "state_key": state_key,
+            "attributes": {
+                key: value for key, value in attrs.items()
+                if key not in {"updated_at", "created_at", "last_edited_at"}
+            },
+            "changes": payload.get("changes"),
+            "merge_request": payload.get("merge_request"),
+        }
+        return hashlib.sha256(json.dumps(facts, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    def _feedback_baseline(self, payload: dict[str, Any]) -> WorkItemState | None:
+        changes = payload.get("changes")
+        if (
+            str(payload.get("object_kind") or payload.get("event_name") or "").casefold()
+            not in {"issue", "merge_request"}
+            or not isinstance(changes, dict) or "labels" not in changes
+            or set(changes) - {"labels", "updated_at"}
+        ):
+            return None
+        lookup = getattr(self.work_items, "get_state", None)
+        ref = gitlab_project_issue_ref(payload)
+        if lookup is None or not ref:
+            return None
+        try:
+            state = lookup(ref)
+            return state.model_copy(deep=True) if isinstance(state, WorkItemState) else None
+        except Exception:
+            # An unavailable observation is not proof of unchanged work.
+            return None
+
+    def _unchanged_workflow_feedback(
+        self, payload: dict[str, Any], baseline: WorkItemState | None,
+        projected: WorkItemState | None, *, project_id: str,
+    ) -> bool:
+        if not isinstance(baseline, WorkItemState) or not isinstance(projected, WorkItemState):
+            return False
+        kind = str(payload.get("object_kind") or payload.get("event_name") or "").casefold()
+        attrs = payload.get("object_attributes") or {}
+        changes = payload.get("changes")
+        if (
+            kind not in {"issue", "merge_request"}
+            or attrs.get("action") not in {"update", "updated"}
+            or not isinstance(changes, dict) or "labels" not in changes
+            or set(changes) - {"labels", "updated_at"}
+            or baseline.project_id != project_id or projected.project_id != project_id
+            or baseline.ref != projected.ref
+            or baseline.ref != gitlab_project_issue_ref(payload)
+            or self.work_items.split_brain_findings(projected)
+        ):
+            return False
+        try:
+            project = self.work_items.project_lookup(project_id)
+        except Exception:
+            return False
+        if project is None or any(
+            getattr(baseline, key) != getattr(project, key, None)
+            or getattr(projected, key) != getattr(project, key, None)
+            for key in ("organization_id", "workspace_id")
+        ):
+            return False
+        label_change = changes["labels"]
+        if not isinstance(label_change, dict):
+            return False
+
+        def labels(values: Any) -> set[str] | None:
+            if not isinstance(values, list):
+                return None
+            result = set()
+            for value in values:
+                name = value if isinstance(value, str) else (
+                    value.get("title") or value.get("name") if isinstance(value, dict) else None
+                )
+                if not isinstance(name, str) or not name.strip():
+                    return None
+                result.add(name.strip())
+            return result
+
+        previous_labels = labels(label_change.get("previous"))
+        current_labels = labels(label_change.get("current"))
+        if previous_labels is None or current_labels is None or any(
+            not name.startswith(("owner::", "status::"))
+            for name in previous_labels ^ current_labels
+        ):
+            return False
+        current_workflow_labels = {
+            name for name in current_labels
+            if name.startswith(("owner::", "status::"))
+        }
+        expected_workflow_labels = set()
+        if projected.current_owner:
+            expected_workflow_labels.add("owner::" + projected.current_owner)
+        if projected.status_label:
+            expected_workflow_labels.add(projected.status_label)
+        if current_workflow_labels != expected_workflow_labels:
+            return False
+        # Source identity revisions and provider label snapshots are projection
+        # metadata; every business, scope, evidence and handoff field must match.
+        excluded = {
+            "source_identity", "labels", "updated_at", "last_gitlab_event_at",
+            "last_meaningful_update_at", "last_owner_activity_at",
+        }
+        return baseline.model_dump(exclude=excluded) == projected.model_dump(exclude=excluded)
 
     def remember_semantic_key(self, key: str | None, *, reason: str) -> bool:
         if not key:
@@ -1050,18 +1158,6 @@ class GitLabService:
                 "eventId": event_id,
             }
 
-        semantic_key = self.semantic_key(payload)
-        if not self.remember_semantic_key(
-            semantic_key,
-            reason="gitlab-webhook",
-        ):
-            return {
-                "ok": True,
-                "ignored": True,
-                "reason": "semantic_duplicate",
-                "eventId": event_id,
-            }
-
         canonical_delivery = await self._ingest_canonical_event(
             payload,
             project_id=project_id,
@@ -1082,10 +1178,23 @@ class GitLabService:
                 ),
             }
 
+        semantic_key = self.semantic_key(payload)
+        if not self.remember_semantic_key(semantic_key, reason="gitlab-webhook"):
+            return {
+                "ok": True, "ignored": True, "reason": "semantic_duplicate",
+                "eventId": event_id,
+                **({"canonicalEventId": canonical_delivery.event.event_id} if canonical_delivery else {}),
+            }
+
+        baseline = await asyncio.to_thread(self._feedback_baseline, payload)
         projected_state = await asyncio.to_thread(
             self.work_items.project_event,
             payload,
             project_id=project_id,
+        )
+        workflow_feedback = await asyncio.to_thread(
+            self._unchanged_workflow_feedback,
+            payload, baseline, projected_state, project_id=project_id,
         )
         agents = self.event_target_agents(
             payload,
@@ -1127,6 +1236,7 @@ class GitLabService:
             and str((payload.get("object_attributes") or {}).get("status") or "").strip().casefold()
             in {"pending", "running"}
         )
+        deterministic = pipeline_progress or workflow_feedback
         results: list[dict[str, Any]] = []
 
         async def deliver_routed_event(
@@ -1141,7 +1251,7 @@ class GitLabService:
                     payload,
                     agent,
                 )
-                if pipeline_progress:
+                if deterministic:
                     result = {"ok": True, "queued": False, "deterministic": True,
                               "threadId": binding.thread_id}
                 elif (
@@ -1180,12 +1290,12 @@ class GitLabService:
                             "sent",
                             False,
                         ),
-                        **({"deterministic": True} if pipeline_progress else {}),
+                        **({"deterministic": True} if deterministic else {}),
                     }
                 )
             return AutonomyReasoningResult(
                 summary=(
-                    "GitLab progress recorded deterministically" if pipeline_progress else
+                    "GitLab progress recorded deterministically" if deterministic else
                     "GitLab event routed through bounded autonomy"
                 )
             )
@@ -1197,11 +1307,11 @@ class GitLabService:
             autonomy_cycle = await self.autonomy_controller.process(
                 canonical_delivery.event,
                 AutonomyObservation(
-                    deterministic_resolved=pipeline_progress,
-                    reasoning_score=0.0 if pipeline_progress else 1.0,
+                    deterministic_resolved=deterministic,
+                    reasoning_score=0.0 if deterministic else 1.0,
                     reason=(
-                        "nonterminal pipeline progress recorded without agent reasoning"
-                        if pipeline_progress else
+                        ("unchanged canonical workflow feedback recorded without agent reasoning" if workflow_feedback else "nonterminal pipeline progress recorded without agent reasoning")
+                        if deterministic else
                         "configured GitLab routing requires agent reasoning"
                     ),
                 ),
@@ -1209,12 +1319,12 @@ class GitLabService:
                     f"gitlab-route:{project_id}:"
                     f"{canonical_delivery.event.event_type}"
                 ),
-                reasoner=None if pipeline_progress else deliver_routed_event,
+                reasoner=None if deterministic else deliver_routed_event,
             )
             if (
                 autonomy_cycle.outcome
                 != AutonomyCycleOutcome.COMPLETED
-                and not (pipeline_progress and autonomy_cycle.outcome == AutonomyCycleOutcome.DETERMINISTIC)
+                and not (deterministic and autonomy_cycle.outcome == AutonomyCycleOutcome.DETERMINISTIC)
             ):
                 return {
                     "ok": True,
@@ -1230,7 +1340,7 @@ class GitLabService:
                         canonical_delivery.event.event_id
                     ),
                 }
-            if pipeline_progress:
+            if deterministic:
                 await deliver_routed_event()
         else:
             await deliver_routed_event()
@@ -1248,7 +1358,7 @@ class GitLabService:
                 ),
                 "agents": agents,
                 "targets": results,
-                **({"deterministic": True} if pipeline_progress else {}),
+                **({"deterministic": True} if deterministic else {}),
             }
         )
         await self.operations.publish_event(
@@ -1258,17 +1368,17 @@ class GitLabService:
                 "kind": kind,
                 "projectId": project_id,
                 "targets": results,
-                **({"deterministic": True} if pipeline_progress else {}),
+                **({"deterministic": True} if deterministic else {}),
             }
         )
-        if not pipeline_progress:
+        if not deterministic:
             self.operations.schedule_recovery()
         return {
             "ok": True,
             "accepted": True,
             "eventId": event_id,
             "targets": results,
-            **({"deterministic": True, "reason": "pipeline_progress_recorded"} if pipeline_progress else {}),
+            **({"deterministic": True, "reason": "workflow_feedback_recorded" if workflow_feedback else "pipeline_progress_recorded"} if deterministic else {}),
         }
 
     async def sweep_support_servicedesk(self) -> dict[str, Any]:

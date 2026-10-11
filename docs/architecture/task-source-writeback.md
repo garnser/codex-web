@@ -49,6 +49,15 @@ reflects the business stage. Receipt delivery does not constitute validation.
 Incoming awaiting-confirmation feedback cannot promote a pending handoff's
 business stage. Legacy adapters retain their existing owner/state contracts.
 
+Nonterminal external workflow labels cannot change the business stage, cancel
+the pending recipient intake, or reassign its canonical sender/action owner.
+The original handoff remains pending with its original request time and
+awaiting-confirmation status until canonical ACK, progress, expiry or resolution.
+Provider snapshots/labels remain observable as source data; they do not fabricate
+recipient acceptance. Authoritative external closure retains its existing terminal
+reconciliation path. Preserved source stage changes emit a canonical work-item
+event so operators can distinguish retained delivery from provider projection.
+
 Delivery-pending state participates in coalescing and applied fingerprints, so
 creating or acknowledging a handoff cannot be suppressed merely because owner,
 business stage and provider revision are unchanged. Operations diagnostics expose

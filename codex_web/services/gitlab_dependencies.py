@@ -26,6 +26,7 @@ class GitLabWorkItemRuntimeDependencies:
     project_event: Callable[..., Any]
     project_lookup: Callable[[str], Any]
     load_projects: Callable[[], list[Any]]
+    get_state: Callable[[str], WorkItemState | None] | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -120,12 +120,21 @@ class WorkItemStateMachine:
             fallback=state.current_stage,
         )
         if (
-            external_projection and normalized == "ready_for_validation"
+            external_projection and normalized != "closed"
             and state.handoff and state.handoff.status == "pending"
         ):
-            # Awaiting-confirmation labels describe receipt delivery. They
-            # cannot promote the retained business stage before actual ACK.
-            return state
+            # Provider workflow labels cannot acknowledge, cancel or replace
+            # canonical recipient delivery. Keep the original business stage
+            # and intake until an actual ACK/progress/expiry resolves it.
+            # Authoritative external closure retains its existing terminal path.
+            if normalized != state.current_stage:
+                self._append_work_item_event(self._work_item_event(
+                    state.ref, "pending_handoff_source_stage_preserved",
+                    payload={"source": source, "projected_stage": normalized,
+                             "retained_stage": state.current_stage,
+                             "handoff_requested_at": state.handoff.requested_at},
+                ))
+            return self._sync_work_item_status_label(state)
         return self.transitions.transition(
             state,
             normalized,
@@ -509,6 +518,10 @@ class WorkItemStateMachine:
         now: float,
         previous_stage: str | None = None,
     ) -> WorkItemState:
+        if state.handoff and state.handoff.status == "pending":
+            # Called by external-source projectors, never by recipient ACK.
+            # A different provider owner label is not a canonical handback.
+            return self._sync_work_item_status_label(state)
         owner = (
             self._coerce_owner(projected_owner)
             or self._coerce_owner(state.current_owner)

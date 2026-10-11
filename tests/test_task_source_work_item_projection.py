@@ -195,6 +195,35 @@ class TaskSourceWorkItemProjectionTests(unittest.TestCase):
         self.assertEqual(updated.current_owner, "carl")
         self.assertEqual(updated.next_owner, "operator")
 
+    def test_nonterminal_source_labels_cannot_cancel_pending_recovery_delivery(self):
+        base = self.projector.upsert(self.source, self.snapshot(), project_id="home")
+        for labels in (
+            ("owner::carl", "status::in progress"),
+            ("owner::someone-else", "status::blocked"),
+        ):
+            with self.subTest(labels=labels):
+                state = base.model_copy(deep=True)
+                state.current_stage = "failed_with_action_owner"
+                state.next_owner = "operator"
+                state.next_action = "Operator: inspect the original receipt"
+                state.blocker = "Publication receipt unavailable"
+                state.status_label = "status::awaiting confirmation"
+                state.handoff = WorkItemHandoff(
+                    from_agent="carl", to_agent="operator", requested_at=180,
+                    expected_action=state.next_action,
+                )
+                self.host.states[state.ref] = state
+                incoming = replace(self.snapshot(revision="2026-09-17T19:01:00Z"), labels=labels)
+                updated = self.projector.upsert(self.source, incoming, project_id="home")
+                self.assertEqual(updated.handoff, state.handoff)
+                self.assertEqual(updated.current_owner, "carl")
+                self.assertEqual(updated.next_owner, "operator")
+                self.assertEqual(updated.current_stage, "failed_with_action_owner")
+                self.assertEqual(updated.status_label, "status::awaiting confirmation")
+                self.assertEqual(updated.blocker, state.blocker)
+                self.assertEqual(updated.next_action, state.next_action)
+                self.assertEqual(updated.labels, list(labels))
+
     def test_issue_refresh_preserves_implementation_attribution_during_operator_repair(self) -> None:
         state = self.projector.upsert(self.source, self.snapshot(), project_id="home")
         state.implementation_owner = "nora"
