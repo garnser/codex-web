@@ -16,6 +16,7 @@ from codex_web.services.upgrades import (
 from codex_web.upgrades import (
     UpgradeDefinitionMigrationCreate,
     UpgradePlanCreate,
+    UpgradeLocalDeploymentQualificationRequest,
     UpgradeServiceDrainRequest,
     UpgradeStepExecute,
 )
@@ -121,6 +122,26 @@ def build_upgrades_router(service: UpgradeService) -> APIRouter:
                 target_revision=payload.target_revision,
             )
             return {"item": item.model_dump(mode="json")}
+        except Exception as exc:
+            if isinstance(exc, (UpgradeError, AuthorizationError)):
+                raise error(exc) from exc
+            raise
+
+    @router.post("/{plan_id}/qualify-local-deployment")
+    async def qualify_local_deployment(
+        plan_id: str,
+        payload: UpgradeLocalDeploymentQualificationRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            qualification = service.qualify_local_deployment(
+                plan_id, actor=admin(request),
+                service_instance_id=payload.service_instance_id,
+                source_revision=payload.source_revision,
+                target_revision=payload.target_revision,
+                preflight_evidence_id=payload.preflight_evidence_id,
+            )
+            return {"qualification": qualification}
         except Exception as exc:
             if isinstance(exc, (UpgradeError, AuthorizationError)):
                 raise error(exc) from exc

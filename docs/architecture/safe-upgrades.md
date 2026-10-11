@@ -156,6 +156,12 @@ compatible rollback. Local overlays cannot change the immutable qualified
 candidate. Automatic rollback is allowed only when the canonical qualification
 and current plan both retain rollback availability; otherwise maintenance stays
 in place for operator recovery.
+Host operators can obtain the same fresh canonical check from
+`POST /api/upgrades/{plan_id}/qualify-local-deployment`, with the exact service
+instance, source/target and preflight evidence. It retains administrator+MFA or
+scoped upgrade service authority and the complete-hosted-scope checks. A CLI
+guard must perform this request under the deployment lock at the one-shot
+verification boundary; a previously saved response is not an install grant.
 
 ## Migration phases
 
