@@ -131,6 +131,11 @@ class AgentRuntimeUsageStore:
             )
             return updated
 
+    def revision(self) -> float | None:
+        with self._lock:
+            self._ensure_records()
+            return self.store.namespace_revision(self.namespace)
+
     def list(self) -> list[AgentRuntimeUsage]:
         return sorted(
             self.load().records,

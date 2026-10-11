@@ -34,15 +34,21 @@ algorithm, partition ID, monotonically increasing sequence, previous record hash
 and SHA-256 of canonical JSON payload.
 
 The transactional AutonomyAuditStore append operation reads the current
-partition tail and appends the next record under the same SQLite writer
-transaction. Concurrent writers cannot independently claim the same next
-sequence.
+partition tail and assigns the next sequence under the shared StateStore
+namespace lock. It writes one immutable audit row, its partition tail and
+sequence metadata in the same transaction. Concurrent SQLite or PostgreSQL
+writers cannot independently claim the same sequence. Appends validate the
+selected tail and new payload; full-history validation and integrity checking
+remain explicit inspection/verification operations.
 
-Append validates the existing state and serializes the updated document within
-that transaction, then returns its newly created immutable record. It does not
-reconstruct the full persisted state solely to discard it. The general update
-operation continues returning validated persisted state; inspection and integrity
-verification retain their existing validation contract.
+Physical storage uses the versioned `autonomy-audit-records/1.0` layout in the
+existing namespace. A legacy envelope is validated and converted once in a
+transaction, preserving record order, hashes, checkpoints, policy and signals.
+Public load/update APIs still expose `AutonomyAuditState`; canonical recovery
+snapshots preserve the keyed layout and compute audit roots through the same
+logical decoder. Before rolling back to a version that cannot read this layout,
+export `AutonomyAuditStore.load().model_dump(mode="json")` to the namespace
+while writers are drained. Direct downgrade without that export is unsupported.
 
 Verification recomputes payload hashes, record hashes, previous-hash links and
 sequences. Missing, reordered or rewritten records fail integrity verification

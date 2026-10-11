@@ -195,3 +195,18 @@ items prevent a watchdog continuation from starting or enqueueing duplicate work
 Scope/preflight failures retain their ordinary visible error and cannot fall back
 to executing in the recipient's prior repository. Legacy discovery without a
 selected canonical item keeps its existing dispatch contract.
+
+
+### Bounded cycle persistence
+
+The existing autonomy namespace stores cycles using the versioned
+`autonomy-cycle-records/1.0` layout: ordered individual rows, a bounded
+cycle/event lookup index, and sequence/retention metadata. The legacy cycle
+array is validated and migrated transactionally once. Append assigns a sequence
+and expires the oldest row/index atomically; optimistic metadata checks retry
+concurrent ring changes. Duplicate-event lookup uses the index, and cooldown
+reads page at most the existing 500-cycle window. Full inspection and general
+updates retain the logical `AutonomyState` contract. Append returns its persisted
+cycle rather than reconstructing a discarded full state. Before an older-code
+rollback, drain writers and export the logical `load().model_dump(mode="json")`
+representation to the namespace. Unknown internal versions fail closed.

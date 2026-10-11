@@ -63,3 +63,19 @@ Browser tests record request counts and payload bytes for:
 Representative large-data tests cover 1,000-thread server-side list behavior and a 1,300+ Work Item browser session. Static boundary tests also prevent bundle growth, unbounded row rendering and removal of cancellation/telemetry contracts.
 
 If a budget must change, update the documented contract, the `FRONTEND_BUDGETS` constants and the corresponding tests in the same reviewed change. Do not loosen a test solely to make a regression pass.
+
+
+### Header usage projections
+
+The header requests `/api/agent-runtime-usage?include_items=false` and consumes
+only exact scoped resource aggregates and the matching historical record count.
+The default API response still includes detailed items. Summary projections are
+coalesced off the ASGI loop and cached separately for each tenant/workspace and
+filter set, with at most 16 entries of 256 KiB each. They may lag writes by at
+most five seconds; `freshness.checked_at` and `freshness.max_age_seconds` expose
+that bound. Expiry checks canonical shared-store revisions before reusing a
+projection, including after deletes and writes by another process. Detailed
+accounting reads remain uncached. Runtime rate-limit notifications update quota
+resources from the supplied snapshot and debounce one resources-only refresh;
+they do not request the same provider snapshot again. Manual and project-change
+refreshes coalesce in-flight work and retain a trailing full refresh.

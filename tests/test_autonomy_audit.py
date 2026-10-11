@@ -137,7 +137,7 @@ class AutonomyAuditTests(unittest.IsolatedAsyncioTestCase):
             completed_at=101.0,
         )
 
-    def test_append_validates_existing_state_once_and_retains_chain_receipt(self):
+    def test_append_reads_only_partition_tail_and_retains_chain_receipt(self):
         first = self.service.record_cycle(
             self.cycle("cycle-first", "evt-first"),
             self.event("evt-first"),
@@ -149,7 +149,7 @@ class AutonomyAuditTests(unittest.IsolatedAsyncioTestCase):
             second = self.audit_store.append(
                 first.payload.model_copy(update={"cycle_id": "cycle-second"})
             )
-        self.assertEqual(decode.call_count, 1)
+        self.assertEqual(decode.call_count, 0)
         self.assertEqual(second.sequence, first.sequence + 1)
         self.assertEqual(second.previous_hash, first.record_hash)
         self.assertEqual(self.audit_store.load().records[-1], second)
@@ -159,6 +159,7 @@ class AutonomyAuditTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def test_public_update_still_validates_and_returns_persisted_state(self):
+        self.audit_store.load()  # Materialize the legacy representation first.
         with patch.object(
             self.audit_store, "_decode", wraps=self.audit_store._decode
         ) as decode:
@@ -172,7 +173,7 @@ class AutonomyAuditTests(unittest.IsolatedAsyncioTestCase):
             self.event("evt-first"),
             actor=self.actor,
         )
-        invalid = self.sqlite.get("autonomy_audit")
+        invalid = self.audit_store.load().model_dump(mode="json")
         invalid["records"][0]["payload"]["model_tokens"] = -1
         self.sqlite.put("autonomy_audit", invalid)
         with self.assertRaises(ValueError):
@@ -223,7 +224,7 @@ class AutonomyAuditTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(verified.status, AuditIntegrityStatus.VERIFIED)
         self.assertEqual(verified.records_checked, 2)
 
-        raw = self.sqlite.get("autonomy_audit")
+        raw = self.audit_store.load().model_dump(mode="json")
         raw["records"][0]["payload"]["reason_code"] = "tampered"
         self.sqlite.put("autonomy_audit", raw)
 

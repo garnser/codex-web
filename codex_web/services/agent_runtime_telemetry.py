@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import copy
 import hashlib
+import threading
+from collections import OrderedDict
 import json
 import time
 from collections.abc import Callable
@@ -58,6 +61,13 @@ class AgentRuntimeTelemetryService:
         self.observation_notifier = observation_notifier
         self.clock = clock
         self._unsubscribers: list[Callable[[], None]] = []
+        # Only compact resource projections are retained, never usage histories.
+        self._summary_lock = threading.Lock()
+        self._summary_cache: OrderedDict[tuple[Any, ...], tuple[float, float | None, dict[str, Any]]] = OrderedDict()
+        self._summary_clock = time.monotonic
+        self.summary_max_age_seconds = 5.0
+        self.summary_max_entries = 16
+        self.summary_max_bytes = 256 * 1024
 
     def close(self) -> None:
         for unsubscribe in self._unsubscribers:
@@ -112,6 +122,48 @@ class AgentRuntimeTelemetryService:
                 record for record in records if model_id in record.observed_model_ids
             ]
         return records
+
+    def summary(self, actor: AuthenticationActor, **filters: str | None) -> dict[str, Any]:
+        """Coalesce header reads; detailed accounting reads remain uncached.
+
+        A projection may lag canonical writes by at most five seconds. After
+        that bound, a shared-store revision check detects other writers and
+        deletes. An unchanged revision needs no history read or aggregation.
+        """
+        key = (actor.organization_id, actor.workspace_id, *sorted(filters.items()))
+        with self._summary_lock:
+            now = self._summary_clock()
+            cached = self._summary_cache.get(key)
+            if cached is not None and now - cached[0] < self.summary_max_age_seconds:
+                self._summary_cache.move_to_end(key)
+                return copy.deepcopy(cached[2])
+            revision = self.store.revision()
+            if cached is not None and revision == cached[1]:
+                result = copy.deepcopy(cached[2])
+            else:
+                records = self.list(actor, **filters)
+                result = {
+                    "count": len(records),
+                    "resources": [
+                        resource.model_dump(mode="json")
+                        for resource in self.aggregate_resources(records)
+                    ],
+                }
+            result["freshness"] = {
+                "checked_at": self.clock(),
+                "max_age_seconds": self.summary_max_age_seconds,
+            }
+            # Bound both scope count and per-entry memory, including unusually
+            # large provider/model catalogs. Oversized results are returned,
+            # but never retained by the process-local cache.
+            if len(json.dumps(result).encode("utf-8")) <= self.summary_max_bytes:
+                self._summary_cache[key] = (self._summary_clock(), revision, result)
+                self._summary_cache.move_to_end(key)
+                while len(self._summary_cache) > self.summary_max_entries:
+                    self._summary_cache.popitem(last=False)
+            else:
+                self._summary_cache.pop(key, None)
+            return copy.deepcopy(result)
 
     @staticmethod
     def aggregate_resources(records: list[AgentRuntimeUsage]) -> list[UsageResource]:

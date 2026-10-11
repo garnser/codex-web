@@ -13,6 +13,7 @@ from codex_web.artifact_evidence import (
     EvidenceType,
 )
 from codex_web.autonomy_audit import AuditIntegrityStatus, AutonomyAuditState
+from codex_web.storage.autonomy_audit import AutonomyAuditStore
 from codex_web.canonical_events import CanonicalEventType
 from codex_web.crypto import (
     CryptoKeyState,
@@ -414,7 +415,7 @@ class RecoveryService:
         if not isinstance(raw, dict):
             return None
         try:
-            state = AutonomyAuditState.model_validate(raw)
+            state = AutonomyAuditStore._decode(raw)
         except Exception:
             return None
         partition_rows = [
