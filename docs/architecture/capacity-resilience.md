@@ -15,7 +15,10 @@ reconciliation work.
 CapacityPolicy complements existing bounded mechanisms rather than replacing
 them:
 
-- per-thread turn queues already have a configured maximum depth;
+- per-thread turn queues expose a configured scheduling high-water mark;
+  validated incoming tasks remain durably retained above it, without admitting
+  extra concurrent execution. Retention is committed canonical state, not a
+  growing population of runnable tasks or model invocations;
 - canonical EventTransport uses bounded local queues and durable outbox retry;
 - outbox dispatcher and transport consumer process bounded batches;
 - Scheduler claims/fires bounded batches and applies explicit misfire policy;
