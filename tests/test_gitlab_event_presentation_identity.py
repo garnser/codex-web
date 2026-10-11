@@ -33,6 +33,13 @@ class GitLabEventPresentationIdentityTests(unittest.TestCase):
         self.assertNotIn('!306', rendered)
         self.assertEqual(GitLabService.reference(None, self.payload), rendered)
 
+    def test_deterministic_progress_notice_does_not_claim_an_agent_started(self):
+        self.payload['object_attributes']['status'] = 'running'
+        rendered = self.service.format_notice(self.payload, 'quinn', {'ok': True, 'deterministic': True, 'queued': False})
+        self.assertIn('recorded without agent turn', rendered)
+        self.assertNotIn('(started)', rendered)
+        self.assertNotIn('(queued)', rendered)
+
     def test_pipeline_prompt_preserves_fact_identity_without_inventing_a_work_item(self):
         original = copy.deepcopy(self.payload)
         prompt = self.service.format_prompt(self.payload, 'quinn')

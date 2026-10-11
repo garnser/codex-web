@@ -1119,9 +1119,17 @@ class GitLabService:
                 for binding in master_bindings
             )
 
+        # These provider protocol states report progress, not a completed CI
+        # result needing review. Preserve ingestion/projection and notices,
+        # while terminal and unfamiliar states keep the existing reasoning path.
+        pipeline_progress = (
+            kind == "pipeline"
+            and str((payload.get("object_attributes") or {}).get("status") or "").strip().casefold()
+            in {"pending", "running"}
+        )
         results: list[dict[str, Any]] = []
 
-        async def dispatch_reasoning(
+        async def deliver_routed_event(
             *_args: Any,
         ) -> AutonomyReasoningResult:
             resource_ids = tuple(projected_state.resource_ids)
@@ -1133,7 +1141,10 @@ class GitLabService:
                     payload,
                     agent,
                 )
-                if (
+                if pipeline_progress:
+                    result = {"ok": True, "queued": False, "deterministic": True,
+                              "threadId": binding.thread_id}
+                elif (
                     self.operations.dispatch_scoped_event is not None
                     and repository_resource_id is not None
                 ):
@@ -1169,10 +1180,12 @@ class GitLabService:
                             "sent",
                             False,
                         ),
+                        **({"deterministic": True} if pipeline_progress else {}),
                     }
                 )
             return AutonomyReasoningResult(
                 summary=(
+                    "GitLab progress recorded deterministically" if pipeline_progress else
                     "GitLab event routed through bounded autonomy"
                 )
             )
@@ -1184,22 +1197,24 @@ class GitLabService:
             autonomy_cycle = await self.autonomy_controller.process(
                 canonical_delivery.event,
                 AutonomyObservation(
-                    deterministic_resolved=False,
-                    reasoning_score=1.0,
+                    deterministic_resolved=pipeline_progress,
+                    reasoning_score=0.0 if pipeline_progress else 1.0,
                     reason=(
-                        "configured GitLab routing requires "
-                        "agent reasoning"
+                        "nonterminal pipeline progress recorded without agent reasoning"
+                        if pipeline_progress else
+                        "configured GitLab routing requires agent reasoning"
                     ),
                 ),
                 cycle_key=(
                     f"gitlab-route:{project_id}:"
                     f"{canonical_delivery.event.event_type}"
                 ),
-                reasoner=dispatch_reasoning,
+                reasoner=None if pipeline_progress else deliver_routed_event,
             )
             if (
                 autonomy_cycle.outcome
                 != AutonomyCycleOutcome.COMPLETED
+                and not (pipeline_progress and autonomy_cycle.outcome == AutonomyCycleOutcome.DETERMINISTIC)
             ):
                 return {
                     "ok": True,
@@ -1215,8 +1230,10 @@ class GitLabService:
                         canonical_delivery.event.event_id
                     ),
                 }
+            if pipeline_progress:
+                await deliver_routed_event()
         else:
-            await dispatch_reasoning()
+            await deliver_routed_event()
 
         self.operations.append_event(
             {
@@ -1231,6 +1248,7 @@ class GitLabService:
                 ),
                 "agents": agents,
                 "targets": results,
+                **({"deterministic": True} if pipeline_progress else {}),
             }
         )
         await self.operations.publish_event(
@@ -1240,14 +1258,17 @@ class GitLabService:
                 "kind": kind,
                 "projectId": project_id,
                 "targets": results,
+                **({"deterministic": True} if pipeline_progress else {}),
             }
         )
-        self.operations.schedule_recovery()
+        if not pipeline_progress:
+            self.operations.schedule_recovery()
         return {
             "ok": True,
             "accepted": True,
             "eventId": event_id,
             "targets": results,
+            **({"deterministic": True, "reason": "pipeline_progress_recorded"} if pipeline_progress else {}),
         }
 
     async def sweep_support_servicedesk(self) -> dict[str, Any]:

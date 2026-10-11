@@ -99,6 +99,14 @@ The GitLab routing service may continue to own provider-specific notification/ro
 
 Non-issue GitLab events remain outside the issue-task adapter boundary until their authoritative task/artifact identity and canonical semantics are migrated explicitly; they must not be forced into an issue identity merely to satisfy the adapter contract.
 
+Pipeline `pending` and `running` webhooks retain canonical CI-event ingestion,
+deduplication, Work Item projection and configured notices, but do not enqueue a
+native agent turn or trigger native recovery. The existing autonomy gate records
+them as deterministically resolved with zero reasoning score. Notices explicitly
+say the update was recorded without an agent turn. Terminal CI outcomes,
+unfamiliar states and other webhook kinds keep their existing reasoning path;
+this progress handling does not establish CI success, review, merge or closure.
+
 ## Conformance
 
 Representative create, discovery, read, event, projection, and mutation behavior must pass the shared `TaskSourceConformanceSuite` and provider-neutral runtime tests. GitLab-specific tests add transport/label/lifecycle assertions on top of that shared gate; `ReferenceTaskSource` separately proves that the runtime is not dependent on GitLab semantics.
