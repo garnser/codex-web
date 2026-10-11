@@ -546,26 +546,78 @@ class ActionIntentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(completed.last_receipt_id)
         self.assertEqual(provider.calls,1)
 
+    async def test_invalid_unstarted_deferral_does_not_become_unknown_drain_blocker(self):
+        from codex_web.services.upgrades import UpgradeService
+        intent = self._create()
+        original_request = intent.request.model_dump(mode="json")
+        original_work_item = self.host.states[self.work_item.ref].model_copy(deep=True)
+        settled = self.service.fail_if_unstarted(
+            intent.id, actor=self.worker_actor,
+            reason="origin released; preserve commit and request a fresh authorized assignment",
+        )
+        self.assertEqual(settled.status, ActionIntentStatus.FAILED)
+        self.assertEqual(settled.attempt, 0)
+        self.assertIsNone(settled.execution_started_at)
+        self.assertIsNone(settled.last_receipt_id)
+        self.assertIsNone(settled.last_verification_id)
+        self.assertEqual(settled.request.model_dump(mode="json"), original_request)
+        self.assertEqual(self.host.states[self.work_item.ref], original_work_item)
+        self.assertEqual(UpgradeService._active_action_count(
+            SimpleNamespace(action_intents=self.service), self.actor, service_wide=True,
+        ), 0)
+        self.assertEqual(self.reference.values, {})
+
     async def test_stale_deferral_is_visible_without_provider_execution(self):
         intent = self._create()
-        recovered = self.service.require_recovery_if_unstarted(
+        recovered = self.service.fail_if_unstarted(
             intent.id, actor=self.worker_actor, reason="origin released; preserve commit",
         )
-        self.assertEqual(recovered.status, ActionIntentStatus.REQUIRES_RECONCILIATION)
+        self.assertEqual(recovered.status, ActionIntentStatus.FAILED)
         self.assertEqual(recovered.attempt, 0)
         self.assertIn("preserve commit", recovered.last_error)
         self.assertEqual(self.reference.values, {})
+
+    async def test_unstarted_rejection_preserves_execution_and_receipt_evidence(self):
+        for field, value in (("execution_started_at", 0.0),
+                             ("last_receipt_id", "retained-receipt"),
+                             ("last_verification_id", "retained-verification"),
+                             ("status", ActionIntentStatus.REQUIRES_RECONCILIATION),
+                             ("status", ActionIntentStatus.UNCERTAIN)):
+            with self.subTest(field=field, value=value):
+                intent = self._create()
+                def retain_evidence(state):
+                    state.intents = [item.model_copy(update={field: value})
+                                     if item.id == intent.id else item for item in state.intents]
+                    return state
+                self.service.store.update(retain_evidence, intent_ids=(intent.id,))
+                original = self.service.get(intent.id, self.actor)
+                current = self.service.fail_if_unstarted(
+                    intent.id, actor=self.worker_actor, reason="stale origin snapshot",
+                )
+                self.assertEqual(current, original)
+
+    async def test_unstarted_rejection_notifies_only_actual_transition(self):
+        from unittest.mock import Mock
+        intent = self._create()
+        notifier = Mock()
+        self.service.status_notifier = notifier
+        first = self.service.fail_if_unstarted(intent.id, actor=self.worker_actor, reason="origin invalid")
+        second = self.service.fail_if_unstarted(intent.id, actor=self.worker_actor, reason="duplicate recovery cycle")
+        self.assertEqual(first, second)
+        notifier.assert_called_once_with(first)
+        self.assertFalse(first.failure.requires_reconciliation)
+        self.assertFalse(first.failure.automatic_retry_allowed)
 
     async def test_stale_deferral_cannot_overwrite_concurrent_claim_or_result(self):
         intent = self._create()
         self.service.claim(ActionIntentClaimRequest(worker_id="worker-1"),
                            actor=self.worker_actor, intent_id=intent.id)
-        current = self.service.require_recovery_if_unstarted(
+        current = self.service.fail_if_unstarted(
             intent.id, actor=self.worker_actor, reason="stale snapshot",
         )
         self.assertEqual(current.status, ActionIntentStatus.CLAIMED)
         completed = await self.service.execute_claimed(intent.id, "worker-1", actor=self.worker_actor)
-        current = self.service.require_recovery_if_unstarted(
+        current = self.service.fail_if_unstarted(
             intent.id, actor=self.worker_actor, reason="stale snapshot",
         )
         self.assertEqual(current.status, completed.status)
