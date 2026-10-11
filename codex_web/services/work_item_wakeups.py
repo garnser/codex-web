@@ -124,10 +124,17 @@ class WorkItemWakeupQueuePolicy:
         # updates for the same canonical work item accumulated while an agent
         # was busy, only the newest one can be actionable; processing older
         # snapshots wastes queue capacity and may reintroduce stale routing.
-        latest_gitlab_index: dict[str, int] = {}
+        latest_gitlab_index: dict[tuple[str, str], int] = {}
         for index, queued in enumerate(compacted):
-            if queued.source == "gitlab" and queued.work_item_ref:
-                latest_gitlab_index[queued.work_item_ref] = index
+            if queued.source == "gitlab" and queued.work_item_ref and queued.reply_target is None:
+                key = (queued.thread_id, queued.work_item_ref)
+                previous = latest_gitlab_index.get(key)
+                # Front requeue and recovery can reorder the list. Admission
+                # time identifies recency; ID breaks equal-time ties stably.
+                if previous is None or (queued.created_at, queued.id) > (
+                    compacted[previous].created_at, compacted[previous].id
+                ):
+                    latest_gitlab_index[key] = index
         if latest_gitlab_index:
             deduplicated = [
                 queued
@@ -135,7 +142,8 @@ class WorkItemWakeupQueuePolicy:
                 if not (
                     queued.source == "gitlab"
                     and queued.work_item_ref
-                    and latest_gitlab_index[queued.work_item_ref] != index
+                    and queued.reply_target is None
+                    and latest_gitlab_index[(queued.thread_id, queued.work_item_ref)] != index
                 )
             ]
             if len(deduplicated) != len(compacted):
@@ -148,6 +156,7 @@ class WorkItemWakeupQueuePolicy:
             if not (
                 queued.source == "gitlab"
                 and queued.work_item_ref
+                and queued.reply_target is None
                 and self._work_item_is_terminal(queued.work_item_ref)
             )
         ]
@@ -159,6 +168,7 @@ class WorkItemWakeupQueuePolicy:
 
     def compact_queues(self) -> None:
         queues = self.host._load_turn_queues()
+        before = {key: list(items) for key, items in queues.items()}
         changed = False
         for thread_id, items in list(queues.items()):
             queues[thread_id], queue_changed = self.coalesce(items)
@@ -168,6 +178,31 @@ class WorkItemWakeupQueuePolicy:
                 changed = True
         if changed:
             self.host._save_turn_queues(queues)
+            append_event = getattr(self.host, "_append_bot_event", None)
+            if callable(append_event):
+                for thread_id, items in before.items():
+                    retained = queues.get(thread_id, [])
+                    retained_ids = {item.id for item in retained}
+                    retained_by_ref = {
+                        (item.thread_id, item.work_item_ref): item
+                        for item in retained
+                        if item.source == "gitlab" and item.work_item_ref
+                        and item.reply_target is None
+                    }
+                    replacements = []
+                    for item in items:
+                        replacement = retained_by_ref.get((item.thread_id, item.work_item_ref))
+                        if (
+                            item.id not in retained_ids and replacement is not None
+                            and item.source == "gitlab" and item.reply_target is None
+                        ):
+                            replacements.append({
+                                "removed_id": item.id, "retained_id": replacement.id,
+                                "work_item_ref": item.work_item_ref, "project_id": item.project_id,
+                            })
+                    if replacements:
+                        append_event({"type": "queued_gitlab_notifications_coalesced",
+                                      "thread_id": thread_id, "replacements": replacements})
 
 
 def install_work_item_wakeup_queue_policy(app: Any, host: Any) -> WorkItemWakeupQueuePolicy:
