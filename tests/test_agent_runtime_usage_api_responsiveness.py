@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import contextvars
 import threading
 import unittest
@@ -72,7 +73,7 @@ class RuntimeUsageApiResponsivenessTests(unittest.IsolatedAsyncioTestCase):
         service = SimpleNamespace(list=list_records, aggregate_resources=aggregate)
         endpoint = build_agent_runtime_usage_router(service).routes[0].endpoint
         result = await endpoint(self.request, 'p', 'e', 's', 'provider', 'runtime', 'model')
-        self.assertEqual(result, {'items': [{'kind': 'item'}], 'count': 1,
+        self.assertEqual(json.loads(result.body), {'items': [{'kind': 'item'}], 'count': 1,
             'resources': [{'kind': 'resource'}]})
         self.assertEqual([x[0] for x in calls], ['list', 'aggregate', 'item', 'resource'])
         self.assertTrue(all(thread != main for _,thread in calls))
@@ -88,7 +89,58 @@ class RuntimeUsageApiResponsivenessTests(unittest.IsolatedAsyncioTestCase):
             {'runtime_id':'other'}, {'observed_model_ids':('other',)}):
             self.service.store.upsert(record.model_copy(update={'id': 'other-'+str(len(changes))+'-'+next(iter(changes)), **changes}))
         result = await self.endpoint(self.request, 'p', 'e', 's', 'openai', 'codex', 'model')
-        self.assertEqual(result, {'items': [record.model_dump(mode='json')], 'count': 1, 'resources': []})
+        self.assertEqual(json.loads(result.body), {'items': [record.model_dump(mode='json')], 'count': 1, 'resources': []})
+
+    async def test_overlapping_reads_share_projection_and_cancel_independently(self):
+        started, release = threading.Event(), threading.Event()
+        calls = []
+        def blocking(actor, **filters):
+            calls.append(filters)
+            started.set()
+            release.wait(2)
+            return []
+        with patch.object(self.service, "list", side_effect=blocking):
+            first = asyncio.create_task(self.endpoint(self.request, project_id="p"))
+            await asyncio.to_thread(started.wait, 2)
+            second = asyncio.create_task(self.endpoint(self.request, project_id="p"))
+            await asyncio.sleep(0)
+            first.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await first
+            release.set()
+            result = await second
+            self.assertEqual(json.loads(result.body)["count"], 0)
+            self.assertEqual(len(calls), 1)
+            await self.endpoint(self.request, project_id="p")
+            self.assertEqual(len(calls), 2, "completed snapshots must not be cached")
+
+    async def test_overlapping_different_filters_and_scopes_are_separate(self):
+        started, release = threading.Event(), threading.Event()
+        calls = []
+        def blocking(actor, **filters):
+            calls.append((actor.workspace_id, filters["project_id"]))
+            if len(calls) == 3:
+                started.set()
+            release.wait(2)
+            return []
+        with patch.object(self.service, "list", side_effect=blocking):
+            tasks = [asyncio.create_task(self.endpoint(self.request, project_id=p)) for p in ("p", "other")]
+            other = Request({"type": "http", "state": {"identity_actor": self.fixture.actor.model_copy(update={"workspace_id": "foreign"})}})
+            tasks.append(asyncio.create_task(self.endpoint(other, project_id="p")))
+            try:
+                self.assertTrue(await asyncio.to_thread(started.wait, 2))
+            finally:
+                release.set()
+                await asyncio.gather(*tasks)
+        self.assertCountEqual(calls, [(self.fixture.actor.workspace_id, "p"), (self.fixture.actor.workspace_id, "other"), ("foreign", "p")])
+
+    async def test_failed_projection_is_removed_and_next_request_retries(self):
+        with patch.object(self.service, "list", side_effect=[ValueError("broken"), []]) as listing:
+            with self.assertRaisesRegex(ValueError, "broken"):
+                await self.endpoint(self.request)
+            result = await self.endpoint(self.request)
+            self.assertEqual(json.loads(result.body)["count"], 0)
+            self.assertEqual(listing.call_count, 2)
 
     async def test_unauthenticated_request_denies_before_catalog_read(self):
         request = Request({'type': 'http', 'state': {}})

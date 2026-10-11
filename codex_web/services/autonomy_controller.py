@@ -335,7 +335,7 @@ class AutonomyController:
         reason: str,
         error: str | None = None,
     ) -> None:
-        self.store.append_dead_letter(
+        self.store.record_dead_letter(
             AutonomyDeadLetter(
                 cycle_id=cycle.id,
                 cycle_key=cycle.cycle_key,

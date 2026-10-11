@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
-from codex_web.autonomy import AutonomyCycleRecord, AutonomyState
+from codex_web.autonomy import AutonomyCycleRecord, AutonomyDeadLetter, AutonomyState
 from codex_web.autonomy_audit import AutonomyAuditPayload, AutonomyAuditRecord, AutonomyAuditState, GENESIS_HASH
 from codex_web.storage.autonomy import AutonomyStateStore
 from codex_web.storage.autonomy_audit import AutonomyAuditStore
@@ -27,6 +27,55 @@ def audit_payload(i, workspace='ws'):
 
 
 class AutonomyAppendContract:
+    @staticmethod
+    def dead_letter(i):
+        return AutonomyDeadLetter(id=f"dead-{i}", cycle_id=f"cycle-{i}", cycle_key=f"cycle-{i}",
+                                  event_id=f"event-{i}", event_type="test", reason="blocked", attempts=0)
+
+    def test_dead_letter_write_leaves_cycle_history_and_lookup_unchanged(self):
+        store = AutonomyStateStore(self.backend)
+        self.backend.put(store.namespace, AutonomyState(cycles=[cycle(i) for i in range(5000)],
+                         dead_letters=[self.dead_letter(i) for i in range(1000)]).model_dump(mode="json"))
+        store._ensure_cycle_records()
+        before = self.backend.record_items(store.namespace)
+        with patch.object(self.backend, "get", side_effect=AssertionError("history read")), \
+             patch.object(self.backend, "record_items", side_effect=AssertionError("history scan")), \
+             patch.object(self.backend, "record_replace", side_effect=AssertionError("history replacement")), \
+             patch.object(self.backend, "update", side_effect=AssertionError("full-state update")), \
+             patch.object(store, "_decode", side_effect=AssertionError("cycle validation")):
+            appended = self.dead_letter(1000)
+            self.assertEqual(store.record_dead_letter(appended), appended)
+        after = self.backend.record_items(store.namespace)
+        history = lambda rows: {k: v for k, v in rows.items() if k not in ("dead_letters", "updated_at")}
+        self.assertEqual(history(before), history(after))
+        self.assertEqual(len(after["dead_letters"]), 1000)
+        self.assertEqual(after["dead_letters"][0]["id"], "dead-1")
+        self.assertEqual(after["dead_letters"][-1]["id"], "dead-1000")
+
+    def test_concurrent_dead_letters_are_atomic_and_wrapper_keeps_full_state_contract(self):
+        store = AutonomyStateStore(self.backend)
+        store.max_dead_letters = 10
+        store._ensure_records()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(lambda i: store.record_dead_letter(self.dead_letter(i)), range(30)))
+        state = store.load()
+        self.assertEqual(len(state.dead_letters), 10)
+        self.assertEqual(len({item.id for item in state.dead_letters}), 10)
+        result = store.append_dead_letter(self.dead_letter(30))
+        self.assertIsInstance(result, AutonomyState)
+        self.assertEqual(len(result.dead_letters), 10)
+        self.assertEqual(result.dead_letters[-1].id, "dead-30")
+
+    def test_invalid_retained_dead_letter_rejects_write_atomically(self):
+        store = AutonomyStateStore(self.backend)
+        store._ensure_records()
+        for raw in ([{"id": "invalid"}], {}):
+            with self.subTest(raw=raw):
+                self.backend.record_apply(store.namespace, upserts={"dead_letters": raw})
+                with self.assertRaises(ValueError):
+                    store.record_dead_letter(self.dead_letter(1))
+                self.assertEqual(self.backend.record_get(store.namespace, "dead_letters"), raw)
+
     def test_cycle_append_and_duplicate_lookup_do_not_read_or_validate_history(self):
         store = AutonomyStateStore(self.backend)
         self.backend.put(store.namespace, AutonomyState(cycles=[cycle(i) for i in range(5000)]).model_dump(mode='json'))
