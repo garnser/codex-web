@@ -70,6 +70,16 @@ Provider-specific fixtures remain at the adapter edge. Assertions over canonical
 
 ### Usage inspection scheduling
 
+The agent-session list projects all authorized sessions from one fresh,
+tenant-filtered telemetry read per request. That awaited worker-pool operation
+selects each visible session's latest record using the existing descending
+observation-time and record-ID order. Runtime health is read once for each
+provider/runtime pair within the response, including unavailable fallbacks.
+Neither snapshot survives the request; subsequent requests see fresh usage and
+health. Empty session lists skip telemetry reads. The single-session endpoint
+retains its existing scoped read. Response schemas, accounting, session
+authorization and canonical telemetry validation remain unchanged.
+
 The runtime usage API resolves its authenticated request actor before scheduling
 one awaited worker-pool read. That operation retains the existing validated catalog
 lookup, tenant and request filters, resource aggregation, output order and JSON
