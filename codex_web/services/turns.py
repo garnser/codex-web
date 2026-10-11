@@ -760,10 +760,12 @@ class TurnService:
 
     def queue(self, thread_id: str) -> dict[str, Any]:
         self.recovery.raise_if_thread_replaced(thread_id)
+        depth = self.queue_policy.depth(thread_id)
         return {
             "threadId": thread_id,
             "active": self.execution.thread_is_active(thread_id),
-            "queueDepth": self.queue_policy.depth(thread_id),
+            "queueDepth": depth,
+            **TurnQueuePolicy.retention_status(depth, TurnQueuePolicy.max_depth()),
             "queued": [
                 {
                     "id": queued.id,

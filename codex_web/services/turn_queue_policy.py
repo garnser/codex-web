@@ -38,11 +38,20 @@ class TurnQueuePolicy:
 
     @staticmethod
     def max_depth() -> int:
+        """Return the scheduling high-water mark, not a durable retention cap."""
         try:
             value = int(os.environ.get("CODEX_WEB_MAX_THREAD_QUEUE_DEPTH") or "12")
         except ValueError:
             return 12
         return max(1, min(value, 100))
+
+    @staticmethod
+    def retention_status(depth: int, high_water_mark: int) -> dict[str, int | bool]:
+        return {
+            "queueHighWaterMark": high_water_mark,
+            "queueUnderPressure": depth >= high_water_mark,
+            "retainedBeyondHighWaterMark": max(0, depth - high_water_mark),
+        }
 
     @staticmethod
     def steer_window_seconds() -> float:

@@ -42,6 +42,7 @@ from codex_web.services.provider_capacity import (
 from codex_web.services.project_runtime import assignment_sandbox_policy
 from codex_web.services.local_execution_worker import LocalExecutionWorkerCapacityError
 from codex_web.services.replicated_ownership import ReplicatedOwnershipService
+from codex_web.services.turn_queue_policy import TurnQueuePolicy
 from codex_web.services.agent_worker_session import (
     AssignmentBoundAgentSessionManager,
     AssignmentBoundAgentSessionStaleError,
@@ -689,11 +690,13 @@ class TurnExecutionService:
 
     async def publish_queue_status(self, thread_id: str) -> None:
         h = self.host
+        depth = h._thread_queue_depth(thread_id)
         await h.hub.publish(
             {
                 "type": "queue.status",
                 "threadId": thread_id,
-                "queueDepth": h._thread_queue_depth(thread_id),
+                "queueDepth": depth,
+                **TurnQueuePolicy.retention_status(depth, h._max_thread_queue_depth()),
                 "active": self.thread_is_active(thread_id),
             }
         )
@@ -769,16 +772,12 @@ class TurnExecutionService:
                         if id(existing) not in wakeup_ids
                     ]
 
-            if len(items) >= h._max_thread_queue_depth():
-                raise HTTPException(
-                    status_code=429,
-                    detail={
-                        "code": "thread_queue_full",
-                        "threadId": thread_id,
-                        "queueDepth": len(items),
-                        "maxQueueDepth": h._max_thread_queue_depth(),
-                    },
-                )
+            # This is durable admission, not execution admission. A full
+            # scheduling window must not discard a provider message that has
+            # already been acknowledged or canonically deduplicated upstream.
+            # Retain the task atomically; the existing serial drain and worker
+            # capacity gates still govern execution. Storage failure propagates
+            # rather than reporting successful admission.
 
             queued = QueuedTurn(
                 id=(

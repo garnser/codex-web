@@ -224,6 +224,22 @@ acknowledgement. Interrupted turns retain the canonical handoff checks.
 Activity updates for an existing bot binding preserve its recovered thread ID.
 The thread list renders pending queue depth alongside busy status and refreshes
 that depth from canonical project binding snapshots.
+
+Thread queue admission commits each validated task to the existing transactional
+TurnQueueRepository before reporting success. `CODEX_WEB_MAX_THREAD_QUEUE_DEPTH`
+is a scheduling pressure threshold (default 12), not permission to discard an
+incoming task. Queue inspection and status events expose `queueHighWaterMark`,
+`queueUnderPressure`, and `retainedBeyondHighWaterMark`; existing thread badges
+show the complete retained depth. Crossing the threshold preserves FIFO,
+execution identity, profile/repository scope and reply targets. It does not
+increase worker concurrency or bypass execution admission. Storage errors
+propagate and never establish successful retention. Duplicate inputs reuse
+their existing retained item. No new work object or storage schema is introduced.
+
+This protects thread-queue saturation. It does not establish crash durability
+for raw Slack envelopes acknowledged into an in-memory ingress shard, or
+crash-safe reconciliation of an unknown native start outcome. Those boundaries
+remain distinct from successful durable queue admission.
 ### Retained retry after stale-thread replacement
 
 A retained preflight attempt keeps its original thread, request, execution ID,

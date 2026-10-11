@@ -510,7 +510,7 @@ function renderThreads() {
     const depth=queuedDepth(thread.id);
     const threadStatus=(waiting
       ?`<span class="thread-state waiting"><span class="thread-state-dot"></span>Waiting for Codex</span>`
-      :"")+(depth>0?`<span class="thread-state queued">Queued ${depth}</span>`:"");
+      :"")+(depth>0?`<span class="thread-state queued" title="Tasks retained in the durable queue; execution remains sequential">Queued ${depth}</span>`:"");
 
     let actionMarkup="";
     if(expanded){
