@@ -445,6 +445,85 @@ class WorkItemGitLabSyncTests(unittest.TestCase):
         self.assertEqual(updated.next_owner, "james")
         self.assertEqual(updated.status_label, "status::blocked")
 
+    def test_unchanged_blocked_owner_refresh_preserves_pending_action_handoff(self) -> None:
+        handoff = WorkItemHandoff(
+            from_agent="orchestrator", to_agent="operator", requested_at=180.0,
+            status="pending", expected_action="Repair existing artifact delivery",
+        )
+        self._save(self._state(
+            stage="failed_with_action_owner", owner="orchestrator",
+            meaningful_at=20.0, gitlab_at=19.0, handoff=handoff,
+            status_label="status::awaiting confirmation", next_owner="operator",
+        ))
+        server._upsert_work_item_state_from_gitlab_event(
+            self._event_payload(state="opened", updated_at=_iso(50),
+                                labels=["owner::orchestrator", "status::blocked"]),
+            project_id="platform",
+        )
+        updated = self._load()
+        self.assertEqual(updated.current_owner, "orchestrator")
+        self.assertEqual(updated.next_owner, "operator")
+        self.assertEqual(updated.handoff, handoff)
+        self.assertIsNone(updated.handoff.acknowledged_at)
+        self.assertFalse(any(h.reason_code == "blocked_reconciled"
+                             for h in updated.handoff_history))
+
+    def test_changed_blocked_owner_still_supersedes_pending_action_handoff(self) -> None:
+        self._save(self._state(
+            stage="failed_with_action_owner", owner="orchestrator",
+            meaningful_at=20.0, gitlab_at=19.0,
+            handoff=WorkItemHandoff(from_agent="orchestrator", to_agent="operator",
+                                   requested_at=180.0, status="pending"),
+            status_label="status::awaiting confirmation", next_owner="operator",
+        ))
+        server._upsert_work_item_state_from_gitlab_event(
+            self._event_payload(state="opened", updated_at=_iso(50),
+                                labels=["owner::james", "status::blocked"]),
+            project_id="platform",
+        )
+        updated = self._load()
+        self.assertEqual(updated.current_owner, "james")
+        self.assertEqual(updated.next_owner, "james")
+        self.assertIsNone(updated.handoff)
+        self.assertEqual(updated.handoff_history[-1].reason_code, "blocked_reconciled")
+
+    def test_new_blocked_stage_same_owner_still_reconciles_handoff(self) -> None:
+        self._save(self._state(
+            stage="ready_for_validation", owner="carl",
+            meaningful_at=20.0, gitlab_at=19.0,
+            handoff=WorkItemHandoff(from_agent="carl", to_agent="release manager",
+                                   requested_at=180.0, status="pending"),
+            status_label="status::awaiting confirmation", next_owner="release manager",
+        ))
+        server._upsert_work_item_state_from_gitlab_event(
+            self._event_payload(state="opened", updated_at=_iso(50),
+                                labels=["owner::carl", "status::blocked"]),
+            project_id="platform",
+        )
+        updated = self._load()
+        self.assertEqual(updated.current_owner, "carl")
+        self.assertEqual(updated.next_owner, "carl")
+        self.assertIsNone(updated.handoff)
+
+    def test_blocked_merge_request_refresh_preserves_pending_action_handoff(self) -> None:
+        state = self._state(
+            stage="failed_with_action_owner", owner="orchestrator",
+            meaningful_at=20.0, gitlab_at=19.0,
+            handoff=WorkItemHandoff(from_agent="orchestrator", to_agent="operator",
+                                   requested_at=180.0, status="pending"),
+            status_label="status::awaiting confirmation", next_owner="operator",
+        )
+        state.ref = "veridataops/platform!134"
+        state.kind = "merge_request"
+        self._save(state)
+        payload = self._event_payload(state="opened", updated_at=_iso(50),
+                                      labels=["owner::orchestrator", "status::blocked"])
+        payload["object_kind"] = "merge_request"
+        server._upsert_work_item_state_from_gitlab_event(payload, project_id="platform")
+        updated = server._work_item_state(state.ref)
+        self.assertEqual(updated.next_owner, "operator")
+        self.assertEqual(updated.handoff, state.handoff)
+
     def test_pipeline_event_projects_as_closed_evidence_item(self) -> None:
         state = server._upsert_work_item_state_from_gitlab_event(
             self._pipeline_payload(iid=220, status="success", updated_at=_iso(61)),

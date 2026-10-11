@@ -415,6 +415,7 @@ class GitLabArtifactEventProjector:
                     projected_owner=projected_owner,
                     previous_owner=previous_owner,
                     now=now,
+                    previous_stage=previous_stage,
                 )
 
         state = self.state_machine._ensure_work_item_lane_defaults(state)
