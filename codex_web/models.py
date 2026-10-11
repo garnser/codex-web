@@ -341,6 +341,7 @@ class WorkItemAckCreate(BaseModel):
 
 class WorkItemProgressUpdate(BaseModel):
     actor: str | None = None
+    expected_handoff_requested_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     current_owner: str | None = None
     current_stage: WorkItemStage | None = None
     next_action: str | None = None

@@ -4,6 +4,7 @@ import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
+from fastapi import HTTPException
 
 from codex_web.models import TaskSourceIdentity, WorkItemHandoff, WorkItemProgressUpdate
 from codex_web.services.work_items import WorkItemService
@@ -78,6 +79,42 @@ class ProgressEvidenceTests(unittest.TestCase):
 
 
 class ProgressSchedulingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stale_corrective_handback_progress_has_no_writeback_or_dispatch(self):
+        fixture = ProgressEvidenceTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        state = fixture.machine._work_item_state(fixture.ref)
+        state.handoff = WorkItemHandoff(from_agent="quinn", to_agent="dana",
+                                       requested_at=180.0, status="pending")
+        state.current_owner = "quinn"
+        state.next_owner = "dana"
+        fixture.machine._save_work_item_state(state)
+        before = fixture.machine._work_item_state(fixture.ref).model_dump(mode="json")
+        service = object.__new__(WorkItemService)
+        service.state_machine = fixture.machine
+        service.task_source_writeback = SimpleNamespace(sync=AsyncMock())
+        continuity = SimpleNamespace(schedule_actionable_owner_dispatch=Mock(),
+                                     schedule_actionable_owner_continuity_check=Mock())
+        recovery = SimpleNamespace(schedule=Mock())
+        publish = AsyncMock()
+        with self.assertRaises(HTTPException) as caught:
+            await service._progress_with(
+                fixture.ref, WorkItemProgressUpdate(actor="dana", next_owner="quinn",
+                                                    current_stage="validation_running", blocker=None),
+                continuity=continuity, recovery=recovery,
+                structured_progress=fixture.machine._structured_progress,
+                public_state=fixture.machine._work_item_state_public,
+                split_brain_findings=fixture.machine._work_item_split_brain_findings,
+                publish_event=publish,
+            )
+        self.assertEqual(caught.exception.detail["code"], "pending_handoff_conflict")
+        self.assertEqual(fixture.machine._work_item_state(fixture.ref).model_dump(mode="json"), before)
+        service.task_source_writeback.sync.assert_not_called()
+        publish.assert_not_called()
+        recovery.schedule.assert_not_called()
+        continuity.schedule_actionable_owner_dispatch.assert_not_called()
+        continuity.schedule_actionable_owner_continuity_check.assert_not_called()
+
     async def test_historical_override_does_not_require_a_canonical_record(self):
         fixture = ProgressEvidenceTests()
         fixture.setUp()
