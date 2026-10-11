@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import json
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
@@ -103,5 +104,6 @@ class UsageSummaryApiTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.service, 'summary', side_effect=summary), \
              patch.object(self.service, 'list', side_effect=AssertionError('detailed response')):
             result = await self.endpoint(self.request, project_id='p', include_items=False)
+        result = json.loads(result.body)
         self.assertNotIn('items', result)
         self.assertNotEqual(threads, [main])

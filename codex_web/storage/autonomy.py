@@ -244,12 +244,32 @@ class AutonomyStateStore:
             if self.store.record_mutate(self.namespace, keys, apply):
                 return cycle
 
-    def append_dead_letter(self, item: AutonomyDeadLetter) -> AutonomyState:
-        def apply(state: AutonomyState) -> AutonomyState:
-            state.dead_letters.append(item)
-            return state
+    def record_dead_letter(self, item: AutonomyDeadLetter) -> AutonomyDeadLetter:
+        """Append to the bounded dead-letter field without reading cycle history."""
+        self._ensure_records()
+        item = AutonomyDeadLetter.model_validate(item.model_dump(mode="json"))
+        row = item.model_dump(mode="json")
 
-        return self.update(apply)
+        def apply(current):
+            values = current["dead_letters"]
+            if values is None:
+                values = []
+            if not isinstance(values, list):
+                raise ValueError("autonomy dead letters must be a list")
+            # Validate retained state as before; never return an unchecked
+            # record merely because the full cycle ledger is no longer read.
+            retained = [AutonomyDeadLetter.model_validate(value).model_dump(mode="json")
+                        for value in values]
+            return {"dead_letters": (retained + [row])[-self.max_dead_letters:],
+                    "updated_at": time.time()}
+
+        self.store.record_mutate(self.namespace, ("dead_letters", "updated_at"), apply)
+        return item
+
+    def append_dead_letter(self, item: AutonomyDeadLetter) -> AutonomyState:
+        # Preserve the historical full-state return contract for explicit callers.
+        self.record_dead_letter(item)
+        return self.load()
 
     def add_break_glass_grant(
         self,
