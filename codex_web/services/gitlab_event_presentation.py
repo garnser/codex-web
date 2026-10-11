@@ -203,6 +203,7 @@ class GitLabEventPresentationService:
         url = self.event_url(payload)
         route_name = agent or "project"
         dispatch_state = (
+            "recorded without agent turn" if result.get("deterministic") else
             "queued" if result.get("queued") else "started"
         )
         lines = [
