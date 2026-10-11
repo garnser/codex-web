@@ -752,6 +752,12 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("repository.read.job-logs", operation_ids)
         self.assertIn("repository.read.artifacts", operation_ids)
         self.assertIn("repository.read.artifact-download", operation_ids)
+        artifact_download = next(item for item in payload["operations"] if item["id"] == "repository.read.artifact-download")
+        self.assertIn("member_path", artifact_download["optional_query_parameters"])
+        self.assertIn("repository_resource_id", artifact_download["optional_query_parameters"])
+        for operation in payload["operations"]:
+            if operation["id"] != "repository.read.artifact-download":
+                self.assertNotIn("member_path", operation.get("optional_query_parameters", []))
         self.assertIn("repository.check.rerun", operation_ids)
         self.assertIn("repository.workspace.refresh", operation_ids)
         self.assertIn("action_intent.reconcile", operation_ids)
