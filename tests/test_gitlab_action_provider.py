@@ -480,7 +480,7 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse((await self.execution.verify(self.binding.id, result, actor=self.actor)).verified)
         rows[0].clear()
         rows[0].update({**original, "description": "another action owns this MR"})
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ActionRequirementError):
             await self.execution.execute(self.binding.id, request, actor=self.actor)
         self.assertEqual(len(writes), 1)
 
@@ -573,6 +573,29 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("secret-gitlab-token", str(history))
 
+    async def test_unowned_mr_rejection_is_known_failed_with_no_write(self):
+        self.client.merge_request_rows.append({"id":99,"iid":7,"title":"Existing",
+            "description":"Existing delivery; no current marker", "source_branch":"feature/890",
+            "target_branch":"main","draft":False})
+        completed, history = await self._execute_upsert_intent({"title":"Correction",
+            "head":"feature/890","base":"main","draft":False})
+        self.assertEqual(completed.status, ActionIntentStatus.FAILED)
+        self.assertFalse(completed.failure.requires_reconciliation)
+        self.assertEqual(history["receipts"][-1]["outcome"], "failed")
+        self.assertIn("not owned",completed.last_error)
+        self.assertEqual(self.client.merge_request_creates,0)
+        self.assertEqual(self.client.merge_request_updates,0)
+        self.assertEqual(self.client.merge_request_rows[0]["title"],"Existing")
+
+    async def test_empty_parameters_fail_without_any_provider_calls(self):
+        for action in [CODE_HOST_ISSUE_COMMENT_ACTION_ID,CODE_HOST_ISSUE_UPDATE_ACTION_ID,
+                       CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID,CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID]:
+            with self.subTest(action=action), self.assertRaises(ActionRequirementError):
+                await self.execution.execute(self.binding.id,self._request(action,{}),actor=self.actor)
+        self.assertEqual(self.client.credentials,[])
+        self.assertEqual(self.client.merge_request_creates,0)
+        self.assertEqual(self.client.merge_request_merges,0)
+
     async def test_value_error_after_mr_write_retains_unknown_receipt(self):
         create = self.client.create_merge_request
 
@@ -624,7 +647,7 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-        with self.assertRaisesRegex(ValueError, "not owned"):
+        with self.assertRaisesRegex(ActionRequirementError, "not owned"):
             await self.execution.execute(self.binding.id, request, actor=self.actor)
 
     async def test_merge_request_requires_exact_head_and_green_pipeline(self) -> None:
@@ -691,7 +714,7 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-        with self.assertRaisesRegex(ValueError, "no longer matches"):
+        with self.assertRaisesRegex(ActionRequirementError, "no longer matches"):
             await self.execution.execute(
                 self.binding.id, request, actor=self.actor
             )
@@ -781,7 +804,7 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
             self.recovery_state.leases[0].expires_at = time.time() - 1
             return result
         self.client.branch = expire
-        with self.assertRaisesRegex(ValueError, "lease is not active"):
+        with self.assertRaisesRegex(ActionRequirementError, "lease is not active"):
             await self.execution.execute(self.binding.id, request, actor=self.actor)
         self.assertIsNone(self.published)
 

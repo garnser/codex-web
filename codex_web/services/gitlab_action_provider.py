@@ -325,7 +325,21 @@ class GitLabActionProvider:
         credential: str | None = None,
     ) -> ActionResult:
         if not credential:
-            raise ValueError("GitLab credential is required")
+            raise ActionRequirementError("GitLab credential is required")
+        # Preparation is side-effect free. Invalid inputs or workspace scope
+        # must fail before any provider mutation, never become unknown outcomes.
+        try:
+            await self.prepare(request, binding=binding)
+        except ValueError as exc:
+            prefix = (
+                "GitLab branch could not be attested"
+                if request.action_id == CODE_HOST_BRANCH_PUBLISH_ACTION_ID
+                else "GitLab action precondition failed"
+            )
+            if request.action_id == CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID:
+                prefix += "; supported change request parameters: title, body, head, base, draft"
+            raise ActionRequirementError(f"{prefix}: {exc}") from exc
+
         project = self.contract.locator(request)
         started = time.time()
         output: dict[str, Any] = {
@@ -420,7 +434,7 @@ class GitLabActionProvider:
                 None,
             )
             if owned is None and merge_requests:
-                raise ValueError(
+                raise ActionRequirementError(
                     "an existing merge request for head/base is not owned by this ActionIntent"
                 )
             api_payload = {
@@ -489,7 +503,11 @@ class GitLabActionProvider:
                 await self._attest_existing_merge_request(attested, project, credential)
                 # Provider reads may outlive the lease or overlap workspace mutation.
                 # Re-attest every local guard after the remote proof, before push.
-                if self.contract.attest_branch(request) != attested:
+                try:
+                    reattested = self.contract.attest_branch(request)
+                except ValueError as exc:
+                    raise ActionRequirementError(str(exc)) from exc
+                if reattested != attested:
                     raise ActionRequirementError("execution workspace attestation changed during existing merge request verification")
             if self.branch_publisher is not None:
                 await self.branch_publisher(
@@ -529,7 +547,7 @@ class GitLabActionProvider:
         elif request.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
             payload = self.contract.pull_request_merge(request)
             if payload["merge_method"] == "rebase":
-                raise ValueError(
+                raise ActionRequirementError(
                     "GitLab rebase-and-merge is not supported atomically"
                 )
             iid = payload["number"]
@@ -539,14 +557,14 @@ class GitLabActionProvider:
             current_sha = str(current.get("sha") or "").casefold()
             expected_head_sha = payload["expected_head_sha"]
             if expected_head_sha and current_sha != expected_head_sha:
-                raise ValueError(
+                raise ActionRequirementError(
                     "GitLab merge request head no longer matches expected_head_sha"
                 )
             if str(current.get("state") or "").casefold() != "merged":
                 if bool(current.get("draft")) or bool(
                     current.get("work_in_progress")
                 ):
-                    raise ValueError("GitLab merge request is still a draft")
+                    raise ActionRequirementError("GitLab merge request is still a draft")
                 detailed_status = str(
                     current.get("detailed_merge_status") or ""
                 ).casefold()
@@ -554,18 +572,18 @@ class GitLabActionProvider:
                     current.get("merge_status") or ""
                 ).casefold()
                 if detailed_status and detailed_status != "mergeable":
-                    raise ValueError(
+                    raise ActionRequirementError(
                         "GitLab merge request is not clean and mergeable"
                     )
                 if merge_status and merge_status != "can_be_merged":
-                    raise ValueError(
+                    raise ActionRequirementError(
                         "GitLab merge request is not clean and mergeable"
                     )
                 pipeline = current.get("head_pipeline")
                 if not isinstance(pipeline, dict) or str(
                     pipeline.get("status") or ""
                 ).casefold() != "success":
-                    raise ValueError(
+                    raise ActionRequirementError(
                         "GitLab merge request head pipeline is not successful"
                     )
                 merged = await self.client.accept_merge_request(
