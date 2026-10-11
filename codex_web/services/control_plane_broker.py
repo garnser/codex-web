@@ -350,6 +350,7 @@ _MUTATION_SUFFIXES = {
     "reconcile": "work_item.reconcile",
 }
 _SAFE_TRACE_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_REPOSITORY_ACTION_PAYLOAD_FIELDS = ("parameters", "idempotency_key")
 _REPOSITORY_ACTIONS = {
     "/api/repository-actions/issue/create": (
         "repository.issue.create",
@@ -448,7 +449,7 @@ class ControlPlaneBrokerService:
         if any(item.id == operation_id for operation_id, _ in _REPOSITORY_ACTIONS.values()):
             result["request_body"] = {
                 "type": "object",
-                "allowed_fields": ["parameters", "idempotency_key"],
+                "allowed_fields": list(_REPOSITORY_ACTION_PAYLOAD_FIELDS),
                 "parameters": {"type": "object"},
                 "idempotency_key": {"type": "string"},
                 "assignment_bound_parameters": (
@@ -915,7 +916,7 @@ class ControlPlaneBrokerService:
             for operation_id, action_id in _REPOSITORY_ACTIONS.values()
             if operation_id == operation.id
         )
-        allowed_keys = {"parameters", "idempotency_key"}
+        allowed_keys = set(_REPOSITORY_ACTION_PAYLOAD_FIELDS)
         unexpected = sorted(set(payload) - allowed_keys)
         if unexpected:
             raise ControlPlaneBrokerRequestError(
