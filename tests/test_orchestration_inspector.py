@@ -1,6 +1,14 @@
 from __future__ import annotations
 
 import tempfile
+import asyncio
+import threading
+from contextlib import ExitStack
+from types import SimpleNamespace
+from unittest.mock import patch
+from starlette.requests import Request
+from codex_web.identity import PrincipalKind
+from codex_web.api.orchestration import build_orchestration_router
 import unittest
 from pathlib import Path
 
@@ -58,6 +66,52 @@ class OrchestrationInspectorTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    async def test_timeline_loads_each_domain_once_per_request(self) -> None:
+        for index in range(5):
+            await self.ingestion.ingest(
+                event_type=CanonicalEventType.WORK_TRANSITION,
+                source="fixture:bounded-refresh", idempotency_key=str(index),
+                payload={"ref": f"TASK-{index}"},
+            )
+        stores = [(self.action_intents, "load"), (self.approvals, "list"),
+                  (self.attention, "list"), (self.runtime_usage, "list"),
+                  (self.agent_sessions, "list"), (self.model_gateway, "load"),
+                  (self.artifact_evidence, "load")]
+        with ExitStack() as stack:
+            reads = [stack.enter_context(patch.object(store, method,
+                     wraps=getattr(store, method))) for store, method in stores]
+            snapshot = self.service.snapshot(organization_id="local", workspace_id="default")
+            self.assertEqual(snapshot["event_count"], 5)
+            for read in reads:
+                self.assertEqual(read.call_count, 1)
+            self.service.snapshot(organization_id="local", workspace_id="default")
+            for read in reads:
+                self.assertEqual(read.call_count, 2)  # No cross-request cache.
+
+    async def test_inspector_api_keeps_loop_responsive_during_store_read(self) -> None:
+        started, release = threading.Event(), threading.Event()
+        loop_thread = threading.get_ident()
+        def snapshot(**kwargs):
+            self.assertNotEqual(threading.get_ident(), loop_thread)
+            self.assertEqual(kwargs["organization_id"], "local")
+            started.set()
+            if not release.wait(5):
+                raise RuntimeError("store read was not released")
+            return {"event_count": 0}
+        router = build_orchestration_router(SimpleNamespace(snapshot=snapshot))
+        endpoint = next(route.endpoint for route in router.routes if route.name == "inspector")
+        actor = SimpleNamespace(principal_kind=PrincipalKind.SERVICE,
+            service_scopes=("orchestration:read",), organization_id="local", workspace_id="default")
+        request = Request({"type": "http", "state": {"identity_actor": actor}})
+        task = asyncio.create_task(endpoint(request))
+        try:
+            self.assertTrue(await asyncio.to_thread(started.wait, 2))
+            self.assertFalse(task.done())
+            await asyncio.sleep(0)
+        finally:
+            release.set()
+        self.assertEqual(await task, {"event_count": 0})
 
     async def test_snapshot_correlates_event_with_deterministic_cycle(self) -> None:
         delivery = await self.ingestion.ingest(

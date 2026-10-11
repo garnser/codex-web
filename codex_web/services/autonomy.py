@@ -371,7 +371,7 @@ class AutonomyService:
         settings = d.load_gitlab_routing_settings()
         if not settings.enabled:
             return
-        states = d.load_work_item_states()
+        states = await asyncio.to_thread(d.load_work_item_states)
         now = time.time()
         for project_id, project_settings in settings.projects.items():
             if not project_settings.enabled:
@@ -521,7 +521,7 @@ class AutonomyService:
 
     async def run_work_item_sla_cycle(self) -> None:
         d = self.runtime
-        states = d.load_work_item_states()
+        states = await asyncio.to_thread(d.load_work_item_states)
         if not states:
             return
         now = time.time()
