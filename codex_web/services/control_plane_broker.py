@@ -183,6 +183,13 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
         authority_level=AuthorityLevel.EXECUTE,
     ),
     ControlPlaneBrokerOperation(
+        id="repository.read.delivery-evidence",
+        method="GET",
+        path_template="/api/action-intents/{intent_id}/delivery-evidence",
+        capability="repository.read",
+        authority_level=AuthorityLevel.READ,
+    ),
+    ControlPlaneBrokerOperation(
         id="repository.read.metadata",
         method="GET",
         path_template="/api/repository-facts",
@@ -708,7 +715,9 @@ class ControlPlaneBrokerService:
                 query=query,
             )
         action_intent_prefix = "/api/action-intents/"
-        action_intent_suffix = "/reconcile"
+        action_intent_suffix = (
+            "/delivery-evidence" if path.endswith("/delivery-evidence") else "/reconcile"
+        )
         if path.startswith(action_intent_prefix) and path.endswith(
             action_intent_suffix
         ):
@@ -719,10 +728,13 @@ class ControlPlaneBrokerService:
             ).strip("/")
             if not re.fullmatch(r"action-intent-[A-Za-z0-9]+", intent_id):
                 raise ControlPlaneBrokerDeniedError("invalid action intent id")
-            operation = _OPERATION_BY_ID["action_intent.reconcile"]
+            operation = _OPERATION_BY_ID[
+                "repository.read.delivery-evidence"
+                if action_intent_suffix == "/delivery-evidence" else "action_intent.reconcile"
+            ]
             if method != operation.method:
                 raise ControlPlaneBrokerDeniedError(
-                    "method is not allowed for action-intent reconciliation"
+                    f"method is not allowed for {operation.id}"
                 )
             return _ResolvedOperation(
                 operation=operation,
@@ -1281,6 +1293,44 @@ class ControlPlaneBrokerService:
 
         return actor, requester_actor, state, authority_decision
 
+    def _read_delivery_evidence(
+        self, assignment: ExecutionAssignment, requester_actor: AuthenticationActor,
+        intent_id: str | None, query: dict[str, list[str]],
+    ) -> dict[str, Any]:
+        if self.action_intents is None or intent_id is None:
+            raise ControlPlaneBrokerDeniedError("delivery evidence is unavailable")
+        intent = self.action_intents.get(intent_id, requester_actor)
+        repository_id = self._read_repository_id(assignment, query)
+        if (
+            intent.action_id not in _RECONCILABLE_REPOSITORY_ACTION_IDS
+            or intent.organization_id != assignment.organization_id
+            or intent.workspace_id != assignment.workspace_id
+            or intent.project_id != assignment.project_id
+            or tuple(intent.resource_ids) != (repository_id,)
+            or intent.requested_by != requester_actor.identity_id
+        ):
+            raise ControlPlaneBrokerDeniedError("delivery evidence is outside assignment scope")
+        history = self.action_intents.history(intent_id, requester_actor)
+        original = history["intent"]
+        def select(row: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+            return {key: row.get(key) for key in fields}
+        # Metadata only: never expose arbitrary request/provider/inbox bodies.
+        # Eight recent rows bound inspection; original receipt IDs remain exact.
+        return {
+            "intent": select(original, ("id", "action_id", "status", "attempt",
+                "organization_id", "workspace_id", "project_id", "resource_ids",
+                "work_item_ref", "execution_id", "last_receipt_id", "last_verification_id")),
+            "parameters": select((original.get("request") or {}).get("parameters") or {},
+                ("execution_workspace_id", "branch", "head_revision", "expected_remote_revision",
+                 "expected_remote_absent", "work_item_issue_number", "existing_change_request_number")),
+            "receipts": [select(row, ("id", "intent_id", "attempt", "outcome",
+                "provider_external_id", "received_at")) for row in history["receipts"][-8:]],
+            "verifications": [select(row, ("id", "intent_id", "verified", "verified_at"))
+                for row in history["verifications"][-8:]],
+            "omitted_receipts": max(0, len(history["receipts"]) - 8),
+            "omitted_verifications": max(0, len(history["verifications"]) - 8),
+        }
+
     async def dispatch(
         self,
         *,
@@ -1322,6 +1372,13 @@ class ControlPlaneBrokerService:
             result = self._schedule_local_deployment(
                 payload,
                 actor=requester_actor,
+            )
+        elif operation.id == "repository.read.delivery-evidence":
+            if payload:
+                raise ControlPlaneBrokerRequestError("delivery evidence read accepts no body")
+            result = await asyncio.to_thread(
+                self._read_delivery_evidence, assignment, requester_actor,
+                resolved.target_ref, resolved.query,
             )
         elif repository_read:
             result = await self._read_repository_fact(
