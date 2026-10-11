@@ -412,7 +412,7 @@ class WorkItemGitLabSyncTests(unittest.TestCase):
         self.assertEqual(updated.status_label, "status::in progress")
         self.assertEqual(updated.handoff.status if updated.handoff else None, "accepted")
 
-    def test_blocked_event_reconciles_actionable_owner_and_clears_pending_handoff(self) -> None:
+    def test_blocked_event_records_source_labels_without_clearing_pending_handoff(self) -> None:
         handoff = WorkItemHandoff(
             from_agent="carl",
             to_agent="release manager",
@@ -441,10 +441,15 @@ class WorkItemGitLabSyncTests(unittest.TestCase):
         )
 
         updated = self._load()
-        self.assertEqual(updated.current_stage, "failed_with_action_owner")
-        self.assertEqual(updated.current_owner, "james")
-        self.assertEqual(updated.next_owner, "james")
-        self.assertEqual(updated.status_label, "status::blocked")
+        # Workflow labels are not recipient ACK or canonical intake resolution.
+        self.assertEqual(updated.current_stage, "ready_for_validation")
+        self.assertEqual(updated.current_owner, "carl")
+        self.assertEqual(updated.next_owner, "release manager")
+        self.assertEqual(updated.status_label, "status::awaiting confirmation")
+        self.assertEqual(updated.handoff, handoff)
+        self.assertIsNone(updated.handoff.acknowledged_at)
+        self.assertIn("owner::james", updated.labels)
+        self.assertIn("status::blocked", updated.labels)
 
     def test_unchanged_blocked_owner_refresh_preserves_pending_action_handoff(self) -> None:
         handoff = WorkItemHandoff(
@@ -469,7 +474,7 @@ class WorkItemGitLabSyncTests(unittest.TestCase):
         self.assertFalse(any(h.reason_code == "blocked_reconciled"
                              for h in updated.handoff_history))
 
-    def test_changed_blocked_owner_still_supersedes_pending_action_handoff(self) -> None:
+    def test_changed_provider_owner_cannot_supersede_pending_action_handoff(self) -> None:
         self._save(self._state(
             stage="failed_with_action_owner", owner="orchestrator",
             meaningful_at=20.0, gitlab_at=19.0,
@@ -483,13 +488,15 @@ class WorkItemGitLabSyncTests(unittest.TestCase):
             project_id="platform",
         )
         updated = self._load()
-        self.assertEqual(updated.current_owner, "james")
-        self.assertEqual(updated.next_owner, "james")
-        self.assertIsNone(updated.handoff)
-        self.assertEqual(updated.handoff_history[-1].reason_code, "blocked_reconciled")
-        self.assertIsNone(updated.handoff_history[-1].acknowledged_at)
+        self.assertEqual(updated.current_owner, "orchestrator")
+        self.assertEqual(updated.next_owner, "operator")
+        self.assertEqual(updated.handoff.requested_at, 180.0)
+        self.assertIsNone(updated.handoff.acknowledged_at)
+        self.assertEqual(updated.handoff.status, "pending")
+        self.assertFalse(updated.handoff_history)
+        self.assertIn("owner::james", updated.labels)
 
-    def test_new_blocked_stage_same_owner_still_reconciles_handoff(self) -> None:
+    def test_blocked_source_stage_preserves_pending_recipient_and_business_stage(self) -> None:
         self._save(self._state(
             stage="ready_for_validation", owner="carl",
             meaningful_at=20.0, gitlab_at=19.0,
@@ -504,8 +511,11 @@ class WorkItemGitLabSyncTests(unittest.TestCase):
         )
         updated = self._load()
         self.assertEqual(updated.current_owner, "carl")
-        self.assertEqual(updated.next_owner, "carl")
-        self.assertIsNone(updated.handoff)
+        self.assertEqual(updated.next_owner, "release manager")
+        self.assertEqual(updated.current_stage, "ready_for_validation")
+        self.assertEqual(updated.handoff.status, "pending")
+        self.assertEqual(updated.handoff.requested_at, 180.0)
+        self.assertIsNone(updated.handoff.acknowledged_at)
 
     def test_blocked_merge_request_refresh_preserves_pending_action_handoff(self) -> None:
         state = self._state(

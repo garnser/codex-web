@@ -43,6 +43,25 @@ repository target or repository scope. The canonical work-item reference remains
 attached for coordination and audit. Repository-capable recipients retain the
 event's requested scope, subject to normal execution admission checks.
 
+Routine GitLab work remains with the canonical implementation/validation owner
+or pending handoff recipient. Failed work selects its explicit next action owner
+through the same actionable-owner rule as continuity dispatch. Orchestrator is
+the exception path for inconsistent routing, missing ownership, or an explicit
+coordination/recovery action. Repository attestation and publication reconciliation
+remain with the admitted repository worker; a coordination-only profile cannot
+gain repository authority from a recovery request.
+
+Authenticated provider updates enter the canonical event journal before semantic
+routing suppression. Semantic fingerprints include material source attributes,
+head/commit and change facts; equal labels alone cannot suppress changed code or
+issue content. Workflow-label-only feedback may be recorded without a model turn
+only when an available same-tenant/Project pre/post snapshot proves business,
+ownership, scope, handoff and evidence state unchanged, current labels agree with
+canonical workflow state, and routing has no conflict. Unknown changes, missing
+observations and actual deltas retain normal owner reasoning. Existing event/cycle
+and dispatch observations expose the deterministic result without an extra model
+or recovery wake; retained queue entries are not removed by this rule.
+
 Recovery serializes replacements for each provider, project and logical agent;
 turn admission serializes starts for each Thread. Slow provider calls for one
 owner or Thread do not hold unrelated owners or Threads. Canonical assignment,

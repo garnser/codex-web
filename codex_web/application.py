@@ -3961,6 +3961,7 @@ gitlab_work_item_runtime_dependencies = (
         project_event=work_item_service.project_gitlab_event_compat,
         project_lookup=project_runtime_service.get,
         load_projects=project_repository.load,
+        get_state=work_item_state_machine._work_item_state,
     )
 )
 gitlab_event_presentation = GitLabEventPresentationService(
