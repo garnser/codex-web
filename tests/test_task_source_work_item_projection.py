@@ -179,6 +179,22 @@ class TaskSourceWorkItemProjectionTests(unittest.TestCase):
                 self.assertEqual(updated.blocker, state.blocker)
                 self.assertEqual(updated.handoff, state.handoff)
 
+    def test_awaiting_receipt_refresh_preserves_failed_business_stage_and_pending_handoff(self):
+        state = self.projector.upsert(self.source, self.snapshot(), project_id="home")
+        state.current_stage = "failed_with_action_owner"
+        state.next_owner = "operator"
+        state.handoff = WorkItemHandoff(
+            from_agent="carl", to_agent="operator", status="pending", requested_at=180.0,
+        )
+        self.host.states[state.ref] = state
+        snapshot = replace(self.snapshot(revision="2026-09-17T19:01:00Z"),
+                           labels=("owner::carl", "status::awaiting confirmation"))
+        updated = self.projector.upsert(self.source, snapshot, project_id="home")
+        self.assertEqual(updated.current_stage, "failed_with_action_owner")
+        self.assertEqual(updated.handoff, state.handoff)
+        self.assertEqual(updated.current_owner, "carl")
+        self.assertEqual(updated.next_owner, "operator")
+
     def test_issue_refresh_preserves_implementation_attribution_during_operator_repair(self) -> None:
         state = self.projector.upsert(self.source, self.snapshot(), project_id="home")
         state.implementation_owner = "nora"

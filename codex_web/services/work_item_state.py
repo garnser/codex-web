@@ -119,6 +119,13 @@ class WorkItemStateMachine:
             target_stage,
             fallback=state.current_stage,
         )
+        if (
+            external_projection and normalized == "ready_for_validation"
+            and state.handoff and state.handoff.status == "pending"
+        ):
+            # Awaiting-confirmation labels describe receipt delivery. They
+            # cannot promote the retained business stage before actual ACK.
+            return state
         return self.transitions.transition(
             state,
             normalized,

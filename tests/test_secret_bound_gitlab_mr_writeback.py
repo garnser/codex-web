@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import unittest
+import tempfile
+from pathlib import Path
 from copy import deepcopy
 
 import httpx
 
 from codex_web.integrations.gitlab_client import GitLabClient
-from codex_web.models import TaskSourceConfiguration
+from codex_web.models import TaskSourceConfiguration, WorkItemHandoff, WorkItemAckCreate
 from codex_web.secrets import SecretRotate
 from codex_web.services.builtin_task_source_runtime import SecretBoundTaskSource
 from codex_web.services.gitlab_task_source import GitLabTaskSource
@@ -70,9 +72,8 @@ class SecretBoundGitLabMrWritebackTests(unittest.IsolatedAsyncioTestCase):
         dependencies = writeback_fixture._Dependencies(state)
         service = TaskSourceWritebackService(None, writeback_fixture._registry(source), dependencies=dependencies)
         result = await service.sync(state)
-        self.assertEqual([request[0] for request in self.requests], ['GET','PUT','GET','PUT'])
-        self.assertEqual(self.requests[1][2], {'labels':'custom,priority::P1,status::in progress,owner::quinn'})
-        self.assertEqual(self.requests[3][2], {'labels':'custom,owner::quinn,priority::P1,status::awaiting confirmation'})
+        self.assertEqual([request[0] for request in self.requests], ['GET','PUT'])
+        self.assertEqual(self.requests[1][2], {'labels':'custom,priority::P1,owner::quinn,status::in progress'})
         self.assertEqual(result.ref, 'group/project!42')
         self.assertEqual(result.source_identity.external_id, 'group/project!42')
         self.assertEqual(result.current_owner, 'quinn')
@@ -84,6 +85,62 @@ class SecretBoundGitLabMrWritebackTests(unittest.IsolatedAsyncioTestCase):
         before = len(self.requests)
         await service.sync(result)
         self.assertEqual(len(self.requests), before)
+
+    async def test_pending_failed_mr_survives_secret_bound_writeback_and_actual_ack(self):
+        source, _ = self.source()
+        state = writeback_fixture._state(owner='quinn', stage='failed_with_action_owner').model_copy(update={
+            'ref': 'group/project!42', 'kind': 'merge_request', 'source_identity': self.identity,
+            'next_owner': 'carl', 'implementation_owner': 'carl', 'validation_owner': 'quinn',
+            'artifact_state': 'merge_request', 'mr_refs': ['group/project!42'],
+            'handoff': WorkItemHandoff(from_agent='quinn', to_agent='carl', status='pending', requested_at=180.0),
+        })
+        dependencies = writeback_fixture._Dependencies(state)
+        service = TaskSourceWritebackService(None, writeback_fixture._registry(source), dependencies=dependencies)
+        result = await service.sync(state)
+        self.assertEqual(result.current_stage, 'failed_with_action_owner')
+        self.assertEqual(result.current_owner, 'quinn')
+        self.assertEqual(result.next_owner, 'carl')
+        self.assertEqual(result.handoff, state.handoff)
+        self.assertIn('status::awaiting confirmation', self.row['labels'])
+        self.assertEqual([r[0] for r in self.requests], ['GET', 'PUT'])
+        before = len(self.requests)
+        await service.sync(result)
+        self.assertEqual(len(self.requests), before)
+        # A recipient's real acknowledgement changes the delivery fingerprint,
+        # including when the business stage and provider revision stay fixed.
+        from codex_web.services.work_item_state import WorkItemStateMachine
+        from tests.test_task_source_work_item_projection import _Host
+        with tempfile.TemporaryDirectory() as directory:
+            host = _Host(Path(directory))
+            host.states[result.ref] = result.model_copy(deep=True)
+            result = WorkItemStateMachine(host)._structured_ack(
+                result.ref, WorkItemAckCreate(actor='carl', accepted=True),
+            )
+        dependencies.state = result.model_copy(deep=True)
+        acknowledged = await service.sync(result)
+        self.assertEqual(acknowledged.handoff.status, 'accepted')
+        self.assertEqual(acknowledged.current_stage, 'failed_with_action_owner')
+        self.assertIn('status::blocked', self.row['labels'])
+        self.assertEqual(self.row['state'], 'opened')
+        self.assertTrue(all(token == 'provider-token' for token in self.tokens))
+        self.assertNotIn('provider-token', json.dumps(acknowledged.model_dump(mode='json')))
+
+    async def test_creating_pending_handoff_changes_fingerprint_without_owner_or_stage_change(self):
+        source, _ = self.source()
+        state = writeback_fixture._state(owner='quinn', stage='failed_with_action_owner').model_copy(update={
+            'ref': 'group/project!42', 'kind': 'merge_request', 'source_identity': self.identity,
+        })
+        dependencies = writeback_fixture._Dependencies(state)
+        service = TaskSourceWritebackService(None, writeback_fixture._registry(source), dependencies=dependencies)
+        result = await service.sync(state)
+        self.assertIn('status::blocked', self.row['labels'])
+        result.handoff = WorkItemHandoff(from_agent='quinn', to_agent='carl', requested_at=180.0)
+        dependencies.state = result.model_copy(deep=True)
+        pending = await service.sync(result)
+        self.assertEqual(pending.current_owner, result.current_owner)
+        self.assertEqual(pending.current_stage, result.current_stage)
+        self.assertIn('status::awaiting confirmation', self.row['labels'])
+        self.assertEqual([r[0] for r in self.requests], ['GET', 'PUT', 'GET', 'PUT'])
 
     async def test_individual_labels_preserve_lifecycle_for_open_closed_merged(self):
         for lifecycle in ('opened','closed','merged'):

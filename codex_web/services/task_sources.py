@@ -21,6 +21,7 @@ class TaskSourceCapability(StrEnum):
     EVENTS = "events"
     OWNER_WRITE = "owner_write"
     STATE_WRITE = "state_write"
+    DELIVERY_STATE_WRITE = "delivery_state_write"
     COMMENTS = "comments"
     DISCUSSIONS = "discussions"
     ARTIFACT_LINKS = "artifact_links"
@@ -115,6 +116,22 @@ class TaskSourceCombinedWriteCapable(Protocol):
         *,
         owner: str | None,
         stage: WorkItemStage,
+    ) -> TaskSourceWritebackResult:
+        ...
+
+
+@runtime_checkable
+class TaskSourceDeliveryWriteCapable(Protocol):
+    """Optional owner/stage projection with independent handoff receipt status."""
+
+    async def write_delivery_projection(
+        self,
+        identity: TaskSourceIdentity,
+        current: TaskSourceSnapshot,
+        *,
+        owner: str | None,
+        stage: WorkItemStage,
+        delivery_pending: bool,
     ) -> TaskSourceWritebackResult:
         ...
 

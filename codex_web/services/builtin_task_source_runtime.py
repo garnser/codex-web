@@ -178,6 +178,18 @@ class SecretBoundTaskSource:
             current_stage=current_stage,
         )
 
+    async def write_delivery_projection(
+        self, identity, current, *, owner, stage, delivery_pending,
+    ):
+        self.capabilities.require(TaskSourceCapability.DELIVERY_STATE_WRITE)
+        return await self._use(
+            "write_delivery_projection",
+            lambda source: source.write_delivery_projection(
+                identity, current, owner=owner, stage=stage,
+                delivery_pending=delivery_pending,
+            ),
+        )
+
     async def write_owner(self, identity, owner: str | None) -> TaskSourceSnapshot:
         self.capabilities.require(TaskSourceCapability.OWNER_WRITE)
         return await self._use(
