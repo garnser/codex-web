@@ -305,7 +305,7 @@ jobs:
             --tag "${candidate_tag}" \
             .
 
-          digest="$(docker buildx imagetools inspect "${candidate_tag}" | awk '$1 == "Digest:" {print $2; exit}')"
+          digest="$(docker buildx imagetools inspect "${candidate_tag}" | awk '$1 == "Digest:" && !found {print $2; found=1}')"
           test -n "$digest"
           echo "candidate_tag=$candidate_tag" >> "$GITHUB_OUTPUT"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
@@ -453,7 +453,7 @@ jobs:
           docker pull "$candidate_tag"
           test "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$candidate_tag")" = "$CANDIDATE_SHA"
           test "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$candidate_tag")" = "v${VERSION}"
-          digest="$(docker buildx imagetools inspect "$candidate_tag" | awk '$1 == "Digest:" {print $2; exit}')"
+          digest="$(docker buildx imagetools inspect "$candidate_tag" | awk '$1 == "Digest:" && !found {print $2; found=1}')"
           test -n "$digest"
           echo "candidate_tag=$candidate_tag" >> "$GITHUB_OUTPUT"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
@@ -565,7 +565,7 @@ jobs:
             "${CANDIDATE_TAG}"
 
           for promoted in "${IMAGE}:${VERSION}" "${IMAGE}:${TAG}" "${IMAGE}:latest"; do
-            digest="$(docker buildx imagetools inspect "$promoted" | awk '$1 == "Digest:" {print $2; exit}')"
+            digest="$(docker buildx imagetools inspect "$promoted" | awk '$1 == "Digest:" && !found {print $2; found=1}')"
             test "$digest" = "$EXPECTED_DIGEST"
           done
 
