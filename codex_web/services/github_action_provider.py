@@ -244,6 +244,7 @@ class GitHubActionProvider:
                 "execution_workspace_id": attested.workspace_id,
                 "branch": attested.branch,
                 "head_revision": attested.revision,
+                "expected_remote_absent": attested.expected_remote_revision == "",
                 "workspace_attested": attested.workspace_path.is_dir(),
             }
         if request.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
@@ -489,6 +490,7 @@ class GitHubActionProvider:
                 {
                     "branch": attested.branch,
                     "head_revision": attested.revision,
+                    "expected_remote_absent": attested.expected_remote_revision == "",
                     "execution_workspace_id": attested.workspace_id,
                 }
             )

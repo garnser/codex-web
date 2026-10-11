@@ -719,6 +719,29 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
                 self.binding.id, request, actor=self.actor
             )
 
+    async def test_recovery_can_require_remote_branch_absence(self):
+        request = self._request(CODE_HOST_BRANCH_PUBLISH_ACTION_ID, {
+            "execution_workspace_id": "workspace-a",
+            "branch": "codex/preserved-recovery",
+            "head_revision": self.head,
+            "expected_remote_absent": True,
+        })
+        result = await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.assertEqual(self.published[5], "")
+        self.assertTrue(result.output["expected_remote_absent"])
+
+    async def test_absence_precondition_rejects_invalid_and_conflicting_requests(self):
+        params = {"execution_workspace_id": "workspace-a", "branch": "codex/preserved-recovery",
+                  "head_revision": self.head, "expected_remote_absent": True}
+        for changes in [{"expected_remote_absent": "true"}, {"expected_remote_absent": 1},
+                        {"expected_remote_revision": self.head}, {"expected_remote_revision": ""},
+                        {"expected_remote_absent": False}, {"branch": "legacy/recovery"},
+                        {"existing_change_request_number": 258}]:
+            with self.subTest(changes=changes):
+                with self.assertRaises(ActionRequirementError):
+                    await self.execution.execute(self.binding.id,
+                        self._request(CODE_HOST_BRANCH_PUBLISH_ACTION_ID, {**params, **changes}), actor=self.actor)
+
     def _existing_mr_request(self):
         state = self.provider.contract.workspaces.store.load()
         self.recovery_state = state
