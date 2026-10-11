@@ -207,6 +207,7 @@ class RuntimeSupervisorAsyncTests(unittest.IsolatedAsyncioTestCase):
             stale_turn_recovery=StaleTurnRecovery(),
             codex=Codex(),
             local_worker_heartbeat=lambda: order.append("worker-heartbeat"),
+            recover_deferred_repository_actions=lambda: asyncio.sleep(30),
         )
 
         await service.start()
@@ -214,6 +215,8 @@ class RuntimeSupervisorAsyncTests(unittest.IsolatedAsyncioTestCase):
             order.index("worker-heartbeat"),
             order.index("stale-recovery:startup"),
         )
+        self.assertIn("deferred-repository-actions", service.tasks)
+        self.assertFalse(service.tasks["deferred-repository-actions"].done())
         self.assertIn("local-worker-heartbeat", service.tasks)
         self.assertFalse(service.tasks["local-worker-heartbeat"].done())
         await service.stop()

@@ -1020,6 +1020,30 @@ class ActionIntentService:
                 break
         return claimed[0] if claimed else None
 
+    def require_recovery_if_unstarted(
+        self, intent_id: str, *, actor: AuthenticationActor, reason: str,
+    ) -> ActionIntent:
+        """Settle a stale deferral without overwriting a concurrent claim/result."""
+        self._require_worker(actor)
+        self._intent(intent_id, actor)
+        def apply(state):
+            for index, item in enumerate(state.intents):
+                if (item.id == intent_id and item.status == ActionIntentStatus.PENDING
+                        and item.attempt == 0 and item.lease is None):
+                    state.intents[index] = item.model_copy(update={
+                        "status": ActionIntentStatus.REQUIRES_RECONCILIATION,
+                        "last_error": reason, "updated_at": time.time(),
+                    })
+            return state
+        state = self.store.update(apply, intent_ids=(intent_id,))
+        result = next(item for item in state.intents if item.id == intent_id)
+        if self.status_notifier is not None:
+            try:
+                self.status_notifier(result)
+            except Exception:
+                pass
+        return result
+
     def renew_claim(
         self,
         intent_id: str,

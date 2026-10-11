@@ -227,3 +227,9 @@ propagation. Workspace/session point reads fetch only the workspace and lease;
 turn admission fetches only the referenced Work Item execution metadata. Bulk
 administrative snapshots remain explicit bulk operations, separate from claim,
 execution, receipt and status hot paths.
+
+### Deferred assignment-bound repository delivery
+
+The supervised local execution worker periodically examines at most 256 scoped pending intents and handles at most eight never-started assignment-broker repository actions per cycle. A valid request resumes through the existing canonical claim and execute boundaries after maintenance admission reopens. Recovery rechecks the exact originating assignment, worker lifecycle, lease/fence/deadline, tenant/project, singular writable repository, requester identity and current broker authority. Normal provider policy, approval, credential, workspace attestation, remote compare-and-swap and verification checks remain required.
+
+Recovery never automatically repeats attempted or uncertain mutations. A released, expired or missing origin becomes `requires_reconciliation` with an explicit commit-preserving recovery reason, using an atomic pending/attempt-zero/no-lease comparison so a concurrent claim or result cannot be overwritten. The existing ActionIntent inspector exposes this state. A replacement publication requires a newly authorized live assignment after provider reconciliation; historical authority is never transplanted. Temporary storage errors remain retriable supervisor errors. The supervisor owns task startup and cancellation; maintenance/draining workers suspend processing. No LLM calls or additional authority grants are introduced.
