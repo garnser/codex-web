@@ -577,7 +577,10 @@ class CodeHostActionContract:
             or expected_remote_revision is None
         ):
             raise ValueError(
-                "a recovery publication requires a codex/ branch and its expected remote revision"
+                "a recovery publication requires a codex/ branch and its expected remote revision, "
+                "or an explicit absence precondition: "
+                "expected_remote_revision for an existing ref, or expected_remote_absent: true "
+                "for a confirmed absent ref; keep the local checkout on its attested workspace branch"
             )
         root = getattr(self.workspaces.backend, "root", None)
         if root is None:
