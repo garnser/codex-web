@@ -113,6 +113,53 @@ class KeyedRevisionContract:
         self.assertEqual(self.reader.record_items('cache/%?extra'), {'untouched': 3})
         self.assertEqual(self.reader.record_items('cache'), {'untouched': 4})
 
+    def test_collection_ranges_preserve_unicode_order_pagination_and_isolation(self):
+        from codex_web.storage.state_store import state_record_storage_key
+
+        namespace = 'cache/\u96ea %?'
+        records = {
+            '\u96ea': {'value': 1},
+            'a/%?': {'value': 2},
+            '\u00e9': {'value': 3},
+        }
+        expected_keys = sorted(
+            records,
+            key=lambda key: state_record_storage_key(namespace, key),
+        )
+        self.store.record_replace(namespace, records)
+        self.store.record_replace(namespace + 'extra', {'untouched': 4})
+        self.store.record_replace('cache', {'untouched': 5})
+
+        self.assertEqual(self.reader.record_count(namespace), len(records))
+        self.assertEqual(
+            list(self.reader.record_items(namespace)),
+            expected_keys,
+        )
+        first, cursor = self.reader.record_page(namespace, limit=2)
+        self.assertEqual(list(first), expected_keys[:2])
+        self.assertEqual(cursor, expected_keys[1])
+        second, cursor = self.reader.record_page(
+            namespace,
+            after=cursor,
+            limit=2,
+        )
+        self.assertEqual(list(second), expected_keys[2:])
+        self.assertIsNone(cursor)
+
+        before = self.reader.namespace_revision(namespace)
+        self.store.record_apply(
+            namespace,
+            upserts={'\u96ea': {'value': 6}},
+        )
+        self.assertGreater(self.reader.namespace_revision(namespace), before)
+        self.assertTrue(self.store.delete(namespace))
+        self.assertEqual(self.reader.record_items(namespace), {})
+        self.assertEqual(
+            self.reader.record_items(namespace + 'extra'),
+            {'untouched': 4},
+        )
+        self.assertEqual(self.reader.record_items('cache'), {'untouched': 5})
+
     def test_concurrent_point_writers_and_replacements_complete(self):
         self.store.record_replace('cache', {'counter': 0})
         def write(_):

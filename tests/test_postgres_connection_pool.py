@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from codex_web.storage.postgres_state import PostgresStateStore, shared_postgres_connection_pool, close_postgres_connection_pools
+from codex_web.storage.state_store import state_record_prefix
 
 
 class _Pool:
@@ -29,6 +30,91 @@ class _Pool:
 
 
 class PostgresConnectionPoolTests(unittest.TestCase):
+    @staticmethod
+    def _store_with_cursor(cursor):
+        pool = _Pool()
+        cursor_context = Mock()
+        cursor_context.__enter__ = Mock(return_value=cursor)
+        cursor_context.__exit__ = Mock(return_value=False)
+        pool.connection_value.cursor.return_value = cursor_context
+        with patch.object(PostgresStateStore, "_initialize"):
+            store = PostgresStateStore(
+                "test-dsn",
+                connect=Mock(),
+                connection_pool=pool,
+            )
+        return store
+
+    def test_collection_queries_use_encoded_primary_key_ranges(self):
+        namespace = "cache/\u96ea %?"
+        record_prefix = f"{state_record_prefix(namespace)}k/"
+
+        items_cursor = Mock()
+        items_cursor.fetchall.return_value = []
+        self.assertEqual(
+            PostgresStateStore._record_items_in_cursor(
+                items_cursor,
+                namespace,
+            ),
+            {},
+        )
+        items_query, items_parameters = items_cursor.execute.call_args.args
+        self.assertIn("namespace >= %s AND namespace < %s", items_query)
+        self.assertNotIn("LEFT(", items_query)
+        self.assertEqual(
+            items_parameters,
+            (record_prefix, record_prefix + "\uffff"),
+        )
+
+        count_cursor = Mock()
+        count_cursor.fetchone.side_effect = [(1,), (3,)]
+        count_store = self._store_with_cursor(count_cursor)
+        self.addCleanup(count_store.close)
+        self.assertEqual(count_store.record_count(namespace), 3)
+        count_query, count_parameters = count_cursor.execute.call_args_list[-1].args
+        self.assertIn("namespace >= %s AND namespace < %s", count_query)
+        self.assertNotIn("LEFT(", count_query)
+        self.assertEqual(
+            count_parameters,
+            (record_prefix, record_prefix + "\uffff"),
+        )
+
+        delete_cursor = Mock()
+        delete_cursor.rowcount = 1
+        delete_store = self._store_with_cursor(delete_cursor)
+        self.addCleanup(delete_store.close)
+        self.assertTrue(delete_store.delete(namespace))
+        delete_query, delete_parameters = delete_cursor.execute.call_args_list[-1].args
+        collection_prefix = state_record_prefix(namespace)
+        self.assertIn("namespace >= %s AND namespace < %s", delete_query)
+        self.assertNotIn("LEFT(", delete_query)
+        self.assertEqual(
+            delete_parameters,
+            (collection_prefix, collection_prefix + "\uffff"),
+        )
+
+        put_cursor = Mock()
+        put_cursor.fetchone.return_value = (1,)
+        put_store = self._store_with_cursor(put_cursor)
+        self.addCleanup(put_store.close)
+        put_store.put(namespace, ["replacement"])
+        range_deletes = [
+            call.args
+            for call in put_cursor.execute.call_args_list
+            if str(call.args[0]).startswith(
+                "DELETE FROM codex_state_documents WHERE namespace >="
+            )
+        ]
+        self.assertEqual(
+            range_deletes,
+            [
+                (
+                    "DELETE FROM codex_state_documents WHERE namespace >= %s AND namespace < %s",
+                    (collection_prefix, collection_prefix + "\uffff"),
+                )
+            ],
+        )
+
     def test_pool_checkout_reuses_connection_without_opening_or_closing_per_operation(self):
         pool = _Pool()
         connect = Mock(side_effect=AssertionError("new connection opened"))
