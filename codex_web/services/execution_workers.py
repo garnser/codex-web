@@ -247,7 +247,7 @@ class ExecutionWorkerService:
         )
         scoped = [
             worker
-            for worker in self.store.load().workers
+            for worker in self.store.list_workers()
             if self._same_scope(worker, actor)
         ]
         active = [

@@ -300,6 +300,53 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
         batch.assert_called_once()
         self.assertEqual(len(batch.call_args.args[0]), 4)
 
+    def test_readiness_reads_only_workers_and_observes_lifecycle_changes(self) -> None:
+        store = self.service.store
+        before = store.load()
+        backend = store.store
+        read = backend.record_items
+
+        def workers_only(namespace):
+            self.assertEqual(namespace, store.worker_namespace)
+            return read(namespace)
+
+        def readiness():
+            return self.service.execution_readiness(
+                required_capabilities=(WorkerCapability.GIT,),
+                execution_contract_version="1.0",
+                actor=self.admin,
+            )
+
+        def lifecycle(value):
+            def update(state):
+                state.workers[0].lifecycle = value
+                return state
+            return update
+
+        with patch.object(backend, "record_items", side_effect=workers_only):
+            self.assertEqual(store.list_workers(), before.workers)
+            self.assertTrue(readiness().ready)
+            other = ExecutionWorkerStore(backend)
+            other.update_worker(
+                self.worker.id,
+                lifecycle(WorkerLifecycle.DRAINING),
+            )
+            blocked = readiness()
+            self.assertFalse(blocked.ready)
+            self.assertEqual(blocked.code, "worker_unavailable")
+            other.update_worker(
+                self.worker.id,
+                lifecycle(WorkerLifecycle.ACTIVE),
+            )
+            self.assertTrue(readiness().ready)
+        self.assertEqual(store.load().events, before.events)
+
+    def test_worker_projection_validates_all_worker_records(self) -> None:
+        store = self.service.store
+        store.store.record_apply(store.worker_namespace, upserts={"invalid": {}})
+        with self.assertRaises(ValueError):
+            store.list_workers()
+
     def test_late_legacy_document_reconciles_into_keyed_records(self) -> None:
         raw = self.service.store.load().model_dump(mode="json")
         raw["workers"][0]["version"] = "late-legacy-version"

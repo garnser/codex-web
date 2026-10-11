@@ -260,6 +260,19 @@ class ExecutionWorkerStore:
         with self._lock:
             return self._load_unlocked(include_history=False)
 
+    def list_workers(self) -> list[ExecutionWorker]:
+        """Read fresh validated workers without assignments or history."""
+        with self._lock:
+            self._ensure_records()
+            records = self.store.record_items(self.worker_namespace)
+            return [
+                ExecutionWorker.model_validate(payload)
+                for payload in sorted(
+                    records.values(),
+                    key=lambda item: (item.get("registered_at", 0), item.get("id", "")),
+                )
+            ]
+
     def assignment(self, assignment_id: str) -> ExecutionAssignment | None:
         self._ensure_records()
         payload = self.store.record_get(self.assignment_namespace, assignment_id)
