@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+import urllib.parse
 from pathlib import Path
 
 
@@ -41,20 +42,45 @@ def version_matches(observed: str, expected: str) -> bool:
     )
 
 
-def health(expected: str) -> bool:
+def maintenance_plan(qualification: dict[str, object]) -> dict[str, object]:
+    plan_id = urllib.parse.quote(str(qualification["upgrade_plan_id"]), safe="")
+    with urllib.request.urlopen("http://127.0.0.1:8765/api/upgrades/" + plan_id, timeout=3) as response:
+        plan = json.load(response)["item"]
+    if not (
+        plan.get("id") == qualification["upgrade_plan_id"]
+        and plan.get("maintenance_mode") is True
+        and plan.get("maintenance_scope") == "service"
+        and plan.get("service_instance_id") == qualification["service_instance_id"]
+        and plan.get("deployment_source_revision") == qualification["source_revision"]
+        and plan.get("deployment_target_revision") == qualification["target_revision"]
+    ):
+        raise RuntimeError("installation maintenance plan no longer matches qualification")
+    return plan
+
+
+def health(expected: str, qualification: dict[str, object], *, rollback: bool = False) -> bool:
+    """Verify installation under the still-active canonical maintenance plan.
+
+    Readiness is deliberately false until the operator verifies the Upgrade
+    Plan and restores worker/autonomy controls. It is not an install gate.
+    """
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         try:
             with urllib.request.urlopen("http://127.0.0.1:8765/api/livez", timeout=3) as response:
-                live = response.status == 200
-            with urllib.request.urlopen("http://127.0.0.1:8765/api/readyz", timeout=3) as response:
-                ready = response.status == 200
+                live = response.status == 200 and json.load(response).get("ok") is True
+            plan = maintenance_plan(qualification)
             with urllib.request.urlopen("http://127.0.0.1:8765/api/version", timeout=3) as response:
                 version = json.load(response)
             observed = str(version.get("gitRevision") or version.get("git_revision") or "")
             if observed in {"", "unknown"}:
                 observed = str(version.get("staticVersion") or "").split("-", 1)[0]
-            if live and ready and version_matches(observed, expected):
+            field = "source_revision" if rollback else "target_revision"
+            if (
+                live and version_matches(observed, expected)
+                and qualification[field] == expected
+                and (not rollback or plan.get("rollback_available") is True)
+            ):
                 return True
         except Exception:
             pass
@@ -64,6 +90,18 @@ def health(expected: str) -> bool:
 
 def checkout(live: Path, commit: str) -> None:
     git(live, "checkout", "--detach", commit)
+
+
+def set_service_revision(revision_value: str) -> None:
+    """Keep the fixed service's build metadata aligned with its checkout."""
+    if len(revision_value) != 40 or any(c not in "0123456789abcdef" for c in revision_value):
+        raise ValueError("service revision must be an exact lowercase SHA")
+    with tempfile.NamedTemporaryFile(mode="w", prefix="codex-web-revision-", encoding="utf-8") as staged:
+        staged.write("[Service]\nEnvironment=CODEX_WEB_GIT_REVISION=" + revision_value + "\n")
+        staged.flush()
+        run("sudo", "-n", "install", "-m", "0644", staged.name,
+            "/etc/systemd/system/codex-web.service.d/zz-local-deploy-revision.conf")
+    run("sudo", "-n", "systemctl", "daemon-reload")
 
 
 def verify_canonical_guard(fd: int) -> dict[str, object]:
@@ -147,6 +185,8 @@ def main() -> int:
                     timeout=300,
                 )
                 built = revision(stage)
+                if built != args.candidate:
+                    raise SystemExit("local overlays changed the qualified immutable candidate")
                 if revision(args.source, "origin/main") != args.candidate:
                     raise SystemExit("candidate changed while deployment was staged")
                 if revision(args.live) != previous:
@@ -171,15 +211,30 @@ def main() -> int:
             finally:
                 git(args.source, "worktree", "remove", "--force", str(stage), check=False)
 
-        run("sudo", "-n", "systemctl", "restart", "codex-web.service", timeout=120)
-        if health(built):
+        installed = False
+        try:
+            set_service_revision(built)
+            run("sudo", "-n", "systemctl", "restart", "codex-web.service", timeout=120)
+            installed = health(built, qualification)
+        except Exception as exc:
+            print(json.dumps({"event": "installation_error", "error_type": type(exc).__name__}), flush=True)
+        if installed:
             print(json.dumps({"event": "complete", "candidate": args.candidate, "installed": built}), flush=True)
             return 0
 
+        if qualification.get("rollback_available") is not True:
+            raise SystemExit("installation verification failed; canonical plan does not permit automatic rollback; maintenance retained")
+        try:
+            rollback_plan = maintenance_plan(qualification)
+        except Exception as exc:
+            raise SystemExit("cannot qualify rollback; maintenance retained") from exc
+        if rollback_plan.get("rollback_available") is not True:
+            raise SystemExit("canonical rollback permission changed; maintenance retained")
         print(json.dumps({"event": "rollback", "target": previous}), flush=True)
         checkout(args.live, previous)
+        set_service_revision(previous)
         run("sudo", "-n", "systemctl", "restart", "codex-web.service", timeout=120)
-        if not health(previous):
+        if not health(previous, qualification, rollback=True):
             raise SystemExit("deployment failed and rollback health verification failed")
         raise SystemExit("deployment failed; previous build restored")
 

@@ -147,6 +147,22 @@ revalidation aborts without restarting. A receipt file is not authoritative.
 Root-capable tools can still bypass the helper; that explicit host-operator
 boundary remains visible and must not be described as universal protection.
 
+After the qualified switch, the local installer checks liveness, exact running
+revision metadata and the same source/target service-maintenance plan. Readiness
+remains deliberately false while workers and autonomy are drained; the operator
+must still verify the plan and restore those controls before claiming readiness.
+The fixed service revision override follows the installed checkout and any
+compatible rollback. Local overlays cannot change the immutable qualified
+candidate. Automatic rollback is allowed only when the canonical qualification
+and current plan both retain rollback availability; otherwise maintenance stays
+in place for operator recovery.
+Host operators can obtain the same fresh canonical check from
+`POST /api/upgrades/{plan_id}/qualify-local-deployment`, with the exact service
+instance, source/target and preflight evidence. It retains administrator+MFA or
+scoped upgrade service authority and the complete-hosted-scope checks. A CLI
+guard must perform this request under the deployment lock at the one-shot
+verification boundary; a previously saved response is not an install grant.
+
 ## Migration phases
 
 Steps are declared before execution and must be ordered:
