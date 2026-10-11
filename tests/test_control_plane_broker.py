@@ -1339,6 +1339,12 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             calls.append(request)
             self.assertEqual(request.headers["PRIVATE-TOKEN"], "provider-secret")
             path = request.url.path
+            if path == "/api/v4/projects/99":
+                return httpx.Response(200, json={"id": 99, "name": "core"})
+            if path == "/api/v4/projects/99/jobs/19025":
+                return httpx.Response(200, json={**job, "pipeline": {"id": 3394, "project_id": 99}})
+            if path == "/api/v4/projects/99/jobs/19025/artifacts":
+                return httpx.Response(200, content=b"immutable-core-wheel", headers={"content-type": "application/zip"})
             if path == "/api/v4/projects/42":
                 return httpx.Response(200, json={"id": 42, "name": "widgets"})
             if path == "/api/v4/projects/42/pipelines/3394/jobs":
@@ -1412,6 +1418,67 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         cross_tenant = assignment.model_copy(update={"workspace_id": "other"})
         with self.assertRaises(ControlPlaneBrokerDeniedError):
             await read("/api/repository-facts/artifacts/19025/download", cross_tenant)
+        dependency = resources.create(
+            ResourceCreate(
+                name="acme/core", resource_type=ResourceType.REPOSITORY,
+                provenance=ResourceProvenance(
+                    provider="gitlab", provider_instance="gitlab.example", external_id="99",
+                ),
+            ), actor=self.identity.local_trusted_actor(),
+        )
+        # The dependency has its own provider binding; primary repository metadata
+        # cannot establish its package provenance.
+        def scoped_bindings(actor):
+            items = bindings(actor)
+            items.append(SimpleNamespace(
+                **{**vars(items[0]), "id": "gitlab-core-action-binding",
+                   "resource_ids": (dependency.id,)},
+            ))
+            return items
+        action_registry.list_bindings = scoped_bindings
+        consumer = assignment.model_copy(update={
+            "resource_ids": (resource.id, dependency.id),
+            "repository_scope": assignment.repository_scope.model_copy(update={
+                "read_only_repository_ids": (dependency.id,),
+            }),
+        })
+        dependency_start = len(calls)
+        with patch.object(self.authority, "evaluate", wraps=self.authority.evaluate) as authorize:
+            status, payload, *_ = await read(
+                "/api/repository-facts/artifacts/19025/download?repository_resource_id=" + dependency.id,
+                consumer,
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(base64.b64decode(payload["item"]["content_base64"]), b"immutable-core-wheel")
+        self.assertEqual(authorize.call_args.args[0].resource_ids, (dependency.id,))
+        self.assertTrue(all(c.url.path == "/api/v4/projects/99" or c.url.path.startswith("/api/v4/projects/99/") for c in calls[dependency_start:]))
+        self.assertNotIn("provider-secret", json.dumps(payload))
+        # Selection never widens the assignment's immutable scope, even when a
+        # resource is otherwise visible to the requester.
+        count = len(calls)
+        for selected in [assignment, consumer.model_copy(update={
+            "repository_scope": consumer.repository_scope.model_copy(update={"workspace_id": "other"}),
+        })]:
+            with self.assertRaises(ControlPlaneBrokerDeniedError):
+                await read("/api/repository-facts/artifacts/19025/download?repository_resource_id=" + dependency.id, selected)
+        for value in ["", "a&repository_resource_id=b"]:
+            with self.assertRaises(ControlPlaneBrokerRequestError):
+                await read("/api/repository-facts/artifacts/19025/download?repository_resource_id=" + value, consumer)
+        with self.assertRaises(ControlPlaneBrokerDeniedError):
+            await read("/api/repository-facts/artifacts/19025/download?repository_resource_id=" + dependency.id,
+                       consumer.model_copy(update={"execution_profile_id": "orchestration-only"}))
+        with self.assertRaises(ControlPlaneBrokerRequestError):
+            await service.dispatch(
+                assignment=consumer, worker_actor=self.worker_actor, method="POST",
+                raw_target="/api/repository-actions/branch/publish?repository_resource_id=" + dependency.id,
+                body=b"{}",
+            )
+        self.assertEqual(len(calls), count)
+        # No selector still targets the existing writable repository.
+        status, payload, *_ = await read("/api/repository-facts/artifacts/19025/download", consumer)
+        self.assertEqual(base64.b64decode(payload["item"]["content_base64"]), b"PK\x03\x04archive")
+        self.assertEqual(secret_broker.calls[-1][0], "secret-gitlab")
+        secret_count = len(secret_broker.calls)
         # Unsupported optional member reads fail before secret resolution; whole-archive
         # behavior remains exercised by the existing GitHub adapter regressions.
         github = GitHubCodeHostProvider(GitHubClient(transport=httpx.MockTransport(lambda r: httpx.Response(404))))
@@ -1433,7 +1500,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 "github-read", github_resource.id, 19025, actor=self.worker_actor,
                 max_bytes=327680, member_path="html/index.html",
             )
-        self.assertEqual(len(secret_broker.calls), 3)
+        self.assertEqual(len(secret_broker.calls), secret_count)
 
     async def test_gitlab_assignment_can_read_merge_request_fact(self) -> None:
         code_hosts = _CodeHosts()

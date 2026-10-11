@@ -450,6 +450,10 @@ class ControlPlaneBrokerService:
                         "path_template": item.path_template,
                         "capability": item.capability,
                         "authority_level": item.authority_level.value,
+                        **(
+                            {"optional_query_parameters": ["repository_resource_id"]}
+                            if item.id.startswith("repository.read.") else {}
+                        ),
                     }
                     for item in OPERATIONS
                 ]
@@ -529,8 +533,9 @@ class ControlPlaneBrokerService:
         path = parsed.path
         query = parse_qs(parsed.query, keep_blank_values=False)
         member_query = parse_qs(parsed.query, keep_blank_values=True)
-        if "member_path" in member_query:
-            query["member_path"] = member_query["member_path"]
+        for key in ("member_path", "repository_resource_id"):
+            if key in member_query:
+                query[key] = member_query[key]
         repository_action = _REPOSITORY_ACTIONS.get(path)
         if repository_action is not None:
             operation = _OPERATION_BY_ID[repository_action[0]]
@@ -781,6 +786,37 @@ class ControlPlaneBrokerService:
             )
         return writable[0]
 
+    @classmethod
+    def _read_repository_id(
+        cls,
+        assignment: ExecutionAssignment,
+        query: dict[str, list[str]],
+    ) -> str:
+        primary = cls._writable_repository_id(assignment)
+        scope = assignment.repository_scope
+        if scope is not None and (
+            scope.organization_id != assignment.organization_id
+            or scope.workspace_id != assignment.workspace_id
+            or scope.project_id != assignment.project_id
+        ):
+            raise ControlPlaneBrokerDeniedError("repository scope tenant/project mismatch")
+        values = query.get("repository_resource_id")
+        if values is None:
+            return primary
+        if len(values) != 1 or not values[0].strip():
+            raise ControlPlaneBrokerRequestError(
+                "repository_resource_id must occur once and be nonempty"
+            )
+        selected = values[0].strip()
+        allowed = {primary}
+        if scope is not None:
+            allowed.update(scope.read_only_repository_ids)
+        if selected not in allowed or selected not in assignment.resource_ids:
+            raise ControlPlaneBrokerDeniedError(
+                "repository fact target is outside assignment repository scope"
+            )
+        return selected
+
     @staticmethod
     def _repository_action_binding(
         *,
@@ -926,12 +962,13 @@ class ControlPlaneBrokerService:
         *,
         assignment: ExecutionAssignment,
         actor: AuthenticationActor,
+        query: dict[str, list[str]] | None = None,
     ) -> tuple[str, str]:
         if self.code_hosts is None or self.action_intents is None:
             raise ControlPlaneBrokerDeniedError(
                 "governed repository reads are unavailable"
             )
-        repository_id = self._writable_repository_id(assignment)
+        repository_id = self._read_repository_id(assignment, query or {})
         action_registry = self.action_intents.execution.registry
         action_binding = self._repository_action_binding(
             action_registry=action_registry,
@@ -977,6 +1014,7 @@ class ControlPlaneBrokerService:
         binding_id, repository_id = self._code_host_binding(
             assignment=assignment,
             actor=actor,
+            query=query,
         )
         if operation.id == "repository.read.metadata":
             item = await self.code_hosts.repository(
@@ -1122,6 +1160,10 @@ class ControlPlaneBrokerService:
         operation = resolved.operation
         actor = self._actor(assignment, worker_actor)
         repository_read = operation.id.startswith("repository.read.")
+        if "repository_resource_id" in resolved.query and not repository_read:
+            raise ControlPlaneBrokerRequestError(
+                "repository_resource_id is only supported for repository fact reads"
+            )
         requester_actor = (
             self._requester_actor(assignment)
             if operation.id.startswith("repository.")
@@ -1138,7 +1180,10 @@ class ControlPlaneBrokerService:
             or operation.id.startswith("action_intent.")
             or operation.id.startswith("deployment.local.")
         ):
-            resource_ids = (self._writable_repository_id(assignment),)
+            resource_ids = (
+                self._read_repository_id(assignment, resolved.query)
+                if repository_read else self._writable_repository_id(assignment),
+            )
         elif resolved.target_ref is not None:
             state = self._state_for_target(assignment, resolved.target_ref)
             resource_ids = tuple(state.resource_ids)
