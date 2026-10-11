@@ -69,13 +69,13 @@ class AutonomyControllerTests(unittest.IsolatedAsyncioTestCase):
     async def test_blocked_storage_keeps_loop_responsive_and_deduplicates_parallel_event(self):
         entered = threading.Event()
         release = threading.Event()
-        original = self.store.load
-        def blocked_load():
+        original = self.store.find_cycle
+        def blocked_load(*args):
             entered.set()
             if not release.wait(5):
                 raise RuntimeError("test storage not released")
-            return original()
-        self.store.load = blocked_load
+            return original(*args)
+        self.store.find_cycle = blocked_load
         observation = AutonomyObservation(deterministic_resolved=True, reason="known transition")
         first = asyncio.create_task(self.controller.process(self.event(), observation))
         second = None
@@ -89,7 +89,7 @@ class AutonomyControllerTests(unittest.IsolatedAsyncioTestCase):
             release.set()
         results = await asyncio.gather(first, second)
         self.assertEqual(results[0].id, results[1].id)
-        self.assertEqual(len(original().cycles), 1)
+        self.assertEqual(len(self.store.load().cycles), 1)
 
     async def test_cancelled_persistence_finishes_before_duplicate_cycle_enters(self):
         entered = threading.Event()

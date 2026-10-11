@@ -26,12 +26,12 @@ def build_agent_runtime_usage_router(
         provider_id: str | None = None,
         runtime_id: str | None = None,
         model_id: str | None = None,
+        include_items: bool = True,
     ) -> dict[str, Any]:
         actor = request_actor(request)
 
         def read_projection() -> dict[str, Any]:
-            items = service.list(
-                actor,
+            filters = dict(
                 project_id=project_id,
                 execution_id=execution_id,
                 agent_session_id=agent_session_id,
@@ -39,6 +39,9 @@ def build_agent_runtime_usage_router(
                 runtime_id=runtime_id,
                 model_id=model_id,
             )
+            if not include_items:
+                return service.summary(actor, **filters)
+            items = service.list(actor, **filters)
             aggregates = service.aggregate_resources(items)
             return {
                 "items": [item.model_dump(mode="json") for item in items],

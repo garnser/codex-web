@@ -308,14 +308,7 @@ class AutonomyController:
         return cycle
 
     def _existing(self, cycle_key: str, event_id: str) -> AutonomyCycleRecord | None:
-        return next(
-            (
-                item
-                for item in reversed(self.store.load().cycles)
-                if item.cycle_key == cycle_key and item.event_id == event_id
-            ),
-            None,
-        )
+        return self.store.find_cycle(cycle_key, event_id)
 
     def _cooldown_active(
         self,
@@ -332,7 +325,7 @@ class AutonomyController:
             and item.event_type == event.event_type
             and item.reasoning_invoked
             and now - item.completed_at < control.cooldown_seconds
-            for item in reversed(self.store.load().cycles[-500:])
+            for item in reversed(self.store.recent_cycles(500))
         )
 
     def _record_dead_letter(

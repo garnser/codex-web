@@ -205,7 +205,9 @@ jobs:
           python -m pip install -r requirements-distributed.txt
 
       - name: Exercise PostgreSQL and Redis replicated semantics
-        run: python -m unittest tests.test_distributed_backends
+        run: >-
+          python -m unittest tests.test_distributed_backends tests.test_keyed_revisions
+          tests.test_postgres_collection_ranges tests.test_autonomy_append_scaling
 
   browser-suite:
     name: chromium-${{ matrix.suite }}

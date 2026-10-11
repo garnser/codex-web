@@ -802,11 +802,14 @@ class SQLiteStateStore:
                 return float(row[0])
             marker = state_record_marker(namespace)
             row = connection.execute(
-                "SELECT updated_at FROM state_documents WHERE namespace = ?",
+                "SELECT payload, updated_at FROM state_documents WHERE namespace = ?",
                 (marker,),
             ).fetchone()
             if row is None:
                 return None
+            metadata = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+            if metadata.get("revisionTracked"):
+                return float(row[1])
             prefix = state_record_prefix(namespace)
             latest = connection.execute(
                 """
@@ -819,7 +822,7 @@ class SQLiteStateStore:
             return (
                 float(latest[0])
                 if latest and latest[0] is not None
-                else float(row[0])
+                else float(row[1])
             )
 
     def contains(self, namespace: str) -> bool:

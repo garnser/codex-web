@@ -97,3 +97,36 @@ export function renderUsageResources(container, resources = []) {
     container.append(card);
   }
 }
+
+// Runtime notifications already contain the provider snapshot. Reading it
+// again can itself emit another notification, so consume that evidence directly.
+export function normalizeCodexRateLimitResources(payload = {}) {
+  const byId = payload.rateLimitsByLimitId;
+  const snapshot = (byId && (byId.codex || Object.values(byId)[0]))
+    || payload.rateLimits || payload.rate_limits || payload;
+  if (!snapshot || typeof snapshot !== "object") return [];
+  const limitId = String(snapshot.limitId || snapshot.limit_id || "codex");
+  return ["primary", "secondary"].flatMap(name => {
+    const window = snapshot[name];
+    if (!window || typeof window !== "object") return [];
+    const used = window.usedPercent ?? window.used_percent;
+    if (used == null || typeof used === "boolean"
+      || (typeof used !== "number" && typeof used !== "string")
+      || (typeof used === "string" && !used.trim()) || !Number.isFinite(Number(used))) return [];
+    const consumed = Math.max(0, Number(used));
+    const duration = window.windowDurationMins ?? window.window_minutes;
+    const resetAt = window.resetsAt ?? window.resets_at;
+    let label = name === "primary" ? "Primary rate limit" : "Secondary rate limit";
+    if (typeof duration === "number" && duration > 0) {
+      label = duration % 10080 === 0 ? "Weekly rate limit"
+        : duration % 60 === 0 ? `${duration / 60} hour rate limit`
+        : `${duration} minute rate limit`;
+    }
+    return [{resource_id: `${limitId}:${name}`, label, kind: "rate_limit",
+      consumed, limit: 100, remaining: Math.max(0, 100 - consumed),
+      unit: "percent", period: typeof duration === "number" ? `${duration} minutes` : null,
+      reset_at: typeof resetAt === "number" ? resetAt : null,
+      source: "provider_reported", authoritative: true, measurement_mode: "snapshot",
+      provider_id: "openai", runtime_id: "codex"}];
+  });
+}

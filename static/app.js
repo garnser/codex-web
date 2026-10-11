@@ -18,7 +18,8 @@ import{reconcileSteeringFailure}from"./queue_steering.js";
 import*as rtui from"./repository_target_ui.js";
 import*as tsui from"./thread_settings_ui.js";
 import*as tskills from"./thread_skills_ui.js";
-import{normalizeUsageResources,renderUsageResources}from"./usage_resources.js";
+import{createHeaderUsageController}from"./usage_refresh.js";
+import{renderUsageResources}from"./usage_resources.js";
 
 const state={
   projects: [],
@@ -1504,7 +1505,7 @@ function handleEvent(event) {
       renderTokenUsage();
     }
   } else if (message.method === "account/rateLimits/updated") {
-    refreshTokenUsage();
+    usageController.handleRateLimits(message.params || {});
   }
   if (!isActiveThreadEvent(message)) {
     updateWaitingFromState();
@@ -2205,30 +2206,8 @@ async function recoverDaemon() {
   }
 }
 
-async function refreshTokenUsage() {
-  const projectId = state.projectId;
-  try {
-    const [limitsResult, usageResult] = await Promise.allSettled([
-      api("/api/account/rate-limits"),
-      api(`/api/agent-runtime-usage${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`),
-    ]);
-    if (projectId !== state.projectId) return;
-    const resources = [
-      ...(limitsResult.status === "fulfilled" ? normalizeUsageResources(limitsResult.value) : []),
-      ...(usageResult.status === "fulfilled" && Array.isArray(usageResult.value.resources) ? usageResult.value.resources : []),
-    ];
-    const unique = new Map(resources.map(resource => [
-      [resource.provider_id, resource.account_id, resource.runtime_id, resource.model_id, resource.resource_id, resource.period_started_at, resource.reset_at].join("|"),
-      resource,
-    ]));
-    state.accountUsageResources = [...unique.values()];
-    state.usageProjectId = projectId;
-    renderTokenUsage();
-  } catch (error) {
-    logEvent("token.error", { message: error.message });
-    renderTokenUsage();
-  }
-}
+const usageController = createHeaderUsageController({state, api, render: renderTokenUsage, log: logEvent});
+function refreshTokenUsage() { return usageController.request(); }
 
 function escapeHtml(value) {
   return String(value ?? "")
