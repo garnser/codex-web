@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from itertools import permutations
 from types import SimpleNamespace
 
-from codex_web.models import QueuedTurn
+from codex_web.models import BotReplyTarget, QueuedTurn
 from codex_web.services.work_item_wakeups import (
     WORK_ITEM_WAKEUP_BATCH_HEADER,
     WorkItemWakeupQueuePolicy,
@@ -35,13 +36,14 @@ class WorkItemWakeupQueuePolicyTests(unittest.TestCase):
         thread_id: str = "thread-1",
         source: str = "web",
         work_item_ref: str | None = None,
+        created_at: float = 1.0,
     ) -> QueuedTurn:
         return QueuedTurn(
             id=queued_id,
             thread_id=thread_id,
             project_id="project-1",
             message=message,
-            created_at=1.0,
+            created_at=created_at,
             source=source,
             work_item_ref=work_item_ref,
         )
@@ -159,6 +161,73 @@ class WorkItemWakeupQueuePolicyTests(unittest.TestCase):
 
         self.assertIs(compacted, items)
         self.assertFalse(changed)
+
+    def test_front_requeue_and_restore_order_cannot_replace_newer_snapshot(self) -> None:
+        updates = [self.queued(name, "snapshot " + name, source="gitlab",
+                              work_item_ref="group/project#12", created_at=at)
+                   for name, at in (("newest", 3.0), ("old", 1.0), ("middle", 2.0))]
+        for ordering in permutations(updates):
+            with self.subTest(order=[item.id for item in ordering]):
+                compacted, changed = self.policy.coalesce(list(ordering))
+                self.assertTrue(changed)
+                self.assertEqual([item.id for item in compacted], ["newest"])
+                self.assertEqual(compacted[0].message, "snapshot newest")
+
+    def test_equal_admission_time_has_stable_id_tie_break(self) -> None:
+        updates = [self.queued(name, name, source="gitlab", work_item_ref="group/project#12")
+                   for name in ("a", "z")]
+        for ordering in permutations(updates):
+            self.assertEqual([item.id for item in self.policy.coalesce(list(ordering))[0]], ["z"])
+
+    def test_same_reference_on_other_thread_is_not_coalesced(self) -> None:
+        items = [self.queued(name, name, source="gitlab", work_item_ref="group/project#12",
+                             thread_id=name) for name in ("thread-1", "thread-2")]
+        compacted, changed = self.policy.coalesce(items)
+        self.assertIs(compacted, items)
+        self.assertFalse(changed)
+
+    def test_reply_bearing_gitlab_notifications_survive_compaction_and_terminal_cleanup(self) -> None:
+        reply = self.queued("reply", "reply notification", source="gitlab", work_item_ref="group/project#12")
+        reply.reply_target = BotReplyTarget(thread_id="thread-1", provider="slack",
+                                           external_conversation_id="channel", updated_at=1.0)
+        ordinary = self.queued("ordinary", "latest snapshot", source="gitlab",
+                               work_item_ref="group/project#12", created_at=2.0)
+        compacted, changed = self.policy.coalesce([reply, ordinary])
+        self.assertFalse(changed)
+        self.assertEqual([item.id for item in compacted], ["reply", "ordinary"])
+        self.host._work_item_state = lambda _ref: SimpleNamespace(current_stage="closed")
+        compacted, changed = self.policy.coalesce([reply, ordinary])
+        self.assertTrue(changed)
+        self.assertEqual([item.id for item in compacted], ["reply"])
+
+    def test_compaction_provenance_follows_successful_save_and_contains_no_message(self) -> None:
+        order = []
+        self.queues = {"thread-1": [
+            self.queued("new", "private newest body", source="gitlab",
+                        work_item_ref="group/project#12", created_at=2.0),
+            self.queued("old", "private old body", source="gitlab", work_item_ref="group/project#12"),
+        ]}
+        self.host._save_turn_queues = lambda _queues: order.append("saved")
+        self.host._append_bot_event = lambda event: order.append(event)
+        self.policy.compact_queues()
+        self.assertEqual(order[0], "saved")
+        self.assertEqual(order[1]["replacements"], [{"removed_id": "old", "retained_id": "new",
+                                                   "work_item_ref": "group/project#12", "project_id": "project-1"}])
+        self.assertNotIn("private", str(order))
+        self.policy.compact_queues()
+        self.assertEqual(len(order), 2)
+
+    def test_failed_queue_save_does_not_emit_compaction_receipt(self) -> None:
+        self.queues = {"thread-1": [self.queued(name, name, source="gitlab",
+                                               work_item_ref="group/project#12") for name in ("a", "z")]}
+        events = []
+        self.host._append_bot_event = events.append
+        def fail(_queues):
+            raise RuntimeError("queue save failed")
+        self.host._save_turn_queues = fail
+        with self.assertRaises(RuntimeError):
+            self.policy.compact_queues()
+        self.assertEqual(events, [])
 
     def test_coalesce_discards_gitlab_notification_for_terminal_item(self) -> None:
         self.host._work_item_state = lambda ref: (

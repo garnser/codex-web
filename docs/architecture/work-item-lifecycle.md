@@ -260,3 +260,7 @@ owner, or artifact fields. Missing aliases remain unresolved and visible in
 Project readiness; projections never substitute unrelated Project Resources.
 Artifact projection uses keyed state reads and writes when available so one MR
 event does not scan or rewrite the complete work-item collection.
+
+## Queued task-source notification recency
+
+Unaddressed GitLab reconciliation notifications for the same thread and Work Item coalesce by canonical queue admission `created_at`, with queued ID as the deterministic equal-time tie-break. List position is not recency: retry-front insertion and restoration can reorder entries. Other threads/references, explicit handoffs, user messages and notifications carrying reply targets retain their delivery semantics. Terminal cleanup removes only unaddressed GitLab reconciliation signals. Startup compaction records removed/retained notification IDs and Work Item/Project references through existing bot audit events after queue persistence succeeds; message bodies and secrets are excluded. Notification compaction is neither recipient acknowledgement nor issue completion.
