@@ -86,10 +86,10 @@ class DeferredRepositoryActionRecovery:
                     ControlPlaneBrokerDeniedError, AuthenticationError, AuthorizationError,
                     ExecutionWorkspaceNotFoundError) as exc:
                 await asyncio.to_thread(
-                    self.intents.require_recovery_if_unstarted, intent.id,
+                    self.intents.fail_if_unstarted, intent.id,
                     actor=self.actor,
                     reason=("Deferred delivery requires a newly authorized live assignment; "
-                            "preserve the local commit and reconcile this request before "
+                            "this request never started; preserve the local commit before "
                             "publishing a replacement. " + type(exc).__name__),
                 )
                 continue

@@ -35,7 +35,7 @@ class DeferredRepositoryActionsTests(unittest.IsolatedAsyncioTestCase):
             return NS(id=intent_id)
         self.intents = NS(store=NS(indexed_intents=lambda *a, **k:iter(self.pending)),
             claim=Mock(side_effect=claim), execute_claimed=AsyncMock(),
-            require_recovery_if_unstarted=Mock())
+            fail_if_unstarted=Mock())
         self.broker = NS(_writable_repository_id=Mock(return_value="repo"),
             _resolve_operation=Mock(return_value=NS()), _dispatch_scope=Mock(return_value=(None,self.actor,None,None)),
             execution_workspaces=NS(get=Mock(return_value=NS(status="active",execution_id="origin",
@@ -67,7 +67,7 @@ class DeferredRepositoryActionsTests(unittest.IsolatedAsyncioTestCase):
         await self.recovery.run_once()
         self.intents.execute_claimed.assert_not_awaited()
         self.intents.claim.assert_not_called()
-        self.assertEqual(self.intents.require_recovery_if_unstarted.call_count, 6)
+        self.assertEqual(self.intents.fail_if_unstarted.call_count, 6)
 
     async def test_uncertain_retried_delayed_and_nonbroker_actions_are_not_replayed(self):
         self.admitted = True
@@ -76,7 +76,7 @@ class DeferredRepositoryActionsTests(unittest.IsolatedAsyncioTestCase):
             old=getattr(self.intent,attribute);setattr(self.intent,attribute,value)
             await self.recovery.run_once();setattr(self.intent,attribute,old)
         self.intents.claim.assert_not_called()
-        self.intents.require_recovery_if_unstarted.assert_not_called()
+        self.intents.fail_if_unstarted.assert_not_called()
 
     async def test_draining_worker_and_transient_storage_error_do_not_mutate_intents(self):
         self.worker.lifecycle="draining"
@@ -86,17 +86,17 @@ class DeferredRepositoryActionsTests(unittest.IsolatedAsyncioTestCase):
         self.workers.assignment_for_execution.side_effect=RuntimeError("database temporarily unavailable")
         with self.assertRaises(RuntimeError):
             await self.recovery.run_once()
-        self.intents.require_recovery_if_unstarted.assert_not_called()
+        self.intents.fail_if_unstarted.assert_not_called()
 
     async def test_released_workspace_requires_recovery_without_claim(self):
         self.broker.execution_workspaces.get.return_value.status="released"
         self.admitted=True
         await self.recovery.run_once()
         self.intents.claim.assert_not_called()
-        self.intents.require_recovery_if_unstarted.assert_called_once()
+        self.intents.fail_if_unstarted.assert_called_once()
 
     async def test_cycle_limits_mutations_to_eight(self):
         self.pending=[NS(**{**vars(self.intent),"id":str(i)}) for i in range(20)]
         self.assignment.status="cancelled"
         await self.recovery.run_once()
-        self.assertEqual(self.intents.require_recovery_if_unstarted.call_count,8)
+        self.assertEqual(self.intents.fail_if_unstarted.call_count,8)
