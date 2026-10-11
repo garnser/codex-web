@@ -17,6 +17,7 @@ class WorkItemWatchdogCandidatePolicy:
         load_states: Callable[[], dict[str, WorkItemState]] | None = None,
         split_brain_findings: Callable[[WorkItemState], list[str]] | None = None,
         handoff_timeout_seconds: Callable[[], float] | None = None,
+        handoff_delivery_timeout_seconds: Callable[[], float] | None = None,
         coerce_owner: Callable[[str | None], str | None] | None = None,
         sla_threshold_seconds: Callable[[WorkItemState], float] | None = None,
     ) -> None:
@@ -50,6 +51,8 @@ class WorkItemWatchdogCandidatePolicy:
         self.load_states = load_states
         self.split_brain_findings = split_brain_findings
         self.handoff_timeout_seconds = handoff_timeout_seconds
+        self.handoff_delivery_timeout_seconds = handoff_delivery_timeout_seconds or getattr(
+            host, "_work_item_handoff_delivery_timeout_seconds", lambda: 3600.0)
         self.coerce_owner = coerce_owner
         self.sla_threshold_seconds = sla_threshold_seconds
 
@@ -64,6 +67,19 @@ class WorkItemWatchdogCandidatePolicy:
         if self.split_brain_findings(state):
             return ("split_brain", now - state.updated_at)
         if state.handoff and state.handoff.status == "pending":
+            delivery = state.handoff.delivery
+            if delivery is not None:
+                waiting = delivery.status == "awaiting_dispatch"
+                clock_start = state.handoff.requested_at if waiting else delivery.started_at
+                if clock_start is None:
+                    return None
+                pending_age = now - clock_start
+                timeout = self.handoff_delivery_timeout_seconds() if waiting else self.handoff_timeout_seconds()
+                if pending_age >= timeout:
+                    return ("handoff_delivery_expired" if waiting else "pending_handoff", pending_age)
+                # A queued handoff has its own deadline; stale implementation
+                # age cannot promote it into a premature coordination exception.
+                return None
             pending_age = now - state.handoff.requested_at
             if pending_age >= min(self.handoff_timeout_seconds(), 300.0):
                 return ("pending_handoff", pending_age)
@@ -123,6 +139,7 @@ def install_work_item_watchdog_candidate_policy(
     load_states: Callable[[], dict[str, WorkItemState]] | None = None,
     split_brain_findings: Callable[[WorkItemState], list[str]] | None = None,
     handoff_timeout_seconds: Callable[[], float] | None = None,
+    handoff_delivery_timeout_seconds: Callable[[], float] | None = None,
     coerce_owner: Callable[[str | None], str | None] | None = None,
     sla_threshold_seconds: Callable[[WorkItemState], float] | None = None,
 ) -> WorkItemWatchdogCandidatePolicy:
@@ -135,6 +152,7 @@ def install_work_item_watchdog_candidate_policy(
             load_states=load_states,
             split_brain_findings=split_brain_findings,
             handoff_timeout_seconds=handoff_timeout_seconds,
+            handoff_delivery_timeout_seconds=handoff_delivery_timeout_seconds,
             coerce_owner=coerce_owner,
             sla_threshold_seconds=sla_threshold_seconds,
         )

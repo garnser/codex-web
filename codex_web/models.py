@@ -248,6 +248,24 @@ class ThreadRunSettings(BaseModel):
     skill_refs: tuple[DefinitionReference, ...] | None = None
 
 
+class WorkItemHandoffDelivery(BaseModel):
+    """Qualified recipient start evidence; queue admission is not delivery."""
+    status: Literal["awaiting_dispatch", "delivered"] = "awaiting_dispatch"
+    started_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    thread_id: str | None = None
+    turn_id: str | None = None
+    execution_id: str | None = None
+
+    @model_validator(mode="after")
+    def qualified_delivery(self):
+        evidence = (self.started_at, self.thread_id, self.turn_id, self.execution_id)
+        if self.status == "delivered" and (self.started_at is None or not all(evidence[1:])):
+            raise ValueError("delivered handoff requires actual start, thread, turn and execution evidence")
+        if self.status == "awaiting_dispatch" and any(value is not None for value in evidence):
+            raise ValueError("awaiting dispatch cannot contain delivered start evidence")
+        return self
+
+
 class WorkItemHandoff(BaseModel):
     from_agent: str
     to_agent: str
@@ -259,6 +277,7 @@ class WorkItemHandoff(BaseModel):
     reason_code: str | None = None
     artifact_state: ArtifactState | None = None
     stage: WorkItemStage | None = None
+    delivery: WorkItemHandoffDelivery | None = None
 
 
 class WorkItemState(BaseModel):
@@ -458,6 +477,7 @@ class QueuedTurn(BaseModel):
     message: str
     execution_id: str | None = None
     work_item_ref: str | None = None
+    handoff_requested_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     sandbox: SandboxMode | None = None
     approval_policy: ApprovalPolicy | None = None
     model: str | None = None

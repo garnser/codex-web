@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from codex_web.models import WorkItemHandoff, WorkItemState
+from codex_web.models import WorkItemHandoff, WorkItemHandoffDelivery, WorkItemState
 from codex_web.services.work_item_watchdog_candidates import (
     WorkItemWatchdogCandidatePolicy,
     install_work_item_watchdog_candidate_policy,
@@ -81,6 +81,18 @@ class WorkItemWatchdogCandidatePolicyTests(unittest.TestCase):
             self.policy.orchestrator_reason(state, now=1000.0),
             ("pending_handoff", 299.0),
         )
+
+    def test_queue_and_maintenance_wait_do_not_trigger_premature_orchestrator_work(self):
+        handoff = WorkItemHandoff(from_agent="nora", to_agent="quinn", requested_at=100,
+            delivery=WorkItemHandoffDelivery())
+        state = self.state("group/project#78", handoff=handoff, last_meaningful_update_at=100)
+        self.assertIsNone(self.policy.orchestrator_reason(state, now=1200))
+        self.assertEqual(self.policy.orchestrator_reason(state, now=3700),
+            ("handoff_delivery_expired", 3600))
+        handoff.delivery = WorkItemHandoffDelivery(status="delivered", started_at=1200,
+            thread_id="quinn-thread", turn_id="actual-turn", execution_id="actual-execution")
+        self.assertIsNone(self.policy.orchestrator_reason(state, now=1500))
+        self.assertEqual(self.policy.orchestrator_reason(state, now=2100), ("pending_handoff", 900))
 
     def test_orchestrator_reason_classifies_unowned_blocked_and_stale_lanes(self) -> None:
         unowned = self.state("group/project#1", owner=None, updated_at=950.0)

@@ -402,6 +402,12 @@ function renderDetail(payload) {
           blocker: item.blocker,
           release_gate: item.release_gate,
           handoff: item.handoff ? `${item.handoff.from_agent} → ${item.handoff.to_agent} (${item.handoff.status})` : '—',
+          handoff_delivery: item.handoff?.delivery?.status || (item.handoff ? 'untracked historical delivery' : '—'),
+          handoff_requested_at: fmtTime(item.handoff?.requested_at),
+          recipient_started_at: fmtTime(item.handoff?.delivery?.started_at),
+          recipient_thread: item.handoff?.delivery?.thread_id,
+          recipient_turn: item.handoff?.delivery?.turn_id,
+          handoff_deadline: state.detailPayload?.handoff_deadline ? `${state.detailPayload.handoff_deadline.kind}: ${fmtTime(state.detailPayload.handoff_deadline.deadline_at)} (${state.detailPayload.handoff_deadline.clock_source})` : '—',
         })}</div>
       </section>
       <section class="work-detail-card external-card">

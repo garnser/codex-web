@@ -153,6 +153,7 @@ class WorkItemContinuityTests(unittest.IsolatedAsyncioTestCase):
         await service.dispatch_structured_handoff(state, source="handoff-test")
         self.assertEqual(calls, [("project-a:quinn", {
             "work_item_ref": state.ref,
+            "handoff_requested_at": state.handoff.requested_at,
             "repository_resource_id": "worker-repository",
             "writable_repository_resource_ids": ("worker-repository",),
         })])

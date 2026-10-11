@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from codex_web.models import WorkItemHandoff, WorkItemState
+from codex_web.models import WorkItemHandoff, WorkItemHandoffDelivery, WorkItemState
 from codex_web.services.work_item_timing import WorkItemTimingPolicy, install_work_item_timing_policy
 
 
@@ -47,6 +47,29 @@ class WorkItemTimingPolicyTests(unittest.TestCase):
             self.assertEqual(self.policy.progress_sla_seconds(), 3600.0)
             self.assertEqual(self.policy.release_validation_sla_seconds(), 1800.0)
             self.assertEqual(self.policy.accepted_handoff_owner_idle_seconds(), 300.0)
+
+    def test_delivery_deadline_is_separate_finite_and_observable(self):
+        for value, expected in [('invalid', 3600), ('nan', 3600), ('inf', 3600), ('1', 60), ('7200', 7200)]:
+            with patch.dict(os.environ, {'CODEX_WEB_WORK_ITEM_HANDOFF_DELIVERY_TIMEOUT_SECONDS': value}):
+                self.assertEqual(self.policy.handoff_delivery_timeout_seconds(), expected)
+        state = self.state(accepted=True)
+        state.handoff.status = 'pending'
+        state.handoff.acknowledged_at = None
+        state.handoff.delivery = WorkItemHandoffDelivery()
+        with patch.dict(os.environ, {'CODEX_WEB_WORK_ITEM_HANDOFF_DELIVERY_TIMEOUT_SECONDS':'3600',
+            'CODEX_WEB_WORK_ITEM_HANDOFF_TIMEOUT_SECONDS':'900'}):
+            projection = self.policy.handoff_deadline_projection(state)
+            self.assertEqual(projection['kind'], 'dispatch')
+            self.assertEqual(projection['deadline_at'], 3601)
+            state.handoff.delivery = WorkItemHandoffDelivery(status='delivered', started_at=3000,
+                thread_id='quinn-thread', turn_id='actual-turn', execution_id='actual-execution')
+            projection = self.policy.handoff_deadline_projection(state)
+            self.assertEqual(projection['clock_source'], 'recipient_native_start')
+            self.assertEqual(projection['deadline_at'], 3900)
+            state.handoff.delivery = None
+            self.assertTrue(self.policy.handoff_deadline_projection(state)['legacy_untracked'])
+            state.handoff.status = 'accepted'
+            self.assertIsNone(self.policy.handoff_deadline_projection(state))
 
         with patch.dict(
             os.environ,

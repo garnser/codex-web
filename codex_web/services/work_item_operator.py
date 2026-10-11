@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from codex_web.services.work_item_timing import WorkItemTimingPolicy
+
 import asyncio
 import time
 from dataclasses import asdict
@@ -410,6 +412,7 @@ class WorkItemOperatorService:
                 "source": "project-default" if project is not None else None,
             },
             "history": history,
+            "handoff_deadline": WorkItemTimingPolicy.handoff_deadline_projection(state),
             "diagnostics": self._diagnostics(state, history),
             "actions": self._actions(state, source),
         }

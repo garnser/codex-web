@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 from collections.abc import Callable
 from typing import Any
 
@@ -30,6 +31,33 @@ class WorkItemTimingPolicy:
         except ValueError:
             return 900.0
         return max(60.0, seconds)
+
+    @staticmethod
+    def handoff_delivery_timeout_seconds() -> float:
+        """Bound undelivered work separately from the recipient ACK window."""
+        try:
+            seconds = float(os.environ.get("CODEX_WEB_WORK_ITEM_HANDOFF_DELIVERY_TIMEOUT_SECONDS") or "3600")
+        except ValueError:
+            return 3600.0
+        return max(60.0, seconds) if math.isfinite(seconds) else 3600.0
+
+    @classmethod
+    def handoff_deadline_projection(cls, state: WorkItemState) -> dict[str, Any] | None:
+        handoff = state.handoff
+        if handoff is None or handoff.status != "pending":
+            return None
+        delivery = handoff.delivery
+        waiting = delivery is not None and delivery.status == "awaiting_dispatch"
+        start = delivery.started_at if delivery is not None and delivery.status == "delivered" else handoff.requested_at
+        seconds = cls.handoff_delivery_timeout_seconds() if waiting else cls.handoff_timeout_seconds()
+        return {
+            "kind": "dispatch" if waiting else "acknowledgement",
+            "clock_source": "recipient_native_start" if delivery is not None and not waiting else "original_request",
+            "legacy_untracked": delivery is None,
+            "started_at": start,
+            "timeout_seconds": seconds,
+            "deadline_at": start + seconds if start is not None else None,
+        }
 
     @staticmethod
     def progress_sla_seconds() -> float:
@@ -129,6 +157,7 @@ def install_work_item_timing_policy(
     host._work_item_handoff_timeout_seconds = (
         policy.handoff_timeout_seconds
     )
+    host._work_item_handoff_delivery_timeout_seconds = policy.handoff_delivery_timeout_seconds
     host._work_item_progress_sla_seconds = (
         policy.progress_sla_seconds
     )

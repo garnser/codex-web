@@ -102,6 +102,8 @@ class AutonomyService:
                 "writable_repository_resource_ids": writable,
                 "require_idle": True,
             }
+            if work_item.handoff is not None and work_item.handoff.status == "pending":
+                dispatch_context["handoff_requested_at"] = work_item.handoff.requested_at
         if self.controller is None or self.canonical_events is None:
             return await self.runtime.dispatch_event(binding, text, source, **dispatch_context)
 
@@ -533,9 +535,21 @@ class AutonomyService:
 
             if state.handoff and state.handoff.status == "pending":
                 handoff = state.handoff
-                pending_age = now - handoff.requested_at
+                delivery = handoff.delivery
+                awaiting_delivery = delivery is not None and delivery.status == "awaiting_dispatch"
+                clock_start = (
+                    delivery.started_at
+                    if delivery is not None and delivery.status == "delivered"
+                    else handoff.requested_at
+                )
+                if clock_start is None:
+                    # Missing qualified evidence cannot start an ACK deadline.
+                    continue
+                pending_age = now - clock_start
+                timeout = d.handoff_delivery_timeout_seconds() if awaiting_delivery else d.handoff_timeout_seconds()
+                expiry_reason = "handoff_delivery_expired" if awaiting_delivery else "handoff_expired"
                 recipient = d.coerce_owner(handoff.to_agent)
-                if pending_age >= d.handoff_timeout_seconds():
+                if pending_age >= timeout:
                     if d.update_work_item_state is None:
                         # Never expire from a detached snapshot without a
                         # canonical atomic mutation collaborator.
@@ -554,13 +568,20 @@ class AutonomyService:
                         sender = d.coerce_owner(handoff.from_agent)
                         current = d.archive_active_handoff(
                             current, now=now, status="superseded",
-                            reason_code="handoff_expired",
+                            reason_code=expiry_reason,
                         )
                         current.current_owner = sender
                         current.current_stage = "implementation_active"
                         current.next_owner = sender
-                        current.next_action = current.next_action or "Resume ownership or escalate one exact blocker."
-                        current.blocker = "Structured handoff expired without acknowledgement."
+                        current.next_action = (
+                            f"{sender}: reconcile the expired delivery to {recipient} and renew only after its exact blocker changes."
+                            if awaiting_delivery else
+                            f"{sender}: reconcile the expired intake to {recipient}; no pending acknowledgement remains."
+                        )
+                        current.blocker = (
+                            "Structured handoff could not be delivered within its dispatch window."
+                            if awaiting_delivery else "Structured handoff expired without acknowledgement."
+                        )
                         current.updated_at = now
                         current.last_meaningful_update_at = now
                         expired = True
@@ -572,7 +593,7 @@ class AutonomyService:
                     d.append_work_item_event(
                         d.work_item_event(
                             ref,
-                            "handoff_expired",
+                            expiry_reason,
                             payload={
                                 "from_agent": handoff.from_agent,
                                 "to_agent": handoff.to_agent,
@@ -600,6 +621,7 @@ class AutonomyService:
                                 d.work_item_dispatch_text(state),
                                 "work-item-sla",
                                 cycle_key=dispatch_key,
+                                work_item=state,
                                 payload={
                                     "project_id": state.project_id,
                                     "ref": ref,

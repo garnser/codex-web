@@ -53,10 +53,12 @@ class AutonomyRuntimeDependencies:
     project_scope: Callable[[str], tuple[str | None, str | None]]
     update_work_item_state: Callable[..., Any] | None = None
     schedule_current_work_item_writeback: Callable[[str], Any] | None = None
+    handoff_delivery_timeout_seconds: Callable[[], float] = lambda: 3600.0
 
     @classmethod
     def from_host(cls, host: Any) -> "AutonomyRuntimeDependencies":
         return cls(
+            handoff_delivery_timeout_seconds=getattr(host, "_work_item_handoff_delivery_timeout_seconds", lambda: 3600.0),
             schedule_current_work_item_writeback=getattr(
                 host, "_schedule_current_work_item_writeback", None,
             ),

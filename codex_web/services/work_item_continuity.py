@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 from typing import Any
 
 from fastapi import HTTPException
 
-from codex_web.models import WorkItemState
+from codex_web.models import WorkItemState, WorkItemHandoffDelivery
 from codex_web.services.work_item_dependencies import actionable_owner_value, work_item_repository_scope
 from codex_web.services.keyed_background_tasks import KeyedTaskCoordinator
 from codex_web.services.runtime_policy import RuntimePolicy
@@ -21,6 +22,9 @@ class DeferredWorkItemContinuityService:
 
     def bind(self, service: "WorkItemContinuityService") -> None:
         self.service = service
+
+    def record_handoff_delivery(self, ref: str, **evidence: Any) -> bool:
+        return self._require().record_handoff_delivery(ref, **evidence)
 
     def _require(self) -> "WorkItemContinuityService":
         if self.service is None:
@@ -128,8 +132,10 @@ class WorkItemContinuityService:
         record_watchdog_dispatch: Callable[[str], None],
         coordination_channel: str,
         revalidate_after_thread_replacement: bool = True,
+        update_state: Callable[..., Any] | None = None,
     ) -> None:
         self.policy = policy
+        self.update_state = update_state
         self.get_state = get_state
         self.coerce_owner = coerce_owner
         self.binding_for_agent = binding_for_agent
@@ -257,6 +263,46 @@ class WorkItemContinuityService:
             return owner, None, "work_item_owner_project_mismatch"
         return owner, binding, None
 
+    def record_handoff_delivery(
+        self, ref: str, *, expected_requested_at: float, recipient: str,
+        organization_id: str, workspace_id: str, project_id: str,
+        thread_id: str, turn_id: str, execution_id: str, started_at: float,
+    ) -> bool:
+        """Record a successful native start, never a queue/unknown-start receipt."""
+        if self.update_state is None or not all((thread_id, turn_id, execution_id)):
+            return False
+        recorded = False
+
+        def update(current):
+            nonlocal recorded
+            recorded = False
+            if current is None or current.closed_at or current.current_stage == "closed":
+                return current
+            handoff = current.handoff
+            if (
+                current.organization_id != organization_id or current.workspace_id != workspace_id
+                or current.project_id != project_id or handoff is None
+                or handoff.status != "pending" or handoff.requested_at != expected_requested_at
+                or handoff.delivery is None
+                or self.coerce_owner(handoff.to_agent) != self.coerce_owner(recipient)
+                or started_at < handoff.requested_at
+                or (handoff.delivery is not None and handoff.delivery.status == "delivered")
+            ):
+                return current
+            handoff.delivery = WorkItemHandoffDelivery(status="delivered", started_at=started_at,
+                thread_id=thread_id, turn_id=turn_id, execution_id=execution_id)
+            current.updated_at = time.time()
+            recorded = True
+            return current
+
+        self.update_state(ref, update)
+        if recorded:
+            self.append_event({"type":"work_item_handoff_delivery_started", "ref":ref,
+                "requested_at":expected_requested_at,"recipient":recipient,
+                "thread_id":thread_id,"turn_id":turn_id,"execution_id":execution_id,
+                "started_at":started_at})
+        return recorded
+
     def owner_dispatch_projection(self, state: WorkItemState) -> dict[str, Any]:
         """Expose only a currently eligible exact owner/thread pair."""
         owner, binding, blocked_reason = self._owner_dispatch_resolution(state)
@@ -343,6 +389,7 @@ class WorkItemContinuityService:
             self.dispatch_text(state),
             source,
             work_item_ref=state.ref,
+            handoff_requested_at=handoff.requested_at,
             repository_resource_id=repository_resource_id,
             writable_repository_resource_ids=writable_repository_resource_ids,
         )
@@ -474,10 +521,15 @@ class WorkItemContinuityService:
         if not self.watchdog_dispatch_allowed(dispatch_key):
             return
         self.record_watchdog_dispatch(dispatch_key)
+        repository_resource_id, writable_repository_resource_ids = self._dispatch_repository_scope(state)
         result = await self.dispatch_event(
             binding,
             self.dispatch_text(state),
             source,
+            work_item_ref=state.ref,
+            handoff_requested_at=handoff.requested_at,
+            repository_resource_id=repository_resource_id,
+            writable_repository_resource_ids=writable_repository_resource_ids,
         )
         self.append_event(
             {
