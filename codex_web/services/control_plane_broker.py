@@ -453,6 +453,8 @@ class ControlPlaneBrokerService:
         }
         if item.id.startswith("repository.read."):
             result["optional_query_parameters"] = ["repository_resource_id"]
+        if item.id == "repository.read.artifact-download":
+            result["optional_query_parameters"].append("member_path")
         if any(item.id == operation_id for operation_id, _ in _REPOSITORY_ACTIONS.values()):
             result["request_body"] = {
                 "type": "object",

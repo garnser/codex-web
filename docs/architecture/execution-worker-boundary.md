@@ -321,6 +321,15 @@ ineligible for repository facts. The selector is rejected on mutations and does
 not change publication targets, workspace leases, artifact byte limits or member
 path validation. The operation catalog advertises this optional query parameter.
 
+`repository.read.artifact-download` also advertises optional `member_path`:
+`GET /api/repository-facts/artifacts/{artifact_id}/download?max_bytes={max_bytes}&member_path={url_encoded_relative_path}`.
+This selects one member of the original job artifact, with the same repository,
+tenant, job provenance and response-byte bounds as whole-archive reads. Omit it
+for the original archive. Single relative member paths are validated against
+traversal and absolute paths; duplicate or empty selectors are rejected. Use
+original artifact members for bounded preview review rather than rebuilding or
+mistaking a truncated ZIP prefix for the full artifact.
+
 The channel is HTTP and does not require MCP tool registration. Task instructions
 include an explicit direct-loopback discovery example with a bounded client
 connection/read deadline. Proxy bypass is local to that broker request; it must
