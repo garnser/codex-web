@@ -1331,7 +1331,12 @@ class ControlPlaneBrokerService:
             )
         elif operation.id == "work_item.read":
             assert resolved.target_ref is not None
+            assert state is not None
             result = await self.work_items.get(resolved.target_ref)
+            result["owner_dispatch"] = await asyncio.to_thread(
+                self.operator.owner_dispatch_projection,
+                state,
+            )
             authoritative_source = await self.operator.source_detail(
                 resolved.target_ref
             )

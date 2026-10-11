@@ -177,11 +177,23 @@ class _WorkItems:
 class _Operator:
     def __init__(self):
         self.steers = []
+        self.owner_dispatch_reads = []
+        self.owner_dispatch_threads = []
 
     async def source_detail(self, ref):
         return {
             "snapshot": {"identity": {"external_id": ref}, "body_text": "Acceptance criteria"},
             "discussion": [{"external_id": "comment-1", "body_text": "Context"}],
+        }
+
+    def owner_dispatch_projection(self, state):
+        self.owner_dispatch_reads.append(state.ref)
+        self.owner_dispatch_threads.append(threading.get_ident())
+        return {
+            "eligible": True,
+            "blocked_reason": None,
+            "expected_owner": "james",
+            "expected_thread_id": "thread-james",
         }
 
     async def retry(self, ref, *, actor, reason):
@@ -830,6 +842,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                     )
                 authority.assert_not_called()
                 read.assert_not_awaited()
+                self.assertEqual(self.operator.owner_dispatch_reads, [])
 
     async def test_assignment_validation_runs_off_event_loop(self) -> None:
         event_loop_thread = threading.get_ident()
@@ -888,6 +901,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(actor.tenant, self.worker_actor.tenant)
 
     async def test_authorized_read_and_handoff_use_exact_role_authority(self) -> None:
+        event_loop_thread = threading.get_ident()
         encoded = quote(self.ref, safe="")
         status, headers, payload = await self._request(
             "GET",
@@ -906,6 +920,20 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             payload["assigned_scope"]["body_text"],
             "Acceptance criteria",
+        )
+        self.assertEqual(
+            payload["owner_dispatch"],
+            {
+                "eligible": True,
+                "blocked_reason": None,
+                "expected_owner": "james",
+                "expected_thread_id": "thread-james",
+            },
+        )
+        self.assertEqual(self.operator.owner_dispatch_reads, [self.ref])
+        self.assertNotEqual(
+            self.operator.owner_dispatch_threads[0],
+            event_loop_thread,
         )
         self.assertEqual(headers["x-correlation-id"], "corr-read-1")
         self.assertEqual(payload["_broker"]["operation"], "work_item.read")
