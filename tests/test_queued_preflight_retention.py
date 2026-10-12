@@ -13,6 +13,70 @@ from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
 class QueuedAdmissionDrainTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_receipt_survives_post_start_bookkeeping_failure(self):
+        from codex_web.models import Project
+        from tests.test_turn_execution import TurnExecutionStartTests
+        for receipt_write_fails in (False, True):
+            with self.subTest(receipt_write_fails=receipt_write_fails), tempfile.TemporaryDirectory() as directory:
+                host, binding, sessions, runtime = TurnExecutionStartTests()._service(bootstrap_thread_id='t1')
+                runtime.bootstrap_bindings.initial_turn_pending = True
+                runtime.bootstrap_bindings.mark_initial_turn_started = Mock(side_effect=RuntimeError('bookkeeping unavailable'))
+                project = Project(id='p1', name='Project', path='/workspace/project',
+                    sandbox='workspace-write', approval_policy='on-request')
+                runtime.queued_preflight = ExecutionPreflightService(ExecutionPreflightStore(
+                    SQLiteStateStore(Path(directory) / 'state.sqlite')))
+                queued = QueuedTurn(id='original', thread_id='t1', project_id='p1',
+                    execution_id='original-execution', message='original', created_at=1)
+                retained = runtime.queued_preflight.retain_queued(queued,
+                    organization_id=project.organization_id, workspace_id=project.workspace_id)
+                _, claim = runtime.queued_preflight.claim_queued_admission(retained.id)
+                runtime.queued_preflight.begin_queued_start(retained.id, claim_id=claim)
+                if receipt_write_fails:
+                    runtime.queued_preflight.record_queued_native_start = Mock(side_effect=RuntimeError('receipt storage unavailable'))
+                with self.assertRaises(RuntimeError):
+                    await runtime.start_thread_turn_now('t1', project=project, message='original',
+                        sandbox='workspace-write', approval_policy='on-request',
+                        execution_id='original-execution', source='queued:web',
+                        queued_admission_attempt_id=retained.id, queued_admission_claim_id=claim)
+                saved = ExecutionPreflightStore(SQLiteStateStore(Path(directory) / 'state.sqlite')).get(retained.id)
+                self.assertEqual(saved.status, 'reconciliation_required' if receipt_write_fails else 'started')
+                if not receipt_write_fails:
+                    self.assertEqual(saved.queued_start_receipt.provider_native_turn_id, 'turn-1')
+                    self.assertEqual(saved.queued_start_receipt.requested_execution_id, 'original-execution')
+                    self.assertEqual(saved.queued_start_receipt.execution_id, 'bootstrap-exec')
+                self.assertEqual(host.active['t1'].turn_id, 'turn-1')
+                self.assertEqual(sessions.completed, [])
+                self.assertEqual([method for method, _ in sessions.session.requests].count('turn/start'), 1)
+
+    async def test_restored_queue_copy_is_reconciled_only_with_actual_start_receipt(self):
+        from codex_web.models import Project, QueuedNativeStartReceipt
+        from codex_web.runtime.execution import TurnExecutionService
+        from tests.test_turn_execution import _Host
+        with tempfile.TemporaryDirectory() as directory:
+            host = _Host()
+            project = Project(id='project', name='Project', path='/workspace/project')
+            host._project = lambda _id: project
+            runtime = TurnExecutionService(host)
+            runtime.queued_preflight = ExecutionPreflightService(ExecutionPreflightStore(
+                SQLiteStateStore(Path(directory) / 'state.sqlite')))
+            runtime.start_thread_turn_now = AsyncMock()
+            runtime.schedule_queue_drain = Mock()
+            queued = runtime.enqueue_turn(thread_id='thread', project_id='project', message='original')
+            attempt = runtime.queued_preflight.retain_queued(queued,
+                organization_id=project.organization_id, workspace_id=project.workspace_id)
+            _, claim = runtime.queued_preflight.claim_queued_admission(attempt.id)
+            runtime.queued_preflight.begin_queued_start(attempt.id, claim_id=claim)
+            runtime.queued_preflight.record_queued_native_start(attempt.id, QueuedNativeStartReceipt(
+                admission_claim_id=claim, requested_execution_id=queued.execution_id,
+                execution_id='actual-execution', thread_id='thread',
+                provider_native_session_id='native-session', provider_native_turn_id='actual-turn',
+                provider_id='openai', runtime_id='codex', observed_at=200))
+            await runtime.drain_thread_queue('thread')
+            self.assertEqual(host._thread_queue('thread'), [])
+            runtime.start_thread_turn_now.assert_not_awaited()
+            self.assertEqual(runtime.queued_preflight.store.get(attempt.id).status, 'started')
+            self.assertEqual(host.events[-1]['type'], 'queued_original_started_receipt_reconciled')
+
     async def test_empty_start_response_never_emits_started_receipt(self):
         from codex_web.models import Project
         from codex_web.runtime.execution import TurnExecutionService
@@ -227,6 +291,27 @@ class QueuedPreflightRetentionTests(unittest.TestCase):
             reply_target=BotReplyTarget(thread_id='thread', provider='slack',
                 external_conversation_id='conversation', message_id='message', updated_at=100))
 
+    def test_native_receipt_rejects_wrong_claim_execution_or_thread(self):
+        from codex_web.models import QueuedNativeStartReceipt
+        retained = self.retain()
+        _, claim = self.service.claim_queued_admission(retained.id)
+        self.service.begin_queued_start(retained.id, claim_id=claim)
+        fields = dict(admission_claim_id=claim, requested_execution_id='intended-execution',
+            execution_id='actual-assignment-execution', thread_id='thread',
+            provider_native_session_id='native-session', provider_native_turn_id='actual-turn',
+            provider_id='openai', runtime_id='codex', observed_at=201)
+        for key in ['admission_claim_id','requested_execution_id','thread_id']:
+            with self.assertRaises(ValueError):
+                self.service.record_queued_native_start(retained.id, QueuedNativeStartReceipt(**{**fields,key:'wrong'}))
+        receipt = QueuedNativeStartReceipt(**fields)
+        self.service.record_queued_native_start(retained.id, receipt)
+        self.service.record_queued_native_start(retained.id, receipt)
+        saved = ExecutionPreflightStore(SQLiteStateStore(self.database)).get(retained.id)
+        self.assertEqual(saved.status, 'started')
+        self.assertEqual(saved.queued_start_receipt, receipt)
+        self.service.queued_disposition(retained.id, status='reconciliation_required', claim_id=claim)
+        self.assertEqual(self.store.get(retained.id).status, 'started')
+
     def retain(self, queued=None):
         return self.service.retain_queued(queued or self.queued,
             organization_id='org', workspace_id='workspace')
@@ -302,6 +387,24 @@ class QueuedPreflightRetentionTests(unittest.TestCase):
             dict(repository_resource_id='another-repository'), dict(agent_profile_actor_id='another-actor')]:
             with self.subTest(change=change):
                 self.assertIsNone(self.store.matching_queued(repeated | change))
+
+    def test_interrupted_queue_recovery_is_inspectable_and_claim_fenced(self):
+        attempt = self.retain()
+        _, original_claim = self.service.claim_queued_admission(attempt.id)
+        _, acquired = self.store.claim_retry(attempt.id, claim_id='first-recovery', now=1000)
+        self.assertTrue(acquired)
+        self.assertEqual(self.store.for_thread('thread')[0].id, attempt.id)
+        self.service.queued_disposition(attempt.id, status='blocked', claim_id=original_claim)
+        self.assertEqual(self.store.get(attempt.id).status, 'retrying')
+        _, acquired = self.store.claim_retry(attempt.id, claim_id='second-recovery', now=2000)
+        self.assertTrue(acquired)
+        self.service.queue_retry_committed(attempt.id, claim_id='first-recovery')
+        self.assertEqual(self.store.get(attempt.id).status, 'retrying')
+        self.service.queue_retry_committed(attempt.id, claim_id='second-recovery')
+        self.assertEqual(self.store.get(attempt.id).status, 'queued')
+        self.assertIsNone(self.store.get(attempt.id).started_at)
+        self.assertEqual(self.store.for_thread('thread')[0].queued_turn_snapshot,
+                         self.queued.model_dump(mode='json'))
 
     def test_recovery_fences_pre_start_claim_without_replaying_unknown_start(self):
         attempt = self.retain()

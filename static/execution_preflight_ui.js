@@ -83,6 +83,12 @@ export function createExecutionPreflightUi({
             : status === 'queued' ? 'Original request retained for admission; no start is confirmed.'
               : status === 'admitting' ? 'Pre-start admission reserved. Retry fences this reservation before native startup.' : '',
           correlation ? `Correlation: ${correlation}` : "",
+          attempt.queued_start_receipt
+            ? `Confirmed native turn: ${attempt.queued_start_receipt.provider_native_turn_id}` : '',
+          attempt.queued_start_receipt
+            ? `Native runtime: ${attempt.queued_start_receipt.provider_id}/${attempt.queued_start_receipt.runtime_id}` : '',
+          attempt.queued_start_receipt
+            ? `Requested execution: ${attempt.queued_start_receipt.requested_execution_id}; admitted execution: ${attempt.queued_start_receipt.execution_id}` : '',
           attempt.replacement_thread_id
             ? `Original thread: ${attempt.thread_id}; current thread: ${attempt.replacement_thread_id}`
             : "",

@@ -13,6 +13,7 @@ from codex_web.models import (
     ExecutionPreflightBlockerSnapshot,
     TurnCreate,
     QueuedTurn,
+    QueuedNativeStartReceipt,
 )
 from codex_web.services.identity import IdentityService
 from codex_web.storage.execution_preflight import ExecutionPreflightStore
@@ -88,6 +89,24 @@ class ExecutionPreflightService:
                 'updated_at':float(self.clock())})
         self.store.update(attempt_id, update)
         return acquired
+
+    def record_queued_native_start(
+        self, attempt_id: str, receipt: QueuedNativeStartReceipt,
+    ) -> ExecutionPreflightAttempt:
+        """Only the native runtime response may supply this internal receipt."""
+        def update(current):
+            if current.status == 'started' and current.queued_start_receipt == receipt:
+                return current
+            if (current.queued_turn_snapshot is None
+                    or current.status != 'reconciliation_required'
+                    or current.queued_admission_claim_id != receipt.admission_claim_id
+                    or current.execution_id != receipt.requested_execution_id
+                    or (current.replacement_thread_id or current.thread_id) != receipt.thread_id):
+                raise ValueError('native start receipt does not match the retained admission')
+            return current.model_copy(update={'status':'started',
+                'queued_start_receipt':receipt, 'started_at':receipt.observed_at,
+                'updated_at':receipt.observed_at, 'last_error':None, 'blockers':()})
+        return self.store.update(attempt_id, update)
 
     def queued_disposition(self, attempt_id: str, *, status: str,
                            detail: dict[str, Any] | None = None,
@@ -481,7 +500,7 @@ class ExecutionPreflightService:
         self._authorize(attempt, actor)
         payload = attempt.model_dump(mode="json")
         payload["can_retry"] = self.can_retry(actor) and attempt.status not in {
-            "queued", "reconciliation_required"}
+            "queued", "reconciliation_required", "started"}
         payload["retry_href"] = (
             f"/api/threads/{attempt.replacement_thread_id or attempt.thread_id}/preflight-attempts/"
             f"{attempt.id}/retry"

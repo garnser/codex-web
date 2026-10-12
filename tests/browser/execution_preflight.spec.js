@@ -105,3 +105,11 @@ for (const outcome of ['resolve', 'reject']) {
   await page.getByRole('button', { name: 'Retry', exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.__reloadCalls)).toEqual(['replacement-thread']);
 });
+
+test('confirmed retained start shows actual native receipt without a replay action', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?disposition=started');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+  await expect(page.locator('.message.tool')).toContainText('Confirmed native turn: actual-native-turn');
+  await expect(page.locator('.message.tool')).toContainText('Requested execution: original-request-execution; admitted execution: actual-bootstrap-execution');
+  await expect(page.getByRole('button', {name:'Retry', exact:true})).toHaveCount(0);
+});

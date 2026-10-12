@@ -1773,6 +1773,8 @@ class TurnExecutionService:
         agent_profile_revision: int | None = None,
         agent_profile_actor_id: str | None = None,
         preserve_active_handoff: bool = False,
+        queued_admission_attempt_id: str | None = None,
+        queued_admission_claim_id: str | None = None,
     ) -> dict[str, Any]:
         scope = (project.organization_id, project.workspace_id)
         if (
@@ -1826,6 +1828,8 @@ class TurnExecutionService:
                     agent_profile_revision=agent_profile_revision,
                     agent_profile_actor_id=agent_profile_actor_id,
                     preserve_active_handoff=preserve_active_handoff,
+                    queued_admission_attempt_id=queued_admission_attempt_id,
+                    queued_admission_claim_id=queued_admission_claim_id,
                 )
         return await self._start_thread_turn_now_admitted(
             thread_id,
@@ -1849,6 +1853,8 @@ class TurnExecutionService:
             agent_profile_revision=agent_profile_revision,
             agent_profile_actor_id=agent_profile_actor_id,
             preserve_active_handoff=preserve_active_handoff,
+            queued_admission_attempt_id=queued_admission_attempt_id,
+            queued_admission_claim_id=queued_admission_claim_id,
         )
 
     async def _start_thread_turn_now_admitted(
@@ -1875,6 +1881,8 @@ class TurnExecutionService:
         agent_profile_revision: int | None = None,
         agent_profile_actor_id: str | None = None,
         preserve_active_handoff: bool = False,
+        queued_admission_attempt_id: str | None = None,
+        queued_admission_claim_id: str | None = None,
     ) -> dict[str, Any]:
         h = self.host
         if self.upgrade_turn_admission_guard is not None:
@@ -2924,6 +2932,7 @@ class TurnExecutionService:
                 developer_instructions=effective_developer_instructions,
             )
             history_started = False
+            queued_native_start_confirmed = False
             self.record_user_message(thread_id, requested_execution_id, message)
             try:
                 if (
@@ -2942,6 +2951,24 @@ class TurnExecutionService:
                     native_session_id,
                     runtime_turn_request,
                 )
+                actual_native_turn_id = runtime_turn_result.provider_native_turn_id or (
+                    (runtime_turn_result.payload.get('turn') or {}).get('id')
+                    if isinstance(runtime_turn_result.payload, dict) else None)
+                if (queued_admission_attempt_id and queued_admission_claim_id
+                        and actual_native_turn_id and self.queued_preflight is not None):
+                    from codex_web.models import QueuedNativeStartReceipt
+                    queued_native_start_confirmed = True
+                    self.mark_thread_active(thread_id, turn_id=actual_native_turn_id)
+                    await asyncio.to_thread(self.queued_preflight.record_queued_native_start,
+                        queued_admission_attempt_id, QueuedNativeStartReceipt(
+                            admission_claim_id=queued_admission_claim_id,
+                            requested_execution_id=requested_execution_id,
+                            execution_id=canonical_execution_id, thread_id=thread_id,
+                            provider_native_session_id=(runtime_turn_result.provider_native_session_id
+                                or native_session_id),
+                            provider_native_turn_id=actual_native_turn_id,
+                            provider_id=str(runtime_adapter.provider_id),
+                            runtime_id=str(runtime_adapter.runtime_id), observed_at=time.time()))
                 if initial_turn_pending and self.bootstrap_bindings is not None:
                     self.bootstrap_bindings.mark_initial_turn_started(
                         thread_id,
@@ -3034,6 +3061,13 @@ class TurnExecutionService:
                             },
                         )
             except Exception as exc:
+                if queued_native_start_confirmed:
+                    # The provider accepted the turn. Bookkeeping failure cannot
+                    # cancel its ownership or authorize replay of the original.
+                    h._append_bot_event({'type':'queued_native_start_bookkeeping_failed',
+                        'thread_id':thread_id, 'turn_id':actual_native_turn_id,
+                        'attempt_id':queued_admission_attempt_id})
+                    raise
                 self.fail_user_message(thread_id, requested_execution_id)
                 if history_started and self.thread_history is not None:
                     with contextlib.suppress(Exception):
@@ -3277,6 +3311,15 @@ class TurnExecutionService:
                     organization_id=candidate_project.organization_id,
                     workspace_id=candidate_project.workspace_id,
                 )
+                if attempt.status == 'started' and attempt.queued_start_receipt is not None:
+                    # A restored queue copy is redundant only when the original
+                    # retained admission has its actual immutable start receipt.
+                    removed = self.pop_queued_turn(thread_id, candidate.id)
+                    if removed is not None:
+                        h._append_bot_event({'type':'queued_original_started_receipt_reconciled',
+                            'thread_id':thread_id, 'queued_id':candidate.id,
+                            'turn_id':attempt.queued_start_receipt.provider_native_turn_id})
+                    continue
                 if attempt.status != 'queued':
                     continue
                 attempt, claim_id = await asyncio.to_thread(
@@ -3400,6 +3443,8 @@ class TurnExecutionService:
                 agent_profile_id=queued.agent_profile_id,
                 agent_profile_revision=queued.agent_profile_revision,
                 agent_profile_actor_id=queued.agent_profile_actor_id,
+                **({'queued_admission_attempt_id':retained_attempt.id,
+                    'queued_admission_claim_id':admission_claim_id} if retained_attempt is not None else {}),
             )
             returned_turn = start_response.get('turn', {}) if isinstance(start_response, dict) else {}
             if retained_attempt is not None:

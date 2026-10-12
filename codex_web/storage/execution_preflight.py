@@ -211,6 +211,7 @@ class ExecutionPreflightStore:
 
         def mutate(payload):
             nonlocal acquired
+            acquired = False
             if not isinstance(payload, dict):
                 raise KeyError(attempt_id)
             current = ExecutionPreflightAttempt.model_validate(payload)
@@ -225,11 +226,10 @@ class ExecutionPreflightStore:
                 retry_started_at = current.retry_started_at or current.updated_at
                 if now - retry_started_at < max(1.0, stale_after_seconds):
                     return current.model_dump(mode="json")
-                if current.queued_turn_snapshot is not None:
-                    # Expired ownership is not evidence that an uncertain
-                    # admission did not start. Require reconciliation.
-                    return current.model_copy(update={'status':'reconciliation_required',
-                        'updated_at':now}).model_dump(mode='json')
+                # Retained queued recovery never calls the native runtime in
+                # retrying state. Only a later queued -> admitting -> unknown
+                # claim can pass the native gate, so interrupted queue recovery
+                # may acquire a new token without inferring a start outcome.
             acquired = True
             return current.model_copy(
                 update={
@@ -238,6 +238,8 @@ class ExecutionPreflightStore:
                     "retry_claim_id": claim_id,
                     "retry_started_at": now,
                     "last_error": None,
+                    **({'queued_admission_claim_id':None}
+                       if current.queued_turn_snapshot is not None else {}),
                     "updated_at": now,
                 }
             ).model_dump(mode="json")
@@ -251,7 +253,7 @@ class ExecutionPreflightStore:
         attempt = ExecutionPreflightAttempt.model_validate(payload)
         self.store.record_apply(
             self.NAMESPACE,
-            upserts={self._thread_key(attempt): attempt.model_dump(mode="json")},
+            upserts={self._thread_key(attempt): {"attemptId":attempt.id}},
         )
         return attempt, acquired
 

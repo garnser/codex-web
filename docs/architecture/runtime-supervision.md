@@ -332,6 +332,19 @@ the native-start gate. Concurrent drainers cannot acquire the same claim twice.
 A durable reconciliation-required gate commits before
 native startup; uncertain outcomes cannot be replayed through retry or steering.
 An active marker or an expired retry claim does not establish successful start.
+The native runtime records a claim-bound provider start receipt before bootstrap
+and other post-start bookkeeping. It includes the requested execution, actual
+assignment execution and native session/turn/runtime IDs. A bookkeeping failure
+preserves actual active-turn ownership and cannot rewrite that receipt as an
+unstarted failure. Only that receipt permits removing a redundant restored queue
+copy. A request with no receipt remains uncertain; absence and timeout are not
+proof of an unstarted request.
+
+Interrupted explicit queue recovery is distinct from native admission: its
+`retrying` state cannot pass the native-start gate. A stale recovery token may be
+replaced while fencing the old admission and recovery tokens; this restores only
+the original queue request, and ordinary admission still has to claim it. An
+uncertain native admission cannot enter this recovery path.
 Confirmed preflight rejection retains a blocked request for explicit recovery;
 later eligible requests can proceed. Maintenance and capacity waits retain their
 existing queue/backoff path. A missing Project cannot justify inventing tenant
