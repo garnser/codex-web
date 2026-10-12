@@ -2053,6 +2053,15 @@ class TurnExecutionService:
                 # Recovery may clear the historical assignment variable after
                 # a failed start. Its immutable profile must survive that loss.
                 recovered_profile = getattr(assignment, "agent_profile", None)
+                profile_revision_drift = bool(agent_profile_id and recovered_profile is not None
+                    and recovered_profile.profile_id == agent_profile_id
+                    and agent_profile_revision is not None
+                    and recovered_profile.profile_revision != agent_profile_revision)
+                if profile_revision_drift:
+                    # A new pinned revision of the same collaborator requires
+                    # a freshly authorized binding, not rewriting the request
+                    # or pretending the previous assignment has that revision.
+                    recovered_profile = None
                 if agent_profile_id and recovered_profile is not None and (
                     recovered_profile.profile_id != agent_profile_id
                     or (
@@ -2083,6 +2092,14 @@ class TurnExecutionService:
                         agent_profile_id=agent_profile_id,
                         agent_profile_revision=agent_profile_revision,
                     )
+                    if selected_profile is not None and (
+                        selected_profile.profile_id != agent_profile_id or (
+                            agent_profile_revision is not None
+                            and selected_profile.profile_revision != agent_profile_revision)):
+                        raise HTTPException(status_code=409, detail={
+                            'code':'execution_preflight_blocked',
+                            'message':'Canonical recovery did not select the exact requested profile revision.',
+                            'retryable':False})
                     expected_runtime = desired_runtime or (
                         (runtime_binding.provider_id, runtime_binding.runtime_id)
                         if runtime_binding is not None else None
@@ -2126,7 +2143,7 @@ class TurnExecutionService:
                         agent_profile_id=agent_profile_id,
                         agent_profile_revision=agent_profile_revision,
                     )
-                switch_needed = (
+                switch_needed = profile_revision_drift or (
                     desired_runtime is not None
                     and (
                         runtime_binding is None
@@ -2204,16 +2221,11 @@ class TurnExecutionService:
                         ),
                         sandbox=effective_sandbox,
                         approval_policy=effective_approval_policy,
-                        execution_profile_id=getattr(
-                            assignment,
-                            "execution_profile_id",
-                            effective_execution_profile_id,
-                        ),
-                        agent_profile=getattr(
-                            assignment,
-                            "agent_profile",
-                            None,
-                        ) or recovered_profile,
+                        execution_profile_id=(recovered_profile.execution_profile_id
+                            if profile_revision_drift else getattr(assignment,
+                                "execution_profile_id", effective_execution_profile_id)),
+                        agent_profile=(recovered_profile if profile_revision_drift else
+                            getattr(assignment, "agent_profile", None) or recovered_profile),
                         # A repository-scoped turn is allowed to supersede a
                         # thread's previous bootstrap repository. Prefer the
                         # requested target here; using the old assignment
@@ -3499,7 +3511,8 @@ class TurnExecutionService:
                     retained_attempt.id, status='queued', detail=detail, claim_id=admission_claim_id)
             if retained_attempt is not None and not deferred_admission:
                 detail = exc.detail if isinstance(exc, HTTPException) and isinstance(exc.detail, dict) else None
-                known_unstarted = bool(detail and detail.get('code') == 'execution_preflight_blocked'
+                known_unstarted = bool(detail and detail.get('code') in {
+                    'execution_preflight_blocked', 'thread_agent_profile_immutable'}
                     and not self.thread_is_active(thread_id))
                 await asyncio.to_thread(self.queued_preflight.queued_disposition,
                     retained_attempt.id,

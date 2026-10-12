@@ -380,6 +380,54 @@ class QueuedPreflightRetentionTests(unittest.TestCase):
             reply_target=BotReplyTarget(thread_id='thread', provider='slack',
                 external_conversation_id='conversation', message_id='message', updated_at=100))
 
+    def test_recorded_profile_refusal_reconciliation_is_authorized_and_never_starts(self):
+        from tests.test_execution_preflight import actor
+        from codex_web.models import ExecutionPreflightBlocker
+        from fastapi import HTTPException
+        attempt = self.retain()
+        refusal = ExecutionPreflightBlocker(code='thread_agent_profile_immutable', message='profile refused',
+            requestedAgentProfileId='original-profile', requestedAgentProfileRevision=6,
+            effectiveAgentProfile={'profile_id':'original-profile', 'profile_revision':7})
+        self.store.update(attempt.id, lambda current: current.model_copy(update={
+            'status':'reconciliation_required', 'blockers':(refusal,)}))
+        admin = actor(admin=True).model_copy(update={'workspace_id':'workspace'})
+        member = actor(admin=False).model_copy(update={'workspace_id':'workspace'})
+        current = self.store.get(attempt.id)
+        self.assertTrue(self.service.public(current, actor=admin)['can_reconcile_prestart'])
+        self.assertFalse(self.service.public(current, actor=member)['can_reconcile_prestart'])
+        with self.assertRaises(HTTPException):
+            self.service.reconcile_prestart_refusal(attempt.id, actor=member)
+        saved = self.service.reconcile_prestart_refusal(attempt.id, actor=admin)
+        self.assertEqual(saved.status, 'blocked')
+        self.assertIsNone(saved.started_at)
+        self.assertIsNone(saved.queued_start_receipt)
+        self.assertEqual(saved.queued_turn_snapshot, self.queued.model_dump(mode='json'))
+        self.assertEqual(self.service.reconcile_prestart_refusal(attempt.id, actor=admin).status, 'blocked')
+        # A concurrent actual start is terminal; reconciliation cannot erase it.
+        self.service.queued_disposition(attempt.id, status='started')
+        self.assertEqual(self.service.reconcile_prestart_refusal(attempt.id, actor=admin).status, 'started')
+
+    def test_unknown_or_mismatched_refusal_cannot_be_reconciled_as_unstarted(self):
+        from tests.test_execution_preflight import actor
+        from codex_web.models import ExecutionPreflightBlocker
+        from fastapi import HTTPException
+        attempt = self.retain()
+        admin = actor(admin=True).model_copy(update={'workspace_id':'workspace'})
+        base = dict(code='thread_agent_profile_immutable', message='profile refused',
+            requestedAgentProfileId='original-profile', requestedAgentProfileRevision=6,
+            effectiveAgentProfile={'profile_id':'original-profile', 'profile_revision':7})
+        for changed in [dict(code='native_start_outcome_unknown'), dict(requestedAgentProfileRevision=5),
+                        dict(effectiveAgentProfile={'profile_id':'original-profile'}),
+                        dict(effectiveAgentProfile='malformed'),
+                        dict(effectiveAgentProfile={'profile_id':'different-profile','profile_revision':7})]:
+            blocker = ExecutionPreflightBlocker(**{**base, **changed})
+            self.store.update(attempt.id, lambda current: current.model_copy(update={
+                'status':'reconciliation_required','blockers':(blocker,)}))
+            with self.assertRaises(HTTPException):
+                self.service.reconcile_prestart_refusal(attempt.id, actor=admin)
+            self.assertEqual(self.store.get(attempt.id).status, 'reconciliation_required')
+            self.assertFalse(self.service.public(self.store.get(attempt.id), actor=admin)['can_reconcile_prestart'])
+
     def test_native_receipt_rejects_wrong_claim_execution_or_thread(self):
         from codex_web.models import QueuedNativeStartReceipt
         retained = self.retain()

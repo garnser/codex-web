@@ -242,6 +242,10 @@ API_DOMAINS.update({
 # now require canonical operational authority while ordinary progress/handoff
 # traffic remains compatible with authenticated-member workflows.
 EXACT_POLICIES: dict[tuple[str, str], ApiAuthorizationPolicy] = {
+    ('POST', '/api/threads/{thread_id}/preflight-attempts/{attempt_id}/reconcile-prestart'): ApiAuthorizationPolicy(
+        capability='execution.retry', level=AuthorityLevel.EXECUTE, access=ApiAccessMode.ADMIN,
+        required_assurance=AuthenticationAssurance.MFA,
+        description='Reconcile a retained authoritative pre-start refusal with administrator authority and MFA.'),
     (
         "POST",
         "/api/threads/{thread_id}/preflight-attempts/{attempt_id}/retry",
