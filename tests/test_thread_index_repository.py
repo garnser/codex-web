@@ -21,6 +21,59 @@ class ThreadIndexRepositoryTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tempdir.cleanup()
 
+    def test_replacement_survives_restart_with_original_provenance(self):
+        repository = ThreadIndexRepository(self.store, self.legacy_path)
+        provenance = {"actor_identity_id": "owner", "organization_id": "tenant",
+                      "workspace_id": "workspace", "agent_profile_id": "carl",
+                      "agent_profile_revision": 6, "repository_resource_id": "platform"}
+        repository.remember_replacement("old", "middle", project_id="project", provenance=provenance)
+        repository.remember_replacement("middle", "new", project_id="project", provenance=provenance)
+        reopened = ThreadIndexRepository(SQLiteStateStore(self.root / "state.db"), self.legacy_path)
+        self.assertEqual(reopened.replacement_thread_id("old"), "new")
+        self.assertIsNone(reopened.replacement_thread_id("new"))
+        edge = reopened.store.get(repository.REPLACEMENTS_NAMESPACE)["edges"]["old"]
+        self.assertEqual(edge["new_thread_id"], "middle")
+        self.assertEqual(edge["provenance"], provenance)
+
+    def test_conflict_cycle_and_tenant_crossing_preserve_original_edge(self):
+        repository = ThreadIndexRepository(self.store, self.legacy_path)
+        provenance = {"organization_id": "tenant", "workspace_id": "workspace"}
+        repository.remember_replacement("old", "new", project_id="project", provenance=provenance)
+        original = self.store.get(repository.REPLACEMENTS_NAMESPACE)
+        # Idempotency does not replace the first observation.
+        repository.remember_replacement("old", "new", project_id="project", provenance=provenance)
+        for old, new, project, scope in [
+            ("old", "other", "project", provenance),
+            ("new", "old", "project", provenance),
+            ("new", "other", "other-project", provenance),
+            ("new", "other", "project", {"organization_id": "other-tenant"}),
+            ("earlier", "old", "other-project", provenance),
+        ]:
+            with self.assertRaises(ValueError):
+                repository.remember_replacement(old, new, project_id=project, provenance=scope)
+            self.assertEqual(self.store.get(repository.REPLACEMENTS_NAMESPACE), original)
+
+    def test_concurrent_opposite_edges_cannot_create_cycle(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        barrier = Barrier(2)
+
+        def record(old, new):
+            repository = ThreadIndexRepository(SQLiteStateStore(self.root / "state.db"), self.legacy_path)
+            barrier.wait()
+            try:
+                repository.remember_replacement(old, new, project_id="project", provenance={})
+                return "recorded"
+            except ValueError:
+                return "rejected"
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            results = list(workers.map(lambda pair: record(*pair), [("a", "b"), ("b", "a")]))
+        self.assertEqual(sorted(results), ["recorded", "rejected"])
+        repository = ThreadIndexRepository(self.store, self.legacy_path)
+        self.assertNotEqual(repository.replacement_thread_id("a"), "a")
+        self.assertNotEqual(repository.replacement_thread_id("b"), "b")
+
     def test_imports_legacy_json_then_keeps_sqlite_authoritative(self) -> None:
         self.legacy_path.write_text(
             json.dumps(

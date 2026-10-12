@@ -77,6 +77,18 @@ class ThreadRecoveryServiceTests(unittest.TestCase):
         self.assertEqual(service.replacement_thread_id("thread-b"), "thread-c")
         self.assertIsNone(service.replacement_thread_id("thread-c"))
 
+    def test_durable_replacement_is_used_after_process_memory_is_lost(self):
+        lookup = Mock(return_value="actual-successor")
+        index = SimpleNamespace(replacement_thread_id=lookup)
+        service = recovery_service(SimpleNamespace(THREAD_REPLACEMENTS={}), thread_index=index)
+        self.assertEqual(service.replacement_thread_id("original"), "actual-successor")
+        lookup.assert_called_once_with("original")
+
+    def test_legacy_replacement_cycle_fails_closed(self):
+        service = recovery_service(SimpleNamespace(THREAD_REPLACEMENTS={"a": "b", "b": "a"}))
+        with self.assertRaises(ValueError):
+            service.replacement_thread_id("a")
+
     def test_replaced_thread_raises_structured_conflict(self) -> None:
         host = SimpleNamespace(
             THREAD_REPLACEMENTS={"old": "new"},
@@ -269,6 +281,36 @@ class ThreadRecoveryReplacementTests(unittest.IsolatedAsyncioTestCase):
         retarget_state.assert_called_once_with("old-thread", "new-thread")
         archive.assert_awaited_once_with("old-thread", "new-thread")
         self.assertEqual(host.THREAD_REPLACEMENTS["old-thread"], "new-thread")
+
+    async def test_recorded_bot_replacement_finishes_transfer_without_second_bootstrap(self):
+        binding = BotBinding(id="binding", provider="slack", project_id="home",
+                             external_conversation_id="channel", thread_id="old",
+                             route_prefix="Carl", created_at=1, updated_at=1)
+        successor = binding.model_copy(update={"thread_id": "actual-successor"})
+        host = SimpleNamespace(_load_bot_bindings=lambda: [binding],
+                               _binding_prefix=lambda b: b.route_prefix,
+                               _retarget_logical_bot_bindings=Mock(return_value=successor),
+                               _retarget_bot_thread_state=Mock(),
+                               _archive_replaced_bot_thread=AsyncMock())
+        creator = AsyncMock()
+        index = SimpleNamespace(replacement_thread_id=lambda t: "actual-successor" if t == "old" else None)
+        service = recovery_service(host, thread_index=index, thread_creator=creator)
+        result = await service.replace_stale_bot_thread(binding, "archived")
+        self.assertEqual(result.thread_id, "actual-successor")
+        creator.assert_not_awaited()
+        host._retarget_bot_thread_state.assert_called_once_with("old", "actual-successor")
+        host._archive_replaced_bot_thread.assert_awaited_once_with("old", "actual-successor")
+
+    async def test_recorded_web_replacement_finishes_transfer_without_second_bootstrap(self):
+        host = SimpleNamespace(_retarget_bot_thread_state=Mock(),
+                               _archive_replaced_bot_thread=AsyncMock())
+        creator = AsyncMock()
+        index = SimpleNamespace(replacement_thread_id=lambda t: "actual-successor" if t == "old" else None)
+        service = recovery_service(host, thread_index=index, thread_creator=creator)
+        result = await service.replace_stale_web_thread("old", service.projects.get("home"), "archived")
+        self.assertEqual(result, "actual-successor")
+        creator.assert_not_awaited()
+        host._retarget_bot_thread_state.assert_called_once_with("old", "actual-successor")
 
     async def test_replacement_bootstrap_preserves_resolved_profile_and_actor(self):
         creator = AsyncMock(return_value={"thread": {"id": "new-thread"}})
