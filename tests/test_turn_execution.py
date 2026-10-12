@@ -1028,6 +1028,55 @@ class _BootstrapBindings:
 
 
 class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
+    async def test_scoped_read_context_does_not_inherit_unrelated_thread_defaults(self):
+        for source, ref, explicit, expected in [
+            ('owner-work-watchdog', 'group/app#49', (), ()),
+            ('queued:gitlab', None, (), ()),
+            ('owner-work-watchdog', 'group/app#49', ('required-context',), ('required-context',)),
+            ('web', None, (), ('unrelated-context',)),
+        ]:
+            with self.subTest(source=source, ref=ref, explicit=explicit):
+                host, binding, sessions, service = self._service()
+                host._thread_run_settings = lambda _id: ThreadRunSettings(
+                    read_only_repository_resource_ids=('unrelated-context',))
+                host._remember_thread_run_settings = Mock()
+                await service.start_thread_turn_now('t1',
+                    project=Project(id='p1', name='Project', path='/workspace/project'),
+                    message='original task', sandbox='workspace-write', approval_policy='on-request',
+                    source=source, work_item_ref=ref, read_only_repository_resource_ids=explicit)
+                self.assertEqual(binding.calls[0]['read_only_repository_ids'], expected)
+                if ref or source.startswith('queued:'):
+                    self.assertEqual(host._remember_thread_run_settings.call_args.kwargs[
+                        'read_only_repository_resource_ids'], expected)
+                else:
+                    host._remember_thread_run_settings.assert_not_called()
+
+    async def test_read_context_change_rebinds_idle_bootstrap_with_original_profile(self):
+        host, sessions, service, profile, runtime, actor, kwargs = await self._explicit_recovery(scope_switch=True)
+        kwargs.update(repository_resource_id='repo-old', writable_repository_resource_ids=('repo-old',),
+                      work_item_ref='group/app#49', read_only_repository_resource_ids=())
+        old = sessions.session.validate_current()
+        old.repository_scope = SimpleNamespace(writable_repository_ids=('repo-old',),
+                                               read_only_repository_ids=('unrelated-context',))
+        recovered = sessions.start.return_value
+        new = recovered.validate_current()
+        new.repository_target = SimpleNamespace(mutable_repository_id='repo-old')
+        new.repository_scope = SimpleNamespace(writable_repository_ids=('repo-old',),
+                                               read_only_repository_ids=())
+        host._thread_run_settings = lambda _id: ThreadRunSettings(
+            read_only_repository_resource_ids=('unrelated-context',))
+        host._remember_thread_run_settings = Mock()
+        await service.start_thread_turn_now('t1', **kwargs)
+        service._supersede_thread_bootstrap.assert_awaited_once()
+        values = service._supersede_thread_bootstrap.await_args.kwargs
+        self.assertEqual(values['read_only_repository_ids'], ())
+        self.assertEqual(values['explicit_repository_id'], 'repo-old')
+        self.assertEqual(values['writable_repository_ids'], ('repo-old',))
+        self.assertEqual(values['agent_profile'], profile)
+        self.assertEqual(host._remember_thread_run_settings.call_args.kwargs[
+            'read_only_repository_resource_ids'], ())
+        self.assertEqual(service._select_runtime_binding.await_args.kwargs['actor'], actor)
+
     async def test_handoff_delivery_requires_successful_recipient_native_turn_start(self):
         for fail in (False, True):
             with self.subTest(fail=fail):
