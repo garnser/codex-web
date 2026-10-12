@@ -312,6 +312,44 @@ class ContinuityCoalescingTests(unittest.IsolatedAsyncioTestCase):
             coordination_channel="coord",
         )
 
+    async def test_explicit_retry_retains_busy_owner_request_once_in_original_scope(self):
+        state=_state(ref='example/app!274')
+        state.kind='merge_request'
+        state.resource_ids=['original-repository']
+        state.execution.retry.attempt=1
+        scopes, dispatches=[],[]
+        service=self._service({state.ref:state},dispatches=dispatches,dispatch_scopes=scopes)
+        service.thread_is_active=lambda thread:True
+        service.thread_queue_depth=lambda thread:12
+        normal=await service.dispatch_actionable_owner(state,source='continuity')
+        self.assertEqual(normal['status'],'already_active')
+        first=await service.dispatch_actionable_owner(state,source='operator-retry',actor='operator')
+        duplicate=await service.dispatch_actionable_owner(state,source='operator-retry',actor='operator')
+        self.assertTrue(first['dispatched'])
+        self.assertEqual(duplicate['status'],'duplicate')
+        self.assertEqual(len(dispatches),1)
+        self.assertEqual(scopes,[{'work_item_ref':state.ref,
+            'repository_resource_id':'original-repository',
+            'writable_repository_resource_ids':('original-repository',), 'require_idle':False}])
+        self.assertEqual(state.current_owner,'james')
+        await service.stop()
+
+    async def test_explicit_retry_supersedes_pending_old_attempt_without_background_discard(self):
+        state=_state(ref='example/app!274');state.execution.retry.attempt=1
+        states={state.ref:state};dispatches=[]
+        service=self._service(states,dispatches=dispatches)
+        service.thread_queue_depth=lambda thread:12
+        service.schedule_actionable_owner_dispatch(state,source='operator-retry',actor='operator')
+        latest=state.model_copy(deep=True);latest.execution.retry.attempt=2;states[state.ref]=latest
+        service.schedule_actionable_owner_dispatch(latest,source='operator-retry',actor='operator')
+        service.schedule_actionable_owner_dispatch(latest,source='continuity',actor='operator')
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if service.dispatch_coordinator.status()['activeTasks']==0:break
+        self.assertEqual(len(dispatches),1)
+        self.assertEqual(dispatches[0][2],'operator-retry')
+        await service.stop()
+
     async def test_governed_steer_dispatches_exact_owner_scope_once(self) -> None:
         state = _state()
         state.resource_ids = ["repository-a"]

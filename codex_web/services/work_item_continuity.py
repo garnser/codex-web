@@ -646,14 +646,15 @@ class WorkItemContinuityService:
         binding = self.responsible_binding(state)
         if not binding:
             return {"status": "binding_unavailable", "dispatched": False}
-        if self.thread_is_active(binding.thread_id):
+        explicit_retry = source == 'operator-retry'
+        if self.thread_is_active(binding.thread_id) and not explicit_retry:
             return {
                 "status": "already_active",
                 "dispatched": False,
                 "owner": owner,
                 "thread_id": binding.thread_id,
             }
-        if self.thread_queue_depth(binding.thread_id):
+        if self.thread_queue_depth(binding.thread_id) and not explicit_retry:
             return {
                 "status": "already_queued",
                 "dispatched": False,
@@ -686,6 +687,8 @@ class WorkItemContinuityService:
             f"work-item-owner-progress:{state.ref}:{binding.thread_id}:"
             f"{owner}:{state.current_stage}"
         )
+        if explicit_retry:
+            dispatch_key += f':operator-retry:{state.execution.retry.attempt}'
         if not self.watchdog_dispatch_allowed(dispatch_key):
             return {
                 "status": "duplicate",
@@ -707,7 +710,7 @@ class WorkItemContinuityService:
             writable_repository_resource_ids=(
                 writable_repository_resource_ids
             ),
-            require_idle=True,
+            require_idle=not explicit_retry,
         )
         skipped = str(result.get("skipped") or "").strip()
         if skipped:
@@ -869,6 +872,8 @@ class WorkItemContinuityService:
         if not expected_owner:
             return
         expected_stage = state.current_stage
+        explicit_retry = source == 'operator-retry'
+        expected_retry_attempt = state.execution.retry.attempt
         ref = state.ref
 
         async def run() -> None:
@@ -891,6 +896,7 @@ class WorkItemContinuityService:
                 )
                 or current_owner != expected_owner
                 or latest.current_stage != expected_stage
+                or (explicit_retry and latest.execution.retry.attempt != expected_retry_attempt)
             ):
                 return
             try:
@@ -916,9 +922,9 @@ class WorkItemContinuityService:
                 )
 
         self.dispatch_coordinator.schedule(
-            f"owner-dispatch:{ref}",
+            f"owner-dispatch:{ref}" + (":operator-retry" if explicit_retry else ""),
             run,
-            revision=self._owner_revision(state),
+            revision=self._owner_revision(state) + (f"|operator-retry:{expected_retry_attempt}" if explicit_retry else ""),
             scope=state.project_id,
             timeout_seconds=(
                 float(
