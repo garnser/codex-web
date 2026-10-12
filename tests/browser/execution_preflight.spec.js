@@ -1,5 +1,18 @@
 const { test, expect } = require('@playwright/test');
 
+for (const disposition of ['queued', 'reconciliation_required']) {
+  test(`retained ${disposition} exposes original provenance without an unsafe retry`, async ({ page }) => {
+    await page.goto(`http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?disposition=${disposition}`);
+    await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+    await expect(page.locator('.message.tool')).toContainText('Original queued request: original-queue-id');
+    await expect(page.locator('.message.tool')).toContainText('Agent profile: original-profile · revision 6');
+    await expect(page.getByRole('button', {name:'Retry', exact:true})).toHaveCount(0);
+    if (disposition === 'reconciliation_required') {
+      await expect(page.locator('.message.tool')).toContainText('Native start outcome is unknown');
+    }
+  });
+}
+
 test('retained execution preflight renders blocker and authorized retry', async ({ page }) => {
   await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html');
   await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);

@@ -66,6 +66,14 @@
       updated_at: 1800000010,
       blockers: [blocker],
     }];
+    const disposition = new URLSearchParams(location.search).get('disposition');
+    if (disposition) {
+      attempts[0].status = disposition;
+      attempts[0].can_retry = !['queued', 'reconciliation_required'].includes(disposition);
+      attempts[0].queued_turn_snapshot = {id:'original-queue-id', work_item_ref:'group/repo#78'};
+      attempts[0].agent_profile_id = 'original-profile';
+      attempts[0].agent_profile_revision = 6;
+    }
 
     const api = async (path, options = {}) => {
       window.__apiCalls.push({ path, method: options.method || "GET" });

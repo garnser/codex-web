@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any, Callable
+import hashlib
+import json
 
 from codex_web.models import (
     ExecutionPreflightAttempt,
@@ -36,6 +38,29 @@ class ExecutionPreflightStore:
     def _attempt_key(attempt_id: str) -> str:
         return f"a/{attempt_id}"
 
+    @staticmethod
+    def queued_identity(snapshot: dict[str, Any]) -> dict[str, Any]:
+        return {key:value for key,value in snapshot.items()
+            if key not in {'id','execution_id','created_at','attempts'}}
+
+    @classmethod
+    def _queued_identity_key(cls, snapshot: dict[str, Any]) -> str:
+        digest = hashlib.sha256(json.dumps(cls.queued_identity(snapshot), sort_keys=True,
+            separators=(',', ':')).encode()).hexdigest()
+        return f"q/{snapshot['thread_id']}/{digest}/"
+
+    def matching_queued(self, snapshot: dict[str, Any]) -> ExecutionPreflightAttempt | None:
+        cursor = None
+        while True:
+            rows, cursor = self.store.record_page(self.NAMESPACE,
+                key_prefix=self._queued_identity_key(snapshot), after=cursor, limit=200)
+            for row in rows.values():
+                attempt = self.get(row['attemptId'])
+                if attempt is not None and attempt.status != 'started':
+                    return attempt
+            if cursor is None:
+                return None
+
     @classmethod
     def _thread_key(cls, attempt: ExecutionPreflightAttempt) -> str:
         return (
@@ -66,6 +91,41 @@ class ExecutionPreflightStore:
                 },
             },
         )
+
+    def retain_queued(self, attempt: ExecutionPreflightAttempt) -> ExecutionPreflightAttempt:
+        """Commit the full request before queue removal; retries preserve its state."""
+        def retain(raw):
+            if raw is not None:
+                current = ExecutionPreflightAttempt.model_validate(raw)
+                expected = current.queued_turn_snapshot
+                if expected is not None and current.replacement_thread_id:
+                    expected = dict(expected)
+                    original_thread = expected.get('thread_id')
+                    expected['thread_id'] = current.replacement_thread_id
+                    reply = expected.get('reply_target')
+                    if reply and reply.get('thread_id') == original_thread:
+                        expected['reply_target'] = dict(reply, thread_id=current.replacement_thread_id)
+                if (
+                    current.organization_id != attempt.organization_id
+                    or current.workspace_id != attempt.workspace_id
+                    or current.project_id != attempt.project_id
+                    or expected != attempt.queued_turn_snapshot
+                ):
+                    raise ValueError("retained queued request identity changed")
+                return raw
+            return attempt.model_dump(mode="json")
+
+        raw = self.store.record_update(self.NAMESPACE, self._attempt_key(attempt.id),
+            retain, default=None)
+        retained = ExecutionPreflightAttempt.model_validate(raw)
+        # Both writes complete before the runtime may remove the queue entry.
+        # A crash between them leaves the original queue intact; calling this
+        # again repairs the existing domain's inspection index idempotently.
+        self.store.record_apply(self.NAMESPACE, upserts={
+            self._thread_key(retained): {"attemptId":retained.id},
+            self._queued_identity_key(attempt.queued_turn_snapshot)+retained.id:
+                {"attemptId":retained.id}})
+        return retained
 
     def update(
         self,
@@ -100,9 +160,16 @@ class ExecutionPreflightStore:
         updated = ExecutionPreflightAttempt.model_validate(payload)
         if updated.replacement_thread_id:
             target = updated.model_copy(update={"thread_id": updated.replacement_thread_id})
-            self.store.record_apply(self.NAMESPACE, upserts={
+            indexes = {
                 self._thread_key(target): {"attemptId": updated.id},
-            })
+            }
+            if updated.queued_turn_snapshot is not None:
+                projected = dict(updated.queued_turn_snapshot, thread_id=updated.replacement_thread_id)
+                reply = projected.get('reply_target')
+                if reply and reply.get('thread_id') == updated.thread_id:
+                    projected['reply_target'] = dict(reply, thread_id=updated.replacement_thread_id)
+                indexes[self._queued_identity_key(projected)+updated.id] = {'attemptId':updated.id}
+            self.store.record_apply(self.NAMESPACE, upserts=indexes)
         return updated
 
 
@@ -147,6 +214,8 @@ class ExecutionPreflightStore:
             if not isinstance(payload, dict):
                 raise KeyError(attempt_id)
             current = ExecutionPreflightAttempt.model_validate(payload)
+            if current.status in {"queued", "reconciliation_required"}:
+                return current.model_dump(mode="json")
             if current.status == "started":
                 return current.model_dump(mode="json")
             if current.status == "retrying":
@@ -156,6 +225,11 @@ class ExecutionPreflightStore:
                 retry_started_at = current.retry_started_at or current.updated_at
                 if now - retry_started_at < max(1.0, stale_after_seconds):
                     return current.model_dump(mode="json")
+                if current.queued_turn_snapshot is not None:
+                    # Expired ownership is not evidence that an uncertain
+                    # admission did not start. Require reconciliation.
+                    return current.model_copy(update={'status':'reconciliation_required',
+                        'updated_at':now}).model_dump(mode='json')
             acquired = True
             return current.model_copy(
                 update={

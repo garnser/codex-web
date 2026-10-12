@@ -89,7 +89,7 @@ def _execution_preflight_blocked(
             "code": "execution_preflight_blocked",
             "message": str(exc),
             "blockers": [exc.public()],
-            "retryable": False,
+            "retryable": exc.public().get("retryable") is True,
         },
     )
 
@@ -168,6 +168,7 @@ class TurnExecutionService:
     ) -> None:
         self.host = host
         self.handoff_delivery_recorder: Callable[..., Any] | None = None
+        self.queued_preflight = None
         try:
             self._event_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -733,6 +734,21 @@ class TurnExecutionService:
                 if (
                     existing.source == source
                     and existing.message == message
+                    and existing.project_id == project_id
+                    and existing.work_item_ref == work_item_ref
+                    and existing.handoff_requested_at == handoff_requested_at
+                    and existing.repository_resource_id == repository_resource_id
+                    and existing.writable_repository_resource_ids == writable_repository_resource_ids
+                    and existing.read_only_repository_resource_ids == read_only_repository_resource_ids
+                    and existing.execution_profile_id == execution_profile_id
+                    and existing.agent_profile_id == agent_profile_id
+                    and existing.agent_profile_revision == agent_profile_revision
+                    and existing.agent_profile_actor_id == agent_profile_actor_id
+                    and existing.reply_target == reply_target
+                    and existing.sandbox == sandbox
+                    and existing.approval_policy == approval_policy
+                    and existing.model == model
+                    and existing.reasoning_effort == reasoning_effort
                 ):
                     selected["item"] = existing
                     return items
@@ -812,6 +828,14 @@ class TurnExecutionService:
                 reply_target=reply_target,
                 created_at=time.time(),
             )
+            if self.queued_preflight is not None:
+                retained = self.queued_preflight.store.matching_queued(queued.model_dump(mode='json'))
+                if retained is not None:
+                    raise HTTPException(status_code=409, detail={
+                        'code':'execution_preflight_blocked',
+                        'message':'This original request is retained for recovery; use its existing preflight action.',
+                        'attemptId':retained.id,'retainedMessage':True,
+                        'status':retained.status,'retryable':False})
             items.append(queued)
             selected["item"] = queued
             return items
@@ -819,9 +843,16 @@ class TurnExecutionService:
         self._update_thread_queue(thread_id, mutate)
         return selected["item"]
 
-    def find_duplicate_queued_turn(self, thread_id: str, *, message: str, source: str) -> QueuedTurn | None:
+    def find_duplicate_queued_turn(
+        self, thread_id: str, *, message: str, source: str, **identity: Any,
+    ) -> QueuedTurn | None:
+        # Text alone cannot prove that scope, actor or handoff generation match.
+        # Legacy callers without identity defer to atomic enqueue deduplication.
+        if not identity:
+            return None
         for queued in self.host._thread_queue(thread_id):
-            if queued.source == source and queued.message == message:
+            if (queued.source == source and queued.message == message
+                    and all(getattr(queued, key) == value for key, value in identity.items())):
                 return queued
         return None
 
@@ -3226,13 +3257,59 @@ class TurnExecutionService:
             if self.thread_is_active(thread_id):
                 await self.publish_queue_status(thread_id)
                 return
-        queued = self.pop_next_queued_turn(thread_id)
+        retained_attempt = None
+        admission_claim_id = None
+        if self.queued_preflight is not None:
+            items = h._thread_queue(thread_id)
+            if not items:
+                await self.publish_queue_status(thread_id)
+                return
+            queued = None
+            for candidate in items:
+                try:
+                    candidate_project = h._project(candidate.project_id)
+                except HTTPException:
+                    # Without canonical tenant provenance, keep this request
+                    # in its original queue rather than inventing a tenant.
+                    continue
+                attempt = await asyncio.to_thread(
+                    self.queued_preflight.retain_queued, candidate,
+                    organization_id=candidate_project.organization_id,
+                    workspace_id=candidate_project.workspace_id,
+                )
+                if attempt.status != 'queued':
+                    continue
+                attempt, claim_id = await asyncio.to_thread(
+                    self.queued_preflight.claim_queued_admission, attempt.id)
+                if claim_id is None:
+                    continue
+                queued = self.pop_queued_turn(thread_id, candidate.id)
+                if queued is not None:
+                    retained_attempt = attempt
+                    admission_claim_id = claim_id
+                    break
+                await asyncio.to_thread(self.queued_preflight.queued_disposition,
+                    attempt.id, status='queued', claim_id=claim_id)
+            if queued is None:
+                await self.publish_queue_status(thread_id)
+                return
+        else:
+            queued = self.pop_next_queued_turn(thread_id)
         if not queued:
             await self.publish_queue_status(thread_id)
             return
         queued.attempts += 1
         reschedule_queue = True
         try:
+            if retained_attempt is not None:
+                # This durable gate commits before any native start. A crash
+                # afterwards is explicitly unknown, never an automatic replay.
+                permitted = await asyncio.to_thread(self.queued_preflight.begin_queued_start,
+                    retained_attempt.id, claim_id=admission_claim_id)
+                if not permitted:
+                    self.requeue_turn_front(queued)
+                    reschedule_queue = False
+                    return
             project = h._project(queued.project_id)
             # Queue drains bypass ``TurnService.start``, which normally makes
             # the requested repository/runtime settings durable before an
@@ -3302,7 +3379,7 @@ class TurnExecutionService:
                     queued.agent_profile_actor_id,
                     project,
                 )
-            await self.start_thread_turn_now(
+            start_response = await self.start_thread_turn_now(
                 thread_id,
                 project=project,
                 message=queued.message,
@@ -3324,11 +3401,18 @@ class TurnExecutionService:
                 agent_profile_revision=queued.agent_profile_revision,
                 agent_profile_actor_id=queued.agent_profile_actor_id,
             )
+            returned_turn = start_response.get('turn', {}) if isinstance(start_response, dict) else {}
+            if retained_attempt is not None:
+                await asyncio.to_thread(self.queued_preflight.queued_disposition,
+                    retained_attempt.id, status='started' if returned_turn.get('id') else 'reconciliation_required',
+                    claim_id=admission_claim_id)
             h._append_bot_event(
                 {
-                    "type": "queued_turn_started",
+                    "type": ("queued_turn_started" if returned_turn.get('id')
+                             else "queued_turn_start_outcome_unknown"),
                     "thread_id": thread_id,
                     "queued_id": queued.id,
+                    "turn_id": returned_turn.get('id'),
                     "remaining": h._thread_queue_depth(thread_id),
                 }
             )
@@ -3342,6 +3426,31 @@ class TurnExecutionService:
                 self.requeue_turn_front(queued)
             raise
         except Exception as exc:
+            detail = exc.detail if isinstance(exc, HTTPException) and isinstance(exc.detail, dict) else None
+            deferred_admission = isinstance(exc, (LocalExecutionWorkerCapacityError, ProviderCapacityBlockedError)) or bool(
+                detail and detail.get('code') in {
+                    'upgrade_maintenance_active', 'upgrade_maintenance', 'upgrade_turn_scope_unknown'})
+            if retained_attempt is not None and deferred_admission:
+                await asyncio.to_thread(self.queued_preflight.queued_disposition,
+                    retained_attempt.id, status='queued', detail=detail, claim_id=admission_claim_id)
+            if retained_attempt is not None and not deferred_admission:
+                detail = exc.detail if isinstance(exc, HTTPException) and isinstance(exc.detail, dict) else None
+                known_unstarted = bool(detail and detail.get('code') == 'execution_preflight_blocked'
+                    and not self.thread_is_active(thread_id))
+                await asyncio.to_thread(self.queued_preflight.queued_disposition,
+                    retained_attempt.id,
+                    status='blocked' if known_unstarted else 'reconciliation_required',
+                    detail=detail or {'message':str(exc),'code':'native_start_outcome_unknown'},
+                    claim_id=admission_claim_id,
+                )
+                # The complete request now belongs to the existing durable
+                # preflight recovery domain, rather than a retry-exhaustion drop.
+                h._append_bot_event({'type':'queued_turn_retained_for_recovery',
+                    'thread_id':thread_id,'queued_id':queued.id,
+                    'preflight_attempt_id':retained_attempt.id,
+                    'known_unstarted':known_unstarted})
+                await self.publish_queue_status(thread_id)
+                return
             if (
                 isinstance(exc, HTTPException)
                 and exc.status_code == 409

@@ -240,6 +240,18 @@ class BotEventDispatchService:
                 binding.thread_id,
                 message=text,
                 source=source,
+                project_id=project.id,
+                sandbox=binding.sandbox,
+                approval_policy=binding.approval_policy,
+                model=effective_model,
+                reasoning_effort=effective_reasoning_effort,
+                work_item_ref=work_item_ref,
+                repository_resource_id=repository_resource_id,
+                writable_repository_resource_ids=writable_repository_resource_ids,
+                read_only_repository_resource_ids=read_only_repository_resource_ids,
+                reply_target=reply_target,
+                handoff_requested_at=handoff_requested_at,
+                **profile_kwargs,
             )
             if duplicate:
                 self.telemetry.append(
@@ -466,6 +478,21 @@ class BotEventDispatchCompatibilityFacade:
                 binding.thread_id,
                 message=text,
                 source=source,
+                project_id=project.id,
+                sandbox=binding.sandbox,
+                approval_policy=binding.approval_policy,
+                model=effective_model,
+                reasoning_effort=effective_reasoning_effort,
+                work_item_ref=work_item_ref,
+                repository_resource_id=repository_resource_id,
+                writable_repository_resource_ids=writable_repository_resource_ids,
+                read_only_repository_resource_ids=read_only_repository_resource_ids,
+                reply_target=reply_target,
+                handoff_requested_at=None,
+                execution_profile_id=None,
+                agent_profile_id=None,
+                agent_profile_revision=None,
+                agent_profile_actor_id=None,
             )
             if duplicate:
                 host._append_bot_event(

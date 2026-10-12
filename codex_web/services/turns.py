@@ -675,11 +675,34 @@ class TurnService:
         attempt = self.preflight.get(attempt_id, actor=actor)
         if thread_id not in {attempt.thread_id, attempt.replacement_thread_id}:
             raise HTTPException(status_code=404, detail="preflight attempt not found")
+        if attempt.queued_turn_snapshot is not None and attempt.status == 'reconciliation_required':
+            raise HTTPException(status_code=409, detail={
+                'code':'queued_start_reconciliation_required',
+                'message':'Resolve the original native start outcome before retrying this retained request.',
+                'retryable':False})
         attempt, claim_id, claimed = self.preflight.claim_retry(
             attempt_id,
             actor=actor,
         )
         thread_id = attempt.replacement_thread_id or attempt.thread_id
+        if attempt.queued_turn_snapshot is not None:
+            if not claimed:
+                return {'ok':True,'deduplicated':True,'threadId':thread_id,
+                    'attempt':self.preflight.public(attempt, actor=actor)}
+            queued = QueuedTurn.model_validate(attempt.queued_turn_snapshot)
+            replacement = self.recovery.replacement_thread_id(thread_id)
+            if replacement:
+                attempt = self.preflight.bind_replacement(attempt.id, actor=actor,
+                    claim_id=claim_id, previous_thread_id=thread_id, replacement_thread_id=replacement)
+                thread_id = replacement
+            queued.thread_id = thread_id
+            if queued.reply_target and queued.reply_target.thread_id != thread_id:
+                queued.reply_target = queued.reply_target.model_copy(update={'thread_id':thread_id})
+            self.execution.requeue_turn_front(queued)
+            updated = self.preflight.queue_retry_committed(attempt.id, claim_id=claim_id)
+            self.execution.schedule_queue_drain(thread_id)
+            return {'ok':True,'queued':True,'queuedId':queued.id,'threadId':thread_id,
+                'attempt':self.preflight.public(updated, actor=actor)}
         if (
             self.execution.active_execution_id(thread_id)
             == attempt.execution_id
@@ -806,6 +829,14 @@ class TurnService:
         thread_id: str,
         queued: QueuedTurn,
     ) -> dict[str, Any]:
+        if self.preflight is not None and hasattr(self.preflight, 'retained_queued'):
+            retained = self.preflight.retained_queued(queued)
+            if retained is not None and retained.status != 'queued':
+                self.execution.requeue_turn_front(queued)
+                raise HTTPException(status_code=409, detail={
+                    'code':'retained_queue_recovery_required',
+                    'message':'Use the retained preflight recovery action before steering this request.',
+                    'retryable':False})
         was_active = self.execution.thread_is_active(thread_id)
         handoff_started = False
         interrupted = False
