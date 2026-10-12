@@ -203,8 +203,8 @@ class GitLabActionProvider:
         issue = await self.client.project_issue(
             self.api_base, project, attested.work_item_issue_number, token=credential,
         )
-        closes = await self.client.merge_request_closes_issues(
-            self.api_base, project, iid, token=credential,
+        related = await self.client.issue_related_merge_requests(
+            self.api_base, project, attested.work_item_issue_number, token=credential,
         )
         remote = await self.client.branch(
             self.api_base, project, attested.branch, token=credential,
@@ -233,10 +233,10 @@ class GitLabActionProvider:
             or (remote.get("commit") or {}).get("id") != attested.expected_remote_revision
             or not any(
                 type(row.get("iid")) is int
-                and row.get("iid") == attested.work_item_issue_number
+                and row.get("iid") == iid
                 and type(row.get("project_id")) is int
                 and row.get("project_id") == project_id
-                for row in closes
+                for row in related
             )
         ):
             raise ActionRequirementError(
