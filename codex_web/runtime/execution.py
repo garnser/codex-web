@@ -1898,6 +1898,11 @@ class TurnExecutionService:
         effective_approval_policy = (
             approval_policy or settings.approval_policy or project.approval_policy
         )
+        scoped_read_context = bool(work_item_ref or source.startswith('queued:')
+                                   or queued_admission_attempt_id)
+        effective_read_only_repositories = tuple(
+            read_only_repository_resource_ids if scoped_read_context else
+            (read_only_repository_resource_ids or settings.read_only_repository_resource_ids))
         effective_model = model or settings.model or project.model
         effective_reasoning_effort = reasoning_effort or settings.reasoning_effort
         effective_execution_profile_id = (
@@ -1970,6 +1975,16 @@ class TurnExecutionService:
                         "threadId": thread_id,
                     },
                 )
+            if scoped_read_context:
+                remember = getattr(h, '_remember_thread_run_settings', None)
+                if callable(remember):
+                    # Recovery must recreate the request's scope, not an older
+                    # thread-wide context. Preserve actor/profile and grants.
+                    remember(thread_id,
+                        repository_resource_id=repository_resource_id,
+                        writable_repository_resource_ids=(
+                            requested_writable_repositories or None),
+                        read_only_repository_resource_ids=effective_read_only_repositories)
             bootstrap = self._bootstrap_binding_for_thread(thread_id)
             desired_runtime = _runtime_for_model(effective_model)
             if bootstrap is None:
@@ -1986,10 +2001,7 @@ class TurnExecutionService:
                     writable_repository_ids=tuple(
                         effective_writable_repositories
                     ),
-                    read_only_repository_ids=tuple(
-                        read_only_repository_resource_ids
-                        or settings.read_only_repository_resource_ids
-                    ),
+                    read_only_repository_ids=effective_read_only_repositories,
                     trusted_local_codex_requested=trusted_local_codex_requested,
                     actor=actor,
                     agent_profile_id=agent_profile_id,
@@ -2153,7 +2165,10 @@ class TurnExecutionService:
                             )
                         )
                     )
-                    if target_drift or scope_drift:
+                    read_context_drift = set(effective_read_only_repositories) != set(
+                        getattr(getattr(assignment, 'repository_scope', None),
+                                'read_only_repository_ids', ()))
+                    if target_drift or scope_drift or read_context_drift:
                         switch_needed = True
                 if switch_needed:
                     await resolve_recovery_profile()
@@ -2225,10 +2240,7 @@ class TurnExecutionService:
                         writable_repository_ids=tuple(
                             effective_writable_repositories
                         ),
-                        read_only_repository_ids=tuple(
-                            read_only_repository_resource_ids
-                            or settings.read_only_repository_resource_ids
-                        ),
+                        read_only_repository_ids=effective_read_only_repositories,
                         previous_assignment_id=bootstrap.assignment_id,
                     )
                     if not (
@@ -2322,10 +2334,7 @@ class TurnExecutionService:
                         writable_repository_ids=tuple(
                             effective_writable_repositories
                         ),
-                        read_only_repository_ids=tuple(
-                            read_only_repository_resource_ids
-                            or settings.read_only_repository_resource_ids
-                        ),
+                        read_only_repository_ids=effective_read_only_repositories,
                         previous_assignment_id=bootstrap.assignment_id,
                     )
                     session_manager = self._manager_for_binding(
@@ -2604,10 +2613,7 @@ class TurnExecutionService:
                                 effective_writable_repositories
                             ),
                             writable_repository_source=writable_repository_source,
-                            read_only_repository_ids=(
-                                read_only_repository_resource_ids
-                                or settings.read_only_repository_resource_ids
-                            ),
+                            read_only_repository_ids=effective_read_only_repositories,
                             work_item_ref=work_item_ref,
                             execution_profile_id=effective_execution_profile_id,
                             agent_profile=agent_profile_binding,
@@ -3410,10 +3416,7 @@ class TurnExecutionService:
                         queued.writable_repository_resource_ids
                         or current_settings.writable_repository_resource_ids
                     ),
-                    read_only_repository_resource_ids=(
-                        queued.read_only_repository_resource_ids
-                        or current_settings.read_only_repository_resource_ids
-                    ),
+                    read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
                     execution_profile_id=(
                         queued.execution_profile_id
                         or current_settings.execution_profile_id

@@ -320,6 +320,20 @@ inspect the same attempt; the retry card displays original/current provenance an
 loads the actual target on success or a new preflight denial. Historical target
 index entries never authorize a different retained identity.
 
+Work-item startup and captured queue admission treat their requested read-only
+repository context as authoritative, including an empty set. They must not fill
+that set from an older thread's broad defaults. Ordinary unscoped startup retains
+the existing thread-default behavior. Explicit required read contexts remain
+unchanged and still pass canonical resource/profile authorization.
+
+After the active-turn guard, scoped startup persists the requested context and
+explicit primary/writable settings before bootstrap creation or replacement.
+An idle bootstrap whose read-only context differs is superseded through the
+existing authorized binding path, just like primary/writable/runtime drift.
+Authority is a set; ordering alone does not trigger a replacement. This prevents
+unrelated inherited read leases from blocking another repository's owner without
+editing a live lease or changing the actor, profile revision or grant catalog.
+
 Queued admission writes the complete original `QueuedTurn` into the existing
 preflight recovery domain before removing it from the queue. The snapshot keeps
 its ID, creation/order provenance, actor, exact profile revision, work-item and
