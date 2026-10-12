@@ -1987,6 +1987,21 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["verifications"][0]["verified"])
         self.assertNotIn("private-", json.dumps(payload))
         self.assertFalse(actions.reconciled)
+        # MR promotion uses an upsert receipt. Reading it must not authorize
+        # mutation reconciliation or reveal request/provider bodies.
+        intent.action_id = "code-host.pull-request.upsert"
+        status, upsert_payload, _, _, _ = await service.dispatch(
+            assignment=assignment, worker_actor=self.worker_actor, method="GET",
+            raw_target=f"/api/action-intents/{intent.id}/delivery-evidence", body=b"")
+        self.assertEqual(status, 200)
+        self.assertTrue(upsert_payload["verifications"][0]["verified"])
+        self.assertNotIn("private-", json.dumps(upsert_payload))
+        with self.assertRaisesRegex(ControlPlaneBrokerDeniedError, "outside the assignment delivery scope"):
+            await service.dispatch(
+                assignment=assignment, worker_actor=self.worker_actor, method="POST",
+                raw_target=f"/api/action-intents/{intent.id}/reconcile",
+                body=b'{"retry_if_idempotent":true}')
+        self.assertFalse(actions.reconciled)
         for field, value in (("organization_id", "other"), ("workspace_id", "other"),
                              ("project_id", "other"), ("resource_ids", ("repository-b",)),
                              ("requested_by", "someone-else"), ("action_id", "secret.rotate")):
