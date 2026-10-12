@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import gzip
+import hashlib
 import json
 import os
 import re
@@ -661,6 +662,66 @@ class EventJournal:
         metrics["validEvents"] = len(values_reverse)
         self._recent_metrics = metrics
         return list(reversed(values_reverse[:requested]))
+
+    def recorded_thread_replacements(
+        self, project_id: str, *, max_bytes: int = 128 * 1024 * 1024,
+        max_records: int = 200_000,
+    ) -> list[dict[str, Any]]:
+        """Read recorded controller replacements for explicit recovery only.
+
+        Include retained segments, not just the recent UI tail. A budget
+        overrun fails visibly rather than returning an apparently complete
+        graph. The caller must still verify tenant, thread and bootstrap scope.
+        """
+        if not project_id or max_bytes < 1 or max_records < 1:
+            raise ValueError("invalid replacement evidence query")
+        values: list[dict[str, Any]] = []
+        scanned_bytes = scanned_records = 0
+        with self._lock:
+            paths = [self.active_file]
+            for segment in self._manifest.segments:
+                name = segment.archive_filename if segment.archived else segment.filename
+                if not name or Path(name).name != name:
+                    raise ValueError("invalid journal segment path")
+                parent = self.archive_directory if segment.archived else self.active_file.parent
+                paths.append(parent / name)
+            for path in dict.fromkeys(paths):
+                if not path.exists():
+                    raise ValueError("replacement evidence segment is missing")
+                opener = gzip.open if path.suffix == ".gz" else open
+                with opener(path, "rb") as source:
+                    while True:
+                        raw = source.readline(min(1024 * 1024, max_bytes - scanned_bytes) + 1)
+                        if not raw:
+                            break
+                        scanned_bytes += len(raw)
+                        scanned_records += 1
+                        if scanned_bytes > max_bytes or scanned_records > max_records:
+                            raise RuntimeError("replacement evidence scan budget exceeded")
+                        if not raw.endswith(b"\n"):
+                            # Oversized/truncated records cannot prove a route.
+                            raise ValueError("incomplete replacement evidence record")
+                        try:
+                            event = json.loads(raw)
+                        except (ValueError, UnicodeDecodeError) as exc:
+                            raise ValueError("replacement evidence record is corrupt") from exc
+                        if not isinstance(event, dict):
+                            raise ValueError("replacement evidence record is not an object")
+                        if (event.get("project_id") != project_id or event.get("type") not in
+                                {"stale_bot_thread_replaced", "stale_web_thread_replaced"}):
+                            continue
+                        old, new = event.get("old_thread_id"), event.get("new_thread_id")
+                        if not isinstance(old, str) or not old or not isinstance(new, str) or not new or old == new:
+                            raise ValueError("invalid recorded replacement identity")
+                        values.append({
+                            "old_thread_id": old, "new_thread_id": new,
+                            "project_id": project_id,
+                            "event_type": event["type"],
+                            "recorded_at": event.get("created_at"),
+                            "journal_segment": path.name,
+                            "event_sha256": hashlib.sha256(raw).hexdigest(),
+                        })
+        return values
 
     def recent_metrics(self) -> dict[str, int]:
         return dict(self._recent_metrics)

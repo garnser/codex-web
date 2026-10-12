@@ -100,6 +100,43 @@ class ThreadIndexRepository:
         self.store.update(self.REPLACEMENTS_NAMESPACE, update,
                           default={"version": 1, "edges": {}})
 
+    def remember_recorded_replacements(self, records: list[dict[str, Any]]) -> None:
+        """Atomically import a verified historical chain without rewriting edges."""
+        def update(payload):
+            if not isinstance(payload, dict) or payload.get('version') != 1:
+                raise ValueError('unsupported thread replacement state')
+            edges = dict(payload.get('edges', {}))
+            for edge in records:
+                old, new = edge.get('old_thread_id'), edge.get('new_thread_id')
+                if not old or not new or old == new or not edge.get('project_id') or not isinstance(edge.get('provenance'), dict):
+                    raise ValueError('invalid recorded thread replacement')
+                existing = edges.get(old)
+                if existing is not None:
+                    if any(existing.get(k) != edge.get(k) for k in ('old_thread_id','new_thread_id','project_id')):
+                        raise ValueError('conflicting thread replacement')
+                    for key in ('organization_id','workspace_id'):
+                        a, b = existing['provenance'].get(key), edge['provenance'].get(key)
+                        if a is not None and b is not None and a != b:
+                            raise ValueError('conflicting thread replacement tenant')
+                    continue
+                edges[old] = edge
+            for origin, first in edges.items():
+                current, seen = origin, set()
+                while current in edges:
+                    if current in seen:
+                        raise ValueError('cyclic thread replacement')
+                    seen.add(current)
+                    edge = edges[current]
+                    if edge['old_thread_id'] != current or edge['project_id'] != first['project_id']:
+                        raise ValueError('thread replacement crosses project scope')
+                    for key in ('organization_id','workspace_id'):
+                        a, b = first['provenance'].get(key), edge['provenance'].get(key)
+                        if a is not None and b is not None and a != b:
+                            raise ValueError('thread replacement crosses tenant scope')
+                    current = edge['new_thread_id']
+            return {'version':1, 'edges':edges}
+        self.store.update(self.REPLACEMENTS_NAMESPACE, update, default={'version':1,'edges':{}})
+
     def replacement_thread_id(self, thread_id: str) -> str | None:
         payload = self.store.get(self.REPLACEMENTS_NAMESPACE)
         if payload is None:

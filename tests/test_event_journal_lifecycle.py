@@ -39,6 +39,49 @@ class EventJournalLifecycleTests(unittest.IsolatedAsyncioTestCase):
             clock=self.clock,
         )
 
+    def test_replacement_evidence_query_includes_rotated_records_and_exact_project(self):
+        journal = self._journal()
+        journal.append({'type':'stale_bot_thread_replaced', 'project_id':'project',
+                        'old_thread_id':'old', 'new_thread_id':'middle'})
+        journal.rotate()
+        journal.append({'type':'stale_web_thread_replaced', 'project_id':'project',
+                        'old_thread_id':'middle', 'new_thread_id':'new'})
+        journal.append({'type':'stale_bot_thread_replaced', 'project_id':'other',
+                        'old_thread_id':'old', 'new_thread_id':'unrelated'})
+        records = journal.recorded_thread_replacements('project')
+        self.assertEqual({(r['old_thread_id'], r['new_thread_id']) for r in records},
+                         {('old', 'middle'), ('middle', 'new')})
+        self.assertTrue(all(len(r['event_sha256']) == 64 for r in records))
+        self.assertTrue(all(r['project_id'] == 'project' for r in records))
+
+    def test_replacement_evidence_query_does_not_return_partial_graph_on_budget_overrun(self):
+        journal = self._journal()
+        for index in range(3):
+            journal.append({'type':'stale_bot_thread_replaced', 'project_id':'project',
+                            'old_thread_id':str(index), 'new_thread_id':str(index+1)})
+        with self.assertRaises(RuntimeError):
+            journal.recorded_thread_replacements('project', max_records=1)
+        with self.assertRaises(RuntimeError):
+            journal.recorded_thread_replacements('project', max_bytes=10)
+
+    def test_replacement_evidence_reads_compressed_archive_and_refuses_missing_segment(self):
+        journal=self._journal()
+        journal.append({'type':'stale_bot_thread_replaced','project_id':'project',
+                        'old_thread_id':'old','new_thread_id':'new'})
+        segment=journal.rotate()
+        archived=journal._compress_and_archive(segment)
+        journal._replace_segment(archived)
+        self.assertEqual(journal.recorded_thread_replacements('project')[0]['old_thread_id'],'old')
+        (journal.archive_directory/archived.archive_filename).unlink()
+        with self.assertRaises(ValueError):journal.recorded_thread_replacements('project')
+
+    def test_replacement_evidence_refuses_corrupt_record_instead_of_partial_graph(self):
+        journal=self._journal()
+        journal.append({'type':'stale_bot_thread_replaced','project_id':'project',
+                        'old_thread_id':'old','new_thread_id':'new'})
+        with self.path.open('ab') as target:target.write(b'corrupt\n')
+        with self.assertRaises(ValueError):journal.recorded_thread_replacements('project')
+
     def test_explicit_rotation_preserves_recent_order_and_cursor_sequence(self) -> None:
         journal = self._journal()
         first = [

@@ -14,6 +14,7 @@ from codex_web.identity import AuthenticationActor
 from codex_web.models import BotBinding, IndexedThread, Project, ThreadRunSettings
 from codex_web.services.project_runtime import ProjectRuntimeService
 from codex_web.services.thread_execution_settings import ThreadExecutionSettingsService
+from codex_web.services.thread_bootstrap_bindings import ThreadBootstrapBindingNotFoundError
 from codex_web.services.thread_naming import ThreadNamingService
 from codex_web.storage.thread_index import ThreadIndexRepository
 
@@ -66,6 +67,8 @@ class ThreadRecoveryService:
         self.thread_creator = thread_creator
         self.agent_profile_resolver: Callable[[BotBinding], Any] | None = None
         self.stale_active_turn_reconciler = None
+        self.historical_replacement_events = None
+        self.historical_bootstrap_binding = None
         self._replacement_locks: weakref.WeakValueDictionary[
             tuple[str, str, str], asyncio.Lock
         ] = weakref.WeakValueDictionary()
@@ -539,6 +542,70 @@ class ThreadRecoveryService:
             {"type": "stale_active_turn_released", "thread_id": thread_id, "reason": reason}
         )
         self.host._clear_thread_active(thread_id)
+
+    def restore_recorded_replacement(
+        self, thread_id: str, *, project_id: str, actor: AuthenticationActor,
+    ) -> str | None:
+        """Called only after canonical administrator retry authorization."""
+        existing = self.replacement_thread_id(thread_id)
+        if existing:
+            return existing
+        original = self.thread_index.get(thread_id)
+        if original is None or not original.archived:
+            return None
+        def refused(message):
+            return HTTPException(status_code=409, detail={
+                'code':'historical_thread_replacement_unverified', 'message':message})
+        if original.project_id != project_id:
+            raise refused('Original archived thread Project does not match retained request.')
+        if not callable(self.historical_replacement_events) or not callable(self.historical_bootstrap_binding):
+            raise refused('Historical replacement evidence recovery is unavailable.')
+        try:
+            events = self.historical_replacement_events(project_id)
+        except (ValueError, RuntimeError) as exc:
+            raise refused('Canonical replacement evidence is incomplete or exceeds its bounded query.') from exc
+        by_old: dict[str, list[dict[str, Any]]] = {}
+        for event in events:
+            by_old.setdefault(event['old_thread_id'], []).append(event)
+        current, seen, records = thread_id, set(), []
+        while True:
+            if current in seen:
+                raise refused('Recorded replacement chain is cyclic.')
+            seen.add(current)
+            durable = self.replacement_thread_id(current)
+            if durable:
+                current = durable
+                break
+            candidates = by_old.get(current, [])
+            if not candidates:
+                break
+            destinations = {item['new_thread_id'] for item in candidates}
+            if len(destinations) != 1:
+                raise refused('Recorded replacement chain has conflicting destinations.')
+            new = next(iter(destinations))
+            predecessor, successor = self.thread_index.get(current), self.thread_index.get(new)
+            if (predecessor is None or successor is None or not predecessor.archived
+                    or predecessor.project_id != project_id or successor.project_id != project_id
+                    or any(item['project_id'] != project_id for item in candidates)):
+                raise refused('Recorded replacement lacks matching canonical thread Projects.')
+            records.append({'old_thread_id':current,'new_thread_id':new,'project_id':project_id,
+                'provenance':{'organization_id':actor.organization_id,'workspace_id':actor.workspace_id,
+                    'actor_identity_id':None,'agent_profile_id':None,'agent_profile_revision':None,
+                    'restored_by_actor_id':actor.identity_id,'historical_evidence':candidates}})
+            current = new
+        target = self.thread_index.get(current)
+        if current == thread_id or target is None or target.archived or target.project_id != project_id:
+            raise refused('No complete recorded chain to a current thread exists.')
+        # This canonical lookup refuses another tenant. A bootstrap binding is
+        # metadata proof only; ordinary retry admission still supplies authority.
+        try:
+            binding = self.historical_bootstrap_binding(current, actor)
+        except ThreadBootstrapBindingNotFoundError as exc:
+            raise refused('Recorded replacement destination has no tenant-scoped bootstrap binding.') from exc
+        if binding.thread_id != current or binding.organization_id != actor.organization_id or binding.workspace_id != actor.workspace_id:
+            raise refused('Recorded replacement destination tenant is unverified.')
+        self.thread_index.remember_recorded_replacements(records)
+        return self.replacement_thread_id(thread_id)
 
     def replacement_thread_id(self, thread_id: str) -> str | None:
         lookup = getattr(self.thread_index, "replacement_thread_id", None)

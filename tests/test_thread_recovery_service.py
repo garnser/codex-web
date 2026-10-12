@@ -89,6 +89,52 @@ class ThreadRecoveryServiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             service.replacement_thread_id("a")
 
+    def test_historical_chain_requires_current_tenant_bootstrap_and_preserves_unknown_attribution(self):
+        import tempfile
+        from pathlib import Path
+        from codex_web.storage.sqlite_state import SQLiteStateStore
+        from codex_web.storage.thread_index import ThreadIndexRepository
+        from codex_web.models import IndexedThread
+        with tempfile.TemporaryDirectory() as directory:
+            index = ThreadIndexRepository(SQLiteStateStore(Path(directory)/'state.db'), Path(directory)/'legacy.json')
+            for thread, archived in [('old',True),('middle',True),('current',False)]:
+                index.upsert(IndexedThread(id=thread,name=thread,project_id='home',archived=archived))
+            actor = SimpleNamespace(identity_id='admin',organization_id='org',workspace_id='ws')
+            service = recovery_service(SimpleNamespace(),thread_index=index)
+            service.historical_replacement_events = lambda project: [
+                {'old_thread_id':'old','new_thread_id':'middle','project_id':project,'event_sha256':'a'},
+                {'old_thread_id':'middle','new_thread_id':'current','project_id':project,'event_sha256':'b'}]
+            service.historical_bootstrap_binding = lambda thread, actor: SimpleNamespace(
+                thread_id=thread,organization_id=actor.organization_id,workspace_id=actor.workspace_id)
+            self.assertEqual(service.restore_recorded_replacement('old',project_id='home',actor=actor),'current')
+            edge=index.store.get(index.REPLACEMENTS_NAMESPACE)['edges']['old']
+            self.assertIsNone(edge['provenance']['actor_identity_id'])
+            self.assertIsNone(edge['provenance']['agent_profile_revision'])
+            self.assertEqual(edge['provenance']['restored_by_actor_id'],'admin')
+            restarted=recovery_service(SimpleNamespace(),thread_index=index)
+            self.assertEqual(restarted.replacement_thread_id('old'),'current')
+
+    def test_historical_conflict_or_wrong_tenant_does_not_persist_partial_route(self):
+        import tempfile
+        from pathlib import Path
+        from codex_web.storage.sqlite_state import SQLiteStateStore
+        from codex_web.storage.thread_index import ThreadIndexRepository
+        from codex_web.models import IndexedThread
+        with tempfile.TemporaryDirectory() as directory:
+            index=ThreadIndexRepository(SQLiteStateStore(Path(directory)/'state.db'),Path(directory)/'legacy.json')
+            for thread,archived in [('old',True),('current',False),('other',False)]:
+                index.upsert(IndexedThread(id=thread,name=thread,project_id='home',archived=archived))
+            actor=SimpleNamespace(identity_id='admin',organization_id='org',workspace_id='ws')
+            service=recovery_service(SimpleNamespace(),thread_index=index)
+            base={'old_thread_id':'old','new_thread_id':'current','project_id':'home','event_sha256':'a'}
+            service.historical_replacement_events=lambda project:[base,{**base,'new_thread_id':'other'}]
+            service.historical_bootstrap_binding=lambda thread,actor:SimpleNamespace(thread_id=thread,organization_id='other',workspace_id='ws')
+            with self.assertRaises(HTTPException):service.restore_recorded_replacement('old',project_id='home',actor=actor)
+            self.assertIsNone(index.store.get(index.REPLACEMENTS_NAMESPACE))
+            service.historical_replacement_events=lambda project:[base]
+            with self.assertRaises(HTTPException):service.restore_recorded_replacement('old',project_id='home',actor=actor)
+            self.assertIsNone(index.store.get(index.REPLACEMENTS_NAMESPACE))
+
     def test_replaced_thread_raises_structured_conflict(self) -> None:
         host = SimpleNamespace(
             THREAD_REPLACEMENTS={"old": "new"},

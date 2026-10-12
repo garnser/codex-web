@@ -422,6 +422,11 @@ class ExecutionPreflightService:
             and item.workspace_id == actor.workspace_id
         ]
 
+    def authorize_retry(self, attempt_id: str, *, actor: AuthenticationActor) -> ExecutionPreflightAttempt:
+        current = self.get(attempt_id, actor=actor)
+        self._authorize(current, actor, require_admin=True)
+        return current
+
     def claim_retry(
         self,
         attempt_id: str,

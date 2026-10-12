@@ -3320,6 +3320,9 @@ thread_recovery_service = install_thread_recovery_service(
     terminal_failures=turn_execution_service.terminal_failures,
 )
 
+thread_recovery_service.historical_replacement_events = bot_runtime_telemetry.journal.recorded_thread_replacements
+thread_recovery_service.historical_bootstrap_binding = thread_bootstrap_binding_service.get_by_thread
+
 def _publish_binding_change(event: dict[str, object]) -> None:
     try:
         loop = asyncio.get_running_loop()
