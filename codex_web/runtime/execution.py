@@ -3350,8 +3350,23 @@ class TurnExecutionService:
                 permitted = await asyncio.to_thread(self.queued_preflight.begin_queued_start,
                     retained_attempt.id, claim_id=admission_claim_id)
                 if not permitted:
-                    self.requeue_turn_front(queued)
-                    reschedule_queue = False
+                    current = await asyncio.to_thread(self.queued_preflight.store.get,
+                        retained_attempt.id)
+                    if current is not None and current.status == 'queued':
+                        original = QueuedTurn.model_validate(current.queued_turn_snapshot)
+                        target = current.replacement_thread_id or current.thread_id
+                        if original.reply_target and original.reply_target.thread_id == original.thread_id:
+                            original.reply_target = original.reply_target.model_copy(update={'thread_id':target})
+                        original.thread_id = target
+                        self.requeue_turn_front(original)
+                        if target != thread_id:
+                            self.schedule_queue_drain(target)
+                    # The recovery domain owns the original request. A fenced
+                    # caller cannot restore mutated retry counters or an old
+                    # Thread destination over a newer recovery/admission claim.
+                    h._append_bot_event({'type':'queued_turn_admission_fenced',
+                        'thread_id':thread_id, 'queued_id':queued.id,
+                        'preflight_attempt_id':retained_attempt.id})
                     return
             project = h._project(queued.project_id)
             # Queue drains bypass ``TurnService.start``, which normally makes
@@ -3432,7 +3447,8 @@ class TurnExecutionService:
                 reasoning_effort=queued.reasoning_effort,
                 source=f"queued:{queued.source}",
                 reply_target=queued.reply_target,
-                execution_id=queued.execution_id,
+                execution_id=(queued.execution_id or retained_attempt.execution_id
+                    if retained_attempt is not None else queued.execution_id),
                 work_item_ref=queued.work_item_ref,
                 handoff_requested_at=queued.handoff_requested_at,
                 repository_resource_id=queued.repository_resource_id,

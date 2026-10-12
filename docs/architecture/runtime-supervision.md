@@ -372,8 +372,14 @@ There is no SQL DDL or retrospective start/ACK backfill. Rollout requires draine
 admissions and a declared persisted-payload compatibility change. Mixed-version
 writers are unsupported, and rollback requires the canonical pre-transition
 snapshot under maintenance; source-only rollback cannot safely interpret new
-preflight dispositions. A reserved queue correlation identifies intent, not a
-native execution receipt.
+preflight dispositions. The pre-transition snapshot supports fenced recovery
+before new admissions resume. After new work runs, restoring that older snapshot
+must not discard later requests or provider outcomes or replay their starts;
+those require separate authoritative reconciliation. No compatible source
+rollback is advertised for this transition. A reserved queue correlation
+identifies intent, not a native execution receipt; legacy entries without an
+execution ID use that declared correlation while their original snapshot stays
+unchanged.
 
 A Project readiness request with missing or expired trusted-local account
 evidence performs a coalesced `account/read` metadata request and reevaluates

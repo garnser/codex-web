@@ -13,6 +13,60 @@ from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
 class QueuedAdmissionDrainTests(unittest.IsolatedAsyncioTestCase):
+    async def test_legacy_queue_without_execution_id_uses_retained_intent_correlation(self):
+        from codex_web.models import Project
+        from tests.test_turn_execution import TurnExecutionStartTests
+        with tempfile.TemporaryDirectory() as directory:
+            host, binding, sessions, runtime = TurnExecutionStartTests()._service()
+            project = Project(id='p1', name='Project', path='/workspace/project',
+                sandbox='workspace-write', approval_policy='on-request')
+            host._project = lambda _id: project
+            runtime.queued_preflight = ExecutionPreflightService(ExecutionPreflightStore(
+                SQLiteStateStore(Path(directory) / 'state.sqlite')))
+            runtime.schedule_queue_drain = Mock()
+            original = runtime.enqueue_turn(thread_id='t1', project_id='p1', message='legacy original')
+            original.execution_id = None
+            await runtime.drain_thread_queue('t1')
+            saved = runtime.queued_preflight.store.for_thread('t1')[0]
+            self.assertEqual(saved.status, 'started')
+            self.assertIsNone(saved.queued_turn_snapshot['execution_id'])
+            self.assertEqual(saved.queued_start_receipt.requested_execution_id,
+                             'reserved-queue-' + original.id)
+            self.assertEqual(saved.queued_start_receipt.provider_native_turn_id, 'turn-1')
+            self.assertEqual([method for method, _ in sessions.session.requests].count('turn/start'), 1)
+
+    async def test_preempted_admission_restores_original_identity_before_next_drain(self):
+        from codex_web.models import Project
+        from codex_web.runtime.execution import TurnExecutionService
+        from tests.test_turn_execution import _Host
+        with tempfile.TemporaryDirectory() as directory:
+            host = _Host()
+            project = Project(id='project', name='Project', path='/workspace/project')
+            host._project = lambda _id: project
+            runtime = TurnExecutionService(host)
+            runtime.queued_preflight = ExecutionPreflightService(ExecutionPreflightStore(
+                SQLiteStateStore(Path(directory) / 'state.sqlite')))
+            runtime.start_thread_turn_now = AsyncMock(return_value={'turn': {'id':'actual-turn'}})
+            runtime.schedule_queue_drain = Mock()
+            original = runtime.enqueue_turn(thread_id='thread', project_id='project', message='original')
+            snapshot = original.model_dump(mode='json')
+            begin = runtime.queued_preflight.begin_queued_start
+            def preempt(attempt_id, *, claim_id):
+                _, acquired = runtime.queued_preflight.store.claim_retry(attempt_id,
+                    claim_id='explicit-recovery', now=200)
+                self.assertTrue(acquired)
+                runtime.queued_preflight.queue_retry_committed(attempt_id, claim_id='explicit-recovery')
+                return begin(attempt_id, claim_id=claim_id)
+            runtime.queued_preflight.begin_queued_start = preempt
+            await runtime.drain_thread_queue('thread')
+            runtime.start_thread_turn_now.assert_not_awaited()
+            self.assertEqual(host._thread_queue('thread')[0].model_dump(mode='json'), snapshot)
+            runtime.queued_preflight.begin_queued_start = begin
+            await runtime.drain_thread_queue('thread')
+            runtime.start_thread_turn_now.assert_awaited_once()
+            self.assertEqual(host._thread_queue('thread'), [])
+            self.assertEqual(runtime.queued_preflight.store.for_thread('thread')[0].status, 'started')
+
     async def test_native_receipt_survives_post_start_bookkeeping_failure(self):
         from codex_web.models import Project
         from tests.test_turn_execution import TurnExecutionStartTests
@@ -271,6 +325,41 @@ class QueuedAdmissionDrainTests(unittest.IsolatedAsyncioTestCase):
             await runtime.drain_thread_queue('thread')
         self.assertEqual(host._thread_queue('thread'), [queued])
         runtime.start_thread_turn_now.assert_not_awaited()
+
+
+class QueuedPreflightRecoveryCompatibilityTests(unittest.TestCase):
+    def test_encrypted_snapshot_preserves_original_and_pre_transition_restore_has_no_new_payload(self):
+        from tests.test_recovery import RecoveryTests
+        fixture = RecoveryTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        preflight = ExecutionPreflightService(ExecutionPreflightStore(fixture.state))
+        original = QueuedTurn(id='original', thread_id='thread', project_id='project',
+            message='Complete original request', execution_id='original-execution', created_at=1,
+            agent_profile_id='original-profile', agent_profile_revision=6,
+            agent_profile_actor_id='original-actor', repository_resource_id='repo',
+            writable_repository_resource_ids=('repo',), handoff_requested_at=99)
+        fixture.state.record_apply('turn_queues', upserts={'thread':[original.model_dump(mode='json')]})
+        source_backup = fixture.service.create_backup(actor=fixture.actor)
+        attempt = preflight.retain_queued(original, organization_id='org-a', workspace_id='ws-a')
+        preflight.queued_disposition(attempt.id, status='reconciliation_required')
+        fixture.state.record_apply('turn_queues', upserts={}, deletes=('thread',))
+        target_backup = fixture.service.create_backup(actor=fixture.actor)
+        with tempfile.TemporaryDirectory() as directory:
+            target = SQLiteStateStore(Path(directory) / 'target.sqlite')
+            verified = fixture.service.restore_into_isolated(target_backup.id, target, actor=fixture.actor)
+            self.assertEqual(verified.status, 'pass')
+            self.assertFalse(verified.side_effects_enabled)
+            restored = ExecutionPreflightStore(target).for_thread('thread')[0]
+            self.assertEqual(restored.queued_turn_snapshot, original.model_dump(mode='json'))
+            self.assertEqual(restored.status, 'reconciliation_required')
+            self.assertIsNone(restored.started_at)
+            rollback = SQLiteStateStore(Path(directory) / 'source.sqlite')
+            verified = fixture.service.restore_into_isolated(source_backup.id, rollback, actor=fixture.actor)
+            self.assertEqual(verified.status, 'pass')
+            self.assertIsNone(ExecutionPreflightStore(rollback).get(attempt.id))
+            self.assertEqual(rollback.record_get('turn_queues', 'thread'),
+                             [original.model_dump(mode='json')])
 
 
 class QueuedPreflightRetentionTests(unittest.TestCase):
