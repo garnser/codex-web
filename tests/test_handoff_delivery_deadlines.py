@@ -77,6 +77,7 @@ class HandoffDeliveryPersistenceTests(unittest.TestCase):
         self.repository = self.reopen()
         self.state = WorkItemState(ref='group/project#78', organization_id='org',
             workspace_id='workspace', project_id='project-a', current_owner='nora',
+            resource_ids=['repo-docs'],
             next_owner='quinn', current_stage='ready_for_validation',
             handoff=WorkItemHandoff(from_agent='nora', to_agent='quinn', requested_at=100,
             delivery=WorkItemHandoffDelivery()), created_at=1, updated_at=1,
@@ -89,7 +90,58 @@ class HandoffDeliveryPersistenceTests(unittest.TestCase):
         self.evidence = dict(expected_requested_at=100, recipient='Quinn',
             organization_id='org', workspace_id='workspace', project_id='project-a',
             thread_id='quinn-thread', turn_id='actual-turn', execution_id='actual-execution',
-            started_at=200)
+            started_at=200, execution_profile_id='repository-write',
+            repository_resource_id='repo-docs', writable_repository_resource_ids=('repo-docs',))
+
+    def test_matching_role_and_tenant_cannot_establish_delivery_in_wrong_repository(self):
+        self.assertFalse(self.record(execution_profile_id='repository-write',
+            repository_resource_id='repo-platform',
+            writable_repository_resource_ids=('repo-platform',)))
+        self.assertEqual(self.repository.load()[self.state.ref].handoff.delivery.status,
+            'awaiting_dispatch')
+
+    def test_repository_change_after_admission_rejects_old_scope(self):
+        self.repository.update(self.state.ref,
+            lambda current: current.model_copy(update={'resource_ids':['repo-other']}))
+        self.assertFalse(self.record(execution_profile_id='repository-write',
+            repository_resource_id='repo-docs',
+            writable_repository_resource_ids=('repo-docs',)))
+
+    def test_missing_or_broader_scope_is_not_qualified_delivery(self):
+        for overrides in [dict(execution_profile_id=None),
+            dict(repository_resource_id=None), dict(writable_repository_resource_ids=()),
+            dict(writable_repository_resource_ids=('repo-docs','repo-other')),
+            dict(execution_profile_id='unknown')]:
+            with self.subTest(overrides=overrides):
+                self.assertFalse(self.record(**overrides))
+        current = self.repository.load()[self.state.ref]
+        self.assertEqual(current.handoff.delivery.status, 'awaiting_dispatch')
+        self.assertIsNone(current.handoff.delivery.started_at)
+        self.assertIsNone(current.handoff.acknowledged_at)
+
+    def test_coordination_delivery_has_no_repository_grant(self):
+        self.repository.update(self.state.ref,
+            lambda current: current.model_copy(update={'handoff':current.handoff.model_copy(
+                update={'to_agent':'orchestrator'})}))
+        self.assertFalse(self.record(recipient='orchestrator',
+            execution_profile_id='orchestration-only'))
+        self.assertTrue(self.record(recipient='orchestrator',
+            execution_profile_id='orchestration-only', repository_resource_id=None,
+            writable_repository_resource_ids=()))
+        delivery = self.reopen().load()[self.state.ref].handoff.delivery
+        self.assertTrue(delivery.scope_verified)
+        self.assertIsNone(delivery.repository_resource_id)
+        self.assertEqual(delivery.writable_repository_resource_ids, ())
+
+    def test_prior_delivered_scope_is_not_retroactively_verified_or_retimed(self):
+        original = WorkItemHandoffDelivery(status='delivered', started_at=150,
+            thread_id='original-thread', turn_id='original-turn', execution_id='original-execution')
+        self.repository.update(self.state.ref,
+            lambda current: current.model_copy(update={'handoff':current.handoff.model_copy(
+                update={'delivery':original})}))
+        self.assertFalse(self.record())
+        self.assertEqual(self.reopen().load()[self.state.ref].handoff.delivery, original)
+        self.assertFalse(original.scope_verified)
 
     def reopen(self):
         return ModelMapRepository(SQLiteStateStore(self.database), namespace='work_item_states',
@@ -103,6 +155,8 @@ class HandoffDeliveryPersistenceTests(unittest.TestCase):
         current = self.reopen().load()[self.state.ref]
         self.assertEqual(current.handoff.delivery.started_at, 200)
         self.assertEqual(current.handoff.delivery.execution_id, 'actual-execution')
+        self.assertTrue(current.handoff.delivery.scope_verified)
+        self.assertEqual(current.handoff.delivery.repository_resource_id, 'repo-docs')
         self.assertIsNone(current.handoff.acknowledged_at)
         self.assertEqual(current.current_owner, 'nora')
         self.assertFalse(self.record(started_at=300))

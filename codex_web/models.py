@@ -255,6 +255,11 @@ class WorkItemHandoffDelivery(BaseModel):
     thread_id: str | None = None
     turn_id: str | None = None
     execution_id: str | None = None
+    scope_verified: bool = False
+    execution_profile_id: str | None = None
+    repository_resource_id: str | None = None
+    writable_repository_resource_ids: tuple[str, ...] = ()
+    read_only_repository_resource_ids: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def qualified_delivery(self):
@@ -263,6 +268,22 @@ class WorkItemHandoffDelivery(BaseModel):
             raise ValueError("delivered handoff requires actual start, thread, turn and execution evidence")
         if self.status == "awaiting_dispatch" and any(value is not None for value in evidence):
             raise ValueError("awaiting dispatch cannot contain delivered start evidence")
+        if self.scope_verified and (self.status != "delivered" or not self.execution_profile_id):
+            raise ValueError("verified delivery scope requires delivered execution profile evidence")
+        if self.scope_verified:
+            if self.execution_profile_id == "repository-write":
+                if self.repository_resource_id not in self.writable_repository_resource_ids:
+                    raise ValueError("verified repository delivery requires its admitted writable repository")
+            elif self.execution_profile_id == "orchestration-only":
+                if self.repository_resource_id or self.writable_repository_resource_ids or self.read_only_repository_resource_ids:
+                    raise ValueError("coordination delivery cannot grant repository scope")
+            else:
+                raise ValueError("unsupported delivery execution profile")
+        if self.status == "awaiting_dispatch" and (
+            self.execution_profile_id or self.repository_resource_id
+            or self.writable_repository_resource_ids or self.read_only_repository_resource_ids
+        ):
+            raise ValueError("awaiting dispatch cannot contain admitted repository scope")
         return self
 
 

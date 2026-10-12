@@ -1040,6 +1040,12 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                 assignment = sessions.session.validate_current()
                 assignment.runtime_binding = runtime
                 assignment.agent_profile = profile
+                assignment.organization_id = "org"
+                assignment.workspace_id = "workspace"
+                assignment.execution_profile_id = "repository-write"
+                assignment.repository_target = SimpleNamespace(mutable_repository_id="repo-docs")
+                assignment.repository_scope = SimpleNamespace(writable_repository_ids=("repo-docs",),
+                    read_only_repository_ids=())
                 sessions.session.validate_current = MagicMock(return_value=assignment)
                 service._select_runtime_binding = AsyncMock(return_value=(runtime, profile))
                 service.handoff_delivery_recorder = Mock(return_value=True)
@@ -1067,6 +1073,8 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(evidence["expected_requested_at"], 100)
                     self.assertEqual(evidence["turn_id"], "turn-1")
                     self.assertEqual(evidence["organization_id"], "org")
+                    self.assertEqual(evidence["repository_resource_id"], "repo-docs")
+                    self.assertEqual(evidence["writable_repository_resource_ids"], ("repo-docs",))
                     self.assertEqual(evidence["execution_id"], "bootstrap-exec")
 
     def _service(

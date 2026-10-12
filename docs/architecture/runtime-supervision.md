@@ -13,6 +13,19 @@ execution IDs with `delivery.status=delivered` and `started_at`. Queue admission
 an active marker, failed startup and unknown startup outcomes supply no delivery
 or acknowledgement evidence. Delivery does not change ownership or accept work.
 
+Delivery recording also compares the successful assignment's actual repository
+target and writable scope with the current canonical task under the same atomic
+record lock. Matching role, tenant and nonce alone is insufficient. Repository
+delivery requires the task's declared writable set and admitted primary; missing,
+broader, wrong or changed repository scope leaves delivery unqualified and logs a
+scope rejection. The existing broker coordination profile qualifies only with no
+repository target or writable/read-only grant. Tenant and Project evidence comes
+from the successful canonical assignment rather than the requested Project.
+Verified starts persist the admitted profile and repository scope with
+`scope_verified=true`, separately visible in the inspector. These optional fields
+are additive; older delivered records remain explicitly unverified in scope and
+retain their original timestamps. No retrospective scope or clock is invented.
+
 Undelivered handoffs have a separate bounded dispatch deadline configured by
 `CODEX_WEB_WORK_ITEM_HANDOFF_DELIVERY_TIMEOUT_SECONDS` (default 3600 seconds,
 minimum 60). Once delivered, the existing acknowledgement timeout applies from
