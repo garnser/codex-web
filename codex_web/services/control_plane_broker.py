@@ -395,6 +395,12 @@ _RECONCILABLE_REPOSITORY_ACTION_IDS = frozenset(
     }
 )
 
+# Receipt inspection is read-only and also covers owned MR metadata updates.
+# Keep mutation reconciliation restricted to its existing action allowlist.
+_DELIVERY_EVIDENCE_REPOSITORY_ACTION_IDS = (
+    _RECONCILABLE_REPOSITORY_ACTION_IDS | {CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID}
+)
+
 # These profiles execute different workloads but share the same narrow broker
 # boundary. The broker never grants generic network or localhost access: every
 # request is still operation-allowlisted, tenant/project scoped, authorized,
@@ -1304,7 +1310,7 @@ class ControlPlaneBrokerService:
         intent = self.action_intents.get(intent_id, requester_actor)
         repository_id = self._read_repository_id(assignment, query)
         if (
-            intent.action_id not in _RECONCILABLE_REPOSITORY_ACTION_IDS
+            intent.action_id not in _DELIVERY_EVIDENCE_REPOSITORY_ACTION_IDS
             or intent.organization_id != assignment.organization_id
             or intent.workspace_id != assignment.workspace_id
             or intent.project_id != assignment.project_id
