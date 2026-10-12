@@ -3177,9 +3177,17 @@ class TurnExecutionService:
                     self.handoff_delivery_recorder,
                     work_item_ref, expected_requested_at=handoff_requested_at,
                     recipient=agent_profile_binding.role_id,
-                    organization_id=project.organization_id, workspace_id=project.workspace_id,
-                    project_id=project.id, thread_id=thread_id, turn_id=turn_id,
+                    organization_id=getattr(assignment, "organization_id", None),
+                    workspace_id=getattr(assignment, "workspace_id", None),
+                    project_id=getattr(assignment, "project_id", None),
+                    thread_id=thread_id, turn_id=turn_id,
                     execution_id=canonical_execution_id, started_at=time.time(),
+                    execution_profile_id=getattr(assignment, "execution_profile_id", None),
+                    repository_resource_id=canonical_repository_resource_id,
+                    writable_repository_resource_ids=tuple(getattr(
+                        getattr(assignment, "repository_scope", None), "writable_repository_ids", ())),
+                    read_only_repository_resource_ids=tuple(getattr(
+                        getattr(assignment, "repository_scope", None), "read_only_repository_ids", ())),
                 )
             except Exception:
                 # The native turn already started; do not replay it because

@@ -407,6 +407,9 @@ function renderDetail(payload) {
           recipient_started_at: fmtTime(item.handoff?.delivery?.started_at),
           recipient_thread: item.handoff?.delivery?.thread_id,
           recipient_turn: item.handoff?.delivery?.turn_id,
+          delivery_scope: item.handoff?.delivery?.status === 'delivered' ? (item.handoff.delivery.scope_verified ? 'verified against canonical task' : 'unverified historical scope') : (item.handoff?.status === 'pending' ? 'awaiting admission' : '—'),
+          recipient_repository: item.handoff?.delivery?.repository_resource_id,
+          recipient_execution_profile: item.handoff?.delivery?.execution_profile_id,
           handoff_deadline: state.detailPayload?.handoff_deadline ? `${state.detailPayload.handoff_deadline.kind}: ${fmtTime(state.detailPayload.handoff_deadline.deadline_at)} (${state.detailPayload.handoff_deadline.clock_source})` : '—',
         })}</div>
       </section>

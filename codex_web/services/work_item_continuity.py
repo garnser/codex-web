@@ -267,15 +267,21 @@ class WorkItemContinuityService:
         self, ref: str, *, expected_requested_at: float, recipient: str,
         organization_id: str, workspace_id: str, project_id: str,
         thread_id: str, turn_id: str, execution_id: str, started_at: float,
+        execution_profile_id: str | None = None,
+        repository_resource_id: str | None = None,
+        writable_repository_resource_ids: tuple[str, ...] = (),
+        read_only_repository_resource_ids: tuple[str, ...] = (),
     ) -> bool:
         """Record a successful native start, never a queue/unknown-start receipt."""
-        if self.update_state is None or not all((thread_id, turn_id, execution_id)):
+        if self.update_state is None or not all((thread_id, turn_id, execution_id, execution_profile_id)):
             return False
         recorded = False
+        scope_rejected = False
 
         def update(current):
-            nonlocal recorded
+            nonlocal recorded, scope_rejected
             recorded = False
+            scope_rejected = False
             if current is None or current.closed_at or current.current_stage == "closed":
                 return current
             handoff = current.handoff
@@ -289,8 +295,30 @@ class WorkItemContinuityService:
                 or (handoff.delivery is not None and handoff.delivery.status == "delivered")
             ):
                 return current
+            expected_primary, expected_writable = self._dispatch_repository_scope(current)
+            if execution_profile_id == "orchestration-only":
+                # The broker's coordination profile grants no repository scope.
+                scope_matches = not (
+                    repository_resource_id or writable_repository_resource_ids
+                    or read_only_repository_resource_ids
+                )
+            elif execution_profile_id == "repository-write":
+                scope_matches = bool(expected_writable) and (
+                    set(writable_repository_resource_ids) == set(expected_writable)
+                    and repository_resource_id in expected_writable
+                    and (expected_primary is None or repository_resource_id == expected_primary)
+                )
+            else:
+                scope_matches = False
+            if not scope_matches:
+                scope_rejected = True
+                return current
             handoff.delivery = WorkItemHandoffDelivery(status="delivered", started_at=started_at,
-                thread_id=thread_id, turn_id=turn_id, execution_id=execution_id)
+                thread_id=thread_id, turn_id=turn_id, execution_id=execution_id,
+                scope_verified=True, execution_profile_id=execution_profile_id,
+                repository_resource_id=repository_resource_id,
+                writable_repository_resource_ids=writable_repository_resource_ids,
+                read_only_repository_resource_ids=read_only_repository_resource_ids)
             current.updated_at = time.time()
             recorded = True
             return current
@@ -300,7 +328,18 @@ class WorkItemContinuityService:
             self.append_event({"type":"work_item_handoff_delivery_started", "ref":ref,
                 "requested_at":expected_requested_at,"recipient":recipient,
                 "thread_id":thread_id,"turn_id":turn_id,"execution_id":execution_id,
-                "started_at":started_at})
+                "started_at":started_at,"scope_verified":True,
+                "execution_profile_id":execution_profile_id,
+                "repository_resource_id":repository_resource_id,
+                "writable_repository_resource_ids":list(writable_repository_resource_ids),
+                "read_only_repository_resource_ids":list(read_only_repository_resource_ids)})
+        elif scope_rejected:
+            self.append_event({"type":"work_item_handoff_delivery_scope_rejected", "ref":ref,
+                "requested_at":expected_requested_at,"recipient":recipient,
+                "thread_id":thread_id,"turn_id":turn_id,"execution_id":execution_id,
+                "execution_profile_id":execution_profile_id,
+                "repository_resource_id":repository_resource_id,
+                "writable_repository_resource_ids":list(writable_repository_resource_ids)})
         return recorded
 
     def owner_dispatch_projection(self, state: WorkItemState) -> dict[str, Any]:
