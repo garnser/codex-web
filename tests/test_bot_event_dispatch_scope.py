@@ -7,6 +7,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+from fastapi import HTTPException
+
 from codex_web.models import BotBinding, BotReplyTarget
 from codex_web.services.bot_event_dispatch import (
     BotEventDispatchService, BotEventDispatchCompatibilityFacade,
@@ -122,6 +124,85 @@ class BotEventDispatchScopeTests(unittest.IsolatedAsyncioTestCase):
         await BotEventDispatchCompatibilityFacade(host).dispatch(self.binding, "continue", "orchestrator-watchdog")
         self.assertEqual(host._enqueue_turn.call_args.kwargs["reply_target"], self.captured)
         host._enqueue_turn.assert_called_once()
+
+    async def test_concurrent_start_retains_original_scope_and_profile(self):
+        self.execution.thread_is_active.return_value = False
+        self.queue_policy.depth.return_value = 0
+        self.execution.start_thread_turn_now = AsyncMock(side_effect=HTTPException(
+            409, {"code": "thread_turn_already_active", "threadId": "thread-1"}))
+        self.service.agent_profile_resolver = Mock(return_value=(
+            SimpleNamespace(profile_id="veridataops-dana", revision=6,
+                            execution_profile_id="repository-write"),
+            SimpleNamespace(identity_id="local-admin")))
+        result = await self.service.dispatch(self.binding, "finish SAME MR52", "operator-retry",
+            work_item_ref="veridataops/data-packs!52", repository_resource_id="repo-data",
+            writable_repository_resource_ids=("repo-data",), handoff_requested_at=123)
+        self.assertTrue(result["queued"])
+        self.execution.start_thread_turn_now.assert_awaited_once()
+        self.execution.enqueue_turn.assert_called_once()
+        kwargs = self.execution.enqueue_turn.call_args.kwargs
+        for key, value in {"work_item_ref":"veridataops/data-packs!52",
+            "repository_resource_id":"repo-data", "writable_repository_resource_ids":("repo-data",),
+            "handoff_requested_at":123, "agent_profile_id":"veridataops-dana",
+            "agent_profile_revision":6, "agent_profile_actor_id":"local-admin"}.items():
+            self.assertEqual(kwargs[key], value)
+
+    async def test_idle_only_concurrent_start_keeps_background_quiet(self):
+        self.execution.thread_is_active.return_value = False
+        self.queue_policy.depth.return_value = 0
+        self.execution.start_thread_turn_now = AsyncMock(side_effect=HTTPException(
+            409, {"code":"thread_turn_already_active", "threadId":"thread-1"}))
+        result = await self.service.dispatch(self.binding, "wake", "watchdog", require_idle=True)
+        self.assertEqual(result["skipped"], "already_active")
+        self.execution.enqueue_turn.assert_not_called()
+
+    async def test_unrelated_conflicts_are_not_queued_or_replayed(self):
+        self.execution.thread_is_active.return_value = False
+        self.queue_policy.depth.return_value = 0
+        self.service.resume = SimpleNamespace(is_timeout_error=lambda e:False, is_stale_thread_error=lambda e:False)
+        for detail in ({"code":"uncertain_start", "threadId":"thread-1"},
+                       {"code":"thread_turn_already_active", "threadId":"another-thread"}):
+            self.execution.start_thread_turn_now = AsyncMock(side_effect=HTTPException(409, detail))
+            with self.assertRaises(HTTPException):
+                await self.service.dispatch(self.binding, "finish", "operator-retry")
+            self.execution.enqueue_turn.assert_not_called()
+
+    async def test_replacement_start_race_retains_verified_replacement(self):
+        self.execution.thread_is_active.return_value = False
+        self.queue_policy.depth.return_value = 0
+        self.execution.start_thread_turn_now = AsyncMock(side_effect=[RuntimeError("stale"),
+            HTTPException(409, {"code":"thread_turn_already_active", "threadId":"replacement"})])
+        self.service.resume = SimpleNamespace(is_timeout_error=lambda e:False, is_stale_thread_error=lambda e:True)
+        self.service.recovery.replace_stale_bot_thread = AsyncMock(return_value=
+            self.binding.model_copy(update={"thread_id":"replacement"}))
+        result = await self.service.dispatch(self.binding, "finish SAME52", "operator-retry",
+            work_item_ref="veridataops/data-packs!52", repository_resource_id="repo-data",
+            writable_repository_resource_ids=("repo-data",))
+        self.assertTrue(result["queued"])
+        self.assertEqual(self.execution.enqueue_turn.call_args.kwargs["thread_id"], "replacement")
+        self.assertEqual(self.execution.start_thread_turn_now.await_count, 2)
+
+    async def test_compatibility_start_race_retains_original_work_item(self):
+        host = SimpleNamespace(
+            _project=self.service.projects.get, _thread_run_settings=self.service.settings.get,
+            _conversation_target_for_binding=self.service.targets.conversation_target,
+            _release_stale_active_turn=Mock(), _thread_is_active=Mock(return_value=False),
+            _thread_queue_depth=Mock(return_value=0),
+            _find_duplicate_queued_turn=Mock(return_value=None),
+            _enqueue_turn=Mock(return_value=SimpleNamespace(id="queued")),
+            _upsert_bot_binding=Mock(), _append_bot_event=Mock(),
+            _publish_queue_status=AsyncMock(), hub=SimpleNamespace(publish=AsyncMock()),
+            _start_thread_turn_now=AsyncMock(side_effect=HTTPException(409,
+                {"code":"thread_turn_already_active", "threadId":"thread-1"})),
+            _is_codex_timeout_error=lambda e:False, _is_stale_thread_error=lambda e:False,
+        )
+        result = await BotEventDispatchCompatibilityFacade(host).dispatch(
+            self.binding, "finish existing52", "operator-retry", work_item_ref="veridataops/data-packs!52",
+            repository_resource_id="repo-data", writable_repository_resource_ids=("repo-data",))
+        self.assertTrue(result["queued"])
+        host._enqueue_turn.assert_called_once()
+        self.assertEqual(host._enqueue_turn.call_args.kwargs["work_item_ref"], "veridataops/data-packs!52")
+        self.assertEqual(host._enqueue_turn.call_args.kwargs["writable_repository_resource_ids"], ("repo-data",))
 
     def setUp(self) -> None:
         self.execution = SimpleNamespace(

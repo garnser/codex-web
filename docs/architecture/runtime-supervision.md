@@ -503,3 +503,11 @@ repository scope for normal admission. A routing link and a current bootstrap
 binding are neither authority nor native-start/recipient delivery evidence.
 Existing preflight original/replacement links report the admitted retry target;
 historical unknown-start outcomes remain outside this retry path.
+
+
+Event dispatch also retains a request when the runtime start lock explicitly
+refuses it with `thread_turn_already_active` for the same thread, including a
+verified stale-thread replacement. This refusal occurs before native admission.
+The existing queue preserves the original Work Item, profile and repository
+scope; idle-only background dispatch still skips. Other conflicts, another
+thread and unknown native-start outcomes do not establish this retry condition.

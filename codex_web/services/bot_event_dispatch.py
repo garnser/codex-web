@@ -6,6 +6,8 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from fastapi import HTTPException
+
 from codex_web.models import BotBinding
 from codex_web.services.bot_bindings import BotBindingLifecycleService
 from codex_web.services.bot_runtime_telemetry import BotRuntimeTelemetry
@@ -17,6 +19,25 @@ from codex_web.services.thread_execution_settings import (
 from codex_web.services.thread_recovery import ThreadRecoveryService
 from codex_web.services.thread_resume import ThreadResumeService
 from codex_web.services.turn_queue_policy import TurnQueuePolicy
+
+
+def _concurrent_start_refusal(exc: Exception, thread_id: str) -> bool:
+    # The runtime refuses under its start lock before native admission.
+    return (isinstance(exc, HTTPException) and exc.status_code == 409
+            and isinstance(exc.detail, dict)
+            and exc.detail.get("code") == "thread_turn_already_active"
+            and exc.detail.get("threadId") == thread_id)
+
+
+async def _retain_concurrent_request(thread_id, require_idle, queue_turn, scope=None):
+    if require_idle:
+        result = {"ok": True, "queued": False, "skipped": "already_active",
+                  "threadId": thread_id}
+        if scope is not None:
+            result["dispatchScope"] = scope
+        return result
+    return await queue_turn("event_turn_queued_after_concurrent_start",
+                            "thread became active before native admission")
 
 
 class BotEventDispatchService:
@@ -381,6 +402,9 @@ class BotEventDispatchService:
                 **profile_kwargs,
             )
         except Exception as exc:
+            if _concurrent_start_refusal(exc, binding.thread_id):
+                return await _retain_concurrent_request(
+                    binding.thread_id, require_idle, queue_turn, dispatch_scope)
             if self.resume.is_timeout_error(exc):
                 return await queue_turn(
                     "event_turn_queued_after_timeout",
@@ -400,24 +424,30 @@ class BotEventDispatchService:
                 await asyncio.to_thread(self.targets.event_reply_target, binding)
                 or self.targets.conversation_target(binding)
             )
-            turn = await self.execution.start_thread_turn_now(
-                binding.thread_id,
-                project=project,
-                message=text,
-                sandbox=binding.sandbox,
-                approval_policy=binding.approval_policy,
-                model=effective_model,
-                reasoning_effort=effective_reasoning_effort,
-                source=source,
-                reply_target=reply_target,
-                work_item_ref=work_item_ref,
-                **({"handoff_requested_at": handoff_requested_at} if handoff_requested_at is not None else {}),
-                repository_resource_id=repository_resource_id,
-                writable_repository_resource_ids=writable_repository_resource_ids,
-                read_only_repository_resource_ids=read_only_repository_resource_ids,
-                actor=profile_actor,
-                **profile_kwargs,
-            )
+            try:
+                turn = await self.execution.start_thread_turn_now(
+                    binding.thread_id,
+                    project=project,
+                    message=text,
+                    sandbox=binding.sandbox,
+                    approval_policy=binding.approval_policy,
+                    model=effective_model,
+                    reasoning_effort=effective_reasoning_effort,
+                    source=source,
+                    reply_target=reply_target,
+                    work_item_ref=work_item_ref,
+                    **({"handoff_requested_at": handoff_requested_at} if handoff_requested_at is not None else {}),
+                    repository_resource_id=repository_resource_id,
+                    writable_repository_resource_ids=writable_repository_resource_ids,
+                    read_only_repository_resource_ids=read_only_repository_resource_ids,
+                    actor=profile_actor,
+                    **profile_kwargs,
+                )
+            except Exception as replacement_error:
+                if not _concurrent_start_refusal(replacement_error, binding.thread_id):
+                    raise
+                return await _retain_concurrent_request(
+                    binding.thread_id, require_idle, queue_turn, dispatch_scope)
 
         binding.updated_at = time.time()
         await asyncio.to_thread(self.bindings.upsert, binding)
@@ -613,6 +643,9 @@ class BotEventDispatchCompatibilityFacade:
                 read_only_repository_resource_ids=read_only_repository_resource_ids,
             )
         except Exception as exc:
+            if _concurrent_start_refusal(exc, binding.thread_id):
+                return await _retain_concurrent_request(
+                    binding.thread_id, require_idle, queue_binding_turn, None)
             if host._is_codex_timeout_error(exc):
                 return await queue_binding_turn(
                     "event_turn_queued_after_timeout",
@@ -634,21 +667,27 @@ class BotEventDispatchCompatibilityFacade:
                  if callable(captured_target_for) else None)
                 or host._conversation_target_for_binding(binding)
             )
-            turn = await host._start_thread_turn_now(
-                binding.thread_id,
-                project=project,
-                message=text,
-                sandbox=binding.sandbox,
-                approval_policy=binding.approval_policy,
-                model=effective_model,
-                reasoning_effort=effective_reasoning_effort,
-                source=source,
-                reply_target=reply_target,
-                work_item_ref=work_item_ref,
-                repository_resource_id=repository_resource_id,
-                writable_repository_resource_ids=writable_repository_resource_ids,
-                read_only_repository_resource_ids=read_only_repository_resource_ids,
-            )
+            try:
+                turn = await host._start_thread_turn_now(
+                    binding.thread_id,
+                    project=project,
+                    message=text,
+                    sandbox=binding.sandbox,
+                    approval_policy=binding.approval_policy,
+                    model=effective_model,
+                    reasoning_effort=effective_reasoning_effort,
+                    source=source,
+                    reply_target=reply_target,
+                    work_item_ref=work_item_ref,
+                    repository_resource_id=repository_resource_id,
+                    writable_repository_resource_ids=writable_repository_resource_ids,
+                    read_only_repository_resource_ids=read_only_repository_resource_ids,
+                )
+            except Exception as replacement_error:
+                if not _concurrent_start_refusal(replacement_error, binding.thread_id):
+                    raise
+                return await _retain_concurrent_request(
+                    binding.thread_id, require_idle, queue_binding_turn, None)
 
         binding.updated_at = time.time()
         host._upsert_bot_binding(binding)
