@@ -220,12 +220,13 @@ async function loadSkills(root) {
 async function loadSources(root) {
   const sourceFilter = query(root, "[data-skill-source]");
   const syncSource = query(root, "[data-sync-source]");
-  const selectedFilter = sourceFilter?.value || "";
-  const selectedSyncSource = syncSource?.value || "";
   try {
     const result = await request("/api/skill-sources");
     state.sources = result?.items || [];
   } catch { state.sources = []; }
+  // Preserve selections made while the catalog request was in flight.
+  const selectedFilter = sourceFilter?.value || "";
+  const selectedSyncSource = syncSource?.value || "";
   const options = state.sources.map((item)=>`<option value="${esc(item.source_id)}">${esc(item.name)} · ${esc(item.trust)}</option>`).join("");
   sourceFilter.innerHTML = `<option value="">All sources</option>${options}`;
   syncSource.innerHTML = `<option value="">Select source…</option>${options}`;
