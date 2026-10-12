@@ -380,6 +380,68 @@ class QueuedPreflightRetentionTests(unittest.TestCase):
             reply_target=BotReplyTarget(thread_id='thread', provider='slack',
                 external_conversation_id='conversation', message_id='message', updated_at=100))
 
+    def test_proven_maintenance_refusal_recovers_original_without_starting(self):
+        from tests.test_execution_preflight import actor
+        from codex_web.models import ExecutionPreflightBlocker
+        from fastapi import HTTPException
+        attempt = self.retain()
+        admin = actor(admin=True).model_copy(update={'workspace_id':'workspace'})
+        member = actor(admin=False).model_copy(update={'workspace_id':'workspace'})
+        refusal = ExecutionPreflightBlocker(code='upgrade_maintenance',
+            message='Native turn admission is paused during upgrade maintenance', threadId=attempt.thread_id)
+        for status in ['queued', 'blocked']:
+            self.store.update(attempt.id, lambda current: current.model_copy(update={
+                'status':status, 'blockers':(refusal,)}))
+            saved = self.service.get(attempt.id, actor=admin)
+            self.assertEqual(self.service.public(saved, actor=admin)['can_reconcile_prestart'], status == 'queued')
+            self.assertEqual(self.service.public(saved, actor=admin)['can_retry'], status == 'blocked')
+            self.assertFalse(self.service.public(saved, actor=member)['can_reconcile_prestart'])
+            with self.assertRaises(HTTPException):
+                self.service.reconcile_prestart_refusal(attempt.id, actor=member)
+            reconciled = self.service.reconcile_prestart_refusal(attempt.id, actor=admin)
+            self.assertEqual(reconciled.status, 'blocked')
+            self.assertEqual(reconciled.queued_turn_snapshot, self.queued.model_dump(mode='json'))
+            self.assertIsNone(reconciled.queued_start_receipt)
+            self.assertIsNone(reconciled.started_at)
+        recovered, claim, acquired = self.service.claim_retry(attempt.id, actor=admin)
+        self.assertTrue(acquired)
+        self.assertIsNotNone(claim)
+        self.assertEqual(recovered.queued_turn_snapshot, self.queued.model_dump(mode='json'))
+
+    def test_maintenance_reconciliation_rejects_other_thread_uncertainty_and_active_admission(self):
+        from tests.test_execution_preflight import actor
+        from codex_web.models import ExecutionPreflightBlocker
+        from fastapi import HTTPException
+        attempt = self.retain()
+        admin = actor(admin=True).model_copy(update={'workspace_id':'workspace'})
+        for status, code, thread in [
+            ('queued', 'native_start_outcome_unknown', attempt.thread_id),
+            ('reconciliation_required', 'upgrade_maintenance', attempt.thread_id),
+            ('reconciliation_required', 'upgrade_maintenance', 'unrelated'),
+            ('admitting', 'upgrade_maintenance', attempt.thread_id),
+            ('reconciliation_required', 'upgrade_turn_scope_unknown', attempt.thread_id),
+        ]:
+            refusal = ExecutionPreflightBlocker(code=code, message='refused', threadId=thread)
+            self.store.update(attempt.id, lambda current: current.model_copy(update={
+                'status':status, 'blockers':(refusal,)}))
+            before = self.store.get(attempt.id)
+            with self.assertRaises(HTTPException):
+                self.service.reconcile_prestart_refusal(attempt.id, actor=admin)
+            self.assertEqual(self.store.get(attempt.id), before)
+
+    def test_new_start_fence_clears_prior_refusal_evidence(self):
+        from codex_web.models import ExecutionPreflightBlocker
+        attempt = self.retain()
+        refusal = ExecutionPreflightBlocker(code='upgrade_maintenance', message='maintenance', threadId=attempt.thread_id)
+        self.store.update(attempt.id, lambda current: current.model_copy(update={'blockers':(refusal,), 'last_error':'maintenance'}))
+        claimed, claim = self.service.claim_queued_admission(attempt.id)
+        self.assertTrue(self.service.begin_queued_start(attempt.id, claim_id=claim))
+        unknown = self.store.get(attempt.id)
+        self.assertEqual(unknown.status, 'reconciliation_required')
+        self.assertEqual(unknown.blockers, ())
+        self.assertIsNone(unknown.last_error)
+        self.assertFalse(self.service.recorded_maintenance_refusal(unknown))
+
     def test_recorded_profile_refusal_reconciliation_is_authorized_and_never_starts(self):
         from tests.test_execution_preflight import actor
         from codex_web.models import ExecutionPreflightBlocker

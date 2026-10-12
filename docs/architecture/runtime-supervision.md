@@ -446,3 +446,21 @@ The additive recovery document is ignored by older readers and does not mutate
 existing queue or preflight schemas. Downgrading loses durable routing capability
 and cannot be treated as a repair for retained work. Deployment and recovery
 continue through the canonical upgrade and backup boundaries.
+
+
+## Retained maintenance refusal recovery
+
+A retained queued request with a matching structured pre-native maintenance
+refusal can be reconciled to blocked through the existing administrator/MFA
+preflight action. This creates a working explicit retry path even when its
+runtime queue copy is missing. Reconciliation preserves the immutable request
+and never starts work or establishes delivery. Admission and reconciliation
+share the canonical transactional preflight state: an admitting request cannot
+be reconciled, and an actual start receipt remains terminal.
+
+The native-start fence clears previous blockers and error text so a later
+uncertain start cannot reuse an earlier refusal as negative evidence. Historical
+unknown maintenance outcomes still require separate authoritative evidence;
+queue absence and stale refusal text are insufficient. Existing inspector
+buttons use the canonical action eligibility. FIFO repair and historical
+unknown-outcome reconciliation remain separate acceptance under issue #1321.

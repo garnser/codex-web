@@ -86,7 +86,7 @@ class ExecutionPreflightService:
                 return current
             acquired = True
             return current.model_copy(update={'status':'reconciliation_required',
-                'updated_at':float(self.clock())})
+                'blockers':(), 'last_error':None, 'updated_at':float(self.clock())})
         self.store.update(attempt_id, update)
         return acquired
 
@@ -155,6 +155,28 @@ class ExecutionPreflightService:
                 return True
         return False
 
+    @staticmethod
+    def recorded_maintenance_refusal(attempt: ExecutionPreflightAttempt) -> bool:
+        # These structured controller refusals occur before native turn/start.
+        # Queue absence, timeouts and stale active markers are not evidence.
+        snapshot = attempt.queued_turn_snapshot
+        if (snapshot is None or attempt.queued_start_receipt is not None
+                or attempt.started_at is not None
+                or snapshot.get('thread_id') != attempt.thread_id):
+            return False
+        target = attempt.replacement_thread_id or attempt.thread_id
+        if attempt.status not in {'queued', 'blocked'}:
+            # Historical unknown starts can retain stale blocker text. Their
+            # outcome needs separate authoritative reconciliation evidence.
+            return False
+        return any(blocker.code in {'upgrade_maintenance', 'upgrade_maintenance_active'}
+                   and blocker.model_dump(mode='json').get('threadId') == target
+                   for blocker in attempt.blockers)
+
+    @classmethod
+    def recorded_prestart_refusal(cls, attempt: ExecutionPreflightAttempt) -> bool:
+        return cls.recorded_profile_refusal(attempt) or cls.recorded_maintenance_refusal(attempt)
+
     def reconcile_prestart_refusal(self, attempt_id: str, *, actor: AuthenticationActor) -> ExecutionPreflightAttempt:
         initial = self.get(attempt_id, actor=actor)
         self._authorize(initial, actor, require_admin=True)
@@ -163,10 +185,12 @@ class ExecutionPreflightService:
             # Absence, timeout, active markers and expired claims prove nothing.
             if current.status == 'started':
                 return current
-            if current.status not in {'reconciliation_required', 'blocked'} or not self.recorded_profile_refusal(current):
+            if (current.status not in {'queued', 'reconciliation_required', 'blocked'}
+                    or not self.recorded_prestart_refusal(current)
+                    or (current.status == 'queued' and not self.recorded_maintenance_refusal(current))):
                 raise HTTPException(status_code=409, detail={
                     'code':'prestart_refusal_reconciliation_unavailable',
-                    'message':'No matching authoritative pre-start profile refusal is retained.'})
+                    'message':'No matching authoritative pre-start controller refusal is retained.'})
             return current.model_copy(update={'status':'blocked', 'updated_at':float(self.clock())})
         return self.store.update(attempt_id, update)
 
@@ -542,7 +566,8 @@ class ExecutionPreflightService:
         payload["can_retry"] = self.can_retry(actor) and attempt.status not in {
             "queued", "reconciliation_required", "started"}
         payload['can_reconcile_prestart'] = (self.can_retry(actor)
-            and attempt.status == 'reconciliation_required' and self.recorded_profile_refusal(attempt))
+            and ((attempt.status == 'reconciliation_required' and self.recorded_prestart_refusal(attempt))
+                 or (attempt.status == 'queued' and self.recorded_maintenance_refusal(attempt))))
         payload['reconcile_prestart_href'] = (
             f'/api/threads/{attempt.replacement_thread_id or attempt.thread_id}/preflight-attempts/{attempt.id}/reconcile-prestart')
         payload["retry_href"] = (
