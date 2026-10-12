@@ -464,3 +464,20 @@ unknown maintenance outcomes still require separate authoritative evidence;
 queue absence and stale refusal text are insufficient. Existing inspector
 buttons use the canonical action eligibility. FIFO repair and historical
 unknown-outcome reconciliation remain separate acceptance under issue #1321.
+
+
+## Explicit owner retry delivery
+
+An authorized operator retry is a bounded work request, even when its owner is
+busy with another issue or MR. The existing scoped bot dispatcher retains that
+request in the existing native queue without interrupting active work. Ordinary
+background continuity keeps its idle/empty-queue guards. An explicit retry uses
+its actual canonical retry attempt for dispatch idempotency and coalescing;
+a superseded pending attempt cannot enqueue after a newer retry. Background
+continuity cannot overwrite the explicit retry's pending callback.
+
+The Work Item ref, existing owner/profile resolution and original repository
+scope continue through the normal dispatcher and admission gates. Queueing
+establishes neither native start nor recipient ACK, review, successful CI or
+merge. Existing queue/preflight inspectors remain the canonical evidence for
+retained requests and actual starts; retry counters alone prove neither.
