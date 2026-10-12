@@ -12,6 +12,8 @@ from codex_web.models import (
     ExecutionPreflightBlocker,
     ExecutionPreflightBlockerSnapshot,
     TurnCreate,
+    QueuedTurn,
+    QueuedNativeStartReceipt,
 )
 from codex_web.services.identity import IdentityService
 from codex_web.storage.execution_preflight import ExecutionPreflightStore
@@ -35,6 +37,115 @@ class ExecutionPreflightService:
     @staticmethod
     def _attempt_id(execution_id: str) -> str:
         return f"preflight-{execution_id}"
+
+    def retain_queued(
+        self, queued: QueuedTurn, *, organization_id: str, workspace_id: str,
+    ) -> ExecutionPreflightAttempt:
+        """Retain admission intent, without claiming a native start or delivery."""
+        correlation = queued.execution_id or f"reserved-queue-{queued.id}"
+        now = float(self.clock())
+        attempt = ExecutionPreflightAttempt(
+            id=f'preflight-queued-{queued.id}', correlation_id=correlation,
+            execution_id=correlation, organization_id=organization_id,
+            workspace_id=workspace_id, thread_id=queued.thread_id,
+            project_id=queued.project_id, message=queued.message,
+            queued_turn_snapshot=queued.model_dump(mode="json"),
+            sandbox=queued.sandbox, approval_policy=queued.approval_policy,
+            model=queued.model, reasoning_effort=queued.reasoning_effort,
+            repository_resource_id=queued.repository_resource_id,
+            writable_repository_resource_ids=queued.writable_repository_resource_ids,
+            read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
+            execution_profile_id=queued.execution_profile_id,
+            agent_profile_id=queued.agent_profile_id,
+            agent_profile_revision=queued.agent_profile_revision,
+            agent_profile_actor_id=queued.agent_profile_actor_id,
+            source=queued.source, status="queued", created_at=now, updated_at=now,
+        )
+        return self.store.retain_queued(attempt)
+
+    def claim_queued_admission(self, attempt_id: str) -> tuple[ExecutionPreflightAttempt, str | None]:
+        claim_id = f'queued-admission-{uuid.uuid4().hex}'
+        acquired = False
+        def update(current):
+            nonlocal acquired
+            acquired = False
+            if current.status != 'queued' or current.queued_turn_snapshot is None:
+                return current
+            acquired = True
+            return current.model_copy(update={'status':'admitting',
+                'queued_admission_claim_id':claim_id, 'updated_at':float(self.clock())})
+        updated = self.store.update(attempt_id, update)
+        return updated, claim_id if acquired else None
+
+    def begin_queued_start(self, attempt_id: str, *, claim_id: str) -> bool:
+        acquired = False
+        def update(current):
+            nonlocal acquired
+            acquired = False
+            if current.status != 'admitting' or current.queued_admission_claim_id != claim_id:
+                return current
+            acquired = True
+            return current.model_copy(update={'status':'reconciliation_required',
+                'updated_at':float(self.clock())})
+        self.store.update(attempt_id, update)
+        return acquired
+
+    def record_queued_native_start(
+        self, attempt_id: str, receipt: QueuedNativeStartReceipt,
+    ) -> ExecutionPreflightAttempt:
+        """Only the native runtime response may supply this internal receipt."""
+        def update(current):
+            if current.status == 'started' and current.queued_start_receipt == receipt:
+                return current
+            if (current.queued_turn_snapshot is None
+                    or current.status != 'reconciliation_required'
+                    or current.queued_admission_claim_id != receipt.admission_claim_id
+                    or current.execution_id != receipt.requested_execution_id
+                    or (current.replacement_thread_id or current.thread_id) != receipt.thread_id):
+                raise ValueError('native start receipt does not match the retained admission')
+            return current.model_copy(update={'status':'started',
+                'queued_start_receipt':receipt, 'started_at':receipt.observed_at,
+                'updated_at':receipt.observed_at, 'last_error':None, 'blockers':()})
+        return self.store.update(attempt_id, update)
+
+    def queued_disposition(self, attempt_id: str, *, status: str,
+                           detail: dict[str, Any] | None = None,
+                           claim_id: str | None = None) -> ExecutionPreflightAttempt:
+        """Internal runtime outcome; unknown native starts remain non-retryable."""
+        if status not in {'queued', 'blocked', 'started', 'reconciliation_required'}:
+            raise ValueError('invalid queued admission disposition')
+        now = float(self.clock())
+        def update(current):
+            if current.queued_turn_snapshot is None:
+                raise ValueError('queued disposition requires the original request')
+            if current.status == 'started':
+                return current
+            if claim_id is not None and current.queued_admission_claim_id != claim_id:
+                return current
+            return current.model_copy(update={
+                'status':status, 'updated_at':now,
+                'started_at':now if status == 'started' else None,
+                'blockers':self._blockers(detail) if detail else (),
+                'last_error':str((detail or {}).get('message') or '') or None,
+            })
+        return self.store.update(attempt_id, update)
+
+    def retained_queued(self, queued: QueuedTurn) -> ExecutionPreflightAttempt | None:
+        attempt = self.store.get(f'preflight-queued-{queued.id}')
+        if attempt is None or attempt.queued_turn_snapshot is None:
+            return None
+        if attempt.queued_turn_snapshot.get('id') != queued.id:
+            raise ValueError('retained queued request identity changed')
+        return attempt
+
+    def queue_retry_committed(self, attempt_id: str, *, claim_id: str) -> ExecutionPreflightAttempt:
+        def update(current):
+            if current.status != 'retrying' or current.retry_claim_id != claim_id:
+                return current
+            return current.model_copy(update={'status':'queued', 'retry_claim_id':None,
+                'retry_started_at':None, 'queued_admission_claim_id':None,
+                'updated_at':float(self.clock())})
+        return self.store.update(attempt_id, update)
 
     @staticmethod
     def _blockers(detail: Any) -> tuple[ExecutionPreflightBlocker, ...]:
@@ -388,7 +499,8 @@ class ExecutionPreflightService:
     ) -> dict[str, Any]:
         self._authorize(attempt, actor)
         payload = attempt.model_dump(mode="json")
-        payload["can_retry"] = self.can_retry(actor)
+        payload["can_retry"] = self.can_retry(actor) and attempt.status not in {
+            "queued", "reconciliation_required", "started"}
         payload["retry_href"] = (
             f"/api/threads/{attempt.replacement_thread_id or attempt.thread_id}/preflight-attempts/"
             f"{attempt.id}/retry"

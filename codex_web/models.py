@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -404,6 +404,9 @@ class BotReplyTarget(BaseModel):
 
 
 ExecutionPreflightStatus: TypeAlias = Literal[
+    "queued",
+    "admitting",
+    "reconciliation_required",
     "blocked",
     "retrying",
     "started",
@@ -429,6 +432,21 @@ class ExecutionPreflightBlockerSnapshot(BaseModel):
     attempt_number: int = Field(ge=1)
 
 
+class QueuedNativeStartReceipt(BaseModel):
+    """Actual provider start response, recorded before later bookkeeping."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    admission_claim_id: str = Field(min_length=1)
+    requested_execution_id: str = Field(min_length=1)
+    execution_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    provider_native_session_id: str = Field(min_length=1)
+    provider_native_turn_id: str = Field(min_length=1)
+    provider_id: str = Field(min_length=1)
+    runtime_id: str = Field(min_length=1)
+    observed_at: float
+
+
 class ExecutionPreflightAttempt(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -441,6 +459,9 @@ class ExecutionPreflightAttempt(BaseModel):
     replacement_thread_id: str | None = Field(default=None, min_length=1)
     project_id: str = Field(min_length=1)
     message: str = Field(min_length=1)
+    queued_turn_snapshot: dict[str, Any] | None = None
+    queued_admission_claim_id: str | None = None
+    queued_start_receipt: QueuedNativeStartReceipt | None = None
     sandbox: SandboxMode | None = None
     approval_policy: ApprovalPolicy | None = None
     model: str | None = None

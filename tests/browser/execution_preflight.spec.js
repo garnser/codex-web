@@ -1,5 +1,18 @@
 const { test, expect } = require('@playwright/test');
 
+for (const disposition of ['queued', 'reconciliation_required']) {
+  test(`retained ${disposition} exposes original provenance without an unsafe retry`, async ({ page }) => {
+    await page.goto(`http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?disposition=${disposition}`);
+    await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+    await expect(page.locator('.message.tool')).toContainText('Original queued request: original-queue-id');
+    await expect(page.locator('.message.tool')).toContainText('Agent profile: original-profile · revision 6');
+    await expect(page.getByRole('button', {name:'Retry', exact:true})).toHaveCount(0);
+    if (disposition === 'reconciliation_required') {
+      await expect(page.locator('.message.tool')).toContainText('Native start outcome is unknown');
+    }
+  });
+}
+
 test('retained execution preflight renders blocker and authorized retry', async ({ page }) => {
   await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html');
   await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
@@ -91,4 +104,12 @@ for (const outcome of ['resolve', 'reject']) {
   await expect(page.locator('.message.tool')).toContainText('Original thread: thread-1; current thread: replacement-thread');
   await page.getByRole('button', { name: 'Retry', exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.__reloadCalls)).toEqual(['replacement-thread']);
+});
+
+test('confirmed retained start shows actual native receipt without a replay action', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?disposition=started');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+  await expect(page.locator('.message.tool')).toContainText('Confirmed native turn: actual-native-turn');
+  await expect(page.locator('.message.tool')).toContainText('Requested execution: original-request-execution; admitted execution: actual-bootstrap-execution');
+  await expect(page.getByRole('button', {name:'Retry', exact:true})).toHaveCount(0);
 });

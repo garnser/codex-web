@@ -3430,6 +3430,7 @@ execution_preflight_service = ExecutionPreflightService(
     execution_preflight_store,
 )
 app.state.execution_preflight_service = execution_preflight_service
+turn_execution_service.queued_preflight = execution_preflight_service
 
 turn_service = TurnService(
     projects=project_runtime_service,

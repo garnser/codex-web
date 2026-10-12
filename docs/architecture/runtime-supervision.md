@@ -320,6 +320,67 @@ inspect the same attempt; the retry card displays original/current provenance an
 loads the actual target on success or a new preflight denial. Historical target
 index entries never authorize a different retained identity.
 
+Queued admission writes the complete original `QueuedTurn` into the existing
+preflight recovery domain before removing it from the queue. The snapshot keeps
+its ID, creation/order provenance, actor, exact profile revision, work-item and
+handoff nonce, repository/policy scope and reply destination. Retention failure
+leaves the queue intact. An atomic pre-start claim changes queued admission to
+`admitting` before queue removal. A second claim-checked gate changes that state
+to reconciliation-required before any native startup. Explicit recovery of an
+interrupted pre-start claim fences its old token; that caller can no longer pass
+the native-start gate. Concurrent drainers cannot acquire the same claim twice.
+A durable reconciliation-required gate commits before
+native startup; uncertain outcomes cannot be replayed through retry or steering.
+An active marker or an expired retry claim does not establish successful start.
+The native runtime records a claim-bound provider start receipt before bootstrap
+and other post-start bookkeeping. It includes the requested execution, actual
+assignment execution and native session/turn/runtime IDs. A bookkeeping failure
+preserves actual active-turn ownership and cannot rewrite that receipt as an
+unstarted failure. Only that receipt permits removing a redundant restored queue
+copy. A request with no receipt remains uncertain; absence and timeout are not
+proof of an unstarted request.
+
+Interrupted explicit queue recovery is distinct from native admission: its
+`retrying` state cannot pass the native-start gate. A stale recovery token may be
+replaced while fencing the old admission and recovery tokens; this restores only
+the original queue request, and ordinary admission still has to claim it. An
+uncertain native admission cannot enter this recovery path.
+Confirmed preflight rejection retains a blocked request for explicit recovery;
+later eligible requests can proceed. Maintenance and capacity waits retain their
+existing queue/backoff path. A missing Project cannot justify inventing tenant
+provenance: its original entry remains retained while eligible entries are tried.
+
+Administrator retry reconstructs the original queued request, preserving its
+identity and authorization inputs. It re-enters ordinary queue admission rather
+than substituting the administrator's profile or declaring delivery. Canonical
+thread replacement may retarget the delivery Thread and reply Thread only;
+the original snapshot remains immutable. The preflight inspector shows the
+original queue ID, task/profile attribution and truthful admission/unknown state.
+
+Early event deduplication compares the complete authorization and delivery
+identity, including profile revision, actor, repository scope, reply destination
+and handoff nonce. Equal message text alone cannot suppress a new handoff.
+Retained-request matching excludes only the newly generated queue/execution IDs,
+creation timestamp and retry count; the original snapshot remains unchanged.
+A native start response without an actual turn ID produces an unknown-outcome
+event and retained reconciliation state, never a successful-start receipt.
+
+This extends the application-level persisted preflight payload with an optional
+queued snapshot and new disposition values. Existing records remain readable by
+the new application; older strict preflight readers cannot read new payloads.
+There is no SQL DDL or retrospective start/ACK backfill. Rollout requires drained
+admissions and a declared persisted-payload compatibility change. Mixed-version
+writers are unsupported, and rollback requires the canonical pre-transition
+snapshot under maintenance; source-only rollback cannot safely interpret new
+preflight dispositions. The pre-transition snapshot supports fenced recovery
+before new admissions resume. After new work runs, restoring that older snapshot
+must not discard later requests or provider outcomes or replay their starts;
+those require separate authoritative reconciliation. No compatible source
+rollback is advertised for this transition. A reserved queue correlation
+identifies intent, not a native execution receipt; legacy entries without an
+execution ID use that declared correlation while their original snapshot stays
+unchanged.
+
 A Project readiness request with missing or expired trusted-local account
 evidence performs a coalesced `account/read` metadata request and reevaluates
 readiness. Project scope and authentication policy are checked first. Fresh

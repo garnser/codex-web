@@ -44,7 +44,8 @@ export function createExecutionPreflightUi({
 
         if (status !== "started") {
           addMessage(
-            status === "retrying" ? "You (retrying)" : "You (blocked)",
+            status === "retrying" ? "You (retrying)" : ['queued','admitting'].includes(status)
+              ? "You (retained)" : status === 'reconciliation_required' ? "You (outcome unknown)" : "You (blocked)",
             attempt?.message || "",
             "user",
             new Date((attempt?.created_at || Date.now() / 1000) * 1000),
@@ -52,6 +53,15 @@ export function createExecutionPreflightUi({
         }
 
         const context = [
+          attempt?.queued_turn_snapshot?.id
+            ? `Original queued request: ${attempt.queued_turn_snapshot.id}`
+            : "",
+          attempt?.queued_turn_snapshot?.work_item_ref
+            ? `Work item: ${attempt.queued_turn_snapshot.work_item_ref}`
+            : "",
+          attempt?.agent_profile_id
+            ? `Agent profile: ${attempt.agent_profile_id} · revision ${attempt.agent_profile_revision || 'unknown'}`
+            : "",
           attempt?.execution_profile_id
             ? `Profile: ${attempt.execution_profile_id}`
             : "",
@@ -68,7 +78,17 @@ export function createExecutionPreflightUi({
         ].filter(Boolean);
         const lines = [
           `Preflight attempt ${Number(attempt?.attempt_number || 1)} · ${status}`,
+          status === 'reconciliation_required'
+            ? 'Native start outcome is unknown. Reconcile the original execution before retrying.'
+            : status === 'queued' ? 'Original request retained for admission; no start is confirmed.'
+              : status === 'admitting' ? 'Pre-start admission reserved. Retry fences this reservation before native startup.' : '',
           correlation ? `Correlation: ${correlation}` : "",
+          attempt.queued_start_receipt
+            ? `Confirmed native turn: ${attempt.queued_start_receipt.provider_native_turn_id}` : '',
+          attempt.queued_start_receipt
+            ? `Native runtime: ${attempt.queued_start_receipt.provider_id}/${attempt.queued_start_receipt.runtime_id}` : '',
+          attempt.queued_start_receipt
+            ? `Requested execution: ${attempt.queued_start_receipt.requested_execution_id}; admitted execution: ${attempt.queued_start_receipt.execution_id}` : '',
           attempt.replacement_thread_id
             ? `Original thread: ${attempt.thread_id}; current thread: ${attempt.replacement_thread_id}`
             : "",
@@ -85,7 +105,8 @@ export function createExecutionPreflightUi({
         ].filter(Boolean);
 
         const card = addMessage(
-          status === "started" ? "Preflight resolved" : "Execution blocked",
+          status === "started" ? "Preflight resolved" : ['queued','admitting'].includes(status)
+            ? "Admission retained" : status === 'reconciliation_required' ? "Reconciliation required" : "Execution blocked",
           lines.join("\n"),
           "tool",
           new Date((attempt?.updated_at || Date.now() / 1000) * 1000),
