@@ -481,3 +481,25 @@ scope continue through the normal dispatcher and admission gates. Queueing
 establishes neither native start nor recipient ACK, review, successful CI or
 merge. Existing queue/preflight inspectors remain the canonical evidence for
 retained requests and actual starts; retry counters alone prove neither.
+
+
+## Historical replacement evidence recovery
+
+An authorized administrator retry of a retained blocked/failed request may
+recover missing predecessor links from the canonical controller event journal.
+The bounded query reads retained active, rotated and archived segments and
+refuses incomplete or over-budget scans. Routing requires a single complete
+recorded chain, matching canonical Project records for archived predecessors
+and successors, and a tenant-scoped bootstrap binding for the current target.
+Ambiguity, cycles, missing metadata and another tenant fail before a retry claim
+or queue mutation. The verified chain is persisted in one transactional graph
+update; existing bootstrap edges and provenance are never overwritten.
+
+Legacy events cannot establish an original bootstrap actor or profile revision.
+Recovered provenance records those fields as unknown and retains event hashes,
+segments and the actual administrator who restored the route. The retained
+request still supplies its immutable original actor, profile revision and exact
+repository scope for normal admission. A routing link and a current bootstrap
+binding are neither authority nor native-start/recipient delivery evidence.
+Existing preflight original/replacement links report the admitted retry target;
+historical unknown-start outcomes remain outside this retry path.

@@ -74,6 +74,27 @@ class ThreadIndexRepositoryTests(unittest.TestCase):
         self.assertNotEqual(repository.replacement_thread_id("a"), "a")
         self.assertNotEqual(repository.replacement_thread_id("b"), "b")
 
+    def test_historical_chain_import_is_atomic_when_later_edge_conflicts(self):
+        repository=ThreadIndexRepository(self.store,self.legacy_path)
+        repository.remember_replacement('middle','actual',project_id='project',provenance={})
+        before=self.store.get(repository.REPLACEMENTS_NAMESPACE)
+        with self.assertRaises(ValueError):
+            repository.remember_recorded_replacements([
+                {'old_thread_id':'old','new_thread_id':'middle','project_id':'project','provenance':{}},
+                {'old_thread_id':'middle','new_thread_id':'conflicting','project_id':'project','provenance':{}},
+            ])
+        self.assertEqual(self.store.get(repository.REPLACEMENTS_NAMESPACE),before)
+        self.assertIsNone(repository.replacement_thread_id('old'))
+
+    def test_historical_same_edge_with_conflicting_tenant_preserves_bootstrap_provenance(self):
+        repository=ThreadIndexRepository(self.store,self.legacy_path)
+        repository.remember_replacement('old','new',project_id='project',provenance={'organization_id':'original'})
+        before=self.store.get(repository.REPLACEMENTS_NAMESPACE)
+        with self.assertRaises(ValueError):repository.remember_recorded_replacements([
+            {'old_thread_id':'old','new_thread_id':'new','project_id':'project',
+             'provenance':{'organization_id':'other'}}])
+        self.assertEqual(self.store.get(repository.REPLACEMENTS_NAMESPACE),before)
+
     def test_imports_legacy_json_then_keeps_sqlite_authoritative(self) -> None:
         self.legacy_path.write_text(
             json.dumps(

@@ -690,6 +690,11 @@ class TurnService:
                 'code':'queued_start_reconciliation_required',
                 'message':'Resolve the original native start outcome before retrying this retained request.',
                 'retryable':False})
+        restore = getattr(self.recovery, 'restore_recorded_replacement', None)
+        if callable(restore) and attempt.status in {'blocked', 'failed', 'retrying'}:
+            self.preflight.authorize_retry(attempt.id, actor=actor)
+            await asyncio.to_thread(restore, attempt.replacement_thread_id or attempt.thread_id,
+                                   project_id=attempt.project_id, actor=actor)
         attempt, claim_id, claimed = self.preflight.claim_retry(
             attempt_id,
             actor=actor,
