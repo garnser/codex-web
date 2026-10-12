@@ -149,8 +149,10 @@ granting arbitrary branch replacement.
 For GitLab, `existing_change_request_number` permits a legacy source branch only
 when the canonical workspace and active lease agree on a repository-qualified
 issue reference. The provider independently verifies an opened same-project MR,
-its exact source branch and expected head, its GitLab closing-issue relation, and
-an unprotected non-default remote branch at that same revision. Local workspace
+its exact source branch and expected head, its presence in the assigned issue’s
+complete GitLab related-MR enumeration, and
+an unprotected non-default remote branch at that same revision. A related-only
+MR is sufficient; publication does not require or imply issue closure. Local workspace
 attestation is repeated after provider reads, and Git still enforces the exact
 remote SHA with compare-and-swap. A thread-bootstrap workspace without an issue
 scope cannot use this recovery; acquire a separate canonical issue workspace.

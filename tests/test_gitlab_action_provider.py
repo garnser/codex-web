@@ -174,6 +174,11 @@ class _GitLabClient:
         self.credentials.append(token)
         return self.closing_issues
 
+    async def issue_related_merge_requests(self, api_base, project, iid, *, token):
+        self.credentials.append(token)
+        self.related_issue_reads.append((project, iid))
+        return self.related_merge_requests
+
     async def branch(self, api_base, project, branch, *, token):
         self.credentials.append(token)
         return {"name": branch, "protected": getattr(self, "branch_protected", False), "default": False, "commit": {"id": self.branches.get(branch)}}
@@ -756,7 +761,9 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
         self.recovery_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=path, text=True).strip()
         self.legacy_branch = "james/saas-app-289-signed-saml-validation"
         self.client.issues[289] = {"iid": 289, "project_id": 5}
-        self.client.closing_issues = [{"iid": 289, "project_id": 5}]
+        self.client.closing_issues = []
+        self.client.related_issue_reads = []
+        self.client.related_merge_requests = [{"iid": 258, "project_id": 5}]
         self.client.merge_request_rows = [{"iid": 258, "state": "opened", "source_project_id": 5, "target_project_id": 5, "target_branch": "main", "source_branch": self.legacy_branch, "sha": old_head}]
         self.client.branches[self.legacy_branch] = old_head
         async def existing_mr(*args, **kwargs):
@@ -768,9 +775,11 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
             "existing_change_request_number": 258,
         })
 
-    async def test_existing_mr_legacy_branch_recovery_requires_remote_issue_proof(self):
+    async def test_existing_mr_legacy_branch_recovery_accepts_related_only_issue_proof(self):
         request = self._existing_mr_request()
         result = await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.assertEqual(self.client.closing_issues, [])
+        self.assertEqual(self.client.related_issue_reads, [("group/platform/codex-web", 289)])
         self.assertEqual(self.published[2], self.legacy_branch)
         self.assertEqual(self.published[3], self.recovery_head)
         self.assertEqual(self.published[5], self.head)
@@ -786,13 +795,17 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
                     await self.execution.execute(self.binding.id, request, actor=self.actor)
                 self.assertIsNone(self.published)
                 mr[key] = old
-        self.client.closing_issues = [{"iid": 289, "project_id": 6}]
-        with self.assertRaisesRegex(Exception, "could not be attested"):
-            await self.execution.execute(self.binding.id, request, actor=self.actor)
-        self.client.closing_issues = [{"iid": 290, "project_id": 5}]
-        with self.assertRaisesRegex(Exception, "could not be attested"):
-            await self.execution.execute(self.binding.id, request, actor=self.actor)
-        self.client.closing_issues = [{"iid": 289, "project_id": 5}]
+        for rows in [[], [{"iid": 258, "project_id": 6}],
+                     [{"iid": 259, "project_id": 5}],
+                     [{"iid": "258", "project_id": 5}],
+                     [{"iid": 258, "project_id": True}],
+                     [{"iid": True, "project_id": 5}]]:
+            with self.subTest(related=rows):
+                self.client.related_merge_requests = rows
+                with self.assertRaisesRegex(ActionRequirementError, "could not be attested"):
+                    await self.execution.execute(self.binding.id, request, actor=self.actor)
+                self.assertIsNone(self.published)
+        self.client.related_merge_requests = [{"iid": 258, "project_id": 5}]
         self.client.branch_protected = True
         with self.assertRaisesRegex(ActionRequirementError, "could not be attested"):
             await self.execution.execute(self.binding.id, request, actor=self.actor)
