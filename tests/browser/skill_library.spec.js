@@ -311,3 +311,46 @@ test('editing a reviewed Skill bundle invalidates the preview and retains an uns
   expect(await page.evaluate(async () => (await import('/static/dirty_editor.js')).confirmDiscard())).toBe(false);
   await expect(input).toHaveValue('{ changed');
 });
+
+
+test('source refresh preserves selections made while the catalog request is pending', async ({ page }) => {
+  await expect(page.locator('[data-sync-source] option[value="engineering"]')).toHaveCount(1);
+  let releaseCatalog;
+  let catalogRequested;
+  const requested = new Promise(resolve => { catalogRequested = resolve; });
+  const released = new Promise(resolve => { releaseCatalog = resolve; });
+  await page.unroute('**/api/skill-sources');
+  await page.route('**/api/skill-sources', async route => {
+    if (route.request().method() === 'POST') {
+      await route.fulfill({ json: { item: { source_id: 'engineering-copy' } } });
+      return;
+    }
+    catalogRequested();
+    await released;
+    await route.fulfill({ json: { items: [
+      { source_id: 'engineering', name: 'Reloaded Engineering catalog', trust: 'approved', source_type: 'catalog_bundle' },
+    ] } });
+  });
+  const discoveries = [];
+  await page.route('**/api/skill-sources/engineering/discover', route => {
+    discoveries.push(route.request().url());
+    return route.fulfill({ json: { count: 1, categories: ['Engineering'] } });
+  });
+  await page.getByText('Skill sources').click();
+  await page.locator('[data-source-id]').fill('engineering-copy');
+  await page.locator('[data-source-name]').fill('Engineering copy');
+  await page.locator('[data-source-create]').click();
+  await requested;
+  await page.locator('[data-sync-source]').selectOption('engineering');
+  await page.locator('[data-skill-source]').selectOption('engineering');
+  releaseCatalog();
+  await expect(page.locator('[data-source-health]')).toContainText('Reloaded Engineering catalog');
+  await expect(page.locator('[data-sync-source]')).toHaveValue('engineering');
+  await expect(page.locator('[data-skill-source]')).toHaveValue('engineering');
+  await page.locator('[data-discovery-revision]').fill('upstream-regression');
+  await page.locator('[data-discovery-evidence]').fill('worker-evidence-regression');
+  await page.locator('[data-discovery-catalog]').fill('[]');
+  await page.locator('[data-source-discover]').click();
+  await expect(page.locator('[data-ui-discovery-result]')).toContainText('1 ui-skills discovered');
+  expect(discoveries).toHaveLength(1);
+});
