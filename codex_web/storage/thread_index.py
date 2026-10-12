@@ -37,6 +37,92 @@ class ThreadIndexRepository:
             private=False,
         )
 
+    REPLACEMENTS_NAMESPACE = "thread_recovery_replacements"
+
+    def remember_replacement(
+        self, old_thread_id: str, new_thread_id: str, *,
+        project_id: str, provenance: dict[str, Any],
+    ) -> None:
+        """Record an actual bootstrap replacement, never a name-based guess.
+
+        One transactional graph update fences conflicting replacements and
+        concurrent cycle creation. Edges retain original bootstrap provenance;
+        resolution follows the chain rather than rewriting historical edges.
+        """
+        if not old_thread_id or not new_thread_id or old_thread_id == new_thread_id:
+            raise ValueError("invalid thread replacement")
+        if not project_id:
+            raise ValueError("thread replacement requires project scope")
+        edge = {
+            "old_thread_id": old_thread_id, "new_thread_id": new_thread_id,
+            "project_id": project_id, "provenance": provenance,
+        }
+
+        def same_scope(left, right):
+            if left["project_id"] != right["project_id"]:
+                return False
+            for key in ("organization_id", "workspace_id"):
+                a = left["provenance"].get(key)
+                b = right["provenance"].get(key)
+                if a is not None and b is not None and a != b:
+                    return False
+            return True
+
+        def update(payload):
+            if not isinstance(payload, dict) or payload.get("version") != 1:
+                raise ValueError("unsupported thread replacement state")
+            edges = dict(payload.get("edges", {}))
+            existing = edges.get(old_thread_id)
+            if existing is not None:
+                if existing != edge:
+                    raise ValueError("conflicting thread replacement")
+                return payload
+            current = new_thread_id
+            seen = {old_thread_id}
+            while True:
+                if current in seen:
+                    raise ValueError("cyclic thread replacement")
+                seen.add(current)
+                successor = edges.get(current)
+                if successor is None:
+                    break
+                if not same_scope(successor, edge):
+                    raise ValueError("thread replacement crosses project scope")
+                current = successor["new_thread_id"]
+            # Also check incoming edges: joining two Projects must fail even
+            # when the new destination has no successor yet.
+            for prior in edges.values():
+                if prior["new_thread_id"] == old_thread_id and not same_scope(prior, edge):
+                    raise ValueError("thread replacement crosses project scope")
+            edges[old_thread_id] = edge
+            return {"version": 1, "edges": edges}
+
+        self.store.update(self.REPLACEMENTS_NAMESPACE, update,
+                          default={"version": 1, "edges": {}})
+
+    def replacement_thread_id(self, thread_id: str) -> str | None:
+        payload = self.store.get(self.REPLACEMENTS_NAMESPACE)
+        if payload is None:
+            return None
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            raise ValueError("unsupported thread replacement state")
+        edges = payload.get("edges", {})
+        current = thread_id
+        seen: set[str] = set()
+        project_id = None
+        while current in edges:
+            if current in seen:
+                raise ValueError("cyclic thread replacement")
+            seen.add(current)
+            edge = edges[current]
+            if edge["old_thread_id"] != current:
+                raise ValueError("invalid thread replacement identity")
+            if project_id is not None and edge["project_id"] != project_id:
+                raise ValueError("thread replacement crosses project scope")
+            project_id = edge["project_id"]
+            current = edge["new_thread_id"]
+        return current if current != thread_id else None
+
     @classmethod
     def _scope(cls, project_id: str) -> str:
         value = str(project_id)

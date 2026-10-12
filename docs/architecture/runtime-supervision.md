@@ -417,3 +417,30 @@ proof skips the read; failed or negative reads retain the authentication
 blocker. This is request-driven, consumes no model tokens, and creates no idle
 polling loop. Canonical readiness state reads and writes run off the event loop
 so large work-item collections cannot delay the account RPC response reader.
+
+
+## Durable thread replacement routing
+
+Actual assignment-bound thread bootstrap replacements are recorded in the
+canonical thread-index recovery state before bot bindings, queued work or
+archival are retargeted. The versioned replacement graph retains each original
+edge and the bootstrap Project, actor/tenant, profile revision and repository
+scope provenance. Missing actor metadata remains explicit rather than inferred.
+A transactional update rejects conflicting destinations, cycles and known
+cross-tenant or cross-Project chains. Restarted recovery services resolve this
+graph before consulting the process-local compatibility map.
+
+A replacement link supplies routing, not execution authority or delivery proof.
+Retained-request recovery still reconstructs its original actor, requested
+profile revision and repository scope and passes the normal admission gates.
+Existing preflight inspector replacement links expose the resolved destination;
+no new operator action or permission grant is introduced. Historical routes
+without durable edges require separate authoritative replacement evidence;
+thread names and latest role bindings cannot establish them. An archived-session
+refusal remains retained until its original preflight outcome is explicitly
+reconciled; persistence does not authorize replay of an uncertain start.
+
+The additive recovery document is ignored by older readers and does not mutate
+existing queue or preflight schemas. Downgrading loses durable routing capability
+and cannot be treated as a repair for retained work. Deployment and recovery
+continue through the canonical upgrade and backup boundaries.

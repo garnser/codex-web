@@ -88,6 +88,7 @@ class ThreadRecoveryService:
         agent_profile_id: str | None = None,
         agent_profile_revision: int | None = None,
         actor: AuthenticationActor | None = None,
+        replacement_evidence: dict[str, Any] | None = None,
     ) -> str:
         if self.thread_creator is None:
             raise HTTPException(
@@ -118,6 +119,19 @@ class ThreadRecoveryService:
                     "agent_profile_revision": profile.revision,
                     "actor": actor,
                 }
+        if replacement_evidence is not None:
+            admitted_actor = profile_kwargs.get("actor") or actor
+            replacement_evidence.update({
+                "actor_identity_id": admitted_actor.identity_id if admitted_actor else None,
+                "organization_id": admitted_actor.organization_id if admitted_actor else None,
+                "workspace_id": admitted_actor.workspace_id if admitted_actor else None,
+                "agent_profile_id": profile_kwargs.get("agent_profile_id"),
+                "agent_profile_revision": profile_kwargs.get("agent_profile_revision"),
+                "execution_profile_id": settings.execution_profile_id,
+                "repository_resource_id": settings.repository_resource_id,
+                "writable_repository_resource_ids": list(settings.writable_repository_resource_ids),
+                "read_only_repository_resource_ids": list(settings.read_only_repository_resource_ids),
+            })
         response = await self.thread_creator(
             project_id=project.id,
             sandbox=sandbox,
@@ -273,8 +287,14 @@ class ThreadRecoveryService:
         )
         return True
 
-    def _remember_replacement(self, old_thread_id: str, new_thread_id: str) -> None:
-        h = self.host
+    def _remember_replacement(
+        self, old_thread_id: str, new_thread_id: str, *,
+        project_id: str, provenance: dict[str, Any],
+    ) -> None:
+        persist = getattr(self.thread_index, "remember_replacement", None)
+        if callable(persist):
+            persist(old_thread_id, new_thread_id, project_id=project_id,
+                    provenance=provenance)
         for prior_thread_id, replacement_thread_id in list(self.thread_replacements.items()):
             if replacement_thread_id == old_thread_id:
                 self.thread_replacements[prior_thread_id] = new_thread_id
@@ -295,7 +315,7 @@ class ThreadRecoveryService:
             lock = asyncio.Lock()
             self._replacement_locks[key] = lock
         async with lock:
-            replacement_id = self.thread_replacements.get(binding.thread_id)
+            replacement_id = self.replacement_thread_id(binding.thread_id)
             if replacement_id:
                 matches = [
                     item
@@ -323,13 +343,17 @@ class ThreadRecoveryService:
         approval_policy = binding.approval_policy or settings.approval_policy or project.approval_policy
         thread_name = binding.thread_name or binding.route_prefix or h._binding_prefix(binding)
 
+        replacement_evidence: dict[str, Any] = {}
         new_thread_id = await self._create_replacement_thread(
             project=project,
             settings=settings,
             sandbox=sandbox,
             approval_policy=approval_policy,
             binding=binding,
+            replacement_evidence=replacement_evidence,
         )
+        self._remember_replacement(old_thread_id, new_thread_id,
+                                   project_id=project.id, provenance=replacement_evidence)
         self.settings.remember(
             new_thread_id,
             sandbox=sandbox,
@@ -367,7 +391,6 @@ class ThreadRecoveryService:
             binding.model_copy(update={"sandbox": sandbox, "approval_policy": approval_policy}),
             new_thread_id,
         )
-        self._remember_replacement(old_thread_id, new_thread_id)
         h._retarget_bot_thread_state(old_thread_id, new_thread_id)
         archived_old_thread = await h._archive_replaced_bot_thread(old_thread_id, new_thread_id)
         self.event_sink(
@@ -404,6 +427,7 @@ class ThreadRecoveryService:
         settings = self.settings.get(thread_id)
         sandbox = settings.sandbox or project.sandbox
         approval_policy = settings.approval_policy or project.approval_policy
+        replacement_evidence: dict[str, Any] = {}
         new_thread_id = await self._create_replacement_thread(
             project=project,
             settings=settings,
@@ -412,7 +436,10 @@ class ThreadRecoveryService:
             agent_profile_id=agent_profile_id,
             agent_profile_revision=agent_profile_revision,
             actor=actor,
+            replacement_evidence=replacement_evidence,
         )
+        self._remember_replacement(thread_id, new_thread_id,
+                                   project_id=project.id, provenance=replacement_evidence)
         self.settings.remember(
             new_thread_id,
             sandbox=sandbox,
@@ -445,7 +472,6 @@ class ThreadRecoveryService:
                     updatedAt=time.time(),
                 )
             )
-        self._remember_replacement(thread_id, new_thread_id)
         h._retarget_bot_thread_state(thread_id, new_thread_id)
         archived_old_thread = await h._archive_replaced_bot_thread(thread_id, new_thread_id)
         self.event_sink(
@@ -500,6 +526,11 @@ class ThreadRecoveryService:
         self.host._clear_thread_active(thread_id)
 
     def replacement_thread_id(self, thread_id: str) -> str | None:
+        lookup = getattr(self.thread_index, "replacement_thread_id", None)
+        if callable(lookup):
+            durable = lookup(thread_id)
+            if durable is not None:
+                return durable
         replacement = self.thread_replacements.get(thread_id)
         seen = {thread_id}
         while replacement and replacement not in seen:
@@ -508,7 +539,9 @@ class ThreadRecoveryService:
             if not next_replacement:
                 return replacement
             replacement = next_replacement
-        return replacement
+        if replacement:
+            raise ValueError("cyclic thread replacement")
+        return None
 
     def raise_if_thread_replaced(self, thread_id: str) -> None:
         replacement = self.replacement_thread_id(thread_id)

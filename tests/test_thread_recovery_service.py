@@ -77,6 +77,18 @@ class ThreadRecoveryServiceTests(unittest.TestCase):
         self.assertEqual(service.replacement_thread_id("thread-b"), "thread-c")
         self.assertIsNone(service.replacement_thread_id("thread-c"))
 
+    def test_durable_replacement_is_used_after_process_memory_is_lost(self):
+        lookup = Mock(return_value="actual-successor")
+        index = SimpleNamespace(replacement_thread_id=lookup)
+        service = recovery_service(SimpleNamespace(THREAD_REPLACEMENTS={}), thread_index=index)
+        self.assertEqual(service.replacement_thread_id("original"), "actual-successor")
+        lookup.assert_called_once_with("original")
+
+    def test_legacy_replacement_cycle_fails_closed(self):
+        service = recovery_service(SimpleNamespace(THREAD_REPLACEMENTS={"a": "b", "b": "a"}))
+        with self.assertRaises(ValueError):
+            service.replacement_thread_id("a")
+
     def test_replaced_thread_raises_structured_conflict(self) -> None:
         host = SimpleNamespace(
             THREAD_REPLACEMENTS={"old": "new"},
