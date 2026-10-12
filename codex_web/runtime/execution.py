@@ -3183,7 +3183,8 @@ class TurnExecutionService:
                     thread_id=thread_id, turn_id=turn_id,
                     execution_id=canonical_execution_id, started_at=time.time(),
                     execution_profile_id=getattr(assignment, "execution_profile_id", None),
-                    repository_resource_id=canonical_repository_resource_id,
+                    repository_resource_id=getattr(
+                        getattr(assignment, "repository_target", None), "mutable_repository_id", None),
                     writable_repository_resource_ids=tuple(getattr(
                         getattr(assignment, "repository_scope", None), "writable_repository_ids", ())),
                     read_only_repository_resource_ids=tuple(getattr(
