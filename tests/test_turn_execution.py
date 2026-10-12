@@ -1077,6 +1077,36 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             'read_only_repository_resource_ids'], ())
         self.assertEqual(service._select_runtime_binding.await_args.kwargs['actor'], actor)
 
+    async def test_exact_pinned_profile_revision_transition_in_both_directions(self):
+        for current_revision, requested_revision in [(6, 7), (7, 6)]:
+            with self.subTest(current=current_revision, requested=requested_revision):
+                host, sessions, service, profile, runtime, actor, kwargs = await self._explicit_recovery(scope_switch=True)
+                kwargs.update(repository_resource_id='repo-old', writable_repository_resource_ids=('repo-old',),
+                              agent_profile_revision=requested_revision)
+                previous = profile.model_copy(update={'profile_revision':current_revision,
+                    'profile_record_id':f'profile-rev-{current_revision}'})
+                requested = profile.model_copy(update={'profile_revision':requested_revision,
+                    'profile_record_id':f'profile-rev-{requested_revision}'})
+                old = sessions.session.validate_current()
+                old.agent_profile = previous
+                recovered = sessions.start.return_value
+                new = recovered.validate_current()
+                new.agent_profile = requested
+                new.repository_target = SimpleNamespace(mutable_repository_id='repo-old')
+                new.repository_scope = SimpleNamespace(writable_repository_ids=('repo-old',),
+                                                       read_only_repository_ids=())
+                service._select_runtime_binding = AsyncMock(return_value=(runtime, requested))
+                await service.start_thread_turn_now('t1', **kwargs)
+                service._supersede_thread_bootstrap.assert_awaited_once()
+                values = service._supersede_thread_bootstrap.await_args.kwargs
+                self.assertEqual(values['agent_profile'], requested)
+                self.assertEqual(values['explicit_repository_id'], 'repo-old')
+                self.assertEqual(values['writable_repository_ids'], ('repo-old',))
+                self.assertEqual(service._select_runtime_binding.await_args.kwargs['actor'], actor)
+                self.assertEqual(service._select_runtime_binding.await_args.kwargs['agent_profile_revision'], requested_revision)
+                self.assertEqual([method for method, _ in recovered.requests].count('turn/start'), 1)
+                self.assertEqual(host.active['t1'].agent_profile.profile_revision, requested_revision)
+
     async def test_handoff_delivery_requires_successful_recipient_native_turn_start(self):
         for fail in (False, True):
             with self.subTest(fail=fail):
@@ -2139,9 +2169,9 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                     scope_switch=scope_switch, bound_profile=profile, requested_revision=5)
                 with self.assertRaises(HTTPException) as caught:
                     await service.start_thread_turn_now("t1", **kwargs)
-                self.assertEqual(caught.exception.detail["code"], "thread_agent_profile_immutable")
+                self.assertEqual(caught.exception.detail["code"], "execution_preflight_blocked")
                 service._supersede_thread_bootstrap.assert_not_awaited()
-                service._select_runtime_binding.assert_not_awaited()
+                self.assertEqual(service._select_runtime_binding.await_args.kwargs["agent_profile_revision"], 5)
                 sessions.start.assert_not_awaited()
 
     async def test_null_profile_recovery_routing_denial_prevents_supersession(self):

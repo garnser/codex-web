@@ -130,6 +130,46 @@ class ExecutionPreflightService:
             })
         return self.store.update(attempt_id, update)
 
+    @staticmethod
+    def recorded_profile_refusal(attempt: ExecutionPreflightAttempt) -> bool:
+        if (attempt.queued_turn_snapshot is None or attempt.queued_start_receipt is not None
+                or attempt.started_at is not None or not attempt.agent_profile_id
+                or attempt.agent_profile_revision is None):
+            return False
+        snapshot = attempt.queued_turn_snapshot
+        if (snapshot.get('agent_profile_id') != attempt.agent_profile_id
+                or snapshot.get('agent_profile_revision') != attempt.agent_profile_revision):
+            return False
+        for blocker in attempt.blockers:
+            detail = blocker.model_dump(mode='json')
+            effective = detail.get('effectiveAgentProfile')
+            if not isinstance(effective, dict):
+                continue
+            if (detail.get('code') == 'thread_agent_profile_immutable'
+                    and detail.get('requestedAgentProfileId') == attempt.agent_profile_id
+                    and detail.get('requestedAgentProfileRevision') == attempt.agent_profile_revision
+                    and effective.get('profile_id') == attempt.agent_profile_id
+                    and type(effective.get('profile_revision')) is int
+                    and effective['profile_revision'] >= 1
+                    and effective['profile_revision'] != attempt.agent_profile_revision):
+                return True
+        return False
+
+    def reconcile_prestart_refusal(self, attempt_id: str, *, actor: AuthenticationActor) -> ExecutionPreflightAttempt:
+        initial = self.get(attempt_id, actor=actor)
+        self._authorize(initial, actor, require_admin=True)
+        def update(current):
+            # The recorded controller refusal occurs before native turn/start.
+            # Absence, timeout, active markers and expired claims prove nothing.
+            if current.status == 'started':
+                return current
+            if current.status not in {'reconciliation_required', 'blocked'} or not self.recorded_profile_refusal(current):
+                raise HTTPException(status_code=409, detail={
+                    'code':'prestart_refusal_reconciliation_unavailable',
+                    'message':'No matching authoritative pre-start profile refusal is retained.'})
+            return current.model_copy(update={'status':'blocked', 'updated_at':float(self.clock())})
+        return self.store.update(attempt_id, update)
+
     def retained_queued(self, queued: QueuedTurn) -> ExecutionPreflightAttempt | None:
         attempt = self.store.get(f'preflight-queued-{queued.id}')
         if attempt is None or attempt.queued_turn_snapshot is None:
@@ -501,6 +541,10 @@ class ExecutionPreflightService:
         payload = attempt.model_dump(mode="json")
         payload["can_retry"] = self.can_retry(actor) and attempt.status not in {
             "queued", "reconciliation_required", "started"}
+        payload['can_reconcile_prestart'] = (self.can_retry(actor)
+            and attempt.status == 'reconciliation_required' and self.recorded_profile_refusal(attempt))
+        payload['reconcile_prestart_href'] = (
+            f'/api/threads/{attempt.replacement_thread_id or attempt.thread_id}/preflight-attempts/{attempt.id}/reconcile-prestart')
         payload["retry_href"] = (
             f"/api/threads/{attempt.replacement_thread_id or attempt.thread_id}/preflight-attempts/"
             f"{attempt.id}/retry"

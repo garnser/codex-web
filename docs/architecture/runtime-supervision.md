@@ -334,6 +334,21 @@ Authority is a set; ordering alone does not trigger a replacement. This prevents
 unrelated inherited read leases from blocking another repository's owner without
 editing a live lease or changing the actor, profile revision or grant catalog.
 
+A queued request pinned to a different revision of the same Agent Profile uses
+canonical invocation/access routing to supersede its idle bootstrap with that
+exact revision and original actor. Revision transitions may go in either direction;
+a resolver returning a different revision is rejected before supersession. A
+different collaborator identity remains an immutable-profile refusal.
+
+The controller's `thread_agent_profile_immutable` refusal occurs before native
+turn startup. An authorized preflight reconciliation action may reclassify a
+historical uncertain attempt as blocked only when that stored structured refusal
+matches the immutable request's profile ID/revision and records a different bound
+revision of the same profile. It cannot clear a real start receipt, infer absence
+from markers/timeouts/expiry, or automatically replay the request. Administrator
+and MFA policy apply, and original-scope retry remains a separate explicit action.
+The existing inspector exposes reconciliation only for this verified refusal.
+
 Queued admission writes the complete original `QueuedTurn` into the existing
 preflight recovery domain before removing it from the queue. The snapshot keeps
 its ID, creation/order provenance, actor, exact profile revision, work-item and

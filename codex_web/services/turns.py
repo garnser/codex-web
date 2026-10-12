@@ -660,6 +660,16 @@ class TurnService:
             ],
         }
 
+    def reconcile_preflight(self, thread_id: str, attempt_id: str, *, actor: AuthenticationActor) -> dict[str, Any]:
+        if self.preflight is None:
+            raise HTTPException(status_code=503, detail='execution preflight reconciliation unavailable')
+        attempt = self.preflight.get(attempt_id, actor=actor)
+        if thread_id not in {attempt.thread_id, attempt.replacement_thread_id}:
+            raise HTTPException(status_code=404, detail='preflight attempt not found')
+        updated = self.preflight.reconcile_prestart_refusal(attempt.id, actor=actor)
+        return {'ok':True, 'threadId':updated.replacement_thread_id or updated.thread_id,
+            'attempt':self.preflight.public(updated, actor=actor)}
+
     async def retry_preflight(
         self,
         thread_id: str,

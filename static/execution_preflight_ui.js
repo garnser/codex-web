@@ -113,8 +113,8 @@ export function createExecutionPreflightUi({
         );
         if (
           status === "started"
-          || !attempt?.can_retry
-          || !attempt?.retry_href
+          || (!attempt?.can_retry && !attempt?.can_reconcile_prestart)
+          || !(attempt?.can_reconcile_prestart ? attempt?.reconcile_prestart_href : attempt?.retry_href)
         ) {
           return;
         }
@@ -123,19 +123,22 @@ export function createExecutionPreflightUi({
         if (!body) return;
         const actions = document.createElement("div");
         actions.className = "message-actions";
+        const reconcile = Boolean(attempt?.can_reconcile_prestart);
+        const actionHref = reconcile ? attempt.reconcile_prestart_href : attempt.retry_href;
+        const actionLabel = reconcile ? 'Reconcile unstarted refusal' : 'Retry';
         const retry = document.createElement("button");
         retry.type = "button";
         retry.textContent = status === "retrying"
           ? "Retry in progress"
-          : "Retry";
+          : actionLabel;
         retry.disabled = status === "retrying";
         retry.addEventListener("click", async () => {
           const current = captureView();
           retry.disabled = true;
-          retry.textContent = "Retrying…";
+          retry.textContent = reconcile ? 'Reconciling…' : 'Retrying…';
           let targetThreadId = threadId;
           try {
-            const response = await api(attempt.retry_href, { method: "POST" });
+            const response = await api(actionHref, { method: "POST" });
             targetThreadId = response?.threadId || threadId;
           } catch (error) {
             targetThreadId = error?.detail?.threadId || targetThreadId;

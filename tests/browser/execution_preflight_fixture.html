@@ -73,6 +73,10 @@
       attempts[0].queued_turn_snapshot = {id:'original-queue-id', work_item_ref:'group/repo#78'};
       attempts[0].agent_profile_id = 'original-profile';
       attempts[0].agent_profile_revision = 6;
+      if (new URLSearchParams(location.search).has('knownRefusal')) {
+        attempts[0].can_reconcile_prestart = true;
+        attempts[0].reconcile_prestart_href = '/api/threads/thread-1/preflight-attempts/preflight-thread-turn-1/reconcile-prestart';
+      }
       if (disposition === 'started') attempts[0].queued_start_receipt = {
         provider_native_turn_id:'actual-native-turn', provider_id:'openai', runtime_id:'codex',
         requested_execution_id:'original-request-execution', execution_id:'actual-bootstrap-execution'};
@@ -81,6 +85,7 @@
     const api = async (path, options = {}) => {
       window.__apiCalls.push({ path, method: options.method || "GET" });
       if (path.includes("/preflight-attempts?")) return { items: attempts };
+      if (path.endsWith('/reconcile-prestart')) return {ok:true, threadId:'thread-1'};
       if (path.endsWith("/retry")) {
         if (new URLSearchParams(location.search).has("holdRetry")) {
           return new Promise((resolve, reject) => { window.__finishRetry = { resolve, reject }; });
