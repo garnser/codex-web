@@ -324,10 +324,19 @@ class ThreadRecoveryService:
                     and self.same_logical_binding(item, binding)
                 ]
                 if matches:
-                    return self.preferred_binding_for_replacement(
-                        binding,
-                        matches,
-                    )
+                    durable_lookup = getattr(self.thread_index, "replacement_thread_id", None)
+                    if callable(durable_lookup) and durable_lookup(binding.thread_id):
+                        self.host._retarget_bot_thread_state(binding.thread_id, replacement_id)
+                        await self.host._archive_replaced_bot_thread(binding.thread_id, replacement_id)
+                    return self.preferred_binding_for_replacement(binding, matches)
+                # A crash can leave the verified bootstrap/link intact but
+                # occur before binding/state transfer. Finish that transfer;
+                # never create a conflicting second successor.
+                old_thread_id = binding.thread_id
+                replacement = self.host._retarget_logical_bot_bindings(binding, replacement_id)
+                self.host._retarget_bot_thread_state(old_thread_id, replacement_id)
+                await self.host._archive_replaced_bot_thread(old_thread_id, replacement_id)
+                return replacement
             return await self._replace_stale_bot_thread(binding, error)
 
     async def _replace_stale_bot_thread(
@@ -352,8 +361,6 @@ class ThreadRecoveryService:
             binding=binding,
             replacement_evidence=replacement_evidence,
         )
-        self._remember_replacement(old_thread_id, new_thread_id,
-                                   project_id=project.id, provenance=replacement_evidence)
         self.settings.remember(
             new_thread_id,
             sandbox=sandbox,
@@ -384,6 +391,9 @@ class ThreadRecoveryService:
                     updatedAt=time.time(),
                 )
             )
+
+        self._remember_replacement(old_thread_id, new_thread_id,
+                                   project_id=project.id, provenance=replacement_evidence)
 
         # Use host entrypoints deliberately: they are the compatibility seams
         # used by existing tests/consumers while each subdomain is extracted.
@@ -424,6 +434,11 @@ class ThreadRecoveryService:
         actor: AuthenticationActor | None = None,
     ) -> str:
         h = self.host
+        replacement_id = self.replacement_thread_id(thread_id)
+        if replacement_id:
+            h._retarget_bot_thread_state(thread_id, replacement_id)
+            await h._archive_replaced_bot_thread(thread_id, replacement_id)
+            return replacement_id
         settings = self.settings.get(thread_id)
         sandbox = settings.sandbox or project.sandbox
         approval_policy = settings.approval_policy or project.approval_policy
@@ -438,8 +453,6 @@ class ThreadRecoveryService:
             actor=actor,
             replacement_evidence=replacement_evidence,
         )
-        self._remember_replacement(thread_id, new_thread_id,
-                                   project_id=project.id, provenance=replacement_evidence)
         self.settings.remember(
             new_thread_id,
             sandbox=sandbox,
@@ -472,6 +485,8 @@ class ThreadRecoveryService:
                     updatedAt=time.time(),
                 )
             )
+        self._remember_replacement(thread_id, new_thread_id,
+                                   project_id=project.id, provenance=replacement_evidence)
         h._retarget_bot_thread_state(thread_id, new_thread_id)
         archived_old_thread = await h._archive_replaced_bot_thread(thread_id, new_thread_id)
         self.event_sink(

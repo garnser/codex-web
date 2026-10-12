@@ -422,8 +422,10 @@ so large work-item collections cannot delay the account RPC response reader.
 ## Durable thread replacement routing
 
 Actual assignment-bound thread bootstrap replacements are recorded in the
-canonical thread-index recovery state before bot bindings, queued work or
-archival are retargeted. The versioned replacement graph retains each original
+canonical thread-index recovery state after target settings are saved and
+before bot bindings, queued work or archival are retargeted. A restart can
+finish an interrupted transfer using the recorded successor without creating
+a second bootstrap. The versioned replacement graph retains each original
 edge and the bootstrap Project, actor/tenant, profile revision and repository
 scope provenance. Missing actor metadata remains explicit rather than inferred.
 A transactional update rejects conflicting destinations, cycles and known
