@@ -355,6 +355,8 @@ async function loadAgentDetails(profile, details) {
     executionPolicy.innerHTML = "<summary>Execution policy details</summary>";
     executionPolicy.appendChild(metadataGrid([
       { label: "Execution profile", value: profile.execution_profile_id },
+      { label: "Agent Role", value: profile.role_id },
+      { label: "Operational authority Role", value: profile.authority_role_id || "not declared" },
       { label: "Model class", value: profile.model_policy?.model_class },
       { label: "Workload class", value: profile.model_policy?.workload_class },
       { label: "Pinned model", value: profile.model_policy?.pinned_model_id },
@@ -369,6 +371,10 @@ async function loadAgentDetails(profile, details) {
       { label: "Max concurrency", value: profile.budgets?.max_concurrency },
     ]));
     for (const id of profile.runtime_policy?.preferred_provider_ids || []) executionPolicy.appendChild(referenceNode("agent_provider", id));
+    for (const ref of [profile.role_definition_ref, profile.authority_definition_ref]) {
+      if (ref?.record_id) executionPolicy.appendChild(referenceNode('definition', ref.record_id,
+        {projectId, label:`${ref.definition_id}@r${ref.revision}`}));
+    }
     executionPolicy.appendChild(el("small", "", "Workflow or turn preferences apply first, followed by this Agent Profile revision, scoped Configuration, and defaults. Hard cost and fallback constraints retain the tightest effective value. Change profile defaults with Edit Agent Profile."));
     target.appendChild(executionPolicy);
     if (profile.execution_profile_id) {

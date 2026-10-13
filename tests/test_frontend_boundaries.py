@@ -262,15 +262,18 @@ class FrontendBoundaryTests(unittest.TestCase):
         source_path = STATIC / "control_plane_broker_admin.js"
         source = source_path.read_text(encoding="utf-8")
         html = (STATIC / "index.html").read_text(encoding="utf-8")
+        view = (STATIC / "control_plane_broker_view.js").read_text(encoding="utf-8")
 
         self.assertLessEqual(source_path.stat().st_size, 7_000)
         self.assertIn("api_client.js", source)
         self.assertIn("apiRequest", source)
         self.assertNotIn("fetch(", source)
-        self.assertIn("credential_exposed", source)
+        self.assertIn("control_plane_broker_view.js", source)
+        self.assertLessEqual((STATIC / "control_plane_broker_view.js").stat().st_size, 6_000)
+        self.assertIn("credential_exposed", view)
         self.assertNotIn("lease_token", source)
         self.assertNotIn("capability_token", source)
-        self.assertIn("brokered_control_plane", source)
+        self.assertIn("brokered_control_plane", view)
         self.assertIn("control_plane_broker_admin.js", html)
 
     def test_execution_worker_management_has_its_own_budget_and_api_client(self) -> None:
@@ -304,6 +307,8 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("api_client.js", source)
         self.assertIn("apiRequest", source)
         self.assertNotIn("fetch(", source)
+        self.assertIn("action_intent_outcome_view.js", source)
+        self.assertLessEqual((STATIC / "action_intent_outcome_view.js").stat().st_size, 3_000)
 
     def test_work_graph_admin_has_its_own_budget_and_api_client(self) -> None:
         source_path = STATIC / "work_graph_admin.js"
