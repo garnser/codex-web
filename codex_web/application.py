@@ -3443,6 +3443,7 @@ scheduling_retirement_service = QueuedSchedulingRetirementService(
     queues=turn_queue_repository,
     work_item=work_item_state_machine._work_item_state,
     source_detail=work_item_operator_service.source_detail,
+    replacement_resolver=thread_index_repository.replacement_thread_id,
     thread_is_active=turn_execution_service.thread_is_active,
     append_audit=work_item_state_machine._append_work_item_event,
 )
