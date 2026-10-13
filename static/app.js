@@ -1,3 +1,4 @@
+import{applyQueueAdmissionStatus,renderQueueAdmissionStatus}from"./queue_admission_status.js";
 import{captureThreadView,renameSelectedThread,archiveSelectedThread}from"./thread_view_actions.js";
 import{showBotEditor}from"./bot_page_editor.js";
 import{saveBotIntegration}from"./bot_integration_save.js";
@@ -655,6 +656,7 @@ function renderApprovals() {
 
 function setWaiting(waiting, label = "Waiting for Codex", mode = waiting ? "waiting" : "idle") {
   state.waiting = waiting;
+  renderQueueAdmissionStatus(state);
   const status = $("codex-status");
   const text = $("codex-status-text");
   if (!status || !text) return;
@@ -732,24 +734,17 @@ function updateWaitingFromState() {
     setWaiting(true, "Waiting for approval");
   } else if (isThreadBusy(state.threadId)) {
     setWaiting(true, "Waiting for Codex");
-  } else if (state.automationWaitByThread.get(state.threadId)) {
-    setWaiting(true, state.automationWaitByThread.get(state.threadId));
+
   } else {
     setWaiting(false);
   }
-}
-
-function applyQueueAdmissionStatus(status) {
-  const message = status.automationWaitReason?.message;
-  if (message) state.automationWaitByThread.set(status.threadId, message);
-  else state.automationWaitByThread.delete(status.threadId);
 }
 
 async function refreshQueueStatus(threadId = state.threadId) {
   if (!threadId) return;
   try {
     const status = await api(`/api/threads/${threadId}/queue`);
-    applyQueueAdmissionStatus(status);
+    applyQueueAdmissionStatus(state,status);
     setThreadQueueDepth(threadId, status.queueDepth || 0);
     if (status.active) markThreadBusy(threadId);
     return status;
@@ -1290,6 +1285,7 @@ function clearSelectedThread({ historyMode = "none" } = {}) {
   clearMessages();
   $("thread-title").textContent = "Select a thread";
   $("thread-meta").textContent = "";
+  renderQueueAdmissionStatus(state);
   renderThreads();
   renderTokenUsage();
   renderRepositoryTargetStatus();
@@ -1464,7 +1460,7 @@ function handleEvent(event) {
     return;
   }
   if (event.type === "queue.status") {
-    applyQueueAdmissionStatus(event);
+    applyQueueAdmissionStatus(state,event);
     setThreadQueueDepth(event.threadId, event.queueDepth || 0);
     if (event.active) markThreadBusy(event.threadId);
     return;
