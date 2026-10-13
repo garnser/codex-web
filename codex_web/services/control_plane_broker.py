@@ -44,7 +44,12 @@ from codex_web.control_plane_broker import (
     ControlPlaneBrokerOperation,
     WorkItemOwnerDispatchRequest,
 )
-from codex_web.code_hosts import CodeHostCapability, CodeHostProviderBinding
+from codex_web.code_hosts import (
+    CodeHostCapability,
+    CodeHostError,
+    CodeHostProviderBinding,
+    CodeHostTransientError,
+)
 from codex_web.execution_workers import ExecutionAssignment
 from codex_web.identity import AuthenticationActor, TenantScope
 from codex_web.models import (
@@ -1400,6 +1405,7 @@ class ControlPlaneBrokerService:
         method: str,
         raw_target: str,
         body: bytes,
+        assignment_validator: Callable[[], ExecutionAssignment] | None = None,
     ) -> tuple[int, dict[str, Any], ControlPlaneBrokerOperation, str | None, Any]:
         resolved = self._resolve_operation(method, raw_target)
         operation = resolved.operation
@@ -1475,23 +1481,109 @@ class ControlPlaneBrokerService:
                 raise ControlPlaneBrokerDeniedError(
                     "execution workspace is outside assignment scope"
                 )
+            requested_revision = str(payload.get("revision") or "").strip().casefold()
+            materialization = None
             try:
                 refreshed = self.execution_workspaces.refresh_revision(
                     assignment.execution_workspace_id,
-                    str(payload.get("revision") or ""),
+                    requested_revision,
                     actor=requester_actor,
                 )
             except ExecutionWorkspaceNotFoundError as exc:
-                raise ControlPlaneBrokerRequestError(
-                    str(exc), status_code=404
-                ) from exc
+                if not re.fullmatch(r"[0-9a-f]{40}", requested_revision):
+                    raise ControlPlaneBrokerRequestError(
+                        str(exc), status_code=404
+                    ) from exc
+                if self.code_hosts is None:
+                    raise ControlPlaneBrokerRequestError(
+                        "provider revision materialization is unavailable",
+                        status_code=409,
+                    ) from exc
+                repository_id = self._writable_repository_id(assignment)
+                member = next(
+                    (
+                        item for item in current_workspace.repository_members
+                        if item.resource_id == repository_id
+                        and item.access_mode.value == "write"
+                    ),
+                    None,
+                )
+                if member is None:
+                    raise ControlPlaneBrokerDeniedError(
+                        "assignment writable repository is not the workspace writable member"
+                    ) from exc
+                binding_id, bound_repository_id = self._code_host_binding(
+                    assignment=assignment,
+                    actor=actor,
+                )
+                if bound_repository_id != repository_id:
+                    raise ControlPlaneBrokerDeniedError(
+                        "provider repository binding is outside assignment scope"
+                    ) from exc
+                try:
+                    materialization = (
+                        await self.code_hosts.materialize_default_branch_revision(
+                            binding_id,
+                            repository_id,
+                            requested_revision,
+                            checkout=Path(member.workspace_path),
+                            actor=actor,
+                        )
+                    )
+                except CodeHostTransientError as materialization_exc:
+                    raise ControlPlaneBrokerRequestError(
+                        str(materialization_exc), status_code=502
+                    ) from materialization_exc
+                except CodeHostError as materialization_exc:
+                    raise ControlPlaneBrokerRequestError(
+                        str(materialization_exc), status_code=409
+                    ) from materialization_exc
+                if assignment_validator is not None:
+                    await asyncio.to_thread(assignment_validator)
+                try:
+                    refreshed = self.execution_workspaces.refresh_revision(
+                        assignment.execution_workspace_id,
+                        requested_revision,
+                        actor=requester_actor,
+                        materialization=materialization,
+                    )
+                except ExecutionWorkspaceNotFoundError as refresh_exc:
+                    raise ControlPlaneBrokerRequestError(
+                        "materialized revision is unavailable in the execution workspace",
+                        status_code=409,
+                    ) from refresh_exc
+                except ExecutionWorkspaceConflictError as refresh_exc:
+                    raise ControlPlaneBrokerRequestError(
+                        str(refresh_exc), status_code=409
+                    ) from refresh_exc
+                except ExecutionWorkspaceBackendError as refresh_exc:
+                    raise ControlPlaneBrokerRequestError(str(refresh_exc)) from refresh_exc
             except ExecutionWorkspaceConflictError as exc:
                 raise ControlPlaneBrokerRequestError(
                     str(exc), status_code=409
                 ) from exc
             except ExecutionWorkspaceBackendError as exc:
                 raise ControlPlaneBrokerRequestError(str(exc)) from exc
-            result = {"item": refreshed.model_dump(mode="json")}
+            result = {
+                "item": refreshed.model_dump(mode="json"),
+                "materialization": (
+                    {
+                        "required": True,
+                        "outcome": (
+                            "materialized"
+                            if materialization.fetched
+                            else "already_materialized"
+                        ),
+                        **materialization.model_dump(mode="json"),
+                    }
+                    if materialization is not None
+                    else {
+                        "required": False,
+                        "outcome": "already_present",
+                        "revision": requested_revision,
+                    }
+                ),
+            }
         elif operation.id == "repository.workspace.publication-recovery":
             if self.execution_workspaces is None or not assignment.execution_workspace_id:
                 raise ControlPlaneBrokerDeniedError(
@@ -2237,6 +2329,7 @@ class AssignmentBoundControlPlaneBroker:
                     method=method,
                     raw_target=target,
                     body=body,
+                    assignment_validator=self._validate_current,
                 )
             )
             self.service._audit(

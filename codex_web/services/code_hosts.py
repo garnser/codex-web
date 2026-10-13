@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
+import hashlib
+import os
+from pathlib import Path
+import re
+import subprocess
+import tempfile
 from typing import TypeVar
+from urllib.parse import urlsplit
 
 from codex_web.code_hosts import (
     validate_artifact_member_path,
@@ -18,8 +26,10 @@ from codex_web.code_hosts import (
     CodeHostPullRequestFact,
     CodeHostRefFact,
     CodeHostReleaseFact,
+    CodeHostRevisionMaterializationFact,
     CodeHostReviewFact,
     CodeHostRepositoryFact,
+    CodeHostTransientError,
     CodeHostUnsupportedCapabilityError,
     CodeHostWebhookFact,
 )
@@ -89,7 +99,7 @@ class CodeHostRegistry:
 
 
 class CodeHostService:
-    """Read-only SCM facade. External mutations intentionally live elsewhere."""
+    """Provider-read SCM facade with bounded local object materialization."""
 
     def __init__(
         self,
@@ -103,6 +113,7 @@ class CodeHostService:
         self.resources = resources
         self.secrets = secrets
         self.canonical_events = canonical_events
+        self._materialization_locks: dict[str, asyncio.Lock] = {}
 
     @staticmethod
     def _require_capability(
@@ -233,6 +244,266 @@ class CodeHostService:
                 credential=credential,
             ),
         )
+
+    async def materialize_default_branch_revision(
+        self,
+        binding_id: str,
+        resource_id: str,
+        revision: str,
+        *,
+        checkout: Path,
+        actor: AuthenticationActor,
+    ) -> CodeHostRevisionMaterializationFact:
+        """Fetch one exact, provider-attested default-branch tip into a checkout."""
+        requested = str(revision or "").strip().casefold()
+        if not re.fullmatch(r"[0-9a-f]{40}", requested):
+            raise CodeHostError("materialization requires an exact full commit revision")
+        if not checkout.is_dir():
+            raise CodeHostError("execution workspace checkout is unavailable")
+        binding, provider = self.registry.resolve(binding_id, actor=actor)
+        for capability in (
+            CodeHostCapability.REPOSITORY_READ,
+            CodeHostCapability.REFS_READ,
+            CodeHostCapability.COMMITS_READ,
+        ):
+            self._require_capability(binding, provider, capability)
+        if not binding.credential_ref:
+            raise CodeHostError("authenticated provider access is required for materialization")
+        resource = self._resource(resource_id, actor=actor, binding=binding)
+        lock_key = f"{resource.id}:{checkout.resolve()}"
+        lock = self._materialization_locks.setdefault(lock_key, asyncio.Lock())
+        async with lock:
+            async def materialize(credential: str | None) -> CodeHostRevisionMaterializationFact:
+                if not credential:
+                    raise CodeHostError(
+                        "authenticated provider access is required for materialization"
+                    )
+                repository = await provider.repository(
+                    binding, resource, credential=credential
+                )
+                if (
+                    repository.resource_id != resource.id
+                    or repository.provider_type.casefold() != binding.provider_type.casefold()
+                    or repository.provider_instance != binding.provider_instance
+                ):
+                    raise CodeHostError("provider repository attestation changed")
+                self._validate_repository_provenance(resource, binding, repository)
+                branch = str(repository.default_branch or "").strip()
+                if (
+                    not branch
+                    or not re.fullmatch(r"[A-Za-z0-9._/-]+", branch)
+                    or any(part in {"", ".", ".."} for part in branch.split("/"))
+                ):
+                    raise CodeHostError("provider repository has no safe default branch")
+                refs = await provider.refs(binding, resource, credential=credential)
+                matches = [
+                    item for item in refs
+                    if item.kind == "branch" and item.name == branch
+                ]
+                if len(matches) != 1 or matches[0].revision.casefold() != requested:
+                    raise CodeHostError(
+                        "requested revision is not the attested provider default-branch tip"
+                    )
+                commit = await provider.commit(
+                    binding, resource, requested, credential=credential
+                )
+                if commit.revision.casefold() != requested:
+                    raise CodeHostError("provider commit attestation changed")
+                remote = self._verified_remote_url(binding, repository)
+                already_present = await asyncio.to_thread(
+                    self._git_has_commit, checkout, requested
+                )
+                if not already_present:
+                    await asyncio.to_thread(
+                        self._materialize_git_sync,
+                        checkout,
+                        remote,
+                        branch,
+                        requested,
+                        credential,
+                        binding.provider_type,
+                        resource.id,
+                    )
+                return CodeHostRevisionMaterializationFact(
+                    resource_id=resource.id,
+                    provider_type=binding.provider_type,
+                    provider_instance=binding.provider_instance,
+                    repository_full_name=repository.full_name,
+                    default_branch=branch,
+                    revision=requested,
+                    fetched=not already_present,
+                )
+
+            return await self._with_credential(
+                binding,
+                actor=actor,
+                resource=resource,
+                operation="code-host.revision.materialize",
+                callback=materialize,
+            )
+
+    @staticmethod
+    def _validate_repository_provenance(
+        resource: Resource,
+        binding: CodeHostProviderBinding,
+        repository: CodeHostRepositoryFact,
+    ) -> None:
+        candidates: set[str] = set()
+        provenance = resource.provenance
+        if provenance and provenance.external_url:
+            parsed = urlsplit(provenance.external_url)
+            if (
+                parsed.scheme != "https"
+                or parsed.hostname != urlsplit(f"//{binding.provider_instance}").hostname
+                or parsed.username
+                or parsed.password
+            ):
+                raise CodeHostError("repository Resource URL provenance is invalid")
+            path = parsed.path.strip("/")
+            if path:
+                candidates.add(path.removesuffix(".git"))
+        if provenance and provenance.external_id:
+            candidates.add(provenance.external_id.strip().strip("/"))
+        candidates.update(
+            alias.value.strip().strip("/").removesuffix(".git")
+            for alias in resource.aliases
+            if (alias.provider or "").casefold() == binding.provider_type.casefold()
+            and alias.value.strip()
+        )
+        if not candidates or not (
+            repository.full_name in candidates or repository.external_id in candidates
+        ):
+            raise CodeHostError("provider repository does not match Resource provenance")
+
+    @staticmethod
+    def _verified_remote_url(
+        binding: CodeHostProviderBinding,
+        repository: CodeHostRepositoryFact,
+    ) -> str:
+        if binding.provider_type.casefold() not in {"github", "gitlab"}:
+            raise CodeHostError("provider does not support revision materialization")
+        parsed = urlsplit(f"//{binding.provider_instance}")
+        if (
+            not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise CodeHostError("provider instance is not a safe repository host")
+        full_name = repository.full_name.strip().strip("/")
+        if (
+            not full_name
+            or len(full_name) > 512
+            or any(part in {"", ".", ".."} for part in full_name.split("/"))
+            or not re.fullmatch(r"[A-Za-z0-9._/-]+", full_name)
+        ):
+            raise CodeHostError("provider repository locator is invalid")
+        return f"https://{binding.provider_instance}/{full_name}.git"
+
+    @staticmethod
+    def _git_has_commit(checkout: Path, revision: str) -> bool:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(checkout), "cat-file", "-e", f"{revision}^{{commit}}"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise CodeHostTransientError(
+                "execution workspace Git object inspection failed"
+            ) from exc
+        return result.returncode == 0
+
+    @staticmethod
+    def _materialize_git_sync(
+        checkout: Path,
+        remote: str,
+        branch: str,
+        revision: str,
+        credential: str,
+        provider_type: str,
+        resource_id: str,
+    ) -> None:
+        internal_ref = (
+            "refs/codex/materialized/"
+            + hashlib.sha256(f"{resource_id}:{branch}".encode()).hexdigest()
+        )
+        with tempfile.TemporaryDirectory(prefix="codex-materialize-") as root:
+            root_path = Path(root)
+            askpass = root_path / "askpass.sh"
+            username = "x-access-token" if provider_type.casefold() == "github" else "oauth2"
+            askpass.write_text(
+                "#!/bin/sh\n"
+                "case \"$1\" in\n"
+                f"  *Username*) printf '%s\\n' {username} ;;\n"
+                "  *Password*) printf '%s\\n' \"$CODEX_MATERIALIZE_TOKEN\" ;;\n"
+                "  *) exit 1 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            os.chmod(askpass, 0o700)
+            environment = {
+                key: os.environ[key]
+                for key in (
+                    "PATH", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR",
+                )
+                if key in os.environ
+            }
+            environment.update(
+                {
+                    "HOME": str(root_path),
+                    "CODEX_MATERIALIZE_TOKEN": credential,
+                    "GIT_ASKPASS": str(askpass),
+                    "GIT_TERMINAL_PROMPT": "0",
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_CONFIG_GLOBAL": "/dev/null",
+                }
+            )
+            command = [
+                "git", "-C", str(checkout),
+                "-c", "core.hooksPath=/dev/null",
+                "-c", "credential.helper=",
+                "-c", "protocol.allow=never",
+                "-c", "protocol.https.allow=always",
+                "-c", "submodule.recurse=false",
+                "fetch", "--no-tags", "--no-recurse-submodules", "--depth=1",
+                remote, f"+refs/heads/{branch}:{internal_ref}",
+            ]
+            try:
+                subprocess.run(
+                    command,
+                    env=environment,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                observed = subprocess.run(
+                    ["git", "-C", str(checkout), "rev-parse", "--verify", f"{internal_ref}^{{commit}}"],
+                    env=environment,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                ).stdout.strip().casefold()
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise CodeHostTransientError(
+                    "provider revision materialization failed"
+                ) from exc
+            if observed != revision:
+                subprocess.run(
+                    ["git", "-C", str(checkout), "update-ref", "-d", internal_ref],
+                    env=environment,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                raise CodeHostError("provider default branch changed during materialization")
 
     async def pull_request(
         self,

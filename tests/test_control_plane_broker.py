@@ -12,10 +12,13 @@ from contextlib import ExitStack
 from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 from urllib.parse import quote
 
-from codex_web.code_hosts import CodeHostPullRequestFact
+from codex_web.code_hosts import (
+    CodeHostPullRequestFact,
+    CodeHostRevisionMaterializationFact,
+)
 from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.authority import (
     AUTHORITY_ROLE_CATALOG_ID,
@@ -56,6 +59,10 @@ from codex_web.services.control_plane_broker import (
 )
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.identity import IdentityService
+from codex_web.services.execution_workspaces import (
+    ExecutionWorkspaceConflictError,
+    ExecutionWorkspaceNotFoundError,
+)
 from codex_web.storage.control_plane_broker import ControlPlaneBrokerAuditStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
 from codex_web.storage.identity_state import IdentityStateStore
@@ -1027,6 +1034,186 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(status, 403, denied)
         self.assertEqual(len(calls), 1)
+
+    async def test_workspace_refresh_materializes_only_missing_exact_attested_revision(self) -> None:
+        revision = "a" * 40
+        checkout = Path(self.temp.name) / "workspace-refresh"
+        checkout.mkdir()
+        calls = []
+
+        class Workspaces:
+            def get(inner, workspace_id, actor):
+                del actor
+                return SimpleNamespace(
+                    id=workspace_id,
+                    execution_id="execution-broker-test",
+                    project_id="project-a",
+                    writable_repository_ids=("repository-a",),
+                    repository_members=(SimpleNamespace(
+                        resource_id="repository-a",
+                        access_mode=SimpleNamespace(value="write"),
+                        workspace_path=str(checkout),
+                    ),),
+                )
+
+            def refresh_revision(inner, workspace_id, requested, **kwargs):
+                calls.append((workspace_id, requested, kwargs))
+                if len(calls) == 1:
+                    raise ExecutionWorkspaceNotFoundError(
+                        "revision does not resolve to a commit"
+                    )
+                self.assertEqual(kwargs["materialization"].revision, revision)
+                return SimpleNamespace(model_dump=lambda mode: {
+                    "id": workspace_id, "head_revision": requested,
+                })
+
+        code_hosts = _CodeHosts()
+        code_hosts.materialize_default_branch_revision = AsyncMock(
+            return_value=CodeHostRevisionMaterializationFact(
+                resource_id="repository-a",
+                provider_type="github",
+                provider_instance="github.com",
+                repository_full_name="org/repo",
+                default_branch="main",
+                revision=revision,
+            )
+        )
+        self.service.execution_workspaces = Workspaces()
+        self.service.code_hosts = code_hosts
+        self.service.action_intents = SimpleNamespace(
+            execution=SimpleNamespace(registry=_ActionRegistry("github"))
+        )
+        self.service._authorize = lambda *args, **kwargs: SimpleNamespace(
+            id="authority-workspace-refresh-test", definition_ref=None
+        )
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "repository-write",
+            "execution_workspace_id": "workspace-a",
+            "resource_ids": ("repository-a",),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default", project_id="project-a",
+                writable_repository_ids=("repository-a",),
+                source=RepositoryTargetSource.SINGLE_REPOSITORY,
+                source_ref="repository-a",
+            ),
+        })
+        validated = []
+
+        status, payload, *_ = await self.service.dispatch(
+            assignment=assignment,
+            worker_actor=self.worker_actor,
+            method="POST",
+            raw_target="/api/repository-workspace/refresh",
+            body=json.dumps({"revision": revision}).encode(),
+            assignment_validator=lambda: validated.append(True) or assignment,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["item"]["head_revision"], revision)
+        self.assertEqual(payload["materialization"]["outcome"], "materialized")
+        self.assertEqual(validated, [True])
+        code_hosts.materialize_default_branch_revision.assert_awaited_once_with(
+            "control-plane-read:github-action-binding",
+            "repository-a",
+            revision,
+            checkout=checkout,
+            actor=ANY,
+        )
+
+    async def test_workspace_refresh_preserves_dirty_and_stale_fence_guards(self) -> None:
+        revision = "b" * 40
+        checkout = Path(self.temp.name) / "workspace-refresh-denied"
+        checkout.mkdir()
+
+        class Workspaces:
+            conflict = False
+            calls = 0
+
+            def get(inner, workspace_id, actor):
+                del actor
+                return SimpleNamespace(
+                    id=workspace_id,
+                    execution_id="execution-broker-test",
+                    project_id="project-a",
+                    writable_repository_ids=("repository-a",),
+                    repository_members=(SimpleNamespace(
+                        resource_id="repository-a",
+                        access_mode=SimpleNamespace(value="write"),
+                        workspace_path=str(checkout),
+                    ),),
+                )
+
+            def refresh_revision(inner, workspace_id, requested, **kwargs):
+                inner.calls += 1
+                if inner.conflict:
+                    raise ExecutionWorkspaceConflictError(
+                        "execution workspace has uncommitted changes"
+                    )
+                if inner.calls == 1:
+                    raise ExecutionWorkspaceNotFoundError(
+                        "revision does not resolve to a commit"
+                    )
+                raise AssertionError("stale assignment must block final refresh")
+
+        workspaces = Workspaces()
+        code_hosts = _CodeHosts()
+        code_hosts.materialize_default_branch_revision = AsyncMock(
+            return_value=CodeHostRevisionMaterializationFact(
+                resource_id="repository-a",
+                provider_type="github",
+                provider_instance="github.com",
+                repository_full_name="org/repo",
+                default_branch="main",
+                revision=revision,
+            )
+        )
+        self.service.execution_workspaces = workspaces
+        self.service.code_hosts = code_hosts
+        self.service.action_intents = SimpleNamespace(
+            execution=SimpleNamespace(registry=_ActionRegistry("github"))
+        )
+        self.service._authorize = lambda *args, **kwargs: SimpleNamespace(
+            id="authority-workspace-refresh-denials", definition_ref=None
+        )
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "repository-write",
+            "execution_workspace_id": "workspace-a",
+            "resource_ids": ("repository-a",),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default", project_id="project-a",
+                writable_repository_ids=("repository-a",),
+                source=RepositoryTargetSource.SINGLE_REPOSITORY,
+                source_ref="repository-a",
+            ),
+        })
+
+        with self.assertRaisesRegex(ControlPlaneBrokerDeniedError, "stale"):
+            await self.service.dispatch(
+                assignment=assignment,
+                worker_actor=self.worker_actor,
+                method="POST",
+                raw_target="/api/repository-workspace/refresh",
+                body=json.dumps({"revision": revision}).encode(),
+                assignment_validator=lambda: (_ for _ in ()).throw(
+                    ControlPlaneBrokerDeniedError("assignment lease is stale")
+                ),
+            )
+        self.assertEqual(workspaces.calls, 1)
+
+        workspaces.conflict = True
+        observed_materializations = code_hosts.materialize_default_branch_revision.await_count
+        with self.assertRaisesRegex(ControlPlaneBrokerRequestError, "uncommitted"):
+            await self.service.dispatch(
+                assignment=assignment,
+                worker_actor=self.worker_actor,
+                method="POST",
+                raw_target="/api/repository-workspace/refresh",
+                body=json.dumps({"revision": revision}).encode(),
+            )
+        self.assertEqual(
+            code_hosts.materialize_default_branch_revision.await_count,
+            observed_materializations,
+        )
 
     async def test_authorized_read_and_handoff_use_exact_role_authority(self) -> None:
         event_loop_thread = threading.get_ident()

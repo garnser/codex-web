@@ -93,6 +93,20 @@ class CodeHostCommitFact(BaseModel):
     web_url: str | None = None
 
 
+class CodeHostRevisionMaterializationFact(BaseModel):
+    """Attested provider revision copied into an assignment workspace object store."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    resource_id: str
+    provider_type: str
+    provider_instance: str
+    repository_full_name: str
+    default_branch: str
+    revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    fetched: bool = True
+
+
 class CodeHostPullRequestFact(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 

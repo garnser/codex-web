@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+from codex_web.code_hosts import CodeHostRevisionMaterializationFact
 from codex_web.execution_contract_schema import execution_contract_for_work_item
 from codex_web.execution_subjects import ExecutionSubject, ExecutionSubjectKind
 from codex_web.execution_contract_seed import execution_role_catalog_seed_payload
@@ -312,6 +313,25 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         self.assertEqual(refreshed.head_revision, first)
         self.assertEqual((checkout / "value.txt").read_text(), "first\n")
         self.assertEqual(refreshed.repository_members[0].head_revision, first)
+        materialization = CodeHostRevisionMaterializationFact(
+            resource_id=self.repo.id,
+            provider_type="github",
+            provider_instance="github.com",
+            repository_full_name="org/repository",
+            default_branch="main",
+            revision=first,
+        )
+        self.service.refresh_revision(
+            workspace.id,
+            first,
+            actor=self.actor,
+            materialization=materialization,
+        )
+        events = self.service.events(workspace.id, actor=self.actor)
+        self.assertEqual(
+            events[-1].details["materialization_repository"],
+            "org/repository",
+        )
         (checkout / "dirty.txt").write_text("dirty\n", encoding="utf-8")
         with self.assertRaisesRegex(ExecutionWorkspaceConflictError, "uncommitted"):
             self.service.refresh_revision(workspace.id, first, actor=self.actor)

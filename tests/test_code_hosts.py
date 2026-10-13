@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from codex_web.canonical_events import CanonicalEventType
 from codex_web.code_hosts import (
@@ -18,6 +21,8 @@ from codex_web.code_hosts import (
     CodeHostRepositoryFact,
     CodeHostReviewFact,
     CodeHostUnsupportedCapabilityError,
+    CodeHostError,
+    CodeHostTransientError,
     CodeHostWebhookFact,
 )
 from codex_web.resources import (
@@ -266,6 +271,200 @@ class CodeHostContractTests(unittest.IsolatedAsyncioTestCase):
                 self.resource.id,
                 actor=other,
             )
+
+    def _materialization_service(self, revision: str):
+        class GitHubProvider(_Provider):
+            provider_type = "github"
+
+            async def refs(inner, binding, resource, *, credential):
+                inner._credential(credential)
+                return (
+                    CodeHostRefFact(
+                        name="main", kind="branch", revision=revision
+                    ),
+                )
+
+        resource = self.resources.create(
+            ResourceCreate(
+                resource_type=ResourceType.REPOSITORY,
+                name="org/materialized",
+                provenance=ResourceProvenance(
+                    provider="github",
+                    provider_instance="github.com",
+                    external_id="stable-42",
+                    external_url="https://github.com/org/repo",
+                ),
+            ),
+            actor=self.actor,
+        )
+        provider = GitHubProvider()
+        registry = CodeHostRegistry()
+        registry.register_provider(provider)
+        binding = CodeHostProviderBinding(
+            id="github-materialize",
+            organization_id=self.actor.organization_id,
+            workspace_id=self.actor.workspace_id,
+            provider_type="github",
+            provider_instance="github.com",
+            base_url="https://api.github.com",
+            credential_ref="materialize-secret",
+            capabilities=tuple(CodeHostCapability),
+        )
+        registry.register_binding(binding)
+        service = CodeHostService(registry, self.resources, secrets=self.secrets)
+        return service, provider, binding, resource
+
+    async def test_materialization_requires_exact_attested_default_branch(self) -> None:
+        revision = "a" * 40
+        service, provider, binding, resource = self._materialization_service(revision)
+        checkout = Path(self.temp.name) / "materialize-checkout"
+        checkout.mkdir()
+        with (
+            patch.object(service, "_git_has_commit", return_value=False),
+            patch.object(service, "_materialize_git_sync") as fetch,
+        ):
+            fact = await service.materialize_default_branch_revision(
+                binding.id,
+                resource.id,
+                revision,
+                checkout=checkout,
+                actor=self.actor,
+            )
+
+        self.assertEqual(fact.revision, revision)
+        self.assertEqual(fact.repository_full_name, "org/repo")
+        self.assertTrue(fact.fetched)
+        fetch.assert_called_once()
+        command_args = fetch.call_args.args
+        self.assertEqual(command_args[1], "https://github.com/org/repo.git")
+        self.assertEqual(command_args[3], revision)
+        self.assertEqual(self.secrets.calls[-1][2], "code-host.revision.materialize")
+        self.assertNotIn("provider-secret", fact.model_dump_json())
+
+        with patch.object(service, "_materialize_git_sync") as denied_fetch:
+            with self.assertRaisesRegex(CodeHostError, "default-branch tip"):
+                await service.materialize_default_branch_revision(
+                    binding.id,
+                    resource.id,
+                    "b" * 40,
+                    checkout=checkout,
+                    actor=self.actor,
+                )
+        denied_fetch.assert_not_called()
+
+        foreign = CodeHostRepositoryFact(
+            resource_id=resource.id,
+            provider_type="github",
+            provider_instance="github.com",
+            external_id="foreign-99",
+            name="foreign",
+            full_name="other/foreign",
+            default_branch="main",
+        )
+        with (
+            patch.object(provider, "repository", new=AsyncMock(return_value=foreign)),
+            patch.object(service, "_materialize_git_sync") as foreign_fetch,
+        ):
+            with self.assertRaisesRegex(CodeHostError, "Resource provenance"):
+                await service.materialize_default_branch_revision(
+                    binding.id,
+                    resource.id,
+                    revision,
+                    checkout=checkout,
+                    actor=self.actor,
+                )
+        foreign_fetch.assert_not_called()
+
+        unauthenticated = binding.model_copy(
+            update={"id": "github-materialize-unauthenticated", "credential_ref": None}
+        )
+        service.registry.register_binding(unauthenticated)
+        with self.assertRaisesRegex(CodeHostError, "authenticated provider access"):
+            await service.materialize_default_branch_revision(
+                unauthenticated.id,
+                resource.id,
+                revision,
+                checkout=checkout,
+                actor=self.actor,
+            )
+
+    async def test_concurrent_materialization_fetches_the_revision_once(self) -> None:
+        revision = "c" * 40
+        service, _, binding, resource = self._materialization_service(revision)
+        checkout = Path(self.temp.name) / "concurrent-checkout"
+        checkout.mkdir()
+        with (
+            patch.object(service, "_git_has_commit", side_effect=[False, True]),
+            patch.object(service, "_materialize_git_sync") as fetch,
+        ):
+            first, second = await asyncio.gather(
+                *(
+                    service.materialize_default_branch_revision(
+                        binding.id,
+                        resource.id,
+                        revision,
+                        checkout=checkout,
+                        actor=self.actor,
+                    )
+                    for _ in range(2)
+                )
+            )
+
+        self.assertEqual((first.fetched, second.fetched), (True, False))
+        fetch.assert_called_once()
+
+    def test_materialization_git_command_disables_repository_execution(self) -> None:
+        revision = "d" * 40
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append((command, kwargs))
+            stdout = revision + "\n" if "rev-parse" in command else ""
+            return subprocess.CompletedProcess(command, 0, stdout, "")
+
+        checkout = Path(self.temp.name) / "git-command-checkout"
+        checkout.mkdir()
+        with patch("codex_web.services.code_hosts.subprocess.run", side_effect=run):
+            CodeHostService._materialize_git_sync(
+                checkout,
+                "https://github.com/org/repo.git",
+                "main",
+                revision,
+                "never-print-this-token",
+                "github",
+                self.resource.id,
+            )
+
+        fetch_command, fetch_options = calls[0]
+        self.assertIn("core.hooksPath=/dev/null", fetch_command)
+        self.assertIn("protocol.allow=never", fetch_command)
+        self.assertIn("protocol.https.allow=always", fetch_command)
+        self.assertIn("--no-recurse-submodules", fetch_command)
+        self.assertNotIn("never-print-this-token", " ".join(fetch_command))
+        self.assertEqual(
+            fetch_options["env"]["CODEX_MATERIALIZE_TOKEN"],
+            "never-print-this-token",
+        )
+
+        with patch(
+            "codex_web.services.code_hosts.subprocess.run",
+            side_effect=subprocess.CalledProcessError(
+                128,
+                ["git", "fetch"],
+                stderr="authentication failed: never-print-this-token",
+            ),
+        ):
+            with self.assertRaises(CodeHostTransientError) as failure:
+                CodeHostService._materialize_git_sync(
+                    checkout,
+                    "https://github.com/org/repo.git",
+                    "main",
+                    revision,
+                    "never-print-this-token",
+                    "github",
+                    self.resource.id,
+                )
+        self.assertNotIn("never-print-this-token", str(failure.exception))
 
     async def test_webhook_normalization_is_canonical_and_idempotent(self) -> None:
         first_fact, first = await self.service.ingest_webhook(
