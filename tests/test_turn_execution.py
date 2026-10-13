@@ -1029,11 +1029,13 @@ class _BootstrapBindings:
 
 class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
     async def test_scoped_read_context_does_not_inherit_unrelated_thread_defaults(self):
-        for source, ref, explicit, expected in [
-            ('owner-work-watchdog', 'group/app#49', (), ()),
-            ('queued:gitlab', None, (), ()),
-            ('owner-work-watchdog', 'group/app#49', ('required-context',), ('required-context',)),
-            ('web', None, (), ('unrelated-context',)),
+        for source, ref, explicit, expected, supplied in [
+            ('owner-work-watchdog', 'group/app#49', (), (), False),
+            ('queued:gitlab', None, (), (), False),
+            ('owner-work-watchdog', 'group/app#49', ('required-context',), ('required-context',), False),
+            ('web', None, (), ('unrelated-context',), False),
+            ('web', None, (), (), True),
+            ('web', None, ('required-context',), ('required-context',), True),
         ]:
             with self.subTest(source=source, ref=ref, explicit=explicit):
                 host, binding, sessions, service = self._service()
@@ -1043,9 +1045,10 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
                 await service.start_thread_turn_now('t1',
                     project=Project(id='p1', name='Project', path='/workspace/project'),
                     message='original task', sandbox='workspace-write', approval_policy='on-request',
-                    source=source, work_item_ref=ref, read_only_repository_resource_ids=explicit)
+                    source=source, work_item_ref=ref, read_only_repository_resource_ids=explicit,
+                    read_only_scope_supplied=supplied)
                 self.assertEqual(binding.calls[0]['read_only_repository_ids'], expected)
-                if ref or source.startswith('queued:'):
+                if supplied or ref or source.startswith('queued:'):
                     self.assertEqual(host._remember_thread_run_settings.call_args.kwargs[
                         'read_only_repository_resource_ids'], expected)
                 else:

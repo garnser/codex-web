@@ -81,6 +81,16 @@ Workspace identity, branch derivation and assignment/workspace matching use the
 canonical subject. Work Item synchronization is skipped entirely for non-Work
 Item subjects.
 
+### Explicit repository read scope
+
+A public turn request that explicitly supplies `read_only_repository_resource_ids`
+uses that exact set, including an empty set. Omission preserves remembered defaults
+for ordinary unscoped turns. Admission persists explicit scope before bootstrap or
+replacement, and queued requests retain the resolved set. An unrelated remembered
+repository must not be restored as a read dependency during recovery. Existing
+scope inspectors show the requested and admitted repository sets; authority,
+profile revision, lease fencing and active-assignment guards remain enforced.
+
 ## Fenced leases
 
 Workers claim pending assignments using their authenticated service identity.
