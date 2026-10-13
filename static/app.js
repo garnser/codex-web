@@ -490,7 +490,7 @@ function renderThreads() {
       .filter(([,values])=>values.some((binding)=>binding.is_master))
       .map(([threadId])=>threadId)
   );
-  const threads=[...rawThreads].sort((left,right)=>{
+  const threads=rawThreads.filter((thread)=>!thread.projectId||thread.projectId===state.projectId).sort((left,right)=>{
     const primaryDelta=Number(primaryThreadIds.has(right.id))-Number(primaryThreadIds.has(left.id));
     if(primaryDelta)return primaryDelta;
     return (right.updatedAt||0)-(left.updatedAt||0);
@@ -2290,6 +2290,7 @@ $("save-project").addEventListener("click", event => projectCreator.save(event, 
     delete state.projectUiStatic[project.id];
     if (!activate) return;
     activateProject(state, project.id);
+    clearSelectedThread();
     window.dispatchEvent(new CustomEvent("codex:project-created", { detail: { projectId: project.id, freshBootstrap: project.freshBootstrap || null } }));
   },
 }));

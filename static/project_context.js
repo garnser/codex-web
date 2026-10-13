@@ -1,25 +1,23 @@
-import { confirmDiscard } from "./dirty_editor.js";
+import {clearProjectProjection} from "./project_ui_state.js";
+import {confirmDiscard} from "./dirty_editor.js";
 const ACTIVE_PROJECT_KEY = "codex-web-active-project";
 
-function projectIdFromPath(pathname = window.location.pathname) {
-  const match = String(pathname || "").match(/\/projects\/([^/]+)(?:\/|$)/);
+function projectIdFromPath(pathname=window.location.pathname) {
+  const match=String(pathname||"").match(/\/projects\/([^/]+)(?:\/|$)/);
   if(!match)return "";
   try{return decodeURIComponent(match[1])}catch{return match[1]}
 }
 
 export function initialProjectId() {
-  return (
-    projectIdFromPath()
-    || new URLSearchParams(window.location.search).get("project")
-    || sessionStorage.getItem(ACTIVE_PROJECT_KEY)
-    || "home"
-  );
+  return projectIdFromPath() || new URLSearchParams(window.location.search).get("project")
+    || sessionStorage.getItem(ACTIVE_PROJECT_KEY) || "home";
 }
 
-export function activateProject(state, projectId, { historyMode = "replace" } = {}) {
+export function activateProject(state, projectId, {historyMode="replace"}={}) {
   const normalized=String(projectId||"").trim();
   if(!normalized)return "";
   const projectChanged=state.projectId!==normalized;
+  if(projectChanged)clearProjectProjection(state);
   state.projectId=normalized;
   sessionStorage.setItem(ACTIVE_PROJECT_KEY,normalized);
   if(document.body)document.body.dataset.projectId=normalized;
@@ -32,32 +30,27 @@ export function activateProject(state, projectId, { historyMode = "replace" } = 
     url.searchParams.set("project", normalized);
   }
   if(projectChanged&&historyMode!=="none")url.searchParams.delete("thread");
-  if (historyMode === "push") {
+  if(historyMode==="push"){
     history.pushState({ ...history.state, projectId: normalized }, "", url);
-  } else if (historyMode !== "none") {
+  }else if(historyMode!=="none"){
     history.replaceState({ ...history.state, projectId: normalized }, "", url);
   }
-  window.dispatchEvent(new CustomEvent("codex:project-changed", {
-    detail: { projectId: normalized },
-  }));
+  window.dispatchEvent(new CustomEvent("codex:project-changed", {detail:{projectId:normalized}}));
   return normalized;
 }
 
 export function publishProjectsRendered(projects, projectId) {
   window.dispatchEvent(new CustomEvent("codex:projects-rendered", {
-    detail: {
-      projectId,
-      projects: projects.map(({ id, name, path }) => ({ id, name, path })),
-    },
+    detail: {projectId, projects: projects.map(({id,name,path})=>({id,name,path}))},
   }));
 }
 
 export function createProjectNavigator(state, { refresh, applyRunSettings, onThreadCleared,
   onLocationChanged, onError = console.error } = {}) {
-  const selectProject = async (projectId, { historyMode = "push" } = {}) => {
-    const id = String(projectId || "").trim();
-    if (!id || id === state.projectId) return;
-    if (!confirmDiscard()) return;
+  const selectProject=async (projectId,{historyMode="push"}={})=>{
+    const id=String(projectId||"").trim();
+    if(!id||id===state.projectId)return;
+    if(!confirmDiscard())return;
     activateProject(state, id, { historyMode });
     state.threadId = null;
     state.activeAgentMessage = null;

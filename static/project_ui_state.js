@@ -1,3 +1,16 @@
+export function clearProjectProjection(state) {
+  // Drop the previous project's projection before publishing the new scope.
+  // A slow or failed refresh must never leave its threads available here.
+  state.refreshController?.abort();
+  state.refreshGeneration = (state.refreshGeneration || 0) + 1;
+  state.threads = { data: [] };
+  state.threadIndexProject = "";
+  state.projectResources = [];
+  state.botBindings = [];
+  state.threadSettings = {};
+  state.botChannels = [];
+}
+
 export class ProjectContextUnavailableError extends Error {
   constructor(projectId, projects = [], cause = null) {
     super(`Project ${projectId} is unavailable or inaccessible`);
