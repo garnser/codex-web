@@ -473,6 +473,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.service.action_intents = actions
         self.service.execution_profiles = profiles
         self.service.limits = self.service.limits.model_copy(update={"max_requests_per_minute": 20})
+        self.broker.limits = self.service.limits
         self.current_assignment = assignment
         request = {"parameters": {"title": "Scoped prerequisite", "body": "Existing task"},
                    "idempotency_key": "admin-create-owned-prerequisite"}

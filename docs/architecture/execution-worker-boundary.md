@@ -851,6 +851,10 @@ catalog cannot supply effective administrative targets. Existing schema `1.0` re
 administrative declarations, and ordinary serialized profile snapshots omit the empty
 field so historical checksums and pinned definitions remain unchanged.
 
+Administrative handoff and progress actor fields use the acting published Agent Role.
+Administrative access cannot impersonate an implementer or independent validator in
+a recipient acknowledgement; authenticated requester/worker identities remain distinct.
+
 Administrative operations must validate the selected canonical target, current actor
 and operational authority, live fenced assignment, effective published definition and
 operation permission before creating a canonical ActionIntent. Historical profile or
