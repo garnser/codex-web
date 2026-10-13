@@ -3431,6 +3431,8 @@ thread_service = ThreadService(
 thread_recovery_service.bind_thread_creator(thread_service.create)
 execution_preflight_service = ExecutionPreflightService(
     execution_preflight_store,
+    replacement_resolver=thread_index_repository.replacement_thread_id,
+    event_sink=bot_runtime_telemetry.append,
 )
 app.state.execution_preflight_service = execution_preflight_service
 turn_execution_service.queued_preflight = execution_preflight_service

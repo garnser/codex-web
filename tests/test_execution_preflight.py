@@ -49,6 +49,63 @@ class ExecutionPreflightServiceTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_scoped_route_repair_rejects_mutation_and_accepts_late_original_receipt(self):
+        from codex_web.models import QueuedTurn, QueuedNativeStartReceipt, BotReplyTarget
+        from codex_web.storage.thread_index import ThreadIndexRepository
+        routes = ThreadIndexRepository(self.store.store, Path(self.temp.name) / "threads.json")
+        routes.remember_replacement("old", "new", project_id="project",
+            provenance={"organization_id":"org", "workspace_id":"ws"})
+        self.service.replacement_resolver = routes.replacement_thread_id
+        q = QueuedTurn(id="q", thread_id="old", project_id="project", message="original",
+            source="web", execution_id="original-execution", sandbox="workspace-write",
+            approval_policy="on-request", created_at=100,
+            agent_profile_id="carl", agent_profile_revision=6,
+            repository_resource_id="repo", writable_repository_resource_ids=("repo",),
+            reply_target=BotReplyTarget(thread_id="old", provider="slack",
+                external_conversation_id="channel", message_id="message", updated_at=100))
+        retained = self.service.retain_queued(q, organization_id="org", workspace_id="ws")
+        _, claim = self.service.claim_queued_admission(retained.id)
+        self.service.begin_queued_start(retained.id, claim_id=claim)
+        moved = q.model_copy(update={"thread_id":"new",
+            "reply_target":q.reply_target.model_copy(update={"thread_id":"new"})})
+        for update in [{"message":"changed"}, {"agent_profile_revision":7},
+                       {"writable_repository_resource_ids":("foreign",)},
+                       {"reply_target":moved.reply_target.model_copy(update={"external_conversation_id":"other"})}]:
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                self.service.retain_queued(moved.model_copy(update=update), organization_id="org", workspace_id="ws")
+            self.assertIsNone(self.store.get(retained.id).replacement_thread_id)
+        with self.assertRaises(ValueError):
+            self.service.retain_queued(moved, organization_id="foreign", workspace_id="ws")
+        with self.assertRaises(ValueError):
+            self.service.retain_queued(moved.model_copy(update={"thread_id":"unverified"}),
+                organization_id="org", workspace_id="ws")
+        repaired = self.service.retain_queued(moved, organization_id="org", workspace_id="ws")
+        self.assertEqual(repaired.queued_turn_snapshot, q.model_dump(mode="json"))
+        self.assertEqual(repaired.status, "reconciliation_required")
+        receipt = QueuedNativeStartReceipt(thread_id="old", admission_claim_id=claim,
+            requested_execution_id="original-execution", execution_id="bootstrap",
+            provider_native_turn_id="actual-original-turn", provider_native_session_id="old",
+            provider_id="openai", runtime_id="codex", observed_at=200)
+        started = self.service.record_queued_native_start(retained.id, receipt)
+        self.assertEqual(started.queued_start_receipt, receipt)
+        self.assertEqual(started.replacement_thread_id, "new")
+
+    def test_route_repair_fences_active_admission(self):
+        from codex_web.models import QueuedTurn
+        from codex_web.storage.thread_index import ThreadIndexRepository
+        routes = ThreadIndexRepository(self.store.store, Path(self.temp.name) / "threads.json")
+        routes.remember_replacement("old", "new", project_id="project",
+            provenance={"organization_id":"org", "workspace_id":"ws"})
+        self.service.replacement_resolver = routes.replacement_thread_id
+        q = QueuedTurn(id="q", thread_id="old", project_id="project", message="original",
+            source="web", sandbox=None, approval_policy=None, created_at=100)
+        retained = self.service.retain_queued(q, organization_id="org", workspace_id="ws")
+        self.service.claim_queued_admission(retained.id)
+        with self.assertRaises(ValueError):
+            self.service.retain_queued(q.model_copy(update={"thread_id":"new"}),
+                organization_id="org", workspace_id="ws")
+        self.assertIsNone(self.store.get(retained.id).replacement_thread_id)
+
     def _record(self):
         return self.service.record_blocked(
             actor=self.admin,

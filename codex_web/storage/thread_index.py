@@ -137,7 +137,10 @@ class ThreadIndexRepository:
             return {'version':1, 'edges':edges}
         self.store.update(self.REPLACEMENTS_NAMESPACE, update, default={'version':1,'edges':{}})
 
-    def replacement_thread_id(self, thread_id: str) -> str | None:
+    def replacement_thread_id(
+        self, thread_id: str, *, project_id: str | None = None,
+        organization_id: str | None = None, workspace_id: str | None = None,
+    ) -> str | None:
         payload = self.store.get(self.REPLACEMENTS_NAMESPACE)
         if payload is None:
             return None
@@ -146,7 +149,11 @@ class ThreadIndexRepository:
         edges = payload.get("edges", {})
         current = thread_id
         seen: set[str] = set()
-        project_id = None
+        scoped = any(value is not None for value in
+                     (project_id, organization_id, workspace_id))
+        if scoped and not all((project_id, organization_id, workspace_id)):
+            raise ValueError("thread replacement requires complete tenant scope")
+        observed_project = None
         while current in edges:
             if current in seen:
                 raise ValueError("cyclic thread replacement")
@@ -154,9 +161,15 @@ class ThreadIndexRepository:
             edge = edges[current]
             if edge["old_thread_id"] != current:
                 raise ValueError("invalid thread replacement identity")
-            if project_id is not None and edge["project_id"] != project_id:
+            if observed_project is not None and edge["project_id"] != observed_project:
                 raise ValueError("thread replacement crosses project scope")
-            project_id = edge["project_id"]
+            if scoped:
+                provenance = edge.get("provenance") or {}
+                if (edge["project_id"] != project_id
+                        or provenance.get("organization_id") != organization_id
+                        or provenance.get("workspace_id") != workspace_id):
+                    raise ValueError("thread replacement crosses request scope")
+            observed_project = edge["project_id"]
             current = edge["new_thread_id"]
         return current if current != thread_id else None
 

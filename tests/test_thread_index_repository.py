@@ -35,6 +35,24 @@ class ThreadIndexRepositoryTests(unittest.TestCase):
         self.assertEqual(edge["new_thread_id"], "middle")
         self.assertEqual(edge["provenance"], provenance)
 
+    def test_scoped_replacement_resolution_validates_each_edge(self):
+        repository = ThreadIndexRepository(self.store, self.legacy_path)
+        provenance = {"organization_id":"tenant", "workspace_id":"workspace"}
+        repository.remember_replacement("old", "middle", project_id="project", provenance=provenance)
+        repository.remember_replacement("middle", "new", project_id="project", provenance=provenance)
+        self.assertEqual(repository.replacement_thread_id("old", project_id="project",
+            organization_id="tenant", workspace_id="workspace"), "new")
+        for scope in [dict(project_id="other", organization_id="tenant", workspace_id="workspace"),
+                      dict(project_id="project", organization_id="foreign", workspace_id="workspace"),
+                      dict(project_id="project", organization_id="tenant", workspace_id="foreign"),
+                      dict(project_id="project")]:
+            with self.subTest(scope=scope), self.assertRaises(ValueError):
+                repository.replacement_thread_id("old", **scope)
+        repository.remember_replacement("legacy", "destination", project_id="project", provenance={})
+        with self.assertRaises(ValueError):
+            repository.replacement_thread_id("legacy", project_id="project",
+                organization_id="tenant", workspace_id="workspace")
+
     def test_conflict_cycle_and_tenant_crossing_preserve_original_edge(self):
         repository = ThreadIndexRepository(self.store, self.legacy_path)
         provenance = {"organization_id": "tenant", "workspace_id": "workspace"}

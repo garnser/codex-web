@@ -13,6 +13,54 @@ from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
 class QueuedAdmissionDrainTests(unittest.IsolatedAsyncioTestCase):
+    async def test_verified_replacement_skips_unknown_and_starts_later_request(self):
+        from codex_web.models import Project
+        from codex_web.runtime.execution import TurnExecutionService
+        from codex_web.storage.thread_index import ThreadIndexRepository
+        from tests.test_turn_execution import _Host
+        with tempfile.TemporaryDirectory() as directory:
+            state = SQLiteStateStore(Path(directory) / "state.sqlite")
+            routes = ThreadIndexRepository(state, Path(directory) / "threads.json")
+            routes.remember_replacement("old", "middle", project_id="project",
+                provenance={"organization_id":"local", "workspace_id":"default"})
+            routes.remember_replacement("middle", "new", project_id="project",
+                provenance={"organization_id":"local", "workspace_id":"default"})
+            host = _Host()
+            host._project = lambda _id: Project(id="project", name="Project", path="/workspace/project")
+            runtime = TurnExecutionService(host)
+            events = []
+            service = ExecutionPreflightService(ExecutionPreflightStore(state),
+                replacement_resolver=routes.replacement_thread_id, event_sink=events.append)
+            first = runtime.enqueue_turn(thread_id="old", project_id="project", message="uncertain original")
+            original = service.retain_queued(first, organization_id="local", workspace_id="default")
+            _, claim = service.claim_queued_admission(original.id)
+            service.begin_queued_start(original.id, claim_id=claim)
+            before = service.store.get(original.id).model_dump(mode="json")
+            host.queues.clear()
+            moved = first.model_copy(update={"thread_id":"new"})
+            host.queues["new"] = [moved]
+            second = runtime.enqueue_turn(thread_id="new", project_id="project", message="ready later")
+            runtime.queued_preflight = service
+            runtime.start_thread_turn_now = AsyncMock(return_value={"turn":{"id":"actual"}})
+            runtime.schedule_queue_drain = Mock()
+            await runtime.drain_thread_queue("new")
+            runtime.start_thread_turn_now.assert_awaited_once()
+            self.assertEqual(runtime.start_thread_turn_now.await_args.kwargs["message"], second.message)
+            self.assertEqual([q.id for q in host._thread_queue("new")], [first.id])
+            saved = service.store.get(original.id).model_dump(mode="json")
+            self.assertEqual({k:v for k,v in saved.items() if k not in
+                {"replacement_thread_id","updated_at"}}, {k:v for k,v in before.items() if k not in
+                {"replacement_thread_id","updated_at"}})
+            self.assertEqual(saved["replacement_thread_id"], "new")
+            self.assertIsNone(saved["queued_start_receipt"])
+            self.assertEqual(events[0]["type"], "queued_preflight_replacement_route_restored")
+            reopened = ExecutionPreflightService(ExecutionPreflightStore(
+                SQLiteStateStore(Path(directory) / "state.sqlite")),
+                replacement_resolver=routes.replacement_thread_id)
+            self.assertEqual(reopened.retain_queued(moved, organization_id="local",
+                workspace_id="default").status, "reconciliation_required")
+            self.assertTrue(any(a.id==original.id for a in reopened.store.for_thread("new")))
+
     async def test_legacy_queue_without_execution_id_uses_retained_intent_correlation(self):
         from codex_web.models import Project
         from tests.test_turn_execution import TurnExecutionStartTests

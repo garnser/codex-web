@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import HTTPException
 
@@ -30,9 +30,13 @@ class ExecutionPreflightService:
         store: ExecutionPreflightStore,
         *,
         clock=time.time,
+        replacement_resolver: Callable[..., str | None] | None = None,
+        event_sink: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.store = store
         self.clock = clock
+        self.replacement_resolver = replacement_resolver
+        self.event_sink = event_sink
 
     @staticmethod
     def _attempt_id(execution_id: str) -> str:
@@ -61,7 +65,60 @@ class ExecutionPreflightService:
             agent_profile_actor_id=queued.agent_profile_actor_id,
             source=queued.source, status="queued", created_at=now, updated_at=now,
         )
+        current = self.store.get(attempt.id)
+        if current is not None and (
+            current.replacement_thread_id or current.thread_id
+        ) != queued.thread_id:
+            self._restore_queued_route(current, attempt)
         return self.store.retain_queued(attempt)
+
+    def _restore_queued_route(
+        self, current: ExecutionPreflightAttempt, incoming: ExecutionPreflightAttempt,
+    ) -> None:
+        """Repair scheduling provenance; never infer or retry a native outcome."""
+        if (current.organization_id != incoming.organization_id
+                or current.workspace_id != incoming.workspace_id
+                or current.project_id != incoming.project_id
+                or self.replacement_resolver is None):
+            raise ValueError("retained queued request identity changed")
+        target = self.replacement_resolver(
+            current.thread_id, project_id=current.project_id,
+            organization_id=current.organization_id, workspace_id=current.workspace_id,
+        )
+        if target != incoming.thread_id:
+            raise ValueError("retained queued request replacement is unverified")
+        prior_target = current.replacement_thread_id or current.thread_id
+        changed = False
+        def update(value: ExecutionPreflightAttempt) -> ExecutionPreflightAttempt:
+            nonlocal changed
+            changed = False
+            expected = dict(value.queued_turn_snapshot or {})
+            original = expected.get("thread_id")
+            expected["thread_id"] = target
+            reply = expected.get("reply_target")
+            if reply and reply.get("thread_id") == original:
+                expected["reply_target"] = dict(reply, thread_id=target)
+            if (value.organization_id != incoming.organization_id
+                    or value.workspace_id != incoming.workspace_id
+                    or value.project_id != incoming.project_id
+                    or value.queued_turn_snapshot is None
+                    or expected != incoming.queued_turn_snapshot
+                    or (value.replacement_thread_id or value.thread_id)
+                       not in {prior_target, target}
+                    or value.status in {"admitting", "retrying"}):
+                raise ValueError("retained queued request identity changed")
+            if value.replacement_thread_id == target:
+                return value
+            changed = True
+            return value.model_copy(update={"replacement_thread_id":target,
+                                           "updated_at":float(self.clock())})
+        self.store.update(current.id, update)
+        if changed and self.event_sink is not None:
+            self.event_sink({"type":"queued_preflight_replacement_route_restored",
+                "attempt_id":current.id, "original_thread_id":current.thread_id,
+                "previous_thread_id":prior_target, "replacement_thread_id":target,
+                "project_id":current.project_id,
+                "native_outcome":current.status})
 
     def claim_queued_admission(self, attempt_id: str) -> tuple[ExecutionPreflightAttempt, str | None]:
         claim_id = f'queued-admission-{uuid.uuid4().hex}'
@@ -101,7 +158,7 @@ class ExecutionPreflightService:
                     or current.status != 'reconciliation_required'
                     or current.queued_admission_claim_id != receipt.admission_claim_id
                     or current.execution_id != receipt.requested_execution_id
-                    or (current.replacement_thread_id or current.thread_id) != receipt.thread_id):
+                    or receipt.thread_id not in {current.thread_id, current.replacement_thread_id}):
                 raise ValueError('native start receipt does not match the retained admission')
             return current.model_copy(update={'status':'started',
                 'queued_start_receipt':receipt, 'started_at':receipt.observed_at,
