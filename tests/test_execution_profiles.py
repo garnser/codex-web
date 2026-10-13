@@ -25,6 +25,67 @@ from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
 class ExecutionProfileTests(unittest.TestCase):
+    @staticmethod
+    def administrative_payload():
+        payload = execution_profile_catalog_seed_payload()
+        payload["profiles"].append({
+            "id": "orchestration-admin", "name": "Orchestrator administrative escalation",
+            "description": "Project-scoped governed provider administration",
+            "workspace_mode": "scratch", "repository_access": "none",
+            "required_worker_capabilities": ["command_execution"],
+            "control_plane_operations": ["repository.issue.create"],
+            "administrative_repository_ids": ["resource-connector"],
+        })
+        return payload
+
+    def test_legacy_profile_snapshots_do_not_gain_administrative_fields(self):
+        payload = execution_profile_catalog_seed_payload()
+        self.assertEqual(ExecutionProfileCatalogDefinition.model_validate(payload)
+                         .model_dump(mode="json"), payload)
+        self.assertFalse(any("administrative_repository_ids" in row
+                             for row in payload["profiles"]))
+
+    def test_administrative_targets_cannot_be_repository_execution_or_implicit_operations(self):
+        original = self.administrative_payload()["profiles"][-1]
+        for changes in (
+            {"workspace_mode": "repository", "repository_access": "mutable",
+             "required_worker_capabilities": ["git", "command_execution"]},
+            {"control_plane_operations": []},
+            {"administrative_repository_ids": ["resource-connector", "resource-connector"]},
+            {"administrative_repository_ids": ["/home/private"]},
+            {"administrative_repository_ids": [f"resource-{n}" for n in range(33)]},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                ExecutionProfileContract.model_validate(original | changes)
+
+    def test_administrative_definition_requires_new_schema_and_exact_project(self):
+        with tempfile.TemporaryDirectory() as raw:
+            registry = DefinitionRegistryService(DefinitionRegistryStore(
+                SQLiteStateStore(Path(raw) / "state.sqlite3")))
+            profiles = install_execution_profile_definitions(registry)
+            payload = self.administrative_payload()
+            with self.assertRaises(ValueError):
+                registry.create_draft(DefinitionDraftCreate(
+                    kind="execution-profile-catalog", definition_id="execution.profiles.default",
+                    definition_schema_version="1.0", payload=payload, actor="fixture"))
+            global_record = registry.create_draft(DefinitionDraftCreate(
+                kind="execution-profile-catalog", definition_id="execution.profiles.default",
+                definition_schema_version="1.1", payload=payload, actor="fixture"))
+            registry.publish(global_record.record_id, DefinitionPublishRequest(actor="fixture"))
+            with self.assertRaisesRegex(ValueError, "exact Project-scoped"):
+                profiles.resolve("orchestration-admin", project_id="project-a")
+            project_record = registry.create_draft(DefinitionDraftCreate(
+                kind="execution-profile-catalog", definition_id="execution.profiles.default",
+                definition_schema_version="1.1", payload=payload, actor="fixture",
+                scope_type="project", scope_id="project-a"))
+            registry.publish(project_record.record_id, DefinitionPublishRequest(actor="fixture"))
+            profile, reference = profiles.resolve("orchestration-admin", project_id="project-a")
+            self.assertEqual(profile.administrative_repository_ids, ("resource-connector",))
+            self.assertEqual(reference.record_id, project_record.record_id)
+            self.assertEqual(profile.public()["administrativeRepositoryIds"], ["resource-connector"])
+            with self.assertRaisesRegex(ValueError, "exact Project-scoped"):
+                profiles.resolve("orchestration-admin", project_id="project-b")
+
     def test_seed_contains_repository_and_orchestration_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             store = SQLiteStateStore(Path(raw) / "state.sqlite3")

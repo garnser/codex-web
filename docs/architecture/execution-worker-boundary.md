@@ -837,3 +837,30 @@ nonretryable while later ready requests may start. An actual late original nativ
 receipt still records that original start. Existing preflight inspectors expose
 replacement routing separately from native outcome, with an attributed route
 restoration event. This adds no persisted field, model call or execution grant.
+
+
+### Project-scoped administrative target declarations
+
+Execution-profile catalog schema `1.1` supports bounded `administrative_repository_ids`
+for scratch execution profiles that declare explicit control-plane operations. These
+are canonical resource references for governed provider administration, distinct from
+Git workspace write/read scopes. They grant no filesystem, Git, network, host-mutation,
+credential-reading, or automatic provider-action authority. The declaration must
+resolve from the exact Project-scoped catalog; a global, workspace, or organization
+catalog cannot supply effective administrative targets. Existing schema `1.0` rejects
+administrative declarations, and ordinary serialized profile snapshots omit the empty
+field so historical checksums and pinned definitions remain unchanged.
+
+Administrative operations must validate the selected canonical target, current actor
+and operational authority, live fenced assignment, effective published definition and
+operation permission before creating a canonical ActionIntent. Historical profile or
+requester identity alone cannot grant administrative permission. Administrative target
+configuration does not replace independent review, required CI, provider receipts,
+reconciliation of unknown outcomes, or release/deployment requirements.
+
+Old readers do not understand catalog schema `1.1`; publishing that schema requires
+an explicitly qualified code upgrade before configuring the administrative profile.
+Do not publish a new administrative definition during mixed-version operation or
+assume source-only rollback after such publication. The target declaration schema
+alone does not enable administrative broker execution. Delivery and live acceptance
+are tracked in GitHub issue #1351.

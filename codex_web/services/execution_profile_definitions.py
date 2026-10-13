@@ -4,16 +4,19 @@ from codex_web.definitions import (
     DefinitionContext,
     DefinitionDraftCreate,
     DefinitionReference,
+    DefinitionScope,
     reference_for,
 )
 from codex_web.execution_profile_seed import execution_profile_catalog_seed_payload
 from codex_web.execution_profiles import (
+    ADMINISTRATIVE_EXECUTION_PROFILE_SCHEMA_VERSION,
     EXECUTION_PROFILE_CATALOG_ID,
     EXECUTION_PROFILE_CATALOG_KIND,
     EXECUTION_PROFILE_CATALOG_SCHEMA_VERSION,
     ExecutionProfileCatalogDefinition,
     ExecutionProfileContract,
     validate_execution_profile_catalog,
+    validate_administrative_execution_profile_catalog,
 )
 from codex_web.services.definitions import DefinitionKindSchema, DefinitionRegistryService
 
@@ -89,6 +92,12 @@ class ExecutionProfileDefinitionService:
         profile = catalog.profile_map.get(effective_id)
         if profile is None:
             raise ValueError(f"unknown execution profile: {effective_id}")
+        if profile.administrative_repository_ids and (
+            record.scope_type != DefinitionScope.PROJECT
+            or not project_id or record.scope_id != project_id
+            or record.definition_schema_version != ADMINISTRATIVE_EXECUTION_PROFILE_SCHEMA_VERSION
+        ):
+            raise ValueError("administrative execution targets require an exact Project-scoped schema 1.1 definition")
         return profile, reference_for(record)
 
     def public(
@@ -126,6 +135,14 @@ def install_execution_profile_definitions(
                 validate=validate_execution_profile_catalog,
             )
         )
+    if not any(item["kind"] == EXECUTION_PROFILE_CATALOG_KIND
+               and item["schema_version"] == ADMINISTRATIVE_EXECUTION_PROFILE_SCHEMA_VERSION
+               for item in registry.schemas.metadata()):
+        registry.register_schema(DefinitionKindSchema(
+            kind=EXECUTION_PROFILE_CATALOG_KIND,
+            schema_version=ADMINISTRATIVE_EXECUTION_PROFILE_SCHEMA_VERSION,
+            validate=validate_administrative_execution_profile_catalog,
+        ))
     service = ExecutionProfileDefinitionService(registry)
     service.bootstrap()
     return service
