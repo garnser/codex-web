@@ -80,6 +80,13 @@ apply a function to the indexed namespace column, and the encoded boundary
 keeps adjacent and Unicode logical namespaces isolated without a schema or
 index migration.
 
+A first `record_page()` read may initialize or migrate its keyed collection.
+Execution preflight storage performs that bounded initialization when composed,
+before queue admission can consult its retained-request index inside an atomic
+queue update. This prevents a fresh SQLite queue write from waiting on a second
+writer for lazy preflight initialization; the retained-request duplicate check
+still runs inside the queue transaction.
+
 `record_get_many()` reads at most 1,000 explicitly named keys through one
 connection and collection check. Empty input performs no storage I/O; reads
 retain legacy-document compatibility without migrating or rewriting it.
