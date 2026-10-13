@@ -14,6 +14,7 @@ from codex_web.identity import (
     PrincipalKind,
 )
 from codex_web.models import (
+    BotReplyTarget,
     QueuedNativeStartReceipt,
     QueuedSchedulingRetirement,
     QueuedTurn,
@@ -24,6 +25,7 @@ from codex_web.services.execution_preflight import ExecutionPreflightService
 from codex_web.services.queued_scheduling_retirement import QueuedSchedulingRetirementService
 from codex_web.storage.execution_preflight import ExecutionPreflightStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.storage.thread_index import ThreadIndexRepository
 from codex_web.storage.turn_queue import TurnQueueRepository
 
 
@@ -44,6 +46,8 @@ class QueuedSchedulingRetirementTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
         state = SQLiteStateStore(root / "state.sqlite")
+        self.state = state
+        self.root = root
         self.clock_value = 200.0
         self.preflight = ExecutionPreflightService(
             ExecutionPreflightStore(state), clock=lambda: self.clock_value,
@@ -86,6 +90,23 @@ class QueuedSchedulingRetirementTests(unittest.IsolatedAsyncioTestCase):
         self.source_state = "merged"
         self.active = set()
         self.audit = []
+        self.replacements = {}
+
+        def resolve_replacement(thread_id, **scope):
+            if scope != {
+                "project_id": "project",
+                "organization_id": "org",
+                "workspace_id": "ws",
+            }:
+                raise ValueError("replacement route scope changed")
+            current = thread_id
+            seen = set()
+            while current in self.replacements:
+                if current in seen:
+                    raise ValueError("cyclic replacement route")
+                seen.add(current)
+                current = self.replacements[current]
+            return current if current != thread_id else None
 
         async def source_detail(_ref):
             return {"snapshot": {
@@ -98,6 +119,7 @@ class QueuedSchedulingRetirementTests(unittest.IsolatedAsyncioTestCase):
             queues=self.queues,
             work_item=lambda ref: self.item if ref == self.item.ref else (_ for _ in ()).throw(KeyError(ref)),
             source_detail=source_detail,
+            replacement_resolver=resolve_replacement,
             thread_is_active=lambda thread_id: thread_id in self.active,
             append_audit=self.audit.append,
             clock=lambda: self.clock_value,
@@ -122,6 +144,7 @@ class QueuedSchedulingRetirementTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(result.scheduling_retirement.audit_recorded_at)
         self.assertEqual(self.audit[0].event_type, "queued_scheduling_retired")
         self.assertEqual(self.audit[0].payload["nativeOutcome"], "unknown")
+        self.assertEqual(self.audit[0].payload["originalThreadId"], "thread")
         public = self.preflight.public(result, actor=actor())
         self.assertFalse(public["can_retry"])
         self.assertFalse(public["can_reconcile_prestart"])
@@ -169,6 +192,177 @@ class QueuedSchedulingRetirementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.detail["code"], "scheduling_retirement_queue_changed")
         self.assertEqual(self.queues.get("thread"), [changed, self.later])
         self.assertIsNone(self.preflight.store.get(self.attempt.id).scheduling_retirement)
+
+    async def test_multihop_route_retires_projected_entry_and_preserves_original_evidence(self) -> None:
+        reply = self.queued.model_copy(update={
+            "reply_target": BotReplyTarget(
+                thread_id="thread", provider="slack",
+                external_conversation_id="channel", message_id="message",
+                updated_at=100,
+            ),
+        })
+        original_snapshot = reply.model_dump(mode="json")
+        # Rebuild the retained attempt with reply provenance before restoring
+        # the verified two-edge route, as the real #1322 path does.
+        self.queues.put("thread", [reply, self.later])
+        self.preflight.store.put(self.attempt.model_copy(update={
+            "queued_turn_snapshot": reply.model_dump(mode="json"),
+            "replacement_thread_id": "replacement-2",
+        }))
+        self.replacements.update({
+            "thread": "replacement-1",
+            "replacement-1": "replacement-2",
+        })
+        routes = ThreadIndexRepository(self.state, self.root / "threads.json")
+        provenance = {"organization_id": "org", "workspace_id": "ws"}
+        routes.remember_replacement(
+            "thread", "replacement-1",
+            project_id="project", provenance=provenance,
+        )
+        routes.remember_replacement(
+            "replacement-1", "replacement-2",
+            project_id="project", provenance=provenance,
+        )
+
+        self.service.replacement_resolver = routes.replacement_thread_id
+        projected = reply.model_copy(update={
+            "thread_id": "replacement-2",
+            "reply_target": reply.reply_target.model_copy(
+                update={"thread_id": "replacement-2"},
+            ),
+        })
+        later = self.later.model_copy(update={"thread_id": "replacement-2"})
+        self.queues.put("thread", [])
+        self.queues.put("replacement-2", [projected, later])
+
+        result = await self.service.retire(
+            self.attempt.id, thread_id="replacement-2", actor=actor(),
+        )
+
+        self.assertEqual(self.queues.get("replacement-2"), [later])
+        self.assertEqual(result.queued_turn_snapshot, reply.model_dump(mode="json"))
+        self.assertEqual(result.queued_turn_snapshot, original_snapshot)
+        self.assertEqual(result.queued_turn_snapshot["thread_id"], "thread")
+        self.assertEqual(
+            result.queued_turn_snapshot["reply_target"]["thread_id"], "thread",
+        )
+        self.assertEqual(result.replacement_thread_id, "replacement-2")
+        self.assertEqual(result.status, "reconciliation_required")
+        self.assertIsNone(result.queued_start_receipt)
+        self.assertEqual(self.audit[0].payload["threadId"], "replacement-2")
+        self.assertEqual(self.audit[0].payload["originalThreadId"], "thread")
+
+    async def test_route_projection_rejects_changed_reply_destination_scope_and_actor(self) -> None:
+        reply = self.queued.model_copy(update={
+            "reply_target": BotReplyTarget(
+                thread_id="thread", provider="slack",
+                external_conversation_id="channel", message_id="message",
+                updated_at=100,
+            ),
+        })
+        self.preflight.store.put(self.attempt.model_copy(update={
+            "queued_turn_snapshot": reply.model_dump(mode="json"),
+            "replacement_thread_id": "replacement",
+        }))
+        self.replacements["thread"] = "replacement"
+        projected = reply.model_copy(update={
+            "thread_id": "replacement",
+            "reply_target": reply.reply_target.model_copy(
+                update={"thread_id": "replacement"},
+            ),
+        })
+        cases = (
+            ("reply destination", projected.model_copy(update={
+                "reply_target": projected.reply_target.model_copy(
+                    update={"external_conversation_id": "other"},
+                ),
+            })),
+            ("scope", projected.model_copy(update={
+                "writable_repository_resource_ids": ("other",),
+            })),
+            ("actor", projected.model_copy(update={
+                "agent_profile_actor_id": "other",
+            })),
+        )
+        for label, changed in cases:
+            with self.subTest(label=label):
+                self.queues.put("replacement", [changed])
+                with self.assertRaises(HTTPException) as caught:
+                    await self.service.retire(
+                        self.attempt.id, thread_id="replacement", actor=actor(),
+                    )
+                self.assertEqual(
+                    caught.exception.detail["code"],
+                    "scheduling_retirement_queue_changed",
+                )
+                self.assertEqual(self.queues.get("replacement"), [changed])
+
+    async def test_rejects_unverified_or_active_replacement_route(self) -> None:
+        self.preflight.store.put(self.attempt.model_copy(update={
+            "replacement_thread_id": "replacement",
+        }))
+        for label, route, active, code in (
+            ("missing provenance", {}, set(), "scheduling_retirement_route_unverified"),
+            ("different target", {"thread": "other"}, set(), "scheduling_retirement_route_unverified"),
+            ("active original", {"thread": "replacement"}, {"thread"}, "scheduling_retirement_turn_active"),
+            ("active replacement", {"thread": "replacement"}, {"replacement"}, "scheduling_retirement_turn_active"),
+        ):
+            with self.subTest(label=label):
+                self.replacements.clear()
+                self.replacements.update(route)
+                self.active.clear()
+                self.active.update(active)
+                with self.assertRaises(HTTPException) as caught:
+                    await self.service.retire(
+                        self.attempt.id, thread_id="replacement", actor=actor(),
+                    )
+                self.assertEqual(caught.exception.detail["code"], code)
+
+    async def test_rejects_replacement_graph_outside_retained_tenant_scope(self) -> None:
+        routes = ThreadIndexRepository(self.state, self.root / "threads.json")
+        routes.remember_replacement(
+            "thread", "replacement", project_id="project",
+            provenance={"organization_id": "other", "workspace_id": "ws"},
+        )
+        self.service.replacement_resolver = routes.replacement_thread_id
+        self.preflight.store.put(self.attempt.model_copy(update={
+            "replacement_thread_id": "replacement",
+        }))
+
+        with self.assertRaises(HTTPException) as caught:
+            await self.service.retire(
+                self.attempt.id, thread_id="replacement", actor=actor(),
+            )
+
+        self.assertEqual(
+            caught.exception.detail["code"],
+            "scheduling_retirement_route_unverified",
+        )
+        self.assertEqual(self.queues.get("thread"), [self.queued, self.later])
+
+    async def test_route_extension_during_provider_read_is_fenced(self) -> None:
+        self.replacements["thread"] = "replacement"
+        self.preflight.store.put(self.attempt.model_copy(update={
+            "replacement_thread_id": "replacement",
+        }))
+        projected = self.queued.model_copy(update={"thread_id": "replacement"})
+        self.queues.put("replacement", [projected])
+        original_reader = self.service.source_detail
+
+        async def extend_route(ref):
+            result = await original_reader(ref)
+            self.replacements["replacement"] = "new-target"
+            return result
+
+        self.service.source_detail = extend_route
+        with self.assertRaises(HTTPException) as caught:
+            await self.service.retire(
+                self.attempt.id, thread_id="replacement", actor=actor(),
+            )
+        self.assertEqual(
+            caught.exception.detail["code"], "scheduling_retirement_route_unverified",
+        )
+        self.assertEqual(self.queues.get("replacement"), [projected])
 
     async def test_prepared_but_unconfirmed_removal_stays_fenced_and_unknown(self) -> None:
         evidence = QueuedSchedulingRetirement(

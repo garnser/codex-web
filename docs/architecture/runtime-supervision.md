@@ -404,13 +404,24 @@ Threads to be idle, and a fresh read of the same authoritative provider object
 to report `closed` or `merged`. An open, missing, malformed, cross-scope or
 changed object fails closed.
 
+When recovery has moved scheduling to a replacement Thread, retirement resolves
+the original Thread through the canonical durable replacement graph under the
+retained organization, workspace and Project scope. It projects only the queue
+Thread and a reply Thread that originally pointed to that same Thread. Message,
+reply provider/conversation/message destination, execution, actor/profile and
+repository scope stay byte-equivalent to the immutable snapshot. The original
+snapshot and its digest are never rewritten. Resolution is repeated after the
+provider read and immediately before removal, so an unverified, conflicting or
+concurrently extended route fails closed instead of retiring another entry.
+
 Retirement first appends a `prepared` disposition to the retained preflight.
 That disposition fences queue admission and explicit retry while leaving
 `reconciliation_required`, the original snapshot, blockers, claim and any
 future genuine native receipt intact. A keyed compare-and-remove then removes
-only the byte-equivalent queue entry and preserves every other entry and its
-order. Completion records queue-removal evidence and appends a WorkItem audit
-event. A crash or conflict after preparation remains visibly prepared and
+only the byte-equivalent scheduling projection of that original entry and
+preserves every other entry and its order. Completion records queue-removal
+evidence and appends a WorkItem audit event. A crash or conflict after
+preparation remains visibly prepared and
 non-retryable; queue absence alone cannot promote it to completed retirement.
 The inspector therefore distinguishes retired scheduling, incomplete retirement
 and the still-unknown native outcome. Scheduling retirement never asserts that
@@ -423,7 +434,8 @@ read new payloads. There is no SQL DDL or retrospective start/ACK backfill.
 Rollout requires drained admissions and a declared persisted-payload
 compatibility change. Mixed-version
 writers are unsupported, and rollback requires the canonical pre-transition
-snapshot under maintenance; source-only rollback cannot safely interpret new
+backup of preflights, queues, WorkItems, audit and replacement routing under
+maintenance; source-only rollback cannot safely interpret new
 preflight dispositions. The pre-transition snapshot supports fenced recovery
 before new admissions resume. After new work runs, restoring that older snapshot
 must not discard later requests or provider outcomes or replay their starts;
