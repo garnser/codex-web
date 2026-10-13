@@ -47,12 +47,18 @@ jobs:
         run: python -m unittest tests.test_documentation_foundation tests.test_ci_validation
 
   unit:
-    name: unit-static-tests
+    name: unit-static
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+      - name: Validate test applicability
+        env:
+          CHECK_NAME: unit-static
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          SELECTION_ONLY: 'true'
+        run: python3 scripts/ci/check_gate.py
       - name: Prepare runner-local data directory
         shell: bash
         run: |
@@ -61,20 +67,25 @@ jobs:
             unlink data
           fi
           mkdir -p data
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
           python-version: '3.14'
           cache: pip
           cache-dependency-path: requirements.lock
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
           node-version: '24'
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Install locked Python dependencies
         run: python -m pip install -r requirements.lock
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Run Python tests
         run: python scripts/ci/run_unit_tests.py
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Syntax-check frontend JavaScript
         shell: bash
         run: |
@@ -82,64 +93,90 @@ jobs:
           for script in static/*.js; do
             node --check "$script"
           done
-    needs: changes
-    if: ${{ needs.changes.outputs.full == 'true' }}
+        if: ${{ needs.changes.outputs.full == 'true' }}
+    needs:
+      - changes
+      - documentation
+    if: ${{ always() }}
 
   gitlab-sync-qualification:
-    name: gitlab-sync-qualification-tests
+    name: gitlab-sync-qualification
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+      - name: Validate test applicability
+        env:
+          CHECK_NAME: gitlab-sync-qualification
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          SELECTION_ONLY: 'true'
+        run: python3 scripts/ci/check_gate.py
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
           python-version: '3.14'
           cache: pip
           cache-dependency-path: requirements.lock
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Install locked Python dependencies
         run: python -m pip install -r requirements.lock
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Qualify large-state GitLab sync complexity and responsiveness
         run: python -m unittest tests.test_gitlab_sync_scaling
-    needs: changes
-    if: ${{ needs.changes.outputs.full == 'true' }}
+        if: ${{ needs.changes.outputs.full == 'true' }}
+    needs:
+      - changes
+      - documentation
+    if: ${{ always() }}
 
   explicit-repository-target-qualification:
-    name: explicit-repository-target-qualification-tests
+    name: explicit-repository-target-qualification
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+      - name: Validate test applicability
+        env:
+          CHECK_NAME: explicit-repository-target-qualification
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          SELECTION_ONLY: 'true'
+        run: python3 scripts/ci/check_gate.py
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
           python-version: '3.14'
           cache: pip
           cache-dependency-path: requirements.lock
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
           cache-dependency-path: package-lock.json
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Install locked qualification dependencies
         run: |
           python -m pip install -r requirements.lock
           npm ci
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Restore Playwright browser cache
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Ensure Chromium browser runtime is installed
         run: npx playwright install chromium
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Qualify explicit per-turn repository targeting and isolation
         run: |
           python -m unittest \
             tests.test_explicit_repository_target_qualification \
             tests.test_project_readiness.ProjectReadinessTests.test_explicit_multi_repository_policy_is_ready_without_default
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Qualify coordinated multi-repository execution invariants
         run: |
           python -m unittest \
@@ -154,6 +191,7 @@ jobs:
             tests.test_artifact_evidence.ArtifactEvidenceTests.test_evidence_can_carry_repository_resource_attribution \
             tests.test_action_intents.ActionIntentTests.test_execution_bound_repository_action_must_stay_in_writable_scope \
             tests.test_action_intents.ActionIntentTests.test_execution_bound_repository_action_requires_assignment_state
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Qualify repository target browser provenance and blockers
         shell: bash
         run: |
@@ -174,16 +212,19 @@ jobs:
             tests/browser/execution_preflight.spec.js \
             --workers=1 \
             --reporter=line
-    needs: changes
-    if: ${{ needs.changes.outputs.full == 'true' }}
+        if: ${{ needs.changes.outputs.full == 'true' }}
+    needs:
+      - changes
+      - documentation
+    if: ${{ always() }}
 
   distributed:
-    name: distributed-backends-tests
+    name: distributed-backends
     runs-on: ubuntu-latest
     timeout-minutes: 10
     services:
       postgres:
-        image: postgres:17-alpine
+        image: ${{ needs.changes.outputs.full == 'true' && 'postgres:17-alpine' || '' }}
         env:
           POSTGRES_USER: codex
           POSTGRES_PASSWORD: codex
@@ -192,7 +233,7 @@ jobs:
           - 5432:5432
         options: --health-cmd "pg_isready -U codex -d codex" --health-interval 2s --health-timeout 5s --health-retries 15
       redis:
-        image: redis:8-alpine
+        image: ${{ needs.changes.outputs.full == 'true' && 'redis:8-alpine' || '' }}
         ports:
           - 6379:6379
         options: --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 5s --health-retries 15
@@ -202,6 +243,12 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+      - name: Validate test applicability
+        env:
+          CHECK_NAME: distributed-backends
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          SELECTION_ONLY: 'true'
+        run: python3 scripts/ci/check_gate.py
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
@@ -210,18 +257,23 @@ jobs:
           cache-dependency-path: |
             requirements.lock
             requirements-distributed.txt
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Install locked core and distributed dependencies
         run: |
           python -m pip install -r requirements.lock
           python -m pip install -r requirements-distributed.txt
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Exercise PostgreSQL and Redis replicated semantics
         run: python -m unittest tests.test_distributed_backends tests.test_keyed_revisions tests.test_postgres_collection_ranges
           tests.test_autonomy_append_scaling
-    needs: changes
-    if: ${{ needs.changes.outputs.full == 'true' }}
+        if: ${{ needs.changes.outputs.full == 'true' }}
+    needs:
+      - changes
+      - documentation
+    if: ${{ always() }}
 
   browser-suite:
-    name: chromium-${{ matrix.suite }}-tests
+    name: chromium-${{ matrix.suite }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -233,21 +285,31 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+      - name: Validate test applicability
+        env:
+          CHECK_NAME: chromium-${{ matrix.suite }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          SELECTION_ONLY: 'true'
+        run: python3 scripts/ci/check_gate.py
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
           cache-dependency-path: package-lock.json
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Install locked browser test dependencies
         run: npm ci
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Restore Playwright browser cache
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Ensure Chromium browser runtime is installed
         run: npx playwright install chromium
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Run frontend browser tests
         shell: bash
         run: |
@@ -271,25 +333,28 @@ jobs:
           else
             npm run docs:screenshots
           fi
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Upload browser failure diagnostics
-        if: failure()
+        if: ${{ needs.changes.outputs.full == 'true' && (failure()) }}
         uses: actions/upload-artifact@v4
         with:
           name: browser-failure-diagnostics-${{ matrix.suite }}
           path: test-results/
           if-no-files-found: warn
       - name: Upload documentation screenshot artifact
-        if: matrix.suite == 'screenshots'
+        if: ${{ needs.changes.outputs.full == 'true' && (matrix.suite == 'screenshots') }}
         uses: actions/upload-artifact@v4
         with:
           name: documentation-screenshots
           path: docs/assets/screenshots/generated/
           if-no-files-found: error
-    needs: changes
-    if: ${{ needs.changes.outputs.full == 'true' }}
+    needs:
+      - changes
+      - documentation
+    if: ${{ always() }}
 
   docker:
-    name: docker-smoke-tests
+    name: docker-smoke
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -297,9 +362,16 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 2
+      - name: Validate test applicability
+        env:
+          CHECK_NAME: docker-smoke
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          SELECTION_ONLY: 'true'
+        run: python3 scripts/ci/check_gate.py
       - name: Check optional Docker Hub pull credentials
         id: registry-auth
-        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        if: ${{ needs.changes.outputs.full == 'true' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name
+          == github.repository) }}
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -307,15 +379,15 @@ jobs:
           if [[ -n "$DOCKERHUB_USERNAME" && -n "$DOCKERHUB_TOKEN" ]]; then
             echo 'available=true' >> "$GITHUB_OUTPUT"
           fi
-
       - name: Log in to Docker Hub for authenticated pulls
-        if: steps.registry-auth.outputs.available == 'true'
+        if: ${{ needs.changes.outputs.full == 'true' && (steps.registry-auth.outputs.available == 'true') }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Validate Compose configuration
         run: docker compose config
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Validate recovery Compose/nginx configuration
         shell: bash
         env:
@@ -327,6 +399,7 @@ jobs:
             -f compose.recovery.yaml \
             config >/tmp/recovery-compose.yaml
           grep -F 'deploy/recovery/nginx.conf' /tmp/recovery-compose.yaml
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Select runtime base
         id: runtime-base
         shell: bash
@@ -367,6 +440,7 @@ jobs:
 
           echo "base_image=${base_image}" >> "$GITHUB_OUTPUT"
           echo "codex_version=${expected}" >> "$GITHUB_OUTPUT"
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Build application image
         shell: bash
         env:
@@ -381,12 +455,14 @@ jobs:
             --build-arg "CODEX_WEB_GIT_REVISION=${GITHUB_SHA}" \
             --tag codex-web:test \
             .
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Verify pinned Codex version
         run: |
           expected="$(awk -F= '$1 == "CODEX_VERSION" {print $2}' .env.example)"
           actual="$(docker run --rm --entrypoint codex codex-web:test --version)"
           echo "Expected Codex ${expected}; image reports: ${actual}"
           printf '%s' "$actual" | grep -F "$expected"
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Smoke-test container liveness
         shell: bash
         run: |
@@ -411,6 +487,7 @@ jobs:
 
           echo 'Container did not become live' >&2
           exit 1
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Qualify clean-install onboarding through Compose and public APIs
         shell: bash
         run: |
@@ -465,6 +542,7 @@ jobs:
           docker compose -p codex-web-onboarding restart codex-web
           bash scripts/qualify-clean-install-onboarding.sh verify-restart \
             | tee "$artifacts/restart.json"
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Qualify deterministic first-thread execution substitute
         shell: bash
         run: |
@@ -475,33 +553,44 @@ jobs:
             -m unittest \
             tests.test_fresh_project_bootstrap \
             tests.test_thread_bootstrap_routing
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Upload clean-install onboarding evidence
-        if: always()
+        if: ${{ needs.changes.outputs.full == 'true' && (always()) }}
         uses: actions/upload-artifact@v4
         with:
           name: clean-install-onboarding
           path: /tmp/codex-web-onboarding-artifacts/
           if-no-files-found: warn
-    needs: changes
-    if: ${{ needs.changes.outputs.full == 'true' }}
+    needs:
+      - changes
+      - documentation
+    if: ${{ always() }}
 
   podman-worker:
-    name: rootless-podman-worker-tests
+    name: rootless-podman-worker
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+      - name: Validate test applicability
+        env:
+          CHECK_NAME: rootless-podman-worker
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          SELECTION_ONLY: 'true'
+        run: python3 scripts/ci/check_gate.py
       - name: Install rootless Podman prerequisites
         run: |
           sudo apt-get update
           sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Positive rootless Podman smoke
         shell: bash
         run: |
           set -euo pipefail
           test "$(podman info --format '{{.Host.Security.Rootless}}')" = "true"
           podman run --rm docker.io/library/debian:bookworm-slim /bin/true
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Build non-root Bubblewrap qualification image
         shell: bash
         run: |
@@ -518,6 +607,7 @@ jobs:
             --file /tmp/Containerfile.codex-bwrap \
             --tag localhost/codex-bwrap-probe:test \
             /tmp
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Verify unsupported nested Bubblewrap fails closed
         shell: bash
         run: |
@@ -550,6 +640,7 @@ jobs:
           printf '%s\n' "$output"
           printf '%s' "$output" | grep -E \
             "Can't mount proc|Operation not permitted|Unexpected capabilities"
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Verify capability escalation is not treated as supported fallback
         shell: bash
         run: |
@@ -583,8 +674,11 @@ jobs:
           printf '%s\n' "$output"
           printf '%s' "$output" | grep -E \
             "Unexpected capabilities|Operation not permitted|Can't mount proc"
-    needs: changes
-    if: ${{ needs.changes.outputs.full == 'true' }}
+        if: ${{ needs.changes.outputs.full == 'true' }}
+    needs:
+      - changes
+      - documentation
+    if: ${{ always() }}
 
   functional-shards:
     name: chromium-functional-shard-${{ matrix.shard }}
@@ -648,8 +742,26 @@ jobs:
           path: test-results/
           if-no-files-found: warn
 
-  required-checks:
-    name: ${{ matrix.check }}
+  functional:
+    name: chromium-functional
+    needs:
+      - changes
+      - documentation
+      - functional-shards
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Verify applicable test outcomes
+        env:
+          CHECK_NAME: chromium-functional
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python3 scripts/ci/check_gate.py
+
+  browser:
+    name: chromium
     needs:
       - changes
       - documentation
@@ -664,25 +776,11 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    strategy:
-      fail-fast: false
-      matrix:
-        check:
-          - unit-static
-          - gitlab-sync-qualification
-          - explicit-repository-target-qualification
-          - distributed-backends
-          - chromium-functional
-          - chromium-visual
-          - chromium-screenshots
-          - docker-smoke
-          - rootless-podman-worker
-          - chromium
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
-      - name: Verify all applicable checks and report inapplicable suites
+      - name: Verify applicable test outcomes
         env:
-          CHECK_NAME: ${{ matrix.check }}
+          CHECK_NAME: chromium
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: python3 scripts/ci/check_gate.py
