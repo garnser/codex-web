@@ -42,6 +42,8 @@ class ActionIntentAdminUiTests(unittest.TestCase):
         self.assertIn("Callback payload body is intentionally not rendered", javascript)
         self.assertIn("Evidence-evaluation payload is retained canonically but not dumped", javascript)
         self.assertIn("Request parameter keys only", javascript)
+        self.assertIn("Publication recovery provenance", javascript)
+        self.assertIn("existing_change_request_number", javascript)
         self.assertIn("action-intent:admin", javascript)
         self.assertIn('["mfa", "local_trusted"]', javascript)
         self.assertIn("Expired EXECUTING intents become UNCERTAIN", javascript)

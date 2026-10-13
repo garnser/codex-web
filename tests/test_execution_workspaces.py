@@ -415,6 +415,140 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         self.assertEqual(set(self.host.states), {self.work_item.ref})
         self.assertEqual(self.host.events, [])
 
+    def test_issue_scoped_publication_recovery_preserves_bootstrap_subject(self) -> None:
+        workspace = self.service.acquire(
+            ExecutionWorkspaceAcquire(
+                subject=ExecutionSubject(
+                    kind=ExecutionSubjectKind.THREAD_BOOTSTRAP,
+                    ref="bootstrap-recovery",
+                ),
+                execution_id="bootstrap-recovery-exec",
+                project_id="home",
+                resource_ids=(self.repo.id,),
+                repository_resource_id=self.repo.id,
+                ttl_seconds=30,
+            ),
+            actor=self.actor,
+        )
+        other_admin = self.actor.model_copy(
+            update={"identity_id": "different-workspace-admin"}
+        )
+        with self.assertRaisesRegex(
+            AuthorizationError,
+            "requires the execution workspace owner",
+        ):
+            self.service.authorize_publication_recovery(
+                workspace.id,
+                work_item_ref=self.work_item.ref,
+                repository_resource_id=self.repo.id,
+                assignment_id="assignment-admin-refused",
+                assignment_fence=7,
+                source_execution_id=workspace.execution_id,
+                source_subject=workspace.subject,
+                assignment_deadline_at=time.time() + 20,
+                actor=other_admin,
+            )
+        authorized = self.service.authorize_publication_recovery(
+            workspace.id,
+            work_item_ref=self.work_item.ref,
+            repository_resource_id=self.repo.id,
+            assignment_id="assignment-recovery",
+            assignment_fence=7,
+            source_execution_id=workspace.execution_id,
+            source_subject=workspace.subject,
+            assignment_deadline_at=time.time() + 20,
+            actor=self.actor,
+        )
+
+        self.assertEqual(authorized.subject, workspace.subject)
+        self.assertIsNone(authorized.work_item_ref)
+        self.assertEqual(
+            authorized.publication_recovery.work_item_ref,
+            self.work_item.ref,
+        )
+        self.assertEqual(authorized.publication_recovery.assignment_fence, 7)
+        self.assertLessEqual(
+            authorized.publication_recovery.expires_at,
+            time.time() + 20,
+        )
+        self.assertEqual(
+            self.service.publication_recovery(
+                workspace.id, self.repo.id, actor=self.actor
+            ),
+            authorized.publication_recovery,
+        )
+        events = self.service.events(workspace.id, actor=self.actor)
+        self.assertEqual(events[-1].event_type, "publication_recovery_authorized")
+
+        with self.assertRaisesRegex(
+            ExecutionWorkspaceConflictError,
+            "different active publication recovery scope",
+        ):
+            self.service.authorize_publication_recovery(
+                workspace.id,
+                work_item_ref="group/app#43",
+                repository_resource_id=self.repo.id,
+                assignment_id="assignment-recovery",
+                assignment_fence=7,
+                source_execution_id=workspace.execution_id,
+                source_subject=workspace.subject,
+                assignment_deadline_at=time.time() + 20,
+                actor=self.actor,
+            )
+
+    def test_publication_recovery_refuses_work_item_and_released_workspaces(self) -> None:
+        workspace = self._acquire("work-item-recovery-refused")
+        with self.assertRaisesRegex(
+            ExecutionWorkspaceConflictError,
+            "already have canonical issue scope",
+        ):
+            self.service.authorize_publication_recovery(
+                workspace.id,
+                work_item_ref=self.work_item.ref,
+                repository_resource_id=self.repo.id,
+                assignment_id="assignment-work-item",
+                assignment_fence=1,
+                source_execution_id=workspace.execution_id,
+                source_subject=workspace.subject,
+                assignment_deadline_at=time.time() + 20,
+                actor=self.actor,
+            )
+
+        bootstrap = self.service.acquire(
+            ExecutionWorkspaceAcquire(
+                subject=ExecutionSubject(
+                    kind=ExecutionSubjectKind.THREAD_BOOTSTRAP,
+                    ref="bootstrap-released",
+                ),
+                execution_id="bootstrap-released-exec",
+                project_id="home",
+                resource_ids=(self.repo.id,),
+                repository_resource_id=self.repo.id,
+                ttl_seconds=30,
+            ),
+            actor=self.actor,
+        )
+        self.service.release(
+            bootstrap.id,
+            ExecutionWorkspaceRelease(reason="test release"),
+            actor=self.actor,
+        )
+        with self.assertRaisesRegex(
+            ExecutionWorkspaceConflictError,
+            "not active",
+        ):
+            self.service.authorize_publication_recovery(
+                bootstrap.id,
+                work_item_ref=self.work_item.ref,
+                repository_resource_id=self.repo.id,
+                assignment_id="assignment-released",
+                assignment_fence=1,
+                source_execution_id=bootstrap.execution_id,
+                source_subject=bootstrap.subject,
+                assignment_deadline_at=time.time() + 20,
+                actor=self.actor,
+            )
+
     def test_v1_workspace_state_migrates_work_item_subject_on_workspace_and_lease(self) -> None:
         workspace = self._acquire("migrate-exec", self.repo.id)
         raw = self.service.store.load().model_dump(mode="json")
@@ -433,7 +567,7 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         migrated_lease = next(
             item for item in state.leases if item.execution_workspace_id == workspace.id
         )
-        self.assertEqual(state.schema_version, "1.5")
+        self.assertEqual(state.schema_version, "1.6")
         self.assertEqual(migrated_workspace.subject.kind, ExecutionSubjectKind.WORK_ITEM)
         self.assertEqual(migrated_workspace.subject.ref, self.work_item.ref)
         self.assertEqual(migrated_lease.subject, migrated_workspace.subject)
@@ -483,7 +617,7 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         state = ExecutionWorkspaceStateStore(legacy_sqlite).load()
         migrated = next(item for item in state.workspaces if item.id == workspace.id)
 
-        self.assertEqual(state.schema_version, "1.5")
+        self.assertEqual(state.schema_version, "1.6")
         self.assertEqual(
             migrated.repository_outcome_status,
             RepositoryOutcomeStatus.BLOCKED,

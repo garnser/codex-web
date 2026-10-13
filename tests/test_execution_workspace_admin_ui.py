@@ -48,6 +48,8 @@ class ExecutionWorkspaceAdminUiTests(unittest.TestCase):
         self.assertIn("lease.released_at", javascript)
         self.assertIn("release_reason", javascript)
         self.assertIn("integration.conflicts", javascript)
+        self.assertIn("publication_recovery", javascript)
+        self.assertIn("does not relabel the execution subject", javascript)
         self.assertIn("execution-workspace:admin", javascript)
         self.assertIn('["mfa", "local_trusted"]', javascript)
         self.assertIn("Integration is not declared successful", javascript)

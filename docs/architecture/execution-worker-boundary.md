@@ -310,6 +310,36 @@ level; action fields belong inside `parameters`. Branch publication derives
 values. Malformed flat envelopes fail before intent creation, with a bounded
 shape hint; metadata never changes action validation or publication authority.
 
+An active repository-write owner whose canonical execution subject is `thread`
+or `thread_bootstrap` may request a bounded issue-scoped publication recovery
+through the assignment broker. The broker accepts only a qualified Work Item in
+the same tenant, workspace and Project, whose current owner matches the pinned
+Agent Profile and whose resources include the assignment's single writable
+repository. The request records the original execution subject and execution,
+assignment ID and fence, requester identity, workspace lease, repository and
+expiry. It does not rewrite the subject, create a Work Item execution, transfer
+historical authority or extend either lease.
+
+That provenance permits the existing GitLab-MR recovery contract to consume the
+Work Item's independently verified issue relation while preserving all existing
+exact-local-head, observed-remote-head, source-branch, provider-project and MR
+state checks. A live workspace can hold only one active recovery scope; a
+different issue, repository, assignment or fence is refused until the old scope
+expires with its original assignment/workspace bound. Released, expired,
+cross-Project, cross-repository, unowned and concurrent replacement requests
+fail before ActionIntent creation. The eventual branch ActionIntent is attributed
+to the recovery Work Item and original execution. The workspace inspector shows
+both the immutable execution subject and recovery provenance, while the existing
+ActionIntent inspector shows the Work Item/execution attribution. This adds no
+provider credential exposure, Orchestrator authority, Operator provisioning
+requirement or automatic intent replay.
+
+The execution-workspace persisted contract is version `1.6`. Version `1.5`
+migrates additively with no recovery scope. Older readers that reject unknown
+workspace fields cannot read newly scoped records, so rollback requires the
+canonical pre-transition snapshot or expiry/removal of those records; source-only
+rollback is not advertised after a recovery scope is written.
+
 Repository fact reads accept an optional single, nonempty
 `repository_resource_id` query parameter. The default remains the assignment's
 singular writable repository. Explicit selectors may choose only that repository

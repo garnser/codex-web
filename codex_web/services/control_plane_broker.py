@@ -325,6 +325,13 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
         authority_level=AuthorityLevel.EXECUTE,
     ),
     ControlPlaneBrokerOperation(
+        id="repository.workspace.publication-recovery",
+        method="POST",
+        path_template="/api/repository-workspace/publication-recovery",
+        capability="repository.branch.publish",
+        authority_level=AuthorityLevel.EXECUTE,
+    ),
+    ControlPlaneBrokerOperation(
         id="repository.issue.update",
         method="POST",
         path_template="/api/repository-actions/issue/update",
@@ -489,6 +496,15 @@ class ControlPlaneBrokerService:
                         "existing ref: expected_remote_revision=observed SHA"
                     ),
                 }
+        if item.id == "repository.workspace.publication-recovery":
+            result["request_body"] = {
+                "type": "object",
+                "required": ["work_item_ref"],
+                "allowed_fields": ["work_item_ref"],
+                "provenance": (
+                    "records bounded issue scope without changing the execution subject"
+                ),
+            }
         return result
 
     @staticmethod
@@ -632,8 +648,14 @@ class ControlPlaneBrokerService:
                 target_ref=None,
                 query=query,
             )
-        if path == "/api/repository-workspace/refresh":
-            operation = _OPERATION_BY_ID["repository.workspace.refresh"]
+        workspace_operation = {
+            "/api/repository-workspace/refresh": "repository.workspace.refresh",
+            "/api/repository-workspace/publication-recovery": (
+                "repository.workspace.publication-recovery"
+            ),
+        }.get(path)
+        if workspace_operation is not None:
+            operation = _OPERATION_BY_ID[workspace_operation]
             if method != operation.method:
                 raise ControlPlaneBrokerDeniedError(
                     f"method {method} is not allowed for {operation.id}"
@@ -969,6 +991,37 @@ class ControlPlaneBrokerService:
                 **parameters,
                 "execution_workspace_id": assignment.execution_workspace_id,
             }
+        intent_work_item_ref = assignment.work_item_ref
+        if (
+            action_id == CODE_HOST_BRANCH_PUBLISH_ACTION_ID
+            and parameters.get("existing_change_request_number") is not None
+            and intent_work_item_ref is None
+        ):
+            if self.execution_workspaces is None or not assignment.execution_workspace_id:
+                raise ControlPlaneBrokerDeniedError(
+                    "existing change request recovery requires an execution workspace"
+                )
+            recovery = await asyncio.to_thread(
+                self.execution_workspaces.publication_recovery,
+                assignment.execution_workspace_id,
+                repository_id,
+                actor=requester_actor,
+            )
+            if recovery is None:
+                raise ControlPlaneBrokerDeniedError(
+                    "existing change request recovery requires active issue-scoped publication recovery"
+                )
+            if (
+                recovery.assignment_id != assignment.id
+                or recovery.assignment_fence != assignment.fence
+                or recovery.source_execution_id != assignment.execution_id
+                or recovery.source_subject != assignment.subject
+                or recovery.authorized_by != requester_actor.identity_id
+            ):
+                raise ControlPlaneBrokerDeniedError(
+                    "publication recovery provenance does not match the live assignment fence"
+                )
+            intent_work_item_ref = recovery.work_item_ref
         action_registry = self.action_intents.execution.registry
         binding = self._repository_action_binding(
             action_registry=action_registry,
@@ -1004,7 +1057,7 @@ class ControlPlaneBrokerService:
             ActionIntentCreate(
                 binding_id=binding.id,
                 request=request,
-                work_item_ref=assignment.work_item_ref,
+                work_item_ref=intent_work_item_ref,
                 execution_id=assignment.execution_id,
                 **deadline,
                 policy_decision=ActionDecisionSnapshot(
@@ -1439,6 +1492,71 @@ class ControlPlaneBrokerService:
             except ExecutionWorkspaceBackendError as exc:
                 raise ControlPlaneBrokerRequestError(str(exc)) from exc
             result = {"item": refreshed.model_dump(mode="json")}
+        elif operation.id == "repository.workspace.publication-recovery":
+            if self.execution_workspaces is None or not assignment.execution_workspace_id:
+                raise ControlPlaneBrokerDeniedError(
+                    "assignment publication recovery is unavailable"
+                )
+            if set(payload) != {"work_item_ref"}:
+                raise ControlPlaneBrokerRequestError(
+                    "publication recovery requires only work_item_ref"
+                )
+            work_item_ref = str(payload.get("work_item_ref") or "").strip()
+            if not work_item_ref or len(work_item_ref) > 500:
+                raise ControlPlaneBrokerRequestError(
+                    "publication recovery work_item_ref is invalid"
+                )
+            state = await asyncio.to_thread(
+                self._state_for_target, assignment, work_item_ref
+            )
+            repository_id = self._writable_repository_id(assignment)
+            if repository_id not in tuple(state.resource_ids):
+                raise ControlPlaneBrokerDeniedError(
+                    "publication recovery work item does not own the writable repository"
+                )
+            profile = assignment.agent_profile
+            owner_ids = {
+                value
+                for value in (
+                    getattr(profile, "profile_id", None),
+                    getattr(profile, "role_id", None),
+                )
+                if value
+            }
+            if not owner_ids or getattr(state, "current_owner", None) not in owner_ids:
+                raise ControlPlaneBrokerDeniedError(
+                    "publication recovery requires the current Work Item implementation owner"
+                )
+            if getattr(state, "closed_at", None) is not None or getattr(
+                state, "current_stage", None
+            ) == "closed":
+                raise ControlPlaneBrokerDeniedError(
+                    "publication recovery Work Item is closed"
+                )
+            if assignment.lease is None or assignment.fence < 1:
+                raise ControlPlaneBrokerDeniedError(
+                    "publication recovery requires a live fenced assignment"
+                )
+            try:
+                recovered = await asyncio.to_thread(
+                    self.execution_workspaces.authorize_publication_recovery,
+                    assignment.execution_workspace_id,
+                    work_item_ref=work_item_ref,
+                    repository_resource_id=repository_id,
+                    assignment_id=assignment.id,
+                    assignment_fence=assignment.fence,
+                    source_execution_id=assignment.execution_id,
+                    source_subject=assignment.subject,
+                    assignment_deadline_at=assignment.deadline_at,
+                    actor=requester_actor,
+                )
+            except (
+                ExecutionWorkspaceBackendError,
+                ExecutionWorkspaceConflictError,
+                ExecutionWorkspaceNotFoundError,
+            ) as exc:
+                raise ControlPlaneBrokerRequestError(str(exc), status_code=409) from exc
+            result = {"item": recovered.model_dump(mode="json")}
         elif operation.id.startswith("repository."):
             result = await self._execute_repository_action(
                 assignment=assignment,

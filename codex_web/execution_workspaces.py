@@ -6,7 +6,11 @@ import time
 from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from codex_web.execution_subjects import ExecutionSubject, normalize_execution_subject
+from codex_web.execution_subjects import (
+    ExecutionSubject,
+    ExecutionSubjectKind,
+    normalize_execution_subject,
+)
 
 
 class ExecutionWorkspaceKind(StrEnum):
@@ -90,6 +94,27 @@ class WorkspaceQuota(BaseModel):
     max_active_per_identity: int = Field(default=8, ge=1)
     max_resources_per_workspace: int = Field(default=16, ge=1)
     max_requested_disk_bytes: int = Field(default=20 * 1024 * 1024 * 1024, ge=1)
+
+
+class PublicationRecoveryProvenance(BaseModel):
+    """Bounded issue scope added to a live non-Work-Item workspace.
+
+    This records why the existing workspace may attest an issue-related change
+    request without changing its immutable execution subject.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    work_item_ref: str = Field(min_length=1)
+    repository_resource_id: str = Field(min_length=1)
+    assignment_id: str = Field(min_length=1)
+    assignment_fence: int = Field(ge=1)
+    source_execution_id: str = Field(min_length=1)
+    source_subject: ExecutionSubject
+    lease_id: str = Field(min_length=1)
+    authorized_by: str = Field(min_length=1)
+    authorized_at: float
+    expires_at: float
 
 
 class ExecutionWorkspaceLease(BaseModel):
@@ -192,6 +217,7 @@ class ExecutionWorkspace(BaseModel):
     repository_checkpoints: dict[str, RepositoryCheckpoint] = Field(
         default_factory=dict
     )
+    publication_recovery: PublicationRecoveryProvenance | None = None
 
     @model_validator(mode="after")
     def normalize_subject(self) -> "ExecutionWorkspace":
@@ -249,6 +275,36 @@ class ExecutionWorkspace(BaseModel):
                 raise ValueError("repository checkpoint key must match its resource id")
             if resource_id not in writable:
                 raise ValueError("repository checkpoint must belong to a writable repository")
+        recovery = self.publication_recovery
+        if recovery is not None:
+            if self.subject.kind == ExecutionSubjectKind.WORK_ITEM:
+                raise ValueError(
+                    "publication recovery provenance is only valid for non-work-item subjects"
+                )
+            if recovery.repository_resource_id not in writable:
+                raise ValueError(
+                    "publication recovery repository must be writable in the workspace"
+                )
+            if recovery.source_execution_id != self.execution_id:
+                raise ValueError(
+                    "publication recovery execution must match the workspace"
+                )
+            if recovery.source_subject != self.subject:
+                raise ValueError(
+                    "publication recovery subject must match the workspace"
+                )
+            if recovery.lease_id != self.lease_id:
+                raise ValueError(
+                    "publication recovery lease must match the workspace"
+                )
+            if recovery.authorized_by != self.owner_identity_id:
+                raise ValueError(
+                    "publication recovery requester must own the workspace"
+                )
+            if recovery.expires_at <= recovery.authorized_at:
+                raise ValueError(
+                    "publication recovery expiry must follow authorization"
+                )
         return self
 
 
@@ -265,7 +321,7 @@ class ExecutionWorkspaceEvent(BaseModel):
 class ExecutionWorkspaceState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.5"
+    schema_version: str = "1.6"
     workspaces: list[ExecutionWorkspace] = Field(default_factory=list)
     leases: list[ExecutionWorkspaceLease] = Field(default_factory=list)
     events: list[ExecutionWorkspaceEvent] = Field(default_factory=list)

@@ -126,10 +126,13 @@
     const security = intent.security_decision || {};
     const retry = intent.retry_policy || {};
     const paramKeys = Object.keys(request.parameters || {});
+    const publicationRecovery = intent.action_id === "code-host.branch.publish"
+      && paramKeys.includes("existing_change_request_number");
     return `<details class="comm-entry" data-action-intent-row="${escapeHtml(intent.id)}">
       <summary><strong>${escapeHtml(intent.action_id)} · ${escapeHtml(intent.provider_type)}/${escapeHtml(intent.provider_instance)} · ${escapeHtml(intent.status)}</strong></summary>
       <small>ID: ${escapeHtml(intent.id)} · requested by ${escapeHtml(intent.requested_by)} · created ${timeText(intent.created_at)} · updated ${timeText(intent.updated_at)}</small>
       <small>Work: ${escapeHtml(intent.work_item_ref || "none")} · Goal: ${escapeHtml(intent.goal_id || "none")} · Decision: ${escapeHtml(intent.decision_id || "none")} · Execution: ${escapeHtml(intent.execution_id || "none")}</small>
+      ${publicationRecovery ? `<small>Publication recovery provenance: Work Item ${escapeHtml(intent.work_item_ref || "none")} · original execution ${escapeHtml(intent.execution_id || "none")} · workspace reference retained in the governed request.</small>` : ""}
       <small>Binding: ${escapeHtml(intent.binding_id)} · risk: ${escapeHtml(definition.risk_class || "unknown")} · capabilities: ${escapeHtml(capabilityText(definition.capabilities))}</small>
       <small>Resources: ${listText(intent.resource_ids)} · credential reference: ${escapeHtml(intent.credential_ref || "none")} · dry-run: ${request.dry_run ? "yes" : "no"}</small>
       <small>Request parameter keys only: ${listText(paramKeys)}. Parameter values and provider output bodies are intentionally not rendered in this timeline.</small>

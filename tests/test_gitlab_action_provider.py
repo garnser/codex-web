@@ -17,6 +17,7 @@ from codex_web.action_intents import (
     ActionIntentClaimRequest, ActionIntentCreate, ActionIntentStatus,
 )
 from codex_web.identity import AuthenticationActor, AuthenticationAssurance, PrincipalKind
+from codex_web.execution_subjects import ExecutionSubject, ExecutionSubjectKind
 from codex_web.execution_workspaces import (
     ExecutionWorkspace,
     ExecutionWorkspaceKind,
@@ -24,6 +25,7 @@ from codex_web.execution_workspaces import (
     ExecutionWorkspaceMember,
     ExecutionWorkspaceStatus,
     LeaseMode,
+    PublicationRecoveryProvenance,
 )
 from codex_web.resources import ResourceAlias, ResourceCreate, ResourceType
 from codex_web.secret_backends import LocalFileSecretBackend
@@ -862,6 +864,79 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.published[3], self.recovery_head)
         self.assertEqual(self.published[5], self.head)
         self.assertTrue((await self.execution.verify(self.binding.id, result, actor=self.actor)).verified)
+
+    async def test_existing_mr_recovery_accepts_bounded_bootstrap_provenance(self):
+        request = self._existing_mr_request()
+        workspace = self.recovery_state.workspaces[0]
+        lease = self.recovery_state.leases[0]
+        subject = ExecutionSubject(
+            kind=ExecutionSubjectKind.THREAD_BOOTSTRAP,
+            ref="bootstrap-recovery",
+        )
+        workspace.subject = subject
+        workspace.work_item_ref = None
+        lease.subject = subject
+        lease.work_item_ref = None
+        workspace.publication_recovery = PublicationRecoveryProvenance(
+            work_item_ref="group/platform/codex-web#289",
+            repository_resource_id=self.repository.id,
+            assignment_id="assignment-recovery",
+            assignment_fence=4,
+            source_execution_id=workspace.execution_id,
+            source_subject=subject,
+            lease_id=workspace.lease_id,
+            authorized_by=self.actor.identity_id,
+            authorized_at=time.time(),
+            expires_at=min(lease.expires_at, time.time() + 120),
+        )
+
+        result = await self.execution.execute(
+            self.binding.id, request, actor=self.actor
+        )
+
+        self.assertEqual(result.output["work_item_issue_number"], 289)
+        self.assertEqual(self.published[2], self.legacy_branch)
+        self.assertTrue(
+            (
+                await self.execution.verify(
+                    self.binding.id, result, actor=self.actor
+                )
+            ).verified
+        )
+
+    async def test_existing_mr_recovery_rejects_expired_bootstrap_provenance(self):
+        request = self._existing_mr_request()
+        workspace = self.recovery_state.workspaces[0]
+        lease = self.recovery_state.leases[0]
+        subject = ExecutionSubject(
+            kind=ExecutionSubjectKind.THREAD_BOOTSTRAP,
+            ref="bootstrap-expired",
+        )
+        workspace.subject = subject
+        workspace.work_item_ref = None
+        lease.subject = subject
+        lease.work_item_ref = None
+        workspace.publication_recovery = PublicationRecoveryProvenance(
+            work_item_ref="group/platform/codex-web#289",
+            repository_resource_id=self.repository.id,
+            assignment_id="assignment-expired",
+            assignment_fence=5,
+            source_execution_id=workspace.execution_id,
+            source_subject=subject,
+            lease_id=workspace.lease_id,
+            authorized_by=self.actor.identity_id,
+            authorized_at=time.time() - 30,
+            expires_at=time.time() - 1,
+        )
+
+        with self.assertRaisesRegex(
+            ActionRequirementError,
+            "active publication recovery",
+        ):
+            await self.execution.execute(
+                self.binding.id, request, actor=self.actor
+            )
+        self.assertIsNone(self.published)
 
     async def test_existing_mr_recovery_rejects_unrelated_or_stale_provider_data(self):
         request = self._existing_mr_request()

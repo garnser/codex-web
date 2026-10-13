@@ -61,6 +61,14 @@ def assignment_control_plane_instructions() -> str:
         "state; never replay an attempted historical intent. Publication success requires a succeeded receipt "
         "and verification of the exact remote head, followed by the existing MR and owner/validation handoff "
         "process. Existing-MR recovery must use its observed head, not expected_remote_absent.\n\n"
+        "For an existing GitLab MR whose branch is not codex/, a repository-write owner running under a "
+        "thread or thread-bootstrap subject must first request bounded issue scope with POST "
+        "/api/repository-workspace/publication-recovery and JSON {\"work_item_ref\": \"<qualified-ref>\"}. "
+        "The broker accepts only the current Work Item owner for the assignment's exact writable repository "
+        "and records the original execution, subject, assignment fence and lease expiry without relabeling "
+        "the execution subject. Then publish with existing_change_request_number and the observed "
+        "expected_remote_revision. A denial is an actionable scope/owner/lease blocker; do not ask "
+        "Orchestrator to grant repository authority or use Operator provisioning as a substitute.\n\n"
     ).rstrip()
 
 
