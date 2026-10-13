@@ -78,6 +78,7 @@
   function searchable(item) {
     const workspace = item.workspace;
     const lease = item.lease || {};
+    const recovery = workspace.publication_recovery || {};
     return [
       workspace.id, subjectText(workspace), workspace.work_item_ref, workspace.execution_id,
       workspace.project_id, workspace.owner_identity_id, workspace.kind,
@@ -92,6 +93,9 @@
       lease.id, lease.mode, lease.release_reason,
       workspace.integration?.strategy, workspace.integration?.outcome,
       ...(workspace.integration?.conflicts || []), workspace.error,
+      recovery.work_item_ref, recovery.repository_resource_id,
+      recovery.assignment_id, recovery.source_execution_id,
+      recovery.authorized_by,
     ].filter(Boolean).join(" ").toLowerCase();
   }
 
@@ -151,6 +155,7 @@
       <small>Owner: ${escapeHtml(workspace.owner_identity_id)} · resources: ${escapeHtml(resourceNames(workspace.resource_ids))}</small>
       <small>Repository resource: ${escapeHtml(workspace.repository_resource_id || "none")} · branch: ${escapeHtml(workspace.branch_name || "none")}</small>
       <small>Path: ${escapeHtml(workspace.path || "none")} · base revision: ${escapeHtml(workspace.base_revision || "none")} · head revision: ${escapeHtml(workspace.head_revision || "none")}</small>
+      ${workspace.publication_recovery ? `<small>Publication recovery (does not relabel the execution subject): ${escapeHtml(JSON.stringify(workspace.publication_recovery))}</small>` : '<small>Publication recovery: none.</small>'}
       ${repositoryMembersHtml(workspace)}
       <small>Disk: requested ${bytes(workspace.requested_disk_bytes)} · actual ${workspace.actual_disk_bytes == null ? "unknown" : bytes(workspace.actual_disk_bytes)}</small>
       <small>Created: ${timeText(workspace.created_at)} · updated: ${timeText(workspace.updated_at)} · cleaned: ${timeText(workspace.cleaned_at)}</small>

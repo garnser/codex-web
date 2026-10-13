@@ -760,6 +760,13 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("member_path", operation.get("optional_query_parameters", []))
         self.assertIn("repository.check.rerun", operation_ids)
         self.assertIn("repository.workspace.refresh", operation_ids)
+        self.assertIn("repository.workspace.publication-recovery", operation_ids)
+        recovery = next(
+            item for item in payload["operations"]
+            if item["id"] == "repository.workspace.publication-recovery"
+        )
+        self.assertEqual(recovery["request_body"]["required"], ["work_item_ref"])
+        self.assertIn("without changing", recovery["request_body"]["provenance"])
         self.assertIn("action_intent.reconcile", operation_ids)
         self.assertIn("work_item.steer", operation_ids)
         self.assertIn("deployment.local.status", operation_ids)
@@ -924,6 +931,12 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             ).operation.id,
             "repository.workspace.refresh",
         )
+        self.assertEqual(
+            self.service._resolve_operation(
+                "POST", "/api/repository-workspace/publication-recovery"
+            ).operation.id,
+            "repository.workspace.publication-recovery",
+        )
         for target in (
             "/api/repository-facts/jobs/91",
             "/api/repository-facts/runs/81",
@@ -939,6 +952,81 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(actor.identity_id, self.worker_actor.identity_id)
         self.assertIn("action-intent:worker", actor.service_scopes)
         self.assertEqual(actor.tenant, self.worker_actor.tenant)
+
+    async def test_publication_recovery_requires_owned_issue_and_exact_repository(self) -> None:
+        calls = []
+
+        class Workspaces:
+            def authorize_publication_recovery(inner, workspace_id, **kwargs):
+                calls.append((workspace_id, kwargs))
+                return SimpleNamespace(
+                    model_dump=lambda mode: {
+                        "id": workspace_id,
+                        "subject": kwargs["source_subject"].model_dump(mode="json"),
+                        "publication_recovery": {
+                            "work_item_ref": kwargs["work_item_ref"],
+                            "repository_resource_id": kwargs["repository_resource_id"],
+                        },
+                    }
+                )
+
+        self.service.execution_workspaces = Workspaces()
+        self.service._authorize = lambda *args, **kwargs: SimpleNamespace(
+            id="authority-decision-publication-recovery-test",
+            definition_ref=None,
+        )
+        self.states[self.ref].resource_ids = ("worker-repository",)
+        self.states[self.ref].current_owner = "james"
+        self.states[self.ref].current_stage = "implementation_active"
+        self.states[self.ref].closed_at = None
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "repository-write",
+            "execution_workspace_id": "workspace-own",
+            "resource_ids": ("worker-repository",),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default", project_id="project-a",
+                writable_repository_ids=("worker-repository",),
+                source=RepositoryTargetSource.SINGLE_REPOSITORY,
+                source_ref="worker-repository",
+            ),
+            "agent_profile": AgentProfileExecutionBinding(
+                profile_id="james", profile_revision=6,
+                profile_record_id="profile-record-james6", role_id="james",
+            ),
+        })
+        self.current_assignment = assignment
+
+        status, _, payload = await self._request(
+            "POST", "/api/repository-workspace/publication-recovery",
+            payload={"work_item_ref": self.ref},
+        )
+
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["item"]["subject"]["kind"], "thread_bootstrap")
+        workspace_id, kwargs = calls[0]
+        self.assertEqual(workspace_id, "workspace-own")
+        self.assertEqual(kwargs["repository_resource_id"], "worker-repository")
+        self.assertEqual(kwargs["assignment_id"], assignment.id)
+        self.assertEqual(kwargs["assignment_fence"], assignment.fence)
+        self.assertEqual(kwargs["source_execution_id"], assignment.execution_id)
+        self.assertEqual(kwargs["source_subject"], assignment.subject)
+
+        self.states[self.ref].current_owner = "other-owner"
+        status, _, denied = await self._request(
+            "POST", "/api/repository-workspace/publication-recovery",
+            payload={"work_item_ref": self.ref},
+        )
+        self.assertEqual(status, 403, denied)
+        self.assertEqual(len(calls), 1)
+
+        self.states[self.ref].current_owner = "james"
+        self.states[self.ref].resource_ids = ("other-repository",)
+        status, _, denied = await self._request(
+            "POST", "/api/repository-workspace/publication-recovery",
+            payload={"work_item_ref": self.ref},
+        )
+        self.assertEqual(status, 403, denied)
+        self.assertEqual(len(calls), 1)
 
     async def test_authorized_read_and_handoff_use_exact_role_authority(self) -> None:
         event_loop_thread = threading.get_ident()
@@ -1733,22 +1821,163 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 created = action_intents.created[-1][0]
                 self.assertEqual(created.timeout_seconds, timeout)
                 self.assertEqual(action_intents.claimed[-1][0].lease_seconds, lease)
-                self.assertEqual(created.policy_decision.source, "policy:assignment-control-plane")
+                self.assertEqual(
+                    created.policy_decision.source,
+                    "policy:assignment-control-plane",
+                )
                 self.assertEqual(created.request.resource_ids, ("repository-a",))
                 for field, value in parameters.items():
                     self.assertEqual(created.request.parameters[field], value)
                 if path == "branch/publish":
-                    self.assertEqual(created.request.parameters["execution_workspace_id"], "workspace-a")
+                    self.assertEqual(
+                        created.request.parameters["execution_workspace_id"],
+                        "workspace-a",
+                    )
 
-                for override in ("timeout_seconds", "lease_seconds", "branch", "head_revision"):
+                for override in (
+                    "timeout_seconds", "lease_seconds", "branch", "head_revision"
+                ):
                     before = len(action_intents.created)
-                    with self.assertRaisesRegex(ControlPlaneBrokerRequestError, "Put action fields inside the parameters JSON object"):
+                    with self.assertRaisesRegex(
+                        ControlPlaneBrokerRequestError,
+                        "Put action fields inside the parameters JSON object",
+                    ):
                         await service._execute_repository_action(
-                            assignment=assignment, worker_actor=self.worker_actor,
-                            requester_actor=actor, operation=operation,
+                            assignment=assignment,
+                            worker_actor=self.worker_actor,
+                            requester_actor=actor,
+                            operation=operation,
                             payload={"parameters": parameters, override: 3600},
                         )
                     self.assertEqual(len(action_intents.created), before)
+
+    async def test_existing_change_request_publication_uses_fenced_recovery_attribution(self) -> None:
+        action_intents = _ExecutingActionIntents(_ActionRegistry("gitlab"))
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "repository-write",
+            "execution_workspace_id": "workspace-a",
+            "resource_ids": ("repository-a",),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default",
+                project_id="project-a", writable_repository_ids=("repository-a",),
+                source=RepositoryTargetSource.SINGLE_REPOSITORY,
+                source_ref="repository-a",
+            ),
+        })
+        actor = self.identity.actor_for_identity(assignment.created_by, scope=self.scope)
+        recovery = SimpleNamespace(
+            work_item_ref="group/app#1331",
+            assignment_id=assignment.id,
+            assignment_fence=assignment.fence,
+            source_execution_id=assignment.execution_id,
+            source_subject=assignment.subject,
+            authorized_by=actor.identity_id,
+        )
+
+        class Workspaces:
+            def __init__(inner):
+                inner.calls = []
+
+            def publication_recovery(inner, workspace_id, repository_id, *, actor):
+                inner.calls.append((workspace_id, repository_id, actor.identity_id))
+                return recovery
+
+        workspaces = Workspaces()
+        service = ControlPlaneBrokerService(
+            identity=self.identity, authority=self.authority,
+            work_items=self.work_items, operator=_Operator(),
+            audit=ControlPlaneBrokerAuditStore(self.sqlite),
+            action_intents=action_intents, execution_workspaces=workspaces,
+        )
+        operation = service._resolve_operation(
+            "POST", "/api/repository-actions/branch/publish"
+        ).operation
+
+        await service._execute_repository_action(
+            assignment=assignment, worker_actor=self.worker_actor,
+            requester_actor=actor, operation=operation,
+            payload={"parameters": {
+                "branch": "codex/recovery",
+                "head_revision": "a" * 40,
+                "expected_remote_revision": "b" * 40,
+                "existing_change_request_number": 39,
+            }},
+        )
+
+        created = action_intents.created[-1][0]
+        self.assertEqual(created.work_item_ref, "group/app#1331")
+        self.assertEqual(
+            created.request.parameters["execution_workspace_id"], "workspace-a"
+        )
+        self.assertEqual(
+            workspaces.calls,
+            [("workspace-a", "repository-a", actor.identity_id)],
+        )
+
+        recovery.assignment_fence += 1
+        with self.assertRaisesRegex(
+            ControlPlaneBrokerDeniedError, "live assignment fence"
+        ):
+            await service._execute_repository_action(
+                assignment=assignment, worker_actor=self.worker_actor,
+                requester_actor=actor, operation=operation,
+                payload={"parameters": {
+                    "branch": "codex/recovery",
+                    "head_revision": "a" * 40,
+                    "expected_remote_revision": "b" * 40,
+                    "existing_change_request_number": 39,
+                }},
+            )
+        self.assertEqual(len(action_intents.created), 1)
+
+    async def test_work_item_publication_does_not_require_recovery_provenance(self) -> None:
+        action_intents = _ExecutingActionIntents(_ActionRegistry("gitlab"))
+
+        class Workspaces:
+            def publication_recovery(inner, *args, **kwargs):
+                raise AssertionError("legacy Work Item publication must not use recovery")
+
+        assignment = self.assignment.model_copy(update={
+            "subject": ExecutionSubject(
+                kind=ExecutionSubjectKind.WORK_ITEM,
+                ref="group/app#42",
+            ),
+            "work_item_ref": "group/app#42",
+            "execution_profile_id": "repository-write",
+            "execution_workspace_id": "workspace-work-item",
+            "resource_ids": ("repository-a",),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default",
+                project_id="project-a", writable_repository_ids=("repository-a",),
+                source=RepositoryTargetSource.SINGLE_REPOSITORY,
+                source_ref="repository-a",
+            ),
+        })
+        actor = self.identity.actor_for_identity(assignment.created_by, scope=self.scope)
+        service = ControlPlaneBrokerService(
+            identity=self.identity, authority=self.authority,
+            work_items=self.work_items, operator=_Operator(),
+            audit=ControlPlaneBrokerAuditStore(self.sqlite),
+            action_intents=action_intents, execution_workspaces=Workspaces(),
+        )
+        operation = service._resolve_operation(
+            "POST", "/api/repository-actions/branch/publish"
+        ).operation
+
+        await service._execute_repository_action(
+            assignment=assignment, worker_actor=self.worker_actor,
+            requester_actor=actor, operation=operation,
+            payload={"parameters": {
+                "branch": "codex/work-item",
+                "head_revision": "a" * 40,
+                "expected_remote_revision": "b" * 40,
+                "existing_change_request_number": 39,
+            }},
+        )
+
+        self.assertEqual(
+            action_intents.created[-1][0].work_item_ref, "group/app#42"
+        )
 
     async def test_repository_intent_catalog_calls_do_not_block_event_loop(self) -> None:
         context = ContextVar("broker_request_context")

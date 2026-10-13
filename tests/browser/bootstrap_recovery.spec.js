@@ -6,6 +6,14 @@ test('cancelled bootstrap inspection distinguishes freed quota from retained fil
     subject: { kind: 'thread_bootstrap', ref: 'bootstrap-failed' },
     kind: 'git_worktree', path: '/private/recovery/worktree', branch_name: 'recovery-branch',
     resource_ids: [], owner_identity_id: 'operator', cleaned_at: null,
+    publication_recovery: {
+      work_item_ref: 'garnser/codex-web#1331', repository_resource_id: 'repository-a',
+      assignment_id: 'assignment-cancelled', assignment_fence: 1,
+      source_execution_id: 'bootstrap-execution',
+      source_subject: { kind: 'thread_bootstrap', ref: 'bootstrap-failed' },
+      lease_id: 'reservation', authorized_by: 'operator',
+      authorized_at: 1789999900, expires_at: 1790000000,
+    },
   };
   const responses = {
     '/api/execution-workspaces/inspection': { items: [{ workspace, lease: {
@@ -41,6 +49,8 @@ test('cancelled bootstrap inspection distinguishes freed quota from retained fil
   await expect(row).toContainText('Reservation released; files retained for recovery');
   await expect(row).toContainText('/private/recovery/worktree');
   await expect(row).toContainText('recovery-branch');
+  await expect(row).toContainText('garnser/codex-web#1331');
+  await expect(row).toContainText('does not relabel the execution subject');
   await row.getByRole('button', { name: 'Load event history' }).click();
   await expect(row).toContainText('"preserve_files":true');
   await expect(page.locator('#execution-worker-events')).toContainText('assignment_cancelled');

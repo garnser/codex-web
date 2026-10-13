@@ -12,6 +12,7 @@ from codex_web.execution_workspace_backend import (
     ExecutionWorkspaceBackend,
     ExecutionWorkspaceBackendError,
 )
+from codex_web.execution_subjects import ExecutionSubject
 from codex_web.execution_workspaces import (
     ExecutionWorkspace,
     ExecutionWorkspaceAcquire,
@@ -26,6 +27,7 @@ from codex_web.execution_workspaces import (
     ExecutionWorkspaceStatus,
     IntegrationOutcome,
     LeaseMode,
+    PublicationRecoveryProvenance,
     RepositoryCheckpoint,
     RepositoryCheckpointPushStatus,
     RepositoryOutcomeStatus,
@@ -522,6 +524,179 @@ class ExecutionWorkspaceService:
         refreshed = self.get(workspace_id, actor)
         self._sync_work_item(refreshed)
         return refreshed
+
+    def authorize_publication_recovery(
+        self,
+        workspace_id: str,
+        *,
+        work_item_ref: str,
+        repository_resource_id: str,
+        assignment_id: str,
+        assignment_fence: int,
+        source_execution_id: str,
+        source_subject: ExecutionSubject,
+        assignment_deadline_at: float | None,
+        actor: AuthenticationActor,
+    ) -> ExecutionWorkspace:
+        """Bind one live non-Work-Item workspace to one issue recovery scope."""
+
+        workspace = self.get(workspace_id, actor)
+        self._authorized(workspace, actor)
+        if workspace.owner_identity_id != actor.identity_id:
+            raise AuthorizationError(
+                "publication recovery requires the execution workspace owner"
+            )
+        now = time.time()
+        lease = self.store.lease(workspace.lease_id)
+        if workspace.status != ExecutionWorkspaceStatus.ACTIVE:
+            raise ExecutionWorkspaceConflictError("execution workspace is not active")
+        if lease is None or lease.released_at is not None or lease.expires_at <= now:
+            raise ExecutionWorkspaceConflictError("execution workspace lease is stale")
+        if workspace.work_item_ref is not None:
+            raise ExecutionWorkspaceConflictError(
+                "work-item execution workspaces already have canonical issue scope"
+            )
+        if (
+            workspace.execution_id != source_execution_id
+            or workspace.subject != source_subject
+            or lease.execution_workspace_id != workspace.id
+            or lease.execution_id != workspace.execution_id
+            or lease.subject != workspace.subject
+            or lease.owner_identity_id != workspace.owner_identity_id
+            or lease.resource_modes.get(repository_resource_id) != LeaseMode.WRITE
+            or repository_resource_id not in workspace.writable_repository_ids
+        ):
+            raise ExecutionWorkspaceConflictError(
+                "publication recovery is outside the live writable workspace lease"
+            )
+        expires_at = min(
+            lease.expires_at,
+            assignment_deadline_at
+            if assignment_deadline_at is not None
+            else lease.expires_at,
+        )
+        if expires_at <= now:
+            raise ExecutionWorkspaceConflictError(
+                "publication recovery assignment or workspace lease is expired"
+            )
+        recovery = PublicationRecoveryProvenance(
+            work_item_ref=work_item_ref,
+            repository_resource_id=repository_resource_id,
+            assignment_id=assignment_id,
+            assignment_fence=assignment_fence,
+            source_execution_id=source_execution_id,
+            source_subject=source_subject,
+            lease_id=workspace.lease_id,
+            authorized_by=actor.identity_id,
+            authorized_at=now,
+            expires_at=expires_at,
+        )
+
+        def apply(state):
+            current_lease = next(
+                (item for item in state.leases if item.id == workspace.lease_id),
+                None,
+            )
+            if (
+                current_lease is None
+                or current_lease.released_at is not None
+                or current_lease.expires_at <= now
+            ):
+                raise ExecutionWorkspaceConflictError(
+                    "execution workspace lease is stale"
+                )
+            for index, item in enumerate(state.workspaces):
+                if item.id != workspace_id:
+                    continue
+                if (
+                    item.status != ExecutionWorkspaceStatus.ACTIVE
+                    or item.execution_id != source_execution_id
+                    or item.subject != source_subject
+                    or item.lease_id != current_lease.id
+                    or current_lease.execution_workspace_id != item.id
+                    or current_lease.execution_id != item.execution_id
+                    or current_lease.subject != item.subject
+                    or current_lease.owner_identity_id != item.owner_identity_id
+                    or current_lease.resource_modes.get(repository_resource_id)
+                    != LeaseMode.WRITE
+                    or repository_resource_id not in item.writable_repository_ids
+                ):
+                    raise ExecutionWorkspaceConflictError(
+                        "publication recovery is outside the live writable workspace lease"
+                    )
+                existing = item.publication_recovery
+                if existing is not None and existing.expires_at > now:
+                    if (
+                        existing.work_item_ref != work_item_ref
+                        or existing.repository_resource_id != repository_resource_id
+                        or existing.assignment_id != assignment_id
+                        or existing.assignment_fence != assignment_fence
+                    ):
+                        raise ExecutionWorkspaceConflictError(
+                            "workspace already has a different active publication recovery scope"
+                        )
+                    return state
+                state.workspaces[index] = item.model_copy(
+                    update={"publication_recovery": recovery, "updated_at": now}
+                )
+                self._append_event(
+                    state,
+                    ExecutionWorkspaceEvent(
+                        workspace_id=workspace_id,
+                        event_type="publication_recovery_authorized",
+                        actor_identity_id=actor.identity_id,
+                        details={
+                            "work_item_ref": work_item_ref,
+                            "repository_resource_id": repository_resource_id,
+                            "assignment_id": assignment_id,
+                            "assignment_fence": assignment_fence,
+                            "source_execution_id": source_execution_id,
+                            "expires_at": expires_at,
+                        },
+                    ),
+                )
+                return state
+            raise ExecutionWorkspaceNotFoundError("execution workspace not found")
+
+        self.store.update(apply)
+        return self.get(workspace_id, actor)
+
+    def publication_recovery(
+        self,
+        workspace_id: str,
+        repository_resource_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> PublicationRecoveryProvenance | None:
+        """Return a currently valid recovery scope without extending it."""
+
+        workspace = self.get(workspace_id, actor)
+        self._authorized(workspace, actor)
+        recovery = workspace.publication_recovery
+        if recovery is None:
+            return None
+        lease = self.store.lease(workspace.lease_id)
+        now = time.time()
+        if (
+            workspace.status != ExecutionWorkspaceStatus.ACTIVE
+            or recovery.repository_resource_id != repository_resource_id
+            or recovery.source_execution_id != workspace.execution_id
+            or recovery.source_subject != workspace.subject
+            or recovery.lease_id != workspace.lease_id
+            or recovery.expires_at <= now
+            or lease is None
+            or lease.released_at is not None
+            or lease.expires_at <= now
+            or lease.execution_workspace_id != workspace.id
+            or lease.execution_id != workspace.execution_id
+            or lease.subject != workspace.subject
+            or lease.owner_identity_id != workspace.owner_identity_id
+            or lease.resource_modes.get(repository_resource_id) != LeaseMode.WRITE
+        ):
+            raise ExecutionWorkspaceConflictError(
+                "publication recovery scope is expired or outside the live workspace lease"
+            )
+        return recovery
 
     def record_repository_checkpoint(
         self,

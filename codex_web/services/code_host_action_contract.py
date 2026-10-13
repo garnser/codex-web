@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -561,13 +562,32 @@ class CodeHostActionContract:
             ):
                 raise ValueError("existing change request recovery lease is outside the writable workspace scope")
             ref = str(workspace.work_item_ref or "")
+            if not ref:
+                recovery = workspace.publication_recovery
+                if (
+                    recovery is None
+                    or recovery.repository_resource_id != resource_id
+                    or recovery.source_execution_id != workspace.execution_id
+                    or recovery.source_subject != workspace.subject
+                    or recovery.lease_id != workspace.lease_id
+                    or recovery.authorized_by != workspace.owner_identity_id
+                    or recovery.expires_at <= time.time()
+                ):
+                    raise ValueError(
+                        "existing change request recovery requires a matching issue-scoped workspace lease "
+                        "or active publication recovery"
+                    )
+                ref = recovery.work_item_ref
             repository, separator, issue = ref.rpartition("#")
             if (
                 not separator
                 or repository != self.locator(request)
                 or not issue.isdecimal()
                 or int(issue) < 1
-                or lease.work_item_ref != ref
+                or (
+                    workspace.work_item_ref is not None
+                    and lease.work_item_ref != ref
+                )
             ):
                 raise ValueError("existing change request recovery requires a matching repository issue-scoped workspace lease")
             issue_number = int(issue)
