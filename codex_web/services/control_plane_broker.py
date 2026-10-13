@@ -555,19 +555,44 @@ class ControlPlaneBrokerService:
         assignment: ExecutionAssignment,
     ) -> dict[str, Any]:
         enabled = assignment.execution_profile_id in CONTROL_PLANE_EXECUTION_PROFILES
+        context = self._public_assignment_context(assignment) if enabled else None
+        operations = [self.public_operation(item) for item in OPERATIONS] if enabled else []
+        if enabled and assignment.execution_profile_id == "orchestration-admin":
+            envelope = {"repository_ids": [], "operation_ids": [],
+                        "definition": (assignment.execution_profile_definition.model_dump(mode="json")
+                                       if assignment.execution_profile_definition else None),
+                        "authority_role_id": getattr(assignment.agent_profile, "authority_role_id", None),
+                        "effective_authority_requires_operation_checks": True}
+            try:
+                if self.execution_profiles is None:
+                    raise ValueError("administrative execution capability is unavailable")
+                from codex_web.execution_profiles import ExecutionProfileCatalogDefinition
+                from codex_web.definitions import reference_for
+                pinned = self.execution_profiles.registry.get_record(assignment.execution_profile_definition.record_id)
+                if reference_for(pinned) != assignment.execution_profile_definition:
+                    raise ValueError("pinned administrative definition identity is invalid")
+                profile = ExecutionProfileCatalogDefinition.model_validate(pinned.payload).profile_map[assignment.execution_profile_id]
+                envelope["repository_ids"] = list(profile.administrative_repository_ids)
+                envelope["operation_ids"] = list(profile.control_plane_operations)
+                _, current = self.execution_profiles.resolve(
+                    assignment.execution_profile_id, organization_id=assignment.organization_id,
+                    workspace_id=assignment.workspace_id, project_id=assignment.project_id,
+                )
+                envelope["definition_is_current"] = current == assignment.execution_profile_definition
+                operations = [item for item in operations if item["id"] in profile.control_plane_operations]
+                for item in operations:
+                    if item["id"].startswith("repository.") or item["id"] == "action_intent.reconcile":
+                        item["required_query_parameters"] = ["repository_resource_id"]
+            except (ValueError, KeyError, LookupError, AttributeError) as exc:
+                envelope["inspection_error"] = str(exc)
+                operations = []
+            context["declared_administrative_scope"] = envelope
         return {
             "enabled": enabled,
             "transport": "assignment-bound-unix-socket" if enabled else None,
             "project_id": assignment.project_id if enabled else None,
-            "assignment_context": self._public_assignment_context(assignment) if enabled else None,
-            "operations": (
-                [
-                    self.public_operation(item)
-                    for item in OPERATIONS
-                ]
-                if enabled
-                else []
-            ),
+            "assignment_context": context,
+            "operations": operations,
             "audit_href": (
                 f"/api/control-plane-broker/audit?assignment_id={assignment.id}"
                 if enabled
@@ -1497,8 +1522,8 @@ class ControlPlaneBrokerService:
             target = self._state_for_target(assignment, edge_request.target_ref)
             self._authorize(assignment, operation, actor=requester_actor,
                             resource_ids=tuple(dict.fromkeys((*source.resource_ids, *target.resource_ids))))
-            edge = self.work_graph.add_edge(
-                edge_request, scope=requester_actor.tenant,
+            edge = await asyncio.to_thread(
+                self.work_graph.add_edge, edge_request, scope=requester_actor.tenant,
                 actor_id=requester_actor.identity_id, project_id=assignment.project_id,
             )
             result = {"edge": edge.model_dump(mode="json")}

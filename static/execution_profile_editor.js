@@ -39,6 +39,8 @@ export function editorShell(host) {
         </fieldset>
         <details><summary>Broker operations and platform constraints</summary>
           <label>Requested control-plane operations (one per line)<textarea name="profile-operations" rows="4"></textarea></label>
+          <label>Administrative repository resource IDs (one per line)<textarea name="profile-administrative-targets" rows="4"></textarea></label>
+          <p>Administrative targets require a Project catalog using schema 1.1 and a scratch workspace. Targets declare scope; a live assignment, explicit authority Role and broker checks are required for effective access.</p>
           <p>Direct network access and host mutation are disabled by platform invariants. Worker requirements and requested operations do not grant authority; canonical policy and assignment permissions still apply.</p>
         </details>
         <label>Change reason <input name="profile-reason" required></label>
@@ -71,6 +73,7 @@ export function editorShell(host) {
       for (const [name, value] of Object.entries({ 'profile-id': profile.id, 'profile-name': profile.name,
         'profile-description': profile.description, 'profile-workspace': profile.workspace_mode,
         'profile-access': profile.repository_access, 'profile-operations': (profile.control_plane_operations || []).join('\n'),
+        'profile-administrative-targets': (profile.administrative_repository_ids || []).join('\n'),
         'profile-reason': '' })) field(name).value = value || '';
       field('profile-id').readOnly = !fresh;
       field('profile-default').checked = isDefault;
@@ -79,7 +82,9 @@ export function editorShell(host) {
       constraints(); dirty.markSaved();
     },
     capture() {
-      return { id: field('profile-id').value.trim(), name: field('profile-name').value.trim(),
+      const targets = field('profile-administrative-targets').value.split('\n').map(line => line.trim()).filter(Boolean);
+      return { ...(targets.length ? { administrative_repository_ids: targets } : {}),
+        id: field('profile-id').value.trim(), name: field('profile-name').value.trim(),
         description: field('profile-description').value.trim(), workspace_mode: field('profile-workspace').value,
         repository_access: field('profile-access').value,
         required_worker_capabilities: ['command_execution', 'git', 'container', 'artifact_upload'].filter(cap => field(`cap-${cap}`).checked),

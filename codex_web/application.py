@@ -1708,6 +1708,7 @@ agent_profile_service = AgentProfileService(
 skill_service.bind_profiles(agent_profile_service)
 app.state.agent_profile_store = agent_profile_store
 app.state.agent_profile_service = agent_profile_service
+execution_profile_definition_service.agent_profiles = agent_profile_service
 app.include_router(build_agent_profiles_router(agent_profile_service))
 app.include_router(build_skills_router(skill_service))
 

@@ -1,3 +1,4 @@
+const profileTestOrigin = process.env.CODEX_WEB_BROWSER_TEST_ORIGIN || 'http://127.0.0.1:18766';
 const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require('@playwright/test');
 
@@ -23,7 +24,7 @@ async function mount(page, intercept = null, readonly = false) {
     if (url.pathname.endsWith('/publish')) { effective = { ...candidate, lifecycle: 'published' }; return route.fulfill({ json: { record: effective } }); }
     return route.fulfill({ status: 404, json: { detail: 'Unexpected endpoint' } });
   });
-  await page.goto('http://127.0.0.1:18766/projects/a/definitions?execution_profile=custom');
+  await page.goto(`${profileTestOrigin}/projects/a/definitions?execution_profile=custom`);
   await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Custom profile');
   return writes;
 }
@@ -157,4 +158,21 @@ test('deep-link history restores the selected profile', async ({ page }) => {
   await expect(page).toHaveURL(/execution_profile=orchestration-only/);
   await page.goBack();
   await expect(page.getByLabel('Profile ID', { exact: true })).toHaveValue('custom');
+});
+
+
+test('administrative targets are preserved in a Project-scoped schema 1.1 draft', async ({ page }) => {
+  const writes = await mount(page);
+  await page.locator('summary').filter({ hasText: 'Broker operations' }).click();
+  await page.getByLabel('Administrative repository resource IDs').fill('resource-connector\nresource-data');
+  await page.getByLabel('Requested control-plane operations').fill('repository.issue.create\nwork_graph.edge.create');
+  await page.getByLabel('Change reason').fill('Enable governed administrative escalation');
+  await page.getByRole('button', { name: 'Save new Project draft' }).click();
+  await expect(page.locator('[data-profile-draft]')).toBeVisible();
+  expect(writes[0].body.definition_schema_version).toBe('1.1');
+  expect(writes[0].body.scope_type).toBe('project');
+  const saved = writes[0].body.payload.profiles.find(item => item.id === 'custom');
+  expect(saved.administrative_repository_ids).toEqual(['resource-connector', 'resource-data']);
+  expect(saved.repository_access).toBe('none');
+  expect(saved.control_plane_operations).toEqual(['repository.issue.create', 'work_graph.edge.create']);
 });

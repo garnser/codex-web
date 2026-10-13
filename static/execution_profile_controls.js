@@ -99,7 +99,11 @@ export function render(profileId, escapeHtml) {
     const provenance = definition
       ? ` Canonical definition: ${escapeHtml(definition.definition_id)}@r${escapeHtml(definition.revision)}.`
       : "";
-    summary.innerHTML = `<strong>${escapeHtml(profile.name)}</strong>: ${escapeHtml(profile.repositoryAccess)} repository access · ${escapeHtml(profile.workspaceMode)} workspace · capabilities ${escapeHtml(capabilities)}.${scratch ? " No mutable Git worktree is created." : ""}${provenance} <a id="manage-execution-profiles" class="ghost-button" href="${escapeHtml(definitionsPath)}">Manage profiles in Definitions</a>`;
+    const administrativeTargets = (profile.administrativeRepositoryIds || []).map(escapeHtml);
+    const administrative = administrativeTargets.length
+      ? ` Administrative repository targets: ${administrativeTargets.join(", ")}. Declared operations: ${escapeHtml((profile.controlPlaneOperations || []).join(", "))}. Effective access requires a live assignment and authority checks.`
+      : "";
+    summary.innerHTML = `<strong>${escapeHtml(profile.name)}</strong>: ${escapeHtml(profile.repositoryAccess)} repository access · ${escapeHtml(profile.workspaceMode)} workspace · capabilities ${escapeHtml(capabilities)}.${scratch ? " No mutable Git worktree is created." : ""}${administrative}${provenance} <a id="manage-execution-profiles" class="ghost-button" href="${escapeHtml(definitionsPath)}">Manage profiles in Definitions</a>`;
   } else {
     summary.textContent = "Execution profile metadata unavailable.";
   }

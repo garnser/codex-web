@@ -105,8 +105,12 @@ class ExecutionProfileTests(unittest.TestCase):
                 status="running", lease=SimpleNamespace(expires_at=200, fence=3, worker_id="worker"),
                 fence=3, assigned_worker_id="worker", deadline_at=200,
                 execution_profile_id="orchestration-admin", execution_profile_definition=reference,
-                agent_profile=SimpleNamespace(authority_role_id="escalation", execution_profile_id="orchestration-admin"),
+                agent_profile=SimpleNamespace(authority_role_id="escalation", execution_profile_id="orchestration-admin",
+                    profile_id="orchestrator", profile_revision=8, profile_record_id="profile-r8", role_id="orchestrator"),
             )
+            current_profile = SimpleNamespace(lifecycle="active", revision=8, record_id="profile-r8",
+                authority_role_id="escalation", execution_profile_id="orchestration-admin", role_id="orchestrator")
+            service.agent_profiles = SimpleNamespace(get=Mock(return_value=current_profile))
             actor = SimpleNamespace(organization_id="org", workspace_id="workspace")
             authority = SimpleNamespace(role_ids_for_actor=Mock(return_value=("escalation",)))
             def authorize(**changes):
@@ -119,6 +123,14 @@ class ExecutionProfileTests(unittest.TestCase):
             for changes in ({"target": "resource-foreign"}, {"operation": "repository.branch.publish"}, {"now": 201}):
                 with self.subTest(changes=changes), self.assertRaises(ValueError):
                     authorize(**changes)
+            current_profile.lifecycle = "disabled"
+            with self.assertRaisesRegex(ValueError, "disabled or its binding changed"):
+                authorize()
+            current_profile.lifecycle = "active"
+            current_profile.revision = 9
+            with self.assertRaisesRegex(ValueError, "disabled or its binding changed"):
+                authorize()
+            current_profile.revision = 8
             assignment.lease.fence = 2
             with self.assertRaisesRegex(ValueError, "live fenced"):
                 authorize()

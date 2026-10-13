@@ -458,6 +458,9 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 profile_record_id="orchestrator-record", role_id="orchestrator",
                 authority_role_id="local-admin", execution_profile_id="orchestration-admin"),
         })
+        profiles.agent_profiles = SimpleNamespace(get=lambda profile_id, actor: SimpleNamespace(
+            lifecycle="active", revision=8, record_id="orchestrator-record", role_id="orchestrator",
+            authority_role_id="local-admin", execution_profile_id="orchestration-admin"))
         registry = _ActionRegistry("gitlab")
         original = registry.list_bindings
         def bindings(actor):
@@ -484,6 +487,16 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(requester.identity_id, "local-admin")
         self.assertIsNone(assignment.repository_scope)
         self.assertFalse(assignment.resource_ids)
+        inspection = self.service.public_assignment_capability(assignment)
+        declared = inspection["assignment_context"]["declared_administrative_scope"]
+        self.assertEqual(declared["repository_ids"], [resource_a, resource_b])
+        self.assertEqual(declared["authority_role_id"], "local-admin")
+        self.assertTrue(declared["definition_is_current"])
+        self.assertTrue(declared["effective_authority_requires_operation_checks"])
+        self.assertNotIn(assignment.lease.lease_token, json.dumps(inspection))
+        self.assertEqual(inspection["operations"][0]["id"], "work_graph.edge.create")
+        issue_operation = next(item for item in inspection["operations"] if item["id"] == "repository.issue.create")
+        self.assertEqual(issue_operation["required_query_parameters"], ["repository_resource_id"])
         status, _, _ = await self._request("POST", "/api/repository-actions/branch/publish?repository_resource_id="+resource_b, payload={})
         self.assertEqual(status, 403)
         self.assertEqual(len(actions.created), 1)

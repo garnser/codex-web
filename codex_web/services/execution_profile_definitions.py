@@ -29,6 +29,7 @@ class ExecutionProfileDefinitionService:
     def __init__(self, registry: DefinitionRegistryService) -> None:
         self.registry = registry
         self.usage_loader = None
+        self.agent_profiles = None
 
     def bootstrap(self) -> None:
         self.registry.bootstrap(
@@ -129,6 +130,18 @@ class ExecutionProfileDefinitionService:
                 or binding.authority_role_id not in authority.role_ids_for_actor(
                     actor, project_id=assignment.project_id, now=observed)):
             raise ValueError("administrative operation requires an explicit live authority Role binding")
+        if self.agent_profiles is None:
+            raise ValueError("administrative Agent Profile validation is unavailable")
+        try:
+            current = self.agent_profiles.get(binding.profile_id, actor=actor)
+        except Exception as exc:
+            raise ValueError("administrative Agent Profile is unavailable") from exc
+        if (current.lifecycle != "active" or current.revision != binding.profile_revision
+                or current.record_id != binding.profile_record_id
+                or current.authority_role_id != binding.authority_role_id
+                or current.execution_profile_id != binding.execution_profile_id
+                or current.role_id != binding.role_id):
+            raise ValueError("administrative Agent Profile is disabled or its binding changed")
         profile, reference = self.resolve(
             assignment.execution_profile_id,
             organization_id=assignment.organization_id,
