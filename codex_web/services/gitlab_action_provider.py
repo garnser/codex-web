@@ -26,6 +26,8 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
     CODE_HOST_CHANGE_REQUEST_EVIDENCE,
     CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID,
+    CODE_HOST_ISSUE_CREATE_ACTION_ID,
+    CODE_HOST_ISSUE_CREATE_EVIDENCE,
     CODE_HOST_ISSUE_COMMENT_ACTION_ID,
     CODE_HOST_ISSUE_COMMENT_EVIDENCE,
     CODE_HOST_ISSUE_STATE_EVIDENCE,
@@ -250,6 +252,14 @@ class GitLabActionProvider:
         binding: ActionProviderBinding,
     ) -> dict[str, Any]:
         project = self.contract.locator(request)
+        if request.action_id == CODE_HOST_ISSUE_CREATE_ACTION_ID:
+            payload = self.contract.issue_create(request)
+            return {
+                "operation": "issue-create",
+                "repository": project,
+                "title_sha256": hashlib.sha256(payload["title"].encode()).hexdigest(),
+                "body_sha256": hashlib.sha256(payload["body"].encode()).hexdigest(),
+            }
         if request.action_id == CODE_HOST_ISSUE_COMMENT_ACTION_ID:
             body = self.contract.comment(request)
             return {
@@ -349,7 +359,36 @@ class GitLabActionProvider:
             "repository": project,
             **result_resource_output(request),
         }
-        if request.action_id == CODE_HOST_ISSUE_COMMENT_ACTION_ID:
+        if request.action_id == CODE_HOST_ISSUE_CREATE_ACTION_ID:
+            payload = self.contract.issue_create(request)
+            marker = self.contract.marker(request)
+            # Search all states in this credential-bound repository. A unique
+            # ownership marker bounds recovery without scanning its backlog.
+            issues = await self.client.project_issues(
+                self.api_base, project, token=credential,
+                params={"state": "all", "scope": "all", "search": marker, "per_page": 100},
+            )
+            if len(issues) >= 100:
+                raise ActionRequirementError("GitLab issue ownership search exceeded its bounded result limit")
+            owned = [row for row in issues if marker in str(row.get("description") or "")]
+            if len(owned) > 1:
+                raise ActionRequirementError("multiple GitLab issues share the action ownership marker")
+            desired_body = self._owned_body(payload["body"], marker)
+            item = owned[0] if owned else await self.client.create_project_issue(
+                self.api_base, project, token=credential,
+                payload={"title": payload["title"], "description": desired_body},
+            )
+            iid = self._positive_iid(item, field="issue")
+            evidence_type = CODE_HOST_ISSUE_CREATE_EVIDENCE
+            external_id = str(item.get("id") or iid)
+            url = str(item.get("web_url") or "") or None
+            output.update({
+                "issue_number": iid,
+                "title_sha256": hashlib.sha256(payload["title"].encode()).hexdigest(),
+                "body_sha256": hashlib.sha256(desired_body.encode()).hexdigest(),
+            })
+            summary = "GitLab issue is owned by this action idempotency key."
+        elif request.action_id == CODE_HOST_ISSUE_COMMENT_ACTION_ID:
             iid = self.contract.issue_number(request)
             marker = self.contract.marker(request)
             notes = await self.client.project_issue_notes(
@@ -667,7 +706,22 @@ class GitLabActionProvider:
             raise ValueError("GitLab result binding does not match verification binding")
         project = self.contract.locator_for_result(result, binding)
         verified = False
-        if result.action_id == CODE_HOST_ISSUE_COMMENT_ACTION_ID:
+        if result.action_id == CODE_HOST_ISSUE_CREATE_ACTION_ID:
+            iid = int(result.output["issue_number"])
+            item = await self.client.project_issue(
+                self.api_base, project, iid, token=credential,
+            )
+            marker = self.contract.marker_from_key(result.idempotency_key)
+            verified = (
+                type(item.get("iid")) is int and item["iid"] == iid
+                and (result.external_id is None or str(item.get("id") or "") == result.external_id)
+                and marker in str(item.get("description") or "")
+                and hashlib.sha256(str(item.get("title") or "").encode()).hexdigest()
+                    == result.output["title_sha256"]
+                and hashlib.sha256(str(item.get("description") or "").encode()).hexdigest()
+                    == result.output["body_sha256"]
+            )
+        elif result.action_id == CODE_HOST_ISSUE_COMMENT_ACTION_ID:
             iid = int(result.output["issue_number"])
             marker = self.contract.marker_from_key(result.idempotency_key)
             notes = await self.client.project_issue_notes(
