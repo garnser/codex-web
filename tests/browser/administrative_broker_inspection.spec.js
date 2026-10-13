@@ -236,3 +236,21 @@ test('broker receipt link opens the routed workspace containing the ActionIntent
   await expect(row).toContainText('verification-a');
   await expect(row).toContainText('unknown');
 });
+
+
+test('broker dependency graph link opens its Project work workspace',async({page})=>{
+  const fs=require('node:fs');
+  const fixture=fs.readFileSync(require.resolve('./product_workspaces_fixture.html'),'utf8')
+    .replace('id="work-card"','id="work-graph-panel"')
+    .replace('<h2>Execution Workers</h2>', '<h2>Execution Workers</h2><div data-execution-assignment-management-host="assignment-a"></div>')
+    .replace('</body>', '<script src="/static/control_plane_broker_admin.js"></script></body>');
+  await page.route('**/projects/home/*',route=>route.fulfill({contentType:'text/html',body:fixture}));
+  await page.goto(origin+'/projects/home/workers');
+  await expect(page.locator('[data-product-workspace-host="workers"]')).toBeVisible();
+  await emit(page,assignment('home'));
+  const link=page.getByRole('link',{name:'Inspect dependency graph',exact:true});
+  await link.focus();await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\/projects\/home\/work-items/);
+  await expect(page.locator('#work-graph-panel')).toBeVisible();
+  await expect(page.locator('#refresh-work-graph')).toHaveAttribute('data-clicked', /[1-9]/);
+});
