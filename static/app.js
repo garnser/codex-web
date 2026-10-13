@@ -36,6 +36,7 @@ const state={
   approvals: new Map(),
   activeTurnsByThread: new Map(),
   queuedDepthByThread: new Map(),
+  automationWaitByThread: new Map(),
   waiting: false,
   eventLog: [],
   tokenUsageByThread: {},
@@ -188,6 +189,7 @@ async function applyThreadReplacement(oldThreadId, newThreadId) {
   state.threadReplacements.set(oldThreadId, newThreadId);
   state.activeTurnsByThread.delete(oldThreadId);
   state.queuedDepthByThread.delete(oldThreadId);
+  state.automationWaitByThread.delete(oldThreadId);
   if (state.threadSettings?.[oldThreadId] && !state.threadSettings[newThreadId]) {
     state.threadSettings[newThreadId] = state.threadSettings[oldThreadId];
   }
@@ -730,15 +732,24 @@ function updateWaitingFromState() {
     setWaiting(true, "Waiting for approval");
   } else if (isThreadBusy(state.threadId)) {
     setWaiting(true, "Waiting for Codex");
+  } else if (state.automationWaitByThread.get(state.threadId)) {
+    setWaiting(true, state.automationWaitByThread.get(state.threadId));
   } else {
     setWaiting(false);
   }
+}
+
+function applyQueueAdmissionStatus(status) {
+  const message = status.automationWaitReason?.message;
+  if (message) state.automationWaitByThread.set(status.threadId, message);
+  else state.automationWaitByThread.delete(status.threadId);
 }
 
 async function refreshQueueStatus(threadId = state.threadId) {
   if (!threadId) return;
   try {
     const status = await api(`/api/threads/${threadId}/queue`);
+    applyQueueAdmissionStatus(status);
     setThreadQueueDepth(threadId, status.queueDepth || 0);
     if (status.active) markThreadBusy(threadId);
     return status;
@@ -1453,6 +1464,7 @@ function handleEvent(event) {
     return;
   }
   if (event.type === "queue.status") {
+    applyQueueAdmissionStatus(event);
     setThreadQueueDepth(event.threadId, event.queueDepth || 0);
     if (event.active) markThreadBusy(event.threadId);
     return;

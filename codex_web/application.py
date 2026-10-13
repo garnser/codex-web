@@ -2104,6 +2104,7 @@ app.include_router(
     build_autonomy_router(
         autonomy_controller,
         autonomy_policy_service,
+        control_changed=lambda: turn_execution_service.resume_automated_queues(),
     )
 )
 app.include_router(build_autonomy_audit_router(autonomy_audit_service))
@@ -3232,6 +3233,10 @@ turn_execution_service = install_turn_execution_service(
     thread_history=thread_history_repository,
     transcript=thread_transcript_service,
     maintenance_admission=upgrade_service.native_turn_admission,
+)
+turn_execution_service.automated_admission_allowed = lambda: (
+    runtime_policy.autonomy_enabled()
+    and autonomy_controller.store.control().mode == "active"
 )
  
 def _codex_cli_thread_event(event):

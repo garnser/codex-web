@@ -138,6 +138,9 @@ class _QueuePolicy:
 
 
 class _Execution:
+    def queue_admission_status(self, thread_id):
+        return {"automationWaiting": 0, "automationWaitReason": None}
+
     def __init__(self, queue_policy: _QueuePolicy) -> None:
         self.queue_policy = queue_policy
         self.published = []
