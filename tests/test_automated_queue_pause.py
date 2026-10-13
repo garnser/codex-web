@@ -266,3 +266,28 @@ class AutomatedQueuePauseTests(unittest.IsolatedAsyncioTestCase):
             current.set_result(None)
             await asyncio.sleep(0)
             runtime.schedule_queue_drain.assert_called_once_with('t')
+
+    async def test_paused_human_queue_reaches_actual_native_executor(self):
+        for source in ('web', 'slack', 'telegram', 'operator-ui', 'operator-retry', 'steer:web'):
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as directory:
+                host, _binding, sessions, runtime = fixtures.TurnExecutionStartTests()._service()
+                project = Project(id='p1', name='Project', path='/workspace/project')
+                host._project = lambda _id: project
+                runtime.automated_admission_allowed = lambda: False
+                runtime.queued_preflight = ExecutionPreflightService(ExecutionPreflightStore(
+                    SQLiteStateStore(Path(directory) / 'state.sqlite')))
+                runtime.schedule_queue_drain = Mock()
+                automatic = runtime.enqueue_turn(thread_id='t1', project_id='p1',
+                    message='automation', source='gitlab')
+                human = runtime.enqueue_turn(thread_id='t1', project_id='p1',
+                    message='human', source=source)
+                await runtime.drain_thread_queue('t1')
+                self.assertEqual([item.id for item in host.queues['t1']], [automatic.id])
+                self.assertEqual(runtime.queued_preflight.store.for_thread('t1')[0].status, 'started')
+                self.assertEqual(sum(method == 'turn/start' for method, _ in sessions.session.requests), 1)
+
+    def test_protocol_wrappers_preserve_human_or_automated_origin(self):
+        for source in ('queued:web', 'queued:steer:web', 'steer:queued:slack', 'queued:operator-ui'):
+            self.assertTrue(TurnExecutionService._human_turn_source(source))
+        for source in ('queued:gitlab', 'steer:work-item-handoff', 'queued:steer:unknown', 'queued:web:gitlab'):
+            self.assertFalse(TurnExecutionService._human_turn_source(source))

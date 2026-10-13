@@ -697,6 +697,8 @@ class TurnExecutionService:
 
     @staticmethod
     def _human_turn_source(source: str) -> bool:
+        while source.startswith(("queued:", "steer:")):
+            source = source.split(":", 1)[1]
         return source in {"web", "slack", "telegram", "operator-ui", "operator-retry"}
 
     def automation_wait_reason(self, source: str) -> dict[str, Any] | None:
