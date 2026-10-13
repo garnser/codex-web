@@ -294,6 +294,10 @@ Delivery status, priorities, dependencies, and completion belong in **GitHub Iss
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
 development workflow and Developer Certificate of Origin sign-off requirement.
+All participants must follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+Report suspected vulnerabilities privately as described in the
+[Security Policy](SECURITY.md). For bugs and feature requests, use the
+[issue templates](https://github.com/garnser/codex-web/issues/new/choose).
 
 ## License
 
