@@ -899,3 +899,26 @@ Do not publish a new administrative definition during mixed-version operation or
 assume source-only rollback after such publication. The target declaration schema
 alone does not enable administrative broker execution. Delivery and live acceptance
 are tracked in GitHub issue #1351.
+
+## Automated native turn admission
+
+The turn execution boundary reads the existing RuntimePolicy disable control
+and canonical AutonomyControl mode. Automated origins require runtime autonomy
+to be enabled and mode `active`. Human web, Slack and Telegram input and explicit
+operator UI/retry controls remain admissible under a global autonomy pause;
+source provenance comes from server-side producers, never message contents.
+Unknown sources remain subject to the automated gate.
+
+Queue drain checks this gate before retention, claims, removal or retry-counter
+changes. A mixed queue may admit a human request behind waiting automation
+without moving the waiting requests. Admission rechecks after provider/bootstrap
+awaits before native activity/start. A proven refusal at this boundary restores
+the original request and queue position without charging an attempt. Existing
+unknown outcomes and immutable native receipts retain their reconciliation
+requirements. Pause never authorizes replay or changes ownership of active turns.
+
+Queue API and events expose the waiting count and reason from these same controls;
+the conversation UI shows that reason. Canonical control changes wake the existing
+queue drainer, which rechecks both controls. A runtime disable marker still blocks
+automation after canonical resume; removing it requires the usual runtime/restart
+or explicit queue wakeup. Waiting drains invoke no model and do not spin retries.

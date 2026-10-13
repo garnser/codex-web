@@ -138,6 +138,10 @@ def _runtime_model_id(model: str | None, runtime_binding) -> str | None:
     return value or None
 
 
+class AutomatedAdmissionPaused(HTTPException):
+    """A refusal proven locally before native start, never a provider outcome."""
+
+
 class TurnExecutionService:
     """Own turn execution, queue draining, activity and terminal recovery state."""
 
@@ -169,6 +173,7 @@ class TurnExecutionService:
         self.host = host
         self.handoff_delivery_recorder: Callable[..., Any] | None = None
         self.queued_preflight = None
+        self.automated_admission_allowed: Callable[[], bool] | None = None
         try:
             self._event_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -690,6 +695,41 @@ class TurnExecutionService:
             self.host._save_active_turns(active_turns)
         return removed
 
+    @staticmethod
+    def _human_turn_source(source: str) -> bool:
+        return source in {"web", "slack", "telegram", "operator-ui", "operator-retry"}
+
+    def automation_wait_reason(self, source: str) -> dict[str, Any] | None:
+        # Sources are protocol provenance assigned by server-side producers,
+        # never inferred from task text. Unknown origins are automated.
+        if self._human_turn_source(source):
+            return None
+        if self.automated_admission_allowed is None or self.automated_admission_allowed():
+            return None
+        return {
+            "code": "autonomy_paused",
+            "message": "Automated work is waiting for autonomy to be enabled and resumed",
+            "retryable": True,
+        }
+
+    def _require_automated_admission(self, source: str) -> None:
+        reason = self.automation_wait_reason(source)
+        if reason is not None:
+            raise AutomatedAdmissionPaused(status_code=409, detail=reason)
+
+    def resume_automated_queues(self) -> None:
+        # The canonical control-change request wakes existing queues. Admission
+        # still rechecks both controls; a runtime disable marker cannot be overridden.
+        for thread_id in self.host._load_turn_queues():
+            self.schedule_queue_drain(thread_id)
+
+    def queue_admission_status(self, thread_id: str) -> dict[str, Any]:
+        reason = self.automation_wait_reason("queue-automation")
+        waiting = sum(not self._human_turn_source(item.source)
+                      for item in self.host._thread_queue(thread_id)) if reason else 0
+        return {"automationWaiting": waiting,
+                "automationWaitReason": reason if waiting else None}
+
     async def publish_queue_status(self, thread_id: str) -> None:
         h = self.host
         depth = h._thread_queue_depth(thread_id)
@@ -698,6 +738,7 @@ class TurnExecutionService:
                 "type": "queue.status",
                 "threadId": thread_id,
                 "queueDepth": depth,
+                **self.queue_admission_status(thread_id),
                 **TurnQueuePolicy.retention_status(depth, h._max_thread_queue_depth()),
                 "active": self.thread_is_active(thread_id),
             }
@@ -1777,6 +1818,7 @@ class TurnExecutionService:
         queued_admission_attempt_id: str | None = None,
         queued_admission_claim_id: str | None = None,
     ) -> dict[str, Any]:
+        self._require_automated_admission(source)
         scope = (project.organization_id, project.workspace_id)
         if (
             self.maintenance_admission is not None
@@ -2875,6 +2917,7 @@ class TurnExecutionService:
                     assignment_id,
                 )
 
+            self._require_automated_admission(source)
             if not preserve_active_handoff:
                 self.mark_thread_active(
                     thread_id,
@@ -3319,6 +3362,7 @@ class TurnExecutionService:
                 return
         retained_attempt = None
         admission_claim_id = None
+        original_order = [item.id for item in h._thread_queue(thread_id)]
         if self.queued_preflight is not None:
             items = h._thread_queue(thread_id)
             if not items:
@@ -3326,6 +3370,8 @@ class TurnExecutionService:
                 return
             queued = None
             for candidate in items:
+                if self.automation_wait_reason(candidate.source) is not None:
+                    continue
                 try:
                     candidate_project = h._project(candidate.project_id)
                 except HTTPException:
@@ -3348,9 +3394,15 @@ class TurnExecutionService:
                     continue
                 if attempt.status != 'queued':
                     continue
+                if self.automation_wait_reason(candidate.source) is not None:
+                    continue
                 attempt, claim_id = await asyncio.to_thread(
                     self.queued_preflight.claim_queued_admission, attempt.id)
                 if claim_id is None:
+                    continue
+                if self.automation_wait_reason(candidate.source) is not None:
+                    await asyncio.to_thread(self.queued_preflight.queued_disposition,
+                        attempt.id, status="queued", claim_id=claim_id)
                     continue
                 queued = self.pop_queued_turn(thread_id, candidate.id)
                 if queued is not None:
@@ -3363,13 +3415,17 @@ class TurnExecutionService:
                 await self.publish_queue_status(thread_id)
                 return
         else:
-            queued = self.pop_next_queued_turn(thread_id)
+            candidate = next((item for item in h._thread_queue(thread_id)
+                              if self.automation_wait_reason(item.source) is None), None)
+            queued = self.pop_queued_turn(thread_id, candidate.id) if candidate else None
         if not queued:
             await self.publish_queue_status(thread_id)
             return
+        original_queued = queued.model_copy(deep=True)
         queued.attempts += 1
         reschedule_queue = True
         try:
+            self._require_automated_admission(queued.source)
             if retained_attempt is not None:
                 # This durable gate commits before any native start. A crash
                 # afterwards is explicitly unknown, never an automatic replay.
@@ -3511,12 +3567,31 @@ class TurnExecutionService:
             raise
         except Exception as exc:
             detail = exc.detail if isinstance(exc, HTTPException) and isinstance(exc.detail, dict) else None
-            deferred_admission = isinstance(exc, (LocalExecutionWorkerCapacityError, ProviderCapacityBlockedError)) or bool(
+            deferred_admission = isinstance(exc, (LocalExecutionWorkerCapacityError, ProviderCapacityBlockedError, AutomatedAdmissionPaused)) or bool(
                 detail and detail.get('code') in {
                     'upgrade_maintenance_active', 'upgrade_maintenance', 'upgrade_turn_scope_unknown'})
             if retained_attempt is not None and deferred_admission:
                 await asyncio.to_thread(self.queued_preflight.queued_disposition,
                     retained_attempt.id, status='queued', detail=detail, claim_id=admission_claim_id)
+            if isinstance(exc, AutomatedAdmissionPaused):
+                reschedule_queue = False
+                if retained_attempt is not None:
+                    current = await asyncio.to_thread(
+                        self.queued_preflight.store.get, retained_attempt.id)
+                    if (current.status != "queued"
+                            or current.queued_admission_claim_id != admission_claim_id):
+                        return
+                def restore(items):
+                    if any(item.id == original_queued.id for item in items):
+                        return items
+                    preceding = set(original_order[:original_order.index(original_queued.id)])
+                    index = next((i for i, item in enumerate(items) if item.id not in preceding), len(items))
+                    items.insert(index, original_queued)
+                    return items
+                self._update_thread_queue(thread_id, restore)
+                h._append_bot_event({"type": "queued_turn_waiting_for_autonomy",
+                                     "thread_id": thread_id, "queued_id": queued.id})
+                return
             if retained_attempt is not None and not deferred_admission:
                 detail = exc.detail if isinstance(exc, HTTPException) and isinstance(exc.detail, dict) else None
                 known_unstarted = bool(detail and detail.get('code') in {

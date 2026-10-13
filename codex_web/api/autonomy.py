@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -23,6 +23,8 @@ from codex_web.services.identity import AuthorizationError, IdentityService
 def build_autonomy_router(
     service: AutonomyController,
     policy: AutonomyPolicyService | None = None,
+    *,
+    control_changed: Callable[[], None] | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/autonomy", tags=["autonomy"])
 
@@ -75,6 +77,8 @@ def build_autonomy_router(
     ) -> dict[str, Any]:
         actor = require_admin(request)
         control = service.update_control(payload, actor_id=actor.identity_id)
+        if control_changed is not None:
+            control_changed()
         return {"control": control.model_dump(mode="json")}
 
     @router.post("/scoped-pauses")
@@ -107,18 +111,24 @@ def build_autonomy_router(
     async def pause(request: Request) -> dict[str, Any]:
         actor = require_admin(request)
         control = service.pause(actor_id=actor.identity_id)
+        if control_changed is not None:
+            control_changed()
         return {"control": control.model_dump(mode="json")}
 
     @router.post("/resume")
     async def resume(request: Request) -> dict[str, Any]:
         actor = require_admin(request)
         control = service.resume(actor_id=actor.identity_id)
+        if control_changed is not None:
+            control_changed()
         return {"control": control.model_dump(mode="json")}
 
     @router.post("/kill")
     async def kill(request: Request) -> dict[str, Any]:
         actor = require_admin(request)
         control = service.kill(actor_id=actor.identity_id)
+        if control_changed is not None:
+            control_changed()
         return {"control": control.model_dump(mode="json")}
 
     @router.get("/policy/effective")

@@ -834,6 +834,7 @@ class TurnService:
             "threadId": thread_id,
             "active": self.execution.thread_is_active(thread_id),
             "queueDepth": depth,
+            **self.execution.queue_admission_status(thread_id),
             **TurnQueuePolicy.retention_status(depth, TurnQueuePolicy.max_depth()),
             "queued": [
                 {
