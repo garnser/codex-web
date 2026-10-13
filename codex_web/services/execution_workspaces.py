@@ -4,6 +4,7 @@ import hashlib
 import os
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -12,6 +13,7 @@ from codex_web.execution_workspace_backend import (
     ExecutionWorkspaceBackend,
     ExecutionWorkspaceBackendError,
 )
+from codex_web.code_hosts import CodeHostRevisionMaterializationFact
 from codex_web.execution_subjects import ExecutionSubject
 from codex_web.execution_workspaces import (
     ExecutionWorkspace,
@@ -81,6 +83,7 @@ class ExecutionWorkspaceService:
         self.resources = resources
         self.project_lookup = project_lookup
         self.work_item_host = work_item_host
+        self._revision_refresh_lock = threading.RLock()
         self.quota = quota if quota is not None else WorkspaceQuota.model_validate(
             {
                 field: os.environ[variable]
@@ -426,8 +429,25 @@ class ExecutionWorkspaceService:
         revision: str,
         *,
         actor: AuthenticationActor,
+        materialization: CodeHostRevisionMaterializationFact | None = None,
     ) -> ExecutionWorkspace:
         """Move a clean, actively leased single-repository workspace to one commit."""
+        with self._revision_refresh_lock:
+            return self._refresh_revision_locked(
+                workspace_id,
+                revision,
+                actor=actor,
+                materialization=materialization,
+            )
+
+    def _refresh_revision_locked(
+        self,
+        workspace_id: str,
+        revision: str,
+        *,
+        actor: AuthenticationActor,
+        materialization: CodeHostRevisionMaterializationFact | None,
+    ) -> ExecutionWorkspace:
         requested = str(revision or "").strip().casefold()
         if not re.fullmatch(r"[0-9a-f]{7,40}", requested):
             raise ExecutionWorkspaceBackendError(
@@ -508,13 +528,28 @@ class ExecutionWorkspaceService:
                         "updated_at": updated_at,
                     }
                 )
+                details: dict[str, Any] = {
+                    "requested_revision": requested,
+                    "resolved_revision": resolved,
+                }
+                if materialization is not None:
+                    details.update(
+                        {
+                            "materialization_resource_id": materialization.resource_id,
+                            "materialization_provider_type": materialization.provider_type,
+                            "materialization_provider_instance": materialization.provider_instance,
+                            "materialization_repository": materialization.repository_full_name,
+                            "materialization_default_branch": materialization.default_branch,
+                            "materialization_fetched": materialization.fetched,
+                        }
+                    )
                 self._append_event(
                     current_state,
                     ExecutionWorkspaceEvent(
                         workspace_id=workspace_id,
                         event_type="workspace_revision_refreshed",
                         actor_identity_id=actor.identity_id,
-                        details={"requested_revision": requested, "resolved_revision": resolved},
+                        details=details,
                     ),
                 )
                 return current_state

@@ -320,6 +320,37 @@ level; action fields belong inside `parameters`. Branch publication derives
 values. Malformed flat envelopes fail before intent creation, with a bounded
 shape hint; metadata never changes action validation or publication authority.
 
+The assignment-scoped workspace refresh operation resolves an exact revision in
+the existing checkout first. If, and only if, a full 40-character commit is
+absent locally, the broker may materialize the current default-branch tip that
+the canonical code-host provider independently reports for the assignment's
+single writable repository Resource. The broker derives the HTTPS remote from
+that verified provider binding and repository fact; callers cannot provide a
+URL, repository name, branch or credential. Fetch runs through the existing
+credential-reference boundary with terminal prompting, hooks, recursive
+submodules, redirects and non-HTTPS protocols disabled. Authenticated transport
+runs in a freshly initialized temporary bare repository with no checkout-local
+configuration, includes, URL rewrites or object alternates. The provider-attested
+repository URL retains the GitLab path prefix and exact configured HTTPS port;
+foreign authorities, userinfo and unsafe paths fail closed. Only after verifying
+the fetched commit against the attested revision does the service import its
+object pack into the checkout, without credentials, transport, reference updates
+or working-tree writes. It revalidates the assignment lease/fence before the existing clean-workspace
+refresh mutates HEAD. Dirty workspaces, abbreviated revisions, missing
+credentials, foreign provider/resource facts, moving default branches and stale
+assignments fail visibly. Concurrent recovery is serialized per repository
+checkout and reuses an already materialized exact object without a second
+fetch.
+
+This is an additive compatibility change: the refresh request remains
+`{"revision": <revision>}` and the existing `item` response remains unchanged;
+the response adds bounded `materialization` outcome metadata. No persisted
+schema, Definition, role, scheduler or repository primitive is added. The
+existing workspace event history records safe provider/resource/revision
+provenance, while the broker audit records denials and correlation. Existing
+workspace and broker inspectors already render those canonical details, so no
+separate UI state or linked UI implementation is required.
+
 An active repository-write owner whose canonical execution subject is `thread`
 or `thread_bootstrap` may request a bounded issue-scoped publication recovery
 through the assignment broker. The broker accepts only a qualified Work Item in
