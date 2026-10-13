@@ -485,6 +485,15 @@ class GitLabTaskSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(awaiting_projection.owner_known)
 
         closed = self.source._snapshot_from_issue({**self.client.issue, "state": "closed"})
+        opened = self.source._snapshot_from_issue({**self.client.issue, "state": "opened", "labels": []})
+        self.assertEqual(self.source.project(opened, current_stage="closed").stage, "implementation_active")
+        for status, expected in (("status::blocked", "failed_with_action_owner"),
+                                 ("status::awaiting confirmation", "ready_for_validation")):
+            labeled = self.source._snapshot_from_issue({**self.client.issue, "state": "opened", "labels": [status]})
+            self.assertEqual(self.source.project(labeled, current_stage="closed").stage, expected)
+        for source_state in ("closed", "merged", "", None):
+            terminal = self.source._snapshot_from_issue({**self.client.issue, "state": source_state, "labels": []})
+            self.assertEqual(self.source.project(terminal, current_stage="closed").stage, "closed")
         closed_projection = self.source.project(closed)
         self.assertEqual(closed_projection.stage, "closed")
         self.assertIsNone(closed_projection.owner)

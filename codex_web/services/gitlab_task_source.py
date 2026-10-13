@@ -495,6 +495,10 @@ class GitLabTaskSource:
             }:
                 return current_stage
             return "implementation_active"
+        # An authoritative reopen must not inherit a closed placeholder merely
+        # because the upstream issue has no workflow status label yet.
+        if source_state == "opened" and current_stage == "closed":
+            return "implementation_active"
         return current_stage or "implementation_active"
 
     def project(
