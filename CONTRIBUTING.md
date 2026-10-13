@@ -4,6 +4,11 @@ Thank you for contributing to codex-web. Before starting substantial work,
 read [AGENTS.md](AGENTS.md) and check the canonical GitHub issues, milestones,
 and project metadata for the relevant scope and dependencies.
 
+Participation in the project is governed by the
+[Code of Conduct](CODE_OF_CONDUCT.md). Use the GitHub issue templates for bug
+reports and feature requests, and the pull request template to record scope,
+validation, and UI impact.
+
 ## License and Developer Certificate of Origin
 
 codex-web is licensed under the [Apache License 2.0](LICENSE). Contributions
@@ -41,5 +46,5 @@ force-push the corrected branch. Do not add another person's sign-off.
   and documentation are current.
 
 Use GitHub issues for bugs, feature requests, and independently deliverable
-follow-up work. Security-sensitive reports should not be posted publicly; use
-the repository's private security-reporting channel when one is available.
+follow-up work. Security-sensitive reports should not be posted publicly; follow
+the [Security Policy](SECURITY.md) to report them privately.
