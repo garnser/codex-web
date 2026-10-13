@@ -45,7 +45,7 @@ test('administrative declaration, pinned attribution and actual denied audit rem
   await expect(panel).toContainText('lease fence expired <script>alert(1)</script>');
   await expect(panel.locator('img,script')).toHaveCount(0);
   await expect(panel.getByRole('link',{name:'View work item: group/target#2'})).toHaveAttribute('href','/projects/project-a/work-items?consumer_type=work_item&consumer_id=group%2Ftarget%232');
-  await expect(panel.getByRole('link',{name:'Inspect related ActionIntents and provider receipts'})).toHaveAttribute('href','/projects/project-a/operations?action_execution=execution-a');
+  await expect(panel.getByRole('link',{name:'Inspect related ActionIntents and provider receipts'})).toHaveAttribute('href','/projects/project-a/automations?action_execution=execution-a');
   expect(new URL(reads[0]).searchParams.get('assignment_id')).toBe('assignment-a');
   expect(new URL(reads[0]).searchParams.get('limit')).toBe('20');
   await page.setViewportSize({width:375,height:812});
@@ -207,4 +207,32 @@ test('worker administration loaded after DOM readiness still initializes and bin
   await expect(page.locator('[data-execution-assignment-management-host="assignment-a"]')).toHaveCount(1);
   const before=reads;await page.getByRole('button',{name:'Refresh workers'}).click();
   await expect.poll(()=>reads).toBeGreaterThan(before);
+});
+
+
+test('broker receipt link opens the routed workspace containing the ActionIntent timeline',async({page})=>{
+  const fs=require('node:fs');
+  const fixture=fs.readFileSync(require.resolve('./product_workspaces_fixture.html'),'utf8')
+    .replace('<h2>Execution Workers</h2>', '<h2>Execution Workers</h2><div data-execution-assignment-management-host="assignment-a"></div>')
+    .replace('<div class="developer-card" id="daemon-card">', '<div class="developer-card"><h2>ActionIntents &amp; Side Effects</h2><button id="refresh-action-intents">Refresh</button><div id="action-intent-status"></div><div id="action-intent-recovery-assurance"></div><button id="recover-stale-action-intents">Recover</button><div id="action-intent-list"></div></div><div class="developer-card" id="daemon-card">')
+    .replace('</body>', '<script src="/static/control_plane_broker_admin.js"></script><script src="/static/action_intent_admin.js"></script></body>');
+  await page.route('**/projects/home/*',route=>route.fulfill({contentType:'text/html',body:fixture}));
+  await page.route('**/api/**',route=>{
+    const path=new URL(route.request().url()).pathname;
+    if(path==='/api/action-intents')return route.fulfill({json:{items:[intent('intent-a','home')]}});
+    if(path==='/api/identity/me')return route.fulfill({json:{identity_id:'operator',roles:['admin'],assurance:'mfa',principal_kind:'human'}});
+    return route.fulfill({json:{receipts:[{id:'receipt-a',outcome:'unknown',attempt:1}],verifications:[{id:'verification-a',verified:false}],inbox:[]}});
+  });
+  await page.goto(origin+'/projects/home/workers');
+  await expect(page.locator('[data-product-workspace-host="workers"]')).toBeVisible();
+  await emit(page,assignment('home'));
+  await page.getByRole('link',{name:'Inspect related ActionIntents and provider receipts'}).click();
+  const row=page.locator('[data-action-intent-row="intent-a"]');
+  await expect(page.locator('#refresh-action-intents')).toBeVisible();
+  await expect(row).toBeVisible();
+  await row.locator('summary').click();
+  await row.getByRole('button',{name:'Load side-effect timeline'}).click();
+  await expect(row).toContainText('receipt-a');
+  await expect(row).toContainText('verification-a');
+  await expect(row).toContainText('unknown');
 });
