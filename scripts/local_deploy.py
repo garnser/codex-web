@@ -63,7 +63,9 @@ def origin_identity(value: str) -> tuple[str, str, str]:
         raise RuntimeError("repository origin is incomplete")
     port = parsed.port
     authority = parsed.hostname.lower()
-    if port and port != (443 if parsed.scheme == "https" else 80):
+    if ":" in authority:
+        authority = f"[{authority}]"
+    if port is not None and port != (443 if parsed.scheme == "https" else 80):
         authority += f":{port}"
     return parsed.scheme, authority, path.removesuffix(".git")
 

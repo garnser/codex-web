@@ -168,6 +168,12 @@ class CandidateMaterializationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "credentials"):
             origin_identity("https://user:secret@example.invalid/repository.git")
 
+    def test_origin_identity_keeps_ipv6_hosts_and_ports_distinct(self):
+        self.assertNotEqual(origin_identity("http://[2001:db8::1]:8080/repo"),
+                            origin_identity("http://[2001:db8::1:8080]/repo"))
+        self.assertNotEqual(origin_identity("http://example.invalid:0/repo"),
+                            origin_identity("http://example.invalid/repo"))
+
     def test_running_build_identity_requires_exact_revision_and_network_origin(self):
         for source, revision in [(str(self.remote), self.old),
                                  ("https://example.invalid/repo", "b" * 40)]:
