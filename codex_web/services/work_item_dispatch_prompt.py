@@ -21,9 +21,17 @@ class WorkItemDispatchPromptPolicy:
 
     def render(self, state: WorkItemState) -> str:
         owner = actionable_owner_value(state)
-        findings_suffix = ""
+        wait_instructions = (
+            " Running, pending, created or queued exact-head CI is not a defect. "
+            "Retain the responsible owner and validation stage, record exact MR/head/pipeline "
+            "and observed checks as a checkpoint, then stop until terminal provider evidence. "
+            "Do not label normal CI waiting failed, hand it back solely to wait, poll with "
+            "model calls or retry unchanged CI. Route only evidenced code defects to the "
+            "implementer and actual runner/dependency faults to the CI/runtime owner."
+        )
+        findings_suffix = wait_instructions
         if state.blocking_findings:
-            findings_suffix = (
+            findings_suffix += (
                 " Supporting findings: "
                 + "; ".join(state.blocking_findings[:3])
                 + "."
@@ -64,7 +72,7 @@ class WorkItemDispatchPromptPolicy:
                 f"release/validation lane for {state.ref}. Current stage: "
                 f"{state.current_stage}. Next action: "
                 f"{state.next_action or 'acknowledge and process the release-side lane'}."
-                f"{findings_suffix} Close the lane or emit one exact blocker in "
+                f"{findings_suffix} Record validation progress, close the lane, or emit one actual defect in "
                 f"{self.coordination_channel}. Reconcile the structured work-item "
                 "progress before ending the turn."
             )
@@ -72,6 +80,6 @@ class WorkItemDispatchPromptPolicy:
             f"{owner or 'owner'}: owned-work "
             f"SLA triggered for {state.ref}. Current stage: {state.current_stage}. "
             f"Next action: {state.next_action or 'state the exact next action and continue the item'}."
-            f"{findings_suffix} No passive waiting is allowed. Record the resulting "
+            f"{findings_suffix} Record actionable progress or a pending-prerequisite checkpoint. Record the resulting "
             "progress or blocker in codex-web before you stop."
         )

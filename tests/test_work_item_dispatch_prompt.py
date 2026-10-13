@@ -58,3 +58,22 @@ class WorkItemDispatchPromptTests(unittest.TestCase):
         self.assertTrue(message.startswith("Dana: structured handoff pending"))
         self.assertIn("/api/work-items/example%2Fgtm%2116/ack", message)
         self.assertEqual(state.model_dump(), before)
+
+    def test_pending_ci_instruction_preserves_all_dispatch_paths_and_ack(self):
+        for stage, handoff in [
+            ("implementation_active", None),
+            ("validation_running", None),
+            ("validation_running", WorkItemHandoff(from_agent="James", to_agent="Quinn", requested_at=1.0)),
+            ("validation_running", WorkItemHandoff(from_agent="James", to_agent="Sally", status="accepted", requested_at=1.0, acknowledged_at=2.0)),
+        ]:
+            with self.subTest(stage=stage, handoff=handoff):
+                state = self.state.model_copy(update={"current_stage": stage, "handoff": handoff})
+                before = state.model_dump()
+                message = self.policy.render(state)
+                self.assertIn("exact-head CI is not a defect", message)
+                self.assertIn("Retain the responsible owner and validation stage", message)
+                self.assertIn("terminal provider evidence", message)
+                self.assertNotIn("No passive waiting is allowed", message)
+                self.assertEqual(state.model_dump(), before)
+                if handoff and handoff.status == "pending":
+                    self.assertIn("/ack", message)
