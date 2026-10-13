@@ -25,3 +25,16 @@
 .cw-nowrap{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media(max-width:900px){.cw-page{padding-inline:var(--cw-space-4)}.cw-field,.cw-field-compact,.cw-field-wide{grid-column:span 6}}
 @media(max-width:640px){.cw-page{padding-inline:var(--cw-space-3)}.cw-field,.cw-field-compact,.cw-field-wide,.cw-field-full{grid-column:1/-1}.cw-toolbar{align-items:stretch}.cw-toolbar>button,.cw-toolbar>a[role="button"],.cw-toolbar>select{max-width:100%}}
+
+.control-plane-broker-status {
+  display: grid;
+  gap: .35rem;
+  min-width: 0;
+  padding: .75rem;
+  margin-block: .5rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.control-plane-broker-status small { display: block; overflow-wrap: anywhere; }
+.control-plane-broker-status summary { overflow-wrap: anywhere; }
+.control-plane-broker-status button { justify-self: start; white-space: normal; }

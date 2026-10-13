@@ -13,6 +13,8 @@ class ActionIntentAdminUiTests(unittest.TestCase):
         javascript = (ROOT / "static" / "action_intent_admin.js").read_text(
             encoding="utf-8"
         )
+        self.assertIn("action_intent_outcome_view.js", javascript)
+        javascript += (ROOT / "static" / "action_intent_outcome_view.js").read_text(encoding="utf-8")
 
         self.assertIn('id="action-intent-list"', html)
         self.assertIn('id="action-intent-recovery-panel"', html)

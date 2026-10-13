@@ -59,6 +59,8 @@ from codex_web.models import (
 )
 from codex_web.services.authority_roles import AuthorityRoleService
 from codex_web.services.action_intents import ActionIntentService
+from codex_web.services.agent_profiles import AgentProfileError
+from codex_web.services.definitions import DefinitionCompatibilityError, DefinitionConflictError
 from codex_web.services.code_host_action_contract import (
     CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
     CODE_HOST_ISSUE_COMMENT_ACTION_ID,
@@ -568,6 +570,9 @@ class ControlPlaneBrokerService:
                         "definition": (assignment.execution_profile_definition.model_dump(mode="json")
                                        if assignment.execution_profile_definition else None),
                         "authority_role_id": getattr(assignment.agent_profile, "authority_role_id", None),
+                        "authority_definition": (
+                            assignment.agent_profile.authority_definition_ref.model_dump(mode="json")
+                            if assignment.agent_profile and assignment.agent_profile.authority_definition_ref else None),
                         "effective_authority_requires_operation_checks": True}
             try:
                 if self.execution_profiles is None:
@@ -585,11 +590,41 @@ class ControlPlaneBrokerService:
                     workspace_id=assignment.workspace_id, project_id=assignment.project_id,
                 )
                 envelope["definition_is_current"] = current == assignment.execution_profile_definition
+                envelope["current_definition"] = current.model_dump(mode="json")
+                observation = {"status": "unavailable", "reason": "Administrative declaration inspection is unavailable"}
+                envelope["configuration_observation"] = observation
+                try:
+                    requester = self._requester_actor(assignment)
+                    envelope["requester_identity_id"] = requester.identity_id
+                    profiles = self.execution_profiles.agent_profiles
+                    if assignment.agent_profile is not None and profiles is not None:
+                        latest = profiles.get(assignment.agent_profile.profile_id, actor=requester)
+                        envelope["current_agent_profile"] = {
+                            "profile_id": latest.profile_id, "revision": latest.revision,
+                            "record_id": latest.record_id, "lifecycle": str(latest.lifecycle),
+                            "role_id": latest.role_id, "authority_role_id": latest.authority_role_id,
+                        }
+                    if profile.administrative_repository_ids and profile.control_plane_operations:
+                        # Inspect one explicitly named declaration through the
+                        # same guard used by dispatch. This is no operation grant.
+                        operation_id = profile.control_plane_operations[0]
+                        repository_id = profile.administrative_repository_ids[0]
+                        observation.update(operation_id=operation_id, repository_id=repository_id)
+                        self.execution_profiles.authorize_administrative_target(
+                            assignment, operation_id=operation_id, repository_id=repository_id,
+                            actor=requester, authority=self.authority, now=self._clock())
+                        observation.update(status="valid", reason="Declaration checks passed; each operation still requires live authorization")
+                    else:
+                        observation.update(status="blocked", reason="No administrative operation and repository target are declared")
+                except (ValueError, LookupError, AgentProfileError, AuthorizationError, AuthenticationError,
+                        ControlPlaneBrokerDeniedError, DefinitionCompatibilityError, DefinitionConflictError) as exc:
+                    observation.update(status="blocked", reason=str(exc))
                 operations = [item for item in operations if item["id"] in profile.control_plane_operations]
                 for item in operations:
                     if item["id"].startswith("repository.") or item["id"] == "action_intent.reconcile":
                         item["required_query_parameters"] = ["repository_resource_id"]
-            except (ValueError, KeyError, LookupError, AttributeError) as exc:
+            except (ValueError, KeyError, LookupError, AttributeError,
+                    DefinitionCompatibilityError, DefinitionConflictError) as exc:
                 envelope["inspection_error"] = str(exc)
                 operations = []
             context["declared_administrative_scope"] = envelope

@@ -900,6 +900,26 @@ assume source-only rollback after such publication. The target declaration schem
 alone does not enable administrative broker execution. Delivery and live acceptance
 are tracked in GitHub issue #1351.
 
+The existing worker/broker inspector renders declared administrative targets and
+operations separately from Git scope. It shows the pinned and current execution
+Definition and Agent Profile, Agent Role, operational authority Role, assignment
+requester, and the authenticated broker actor recorded for an operation. A bounded
+declaration observation invokes the same administrative guard for one explicitly
+identified operation/target pair; it creates no authority decision, action or audit
+event and grants no execution permission. Every real operation still rechecks its
+complete live scope, Role, profile, lease/fence and policy requirements.
+
+Broker audit loads on explicit request, reports loading/denied/unavailable/empty
+states, and labels its latest twenty events as a bounded sample. Project changes
+discard old observations and fence late responses. Broker admission and queue/batch
+acceptance do not attest provider execution or recipient acknowledgement. Existing
+ActionIntent links select the assignment execution and expose its canonical target
+resources, unknown/reconciliation state, provider receipts and verification history
+without rendering request bodies, provider output bodies or credential material.
+Operators use the existing Agent Profile/Definition and resource links to repair a
+missing, disabled or stale configuration, the worker inspector for lease/fence
+refusals, and the existing dependency graph for source/target Work Item context.
+
 ## Automated native turn admission
 
 The turn execution boundary reads the existing RuntimePolicy disable control

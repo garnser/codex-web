@@ -2,8 +2,13 @@
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { referenceLink } = await import(`${BASE}/static/reference_navigation.js`);
+  const { referenceAttributes, focusReference } = await import(`${BASE}/static/reference_links.js`);
+  const { captureProjectView, currentProjectId } = await import(`${BASE}/static/project_view_scope.js`);
+  const { decisionHtml, leaseHtml, failureHtml, recoveryHtml } = await import(`${BASE}/static/action_intent_outcome_view.js`);
   let actor = null;
   let intents = [];
+  let refreshGeneration = 0;
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -50,7 +55,7 @@
     const host = document.getElementById("action-intent-recovery-assurance");
     if (host && actor) {
       host.textContent = `Current actor ${actor.identity_id} · ${actor.principal_kind} · assurance ${actor.assurance}. Stale-claim recovery: ${canRecover() ? "allowed" : "blocked"}. Provider execution/reconciliation remains on canonical worker/admin APIs.`;
-    }
+    } else if (host) host.textContent = 'Current actor authority has not been loaded for this view.';
     const button = document.getElementById("recover-stale-action-intents");
     if (button) button.disabled = !canRecover();
   }
@@ -84,6 +89,9 @@
     const term = searchTerm();
     const status = statusFilter();
     return intents.filter((intent) => {
+      if (currentProjectId() && intent.project_id && intent.project_id !== currentProjectId()) return false;
+      const execution = new URLSearchParams(location.search).get('action_execution');
+      if (execution && intent.execution_id !== execution) return false;
       if (status && intent.status !== status) return false;
       return !term || searchable(intent).includes(term);
     });
@@ -97,29 +105,6 @@
       .join(", ") || "none";
   }
 
-  function decisionHtml(label, decision) {
-    return `<small>${escapeHtml(label)}: ${escapeHtml(decision?.outcome || "not_evaluated")} · source ${escapeHtml(decision?.source || "unknown")} · decision ${escapeHtml(decision?.decision_id || "none")} · reason ${escapeHtml(decision?.reason || "none")} · evaluated ${timeText(decision?.evaluated_at)}</small>`;
-  }
-
-  function leaseHtml(lease) {
-    if (!lease) return "<small>Worker lease: none.</small>";
-    return `<small>Worker lease: owner ${escapeHtml(lease.owner)} · acquired ${timeText(lease.acquired_at)} · renewed ${timeText(lease.renewed_at)} · expires ${timeText(lease.expires_at)}</small>`;
-  }
-
-  function failureHtml(failure) {
-    if (!failure) return "";
-    return `<small>Canonical failure: ${escapeHtml(failure.reason_code || "unclassified")} · outcome ${escapeHtml(failure.outcome || "unknown")} · retry ${escapeHtml(failure.retryability || "unknown")} · remediation ${escapeHtml(failure.remediation_key || "failure.inspect")} · ${escapeHtml(failure.summary || "No summary recorded.")}</small>`;
-  }
-
-  function recoveryHtml(intent, retry) {
-    const attempt = Number(intent.attempt);
-    const maxAttempts = Number(retry.max_attempts);
-    const exhausted = Number.isFinite(attempt) && Number.isFinite(maxAttempts)
-      && attempt >= maxAttempts;
-    if (!exhausted || !["failed", "uncertain", "requires_reconciliation"].includes(intent.status)) return "";
-    return "<small>Recovery: retry authority is exhausted and this intent is not claimable. Reconcile the provider outcome, then create a newly authorized replacement ActionIntent if delivery is still required; the replacement must pass current policy and provider gates.</small>";
-  }
-
   function renderIntent(intent) {
     const definition = intent.action_definition || {};
     const request = intent.request || {};
@@ -128,13 +113,14 @@
     const paramKeys = Object.keys(request.parameters || {});
     const publicationRecovery = intent.action_id === "code-host.branch.publish"
       && paramKeys.includes("existing_change_request_number");
-    return `<details class="comm-entry" data-action-intent-row="${escapeHtml(intent.id)}">
+    const ref = (kind, id) => referenceLink(kind, id, {projectId:intent.project_id || currentProjectId()});
+    return `<details class="comm-entry" ${referenceAttributes('action_intent', intent.id)} data-action-intent-row="${escapeHtml(intent.id)}">
       <summary><strong>${escapeHtml(intent.action_id)} · ${escapeHtml(intent.provider_type)}/${escapeHtml(intent.provider_instance)} · ${escapeHtml(intent.status)}</strong></summary>
       <small>ID: ${escapeHtml(intent.id)} · requested by ${escapeHtml(intent.requested_by)} · created ${timeText(intent.created_at)} · updated ${timeText(intent.updated_at)}</small>
-      <small>Work: ${escapeHtml(intent.work_item_ref || "none")} · Goal: ${escapeHtml(intent.goal_id || "none")} · Decision: ${escapeHtml(intent.decision_id || "none")} · Execution: ${escapeHtml(intent.execution_id || "none")}</small>
+      <small>Project: ${escapeHtml(intent.project_id || "unscoped")} · Work: ${ref('work_item', intent.work_item_ref)} · Goal: ${ref('goal', intent.goal_id)} · Decision: ${ref('decision', intent.decision_id)} · Execution: ${escapeHtml(intent.execution_id || "none")}</small>
       ${publicationRecovery ? `<small>Publication recovery provenance: Work Item ${escapeHtml(intent.work_item_ref || "none")} · original execution ${escapeHtml(intent.execution_id || "none")} · workspace reference retained in the governed request.</small>` : ""}
       <small>Binding: ${escapeHtml(intent.binding_id)} · risk: ${escapeHtml(definition.risk_class || "unknown")} · capabilities: ${escapeHtml(capabilityText(definition.capabilities))}</small>
-      <small>Resources: ${listText(intent.resource_ids)} · credential reference: ${escapeHtml(intent.credential_ref || "none")} · dry-run: ${request.dry_run ? "yes" : "no"}</small>
+      <small>Resources: ${(intent.resource_ids || []).map(id => ref('resource',id)).join(', ') || 'none'} · credential reference: ${escapeHtml(intent.credential_ref || "none")} · dry-run: ${request.dry_run ? "yes" : "no"}</small>
       <small>Request parameter keys only: ${listText(paramKeys)}. Parameter values and provider output bodies are intentionally not rendered in this timeline.</small>
       ${decisionHtml("Authority", intent.authority_decision)}
       ${decisionHtml("Policy", intent.policy_decision)}
@@ -158,9 +144,10 @@
     const visible = visibleIntents();
     host.innerHTML = visible.map(renderIntent).join("")
       || '<div class="comm-entry"><strong>No ActionIntents match the current filters.</strong></div>';
-    const attention = intents.filter((item) => ["uncertain", "requires_reconciliation"].includes(item.status)).length;
-    const executing = intents.filter((item) => ["claimed", "executing"].includes(item.status)).length;
-    setStatus(`${intents.length} ActionIntent(s) · ${executing} claimed/executing · ${attention} uncertain/reconciliation-required. Durable intent/receipt/verification state is canonical; provider logs are not the source of truth.`);
+    focusReference(host);
+    const attention = visible.filter((item) => ["uncertain", "requires_reconciliation"].includes(item.status)).length;
+    const executing = visible.filter((item) => ["claimed", "executing"].includes(item.status)).length;
+    setStatus(`${visible.length} ActionIntent(s) in this view · ${executing} claimed/executing · ${attention} uncertain/reconciliation-required. Durable intent/receipt/verification state is canonical; provider logs are not the source of truth.`);
   }
 
   function receiptHtml(receipt) {
@@ -196,6 +183,7 @@
   }
 
   async function loadHistory(button) {
+    const view = captureProjectView();
     const id = button.dataset.actionIntentHistory;
     if (!id) return;
     const host = document.getElementById(`action-intent-history-${id}`);
@@ -204,6 +192,7 @@
     host.innerHTML = "<small>Loading canonical side-effect history...</small>";
     try {
       const history = await apiRequest(`/api/action-intents/${encodeURIComponent(id)}/history`);
+      if (!view.current() || !host.isConnected) return;
       const receipts = history.receipts || [];
       const verifications = history.verifications || [];
       const inbox = history.inbox || [];
@@ -215,7 +204,7 @@
         + inbox.map(inboxHtml).join("")
         + verifications.map(verificationHtml).join("");
     } catch (error) {
-      host.innerHTML = `<small>ActionIntent history unavailable: ${escapeHtml(error.message)}</small>`;
+      if (view.current() && host.isConnected) host.innerHTML = `<small>ActionIntent history unavailable: ${escapeHtml(error.message)}</small>`;
     } finally {
       button.disabled = false;
     }
@@ -236,20 +225,28 @@
   }
 
   async function refresh() {
+    const view = captureProjectView();
+    const revision = ++refreshGeneration;
+    actor = null;
+    renderAssurance();
     setStatus("Loading canonical ActionIntents...");
     try {
       const [response, me] = await Promise.all([
         apiRequest("/api/action-intents"),
         apiRequest("/api/identity/me"),
       ]);
+      if (!view.current() || revision !== refreshGeneration) return;
       intents = response.items || [];
       actor = me;
       renderAssurance();
       render();
     } catch (error) {
+      if (!view.current() || revision !== refreshGeneration) return;
       intents = [];
-      setStatus(`ActionIntent timeline unavailable: ${error.message}`);
+      actor = null;
+      renderAssurance();
       render();
+      setStatus(`ActionIntent timeline ${[401,403].includes(error.status) ? 'access denied' : 'unavailable'}: ${error.message}. Provider outcomes are unknown until a successful read.`);
     }
   }
 
@@ -270,5 +267,14 @@
     if (panel?.open) refresh().catch(console.error);
   }
 
-  window.addEventListener("DOMContentLoaded", bind);
+  if (document.readyState === 'loading') window.addEventListener("DOMContentLoaded", bind, {once:true});
+  else bind();
+  window.addEventListener('codex:project-changed', () => {
+    refreshGeneration += 1;
+    intents = [];
+    actor = null;
+    renderAssurance();
+    render();
+    setStatus('Project changed. Refresh ActionIntents to inspect the selected scope.');
+  });
 })();

@@ -467,6 +467,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 authority_role_id="local-admin", execution_profile_id="orchestration-admin"),
         })
         profiles.agent_profiles = SimpleNamespace(get=lambda profile_id, actor: SimpleNamespace(
+            profile_id=profile_id,
             lifecycle="active", revision=8, record_id="orchestrator-record", role_id="orchestrator",
             authority_role_id="local-admin", execution_profile_id="orchestration-admin"))
         registry = _ActionRegistry("gitlab")
@@ -502,6 +503,9 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(declared["repository_ids"], [resource_a, resource_b])
         self.assertEqual(declared["authority_role_id"], "local-admin")
         self.assertTrue(declared["definition_is_current"])
+        self.assertEqual(declared["requester_identity_id"], "local-admin")
+        self.assertEqual(declared["current_agent_profile"]["revision"], 8)
+        self.assertEqual(declared["configuration_observation"]["status"], "valid")
         self.assertTrue(declared["effective_authority_requires_operation_checks"])
         self.assertNotIn(assignment.lease.lease_token, json.dumps(inspection))
         self.assertEqual(inspection["operations"][0]["id"], "work_graph.edge.create")
@@ -539,6 +543,26 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         status, _, result = await self._request("POST", "/api/work-items/"+quote(self.ref, safe="")+"/progress", payload={})
         self.assertEqual(status, 200, result)
         self.assertEqual(result["item"]["actor"], "orchestrator")
+        audited = len(self.service.audit.load().events)
+        original_get = profiles.agent_profiles.get
+        for update in ({"revision":9}, {"lifecycle":"disabled"}):
+            with self.subTest(update=update):
+                profiles.agent_profiles.get = lambda profile_id, actor: SimpleNamespace(
+                    **(vars(original_get(profile_id, actor)) | update))
+                observed = self.service.public_assignment_capability(assignment)["assignment_context"]["declared_administrative_scope"]
+                self.assertEqual(observed["configuration_observation"]["status"], "blocked")
+                self.assertIn("disabled or its binding changed", observed["configuration_observation"]["reason"])
+                for field,value in update.items():
+                    self.assertEqual(observed["current_agent_profile"][field], value)
+        profiles.agent_profiles.get = original_get
+        expired = assignment.model_copy(update={"lease":assignment.lease.model_copy(update={"expires_at":0})})
+        observed = self.service.public_assignment_capability(expired)["assignment_context"]["declared_administrative_scope"]
+        self.assertIn("live fenced assignment", observed["configuration_observation"]["reason"])
+        with patch.object(self.service.authority, "role_ids_for_actor", return_value=()):
+            observed = self.service.public_assignment_capability(assignment)["assignment_context"]["declared_administrative_scope"]
+            self.assertIn("live authority Role", observed["configuration_observation"]["reason"])
+        self.assertEqual(len(self.service.audit.load().events), audited)
+        self.assertEqual(len(actions.created), 1)
 
     async def test_authoritative_mr_read_through_real_operator_adapter_and_scoped_broker(self):
         import httpx

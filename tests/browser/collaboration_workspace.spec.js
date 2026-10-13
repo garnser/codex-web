@@ -1,3 +1,4 @@
+const collaborationOrigin = process.env.CODEX_WEB_BROWSER_TEST_ORIGIN || 'http://127.0.0.1:18766';
 const { test, expect } = require('@playwright/test');
 
 const profiles = [
@@ -117,7 +118,7 @@ async function mockApis(page, { empty = false } = {}) {
 
 test('Agent, Team and Skill surfaces use stable canonical identities and lifecycle state', async ({ page }) => {
   await mockApis(page);
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
 
   const card = page.locator('#collaboration-workspace-card');
   await expect(card).toBeVisible();
@@ -166,7 +167,7 @@ test('Agent Profile edit creates a bounded revision without editable identity or
     }
     await route.fallback();
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
 
   const maya = page.locator('.collab-agent-card').filter({ hasText: 'Maya' });
   await maya.getByRole('button', { name: 'Edit', exact: true }).click();
@@ -198,7 +199,7 @@ test('Team lifecycle archive requires impact confirmation and a reason', async (
       body: JSON.stringify({ item: { ...teams[0], lifecycle: 'archived', revision: 4 } }),
     });
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
 
   const team = page.locator('.collab-team-card').filter({ hasText: 'Delivery Team' });
   await team.locator('.collab-context-more > summary').click();
@@ -225,7 +226,7 @@ test('Team usage blocks destructive lifecycle and server conflicts preserve the 
     writes.push(route.request().postDataJSON());
     return route.fulfill({ status: 409, json: { detail: 'Team has active consumers; refresh usage.' } });
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
   const team = page.locator('.collab-team-card').filter({ hasText: 'Delivery Team' });
   await team.locator('.collab-context-more > summary').click();
   await team.getByRole('button', { name: 'Usage', exact: true }).click();
@@ -260,7 +261,7 @@ test('Team restore remains available with incompatible consumer impact', async (
     restored = route.request().postDataJSON();
     return route.fulfill({ json: { item: { ...teams[1], lifecycle: 'active', revision: 2 } } });
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
   const team = page.locator('.collab-team-card').filter({ hasText: 'Legacy Team' });
   await team.locator('.collab-context-more > summary').click();
   await team.getByRole('button', { name: 'Restore', exact: true }).click();
@@ -287,7 +288,7 @@ test('Agent Profile usage and archive preflight show canonical blockers and pres
     writes.push(route.request().postDataJSON());
     return route.fulfill({ status: 409, json: { detail: 'Profile revision changed; refresh before changing lifecycle.' } });
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
   const profile = page.locator('.collab-agent-card').filter({ hasText: 'Maya' });
   await profile.locator('.collab-context-more > summary').click();
   await profile.getByRole('button', { name: 'Usage', exact: true }).click();
@@ -326,7 +327,7 @@ test('Agent Profile missing impact blocks archive and successful verified lifecy
     writes.push(route.request().postDataJSON());
     return route.fulfill({ json: { item: { ...profiles[0], lifecycle: 'archived', revision: 5 } } });
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
   const profile = page.locator('.collab-agent-card').filter({ hasText: 'Maya' });
   await profile.locator('.collab-context-more > summary').click();
   await profile.getByRole('button', { name: 'Archive', exact: true }).click();
@@ -353,7 +354,7 @@ test('Agent Profile restore remains available when consumer impact cannot load',
     restored = route.request().postDataJSON();
     return route.fulfill({ json: { item: { ...profiles[1], lifecycle: 'active', revision: 3 } } });
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
   const profile = page.locator('.collab-agent-card').filter({ hasText: 'Nora' });
   await profile.locator('.collab-context-more > summary').click();
   await profile.getByRole('button', { name: 'Restore', exact: true }).click();
@@ -389,7 +390,7 @@ test('Team create and archived-team restore use canonical lifecycle endpoints', 
       body: JSON.stringify({ item: { ...teams[1], lifecycle: 'active', revision: 2 } }),
     });
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
 
   await page.getByRole('button', { name: 'Create Team' }).click();
   const createDialog = page.locator('dialog.product-section-dialog').filter({ hasText: 'Create Team' });
@@ -428,7 +429,7 @@ test('Agent Profile history exposes immutable revision provenance', async ({ pag
       ],
     }),
   }));
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
 
   const maya = page.locator('.collab-agent-card').filter({ hasText: 'Maya' });
   await maya.locator('.collab-context-more > summary').click();
@@ -446,7 +447,7 @@ test('Agent execution/provider details load lazily and remain secondary to stabl
   page.on('request', (request) => {
     if (request.url().includes('/api/agent-profiles/maya/executions')) executionRequests += 1;
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
 
   const maya = page.locator('.collab-agent-card').filter({ hasText: 'Maya' });
   expect(executionRequests).toBe(0);
@@ -486,7 +487,7 @@ test('shared Agent identities retain only the selected Project workload and acce
         items: project === 'empty' ? [] : [{ executionId: `execution-${project}`, projectId: project, status: 'running' }] };
     await route.fulfill({ json: payload });
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
   const maya = page.locator('.collab-agent-card').filter({ hasText: 'Maya' });
   const openContext = () => maya.locator('.collab-agent-context > summary').click();
   const switchProject = id => page.evaluate(projectId => {
@@ -521,7 +522,7 @@ test('shared Agent identities retain only the selected Project workload and acce
 
 test('empty collaboration workspace has explicit Agent, Team and Skill states', async ({ page }) => {
   await mockApis(page, { empty: true });
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
 
   const card = page.locator('#collaboration-workspace-card');
   await expect(card).toContainText('No Agent Profiles');
@@ -533,7 +534,7 @@ test('empty collaboration workspace has explicit Agent, Team and Skill states', 
 test('collaboration cards collapse intentionally at phone width', async ({ page }) => {
   await mockApis(page);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
 
   const columns = await page.locator('[data-collab-agents]').evaluate((node) => getComputedStyle(node).gridTemplateColumns);
   expect(columns.trim().split(/\s+/)).toHaveLength(1);
@@ -547,7 +548,7 @@ test('collaboration cards collapse intentionally at phone width', async ({ page 
 
 test('Agent Profiles and Teams routed pages expose distinct functional surfaces', async ({ page }) => {
   await mockApis(page);
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
 
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:project-workspace-page', {
     detail: { workspace: 'agents', page: 'agent-profiles' },
@@ -571,7 +572,7 @@ test('Agent Profiles and Teams routed pages expose distinct functional surfaces'
 
 test('contextual actions are visible directly on Agent and Team cards', async ({ page }) => {
   await mockApis(page);
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
 
   const maya = page.locator('.collab-agent-card').filter({ hasText: 'Maya' });
   await expect(maya.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
@@ -603,7 +604,7 @@ test('Agent Skill assignments can be attached and detached without leaving the A
     }
     await route.fallback();
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
 
   const maya = page.locator('.collab-agent-card').filter({ hasText: 'Maya' });
   await maya.getByRole('button', { name: 'Edit Skills for Maya' }).click();
@@ -635,7 +636,7 @@ test('Team membership can be managed directly from the Team card', async ({ page
     }
     await route.fallback();
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
 
   const team = page.locator('.collab-team-card').filter({ hasText: 'Delivery Team' });
   await team.getByRole('button', { name: 'Add or remove members for Delivery Team' }).click();
@@ -657,7 +658,7 @@ test('Team membership can be managed directly from the Team card', async ({ page
 
 test('empty Agent and Team collections expose contextual create actions', async ({ page }) => {
   await mockApis(page, { empty: true });
-  await page.goto('http://127.0.0.1:18766/tests/browser/collaboration_workspace_fixture.html');
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
 
   const agentEmpty = page.locator('[data-collab-agents]');
   const teamEmpty = page.locator('[data-collab-teams]');
@@ -670,7 +671,7 @@ test('cross-object links preserve Project and return to the originating Team', a
   const fixture = fs.readFileSync('tests/browser/collaboration_workspace_fixture.html', 'utf8');
   await mockApis(page);
   await page.route('**/projects/project-a/**', route => route.request().resourceType() === 'document' ? route.fulfill({ contentType: 'text/html', body: fixture }) : route.continue());
-  await page.goto('http://127.0.0.1:18766/projects/project-a/teams');
+  await page.goto(`${collaborationOrigin}/projects/project-a/teams`);
   const team = page.locator('[data-reference-kind=team][data-reference-id=delivery]');
   await team.getByRole('link', { name: 'View agent profile: Maya' }).click();
   await expect(page).toHaveURL(/projects\/project-a\/agent-profiles\?consumer_type=agent_profile&consumer_id=maya/);
@@ -680,4 +681,18 @@ test('cross-object links preserve Project and return to the originating Team', a
   await page.goBack();
   await expect(page).toHaveURL(/teams\?consumer_type=team&consumer_id=delivery/);
   await expect(team).toBeFocused();
+});
+
+test('execution policy distinguishes Agent Role and operational authority with pinned Definition links', async ({page}) => {
+  await mockApis(page);
+  await page.route('**/api/agent-profiles?**', route => route.fulfill({json:{items:profiles.map(profile=>profile.profile_id==='maya'
+    ? {...profile,authority_role_id:'ops-reader',authority_definition_ref:{record_id:'role-record-three',definition_id:'authority.roles.default',revision:3}}
+    : profile)}}));
+  await page.goto(`${collaborationOrigin}/tests/browser/collaboration_workspace_fixture.html`);
+  const maya=page.locator('.collab-agent-card').filter({hasText:'Maya'});
+  await maya.getByText('Work, access and execution context',{exact:true}).click();
+  await maya.getByText('Execution policy details',{exact:true}).click();
+  await expect(maya).toContainText('Operational authority Role');
+  await expect(maya).toContainText('ops-reader');
+  await expect(maya.getByRole('link',{name:'View definition: authority.roles.default@r3'})).toHaveAttribute('href','/projects/project-a/definitions?definition_record=role-record-three');
 });
