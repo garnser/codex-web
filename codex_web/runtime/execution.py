@@ -1767,6 +1767,7 @@ class TurnExecutionService:
         repository_resource_id: str | None = None,
         writable_repository_resource_ids: tuple[str, ...] = (),
         read_only_repository_resource_ids: tuple[str, ...] = (),
+        read_only_scope_supplied: bool = False,
         execution_profile_id: str | None = None,
         actor: AuthenticationActor | None = None,
         agent_profile_id: str | None = None,
@@ -1822,6 +1823,7 @@ class TurnExecutionService:
                     repository_resource_id=repository_resource_id,
                     writable_repository_resource_ids=writable_repository_resource_ids,
                     read_only_repository_resource_ids=read_only_repository_resource_ids,
+                    read_only_scope_supplied=read_only_scope_supplied,
                     execution_profile_id=execution_profile_id,
                     actor=actor,
                     agent_profile_id=agent_profile_id,
@@ -1847,6 +1849,7 @@ class TurnExecutionService:
             repository_resource_id=repository_resource_id,
             writable_repository_resource_ids=writable_repository_resource_ids,
             read_only_repository_resource_ids=read_only_repository_resource_ids,
+            read_only_scope_supplied=read_only_scope_supplied,
             execution_profile_id=execution_profile_id,
             actor=actor,
             agent_profile_id=agent_profile_id,
@@ -1875,6 +1878,7 @@ class TurnExecutionService:
         repository_resource_id: str | None = None,
         writable_repository_resource_ids: tuple[str, ...] = (),
         read_only_repository_resource_ids: tuple[str, ...] = (),
+        read_only_scope_supplied: bool = False,
         execution_profile_id: str | None = None,
         actor: AuthenticationActor | None = None,
         agent_profile_id: str | None = None,
@@ -1898,8 +1902,12 @@ class TurnExecutionService:
         effective_approval_policy = (
             approval_policy or settings.approval_policy or project.approval_policy
         )
-        scoped_read_context = bool(work_item_ref or source.startswith('queued:')
-                                   or queued_admission_attempt_id)
+        # Explicit public scope, including an empty set, survives recovery.
+        # Omitted unscoped requests still inherit remembered thread defaults.
+        scoped_read_context = bool(
+            read_only_scope_supplied or work_item_ref
+            or source.startswith('queued:') or queued_admission_attempt_id
+        )
         effective_read_only_repositories = tuple(
             read_only_repository_resource_ids if scoped_read_context else
             (read_only_repository_resource_ids or settings.read_only_repository_resource_ids))

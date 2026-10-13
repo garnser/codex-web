@@ -293,6 +293,32 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         return service, queue, execution, events, settings
 
+    async def test_explicit_read_scope_survives_web_admission_and_queueing(self):
+        for deferred in (False, True):
+            for supplied, expected in [
+                ({}, ("unrelated-context",)),
+                ({"read_only_repository_resource_ids": ()}, ()),
+                ({"read_only_repository_resource_ids": ("required-context",)},
+                 ("required-context",)),
+            ]:
+                with self.subTest(deferred=deferred, supplied=supplied):
+                    service, queue, execution, _events, settings = self._service()
+                    queue.queued = []
+                    execution.active = False
+                    settings.get = lambda _id: ThreadRunSettings(
+                        read_only_repository_resource_ids=("unrelated-context",))
+                    await service.start("thread-1", TurnCreate(
+                        message="repair original MR", project_id="home",
+                        defer_start=deferred, **supplied))
+                    if deferred:
+                        self.assertEqual(queue.queued[0].read_only_repository_resource_ids,
+                                         expected)
+                        self.assertEqual(execution.start_calls, [])
+                    else:
+                        kwargs = execution.start_calls[0][1]
+                        self.assertEqual(kwargs["read_only_repository_resource_ids"], expected)
+                        self.assertEqual(kwargs["read_only_scope_supplied"], bool(supplied))
+
     async def test_deferred_start_persists_work_before_runtime_startup(self):
         service, queue, execution, events, settings = self._service()
         queue.queued = []

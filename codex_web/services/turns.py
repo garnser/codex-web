@@ -349,9 +349,13 @@ class TurnService:
                 or remembered.writable_repository_resource_ids
             )
         )
+        read_only_scope_supplied = (
+            "read_only_repository_resource_ids" in payload.model_fields_set
+        )
         effective_read_only_repository_ids = (
             payload.read_only_repository_resource_ids
-            or remembered.read_only_repository_resource_ids
+            if read_only_scope_supplied
+            else remembered.read_only_repository_resource_ids
         )
         profile_execution_id = (
             profile.execution_profile_id
@@ -518,6 +522,7 @@ class TurnService:
                 repository_resource_id=effective_repository_resource_id,
                 writable_repository_resource_ids=effective_writable_repository_ids,
                 read_only_repository_resource_ids=effective_read_only_repository_ids,
+                read_only_scope_supplied=read_only_scope_supplied,
                 execution_profile_id=effective_execution_profile_id,
                 actor=actor,
                 agent_profile_id=agent_profile_id,
