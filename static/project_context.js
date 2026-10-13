@@ -20,6 +20,18 @@ export function activateProject(state, projectId, { historyMode = "replace" } = 
   const normalized=String(projectId||"").trim();
   if(!normalized)return "";
   const projectChanged=state.projectId!==normalized;
+  if (projectChanged) {
+    // Drop the previous project's projection before publishing the new scope.
+    // A slow or failed refresh must never leave its threads available here.
+    state.refreshController?.abort();
+    state.refreshGeneration = (state.refreshGeneration || 0) + 1;
+    state.threads = { data: [] };
+    state.threadIndexProject = "";
+    state.projectResources = [];
+    state.botBindings = [];
+    state.threadSettings = {};
+    state.botChannels = [];
+  }
   state.projectId=normalized;
   sessionStorage.setItem(ACTIVE_PROJECT_KEY,normalized);
   if(document.body)document.body.dataset.projectId=normalized;

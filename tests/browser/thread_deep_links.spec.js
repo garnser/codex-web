@@ -1,5 +1,75 @@
 const { test, expect } = require('@playwright/test');
 
+for (const outcome of ['success', 'failure']) {
+  test(`project switch clears previous threads while the new list is pending (${outcome})`, async ({ page }) => {
+    await mockChatApi(page);
+    let pending;
+    await page.route('**/api/projects/alpha/ui-state?*', route => { pending = route; });
+    await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+    await expect(page.locator('#thread-title')).toHaveText('Home thread');
+    await expect(page.locator('#threads .item')).toHaveCount(2);
+
+    const visibleImmediately = await page.evaluate(() => {
+      window.dispatchEvent(new CustomEvent('codex:project-select', { detail: { projectId: 'alpha' } }));
+      return document.getElementById('threads').textContent;
+    });
+    expect(visibleImmediately).not.toContain('Home thread');
+    expect(visibleImmediately).not.toContain('Background thread');
+    await expect.poll(() => Boolean(pending)).toBe(true);
+    await expect(page.locator('#threads .item')).toHaveCount(0);
+    await expect(page.locator('#thread-title')).toHaveText('Select a thread');
+    await expect(page.locator('#messages')).not.toContainText('Loaded home-thread');
+
+    if (outcome === 'success') {
+      await pending.fallback();
+      await expect(page.locator('#threads')).toContainText('Alpha thread');
+    } else {
+      await pending.fulfill({ status: 503, json: { detail: 'Project list unavailable' } });
+      await expect(page.locator('#messages')).toContainText('Project list unavailable');
+      await expect(page.locator('#threads .item')).toHaveCount(0);
+    }
+    await expect(page.locator('#threads')).not.toContainText('Home thread');
+  });
+}
+
+test('browser Back clears current threads and fences a late project response', async ({ page }) => {
+  await mockChatApi(page);
+  let pending;
+  await page.route('**/api/projects/alpha/ui-state?*', route => { pending = route; });
+  await page.goto('http://127.0.0.1:18766/projects/home/chat');
+  await expect(page.locator('#threads')).toContainText('Home thread');
+  await page.locator('#product-project-switcher').selectOption('alpha');
+  await expect.poll(() => Boolean(pending)).toBe(true);
+  await expect(page.locator('#threads .item')).toHaveCount(0);
+  await page.goBack();
+  await expect(page.locator('#threads')).toContainText('Home thread');
+  await pending.fallback();
+  await expect(page.locator('body')).toHaveAttribute('data-project-id', 'home');
+  await expect(page.locator('#threads')).not.toContainText('Alpha thread');
+});
+
+test('same-project refresh retains its threads while a new list is pending', async ({ page }) => {
+  await mockChatApi(page);
+  await page.goto('http://127.0.0.1:18766/projects/home/chat');
+  await expect(page.locator('#threads .item')).toHaveCount(2);
+  let pending;
+  await page.route('**/api/projects/home/ui-state?*', route => { pending = route; });
+  await page.locator('#refresh').click();
+  await expect.poll(() => Boolean(pending)).toBe(true);
+  await expect(page.locator('#threads .item')).toHaveCount(2);
+  await pending.fallback();
+  await expect(page.locator('#threads')).toContainText('Home thread');
+});
+
+test('the thread list omits rows explicitly belonging to another Project', async ({ page }) => {
+  const { threads } = await mockChatApi(page);
+  threads.alpha.push(threads.home[0]);
+  await page.goto('http://127.0.0.1:18766/projects/alpha/chat');
+  await expect(page.locator('#threads')).toContainText('Alpha thread');
+  await expect(page.locator('#threads .item')).toHaveCount(1);
+  await expect(page.locator('#threads')).not.toContainText('Home thread');
+});
+
 async function mockChatApi(page, { degradeFirstThreadRead = false, simulateReply = false } = {}) {
   const fs = require('fs');
   const path = require('path');
