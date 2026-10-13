@@ -5,10 +5,12 @@
   const { currentProjectId } = await import(`${BASE}/static/project_view_scope.js`);
   let generation = 0;
   const pending = new Set();
+  const panels = new Map();
   function invalidate() {
     generation += 1;
     pending.forEach(controller => controller.abort());
     pending.clear();
+    panels.clear();
     document.querySelectorAll('.control-plane-broker-status').forEach(node => node.remove());
   }
 
@@ -17,11 +19,23 @@
     if (!projectId || item.project_id !== projectId) return;
     const host = document.querySelector(`[data-execution-assignment-management-host="${CSS.escape(item.id)}"]`);
     if (!host) return;
+    const fingerprint = JSON.stringify(item);
+    const previous = panels.get(item.id);
+    if (previous?.fingerprint === fingerprint) {
+      // Worker rendering replaces its host nodes. Reattach the same inspector
+      // only while its complete public assignment/scope snapshot is unchanged.
+      host.before(previous.panel);
+      return;
+    }
+    previous?.controller?.abort();
+    previous?.panel.remove();
     const panel = document.createElement('section');
     panel.className = 'control-plane-broker-status';
     panel.setAttribute('aria-label', 'Broker scope and outcomes');
     panel.innerHTML = brokerDeclarationHtml(item, projectId);
     host.before(panel);
+    const record = {fingerprint, panel, controller:null};
+    panels.set(item.id, record);
     panel.querySelector('[data-broker-graph]').addEventListener('click', event => {
       if (generation !== viewGeneration || projectId !== currentProjectId()) return;
       const graph = document.getElementById('work-graph-panel');
@@ -37,7 +51,9 @@
     button.addEventListener('click', async () => {
       const controller = new AbortController();
       pending.add(controller);
-      const owned = () => generation === viewGeneration && projectId === currentProjectId() && panel.isConnected;
+      record.controller = controller;
+      const owned = () => generation === viewGeneration && projectId === currentProjectId()
+        && panels.get(item.id) === record && panel.isConnected;
       button.disabled = true;
       status.textContent = 'Loading canonical broker audit…';
       panel.setAttribute('aria-busy', 'true');
@@ -54,13 +70,23 @@
         }
       } finally {
         pending.delete(controller);
+        if (record.controller === controller) record.controller = null;
         if (owned()) { button.disabled = false; panel.removeAttribute('aria-busy'); }
       }
     });
   }
   window.addEventListener('codex:project-changed', invalidate);
   window.addEventListener('codex:execution-worker-state-rendered', event => {
-    invalidate();
-    (event.detail?.assignments || []).forEach(item => renderAssignment(item, generation));
+    const assignments = event.detail?.assignments || [];
+    const current = new Set(assignments.filter(item => item.project_id === currentProjectId()
+      && document.querySelector(`[data-execution-assignment-management-host="${CSS.escape(item.id)}"]`)).map(item => item.id));
+    for (const [id, record] of panels) {
+      if (!current.has(id)) {
+        record.controller?.abort();
+        record.panel.remove();
+        panels.delete(id);
+      }
+    }
+    assignments.forEach(item => renderAssignment(item, generation));
   });
 })();

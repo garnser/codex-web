@@ -196,6 +196,9 @@
     const cancelled = assignments.filter((item) => item.status === "cancelled").length;
     const lost = assignments.filter((item) => ["lost", "failed"].includes(item.status)).length;
     setStatus(`${workers.length} worker(s), ${active} active, ${unhealthy} unavailable · ${assignments.length} assignment(s), ${running} leased/running, ${lost} lost/failed, ${cancelled} cancelled. Worker control-plane state is distinct from execution lease authority.`);
+    window.dispatchEvent(new CustomEvent("codex:execution-worker-state-rendered", {
+      detail: { workers, assignments, events },
+    }));
   }
 
   async function refresh() {
@@ -210,9 +213,6 @@
       assignments = assignmentResponse.items || [];
       events = eventResponse.items || [];
       renderAll();
-      window.dispatchEvent(new CustomEvent("codex:execution-worker-state-rendered", {
-        detail: { workers, assignments, events },
-      }));
     } catch (error) {
       workers = [];
       assignments = [];

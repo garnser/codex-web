@@ -129,3 +129,54 @@ test('denied ActionIntent reads disable stale actor controls and preserve outcom
   await expect(page.locator('#recover-stale-action-intents')).toBeDisabled();
   await expect(page.locator('#action-intent-recovery-assurance')).toContainText('has not been loaded');
 });
+
+test('unchanged worker redraw preserves a pending audit and its completed history',async({page})=>{
+  await mountBroker(page);const item=assignment();await emit(page,item);
+  await page.evaluate(events=>{const original=window.fetch;window.fetch=(url,options)=>String(url).includes('/api/control-plane-broker/audit')
+    ? new Promise(resolve=>{window.releaseAudit=()=>resolve(new Response(JSON.stringify({items:events})))})
+    : original(url,options)},audit);
+  await page.getByRole('button').click();
+  await page.evaluate(value=>{
+    document.querySelector('details').innerHTML='<summary>Assignments</summary><div data-execution-assignment-management-host="assignment-a"></div>';
+    window.dispatchEvent(new CustomEvent('codex:execution-worker-state-rendered',{detail:{assignments:[value]}}));
+  },item);
+  await expect(page.locator('.control-plane-broker-status')).toHaveAttribute('aria-busy','true');
+  await expect(page.locator('[role=status]')).toHaveText('Loading canonical broker audit…');
+  await page.evaluate(async()=>{releaseAudit();await new Promise(resolve=>setTimeout(resolve,0));});
+  await expect(page.locator('[role=status]')).toContainText('Latest 1 recorded broker outcomes');
+  await page.evaluate(value=>window.dispatchEvent(new CustomEvent('codex:execution-worker-state-rendered',{detail:{assignments:[value]}})),item);
+  await expect(page.locator('[role=status]')).toContainText('Latest 1 recorded broker outcomes');
+  await expect(page.locator('.control-plane-broker-status')).toHaveCount(1);
+});
+test('changed pinned/current profile replaces the panel and refuses the old audit response',async({page})=>{
+  await mountBroker(page);const item=assignment();await emit(page,item);
+  await page.evaluate(()=>{const original=window.fetch;window.fetch=(url,options)=>String(url).includes('/api/control-plane-broker/audit')
+    ? new Promise(resolve=>{window.releaseAudit=()=>resolve(new Response(JSON.stringify({items:[{project_id:'project-a',assignment_id:'assignment-a',operation_id:'old-profile-private-outcome'}]})))})
+    : original(url,options)});
+  await page.getByRole('button').click();
+  item.brokered_control_plane.assignment_context.agent_profile.profile_revision=9;
+  item.brokered_control_plane.assignment_context.declared_administrative_scope.current_agent_profile.revision=9;
+  await emit(page,item);
+  await page.evaluate(async()=>{releaseAudit();await new Promise(resolve=>setTimeout(resolve,0));});
+  await expect(page.locator('.control-plane-broker-status')).toContainText('orchestrator@r9');
+  await expect(page.locator('[role=status]')).toHaveText('Broker audit has not been loaded.');
+  await expect(page.locator('.control-plane-broker-status')).not.toContainText('old-profile-private-outcome');
+});
+
+test('filtered assignment drops its pending read before the same row returns',async({page})=>{
+  await mountBroker(page);const item=assignment();await emit(page,item);
+  await page.evaluate(()=>{const original=window.fetch;window.fetch=(url,options)=>String(url).includes('/api/control-plane-broker/audit')
+    ? new Promise(resolve=>{window.releaseAudit=()=>resolve(new Response(JSON.stringify({items:[{project_id:'project-a',assignment_id:'assignment-a',operation_id:'filtered-old-result'}]})))})
+    : original(url,options)});
+  await page.getByRole('button').click();
+  await page.evaluate(value=>{
+    document.querySelector('details').innerHTML='<summary>Assignments</summary>';
+    window.dispatchEvent(new CustomEvent('codex:execution-worker-state-rendered',{detail:{assignments:[value]}}));
+  },item);
+  await expect(page.locator('.control-plane-broker-status')).toHaveCount(0);
+  await page.evaluate(()=>document.querySelector('details').insertAdjacentHTML('beforeend','<div data-execution-assignment-management-host="assignment-a"></div>'));
+  await emit(page,item);
+  await page.evaluate(async()=>{releaseAudit();await new Promise(resolve=>setTimeout(resolve,0));});
+  await expect(page.locator('[role=status]')).toHaveText('Broker audit has not been loaded.');
+  await expect(page.locator('.control-plane-broker-status')).not.toContainText('filtered-old-result');
+});
