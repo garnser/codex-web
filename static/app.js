@@ -655,12 +655,21 @@ function renderApprovals() {
 
 function setWaiting(waiting, label = "Waiting for Codex", mode = waiting ? "waiting" : "idle") {
   state.waiting = waiting;
+  renderQueueAdmissionStatus();
   const status = $("codex-status");
   const text = $("codex-status-text");
   if (!status || !text) return;
   status.classList.toggle("waiting", waiting);
   status.classList.toggle("idle", !waiting);
   text.textContent = waiting ? label : "Idle";
+}
+
+function renderQueueAdmissionStatus() {
+  const notice = $("queue-admission-status");
+  if (!notice) return;
+  const message = state.automationWaitByThread.get(state.threadId);
+  notice.textContent = message || "";
+  notice.hidden = !message;
 }
 
 function queuedDepth(threadId) {
@@ -1290,6 +1299,7 @@ function clearSelectedThread({ historyMode = "none" } = {}) {
   clearMessages();
   $("thread-title").textContent = "Select a thread";
   $("thread-meta").textContent = "";
+  renderQueueAdmissionStatus();
   renderThreads();
   renderTokenUsage();
   renderRepositoryTargetStatus();

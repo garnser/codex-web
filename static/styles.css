@@ -1995,3 +1995,11 @@ menu {
 .work-graph-empty {
   font-size: 13px;
 }
+
+#queue-admission-status {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  white-space: normal;
+}

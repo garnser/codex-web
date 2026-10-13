@@ -918,7 +918,8 @@ unknown outcomes and immutable native receipts retain their reconciliation
 requirements. Pause never authorizes replay or changes ownership of active turns.
 
 Queue API and events expose the waiting count and reason from these same controls;
-the conversation UI shows that reason. Canonical control changes wake the existing
+the conversation UI shows that reason in a separate queue notice, including
+while native activity, uncertainty or approval status occupies the turn indicator. Canonical control changes wake the existing
 queue drainer, which rechecks both controls. A runtime disable marker still blocks
 automation after canonical resume; removing it requires the usual runtime/restart
 or explicit queue wakeup. Waiting drains invoke no model and do not spin retries.
