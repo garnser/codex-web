@@ -60,6 +60,7 @@ from codex_web.services.action_providers import (
 )
 from codex_web.services.code_host_action_contract import (
     CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID,
+    CODE_HOST_JOB_RERUN_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
     CodeHostActionContract,
 )
@@ -570,7 +571,9 @@ class ActionIntentService:
                 for repository_id in repository_ids:
                     self.execution_profiles.authorize_administrative_target(
                         assignment,
-                        operation_id=request.action_id.replace("code-host.", "repository.", 1),
+                        operation_id=("repository.check.rerun"
+                                      if request.action_id == CODE_HOST_JOB_RERUN_ACTION_ID
+                                      else request.action_id.replace("code-host.", "repository.", 1)),
                         repository_id=repository_id, actor=actor, authority=self.authority,
                     )
             except ValueError as exc:

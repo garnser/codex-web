@@ -27,6 +27,34 @@ from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
 class ExecutionProfileTests(unittest.TestCase):
+    def test_action_intent_administrative_scope_uses_broker_operation_names(self):
+        from codex_web.action_providers import ActionRequest
+        from codex_web.resources import ResourceType
+        from codex_web.services.action_intents import ActionIntentService
+
+        profiles = SimpleNamespace(authorize_administrative_target=Mock())
+        assignment = SimpleNamespace(execution_profile_id="orchestration-admin")
+        service = ActionIntentService(
+            None, SimpleNamespace(resources=SimpleNamespace(
+                get=lambda resource_id, actor: SimpleNamespace(resource_type=ResourceType.REPOSITORY))),
+            authority=SimpleNamespace(), execution_profiles=profiles,
+            execution_workers=SimpleNamespace(assignment_for_execution=lambda execution_id, actor: assignment),
+        )
+        actor = SimpleNamespace()
+        for action_id, expected_operation in (
+            ("code-host.job.rerun", "repository.check.rerun"),
+            ("code-host.pull-request.upsert", "repository.pull-request.upsert"),
+            ("code-host.issue.create", "repository.issue.create"),
+        ):
+            with self.subTest(action_id=action_id):
+                request = ActionRequest(action_id=action_id, resource_ids=("resource-repository",),
+                                        organization_id="org", workspace_id="workspace", parameters={})
+                service._validate_execution_repository_scope("execution", request, actor)
+                profiles.authorize_administrative_target.assert_called_with(
+                    assignment, operation_id=expected_operation,
+                    repository_id="resource-repository", actor=actor, authority=service.authority,
+                )
+
     @staticmethod
     def administrative_payload():
         payload = execution_profile_catalog_seed_payload()
