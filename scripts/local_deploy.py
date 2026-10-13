@@ -23,6 +23,39 @@ from pathlib import Path
 LOCAL_DEPLOY_LOCK = Path("/home/nbingester/codex-web-native-runtime/local-deploy.lock")
 
 
+def report_diagnostic(plan_id: str | None, source: str, target: str, phase: str,
+                      *, qualification=None, materialization=None) -> None:
+    """Best-effort claims in canonical Evidence; never a gate or install receipt."""
+    if not plan_id:
+        return
+    try:
+        def api(path, payload=None):
+            request = urllib.request.Request("http://127.0.0.1:8765" + path,
+                data=None if payload is None else json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return json.load(response)
+        plan = api("/api/upgrades/" + urllib.parse.quote(plan_id, safe=""))["item"]
+        if plan["current_app_version"] != source or plan["target_app_version"] != target:
+            raise RuntimeError("diagnostic plan revisions changed")
+        release = api("/api/releases/" + urllib.parse.quote(plan["release_id"], safe=""))["item"]
+        metadata = {"installer_report_version": 1, "upgrade_plan_id": plan_id,
+                    "phase": phase, "source_revision": source, "target_revision": target,
+                    "service_instance_id": (qualification or {}).get("service_instance_id")
+                                           or plan.get("service_instance_id")}
+        if materialization:
+            metadata.update(materialization)
+        if phase == "failed":
+            metadata["failure_code"] = "installation_failed"
+        api("/api/evidence", {"evidence_type": "runtime_result", "result": "info",
+            "project_id": plan.get("project_id"), "artifact_ids": [release["build"]["artifact_id"]],
+            "provider": "local-installer", "source": plan_id,
+            "summary": "Reported installer diagnostic; grants no installation authority or completion.",
+            "metadata": metadata})
+    except Exception:
+        print(json.dumps({"event": "diagnostic_unavailable", "phase": phase}), flush=True)
+
+
 def run(*args: str, check: bool = True, timeout: int = 900) -> subprocess.CompletedProcess[str]:
     print("+", " ".join(args), flush=True)
     return subprocess.run(args, check=check, text=True, capture_output=True, timeout=timeout,
@@ -247,6 +280,7 @@ def main() -> int:
     parser.add_argument("--expected-live", required=True)
     parser.add_argument("--guard-fd", type=int, required=True)
     args = parser.parse_args()
+    report_plan = os.environ.get("CODEX_WEB_UPGRADE_PLAN_ID")
     if len(args.candidate) != 40 or any(c not in "0123456789abcdef" for c in args.candidate):
         raise SystemExit("candidate must be an exact lowercase SHA")
     if len(args.expected_live) != 40 or any(
@@ -275,8 +309,17 @@ def main() -> int:
             raise SystemExit(f"candidate is not current origin/main: {args.candidate} != {available}")
         git(args.source, "merge-base", "--is-ancestor", args.candidate, "origin/main")
         require_clean(args.live)
+        candidate_present = True
+        try:
+            archive_digest(args.live, args.candidate)
+        except subprocess.CalledProcessError:
+            candidate_present = False
         candidate_digest = materialize_candidate(
             args.source, args.live, args.candidate, previous, trusted_origin)
+        materialization = {"archive_sha256": candidate_digest,
+                           "fetched": not candidate_present, "repository_source": trusted_origin}
+        report_diagnostic(report_plan, previous, args.candidate, "objects_verified",
+                          materialization=materialization)
 
         built = args.candidate
         with tempfile.TemporaryDirectory(prefix="codex-web-deploy-") as temp:
@@ -308,6 +351,7 @@ def main() -> int:
                 if archive_digest(args.live, built) != candidate_digest:
                     raise RuntimeError("candidate objects changed while deployment was staged")
                 qualification = verify_canonical_guard(args.guard_fd)
+                report_plan = str(qualification.get("upgrade_plan_id") or report_plan or "")
                 if revision(args.live) != previous:
                     raise RuntimeError("live revision changed during canonical qualification")
                 checked_origins(args.source, args.live, trusted_origin)
@@ -333,6 +377,8 @@ def main() -> int:
             finally:
                 git(args.source, "worktree", "remove", "--force", str(stage), check=False)
 
+        report_diagnostic(report_plan, previous, built, "objects_verified",
+                          qualification=qualification, materialization=materialization)
         installed = False
         try:
             set_service_revision(built)
@@ -341,9 +387,12 @@ def main() -> int:
         except Exception as exc:
             print(json.dumps({"event": "installation_error", "error_type": type(exc).__name__}), flush=True)
         if installed:
+            report_diagnostic(report_plan, previous, built, "installed",
+                              qualification=qualification, materialization=materialization)
             print(json.dumps({"event": "complete", "candidate": args.candidate, "installed": built}), flush=True)
             return 0
 
+        report_diagnostic(report_plan, previous, built, "failed", qualification=qualification)
         if qualification.get("rollback_available") is not True:
             raise SystemExit("installation verification failed; canonical plan does not permit automatic rollback; maintenance retained")
         try:
@@ -362,4 +411,15 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        exit_code = main()
+    except (Exception, SystemExit):
+        def argument(name):
+            try:
+                return sys.argv[sys.argv.index(name) + 1]
+            except (ValueError, IndexError):
+                return ""
+        report_diagnostic(os.environ.get("CODEX_WEB_UPGRADE_PLAN_ID"),
+                          argument("--expected-live"), argument("--candidate"), "failed")
+        raise
+    raise SystemExit(exit_code)

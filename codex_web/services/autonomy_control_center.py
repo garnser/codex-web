@@ -305,6 +305,8 @@ class AutonomyControlCenterService:
                     for item in active_upgrades[:50]
                 ],
                 "count": len(active_upgrades),
+                "recent": [item.model_dump(mode="json") for item in
+                           sorted(upgrades, key=lambda item: item.updated_at, reverse=True)[:5]],
             },
             "execution_plane": {
                 "workers": [

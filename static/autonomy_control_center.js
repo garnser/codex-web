@@ -1,4 +1,5 @@
 import { confirmAction } from './action_confirmation.js';
+import { renderLocalInstallation } from './local_installation_inspector.js';
 const accEsc = (value) => String(value ?? "")
   .replaceAll("&", "&amp;")
   .replaceAll("<", "&lt;")
@@ -170,7 +171,8 @@ function accRender(card, data) {
       item.reason || "available", "");
   }).join("");
 
-  const upgrades = data.upgrades?.active || [];
+  const upgrades = [...new Map([...(data.upgrades?.active || []), ...(data.upgrades?.recent || [])]
+    .map((item) => [item.id, item])).values()];
   card.querySelector("[data-acc-upgrades]").innerHTML = upgrades.length ? upgrades.map(function (item) {
     const preflight = item.preflight ? (item.preflight.satisfied ? "preflight pass" : "preflight blocked: " + (item.preflight.blockers || []).join(", ")) : "preflight not run";
     const coverage = item.maintenance_scope === "service"
@@ -184,7 +186,9 @@ function accRender(card, data) {
       : " · tenant scope";
     return accRow(item.current_app_version + " → " + item.target_app_version + " · " + item.status,
       preflight + " · maintenance " + item.maintenance_mode + coverage + " · rollback " + item.rollback_available + " · irreversible " + item.irreversible_boundary_crossed,
-      accLink("/api/upgrades/" + encodeURIComponent(item.id), "Open " + item.id));
+      accLink("/api/upgrades/" + encodeURIComponent(item.id), "Open " + item.id) +
+      ' <button type="button" class="ghost-button" data-acc-installation="' + accEsc(item.id) + '" aria-expanded="false">Inspect local installation</button>' +
+      '<div data-acc-installation-result="' + accEsc(item.id) + '" role="region" aria-label="Local installation details" hidden></div>');
   }).join("") : accEmpty("No active upgrade plans.");
 
   const workers = data.execution_plane?.workers || [];
@@ -228,6 +232,23 @@ function accRender(card, data) {
       return '<div class="acc-alert"><strong>' + accEsc(item.severity) + " · " + accEsc(item.signal_type || item.id) +
         "</strong><small>" + accEsc(item.reason) + "</small></div>";
     }).join("");
+
+  card.querySelectorAll('[data-acc-installation]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const region = [...card.querySelectorAll('[data-acc-installation-result]')]
+        .find((element) => element.dataset.accInstallationResult === button.dataset.accInstallation);
+      if (!region) return;
+      region.hidden = false;
+      button.setAttribute('aria-expanded', 'true');
+      region.textContent = 'Loading local installation…';
+      try {
+        const details = await accRequest('/api/upgrades/' + encodeURIComponent(button.dataset.accInstallation) + '/local-installation');
+        if (region.isConnected) region.innerHTML = renderLocalInstallation(details);
+      } catch (error) {
+        if (region.isConnected) region.textContent = 'Local installation unavailable or denied: ' + error.message;
+      }
+    });
+  });
 
   card.querySelectorAll("[data-acc-approval]").forEach(function (button) {
     button.addEventListener("click", async function () {

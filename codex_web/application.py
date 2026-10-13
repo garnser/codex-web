@@ -2162,7 +2162,11 @@ execution_worker_service.maintenance_admission = upgrade_service.worker_admissio
 identity_service.workspace_creation_admission = upgrade_service.hosted_scope_admission
 app.state.upgrade_store = upgrade_store
 app.state.upgrade_service = upgrade_service
-app.include_router(build_upgrades_router(upgrade_service))
+app.include_router(build_upgrades_router(upgrade_service, process_reader=lambda plan: (
+    control_plane_broker_factory.service.local_installation_process(plan)
+    if control_plane_broker_factory.service is not None
+    else {"status": "unknown", "reason": "Installer tracking is unavailable"}
+)))
 
 orchestration_inspector_service = OrchestrationInspectorService(
     canonical_event_store,

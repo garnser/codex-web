@@ -450,6 +450,7 @@ class ControlPlaneBrokerService:
         self.limits = limits or ControlPlaneBrokerLimits()
         self._clock = clock
         self._monotonic = monotonic
+        self._local_installers = {}
 
     @staticmethod
     def operations() -> tuple[ControlPlaneBrokerOperation, ...]:
@@ -1812,6 +1813,18 @@ class ControlPlaneBrokerService:
             "log_path": "/home/nbingester/codex-web-native-runtime/local-deploy.log",
         }
 
+    def local_installation_process(self, plan):
+        tracked = self._local_installers.get(plan.id)
+        if not tracked:
+            return {"status": "unknown", "reason": "No live tracked installer handle"}
+        process, instance, source, target = tracked
+        if (instance != self.service_instance_id or instance != plan.service_instance_id
+                or source != plan.deployment_source_revision or target != plan.deployment_target_revision):
+            return {"status": "unknown", "reason": "Tracked installer scope or instance is stale"}
+        result = process.poll()
+        return {"status": "running" if result is None else "exited",
+                "process_id": process.pid, "exit_code": result}
+
     def _qualify_local_deployment(self, payload: dict[str, Any], *, actor):
         if self.upgrades is None or not self.service_instance_id:
             raise ControlPlaneBrokerDeniedError(
@@ -1937,6 +1950,7 @@ class ControlPlaneBrokerService:
                     start_new_session=True,
                     close_fds=True,
                     pass_fds=(child_channel.fileno(),),
+                    env={**os.environ, "CODEX_WEB_UPGRADE_PLAN_ID": str(payload["upgrade_plan_id"])},
                 )
             except Exception:
                 parent_channel.close()
@@ -1951,6 +1965,8 @@ class ControlPlaneBrokerService:
             name=f"local-deployment-guard-{process.pid}",
             daemon=True,
         ).start()
+        self._local_installers[str(payload["upgrade_plan_id"])] = (
+            process, self.service_instance_id, source_revision, candidate)
         return {
             "accepted": True,
             "candidate_revision": candidate,

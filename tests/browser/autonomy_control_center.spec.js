@@ -1,8 +1,50 @@
 const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require("@playwright/test");
+const fixtureURL = (process.env.CODEX_WEB_BROWSER_BASE_URL || "http://127.0.0.1:18766") + "/tests/browser/autonomy_control_center_fixture.html";
+
+test('Local installation separates reported materialization from canonical verification', async ({page}) => {
+  await page.goto(fixtureURL);
+  const button=page.locator('[data-acc-installation="upgrade-1"]');
+  await button.focus(); await page.keyboard.press('Enter');
+  const region=page.locator('[data-acc-installation-result="upgrade-1"]');
+  await expect(region).toBeVisible();
+  await expect(button).toHaveAttribute('aria-expanded','true');
+  await expect(region).toContainText('Installation has no completed canonical verification');
+  await expect(region).toContainText('reported fetched');
+  await expect(region).toContainText('Installer process unknown');
+  await expect(region).toContainText('They grant no permission');
+  const requests=await page.evaluate(()=>window.__accRequests);
+  expect(requests.some(r=>r.path.endsWith('/local-installation') && r.method==='GET')).toBeTruthy();
+  expect(requests.some(r=>r.method!=='GET')).toBeFalsy();
+});
+
+test('Local installation exposes already-present, stale failures and canonical Evidence', async ({page}) => {
+  await page.goto(fixtureURL);
+  await page.evaluate(()=>window.__localInstallation={
+    source_revision:'source',target_revision:'target',plan_status:'completed',maintenance_mode:false,
+    installation_verified:true,plan_href:'/api/upgrades/upgrade-1',release_href:'/api/releases/release-1',
+    canonical_verification:{href:'/api/evidence/post'},process:{status:'exited',exit_code:0},
+    reported_diagnostics:[{phase:'failed',failure_code:'fetch_failed',stale_instance:true,
+      fetched:false,producer_identity_id:'operator',href:'/api/evidence/report'}]});
+  await page.locator('[data-acc-installation="upgrade-1"]').click();
+  const region=page.locator('[data-acc-installation-result="upgrade-1"]');
+  await expect(region).toContainText('Installation verified by canonical post-upgrade evidence');
+  await expect(region).toContainText('reported already present');
+  await expect(region).toContainText('stale instance');
+  await expect(region).toContainText('Failure fetch_failed');
+  await expect(region).toContainText('exit alone does not prove installation');
+  await expect(region.getByRole('link',{name:'Post-upgrade Evidence'})).toHaveAttribute('href','/api/evidence/post');
+});
+
+test('Local installation keeps denied reads visible', async ({page}) => {
+  await page.goto(fixtureURL);
+  await page.evaluate(()=>window.__localInstallationDenied=true);
+  await page.locator('[data-acc-installation="upgrade-1"]').click();
+  await expect(page.locator('[data-acc-installation-result="upgrade-1"]')).toContainText('unavailable or denied: upgrade administrator with MFA required');
+});
 
 test("Autonomy Control Center renders canonical M11 readiness without triggering work", async ({ page }) => {
-  await page.goto("http://127.0.0.1:18766/tests/browser/autonomy_control_center_fixture.html");
+  await page.goto(fixtureURL);
 
   const card = page.locator("#autonomy-control-center-card");
   await expect(card).toBeVisible();
@@ -26,7 +68,7 @@ test("Autonomy Control Center renders canonical M11 readiness without triggering
 });
 
 test("Explain Action follows exact canonical stored provenance without model calls", async ({ page }) => {
-  await page.goto("http://127.0.0.1:18766/tests/browser/autonomy_control_center_fixture.html");
+  await page.goto(fixtureURL);
   const card = page.locator("#autonomy-control-center-card");
 
   await card.locator("[data-acc-intent]").fill("intent-1");
@@ -47,7 +89,7 @@ test("Explain Action follows exact canonical stored provenance without model cal
 });
 
 test("Control Center mutations use canonical autonomy and approval APIs", async ({ page }) => {
-  await page.goto("http://127.0.0.1:18766/tests/browser/autonomy_control_center_fixture.html");
+  await page.goto(fixtureURL);
   const card = page.locator("#autonomy-control-center-card");
 
   await card.locator("[data-acc-pause]").click();
@@ -66,7 +108,7 @@ test("Control Center mutations use canonical autonomy and approval APIs", async 
 });
 
 test("Control Center can create and remove canonical scoped pauses", async ({ page }) => {
-  await page.goto("http://127.0.0.1:18766/tests/browser/autonomy_control_center_fixture.html");
+  await page.goto(fixtureURL);
   const card = page.locator("#autonomy-control-center-card");
 
   await card.locator("[data-acc-pause-scope]").selectOption("project");
@@ -87,7 +129,7 @@ test("Control Center can create and remove canonical scoped pauses", async ({ pa
 
 test("Autonomy Control Center remains usable at phone width", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("http://127.0.0.1:18766/tests/browser/autonomy_control_center_fixture.html");
+  await page.goto(fixtureURL);
 
   const card = page.locator("#autonomy-control-center-card");
   await expect(card).toBeVisible();

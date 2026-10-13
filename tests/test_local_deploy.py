@@ -5,6 +5,7 @@ import json
 import socket
 import threading
 import io
+from scripts.local_deploy import report_diagnostic
 import subprocess
 import tempfile
 import sys
@@ -257,6 +258,27 @@ class CandidateMaterializationTests(unittest.TestCase):
 
 
 class LocalDeployTests(unittest.TestCase):
+    def test_installer_reports_are_informational_evidence_and_report_failure_is_nonfatal(self):
+        payloads=[]
+        def response(request, **kwargs):
+            url=request.full_url
+            if '/api/upgrades/' in url:
+                value={'item':{'current_app_version':'a'*40,'target_app_version':'b'*40,
+                    'release_id':'release','service_instance_id':'instance','project_id':None}}
+            elif '/api/releases/' in url:
+                value={'item':{'build':{'artifact_id':'package'}}}
+            else:
+                payloads.append(json.loads(request.data));value={'item':{'id':'report'}}
+            return io.StringIO(json.dumps(value))
+        with patch('scripts.local_deploy.urllib.request.urlopen',side_effect=response):
+            report_diagnostic('plan','a'*40,'b'*40,'objects_verified',
+                materialization={'archive_sha256':'c'*64,'fetched':True})
+        self.assertEqual(payloads[0]['result'],'info')
+        self.assertEqual(payloads[0]['artifact_ids'],['package'])
+        self.assertEqual(payloads[0]['metadata']['upgrade_plan_id'],'plan')
+        with patch('scripts.local_deploy.urllib.request.urlopen',side_effect=RuntimeError('denied')):
+            report_diagnostic('plan','a'*40,'b'*40,'failed')
+
     def _installation_health(self, *, plan_changes=None, observed=None, rollback=False):
         source, target = "a" * 40, "b" * 40
         qualification = dict(upgrade_plan_id="upgrade-1", service_instance_id="instance-1",
