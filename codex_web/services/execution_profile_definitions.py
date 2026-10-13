@@ -1,19 +1,24 @@
 from __future__ import annotations
 
+import time
+
 from codex_web.definitions import (
     DefinitionContext,
     DefinitionDraftCreate,
     DefinitionReference,
+    DefinitionScope,
     reference_for,
 )
 from codex_web.execution_profile_seed import execution_profile_catalog_seed_payload
 from codex_web.execution_profiles import (
+    ADMINISTRATIVE_EXECUTION_PROFILE_SCHEMA_VERSION,
     EXECUTION_PROFILE_CATALOG_ID,
     EXECUTION_PROFILE_CATALOG_KIND,
     EXECUTION_PROFILE_CATALOG_SCHEMA_VERSION,
     ExecutionProfileCatalogDefinition,
     ExecutionProfileContract,
     validate_execution_profile_catalog,
+    validate_administrative_execution_profile_catalog,
 )
 from codex_web.services.definitions import DefinitionKindSchema, DefinitionRegistryService
 
@@ -24,6 +29,7 @@ class ExecutionProfileDefinitionService:
     def __init__(self, registry: DefinitionRegistryService) -> None:
         self.registry = registry
         self.usage_loader = None
+        self.agent_profiles = None
 
     def bootstrap(self) -> None:
         self.registry.bootstrap(
@@ -89,7 +95,80 @@ class ExecutionProfileDefinitionService:
         profile = catalog.profile_map.get(effective_id)
         if profile is None:
             raise ValueError(f"unknown execution profile: {effective_id}")
+        if profile.administrative_repository_ids and (
+            record.scope_type != DefinitionScope.PROJECT
+            or not project_id or record.scope_id != project_id
+            or record.definition_schema_version != ADMINISTRATIVE_EXECUTION_PROFILE_SCHEMA_VERSION
+        ):
+            raise ValueError("administrative execution targets require an exact Project-scoped schema 1.1 definition")
         return profile, reference_for(record)
+
+    def authorize_administrative_target(
+        self, assignment, *, operation_id: str, repository_id: str,
+        actor, authority, now: float | None = None,
+    ) -> ExecutionProfileContract:
+        """Validate an explicitly published administrative envelope, never Git access.
+
+        Authority for the operation is still evaluated by the broker/ActionIntent.
+        A pinned declaration must also remain effective; superseding/quarantining
+        its definition revokes the old assignment's administrative envelope.
+        """
+        observed = time.time() if now is None else float(now)
+        if (assignment.organization_id != actor.organization_id
+                or assignment.workspace_id != actor.workspace_id
+                or not assignment.project_id
+                or assignment.status not in {"claimed", "running"}
+                or assignment.lease is None
+                or assignment.lease.expires_at <= observed
+                or assignment.lease.fence != assignment.fence
+                or assignment.lease.worker_id != assignment.assigned_worker_id
+                or (assignment.deadline_at is not None and assignment.deadline_at <= observed)):
+            raise ValueError("administrative operation requires a matching live fenced assignment")
+        binding = assignment.agent_profile
+        if (binding is None or not binding.authority_role_id
+                or binding.execution_profile_id != assignment.execution_profile_id
+                or binding.authority_role_id not in authority.role_ids_for_actor(
+                    actor, project_id=assignment.project_id, now=observed)):
+            raise ValueError("administrative operation requires an explicit live authority Role binding")
+        if self.agent_profiles is None:
+            raise ValueError("administrative Agent Profile validation is unavailable")
+        try:
+            current = self.agent_profiles.get(binding.profile_id, actor=actor)
+        except Exception as exc:
+            raise ValueError("administrative Agent Profile is unavailable") from exc
+        if (current.lifecycle != "active" or current.revision != binding.profile_revision
+                or current.record_id != binding.profile_record_id
+                or current.authority_role_id != binding.authority_role_id
+                or current.execution_profile_id != binding.execution_profile_id
+                or current.role_id != binding.role_id):
+            raise ValueError("administrative Agent Profile is disabled or its binding changed")
+        profile, reference = self.resolve(
+            assignment.execution_profile_id,
+            organization_id=assignment.organization_id,
+            workspace_id=assignment.workspace_id,
+            project_id=assignment.project_id,
+        )
+        if reference != assignment.execution_profile_definition:
+            raise ValueError("administrative execution definition is no longer effective")
+        if (not profile.administrative_repository_ids
+                or repository_id not in profile.administrative_repository_ids
+                or operation_id not in profile.control_plane_operations):
+            raise ValueError("administrative operation or repository target is not explicitly declared")
+        # Scratch administration has no Git workspace or executable publication.
+        administrative_operation = (
+            operation_id.startswith("repository.read.")
+            or operation_id.startswith("work_item.")
+            or operation_id in {
+                "repository.issue.create", "repository.issue.comment", "repository.issue.update",
+                "repository.pull-request.upsert", "repository.pull-request.merge",
+                "repository.check.rerun", "action_intent.reconcile",
+                "project.read", "resource.read", "execution.read", "evidence.read",
+                "control_plane.operations.list", "work_graph.edge.create",
+            }
+        )
+        if not administrative_operation:
+            raise ValueError("operation requires a separate scoped execution capability")
+        return profile
 
     def public(
         self,
@@ -126,6 +205,14 @@ def install_execution_profile_definitions(
                 validate=validate_execution_profile_catalog,
             )
         )
+    if not any(item["kind"] == EXECUTION_PROFILE_CATALOG_KIND
+               and item["schema_version"] == ADMINISTRATIVE_EXECUTION_PROFILE_SCHEMA_VERSION
+               for item in registry.schemas.metadata()):
+        registry.register_schema(DefinitionKindSchema(
+            kind=EXECUTION_PROFILE_CATALOG_KIND,
+            schema_version=ADMINISTRATIVE_EXECUTION_PROFILE_SCHEMA_VERSION,
+            validate=validate_administrative_execution_profile_catalog,
+        ))
     service = ExecutionProfileDefinitionService(registry)
     service.bootstrap()
     return service
