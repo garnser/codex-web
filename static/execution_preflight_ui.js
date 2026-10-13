@@ -41,6 +41,9 @@ export function createExecutionPreflightUi({
         const blockers = Array.isArray(attempt?.blockers)
           ? attempt.blockers
           : [];
+        const retirement = attempt?.scheduling_retirement || null;
+        const schedulingRetired = retirement?.state === "retired";
+        const schedulingRetirementPrepared = retirement?.state === "prepared";
 
         if (status !== "started") {
           addMessage(
@@ -58,6 +61,9 @@ export function createExecutionPreflightUi({
             : "",
           attempt?.queued_turn_snapshot?.work_item_ref
             ? `Work item: ${attempt.queued_turn_snapshot.work_item_ref}`
+            : "",
+          retirement?.work_item_ref
+            ? `Retirement proof: ${retirement.work_item_ref} · provider ${retirement.source_state} · canonical ${retirement.canonical_stage}`
             : "",
           attempt?.agent_profile_id
             ? `Agent profile: ${attempt.agent_profile_id} · revision ${attempt.agent_profile_revision || 'unknown'}`
@@ -82,6 +88,11 @@ export function createExecutionPreflightUi({
             ? 'Native start outcome is unknown. Reconcile the original execution before retrying.'
             : status === 'queued' ? 'Original request retained for admission; no start is confirmed.'
               : status === 'admitting' ? 'Pre-start admission reserved. Retry fences this reservation before native startup.' : '',
+          schedulingRetired
+            ? 'Queue scheduling was retired after terminal WorkItem verification. The earlier native start outcome remains unknown and cannot be retried.'
+            : schedulingRetirementPrepared
+              ? 'Scheduling retirement was prepared and admission is fenced, but exact queue removal is not confirmed. Reconciliation is required.'
+              : '',
           correlation ? `Correlation: ${correlation}` : "",
           attempt.queued_start_receipt
             ? `Confirmed native turn: ${attempt.queued_start_receipt.provider_native_turn_id}` : '',
@@ -105,7 +116,11 @@ export function createExecutionPreflightUi({
         ].filter(Boolean);
 
         const card = addMessage(
-          status === "started" ? "Preflight resolved" : ['queued','admitting'].includes(status)
+          schedulingRetired ? (attempt.queued_start_receipt
+            ? "Scheduling retired · native start confirmed"
+            : "Scheduling retired · native outcome unknown")
+            : schedulingRetirementPrepared ? "Scheduling retirement requires reconciliation"
+            : status === "started" ? "Preflight resolved" : ['queued','admitting'].includes(status)
             ? "Admission retained" : status === 'reconciliation_required' ? "Reconciliation required" : "Execution blocked",
           lines.join("\n"),
           "tool",
@@ -113,8 +128,9 @@ export function createExecutionPreflightUi({
         );
         if (
           status === "started"
-          || (!attempt?.can_retry && !attempt?.can_reconcile_prestart)
-          || !(attempt?.can_reconcile_prestart ? attempt?.reconcile_prestart_href : attempt?.retry_href)
+          || (!attempt?.can_retry && !attempt?.can_reconcile_prestart && !attempt?.can_retire_scheduling)
+          || !(attempt?.can_retire_scheduling ? attempt?.retire_scheduling_href
+            : attempt?.can_reconcile_prestart ? attempt?.reconcile_prestart_href : attempt?.retry_href)
         ) {
           return;
         }
@@ -124,8 +140,11 @@ export function createExecutionPreflightUi({
         const actions = document.createElement("div");
         actions.className = "message-actions";
         const reconcile = Boolean(attempt?.can_reconcile_prestart);
-        const actionHref = reconcile ? attempt.reconcile_prestart_href : attempt.retry_href;
-        const actionLabel = reconcile ? 'Reconcile unstarted refusal' : 'Retry';
+        const retire = Boolean(attempt?.can_retire_scheduling);
+        const actionHref = retire ? attempt.retire_scheduling_href
+          : reconcile ? attempt.reconcile_prestart_href : attempt.retry_href;
+        const actionLabel = retire ? 'Retire terminal scheduling'
+          : reconcile ? 'Reconcile unstarted refusal' : 'Retry';
         const retry = document.createElement("button");
         retry.type = "button";
         retry.textContent = status === "retrying"
@@ -135,7 +154,8 @@ export function createExecutionPreflightUi({
         retry.addEventListener("click", async () => {
           const current = captureView();
           retry.disabled = true;
-          retry.textContent = reconcile ? 'Reconciling…' : 'Retrying…';
+          retry.textContent = retire ? 'Retiring scheduling…'
+            : reconcile ? 'Reconciling…' : 'Retrying…';
           let targetThreadId = threadId;
           try {
             const response = await api(actionHref, { method: "POST" });

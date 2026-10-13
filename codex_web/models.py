@@ -447,6 +447,36 @@ class QueuedNativeStartReceipt(BaseModel):
     observed_at: float
 
 
+class QueuedSchedulingRetirement(BaseModel):
+    """Durable proof that scheduling, not the native outcome, was retired."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    state: Literal["prepared", "retired"] = "prepared"
+    native_outcome: Literal["unknown"] = "unknown"
+    queued_turn_id: str = Field(min_length=1)
+    queued_snapshot_sha256: str = Field(min_length=64, max_length=64)
+    work_item_ref: str = Field(min_length=1)
+    source_identity: TaskSourceIdentity
+    source_state: str = Field(min_length=1)
+    canonical_stage: Literal["closed"] = "closed"
+    canonical_terminal_outcome: WorkItemTerminalOutcome | None = None
+    retired_by: str = Field(min_length=1)
+    prepared_at: float
+    queue_removed_at: float | None = None
+    audit_recorded_at: float | None = None
+
+    @model_validator(mode="after")
+    def validate_completion(self):
+        if self.state == "retired" and self.queue_removed_at is None:
+            raise ValueError("retired scheduling requires queue-removal evidence")
+        if self.state == "prepared" and self.queue_removed_at is not None:
+            raise ValueError("prepared scheduling retirement cannot claim queue removal")
+        if self.audit_recorded_at is not None and self.state != "retired":
+            raise ValueError("scheduling retirement cannot be audited before completion")
+        return self
+
+
 class ExecutionPreflightAttempt(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -462,6 +492,7 @@ class ExecutionPreflightAttempt(BaseModel):
     queued_turn_snapshot: dict[str, Any] | None = None
     queued_admission_claim_id: str | None = None
     queued_start_receipt: QueuedNativeStartReceipt | None = None
+    scheduling_retirement: QueuedSchedulingRetirement | None = None
     sandbox: SandboxMode | None = None
     approval_policy: ApprovalPolicy | None = None
     model: str | None = None

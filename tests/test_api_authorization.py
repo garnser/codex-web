@@ -20,7 +20,7 @@ from codex_web.api.authorization import (
     policy_for_operation,
     _match_api_route,
 )
-from codex_web.authority import AuthorityDecisionOutcome
+from codex_web.authority import AuthorityDecisionOutcome, AuthorityLevel
 from codex_web.identity import (
     AuthenticationActor,
     AuthenticationAssurance,
@@ -139,6 +139,16 @@ class ApiAuthorizationTests(unittest.TestCase):
             policy.required_assurance,
             AuthenticationAssurance.MFA,
         )
+
+    def test_terminal_scheduling_retirement_requires_distinct_admin_mfa_capability(self):
+        policy = policy_for_operation(
+            "POST",
+            "/api/threads/{thread_id}/preflight-attempts/{attempt_id}/retire-scheduling",
+        )
+        self.assertEqual(policy.access, ApiAccessMode.ADMIN)
+        self.assertEqual(policy.capability, "execution.retire-scheduling")
+        self.assertEqual(policy.level, AuthorityLevel.EXECUTE)
+        self.assertEqual(policy.required_assurance, AuthenticationAssurance.MFA)
 
     def test_work_item_retry_uses_operational_authority(self):
         app = FastAPI()

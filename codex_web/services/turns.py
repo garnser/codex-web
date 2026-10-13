@@ -14,6 +14,7 @@ from codex_web.models import BotBinding, QueuedTurn, TurnCreate
 from codex_web.services.agent_profiles import AgentProfileAccessDenied, AgentProfileService
 from codex_web.services.bot_binding_selection import BotBindingSelectionService
 from codex_web.services.execution_preflight import ExecutionPreflightService
+from codex_web.services.queued_scheduling_retirement import QueuedSchedulingRetirementService
 from codex_web.services.agent_routing import AgentCapacityRoutingError
 from codex_web.services.project_runtime import ProjectRuntimeService
 from codex_web.services.provider_capacity import ProviderCapacityBlockedError
@@ -112,6 +113,7 @@ class TurnService:
         truncate_text: TextTruncator,
         binding_public: BindingProjector,
         preflight: ExecutionPreflightService | None = None,
+        scheduling_retirement: QueuedSchedulingRetirementService | None = None,
         agent_profiles: AgentProfileService | None = None,
     ) -> None:
         self.projects = projects
@@ -125,6 +127,7 @@ class TurnService:
         self.truncate_text = truncate_text
         self.binding_public = binding_public
         self.preflight = preflight
+        self.scheduling_retirement = scheduling_retirement
         self.agent_profiles = agent_profiles
 
     async def resume(
@@ -674,6 +677,29 @@ class TurnService:
         updated = self.preflight.reconcile_prestart_refusal(attempt.id, actor=actor)
         return {'ok':True, 'threadId':updated.replacement_thread_id or updated.thread_id,
             'attempt':self.preflight.public(updated, actor=actor)}
+
+    async def retire_preflight_scheduling(
+        self,
+        thread_id: str,
+        attempt_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> dict[str, Any]:
+        if self.preflight is None or self.scheduling_retirement is None:
+            raise HTTPException(
+                status_code=503,
+                detail="queued scheduling retirement is unavailable",
+            )
+        updated = await self.scheduling_retirement.retire(
+            attempt_id,
+            thread_id=thread_id,
+            actor=actor,
+        )
+        return {
+            "ok": True,
+            "threadId": updated.replacement_thread_id or updated.thread_id,
+            "attempt": self.preflight.public(updated, actor=actor),
+        }
 
     async def retry_preflight(
         self,

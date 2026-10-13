@@ -14,6 +14,7 @@ from codex_web.models import (
     TurnCreate,
     QueuedTurn,
     QueuedNativeStartReceipt,
+    QueuedSchedulingRetirement,
 )
 from codex_web.services.identity import IdentityService
 from codex_web.storage.execution_preflight import ExecutionPreflightStore
@@ -69,7 +70,8 @@ class ExecutionPreflightService:
         def update(current):
             nonlocal acquired
             acquired = False
-            if current.status != 'queued' or current.queued_turn_snapshot is None:
+            if (current.status != 'queued' or current.queued_turn_snapshot is None
+                    or current.scheduling_retirement is not None):
                 return current
             acquired = True
             return current.model_copy(update={'status':'admitting',
@@ -82,7 +84,9 @@ class ExecutionPreflightService:
         def update(current):
             nonlocal acquired
             acquired = False
-            if current.status != 'admitting' or current.queued_admission_claim_id != claim_id:
+            if (current.status != 'admitting'
+                    or current.queued_admission_claim_id != claim_id
+                    or current.scheduling_retirement is not None):
                 return current
             acquired = True
             return current.model_copy(update={'status':'reconciliation_required',
@@ -118,6 +122,8 @@ class ExecutionPreflightService:
         def update(current):
             if current.queued_turn_snapshot is None:
                 raise ValueError('queued disposition requires the original request')
+            if current.scheduling_retirement is not None:
+                return current
             if current.status == 'started':
                 return current
             if claim_id is not None and current.queued_admission_claim_id != claim_id:
@@ -209,6 +215,92 @@ class ExecutionPreflightService:
             return current.model_copy(update={'status':'queued', 'retry_claim_id':None,
                 'retry_started_at':None, 'queued_admission_claim_id':None,
                 'updated_at':float(self.clock())})
+        return self.store.update(attempt_id, update)
+
+    def prepare_scheduling_retirement(
+        self,
+        attempt_id: str,
+        *,
+        evidence: QueuedSchedulingRetirement,
+        expected_snapshot: dict[str, Any],
+    ) -> ExecutionPreflightAttempt:
+        """Fence native admission before the exact queue item is removed."""
+        def update(current: ExecutionPreflightAttempt) -> ExecutionPreflightAttempt:
+            if current.scheduling_retirement is not None:
+                if current.scheduling_retirement != evidence:
+                    raise HTTPException(status_code=409, detail={
+                        "code": "scheduling_retirement_conflict",
+                        "message": "Scheduling retirement evidence already changed.",
+                    })
+                return current
+            if (
+                current.status != "reconciliation_required"
+                or current.queued_turn_snapshot != expected_snapshot
+                or current.queued_start_receipt is not None
+                or current.started_at is not None
+            ):
+                raise HTTPException(status_code=409, detail={
+                    "code": "scheduling_retirement_unavailable",
+                    "message": "Only an unchanged unknown-start queued request can retire scheduling.",
+                })
+            return current.model_copy(update={
+                "scheduling_retirement": evidence,
+                "updated_at": float(self.clock()),
+            })
+        return self.store.update(attempt_id, update)
+
+    def complete_scheduling_retirement(
+        self,
+        attempt_id: str,
+        *,
+        prepared: QueuedSchedulingRetirement,
+    ) -> ExecutionPreflightAttempt:
+        removed_at = float(self.clock())
+        completed = prepared.model_copy(update={
+            "state": "retired",
+            "queue_removed_at": removed_at,
+        })
+        def update(current: ExecutionPreflightAttempt) -> ExecutionPreflightAttempt:
+            if current.scheduling_retirement == completed:
+                return current
+            if current.scheduling_retirement != prepared:
+                raise HTTPException(status_code=409, detail={
+                    "code": "scheduling_retirement_conflict",
+                    "message": "Scheduling retirement evidence changed before completion.",
+                })
+            return current.model_copy(update={
+                "scheduling_retirement": completed,
+                "updated_at": removed_at,
+            })
+        return self.store.update(attempt_id, update)
+
+    def mark_scheduling_retirement_audited(
+        self,
+        attempt_id: str,
+        *,
+        retired: QueuedSchedulingRetirement,
+    ) -> ExecutionPreflightAttempt:
+        audited_at = float(self.clock())
+        def update(current: ExecutionPreflightAttempt) -> ExecutionPreflightAttempt:
+            evidence = current.scheduling_retirement
+            if evidence is None or evidence.state != "retired":
+                raise HTTPException(status_code=409, detail={
+                    "code": "scheduling_retirement_incomplete",
+                    "message": "Scheduling retirement is not complete.",
+                })
+            if evidence.audit_recorded_at is not None:
+                return current
+            if evidence != retired:
+                raise HTTPException(status_code=409, detail={
+                    "code": "scheduling_retirement_conflict",
+                    "message": "Scheduling retirement evidence changed before audit.",
+                })
+            return current.model_copy(update={
+                "scheduling_retirement": evidence.model_copy(update={
+                    "audit_recorded_at": audited_at,
+                }),
+                "updated_at": audited_at,
+            })
         return self.store.update(attempt_id, update)
 
     @staticmethod
@@ -427,6 +519,16 @@ class ExecutionPreflightService:
         self._authorize(current, actor, require_admin=True)
         return current
 
+    def authorize_scheduling_retirement(
+        self,
+        attempt_id: str,
+        *,
+        actor: AuthenticationActor,
+    ) -> ExecutionPreflightAttempt:
+        current = self.get(attempt_id, actor=actor)
+        self._authorize(current, actor, require_admin=True)
+        return current
+
     def claim_retry(
         self,
         attempt_id: str,
@@ -437,6 +539,11 @@ class ExecutionPreflightService:
         self._authorize(current, actor, require_admin=True)
         if current.status == "started":
             return current, None, False
+        if current.scheduling_retirement is not None:
+            raise HTTPException(status_code=409, detail={
+                "code": "scheduling_retired",
+                "message": "Scheduling was retired; the retained native outcome remains unknown.",
+            })
 
         claim_id = f"retry-{uuid.uuid4().hex}"
         updated, claimed = self.store.claim_retry(
@@ -489,6 +596,8 @@ class ExecutionPreflightService:
             value: ExecutionPreflightAttempt,
         ) -> ExecutionPreflightAttempt:
             if value.status == "started":
+                return value
+            if value.scheduling_retirement is not None:
                 return value
             if claim_id and value.retry_claim_id != claim_id:
                 return value
@@ -568,17 +677,28 @@ class ExecutionPreflightService:
     ) -> dict[str, Any]:
         self._authorize(attempt, actor)
         payload = attempt.model_dump(mode="json")
-        payload["can_retry"] = self.can_retry(actor) and attempt.status not in {
-            "queued", "reconciliation_required", "started"}
+        payload["can_retry"] = (self.can_retry(actor)
+            and attempt.scheduling_retirement is None
+            and attempt.status not in {"queued", "reconciliation_required", "started"})
         payload['can_reconcile_prestart'] = (self.can_retry(actor)
+            and attempt.scheduling_retirement is None
             and ((attempt.status == 'reconciliation_required' and self.recorded_prestart_refusal(attempt))
                  or (attempt.status == 'queued' and self.recorded_maintenance_refusal(attempt))))
+        payload['can_retire_scheduling'] = (self.can_retry(actor)
+            and attempt.scheduling_retirement is None
+            and attempt.status == 'reconciliation_required'
+            and attempt.queued_start_receipt is None
+            and attempt.started_at is None
+            and bool((attempt.queued_turn_snapshot or {}).get('work_item_ref')))
         payload['reconcile_prestart_href'] = (
             f'/api/threads/{attempt.replacement_thread_id or attempt.thread_id}/preflight-attempts/{attempt.id}/reconcile-prestart')
         payload["retry_href"] = (
             f"/api/threads/{attempt.replacement_thread_id or attempt.thread_id}/preflight-attempts/"
             f"{attempt.id}/retry"
         )
+        payload['retire_scheduling_href'] = (
+            f'/api/threads/{attempt.replacement_thread_id or attempt.thread_id}/preflight-attempts/'
+            f'{attempt.id}/retire-scheduling')
         return payload
 
     def retry_payload(
