@@ -180,3 +180,31 @@ test('filtered assignment drops its pending read before the same row returns',as
   await expect(page.locator('[role=status]')).toHaveText('Broker audit has not been loaded.');
   await expect(page.locator('.control-plane-broker-status')).not.toContainText('filtered-old-result');
 });
+
+test('unchanged redraw keeps the expanded assignment visible while its audit completes',async({page})=>{
+  await page.route('**/api/control-plane-broker/audit?*',route=>route.fulfill({json:{items:audit}}));
+  await mountBroker(page);const item=assignment();await emit(page,item);
+  await page.evaluate(value=>{
+    document.querySelector('details').outerHTML='<details><summary>Assignments</summary><div data-execution-assignment-management-host="assignment-a"></div></details>';
+    window.dispatchEvent(new CustomEvent('codex:execution-worker-state-rendered',{detail:{assignments:[value]}}));
+  },item);
+  await expect(page.locator('.control-plane-broker-status')).toBeVisible();
+  await page.getByRole('button').click();
+  await expect(page.locator('[role=status]')).toContainText('Latest 1 recorded broker outcomes');
+});
+
+test('worker administration loaded after DOM readiness still initializes and binds refresh',async({page})=>{
+  let reads=0;
+  await page.route('**/worker-late-fixture',route=>route.fulfill({contentType:'text/html',body:
+    '<meta charset="utf-8"><body data-project-id="project-a"><details id="developer-panel" open><summary>Developer</summary><button id="refresh-execution-workers">Refresh workers</button><div id="execution-worker-status"></div><div id="execution-worker-list"></div><div id="execution-assignment-list"></div><div id="execution-worker-events"></div></details></body>'}));
+  await page.route('**/api/execution-workers**',route=>{
+    const path=new URL(route.request().url()).pathname;
+    if(path.endsWith('/assignments')){reads++;return route.fulfill({json:{items:[{...assignment(),subject:{kind:'work_item',ref:'group/source#1'},resource_ids:[],required_capabilities:[],status:'cancelled'}]}})}
+    return route.fulfill({json:{items:[]}});
+  });
+  await page.goto(origin+'/worker-late-fixture');
+  await page.addScriptTag({url:origin+'/static/execution_worker_admin.js'});
+  await expect(page.locator('[data-execution-assignment-management-host="assignment-a"]')).toHaveCount(1);
+  const before=reads;await page.getByRole('button',{name:'Refresh workers'}).click();
+  await expect.poll(()=>reads).toBeGreaterThan(before);
+});
