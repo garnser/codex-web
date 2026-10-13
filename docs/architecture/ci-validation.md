@@ -46,6 +46,10 @@ suite. Named cross-cutting checks may still overlap; removing those small repeat
 would add brittle case-level selection. Container and distributed executions are
 retained because their environments add distinct validation.
 
+The unit runner refuses a `data` symlink before importing the application. Local
+qualification must use an isolated runner-local directory. Hosted CI replaces the
+repository's dangling deployment symlink with such a directory during preparation.
+
 `playwright.ci.config.js` excludes five explicitly owned spec files from the
 functional shards. Titles never determine ownership. Each full run verifies that
 the three shards plus dedicated spec selections form an exact, non-overlapping

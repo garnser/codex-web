@@ -22,6 +22,8 @@ def selected_tests(suite):
 
 
 if __name__ == "__main__":
+    if Path("data").is_symlink():
+        raise SystemExit("Refusing to run tests through a data symlink; use a runner-local data directory.")
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     discovered = unittest.defaultTestLoader.discover("tests", pattern="test_*.py")
     suite = unittest.TestSuite(selected_tests(discovered))
