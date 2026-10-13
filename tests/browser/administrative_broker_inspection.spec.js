@@ -254,3 +254,43 @@ test('broker dependency graph link opens its Project work workspace',async({page
   await expect(page.locator('#work-graph-panel')).toBeVisible();
   await expect(page.locator('#refresh-work-graph')).toHaveAttribute('data-clicked', /[1-9]/);
 });
+
+
+async function mountLateRoutedInspector(page,kind) {
+  await page.route('**/routed-inspector-late-fixture',route=>route.fulfill({contentType:'text/html',body:
+    `<meta charset="utf-8"><body data-project-id="project-a"><details id="developer-panel"><summary>Developer</summary></details>
+     <section data-product-workspace-panel="${kind}">
+      <button id="refresh-execution-workers">Refresh workers</button><div id="execution-worker-status"></div><div id="execution-worker-list"></div><div id="execution-assignment-list"></div><div id="execution-worker-events"></div>
+      <button id="refresh-action-intents">Refresh actions</button><div id="action-intent-status"></div><div id="action-intent-recovery-assurance"></div><button id="recover-stale-action-intents">Recover</button><div id="action-intent-list"></div>
+     </section></body>`}));
+  await page.route('**/api/**',route=>{
+    const path=new URL(route.request().url()).pathname;
+    if(path.endsWith('/assignments'))return route.fulfill({json:{items:[{...assignment(),subject:{kind:'work_item',ref:'group/source#1'},resource_ids:[],required_capabilities:[],status:'cancelled'}]}});
+    if(path==='/api/action-intents')return route.fulfill({json:{items:[intent(),intent('intent-b','project-b')]}});
+    if(path==='/api/identity/me')return route.fulfill({json:{identity_id:'operator',roles:['admin'],assurance:'mfa',principal_kind:'human'}});
+    return route.fulfill({json:{items:[]}});
+  });
+  await page.goto(origin+'/routed-inspector-late-fixture');
+  await page.addScriptTag({url:origin+'/static/'+(kind==='workers'?'execution_worker_admin':'action_intent_admin')+'.js'});
+}
+
+test('late worker controller loads an already-open routed workspace with Developer closed',async({page})=>{
+  await mountLateRoutedInspector(page,'workers');
+  await expect(page.locator('[data-execution-assignment-management-host="assignment-a"]')).toHaveCount(1);
+  await expect(page.locator('#developer-panel')).not.toHaveAttribute('open','');
+});
+
+test('late ActionIntent controller loads an already-open routed workspace with Developer closed',async({page})=>{
+  await mountLateRoutedInspector(page,'autonomy');
+  await expect(page.locator('[data-action-intent-row="intent-a"]')).toBeVisible();
+  await expect(page.locator('[data-action-intent-row="intent-b"]')).toHaveCount(0);
+  await expect(page.locator('#developer-panel')).not.toHaveAttribute('open','');
+});
+
+test('visible ActionIntent workspace reloads canonical scope after a Project change',async({page})=>{
+  await mountLateRoutedInspector(page,'autonomy');
+  await expect(page.locator('[data-action-intent-row="intent-a"]')).toBeVisible();
+  await page.evaluate(()=>window.dispatchEvent(new CustomEvent('codex:project-changed',{detail:{projectId:'project-b'}})));
+  await expect(page.locator('[data-action-intent-row="intent-b"]')).toBeVisible();
+  await expect(page.locator('[data-action-intent-row="intent-a"]')).toHaveCount(0);
+});

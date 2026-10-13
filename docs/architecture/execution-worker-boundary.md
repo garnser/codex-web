@@ -958,3 +958,8 @@ while native activity, uncertainty or approval status occupies the turn indicato
 queue drainer, which rechecks both controls. A runtime disable marker still blocks
 automation after canonical resume; removing it requires the usual runtime/restart
 or explicit queue wakeup. Waiting drains invoke no model and do not spin retries.
+
+Already-open routed worker and ActionIntent workspaces load their canonical state
+after controller imports finish, even when the legacy Developer panel is closed.
+A visible ActionIntent workspace clears the old actor and results on Project
+changes, then reads the new canonical scope with the existing response fences.

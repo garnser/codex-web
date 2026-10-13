@@ -3,7 +3,7 @@
   const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const { referenceLink } = await import(`${BASE}/static/reference_navigation.js`);
-  const { referenceAttributes, focusReference } = await import(`${BASE}/static/reference_links.js`);
+  const { referenceAttributes, focusReference, workspaceIsVisible } = await import(`${BASE}/static/reference_links.js`);
   const { captureProjectView, currentProjectId } = await import(`${BASE}/static/project_view_scope.js`);
   const { decisionHtml, leaseHtml, failureHtml, recoveryHtml } = await import(`${BASE}/static/action_intent_outcome_view.js`);
   let actor = null;
@@ -264,7 +264,7 @@
     panel?.addEventListener("toggle", () => {
       if (panel.open) refresh().catch(console.error);
     });
-    if (panel?.open) refresh().catch(console.error);
+    if (panel?.open || workspaceIsVisible('autonomy')) refresh().catch(console.error);
   }
 
   if (document.readyState === 'loading') window.addEventListener("DOMContentLoaded", bind, {once:true});
@@ -276,5 +276,6 @@
     renderAssurance();
     render();
     setStatus('Project changed. Refresh ActionIntents to inspect the selected scope.');
+    if (workspaceIsVisible('autonomy')) refresh().catch(console.error);
   });
 })();
