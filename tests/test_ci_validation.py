@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -124,6 +125,16 @@ class RequiredGateTests(unittest.TestCase):
 
 
 class UnitOwnershipTests(unittest.TestCase):
+    def test_runner_rejects_shared_data_symlink_before_importing_application(self):
+        runner = Path(__file__).resolve().parents[1] / "scripts/ci/run_unit_tests.py"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "data").symlink_to(root / "shared-live-data", target_is_directory=True)
+            result = subprocess.run([sys.executable, str(runner)], cwd=root, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("runner-local data directory", result.stderr)
+            self.assertFalse((root / "shared-live-data").exists())
+
     def test_nested_suites_keep_ordinary_tests_and_discovery_failures(self):
         regular = unittest.FunctionTestCase(lambda: None)
         dedicated_class = type("Dedicated", (unittest.TestCase,), {"__module__": "tests.test_gitlab_sync_scaling", "runTest": lambda self: None})
