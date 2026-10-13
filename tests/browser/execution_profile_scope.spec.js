@@ -1,3 +1,4 @@
+const profileTestOrigin = process.env.CODEX_WEB_BROWSER_TEST_ORIGIN || 'http://127.0.0.1:18766';
 const { test, expect } = require('@playwright/test');
 
 function catalog(name) {
@@ -15,7 +16,7 @@ async function mount(page) {
       + '<div id="execution-profile-summary"></div><select id="repository-target"></select>'
       + '<select id="repository-read-context"></select><select id="repository-write-targets"></select>',
   }));
-  await page.goto('http://127.0.0.1:18766/codex/profile-scope-test');
+  await page.goto(`${profileTestOrigin}/codex/profile-scope-test`);
   await page.evaluate(async () => {
     window.profiles = await import('/static/execution_profile_controls.js');
     window.renderProfiles = () => profiles.render('', value => {
@@ -78,4 +79,28 @@ test('failed or absent Project context leaves controls disabled and never loads 
   await page.evaluate(() => profiles.load(''));
   await expect(page.locator('#execution-profile-summary')).toContainText('Select a Project');
   expect(requests).toEqual(['foreign']);
+});
+
+
+test('administrative target declarations are escaped and do not enable Git controls', async ({ page }) => {
+  await mount(page);
+  await page.evaluate(() => {
+    profiles.setCatalog({ default_profile_id: 'orchestration-admin',
+      definition: { definition_id: 'execution.profiles.default', revision: 8 },
+      items: [{ id: 'orchestration-admin', name: 'Administration', workspaceMode: 'scratch',
+        repositoryAccess: 'none', requiredWorkerCapabilities: ['command_execution'],
+        administrativeRepositoryIds: ['resource-connector', '<img src=x onerror=alert(1)>'],
+        controlPlaneOperations: ['repository.issue.create', 'work_graph.edge.create'] }],
+    }, 'project-a');
+    renderProfiles();
+  });
+  await expect(page.locator('#execution-profile-summary')).toContainText('Administrative repository targets: resource-connector');
+  await expect(page.locator('#execution-profile-summary')).toContainText('repository.issue.create');
+  await expect(page.locator('#execution-profile-summary')).toContainText('live assignment and authority checks');
+  await expect(page.locator('#execution-profile-summary img')).toHaveCount(0);
+  await expect(page.locator('#repository-write-targets')).toBeDisabled();
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:project-changed', {
+    detail: { projectId: 'project-b' },
+  })));
+  await expect(page.locator('#execution-profile-summary')).not.toContainText('resource-connector');
 });

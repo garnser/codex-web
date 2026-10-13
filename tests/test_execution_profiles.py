@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishRequest
 from codex_web.execution_profile_seed import execution_profile_catalog_seed_payload
@@ -25,6 +27,160 @@ from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
 class ExecutionProfileTests(unittest.TestCase):
+    def test_action_intent_administrative_scope_uses_broker_operation_names(self):
+        from codex_web.action_providers import ActionRequest
+        from codex_web.resources import ResourceType
+        from codex_web.services.action_intents import ActionIntentService
+
+        profiles = SimpleNamespace(authorize_administrative_target=Mock())
+        assignment = SimpleNamespace(execution_profile_id="orchestration-admin")
+        service = ActionIntentService(
+            None, SimpleNamespace(resources=SimpleNamespace(
+                get=lambda resource_id, actor: SimpleNamespace(resource_type=ResourceType.REPOSITORY))),
+            authority=SimpleNamespace(), execution_profiles=profiles,
+            execution_workers=SimpleNamespace(assignment_for_execution=lambda execution_id, actor: assignment),
+        )
+        actor = SimpleNamespace()
+        for action_id, expected_operation in (
+            ("code-host.job.rerun", "repository.check.rerun"),
+            ("code-host.pull-request.upsert", "repository.pull-request.upsert"),
+            ("code-host.issue.create", "repository.issue.create"),
+        ):
+            with self.subTest(action_id=action_id):
+                request = ActionRequest(action_id=action_id, resource_ids=("resource-repository",),
+                                        organization_id="org", workspace_id="workspace", parameters={})
+                service._validate_execution_repository_scope("execution", request, actor)
+                profiles.authorize_administrative_target.assert_called_with(
+                    assignment, operation_id=expected_operation,
+                    repository_id="resource-repository", actor=actor, authority=service.authority,
+                )
+
+    @staticmethod
+    def administrative_payload():
+        payload = execution_profile_catalog_seed_payload()
+        payload["profiles"].append({
+            "id": "orchestration-admin", "name": "Orchestrator administrative escalation",
+            "description": "Project-scoped governed provider administration",
+            "workspace_mode": "scratch", "repository_access": "none",
+            "required_worker_capabilities": ["command_execution"],
+            "control_plane_operations": ["repository.issue.create"],
+            "administrative_repository_ids": ["resource-connector"],
+        })
+        return payload
+
+    def test_legacy_profile_snapshots_do_not_gain_administrative_fields(self):
+        payload = execution_profile_catalog_seed_payload()
+        self.assertEqual(ExecutionProfileCatalogDefinition.model_validate(payload)
+                         .model_dump(mode="json"), payload)
+        self.assertFalse(any("administrative_repository_ids" in row
+                             for row in payload["profiles"]))
+
+    def test_administrative_targets_cannot_be_repository_execution_or_implicit_operations(self):
+        original = self.administrative_payload()["profiles"][-1]
+        for changes in (
+            {"id": "orchestration-only"},
+            {"id": "unsupported-administrative-profile"},
+            {"workspace_mode": "repository", "repository_access": "mutable",
+             "required_worker_capabilities": ["git", "command_execution"]},
+            {"control_plane_operations": []},
+            {"administrative_repository_ids": ["resource-connector", "resource-connector"]},
+            {"administrative_repository_ids": ["/home/private"]},
+            {"administrative_repository_ids": [f"resource-{n}" for n in range(33)]},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                ExecutionProfileContract.model_validate(original | changes)
+
+    def test_administrative_definition_requires_new_schema_and_exact_project(self):
+        with tempfile.TemporaryDirectory() as raw:
+            registry = DefinitionRegistryService(DefinitionRegistryStore(
+                SQLiteStateStore(Path(raw) / "state.sqlite3")))
+            profiles = install_execution_profile_definitions(registry)
+            payload = self.administrative_payload()
+            with self.assertRaises(ValueError):
+                registry.create_draft(DefinitionDraftCreate(
+                    kind="execution-profile-catalog", definition_id="execution.profiles.default",
+                    definition_schema_version="1.0", payload=payload, actor="fixture"))
+            global_record = registry.create_draft(DefinitionDraftCreate(
+                kind="execution-profile-catalog", definition_id="execution.profiles.default",
+                definition_schema_version="1.1", payload=payload, actor="fixture"))
+            registry.publish(global_record.record_id, DefinitionPublishRequest(actor="fixture"))
+            with self.assertRaisesRegex(ValueError, "exact Project-scoped"):
+                profiles.resolve("orchestration-admin", project_id="project-a")
+            project_record = registry.create_draft(DefinitionDraftCreate(
+                kind="execution-profile-catalog", definition_id="execution.profiles.default",
+                definition_schema_version="1.1", payload=payload, actor="fixture",
+                scope_type="project", scope_id="project-a"))
+            registry.publish(project_record.record_id, DefinitionPublishRequest(actor="fixture"))
+            profile, reference = profiles.resolve("orchestration-admin", project_id="project-a")
+            self.assertEqual(profile.administrative_repository_ids, ("resource-connector",))
+            self.assertEqual(reference.record_id, project_record.record_id)
+            self.assertEqual(profile.public()["administrativeRepositoryIds"], ["resource-connector"])
+            with self.assertRaisesRegex(ValueError, "exact Project-scoped"):
+                profiles.resolve("orchestration-admin", project_id="project-b")
+
+    def test_administrative_envelope_rechecks_lease_roles_target_and_definition(self):
+        with tempfile.TemporaryDirectory() as raw:
+            registry = DefinitionRegistryService(DefinitionRegistryStore(
+                SQLiteStateStore(Path(raw) / "state.sqlite3")))
+            service = install_execution_profile_definitions(registry)
+            payload = self.administrative_payload()
+            record = registry.create_draft(DefinitionDraftCreate(
+                kind="execution-profile-catalog", definition_id="execution.profiles.default",
+                definition_schema_version="1.1", payload=payload, actor="fixture",
+                scope_type="project", scope_id="project-a"))
+            registry.publish(record.record_id, DefinitionPublishRequest(actor="fixture"))
+            profile, reference = service.resolve("orchestration-admin", project_id="project-a")
+            assignment = SimpleNamespace(
+                organization_id="org", workspace_id="workspace", project_id="project-a",
+                status="running", lease=SimpleNamespace(expires_at=200, fence=3, worker_id="worker"),
+                fence=3, assigned_worker_id="worker", deadline_at=200,
+                execution_profile_id="orchestration-admin", execution_profile_definition=reference,
+                agent_profile=SimpleNamespace(authority_role_id="escalation", execution_profile_id="orchestration-admin",
+                    profile_id="orchestrator", profile_revision=8, profile_record_id="profile-r8", role_id="orchestrator"),
+            )
+            current_profile = SimpleNamespace(lifecycle="active", revision=8, record_id="profile-r8",
+                authority_role_id="escalation", execution_profile_id="orchestration-admin", role_id="orchestrator")
+            service.agent_profiles = SimpleNamespace(get=Mock(return_value=current_profile))
+            actor = SimpleNamespace(organization_id="org", workspace_id="workspace")
+            authority = SimpleNamespace(role_ids_for_actor=Mock(return_value=("escalation",)))
+            def authorize(**changes):
+                return service.authorize_administrative_target(
+                    assignment, operation_id=changes.get("operation", "repository.issue.create"),
+                    repository_id=changes.get("target", "resource-connector"),
+                    actor=actor, authority=authority, now=changes.get("now", 100),
+                )
+            self.assertEqual(authorize(), profile)
+            for changes in ({"target": "resource-foreign"}, {"operation": "repository.branch.publish"}, {"now": 201}):
+                with self.subTest(changes=changes), self.assertRaises(ValueError):
+                    authorize(**changes)
+            current_profile.lifecycle = "disabled"
+            with self.assertRaisesRegex(ValueError, "disabled or its binding changed"):
+                authorize()
+            current_profile.lifecycle = "active"
+            current_profile.revision = 9
+            with self.assertRaisesRegex(ValueError, "disabled or its binding changed"):
+                authorize()
+            current_profile.revision = 8
+            assignment.lease.fence = 2
+            with self.assertRaisesRegex(ValueError, "live fenced"):
+                authorize()
+            assignment.lease.fence = 3
+            authority.role_ids_for_actor.return_value = ()
+            with self.assertRaisesRegex(ValueError, "live authority"):
+                authorize()
+            authority.role_ids_for_actor.return_value = ("escalation",)
+            actor.workspace_id = "foreign"
+            with self.assertRaisesRegex(ValueError, "live fenced"):
+                authorize()
+            actor.workspace_id = "workspace"
+            replacement = registry.create_draft(DefinitionDraftCreate(
+                kind="execution-profile-catalog", definition_id="execution.profiles.default",
+                definition_schema_version="1.1", payload=payload, actor="fixture",
+                scope_type="project", scope_id="project-a"))
+            registry.publish(replacement.record_id, DefinitionPublishRequest(actor="fixture"))
+            with self.assertRaisesRegex(ValueError, "no longer effective"):
+                authorize()
+
     def test_seed_contains_repository_and_orchestration_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             store = SQLiteStateStore(Path(raw) / "state.sqlite3")

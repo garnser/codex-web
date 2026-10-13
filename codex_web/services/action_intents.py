@@ -60,6 +60,7 @@ from codex_web.services.action_providers import (
 )
 from codex_web.services.code_host_action_contract import (
     CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID,
+    CODE_HOST_JOB_RERUN_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
     CodeHostActionContract,
 )
@@ -120,6 +121,7 @@ class ActionIntentService:
         identity: IdentityService | None = None,
         capacity: CapacityService | None = None,
         execution_workers: Any | None = None,
+        execution_profiles=None,
         maintenance_guard=None,
         maintenance_admission=None,
         status_notifier=None,
@@ -134,6 +136,7 @@ class ActionIntentService:
         self.identity = identity
         self.capacity = capacity
         self.execution_workers = execution_workers
+        self.execution_profiles = execution_profiles
         self.maintenance_guard = maintenance_guard
         self.maintenance_admission = maintenance_admission
         self.status_notifier = status_notifier
@@ -560,6 +563,22 @@ class ActionIntentService:
             raise ActionIntentConflictError(
                 "execution-bound repository action requires a matching canonical execution assignment"
             ) from exc
+
+        if getattr(assignment, "execution_profile_id", None) == "orchestration-admin":
+            if self.execution_profiles is None or self.authority is None:
+                raise ActionIntentConflictError("administrative execution capability is unavailable")
+            try:
+                for repository_id in repository_ids:
+                    self.execution_profiles.authorize_administrative_target(
+                        assignment,
+                        operation_id=("repository.check.rerun"
+                                      if request.action_id == CODE_HOST_JOB_RERUN_ACTION_ID
+                                      else request.action_id.replace("code-host.", "repository.", 1)),
+                        repository_id=repository_id, actor=actor, authority=self.authority,
+                    )
+            except ValueError as exc:
+                raise ActionIntentConflictError(str(exc)) from exc
+            return
 
         scope = assignment.repository_scope
         if scope is not None:
@@ -1493,6 +1512,10 @@ class ActionIntentService:
                 pending.binding_id,
                 pending.request,
                 actor=actor,
+            )
+            await asyncio.to_thread(
+                self._validate_execution_repository_scope,
+                pending.execution_id, current_request, requester,
             )
             authority_recheck = await asyncio.to_thread(self._canonical_authority_snapshot,
                 definition=current_definition,
