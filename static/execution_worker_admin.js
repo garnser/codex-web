@@ -1,7 +1,7 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { referenceLink } = await import(`${BASE}/static/reference_navigation.js`);
-  const { referenceAttributes, focusReference } = await import(`${BASE}/static/reference_links.js`);
+  const { referenceAttributes, focusReference, workspaceIsVisible } = await import(`${BASE}/static/reference_links.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   let workers = [];
   let assignments = [];
@@ -232,7 +232,7 @@
     panel?.addEventListener("toggle", () => {
       if (panel.open) refresh().catch(console.error);
     });
-    if (panel?.open) refresh().catch(console.error);
+    if (panel?.open || workspaceIsVisible('workers')) refresh().catch(console.error);
   }
 
   if (document.readyState === 'loading') window.addEventListener("DOMContentLoaded", bind, {once:true});

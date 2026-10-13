@@ -29,3 +29,8 @@ export function bindWhenReady(bind) {
   if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', bind, { once: true });
   else bind();
 }
+
+export function workspaceIsVisible(id) {
+  const panel = document.querySelector(`[data-product-workspace-panel="${CSS.escape(id)}"]`);
+  return !!panel && !panel.hidden;
+}
