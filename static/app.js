@@ -734,8 +734,7 @@ function updateWaitingFromState() {
     setWaiting(true, "Waiting for approval");
   } else if (isThreadBusy(state.threadId)) {
     setWaiting(true, "Waiting for Codex");
-  } else if (state.automationWaitByThread.get(state.threadId)) {
-    setWaiting(true, state.automationWaitByThread.get(state.threadId));
+
   } else {
     setWaiting(false);
   }

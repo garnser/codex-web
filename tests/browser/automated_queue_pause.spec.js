@@ -25,7 +25,9 @@ test('conversation status shows paused automation while preserving active and ap
     applyQueueAdmissionStatus({threadId:'thread', automationWaitReason:{message:'Automated work is waiting for autonomy to be enabled and resumed'}});
     updateWaitingFromState();
   });
-  await expect(page.locator('#codex-status-text')).toHaveText('Automated work is waiting for autonomy to be enabled and resumed');
+  await expect(page.locator('#codex-status-text')).toHaveText('Idle');
+  await expect(page.locator('#queue-admission-status')).toHaveText('Automated work is waiting for autonomy to be enabled and resumed');
+  await expect(page.locator('#queue-admission-status')).toBeVisible();
   await page.evaluate(() => {window.busy = true; updateWaitingFromState();});
   await expect(page.locator('#codex-status-text')).toHaveText('Waiting for Codex');
   await expect(page.locator('#queue-admission-status')).toBeVisible();
