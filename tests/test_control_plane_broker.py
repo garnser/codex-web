@@ -442,7 +442,8 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             "id": "orchestration-admin", "name": "Admin", "description": "Governed escalation",
             "workspace_mode": "scratch", "repository_access": "none",
             "required_worker_capabilities": ["command_execution"],
-            "control_plane_operations": ["repository.issue.create", "work_graph.edge.create"],
+            "control_plane_operations": ["repository.issue.create", "work_graph.edge.create",
+                "work_item.handoff", "work_item.acknowledge", "work_item.progress"],
             "administrative_repository_ids": [resource_a, resource_b],
         })
         record = self.registry.create_draft(DefinitionDraftCreate(
@@ -471,6 +472,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         actions = _ExecutingActionIntents(registry)
         self.service.action_intents = actions
         self.service.execution_profiles = profiles
+        self.service.limits = self.service.limits.model_copy(update={"max_requests_per_minute": 20})
         self.current_assignment = assignment
         request = {"parameters": {"title": "Scoped prerequisite", "body": "Existing task"},
                    "idempotency_key": "admin-create-owned-prerequisite"}
@@ -518,6 +520,17 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             "relation": "blocks", "source_ref": target_ref, "target_ref": self.other_ref})
         self.assertEqual(status, 403)
         self.assertEqual(len(calls), 1)
+        for suffix, payload in (
+            ("ack", {"actor": "quinn"}),
+            ("handoff", {"from_agent": "james", "to_agent": "quinn"}),
+            ("progress", {"actor": "dana", "current_owner": "james"}),
+        ):
+            status, _, result = await self._request("POST", "/api/work-items/"+quote(self.ref, safe="")+"/"+suffix, payload=payload)
+            self.assertEqual(status, 403, result)
+            self.assertIn("own agent Role attribution", result["error"]["message"])
+        status, _, result = await self._request("POST", "/api/work-items/"+quote(self.ref, safe="")+"/progress", payload={})
+        self.assertEqual(status, 200, result)
+        self.assertEqual(result["item"]["actor"], "orchestrator")
 
     async def test_authoritative_mr_read_through_real_operator_adapter_and_scoped_broker(self):
         import httpx

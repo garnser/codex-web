@@ -1513,6 +1513,19 @@ class ControlPlaneBrokerService:
                 )
             payload = decoded
 
+        if assignment.execution_profile_id == "orchestration-admin":
+            # Administrative coordination never impersonates an implementer or
+            # independent validator. These are agent-role fields, distinct from
+            # the authenticated requester/worker identities used above.
+            own_role = assignment.agent_profile.role_id
+            attributed_field = ("from_agent" if operation.id == "work_item.handoff"
+                                else "actor" if operation.id in {
+                                    "work_item.acknowledge", "work_item.progress"} else None)
+            if attributed_field:
+                if payload.get(attributed_field) not in {None, own_role}:
+                    raise ControlPlaneBrokerDeniedError("administrative coordination must use its own agent Role attribution")
+                payload[attributed_field] = own_role
+
         if operation.id == "work_graph.edge.create":
             if self.work_graph is None or assignment.execution_profile_id != "orchestration-admin":
                 raise ControlPlaneBrokerDeniedError("dependency administration requires an enabled administrative profile")
