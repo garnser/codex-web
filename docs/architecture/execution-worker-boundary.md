@@ -927,6 +927,11 @@ state replaces the inspector and fences the old response. A removed/filtered row
 or Project change cancels its read and discards the panel; it cannot publish a
 previous scope's result into a later view.
 
+Reattaching an unchanged inspector also preserves the expanded assignment row so
+its pending result remains visible. Worker administration initializes after its
+imports complete even when DOM readiness has already fired; delayed module loads
+must still bind refresh controls and load an already-open inspector.
+
 ## Automated native turn admission
 
 The turn execution boundary reads the existing RuntimePolicy disable control

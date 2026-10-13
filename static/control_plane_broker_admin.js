@@ -24,7 +24,12 @@
     if (previous?.fingerprint === fingerprint) {
       // Worker rendering replaces its host nodes. Reattach the same inspector
       // only while its complete public assignment/scope snapshot is unchanged.
+      const expanded = previous.panel.closest('details')?.open === true;
       host.before(previous.panel);
+      if (expanded) {
+        const parent = host.closest('details');
+        if (parent) parent.open = true;
+      }
       return;
     }
     previous?.controller?.abort();
