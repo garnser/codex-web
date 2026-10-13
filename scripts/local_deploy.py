@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -18,18 +20,120 @@ import urllib.request
 import urllib.parse
 from pathlib import Path
 
+LOCAL_DEPLOY_LOCK = Path("/home/nbingester/codex-web-native-runtime/local-deploy.lock")
+
 
 def run(*args: str, check: bool = True, timeout: int = 900) -> subprocess.CompletedProcess[str]:
     print("+", " ".join(args), flush=True)
-    return subprocess.run(args, check=check, text=True, capture_output=True, timeout=timeout)
+    return subprocess.run(args, check=check, text=True, capture_output=True, timeout=timeout,
+                          env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
 
 
 def git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return run("git", "-C", str(path), *args, check=check)
+    return safe_git(path, *args, check=check)
 
 
 def revision(path: Path, value: str = "HEAD") -> str:
     return git(path, "rev-parse", "--verify", value).stdout.strip()
+
+
+def safe_git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return run("git", "-c", "core.hooksPath=/dev/null", "-c", "submodule.recurse=false",
+               "-c", "fetch.unpackLimit=1", "-c", "transfer.unpackLimit=1",
+               "-C", str(path), *args, check=check, timeout=120)
+
+
+def origin_identity(value: str) -> tuple[str, str, str]:
+    if any(ord(c) < 32 for c in value):
+        raise RuntimeError("repository origin contains invalid characters")
+    parsed = urllib.parse.urlsplit(value)
+    # Local origins support isolated qualification fixtures. Production obtains
+    # its trusted identity from the HTTP(S) running-build metadata below.
+    if not parsed.scheme and Path(value).is_absolute():
+        return "file", "", str(Path(value).resolve())
+    if (parsed.scheme not in {"https", "http", "file"} or parsed.username is not None
+            or parsed.password is not None or parsed.query or parsed.fragment):
+        raise RuntimeError("repository origin is unsupported or contains credentials")
+    path = parsed.path.rstrip("/")
+    if parsed.scheme == "file":
+        if parsed.netloc or not Path(path).is_absolute():
+            raise RuntimeError("local repository origin is invalid")
+        return "file", "", str(Path(path).resolve())
+    if not parsed.hostname or not path:
+        raise RuntimeError("repository origin is incomplete")
+    port = parsed.port
+    authority = parsed.hostname.lower()
+    if port and port != (443 if parsed.scheme == "https" else 80):
+        authority += f":{port}"
+    return parsed.scheme, authority, path.removesuffix(".git")
+
+
+def running_repository_origin(expected_revision: str) -> str:
+    with urllib.request.urlopen("http://127.0.0.1:8765/api/livez", timeout=10) as response:
+        live = json.load(response)
+    build = live.get("build") or {}
+    origin = str(build.get("source") or "")
+    if (live.get("ok") is not True or build.get("gitRevision") != expected_revision
+            or origin_identity(origin)[0] not in {"http", "https"}):
+        raise RuntimeError("running repository identity or source revision is unavailable")
+    return origin
+
+
+def checked_origins(source: Path, live: Path, trusted_origin: str) -> tuple[str, str]:
+    expected = origin_identity(trusted_origin)
+    origins = tuple(safe_git(path, "remote", "get-url", "origin").stdout.strip()
+                    for path in (source, live))
+    if any(origin_identity(value) != expected for value in origins):
+        raise RuntimeError("source/live origin differs from the running repository identity")
+    return origins
+
+
+def archive_digest(path: Path, commit: str) -> str:
+    with tempfile.TemporaryDirectory(prefix="codex-web-object-check-") as directory:
+        archive = Path(directory) / "source.tar"
+        safe_git(path, "-c", "tar.umask=0002", "archive", "--format=tar",
+                 "--output=" + str(archive), commit)
+        digest = hashlib.sha256()
+        with archive.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+
+def require_clean(path: Path) -> None:
+    if safe_git(path, "status", "--porcelain").stdout.strip():
+        raise RuntimeError("live checkout has unexpected changes")
+
+
+def materialize_candidate(source: Path, live: Path, candidate: str,
+                          expected_live: str, trusted_origin: str) -> str:
+    if len(candidate) != 40 or any(c not in "0123456789abcdef" for c in candidate):
+        raise RuntimeError("candidate must be an exact lowercase SHA")
+    origins = checked_origins(source, live, trusted_origin)
+    if revision(live) != expected_live:
+        raise RuntimeError("live revision changed before object materialization")
+    require_clean(live)
+    expected_digest = archive_digest(source, candidate)
+    try:
+        complete = archive_digest(live, candidate) == expected_digest
+    except subprocess.CalledProcessError:
+        complete = False
+    if not complete:
+        # Refetch repairs missing trees/blobs even when negotiation already
+        # knows the commit. Keep received objects packed: operator-owned pack
+        # storage need not write historical root-owned loose-object directories.
+        safe_git(live, "fetch", "--refetch", "--no-auto-maintenance", "--no-tags", "--no-recurse-submodules",
+                 origins[1], candidate)
+    if checked_origins(source, live, trusted_origin) != origins:
+        raise RuntimeError("repository origin changed during materialization")
+    if revision(live) != expected_live:
+        raise RuntimeError("live revision changed during materialization")
+    require_clean(live)
+    if archive_digest(live, candidate) != expected_digest:
+        raise RuntimeError("live candidate archive differs from the qualified source")
+    print(json.dumps({"event": "candidate_objects_verified", "candidate": candidate,
+                      "archive_sha256": expected_digest, "fetched": not complete}), flush=True)
+    return expected_digest
 
 
 def version_matches(observed: str, expected: str) -> bool:
@@ -89,7 +193,10 @@ def health(expected: str, qualification: dict[str, object], *, rollback: bool = 
 
 
 def checkout(live: Path, commit: str) -> None:
-    git(live, "checkout", "--detach", commit)
+    safe_git(live, "checkout", "--no-overwrite-ignore", "--detach", commit)
+    if revision(live) != commit:
+        raise RuntimeError("checkout did not install the exact candidate")
+    require_clean(live)
 
 
 def set_service_revision(revision_value: str) -> None:
@@ -148,7 +255,7 @@ def main() -> int:
         if not (path / ".git").exists():
             raise SystemExit(f"not a Git worktree: {path}")
 
-    lock_path = Path("/home/nbingester/codex-web-native-runtime/local-deploy.lock")
+    lock_path = LOCAL_DEPLOY_LOCK
     with lock_path.open("w", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         previous = revision(args.live)
@@ -157,14 +264,17 @@ def main() -> int:
                 f"live revision changed before deployment: {previous} != {args.expected_live}"
             )
         print(json.dumps({"event": "start", "candidate": args.candidate, "previous": previous}), flush=True)
-        git(args.source, "fetch", "--prune", "origin", "main")
+        trusted_origin = running_repository_origin(previous)
+        origins = checked_origins(args.source, args.live, trusted_origin)
+        safe_git(args.source, "fetch", "--no-auto-maintenance", "--no-tags", "--no-recurse-submodules",
+                 origins[0], "+refs/heads/main:refs/remotes/origin/main")
         available = revision(args.source, "origin/main")
         if args.candidate != available:
             raise SystemExit(f"candidate is not current origin/main: {args.candidate} != {available}")
         git(args.source, "merge-base", "--is-ancestor", args.candidate, "origin/main")
-        dirty = [line for line in git(args.live, "status", "--porcelain").stdout.splitlines() if ".venv" not in line]
-        if dirty:
-            raise SystemExit("live checkout has unexpected changes: " + "; ".join(dirty[:10]))
+        require_clean(args.live)
+        candidate_digest = materialize_candidate(
+            args.source, args.live, args.candidate, previous, trusted_origin)
 
         built = args.candidate
         with tempfile.TemporaryDirectory(prefix="codex-web-deploy-") as temp:
@@ -191,7 +301,15 @@ def main() -> int:
                     raise SystemExit("candidate changed while deployment was staged")
                 if revision(args.live) != previous:
                     raise SystemExit("live revision changed while deployment was staged")
+                checked_origins(args.source, args.live, trusted_origin)
+                require_clean(args.live)
+                if archive_digest(args.live, built) != candidate_digest:
+                    raise RuntimeError("candidate objects changed while deployment was staged")
                 qualification = verify_canonical_guard(args.guard_fd)
+                if revision(args.live) != previous:
+                    raise RuntimeError("live revision changed during canonical qualification")
+                checked_origins(args.source, args.live, trusted_origin)
+                require_clean(args.live)
                 print(
                     json.dumps(
                         {
@@ -208,6 +326,8 @@ def main() -> int:
                     flush=True,
                 )
                 checkout(args.live, built)
+                if archive_digest(args.live, built) != candidate_digest:
+                    raise RuntimeError("installed source archive differs from qualified candidate")
             finally:
                 git(args.source, "worktree", "remove", "--force", str(stage), check=False)
 

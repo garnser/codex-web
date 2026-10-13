@@ -139,7 +139,23 @@ remain unchanged. Unknown coverage fails closed.
 
 The supported local installer accepts only a fresh passing preflight from that
 service drain. It checks active native admissions, ActionIntents and worker
-assignments across all scopes. Under the deployment lock, immediately before
+assignments across all scopes. Before consuming the installation guard, it
+matches both checkout origins to the exact running build's repository identity,
+requires an unchanged clean live checkout, and verifies the complete candidate
+archive against the source checkout. Commit-object presence alone is not
+sufficient. An incomplete live object database receives one bounded exact-commit
+refetch with hooks and recursive submodules disabled; received objects remain
+packed so materialization need not modify historical loose-object directories.
+Origin changes, incomplete objects, fetch failures, archive mismatch and dirty
+or changed HEAD fail before the guard or service restart. Already-complete
+candidates do not fetch into the live repository. The helper emits a structured
+`candidate_objects_verified` result with the exact revision, archive digest and
+fetch disposition into its existing deployment log; this is diagnostic evidence,
+never an installation grant. After checkout it requires exact HEAD, a clean
+tree and the same archive digest before restarting. There is no API or persisted
+schema change and no change to canonical authority or rollback gates.
+
+Under the deployment lock, immediately before
 switching the checkout, an inherited one-shot channel asks the still-running
 control plane to revalidate the exact plan, Release, evidence, instance,
 admission epoch, scope fingerprint and live/source revisions. Missing or stale
