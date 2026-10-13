@@ -54,3 +54,26 @@ class LocalInstallQualificationAPITests(unittest.IsolatedAsyncioTestCase):
         response = await self.request({**self.payload, "source_revision": "bad"})
         self.assertEqual(response.status_code, 422)
         self.service.qualify_local_deployment.assert_not_called()
+
+    async def test_cancel_unexecuted_requires_existing_admin_and_mfa_boundary(self):
+        payload = dict(service_instance_id="instance", running_revision="a"*40,
+                       expected_admission_epoch=2, reason="Superseded target; installer exited before qualification")
+        self.service.cancel_unexecuted.return_value = {"item":{"status":"failed"},
+                                                       "cancellation_evidence_id":"evidence-cancel"}
+        async def request():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url="http://test") as client:
+                return await client.post("/api/upgrades/upgrade-1/cancel-unexecuted", json=payload)
+        self.assertEqual((await request()).status_code, 200)
+        self.service.cancel_unexecuted.reset_mock()
+        original = self.actor
+        for actor in (original.model_copy(update={"assurance":AuthenticationAssurance.PRIMARY}),
+                      original.model_copy(update={"roles":(MembershipRole.MEMBER,)}),
+                      original.model_copy(update={"principal_kind":PrincipalKind.SERVICE,"service_scopes":()})):
+            self.actor = actor
+            self.assertEqual((await request()).status_code, 403)
+        self.service.cancel_unexecuted.assert_not_called()
+        self.actor = original.model_copy(update={"principal_kind":PrincipalKind.SERVICE,
+                                                "service_scopes":("upgrade:admin",)})
+        self.assertEqual((await request()).status_code, 200)
+        self.service.cancel_unexecuted.side_effect = UpgradePreflightError("stale plan")
+        self.assertEqual((await request()).status_code, 409)

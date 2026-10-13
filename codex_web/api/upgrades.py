@@ -23,6 +23,7 @@ from codex_web.upgrades import (
     UpgradeLocalDeploymentQualificationRequest,
     UpgradeServiceDrainRequest,
     UpgradeStepExecute,
+    UpgradeUnexecutedCancellationRequest,
 )
 
 
@@ -161,6 +162,15 @@ def build_upgrades_router(service: UpgradeService, *, process_reader=None) -> AP
             if isinstance(exc, (UpgradeError, AuthorizationError)):
                 raise error(exc) from exc
             raise
+
+    @router.post("/{plan_id}/cancel-unexecuted")
+    async def cancel_unexecuted(plan_id: str, payload: UpgradeUnexecutedCancellationRequest,
+                               request: Request) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(service.cancel_unexecuted, plan_id, payload,
+                                           actor=admin(request))
+        except (UpgradeError, AuthorizationError) as exc:
+            raise error(exc) from exc
 
     @router.post("/{plan_id}/backup")
     async def backup(

@@ -162,6 +162,7 @@ class UpgradeService:
         identity=None,
         service_instance_id: str | None = None,
         admission: UpgradeAdmissionCoordinator | None = None,
+        cancellation_guard=None,
         clock=time.time,
     ) -> None:
         self.store = store
@@ -177,6 +178,7 @@ class UpgradeService:
         self.identity = identity
         self.service_instance_id = service_instance_id
         self.admission = admission or UpgradeAdmissionCoordinator()
+        self.cancellation_guard = cancellation_guard
         self.clock = clock
         self._migration_handlers: dict[str, MigrationHandler] = {}
 
@@ -216,6 +218,12 @@ class UpgradeService:
             raise UpgradeError("upgrade plan not found")
         return item
 
+    def _open_plan(self, plan_id, *, actor):
+        item = self.get(plan_id, actor=actor)
+        if item.status == UpgradeStatus.FAILED and item.completed_at is not None:
+            raise UpgradeConflictError("cancelled upgrade is terminal; create a new plan")
+        return item
+
     def _update(self, plan_id: str, actor: AuthenticationActor, updater) -> UpgradePlan:
         result: list[UpgradePlan] = []
 
@@ -223,6 +231,8 @@ class UpgradeService:
             current = state.plans.get(plan_id)
             if current is None or not self._same_scope(current, actor):
                 raise UpgradeError("upgrade plan not found")
+            if current.status == UpgradeStatus.FAILED and current.completed_at is not None:
+                raise UpgradeConflictError("cancelled upgrade is terminal; create a new plan")
             updated = updater(current)
             state.plans[plan_id] = updated
             result.append(updated)
@@ -462,7 +472,7 @@ class UpgradeService:
         *,
         actor: AuthenticationActor,
     ) -> UpgradePlan:
-        plan = self.get(plan_id, actor=actor)
+        plan = self._open_plan(plan_id, actor=actor)
         profile = plan.compatibility
         blockers: list[str] = []
         warnings: list[str] = []
@@ -762,7 +772,7 @@ class UpgradeService:
         *,
         actor: AuthenticationActor,
     ) -> UpgradePlan:
-        plan = self.get(plan_id, actor=actor)
+        plan = self._open_plan(plan_id, actor=actor)
         if plan.status in {
             UpgradeStatus.COMPLETED,
             UpgradeStatus.ROLLED_BACK,
@@ -796,7 +806,7 @@ class UpgradeService:
         target_revision: str,
     ) -> UpgradePlan:
         self._require_service_drain_authority(actor)
-        plan = self.get(plan_id, actor=actor)
+        plan = self._open_plan(plan_id, actor=actor)
         if plan.status in {UpgradeStatus.COMPLETED, UpgradeStatus.ROLLED_BACK}:
             raise UpgradeConflictError("terminal upgrade cannot enter maintenance")
         if plan.compatibility.deployment_mode.value != "local":
@@ -990,7 +1000,7 @@ class UpgradeService:
         preflight_evidence_id: str,
     ) -> dict[str, Any]:
         self._require_service_drain_authority(actor)
-        plan = self.get(plan_id, actor=actor)
+        plan = self._open_plan(plan_id, actor=actor)
         if not plan.maintenance_mode or not self._service_wide(plan):
             raise UpgradePreflightError(
                 "local deployment requires an active whole-service drain"
@@ -1052,13 +1062,79 @@ class UpgradeService:
             "covered_scopes": [item.model_dump(mode="json") for item in scopes],
         }
 
+    def cancel_unexecuted(self, plan_id, payload, *, actor):
+        self._require_service_drain_authority(actor)
+
+        def cancel():
+            plan = self._open_plan(plan_id, actor=actor)
+            if (not self.service_instance_id
+                    or payload.service_instance_id != self.service_instance_id):
+                raise UpgradeConflictError("cancellation service instance is stale")
+            if payload.expected_admission_epoch != plan.admission_epoch:
+                raise UpgradeConflictError("upgrade admission epoch changed")
+            if (plan.compatibility.deployment_mode.value != "local"
+                    or plan.status not in {UpgradeStatus.DRAFT, UpgradeStatus.PREFLIGHT_BLOCKED,
+                        UpgradeStatus.READY, UpgradeStatus.DRAINING, UpgradeStatus.FAILED}
+                    or plan.completed_at is not None
+                    or plan.irreversible_boundary_crossed or plan.definition_migrations
+                    or any(step.attempts or step.status not in {
+                        UpgradeStepStatus.PENDING, UpgradeStepStatus.AWAITING_APPROVAL,
+                        UpgradeStepStatus.READY} for step in plan.steps)):
+                raise UpgradeConflictError("only an unexecuted local upgrade may be cancelled")
+            if self.cancellation_guard is None:
+                raise UpgradeConflictError("local installation cancellation guard is unavailable")
+            try:
+                with self.cancellation_guard() as running_revision:
+                    if running_revision != payload.running_revision:
+                        raise UpgradeConflictError("running installation revision changed")
+                    if running_revision == plan.target_app_version:
+                        raise UpgradeConflictError("upgrade target is already installed")
+                    if (self.admission.active_count()
+                            or self._active_assignment_count(actor, service_wide=True)
+                            or self._active_action_count(actor, service_wide=True)):
+                        raise UpgradeConflictError("active operations prevent upgrade cancellation")
+                    evidence = self.evidence.create_evidence(EvidenceCreate(
+                        project_id=plan.project_id,
+                        evidence_type=EvidenceType.POLICY_EVALUATION,
+                        provider="codex-web", source="upgrade-unexecuted-cancellation",
+                        result=EvidenceResult.FAIL,
+                        summary="Unexecuted upgrade cancellation requested: " + payload.reason,
+                        metadata={"upgrade_plan_id": plan.id,
+                            "source_app_version": plan.current_app_version,
+                            "target_app_version": plan.target_app_version,
+                            "running_revision": running_revision,
+                            "service_instance_id": self.service_instance_id,
+                            "admission_epoch": plan.admission_epoch,
+                            "reason": payload.reason, "cancellation_attempt": True,
+                            "installation_verified": False,
+                            "rollback_performed": False},
+                    ), actor=actor)
+
+                    def update(current):
+                        if current != plan:
+                            raise UpgradeConflictError("upgrade changed during cancellation")
+                        return current.model_copy(update={
+                            "status": UpgradeStatus.FAILED, "maintenance_mode": False,
+                            "admission_epoch": current.admission_epoch + 1,
+                            "preflight": None, "completed_at": float(self.clock()),
+                            "updated_at": float(self.clock()),
+                        })
+                    cancelled = self._update(plan.id, actor, update)
+                    return {"item": cancelled.model_dump(mode="json"),
+                            "cancellation_evidence_id": evidence.id,
+                            "cancellation_evidence_href": f"/api/evidence/{evidence.id}"}
+            except (OSError, ValueError) as exc:
+                raise UpgradeConflictError("local installation cannot be proven idle and unchanged") from exc
+
+        return self.admission.mutate_drain(cancel)
+
     def capture_pre_upgrade_backup(
         self,
         plan_id: str,
         *,
         actor: AuthenticationActor,
     ) -> UpgradePlan:
-        plan = self.get(plan_id, actor=actor)
+        plan = self._open_plan(plan_id, actor=actor)
         manifest = self.recovery.create_backup(actor=actor)
         return self._update(
             plan.id,
@@ -1094,7 +1170,7 @@ class UpgradeService:
         *,
         actor: AuthenticationActor,
     ) -> UpgradePlan:
-        plan = self.get(plan_id, actor=actor)
+        plan = self._open_plan(plan_id, actor=actor)
         step = next((item for item in plan.steps if item.id == step_id), None)
         if step is None:
             raise UpgradeError("upgrade step not found")
@@ -1184,7 +1260,7 @@ class UpgradeService:
         *,
         actor: AuthenticationActor,
     ) -> UpgradePlan:
-        plan = self.get(plan_id, actor=actor)
+        plan = self._open_plan(plan_id, actor=actor)
         if plan.preflight is None or not plan.preflight.satisfied:
             raise UpgradePreflightError(
                 "upgrade preflight must pass before migration execution"
@@ -1377,7 +1453,7 @@ class UpgradeService:
         *,
         actor: AuthenticationActor,
     ) -> UpgradePlan:
-        plan = self.get(plan_id, actor=actor)
+        plan = self._open_plan(plan_id, actor=actor)
         source = self.definitions.get_record(payload.from_record_id)
         target = self.definitions.get_record(payload.to_record_id)
         baseline = {
@@ -1486,7 +1562,7 @@ class UpgradeService:
         *,
         actor: AuthenticationActor,
     ) -> UpgradePlan:
-        plan = self.get(plan_id, actor=actor)
+        plan = self._open_plan(plan_id, actor=actor)
         blockers: list[str] = []
         if any(
             item.status not in {
@@ -1596,7 +1672,7 @@ class UpgradeService:
         actor: AuthenticationActor,
         reason: str,
     ) -> UpgradePlan:
-        plan = self.get(plan_id, actor=actor)
+        plan = self._open_plan(plan_id, actor=actor)
         if plan.irreversible_boundary_crossed or not plan.rollback_available:
             raise UpgradeConflictError(
                 "rollback is no longer truthful after the irreversible compatibility boundary"
