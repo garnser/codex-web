@@ -45,6 +45,13 @@ force-push the corrected branch. Do not add another person's sign-off.
 - Do not close an issue until its implementation is merged and the required CI
   and documentation are current.
 
+PR checks use focused documentation validation only for explicitly allowlisted
+prose changes. Code, dependencies, fixtures, CI configuration and unknown paths
+run the full applicable suites. Required checks report why a suite is
+inapplicable; main pushes always run full validation. See the
+[CI validation policy](docs/architecture/ci-validation.md) for selection,
+test ownership and diagnostic evidence.
+
 Use GitHub issues for bugs, feature requests, and independently deliverable
 follow-up work. Security-sensitive reports should not be posted publicly; follow
 the [Security Policy](SECURITY.md) to report them privately.
