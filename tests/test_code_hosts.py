@@ -435,7 +435,7 @@ class CodeHostContractTests(unittest.IsolatedAsyncioTestCase):
                 self.resource.id,
             )
 
-        fetch_command, fetch_options = calls[0]
+        fetch_command, fetch_options = next(item for item in calls if "fetch" in item[0])
         self.assertIn("core.hooksPath=/dev/null", fetch_command)
         self.assertIn("protocol.allow=never", fetch_command)
         self.assertIn("protocol.https.allow=always", fetch_command)
@@ -445,6 +445,10 @@ class CodeHostContractTests(unittest.IsolatedAsyncioTestCase):
             fetch_options["env"]["CODEX_MATERIALIZE_TOKEN"],
             "never-print-this-token",
         )
+        self.assertIn("http.followRedirects=false", fetch_command)
+        for command, options in calls:
+            if "fetch" not in command:
+                self.assertNotIn("CODEX_MATERIALIZE_TOKEN", options["env"])
 
         with patch(
             "codex_web.services.code_hosts.subprocess.run",

@@ -328,9 +328,14 @@ single writable repository Resource. The broker derives the HTTPS remote from
 that verified provider binding and repository fact; callers cannot provide a
 URL, repository name, branch or credential. Fetch runs through the existing
 credential-reference boundary with terminal prompting, hooks, recursive
-submodules and the file protocol disabled. It writes only a hashed internal Git
-reference, verifies the fetched commit against the provider-attested revision,
-and revalidates the assignment lease/fence before the existing clean-workspace
+submodules, redirects and non-HTTPS protocols disabled. Authenticated transport
+runs in a freshly initialized temporary bare repository with no checkout-local
+configuration, includes, URL rewrites or object alternates. The provider-attested
+repository URL retains the GitLab path prefix and exact configured HTTPS port;
+foreign authorities, userinfo and unsafe paths fail closed. Only after verifying
+the fetched commit against the attested revision does the service import its
+object pack into the checkout, without credentials, transport, reference updates
+or working-tree writes. It revalidates the assignment lease/fence before the existing clean-workspace
 refresh mutates HEAD. Dirty workspaces, abbreviated revisions, missing
 credentials, foreign provider/resource facts, moving default branches and stale
 assignments fail visibly. Concurrent recovery is serialized per repository
