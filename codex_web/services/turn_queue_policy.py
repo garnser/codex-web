@@ -37,6 +37,23 @@ class TurnQueuePolicy:
         return len(self.queue(thread_id))
 
     @staticmethod
+    def source_origin(source: str) -> str:
+        while source.startswith(("queued:", "steer:")):
+            source = source.split(":", 1)[1]
+        return source
+
+    @classmethod
+    def admission_priority(cls, source: str) -> str:
+        # Slack intake filters bots before assigning this protocol provenance.
+        # Message contents and caller-supplied labels are never consulted.
+        return "human_slack" if cls.source_origin(source) == "slack" else "standard"
+
+    @classmethod
+    def admission_candidates(cls, items: list[QueuedTurn]) -> list[QueuedTurn]:
+        # Stable projection: keep the durable queue and request snapshots intact.
+        return sorted(items, key=lambda item: cls.admission_priority(item.source) != "human_slack")
+
+    @staticmethod
     def max_depth() -> int:
         """Return the scheduling high-water mark, not a durable retention cap."""
         try:

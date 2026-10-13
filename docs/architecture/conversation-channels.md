@@ -230,3 +230,32 @@ state is committed, old 1.0 writers are incompatible; automatic rollback to an
 older writer is unavailable without a separately qualified state restoration.
 The upgrade plan must declare this state migration and its compatibility boundary.
 Receipt APIs/UI show retention and provenance metadata without the stored body.
+
+## Human Slack queue preference
+
+Slack live delivery and history/backfill reject bot-origin messages before the
+existing routing layer assigns the `slack` turn source. Queue admission uses that
+server-assigned protocol provenance, including `queued:`/`steer:` wrappers;
+message text and provider identity claims cannot select a priority or grant
+execution authority.
+
+At a thread's scheduling selection, human Slack requests precede other origins.
+FIFO is preserved within each group. This is a stable scheduling projection over
+the existing durable queue, not a rewrite of physical order or immutable request
+snapshots. Active and already-admitting turns are not interrupted. The preference
+is scoped to the existing destination thread/agent and retains reply targets,
+actor/profile pins, repository settings and execution correlation.
+
+The executor still skips blocked, uncertain and fenced admissions and applies
+normal pause/maintenance, authority and resource checks. A blocked priority request
+does not prevent later eligible work from progressing. Known prestart deferrals
+restore the selected request's original position and counter. Unknown native
+outcomes retain their existing recovery requirement and cannot be replayed merely
+because their source has scheduling preference.
+
+Queue API/events expose the same per-request classification and queued human
+Slack count. The conversation queue notice explains this preference independently
+of native activity/approval/uncertainty and automated admission pause. These UI
+fields are projections and do not alter permission or admission. The fixed intake
+protocol rule adds no mutable operational catalog, persisted priority schema,
+Definition kind, model call, provider mutation or second scheduler.

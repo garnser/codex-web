@@ -840,6 +840,7 @@ class TurnService:
                 {
                     "id": queued.id,
                     "source": queued.source,
+                    "priority": TurnQueuePolicy.admission_priority(queued.source),
                     "createdAt": queued.created_at,
                     "attempts": queued.attempts,
                 }
