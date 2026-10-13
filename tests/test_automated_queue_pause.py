@@ -253,3 +253,16 @@ class AutomatedQueuePauseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([item.model_dump(mode='json') for item in host.queues['t']],
                              original + [arrival[0].model_dump(mode='json')])
             self.assertEqual(preflight.store.get(unknown.id).model_dump(mode='json'), unknown_before)
+
+    async def test_control_wakeup_survives_inflight_drain_coalescing(self):
+        import asyncio
+        with tempfile.TemporaryDirectory() as directory:
+            host, runtime = self.runtime(directory)
+            runtime.enqueue_turn(thread_id='t', project_id='p', message='auto', source='gitlab')
+            current = asyncio.get_running_loop().create_future()
+            runtime.queue_drain_tasks['t'] = current
+            runtime.resume_automated_queues()
+            runtime.schedule_queue_drain.assert_not_called()
+            current.set_result(None)
+            await asyncio.sleep(0)
+            runtime.schedule_queue_drain.assert_called_once_with('t')

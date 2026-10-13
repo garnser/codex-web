@@ -721,7 +721,14 @@ class TurnExecutionService:
         # The canonical control-change request wakes existing queues. Admission
         # still rechecks both controls; a runtime disable marker cannot be overridden.
         for thread_id in self.host._load_turn_queues():
-            self.schedule_queue_drain(thread_id)
+            current = self.queue_drain_tasks.get(thread_id)
+            if current is not None and not current.done():
+                # A resume arriving while a paused admission is being restored
+                # must survive the drainer's existing task coalescing.
+                current.add_done_callback(
+                    lambda _task, target=thread_id: self.schedule_queue_drain(target))
+            else:
+                self.schedule_queue_drain(thread_id)
 
     def queue_admission_status(self, thread_id: str) -> dict[str, Any]:
         reason = self.automation_wait_reason("queue-automation")
