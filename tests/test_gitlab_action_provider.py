@@ -422,6 +422,34 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.issue_creates, 1)
         self.assertFalse((await self.execution.verify(self.binding.id, reused, actor=self.actor)).verified)
 
+    async def test_issue_creation_verification_rejects_forged_receipt_identity(self) -> None:
+        request = self._request(
+            CODE_HOST_ISSUE_CREATE_ACTION_ID,
+            {"title": "Scoped task", "body": "Proof"},
+        )
+        result = await self.execution.execute(
+            self.binding.id, request, actor=self.actor
+        )
+        forged_results = (
+            result.model_copy(
+                update={"output": {**result.output, "issue_number": True}}
+            ),
+            result.model_copy(
+                update={"output": {**result.output, "issue_number": "17"}}
+            ),
+            result.model_copy(update={"external_id": None}),
+            result.model_copy(update={"external_id": "999"}),
+        )
+        for forged in forged_results:
+            with self.subTest(
+                issue_number=forged.output["issue_number"],
+                external_id=forged.external_id,
+            ):
+                verification = await self.execution.verify(
+                    self.binding.id, forged, actor=self.actor
+                )
+                self.assertFalse(verification.verified)
+
     async def test_issue_creation_rejects_duplicate_owned_markers_before_write(self) -> None:
         request = self._request(CODE_HOST_ISSUE_CREATE_ACTION_ID, {"title": "Task"})
         marker = self.provider.contract.marker(request)

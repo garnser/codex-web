@@ -707,20 +707,27 @@ class GitLabActionProvider:
         project = self.contract.locator_for_result(result, binding)
         verified = False
         if result.action_id == CODE_HOST_ISSUE_CREATE_ACTION_ID:
-            iid = int(result.output["issue_number"])
-            item = await self.client.project_issue(
-                self.api_base, project, iid, token=credential,
-            )
-            marker = self.contract.marker_from_key(result.idempotency_key)
-            verified = (
-                type(item.get("iid")) is int and item["iid"] == iid
-                and (result.external_id is None or str(item.get("id") or "") == result.external_id)
-                and marker in str(item.get("description") or "")
-                and hashlib.sha256(str(item.get("title") or "").encode()).hexdigest()
-                    == result.output["title_sha256"]
-                and hashlib.sha256(str(item.get("description") or "").encode()).hexdigest()
-                    == result.output["body_sha256"]
-            )
+            iid = result.output.get("issue_number")
+            external_id = result.external_id
+            if (
+                type(iid) is int
+                and iid > 0
+                and isinstance(external_id, str)
+                and bool(external_id)
+            ):
+                item = await self.client.project_issue(
+                    self.api_base, project, iid, token=credential,
+                )
+                marker = self.contract.marker_from_key(result.idempotency_key)
+                verified = (
+                    type(item.get("iid")) is int and item["iid"] == iid
+                    and str(item.get("id") or iid) == external_id
+                    and marker in str(item.get("description") or "")
+                    and hashlib.sha256(str(item.get("title") or "").encode()).hexdigest()
+                        == result.output.get("title_sha256")
+                    and hashlib.sha256(str(item.get("description") or "").encode()).hexdigest()
+                        == result.output.get("body_sha256")
+                )
         elif result.action_id == CODE_HOST_ISSUE_COMMENT_ACTION_ID:
             iid = int(result.output["issue_number"])
             marker = self.contract.marker_from_key(result.idempotency_key)
