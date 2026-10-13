@@ -50,6 +50,8 @@ class ExecutionProfileTests(unittest.TestCase):
     def test_administrative_targets_cannot_be_repository_execution_or_implicit_operations(self):
         original = self.administrative_payload()["profiles"][-1]
         for changes in (
+            {"id": "orchestration-only"},
+            {"id": "unsupported-administrative-profile"},
             {"workspace_mode": "repository", "repository_access": "mutable",
              "required_worker_capabilities": ["git", "command_execution"]},
             {"control_plane_operations": []},

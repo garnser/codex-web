@@ -39,7 +39,7 @@ export function editorShell(host) {
         </fieldset>
         <details><summary>Broker operations and platform constraints</summary>
           <label>Requested control-plane operations (one per line)<textarea name="profile-operations" rows="4"></textarea></label>
-          <label>Administrative repository resource IDs (one per line)<textarea name="profile-administrative-targets" rows="4"></textarea></label>
+          <label>orchestration-admin repository resource IDs<textarea name="profile-administrative-targets" rows="4"></textarea></label>
           <p>Project schema 1.1 and scratch execution required. Targets grant no authority; access needs a live assignment, authority Role and broker checks.</p>
           <p>Direct network access and host mutation are disabled by platform invariants. Worker requirements and requested operations do not grant authority; canonical policy and assignment permissions still apply.</p>
         </details>

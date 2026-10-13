@@ -51,6 +51,8 @@ class ExecutionProfileContract(BaseModel):
         object.__setattr__(self, "control_plane_operations", operations)
         administrative = self.administrative_repository_ids
         if administrative:
+            if self.id != "orchestration-admin":
+                raise ValueError("administrative targets require the orchestration-admin engine profile")
             if len(set(administrative)) != len(administrative):
                 raise ValueError("administrative repository targets must be distinct")
             if any(not value.startswith("resource-") or len(value) > 128

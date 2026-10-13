@@ -163,15 +163,19 @@ test('deep-link history restores the selected profile', async ({ page }) => {
 
 test('administrative targets are preserved in a Project-scoped schema 1.1 draft', async ({ page }) => {
   const writes = await mount(page);
+  await page.getByRole('button', { name: 'New Execution Profile', exact: true }).click();
+  await page.getByLabel('Profile ID', { exact: true }).fill('orchestration-admin');
+  await page.getByLabel('Name', { exact: true }).fill('Administrative escalation');
+  await page.getByLabel('Description', { exact: true }).fill('Project-scoped governed operations');
   await page.locator('summary').filter({ hasText: 'Broker operations' }).click();
-  await page.getByLabel('Administrative repository resource IDs').fill('resource-connector\nresource-data');
+  await page.getByLabel('orchestration-admin repository resource IDs').fill('resource-connector\nresource-data');
   await page.getByLabel('Requested control-plane operations').fill('repository.issue.create\nwork_graph.edge.create');
   await page.getByLabel('Change reason').fill('Enable governed administrative escalation');
   await page.getByRole('button', { name: 'Save new Project draft' }).click();
   await expect(page.locator('[data-profile-draft]')).toBeVisible();
   expect(writes[0].body.definition_schema_version).toBe('1.1');
   expect(writes[0].body.scope_type).toBe('project');
-  const saved = writes[0].body.payload.profiles.find(item => item.id === 'custom');
+  const saved = writes[0].body.payload.profiles.find(item => item.id === 'orchestration-admin');
   expect(saved.administrative_repository_ids).toEqual(['resource-connector', 'resource-data']);
   expect(saved.repository_access).toBe('none');
   expect(saved.control_plane_operations).toEqual(['repository.issue.create', 'work_graph.edge.create']);
