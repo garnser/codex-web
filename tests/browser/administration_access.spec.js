@@ -150,6 +150,13 @@ test("routed Administration Access uses canonical authority endpoint and fails c
   await page.route("**/api/resources?*", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [{ id: "repo-a", name: "Repo A", resource_type: "repository" }] }) });
   });
+  await page.route("**/api/authority/roles*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ items: [{ id: "developer", name: "Developer" }] }),
+    });
+  });
   await page.route("**/api/authority/effective?*", async (route) => {
     authorityCalls.push(route.request().url());
     await route.fulfill({
@@ -161,6 +168,9 @@ test("routed Administration Access uses canonical authority endpoint and fails c
 
   await page.goto("http://127.0.0.1:18766/administration/access");
   await expect(page.locator(".administration-access-surface")).toBeVisible();
+  // Scope/Role bootstrap must finish before the denial under test; otherwise an
+  // unrelated catalog error can race and replace the effective-authority error.
+  await expect(page.locator('[data-access-role] option[value="developer"]')).toHaveText("Developer · developer");
   await page.locator("[data-access-identity]").selectOption("human-user");
   await expect.poll(() => authorityCalls.length).toBe(1);
   await expect(page.locator("[data-access-message]")).toContainText("administrator MFA/step-up required");
