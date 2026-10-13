@@ -91,7 +91,7 @@ class RequiredGateTests(unittest.TestCase):
         return {
             "changes": {"result": "success", "outputs": {"full": full}},
             "documentation": {"result": "skipped" if full == "true" else "success"},
-            **{owner: {"result": "success" if full == "true" else "skipped"} for owner in set(OWNERS.values())},
+            **{owner: {"result": "skipped" if full == "false" and owner == "functional-shards" else "success"} for owner in set(OWNERS.values())},
         }
 
     def test_full_and_documentation_gates_are_explicit(self):
@@ -103,7 +103,7 @@ class RequiredGateTests(unittest.TestCase):
     def test_failed_cancelled_missing_and_unexpected_skips_fail_every_gate(self):
         for full in ["true", "false"]:
             for job in self.needs(full):
-                for result in ["failure", "cancelled", "missing", "skipped" if full == "true" else "success"]:
+                for result in ["failure", "cancelled", "missing", "skipped", "success"]:
                     if result == self.needs(full)[job]["result"]:
                         continue
                     needs = deepcopy(self.needs(full))
@@ -112,7 +112,27 @@ class RequiredGateTests(unittest.TestCase):
                     else:
                         needs[job]["result"] = result
                     with self.subTest(full=full, job=job, result=result), self.assertRaises(ValueError):
-                        validate("unit-static", needs)
+                        validate("chromium", needs)
+
+    def test_named_jobs_require_valid_selection_and_documentation_before_testing(self):
+        for full in ["true", "false"]:
+            needs = self.needs(full)
+            prerequisites = {key: needs[key] for key in ["changes", "documentation"]}
+            self.assertIn("selected" if full == "true" else "not applicable", validate("unit-static", prerequisites, selection_only=True))
+            for key in prerequisites:
+                bad = deepcopy(prerequisites)
+                bad[key]["result"] = "cancelled"
+                with self.assertRaises(ValueError):
+                    validate("unit-static", bad, selection_only=True)
+
+    def test_functional_aggregate_requires_successful_shards_only_when_applicable(self):
+        for full in ["true", "false"]:
+            needs = self.needs(full)
+            minimal = {key: needs[key] for key in ["changes", "documentation", "functional-shards"]}
+            validate("chromium-functional", minimal)
+            minimal["functional-shards"]["result"] = "failure"
+            with self.assertRaises(ValueError):
+                validate("chromium-functional", minimal)
 
     def test_missing_selection_or_unknown_check_cannot_pass(self):
         for full in ["", "TRUE", None]:

@@ -66,12 +66,14 @@ chromium-functional, chromium-visual, chromium-screenshots, docker-smoke and
 rootless-podman-worker. The chromium aggregate remains available too. CodeQL
 configuration and branch protection are unchanged.
 
-Each named wrapper verifies the selection and all expected owner results. A full
-run requires every owner to succeed and the focused documentation job to be
-skipped. A prose-only run requires documentation success and every runtime owner
-to be skipped. Missing, failed, cancelled or unexpectedly skipped results fail
-the wrapper. Matrix success means all its shards/suites passed. An inapplicable
-check is reported explicitly in its summary; it is not a claimed test pass.
+Named test jobs verify the selection and expected documentation outcome before
+their runtime steps. A prose-only job reports inapplicability and skips its heavy
+steps; it does not install application dependencies or start service containers.
+Full runs execute every runtime step under that same required name. Functional
+Chromium retains a strict aggregate over all three shards, while the chromium
+aggregate checks all owners. Missing, failed, cancelled or unexpectedly skipped
+results fail the applicable gate. Matrix success means all its shards/suites
+passed. An inapplicable check is explicit in its summary, not a claimed test pass.
 
 The selection summary records the complete PR diff and tested checkout revision.
 Diagnostic and screenshot artifacts remain attached to actual test jobs. Never
@@ -86,7 +88,8 @@ prose-only PR as well. Changes to shared code still run broad tests: there is no
 filename-to-unit-test inference or automatic model-based selection.
 
 Compare successful current runs against similar full-stack baseline runs. Sharding
-primarily reduces wall time; additional runners and required-check wrappers may
-increase runner minutes for code PRs. Prose-only PRs avoid the heavy suites. Full
+primarily reduces wall time; additional shard runners may increase runner minutes
+for code PRs. Gates are folded into existing jobs to avoid redundant wrapper
+runners. Prose-only PRs avoid the heavy suites. Full
 main runs provide continuing regression coverage but do not substitute for
 applicable pre-merge checks.
