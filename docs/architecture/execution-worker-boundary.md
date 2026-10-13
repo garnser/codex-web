@@ -824,3 +824,16 @@ requested profile through the normal actor-aware runtime router. Recovery retain
 that canonical runtime binding and refuses an implicit change from the inherited
 or explicitly requested runtime. The actual turn repository and writable scope
 remain subject to normal resource, assignment and workspace validation.
+
+### Retained queue replacement routing
+
+Queue admission restores replacement routing only from the canonical durable
+replacement graph, verifying every edge against the retained Project and tenant.
+Only the scheduling thread and its reply-target thread may differ; original
+messages, destinations, actor/profile revisions and repository scope remain exact.
+Active admission/retry claims fence route changes. The original snapshot, claim,
+blockers and native outcome remain immutable; an uncertain original stays
+nonretryable while later ready requests may start. An actual late original native
+receipt still records that original start. Existing preflight inspectors expose
+replacement routing separately from native outcome, with an attributed route
+restoration event. This adds no persisted field, model call or execution grant.
