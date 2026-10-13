@@ -37,7 +37,7 @@ const state={
   approvals: new Map(),
   activeTurnsByThread: new Map(),
   queuedDepthByThread: new Map(),
-  automationWaitByThread: new Map(),
+  queueAdmissionMessageByThread: new Map(),
   waiting: false,
   eventLog: [],
   tokenUsageByThread: {},
@@ -190,7 +190,7 @@ async function applyThreadReplacement(oldThreadId, newThreadId) {
   state.threadReplacements.set(oldThreadId, newThreadId);
   state.activeTurnsByThread.delete(oldThreadId);
   state.queuedDepthByThread.delete(oldThreadId);
-  state.automationWaitByThread.delete(oldThreadId);
+  state.queueAdmissionMessageByThread.delete(oldThreadId);
   if (state.threadSettings?.[oldThreadId] && !state.threadSettings[newThreadId]) {
     state.threadSettings[newThreadId] = state.threadSettings[oldThreadId];
   }

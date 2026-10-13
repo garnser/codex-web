@@ -697,9 +697,7 @@ class TurnExecutionService:
 
     @staticmethod
     def _human_turn_source(source: str) -> bool:
-        while source.startswith(("queued:", "steer:")):
-            source = source.split(":", 1)[1]
-        return source in {"web", "slack", "telegram", "operator-ui", "operator-retry"}
+        return TurnQueuePolicy.source_origin(source) in {"web", "slack", "telegram", "operator-ui", "operator-retry"}
 
     def automation_wait_reason(self, source: str) -> dict[str, Any] | None:
         # Sources are protocol provenance assigned by server-side producers,
@@ -733,11 +731,17 @@ class TurnExecutionService:
                 self.schedule_queue_drain(thread_id)
 
     def queue_admission_status(self, thread_id: str) -> dict[str, Any]:
+        items = self.host._thread_queue(thread_id)
         reason = self.automation_wait_reason("queue-automation")
-        waiting = sum(not self._human_turn_source(item.source)
-                      for item in self.host._thread_queue(thread_id)) if reason else 0
+        waiting = sum(not self._human_turn_source(item.source) for item in items) if reason else 0
+        priority_count = sum(TurnQueuePolicy.admission_priority(item.source) == "human_slack"
+                             for item in items)
         return {"automationWaiting": waiting,
-                "automationWaitReason": reason if waiting else None}
+                "automationWaitReason": reason if waiting else None,
+                "humanSlackPriorityCount": priority_count,
+                "humanSlackPriorityReason": (
+                    "Human Slack messages have priority when this thread is ready."
+                    if priority_count else None)}
 
     async def publish_queue_status(self, thread_id: str) -> None:
         h = self.host
@@ -3378,7 +3382,7 @@ class TurnExecutionService:
                 await self.publish_queue_status(thread_id)
                 return
             queued = None
-            for candidate in items:
+            for candidate in TurnQueuePolicy.admission_candidates(items):
                 if self.automation_wait_reason(candidate.source) is not None:
                     continue
                 try:
@@ -3424,13 +3428,23 @@ class TurnExecutionService:
                 await self.publish_queue_status(thread_id)
                 return
         else:
-            candidate = next((item for item in h._thread_queue(thread_id)
+            candidate = next((item for item in TurnQueuePolicy.admission_candidates(h._thread_queue(thread_id))
                               if self.automation_wait_reason(item.source) is None), None)
             queued = self.pop_queued_turn(thread_id, candidate.id) if candidate else None
         if not queued:
             await self.publish_queue_status(thread_id)
             return
         original_queued = queued.model_copy(deep=True)
+        def restore_original_position():
+            def restore(items):
+                if any(item.id == original_queued.id for item in items):
+                    return items
+                preceding = set(original_order[:original_order.index(original_queued.id)])
+                index = next((i for i, item in enumerate(items) if item.id not in preceding), len(items))
+                items.insert(index, original_queued)
+                return items
+            self._update_thread_queue(thread_id, restore)
+
         queued.attempts += 1
         reschedule_queue = True
         try:
@@ -3590,14 +3604,7 @@ class TurnExecutionService:
                     if (current.status != "queued"
                             or current.queued_admission_claim_id != admission_claim_id):
                         return
-                def restore(items):
-                    if any(item.id == original_queued.id for item in items):
-                        return items
-                    preceding = set(original_order[:original_order.index(original_queued.id)])
-                    index = next((i for i, item in enumerate(items) if item.id not in preceding), len(items))
-                    items.insert(index, original_queued)
-                    return items
-                self._update_thread_queue(thread_id, restore)
+                restore_original_position()
                 h._append_bot_event({"type": "queued_turn_waiting_for_autonomy",
                                      "thread_id": thread_id, "queued_id": queued.id})
                 return
@@ -3626,8 +3633,8 @@ class TurnExecutionService:
                 and isinstance(exc.detail, dict)
                 and exc.detail.get("code") == "upgrade_maintenance_active"
             ):
-                queued.attempts = max(0, queued.attempts - 1)
-                self.requeue_turn_front(queued)
+                queued.attempts = original_queued.attempts
+                restore_original_position()
                 reschedule_queue = False
                 h._append_bot_event(
                     {
@@ -3648,8 +3655,8 @@ class TurnExecutionService:
                 and exc.detail.get("code")
                 in {"upgrade_maintenance", "upgrade_turn_scope_unknown"}
             ):
-                queued.attempts = max(0, queued.attempts - 1)
-                self.requeue_turn_front(queued)
+                queued.attempts = original_queued.attempts
+                restore_original_position()
                 reschedule_queue = False
                 h._append_bot_event({
                     "type": "queued_turn_waiting_for_upgrade_admission",
@@ -3666,8 +3673,8 @@ class TurnExecutionService:
                 await self.publish_queue_status(thread_id)
                 return
             if isinstance(exc, LocalExecutionWorkerCapacityError):
-                queued.attempts = max(0, queued.attempts - 1)
-                self.requeue_turn_front(queued)
+                queued.attempts = original_queued.attempts
+                restore_original_position()
                 reschedule_queue = False
                 h._append_bot_event({
                     "type": "queued_turn_waiting_for_worker_capacity",
@@ -3678,8 +3685,8 @@ class TurnExecutionService:
                 asyncio.get_running_loop().call_later(30, self.schedule_queue_drain, thread_id)
                 return
             if isinstance(exc, ProviderCapacityBlockedError):
-                queued.attempts = max(0, queued.attempts - 1)
-                self.requeue_turn_front(queued)
+                queued.attempts = original_queued.attempts
+                restore_original_position()
                 wait = self.wait_for_thread_capacity(
                     thread_id=thread_id,
                     execution_id=queued.execution_id,
