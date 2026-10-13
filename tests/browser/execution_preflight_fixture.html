@@ -77,6 +77,18 @@
         attempts[0].can_reconcile_prestart = true;
         attempts[0].reconcile_prestart_href = '/api/threads/thread-1/preflight-attempts/preflight-thread-turn-1/reconcile-prestart';
       }
+      if (new URLSearchParams(location.search).has('retireEligible')) {
+        attempts[0].can_retire_scheduling = true;
+        attempts[0].retire_scheduling_href = '/api/threads/thread-1/preflight-attempts/preflight-thread-turn-1/retire-scheduling';
+      }
+      if (new URLSearchParams(location.search).has('retired')) {
+        attempts[0].can_retry = false;
+        attempts[0].can_retire_scheduling = false;
+        attempts[0].scheduling_retirement = {
+          state: 'retired', native_outcome: 'unknown', work_item_ref: 'group/repo#78',
+          source_state: 'merged', canonical_stage: 'closed',
+        };
+      }
       if (disposition === 'started') attempts[0].queued_start_receipt = {
         provider_native_turn_id:'actual-native-turn', provider_id:'openai', runtime_id:'codex',
         requested_execution_id:'original-request-execution', execution_id:'actual-bootstrap-execution'};
@@ -86,6 +98,7 @@
       window.__apiCalls.push({ path, method: options.method || "GET" });
       if (path.includes("/preflight-attempts?")) return { items: attempts };
       if (path.endsWith('/reconcile-prestart')) return {ok:true, threadId:'thread-1'};
+      if (path.endsWith('/retire-scheduling')) return {ok:true, threadId:'thread-1'};
       if (path.endsWith("/retry")) {
         if (new URLSearchParams(location.search).has("holdRetry")) {
           return new Promise((resolve, reject) => { window.__finishRetry = { resolve, reject }; });

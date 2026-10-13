@@ -135,6 +135,41 @@ class TurnQueueRepository:
             )
         return existed
 
+    def remove_exact(
+        self,
+        thread_id: str,
+        expected: QueuedTurn,
+    ) -> str:
+        """Remove one byte-for-byte-equivalent queue item, preserving order.
+
+        Returns ``removed``, ``missing`` or ``changed``.  The comparison and
+        removal share the keyed queue transaction, so a concurrent mutation
+        cannot be mistaken for the administratively inspected request.
+        """
+        outcome = "missing"
+
+        def update(current: list[QueuedTurn]) -> list[QueuedTurn]:
+            nonlocal outcome
+            matches = [item for item in current if item.id == expected.id]
+            if not matches:
+                outcome = "missing"
+                return current
+            if len(matches) != 1 or matches[0] != expected:
+                outcome = "changed"
+                return current
+            outcome = "removed"
+            removed = False
+            retained: list[QueuedTurn] = []
+            for item in current:
+                if not removed and item.id == expected.id:
+                    removed = True
+                    continue
+                retained.append(item)
+            return retained
+
+        self.update(thread_id, update)
+        return outcome
+
     def flush_legacy_mirror(self) -> None:
         started = __import__("time").perf_counter()
         success = False
@@ -265,4 +300,3 @@ class TurnQueueRepository:
                 default=[],
             )
         self.flush_legacy_mirror()
-

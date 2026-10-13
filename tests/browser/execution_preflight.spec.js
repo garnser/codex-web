@@ -123,3 +123,22 @@ test('known pre-start refusal offers reconciliation without automatically replay
   expect(await page.evaluate(() => window.__apiCalls.find(item => item.method === 'POST').path)).toContain('/reconcile-prestart');
   expect(await page.evaluate(() => window.__reloadCalls)).toEqual(['thread-1']);
 });
+
+test('terminal scheduling retirement is distinct from the unknown native outcome', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?disposition=reconciliation_required&retired');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+  await expect(page.locator('.message.tool')).toContainText('Scheduling retired · native outcome unknown');
+  await expect(page.locator('.message.tool')).toContainText('earlier native start outcome remains unknown');
+  await expect(page.locator('.message.tool')).toContainText('provider merged · canonical closed');
+  await expect(page.getByRole('button', {name:'Retry', exact:true})).toHaveCount(0);
+  await expect(page.getByRole('button', {name:'Retire terminal scheduling', exact:true})).toHaveCount(0);
+});
+
+test('eligible unknown scheduling exposes the bounded admin retirement action', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?disposition=reconciliation_required&retireEligible');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+  await page.getByRole('button', {name:'Retire terminal scheduling', exact:true}).click();
+  await expect.poll(() => page.evaluate(() => window.__apiCalls.filter(item => item.method === 'POST').length)).toBe(1);
+  expect(await page.evaluate(() => window.__apiCalls.find(item => item.method === 'POST').path)).toContain('/retire-scheduling');
+  expect(await page.evaluate(() => window.__reloadCalls)).toEqual(['thread-1']);
+});

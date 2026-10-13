@@ -394,11 +394,34 @@ creation timestamp and retry count; the original snapshot remains unchanged.
 A native start response without an actual turn ID produces an unknown-outcome
 event and retained reconciliation state, never a successful-start receipt.
 
+Terminal WorkItem scheduling retirement is a separate administrative lifecycle
+from native-start reconciliation. The administrator/MFA action derives its
+target solely from the immutable retained queue snapshot and accepts no caller-
+selected WorkItem, repository, tenant, Project or profile scope. It requires the
+same-tenant canonical WorkItem to be closed, all retained writable repositories
+to remain within that WorkItem's resource scope, the original and replacement
+Threads to be idle, and a fresh read of the same authoritative provider object
+to report `closed` or `merged`. An open, missing, malformed, cross-scope or
+changed object fails closed.
+
+Retirement first appends a `prepared` disposition to the retained preflight.
+That disposition fences queue admission and explicit retry while leaving
+`reconciliation_required`, the original snapshot, blockers, claim and any
+future genuine native receipt intact. A keyed compare-and-remove then removes
+only the byte-equivalent queue entry and preserves every other entry and its
+order. Completion records queue-removal evidence and appends a WorkItem audit
+event. A crash or conflict after preparation remains visibly prepared and
+non-retryable; queue absence alone cannot promote it to completed retirement.
+The inspector therefore distinguishes retired scheduling, incomplete retirement
+and the still-unknown native outcome. Scheduling retirement never asserts that
+the old native request did not start, supplies an ACK, or replays it.
+
 This extends the application-level persisted preflight payload with an optional
-queued snapshot and new disposition values. Existing records remain readable by
-the new application; older strict preflight readers cannot read new payloads.
-There is no SQL DDL or retrospective start/ACK backfill. Rollout requires drained
-admissions and a declared persisted-payload compatibility change. Mixed-version
+queued snapshot, receipt and scheduling-retirement evidence. Existing records
+remain readable by the new application; older strict preflight readers cannot
+read new payloads. There is no SQL DDL or retrospective start/ACK backfill.
+Rollout requires drained admissions and a declared persisted-payload
+compatibility change. Mixed-version
 writers are unsupported, and rollback requires the canonical pre-transition
 snapshot under maintenance; source-only rollback cannot safely interpret new
 preflight dispositions. The pre-transition snapshot supports fenced recovery

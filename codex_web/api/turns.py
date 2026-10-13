@@ -82,6 +82,14 @@ def build_turns_router(service: TurnService, scope: ThreadScopeService) -> APIRo
     async def reconcile_prestart(thread_id: str, attempt_id: str, request: Request) -> dict[str, Any]:
         return service.reconcile_preflight(thread_id, attempt_id, actor=request_actor(request))
 
+    @router.post('/api/threads/{thread_id}/preflight-attempts/{attempt_id}/retire-scheduling')
+    async def retire_scheduling(thread_id: str, attempt_id: str, request: Request) -> dict[str, Any]:
+        return await service.retire_preflight_scheduling(
+            thread_id,
+            attempt_id,
+            actor=request_actor(request),
+        )
+
     @router.get("/api/threads/{thread_id}/queue")
     async def thread_queue(thread_id: str) -> dict[str, Any]:
         return service.queue(thread_id)

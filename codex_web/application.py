@@ -315,6 +315,7 @@ from codex_web.services.evaluations import EvaluationService
 from codex_web.services.extensions import ExtensionService
 from codex_web.services.extension_runtime import ExtensionRuntimeRegistry
 from codex_web.services.execution_preflight import ExecutionPreflightService
+from codex_web.services.queued_scheduling_retirement import QueuedSchedulingRetirementService
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.local_artifact_content import LocalArtifactContentStore
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
@@ -3436,6 +3437,16 @@ execution_preflight_service = ExecutionPreflightService(
 )
 app.state.execution_preflight_service = execution_preflight_service
 turn_execution_service.queued_preflight = execution_preflight_service
+work_item_operator_service = WorkItemOperatorService(work_item_service)
+scheduling_retirement_service = QueuedSchedulingRetirementService(
+    preflight=execution_preflight_service,
+    queues=turn_queue_repository,
+    work_item=work_item_state_machine._work_item_state,
+    source_detail=work_item_operator_service.source_detail,
+    thread_is_active=turn_execution_service.thread_is_active,
+    append_audit=work_item_state_machine._append_work_item_event,
+)
+app.state.scheduling_retirement_service = scheduling_retirement_service
 
 turn_service = TurnService(
     projects=project_runtime_service,
@@ -3449,6 +3460,7 @@ turn_service = TurnService(
     truncate_text=lambda value, limit: str(value)[:limit],
     binding_public=_binding_public,
     preflight=execution_preflight_service,
+    scheduling_retirement=scheduling_retirement_service,
     agent_profiles=agent_profile_service,
 )
 turn_execution_service.upgrade_turn_admission_guard = (
@@ -3458,7 +3470,7 @@ app.state.thread_service = thread_service
 app.state.turn_service = turn_service
 project_delivery_service = ProjectDeliveryService(
     projects=project_service, identity=identity_service, scope=thread_scope_service,
-    operator=WorkItemOperatorService(work_item_service),
+    operator=work_item_operator_service,
     states=work_item_service.work_items.load_states,
     turns=turn_service, execution=turn_execution_service,
     controller=autonomy_controller, events=canonical_event_ingestion,
