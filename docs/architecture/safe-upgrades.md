@@ -152,8 +152,29 @@ candidates do not fetch into the live repository. The helper emits a structured
 `candidate_objects_verified` result with the exact revision, archive digest and
 fetch disposition into its existing deployment log; this is diagnostic evidence,
 never an installation grant. After checkout it requires exact HEAD, a clean
-tree and the same archive digest before restarting. There is no API or persisted
-schema change and no change to canonical authority or rollback gates.
+tree and the same archive digest before restarting. Object materialization
+changes no API or persisted schema and retains canonical authority and rollback
+gates.
+
+The existing Control Center includes recent completed Plans and a scoped local
+installation inspector. Its admin/MFA (or `upgrade:admin` service) read joins the
+canonical Plan, Release, post-upgrade Evidence and up to eight matching installer
+reports in the existing Evidence domain. Helper reports use `runtime_result`
+with informational results, fixed diagnostic fields and producer attribution;
+they are untrusted claims and cannot satisfy qualification or completed
+verification. Credential-bearing URLs, arbitrary log/exception bodies and
+unrecognized fields are not returned. A completed Plan is displayed as verified
+only with valid matching canonical post-upgrade Evidence. A process is reported
+running/exited only from the same-instance scoped live `Popen` handle; missing,
+restarted or mismatched handles remain unknown. Stored PIDs or helper reports
+never establish process liveness. Reads add no model calls or mutations.
+
+Installer diagnostic writes are best-effort, use existing Evidence authorization,
+and do not run between consuming the one-shot guard and checkout. Enforced
+deployments without authenticated diagnostic reporting show an unreported state
+while retaining every installation gate. The API projection is additive; no new
+persisted Plan field, schema migration, privilege, or parallel deployment state
+is introduced.
 
 Under the deployment lock, immediately before
 switching the checkout, an inherited one-shot channel asks the still-running

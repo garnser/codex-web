@@ -114,6 +114,18 @@
       if (parsed.pathname === "/api/autonomy/control-center/actions/intent-1/explain") {
         return new Response(JSON.stringify(explanation), { status: 200, headers: { "Content-Type": "application/json" } });
       }
+      if (parsed.pathname === '/api/upgrades/upgrade-1/local-installation') {
+        if (window.__localInstallationDenied) return new Response(JSON.stringify({detail:'upgrade administrator with MFA required'}), {status:403, headers:{'Content-Type':'application/json'}});
+        const details = window.__localInstallation || {
+          source_revision:'a'.repeat(40), target_revision:'b'.repeat(40), plan_status:'ready',
+          maintenance_mode:true, service_instance_id:'instance', installation_verified:false,
+          plan_href:'/api/upgrades/upgrade-1', release_href:'/api/releases/release-1',
+          preflight_evidence_href:'/api/evidence/preflight', process:{status:'unknown',reason:'No live tracked installer handle'},
+          reported_diagnostics:[{phase:'objects_verified',fetched:true,archive_sha256:'c'.repeat(64),
+            repository_source:'https://github.com/org/repo',producer_identity_id:'operator',href:'/api/evidence/report',reported_only:true}]
+        };
+        return new Response(JSON.stringify(details), {status:200,headers:{'Content-Type':'application/json'}});
+      }
       if (parsed.pathname === "/api/autonomy/scoped-pauses" && method === "POST") {
         const payload = JSON.parse(options.body || "{}");
         snapshot.autonomy.scoped_pauses = [{

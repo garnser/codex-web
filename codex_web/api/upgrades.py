@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from typing import Any
+import asyncio
 
 from fastapi import APIRouter, HTTPException, Request
 
 from codex_web.api.identity import request_actor
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.services.identity import AuthorizationError, IdentityService
+from codex_web.services.local_installation_inspector import LocalInstallationInspector
+from codex_web.services.artifact_evidence import ArtifactEvidenceError
+from codex_web.services.releases import ReleaseError
 from codex_web.services.upgrades import (
     UpgradeConflictError,
     UpgradeError,
@@ -22,8 +26,9 @@ from codex_web.upgrades import (
 )
 
 
-def build_upgrades_router(service: UpgradeService) -> APIRouter:
+def build_upgrades_router(service: UpgradeService, *, process_reader=None) -> APIRouter:
     router = APIRouter(prefix="/api/upgrades", tags=["upgrades"])
+    inspector = LocalInstallationInspector(service, process_reader=process_reader)
 
     def admin(request: Request):
         actor = request_actor(request)
@@ -79,6 +84,16 @@ def build_upgrades_router(service: UpgradeService) -> APIRouter:
             item = service.get(plan_id, actor=request_actor(request))
             return {"item": item.model_dump(mode="json")}
         except UpgradeError as exc:
+            raise error(exc) from exc
+
+    @router.get("/{plan_id}/local-installation")
+    async def local_installation(plan_id: str, request: Request) -> dict[str, Any]:
+        try:
+            actor = admin(request)
+            return await asyncio.to_thread(inspector.inspect, plan_id, actor=actor)
+        except (ArtifactEvidenceError, ReleaseError) as exc:
+            raise HTTPException(status_code=404, detail="installation evidence unavailable") from exc
+        except (UpgradeError, AuthorizationError) as exc:
             raise error(exc) from exc
 
     @router.post("/{plan_id}/preflight")
