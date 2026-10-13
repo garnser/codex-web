@@ -25,6 +25,10 @@ class ExecutionPreflightStore:
 
     def __init__(self, store: StateStore) -> None:
         self.store = store
+        # Queue duplicate checks read this collection inside the queue's atomic
+        # update. Materialize its keyed layout before that transaction: lazy
+        # initialization would need a second SQLite writer and deadlock it.
+        self.store.record_page(self.NAMESPACE, limit=1)
 
     @classmethod
     def _inverse_timestamp(cls, value: float) -> int:
