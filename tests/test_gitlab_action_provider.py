@@ -32,6 +32,7 @@ from codex_web.services.action_providers import ActionExecutionService, ActionPr
 from codex_web.services.code_host_action_contract import (
     CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
     CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID,
+    CODE_HOST_ISSUE_CREATE_ACTION_ID,
     CODE_HOST_ISSUE_COMMENT_ACTION_ID,
     CODE_HOST_ISSUE_UPDATE_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
@@ -59,6 +60,8 @@ class _GitLabClient:
         self.note_creates = 0
         self.issues: dict[int, dict] = {}
         self.issue_updates: list[dict] = []
+        self.issue_creates = 0
+        self.issue_searches: list[dict] = []
         self.merge_request_rows: list[dict] = []
         self.merge_request_creates = 0
         self.merge_request_updates = 0
@@ -80,6 +83,19 @@ class _GitLabClient:
             "web_url": f"https://gitlab.example/{project}/-/issues/{iid}#note_31",
         }
         self.notes.append(item)
+        return item
+
+    async def project_issues(self, api_base, project, *, token, params=None):
+        self.credentials.append(token)
+        self.issue_searches.append(params)
+        return list(self.issues.values())
+
+    async def create_project_issue(self, api_base, project, *, token, payload):
+        self.credentials.append(token)
+        self.issue_creates += 1
+        item = {"id": 111, "iid": 17, "state": "opened", **payload,
+                "web_url": f"https://gitlab.example/{project}/-/issues/17"}
+        self.issues[17] = item
         return item
 
     async def project_issue(self, api_base, project, iid, *, token):
@@ -367,6 +383,68 @@ class GitLabActionProviderTests(unittest.IsolatedAsyncioTestCase):
             parameters=parameters,
             idempotency_key="stable-action-key",
         )
+
+    async def test_issue_creation_is_owned_idempotent_and_verified(self) -> None:
+        request = self._request(CODE_HOST_ISSUE_CREATE_ACTION_ID,
+                                {"title": "Repair image scan", "body": "Exact failing job evidence"})
+        first = await self.execution.execute(self.binding.id, request, actor=self.actor)
+        second = await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.assertEqual(self.client.issue_creates, 1)
+        self.assertEqual(first.external_id, second.external_id)
+        self.assertEqual(second.output["issue_number"], 17)
+        self.assertTrue((await self.execution.verify(self.binding.id, second, actor=self.actor)).verified)
+        marker = self.provider.contract.marker(request)
+        self.assertEqual(self.client.issue_searches[0],
+                         {"state": "all", "scope": "all", "search": marker, "per_page": 100})
+        self.client.issues[17]["state"] = "closed"
+        await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.assertEqual(self.client.issue_creates, 1)
+        self.assertNotIn("Exact failing job evidence", second.model_dump_json())
+        self.assertNotIn("secret-gitlab-token", second.model_dump_json())
+        self.assertEqual(set(self.client.credentials), {"secret-gitlab-token"})
+
+    async def test_issue_creation_verification_rejects_changed_identity_and_content(self) -> None:
+        request = self._request(CODE_HOST_ISSUE_CREATE_ACTION_ID, {"title": "Scoped task", "body": "Proof"})
+        result = await self.execution.execute(self.binding.id, request, actor=self.actor)
+        item = self.client.issues[17]
+        for field, value in (("iid", True), ("iid", "17"), ("iid", 18), ("id", 999),
+                             ("title", "Changed"), ("description", "Unowned"),
+                             ("description", item["description"] + " changed")):
+            with self.subTest(field=field, value=value):
+                old = item[field]
+                item[field] = value
+                try:
+                    self.assertFalse((await self.execution.verify(self.binding.id, result, actor=self.actor)).verified)
+                finally:
+                    item[field] = old
+        changed = request.model_copy(update={"parameters": {"title": "Different", "body": "Proof"}})
+        reused = await self.execution.execute(self.binding.id, changed, actor=self.actor)
+        self.assertEqual(self.client.issue_creates, 1)
+        self.assertFalse((await self.execution.verify(self.binding.id, reused, actor=self.actor)).verified)
+
+    async def test_issue_creation_rejects_duplicate_owned_markers_before_write(self) -> None:
+        request = self._request(CODE_HOST_ISSUE_CREATE_ACTION_ID, {"title": "Task"})
+        marker = self.provider.contract.marker(request)
+        self.client.issues = {1: {"iid": 1, "description": marker}, 2: {"iid": 2, "description": marker}}
+        with self.assertRaisesRegex(ActionRequirementError, "multiple GitLab issues"):
+            await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.assertEqual(self.client.issue_creates, 0)
+
+    async def test_issue_creation_saturated_search_does_not_infer_absence(self) -> None:
+        request = self._request(CODE_HOST_ISSUE_CREATE_ACTION_ID, {"title": "Task"})
+        self.client.issues = {i: {"iid": i, "description": "Unrelated"} for i in range(1, 101)}
+        with self.assertRaisesRegex(ActionRequirementError, "bounded result limit"):
+            await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.assertEqual(self.client.issue_creates, 0)
+
+    async def test_issue_creation_invalid_payload_is_rejected_before_provider_access(self) -> None:
+        for parameters in ({"title": ""}, {"title": "Task", "labels": ["security"]}):
+            with self.subTest(parameters=parameters):
+                request = self._request(CODE_HOST_ISSUE_CREATE_ACTION_ID, parameters)
+                with self.assertRaises(ActionRequirementError):
+                    await self.execution.execute(self.binding.id, request, actor=self.actor)
+        self.assertEqual(self.client.issue_creates, 0)
+        self.assertEqual(self.client.credentials, [])
 
     async def test_comment_is_idempotent_and_verifies_through_secret_broker(self) -> None:
         request = self._request(
