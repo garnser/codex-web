@@ -920,6 +920,13 @@ Operators use the existing Agent Profile/Definition and resource links to repair
 missing, disabled or stale configuration, the worker inspector for lease/fence
 refusals, and the existing dependency graph for source/target Work Item context.
 
+Worker redraws reattach an existing broker inspector only when its complete public
+assignment snapshot is unchanged. Its pending or loaded audit read then survives
+unrelated worker refreshes. Changed configuration, pins, lease/fence or assignment
+state replaces the inspector and fences the old response. A removed/filtered row
+or Project change cancels its read and discards the panel; it cannot publish a
+previous scope's result into a later view.
+
 ## Automated native turn admission
 
 The turn execution boundary reads the existing RuntimePolicy disable control
