@@ -126,6 +126,15 @@
         };
         return new Response(JSON.stringify(details), {status:200,headers:{'Content-Type':'application/json'}});
       }
+      if (parsed.pathname === '/api/version') {
+        return new Response(JSON.stringify({gitRevision:'a'.repeat(40)}), {status:200,headers:{'Content-Type':'application/json'}});
+      }
+      if (parsed.pathname === '/api/upgrades/upgrade-1/cancel-unexecuted') {
+        if (window.__cancellationDenied) return new Response(JSON.stringify({detail:'local installer is active'}), {status:409,headers:{'Content-Type':'application/json'}});
+        snapshot.upgrades.active[0].maintenance_mode = false;
+        snapshot.upgrades.active[0].status = 'failed';
+        return new Response(JSON.stringify({item:snapshot.upgrades.active[0],cancellation_evidence_id:'evidence-cancel'}), {status:200,headers:{'Content-Type':'application/json'}});
+      }
       if (parsed.pathname === "/api/autonomy/scoped-pauses" && method === "POST") {
         const payload = JSON.parse(options.body || "{}");
         snapshot.autonomy.scoped_pauses = [{

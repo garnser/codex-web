@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -43,6 +44,7 @@ from codex_web.upgrades import (
     UpgradeStepExecute,
     UpgradeStepKind,
     UpgradeStepStatus,
+    UpgradeUnexecutedCancellationRequest,
 )
 
 
@@ -260,6 +262,110 @@ class UpgradeTests(unittest.IsolatedAsyncioTestCase):
             ),
             actor=self.actor,
         )
+
+    async def test_unexecuted_cancellation_preserves_other_holds_and_truthful_evidence(self):
+        self.actor = self.actor.model_copy(update={"assurance":AuthenticationAssurance.LOCAL_TRUSTED})
+        self.service.service_instance_id = "current-instance"
+        @contextmanager
+        def guard():
+            yield "a" * 40
+        self.service.cancellation_guard = guard
+        plan = self.create_plan(profile=self.profile(deployment_mode=UpgradeDeploymentMode.LOCAL))
+        plan = self.service.start_drain(plan.id, actor=self.actor)
+        other = self.create_plan(profile=self.profile(deployment_mode=UpgradeDeploymentMode.LOCAL))
+        other = self.service.start_drain(other.id, actor=self.actor)
+        request = UpgradeUnexecutedCancellationRequest(service_instance_id="current-instance",
+            running_revision="a" * 40, expected_admission_epoch=plan.admission_epoch,
+            reason="Target superseded before installer qualification")
+        before = self.service.get(other.id, actor=self.actor)
+        result = self.service.cancel_unexecuted(plan.id, request, actor=self.actor)
+        cancelled = self.service.get(plan.id, actor=self.actor)
+        self.assertEqual(cancelled.status, "failed")
+        self.assertFalse(cancelled.maintenance_mode)
+        self.assertEqual(cancelled.admission_epoch, plan.admission_epoch + 1)
+        self.assertIsNone(cancelled.post_upgrade_evidence_id)
+        self.assertEqual(self.service.get(other.id, actor=self.actor), before)
+        self.assertFalse(self.service.worker_assignment_allowed(self.actor.organization_id, self.actor.workspace_id))
+        evidence = self.evidence.items[-1]
+        self.assertEqual(result["cancellation_evidence_id"], evidence.id)
+        self.assertEqual(evidence.payload.result, EvidenceResult.FAIL)
+        self.assertEqual(evidence.payload.source, "upgrade-unexecuted-cancellation")
+        self.assertFalse(evidence.payload.metadata["installation_verified"])
+        self.assertFalse(evidence.payload.metadata["rollback_performed"])
+        with self.assertRaises(UpgradeConflictError):
+            self.service.cancel_unexecuted(plan.id, request, actor=self.actor)
+        for operation in (self.service.start_drain, self.service.preflight, self.service.verify_post_upgrade):
+            with self.assertRaises(UpgradeConflictError):
+                operation(plan.id, actor=self.actor)
+
+    async def test_unexecuted_cancellation_rejects_stale_active_and_executed_plans(self):
+        self.actor = self.actor.model_copy(update={"assurance":AuthenticationAssurance.LOCAL_TRUSTED})
+        self.service.service_instance_id = "current-instance"
+        @contextmanager
+        def guard():
+            yield "a" * 40
+        self.service.cancellation_guard = guard
+        plan = self.create_plan(profile=self.profile(deployment_mode=UpgradeDeploymentMode.LOCAL))
+        request = UpgradeUnexecutedCancellationRequest(service_instance_id="current-instance",
+            running_revision="a" * 40, expected_admission_epoch=plan.admission_epoch,
+            reason="Target superseded before installer qualification")
+        for changes in ({"service_instance_id":"old"}, {"running_revision":"b"*40},
+                        {"expected_admission_epoch":99}):
+            with self.subTest(changes=changes), self.assertRaises(UpgradeConflictError):
+                self.service.cancel_unexecuted(plan.id, request.model_copy(update=changes), actor=self.actor)
+        with self.service.native_turn_admission(self.actor.organization_id, self.actor.workspace_id):
+            with self.assertRaises(UpgradeConflictError):
+                self.service.cancel_unexecuted(plan.id, request, actor=self.actor)
+        self.service._update(plan.id, self.actor, lambda p:p.model_copy(update={"irreversible_boundary_crossed":True}))
+        with self.assertRaises(UpgradeConflictError):
+            self.service.cancel_unexecuted(plan.id, request, actor=self.actor)
+        self.assertFalse(any(e.payload.source=="upgrade-unexecuted-cancellation" for e in self.evidence.items))
+
+    async def test_cancellation_cas_preserves_a_concurrent_drain_change(self):
+        self.actor = self.actor.model_copy(update={"assurance":AuthenticationAssurance.LOCAL_TRUSTED})
+        self.service.service_instance_id = "current-instance"
+        plan = self.create_plan(profile=self.profile(deployment_mode=UpgradeDeploymentMode.LOCAL))
+        @contextmanager
+        def guard():
+            self.service.start_drain(plan.id, actor=self.actor)
+            yield "a"*40
+        self.service.cancellation_guard = guard
+        request = UpgradeUnexecutedCancellationRequest(service_instance_id="current-instance",
+            running_revision="a"*40, expected_admission_epoch=plan.admission_epoch,
+            reason="Superseded unexecuted target")
+        with self.assertRaisesRegex(UpgradeConflictError,"changed during cancellation"):
+            self.service.cancel_unexecuted(plan.id, request, actor=self.actor)
+        current = self.service.get(plan.id, actor=self.actor)
+        self.assertTrue(current.maintenance_mode)
+        self.assertEqual(current.status, "draining")
+        self.assertIsNone(current.completed_at)
+        self.assertTrue(self.evidence.items[-1].payload.metadata['cancellation_attempt'])
+
+    async def test_cancellation_rejects_installed_target_executed_step_and_foreign_scope(self):
+        from codex_web.services.upgrades import UpgradeError
+        self.actor = self.actor.model_copy(update={"assurance":AuthenticationAssurance.LOCAL_TRUSTED})
+        self.service.service_instance_id = "current-instance"
+        @contextmanager
+        def guard():
+            yield "a"*40
+        self.service.cancellation_guard = guard
+        plan = self.create_plan(steps=[UpgradeStepCreate(id="rollout",phase=UpgradePhase.ROLLOUT,
+            kind=UpgradeStepKind.CONTROL_PLANE,description="Rollout")],
+            profile=self.profile(deployment_mode=UpgradeDeploymentMode.LOCAL))
+        request = UpgradeUnexecutedCancellationRequest(service_instance_id="current-instance",
+            running_revision="a"*40, expected_admission_epoch=plan.admission_epoch,
+            reason="Superseded unexecuted target")
+        foreign = self.actor.model_copy(update={"organization_id":"foreign"})
+        with self.assertRaises(UpgradeError):
+            self.service.cancel_unexecuted(plan.id, request, actor=foreign)
+        self.service._update(plan.id, self.actor, lambda p:p.model_copy(update={"target_app_version":"a"*40}))
+        with self.assertRaisesRegex(UpgradeConflictError,"already installed"):
+            self.service.cancel_unexecuted(plan.id, request, actor=self.actor)
+        self.service._update(plan.id, self.actor, lambda p:plan.model_copy(update={
+            "steps":(p.steps[0].model_copy(update={"attempts":1,"status":UpgradeStepStatus.SUCCEEDED}),)}))
+        with self.assertRaisesRegex(UpgradeConflictError,"unexecuted"):
+            self.service.cancel_unexecuted(plan.id, request, actor=self.actor)
+        self.assertEqual(self.evidence.items, [])
 
     async def test_preflight_blocks_incompatible_definition_worker_extension_and_active_work(self):
         payload = {"mode": "strict"}

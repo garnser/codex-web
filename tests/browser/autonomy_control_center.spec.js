@@ -2,6 +2,48 @@ const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require("@playwright/test");
 const fixtureURL = (process.env.CODEX_WEB_BROWSER_BASE_URL || "http://127.0.0.1:18766") + "/tests/browser/autonomy_control_center_fixture.html";
 
+async function cancellationFixture(page) {
+  await page.goto(fixtureURL);
+  await page.evaluate(()=>window.__localInstallation={
+    plan_id:'upgrade-1',source_revision:'a'.repeat(40),target_revision:'b'.repeat(40),
+    plan_status:'draining',maintenance_mode:true,installation_verified:false,
+    plan_href:'/api/upgrades/upgrade-1',release_href:'/api/releases/release-1',
+    current_service_instance_id:'current-instance',admission_epoch:4,
+    cancellation_request_available:true,reported_diagnostics:[]});
+  await page.locator('[data-acc-installation="upgrade-1"]').click();
+  await page.getByLabel('Cancellation reason').fill('Target superseded before qualified installation');
+}
+
+test('Unexecuted cancellation confirms exact scope and preserves independent pause controls', async ({page})=>{
+  await cancellationFixture(page);
+  const button=page.getByRole('button',{name:'Request cancellation of unexecuted plan'});
+  await button.focus(); await page.keyboard.press('Enter');
+  const message=await resolveAction(page, false);
+  expect(message).toContain('upgrade-1');
+  expect(message).toContain('Other holds and paused controls remain effective');
+  let requests=await page.evaluate(()=>window.__accRequests);
+  expect(requests.some(r=>r.method==='POST')).toBeFalsy();
+  await button.click(); await resolveAction(page);
+  await expect(page.locator('#autonomy-control-center-card')).toContainText('Unexecuted plan cancelled; inspect Cancellation Evidence evidence-cancel');
+  requests=await page.evaluate(()=>window.__accRequests);
+  const mutations=requests.filter(r=>r.method!=='GET');
+  expect(mutations).toHaveLength(1);
+  expect(mutations[0].path).toBe('/api/upgrades/upgrade-1/cancel-unexecuted');
+  expect(JSON.parse(mutations[0].body)).toEqual({
+    reason:'Target superseded before qualified installation',running_revision:'a'.repeat(40),
+    service_instance_id:'current-instance',expected_admission_epoch:4});
+});
+
+test('Cancellation denial is visible and keeps the request editable', async ({page})=>{
+  await cancellationFixture(page);
+  await page.evaluate(()=>window.__cancellationDenied=true);
+  const button=page.getByRole('button',{name:'Request cancellation of unexecuted plan'});
+  await button.click(); await resolveAction(page);
+  await expect(page.locator('#autonomy-control-center-card')).toContainText('Cancellation denied or unavailable: local installer is active');
+  await expect(button).toBeEnabled();
+  await expect(page.getByLabel('Cancellation reason')).toHaveValue('Target superseded before qualified installation');
+});
+
 test('Local installation separates reported materialization from canonical verification', async ({page}) => {
   await page.goto(fixtureURL);
   const button=page.locator('[data-acc-installation="upgrade-1"]');

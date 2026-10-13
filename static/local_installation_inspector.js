@@ -19,6 +19,10 @@ export function renderLocalInstallation(data) {
       ${data.preflight_evidence_href ? ' · ' + link(data.preflight_evidence_href, 'Preflight Evidence') : ''}
       ${data.canonical_verification ? ' · ' + link(data.canonical_verification.href, 'Post-upgrade Evidence') : ''}</p>
     <p>Installer diagnostics are reported claims. They grant no permission and do not complete verification.</p>
+    ${data.cancellation ? `<p>Unexecuted plan cancelled: ${escapeHtml(data.cancellation.reason)} · ${link(data.cancellation.href, 'Cancellation Evidence')}. Installation and rollback were not claimed.</p>` : ''}
+    ${data.cancellation_request_available ? `<div><label>Cancellation reason <textarea data-installation-cancel-reason minlength="10" maxlength="500"></textarea></label>
+      <button type="button" class="ghost-button" data-installation-cancel>Request cancellation of unexecuted plan</button>
+      <p>The server verifies authority, current installation, installer lock and execution state. Other maintenance holds and paused autonomy remain effective.</p></div>` : ''}
     ${reports.length ? reports.map((report) => `<div class="acc-row">
       <strong>Reported ${escapeHtml(report.phase)}${report.stale_instance ? ' · stale instance' : ''}</strong>
       <small>Producer ${escapeHtml(report.producer_identity_id)} · ${link(report.href, 'Diagnostic Evidence')}</small>

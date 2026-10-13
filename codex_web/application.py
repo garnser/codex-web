@@ -2139,6 +2139,8 @@ app.state.local_backup_destination = local_backup_destination
 app.include_router(build_recovery_router(recovery_service, project_service))
 
 upgrade_store = UpgradeStore(state_store)
+from codex_web.local_deployment import unchanged_local_installation
+
 upgrade_service = UpgradeService(
     upgrade_store,
     state_store=state_store,
@@ -2152,6 +2154,10 @@ upgrade_service = UpgradeService(
     evidence=artifact_evidence_service,
     identity=identity_service,
     service_instance_id=instance_id,
+    cancellation_guard=lambda: unchanged_local_installation(
+        Path(__file__).resolve().parent.parent,
+        os.environ.get("CODEX_WEB_GIT_REVISION", "unknown"),
+    ),
 )
 action_intent_service.maintenance_guard = (
     upgrade_service.action_execution_allowed

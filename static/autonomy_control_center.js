@@ -243,7 +243,34 @@ function accRender(card, data) {
       region.textContent = 'Loading local installation…';
       try {
         const details = await accRequest('/api/upgrades/' + encodeURIComponent(button.dataset.accInstallation) + '/local-installation');
-        if (region.isConnected) region.innerHTML = renderLocalInstallation(details);
+        if (region.isConnected) {
+          region.innerHTML = renderLocalInstallation(details);
+          const cancelButton = region.querySelector('[data-installation-cancel]');
+          cancelButton?.addEventListener('click', async () => {
+            const reason = region.querySelector('[data-installation-cancel-reason]').value.trim();
+            if (reason.length < 10) {
+              accSetStatus(card, 'Enter a cancellation reason of at least 10 characters.', true);
+              return;
+            }
+            if (!await confirmAction({action:'Cancel unexecuted upgrade', target:details.plan_id,
+              risk:'high', consequence:`Release only this plan’s maintenance hold for ${details.source_revision} → ${details.target_revision}. Other holds and paused controls remain effective.`,
+              recovery:'Cancellation records failure and invalidates this plan’s admission epoch; it does not install or roll back code.',
+              current:()=>region.isConnected, trigger:cancelButton})) return;
+            cancelButton.disabled = true;
+            try {
+              const version = await accRequest('/api/version');
+              const result = await accRequest('/api/upgrades/' + encodeURIComponent(details.plan_id) + '/cancel-unexecuted', {
+                method:'POST', body:JSON.stringify({reason, running_revision:version.gitRevision,
+                  service_instance_id:details.current_service_instance_id,
+                  expected_admission_epoch:details.admission_epoch})});
+              await accLoad(card);
+              accSetStatus(card, 'Unexecuted plan cancelled; inspect Cancellation Evidence ' + result.cancellation_evidence_id, false);
+            } catch (error) {
+              if (cancelButton.isConnected) cancelButton.disabled = false;
+              accSetStatus(card, 'Cancellation denied or unavailable: ' + error.message, true);
+            }
+          });
+        }
       } catch (error) {
         if (region.isConnected) region.textContent = 'Local installation unavailable or denied: ' + error.message;
       }

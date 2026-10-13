@@ -20,7 +20,8 @@ import urllib.request
 import urllib.parse
 from pathlib import Path
 
-LOCAL_DEPLOY_LOCK = Path("/home/nbingester/codex-web-native-runtime/local-deploy.lock")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from codex_web.local_deployment import LOCAL_DEPLOY_LOCK
 
 
 def report_diagnostic(plan_id: str | None, source: str, target: str, phase: str,

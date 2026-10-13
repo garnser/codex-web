@@ -309,6 +309,15 @@ class UpgradeLocalDeploymentQualificationRequest(UpgradeServiceDrainRequest):
     preflight_evidence_id: str = Field(min_length=1, max_length=500)
 
 
+class UpgradeUnexecutedCancellationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    service_instance_id: str = Field(min_length=1, max_length=500)
+    running_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    expected_admission_epoch: int = Field(ge=0)
+    reason: str = Field(min_length=10, max_length=500)
+
+
 class UpgradeState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

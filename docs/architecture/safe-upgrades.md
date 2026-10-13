@@ -7,6 +7,36 @@ as canonical Upgrade Plans with an explicit source/target compatibility profile,
 ordered migration phases, durable step progress, preflight Evidence, and a
 truthful rollback boundary.
 
+## Cancelling an unexecuted local plan
+
+An administrator with MFA and complete hosted-scope coverage, a trusted local
+administrator, or a correctly scoped `upgrade:admin` service may request
+`POST /api/upgrades/{id}/cancel-unexecuted`. The request names the current
+service instance, expected running revision, plan admission epoch and bounded
+reason. Under the same host lock used by the qualified installer and the
+canonical admission coordinator, the service verifies checkout/build agreement
+and rejects an active installer, unknown or changed build, installed target,
+active operations, executed steps, definition migrations or irreversible state.
+An absent host guard fails closed. This local operation does not extend to
+replicated or shared deployments.
+
+Cancellation records separate attributed `upgrade-unexecuted-cancellation`
+Evidence with a failure result, invalidates the admission epoch and clears only
+that plan's maintenance hold. It claims neither installation nor rollback and
+does not alter queued requests, checkpoints, other plans, worker lifecycle or
+autonomy controls. The existing `failed` status with `completed_at` marks this
+terminal disposition without adding a persisted field or enum. Such a plan
+cannot be reopened, verified, retried or marked rolled back; create a fresh
+plan for the current immutable Release instead. Older readers retain the failed
+state and false maintenance hold, although they lack the new cancellation API;
+do not use an older writer to reopen a cancelled plan.
+
+The existing Upgrade installation inspector shows the request, exact source and
+target, reason, canonical denial and Cancellation Evidence separately from
+post-installation verification. Its confirmation does not grant authority:
+the backend independently validates every request. A cancellation request can
+fail after a UI snapshot becomes stale; no automatic retry changes its epoch.
+
 Upgrades are deterministic orchestration. LLMs are not used to decide whether
 versions, schemas, workers, definitions or extensions are compatible.
 

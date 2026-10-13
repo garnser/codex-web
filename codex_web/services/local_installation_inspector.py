@@ -40,7 +40,18 @@ class LocalInstallationInspector:
             verification = {"id": plan.post_upgrade_evidence_id, "valid": valid,
                             "href": f"/api/evidence/{plan.post_upgrade_evidence_id}"}
         reports = []
-        for evidence in self.upgrades.evidence.list_evidence(actor, include_inactive=False):
+        evidence_items = self.upgrades.evidence.list_evidence(actor, include_inactive=False)
+        cancellation = next(({"href": f"/api/evidence/{e.id}",
+            "reason": str(e.metadata.get("reason", ""))[:500]}
+            for e in evidence_items if e.provider == "codex-web"
+            and e.source == "upgrade-unexecuted-cancellation"
+            and e.evidence_type == EvidenceType.POLICY_EVALUATION and e.result == EvidenceResult.FAIL
+            and e.metadata.get("upgrade_plan_id") == plan.id
+            and e.metadata.get("source_app_version") == plan.current_app_version
+            and e.metadata.get("target_app_version") == plan.target_app_version
+            and e.metadata.get("admission_epoch") == plan.admission_epoch - 1
+            and plan.status == UpgradeStatus.FAILED and not plan.maintenance_mode), None)
+        for evidence in evidence_items:
             meta = evidence.metadata
             if (evidence.provider != "local-installer" or evidence.source != plan.id
                     or meta.get("upgrade_plan_id") != plan.id
@@ -84,6 +95,16 @@ class LocalInstallationInspector:
                 "source_revision": plan.current_app_version, "target_revision": plan.target_app_version,
                 "service_instance_id": plan.service_instance_id, "plan_status": plan.status.value,
                 "maintenance_mode": plan.maintenance_mode,
+                "admission_epoch": plan.admission_epoch,
+                "current_service_instance_id": self.upgrades.service_instance_id,
+                "cancellation": cancellation,
+                "cancellation_request_available": bool(
+                    plan.compatibility.deployment_mode.value == "local"
+                    and plan.completed_at is None and not plan.irreversible_boundary_crossed
+                    and not plan.definition_migrations
+                    and plan.status in {UpgradeStatus.DRAFT, UpgradeStatus.PREFLIGHT_BLOCKED,
+                        UpgradeStatus.READY, UpgradeStatus.DRAINING, UpgradeStatus.FAILED}
+                    and not any(step.attempts for step in plan.steps)),
                 "canonical_verification": verification, "installation_verified": verified,
                 "process": process, "reported_diagnostics": reports,
                 "preflight_evidence_href": (f"/api/evidence/{plan.preflight.evidence_id}"

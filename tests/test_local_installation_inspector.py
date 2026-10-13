@@ -20,8 +20,11 @@ class LocalInstallationInspectorTests(unittest.IsolatedAsyncioTestCase):
             assurance=AuthenticationAssurance.MFA)
         self.plan = N(id='plan', release_id='release', current_app_version='a'*40,
             target_app_version='b'*40, service_instance_id='instance', status=UpgradeStatus.READY,
-            maintenance_mode=True, post_upgrade_evidence_id=None, preflight=None)
+            maintenance_mode=True, post_upgrade_evidence_id=None, preflight=None,
+            admission_epoch=1, completed_at=None, irreversible_boundary_crossed=False,
+            definition_migrations=(), steps=(), compatibility=N(deployment_mode=N(value='local')))
         self.service = Mock()
+        self.service.service_instance_id = 'current-instance'
         self.service.get.return_value = self.plan
         self.service.releases.get.return_value = N(id='release', build=N(artifact_id='artifact'))
         self.service.evidence.list_evidence.return_value = []
@@ -35,6 +38,23 @@ class LocalInstallationInspectorTests(unittest.IsolatedAsyncioTestCase):
         metadata.update(changes)
         return N(id='reported', metadata=metadata, provider='local-installer', source='plan',
             producer_identity_id='reporting-actor', observed_at=100, artifact_ids=('artifact',))
+
+    def test_cancellation_evidence_does_not_claim_installation(self):
+        self.plan.status = UpgradeStatus.FAILED
+        self.plan.completed_at = 100
+        self.plan.maintenance_mode = False
+        self.plan.admission_epoch = 2
+        cancellation = N(id='cancel',provider='codex-web',source='upgrade-unexecuted-cancellation',
+            evidence_type=EvidenceType.POLICY_EVALUATION,result=EvidenceResult.FAIL,
+            metadata={'upgrade_plan_id':'plan','source_app_version':'a'*40,
+                      'target_app_version':'b'*40,'admission_epoch':1,'reason':'Superseded before installation'})
+        self.service.evidence.list_evidence.return_value = [cancellation]
+        result = self.inspector.inspect('plan', actor=self.actor)
+        self.assertFalse(result['installation_verified'])
+        self.assertFalse(result['cancellation_request_available'])
+        self.assertEqual(result['cancellation']['href'],'/api/evidence/cancel')
+        cancellation.metadata['admission_epoch'] = 0
+        self.assertIsNone(self.inspector.inspect('plan', actor=self.actor)['cancellation'])
 
     def test_reported_success_never_completes_canonical_verification(self):
         self.service.evidence.list_evidence.return_value = [self.report(phase='installed')]
