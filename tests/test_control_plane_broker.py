@@ -424,6 +424,88 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         )
         await self.broker.start()
 
+    async def test_administrative_issue_creation_requires_published_target_and_preserves_execution(self):
+        from codex_web.execution_profile_seed import execution_profile_catalog_seed_payload
+        from codex_web.services.execution_profile_definitions import install_execution_profile_definitions
+        from codex_web.resources import ResourceCreate, ResourceType
+        from codex_web.services.resources import ResourceCatalogService
+        from codex_web.storage.resource_catalog import ResourceCatalogStore
+        resources = ResourceCatalogService(ResourceCatalogStore(self.sqlite))
+        resource_a = resources.create(ResourceCreate(name="Data", resource_type=ResourceType.REPOSITORY),
+                                      actor=self.identity.local_trusted_actor()).id
+        resource_b = resources.create(ResourceCreate(name="Connector", resource_type=ResourceType.REPOSITORY),
+                                      actor=self.identity.local_trusted_actor()).id
+        self.authority.resources = resources
+        profiles = install_execution_profile_definitions(self.registry)
+        payload = execution_profile_catalog_seed_payload()
+        payload["profiles"].append({
+            "id": "orchestration-admin", "name": "Admin", "description": "Governed escalation",
+            "workspace_mode": "scratch", "repository_access": "none",
+            "required_worker_capabilities": ["command_execution"],
+            "control_plane_operations": ["repository.issue.create", "work_graph.edge.create"],
+            "administrative_repository_ids": [resource_a, resource_b],
+        })
+        record = self.registry.create_draft(DefinitionDraftCreate(
+            kind="execution-profile-catalog", definition_id="execution.profiles.default",
+            definition_schema_version="1.1", payload=payload, actor="fixture",
+            scope_type="project", scope_id="project-a"))
+        self.registry.publish(record.record_id, DefinitionPublishRequest(actor="fixture"))
+        _, reference = profiles.resolve("orchestration-admin", project_id="project-a")
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "orchestration-admin", "execution_profile_definition": reference,
+            "agent_profile": AgentProfileExecutionBinding(
+                profile_id="orchestrator", profile_revision=8,
+                profile_record_id="orchestrator-record", role_id="orchestrator",
+                authority_role_id="local-admin", execution_profile_id="orchestration-admin"),
+        })
+        registry = _ActionRegistry("gitlab")
+        original = registry.list_bindings
+        def bindings(actor):
+            result = original(actor)
+            result[0].resource_ids = (resource_a, resource_b)
+            return result
+        registry.list_bindings = bindings
+        actions = _ExecutingActionIntents(registry)
+        self.service.action_intents = actions
+        self.service.execution_profiles = profiles
+        self.current_assignment = assignment
+        request = {"parameters": {"title": "Scoped prerequisite", "body": "Existing task"},
+                   "idempotency_key": "admin-create-owned-prerequisite"}
+        path = "/api/repository-actions/issue/create"
+        for target in (path, path+"?repository_resource_id=resource-foreign"):
+            status, _, _ = await self._request("POST", target, payload=request)
+            self.assertIn(status, (400, 403))
+        self.assertFalse(actions.created)
+        status, _, result = await self._request("POST", path+"?repository_resource_id="+resource_b, payload=request)
+        self.assertEqual(status, 200, result)
+        created, requester = actions.created[0]
+        self.assertEqual(created.request.resource_ids, (resource_b,))
+        self.assertEqual(created.execution_id, assignment.execution_id)
+        self.assertEqual(requester.identity_id, "local-admin")
+        self.assertIsNone(assignment.repository_scope)
+        self.assertFalse(assignment.resource_ids)
+        status, _, _ = await self._request("POST", "/api/repository-actions/branch/publish?repository_resource_id="+resource_b, payload={})
+        self.assertEqual(status, 403)
+        self.assertEqual(len(actions.created), 1)
+        self.states[self.ref].resource_ids = (resource_a,)
+        target_ref = "group/connector#47"
+        self.states[target_ref] = SimpleNamespace(ref=target_ref, organization_id="local",
+            workspace_id="default", project_id="project-a", resource_ids=(resource_b,))
+        calls = []
+        def add_edge(payload, **kwargs):
+            calls.append((payload, kwargs))
+            return SimpleNamespace(model_dump=lambda mode: {"id": "edge-proof"})
+        self.service.work_graph = SimpleNamespace(add_edge=add_edge)
+        status, _, result = await self._request("POST", "/api/work-graph/edges", payload={
+            "relation": "blocks", "source_ref": target_ref, "target_ref": self.ref})
+        self.assertEqual(status, 200, result)
+        self.assertEqual(calls[0][1]["project_id"], "project-a")
+        self.assertEqual(calls[0][1]["actor_id"], "local-admin")
+        status, _, _ = await self._request("POST", "/api/work-graph/edges", payload={
+            "relation": "blocks", "source_ref": target_ref, "target_ref": self.other_ref})
+        self.assertEqual(status, 403)
+        self.assertEqual(len(calls), 1)
+
     async def test_authoritative_mr_read_through_real_operator_adapter_and_scoped_broker(self):
         import httpx
         from codex_web.integrations.gitlab_client import GitLabClient

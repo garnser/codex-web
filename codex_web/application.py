@@ -2021,6 +2021,7 @@ action_intent_service = ActionIntentService(
     identity=identity_service,
     capacity=capacity_service,
     execution_workers=execution_worker_service,
+    execution_profiles=execution_profile_definition_service,
 )
 app.include_router(build_action_intents_router(action_intent_service))
 app.state.action_intent_store = action_intent_store
@@ -2400,6 +2401,7 @@ control_plane_broker_service = ControlPlaneBrokerService(
     execution_workspaces=execution_workspace_service,
     upgrades=upgrade_service,
     service_instance_id=instance_id,
+    execution_profiles=execution_profile_definition_service,
 )
 control_plane_broker_factory.configure(control_plane_broker_service)
 app.state.control_plane_broker_audit_store = control_plane_broker_audit_store
@@ -2430,6 +2432,7 @@ work_graph_service = WorkGraphService(
 )
 app.state.work_graph_store = work_graph_store
 app.state.work_graph_service = work_graph_service
+control_plane_broker_service.work_graph = work_graph_service
 app.include_router(build_work_graph_router(work_graph_service, project_service))
 metric_store = MetricStore(state_store)
 metric_service = MetricService(metric_store)

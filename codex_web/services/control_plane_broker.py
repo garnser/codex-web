@@ -113,6 +113,10 @@ class _ResolvedOperation:
 
 OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
     ControlPlaneBrokerOperation(
+        id="work_graph.edge.create", method="POST", path_template="/api/work-graph/edges",
+        capability="work_graph.manage", authority_level=AuthorityLevel.EXECUTE,
+    ),
+    ControlPlaneBrokerOperation(
         id="control_plane.operations.list",
         method="GET",
         path_template="/api/control-plane-broker/operations",
@@ -413,7 +417,7 @@ _DELIVERY_EVIDENCE_REPOSITORY_ACTION_IDS = (
 # request is still operation-allowlisted, tenant/project scoped, authorized,
 # fenced, rate limited, and audited below.
 CONTROL_PLANE_EXECUTION_PROFILES = frozenset(
-    {"orchestration-only", "repository-write"}
+    {"orchestration-only", "repository-write", "orchestration-admin"}
 )
 
 
@@ -432,6 +436,8 @@ class ControlPlaneBrokerService:
         execution_workspaces: ExecutionWorkspaceService | None = None,
         upgrades=None,
         service_instance_id: str | None = None,
+        execution_profiles=None,
+        work_graph=None,
         operator: WorkItemOperatorService | None = None,
         limits: ControlPlaneBrokerLimits | None = None,
         clock: Callable[[], float] = time.time,
@@ -440,6 +446,8 @@ class ControlPlaneBrokerService:
         self.identity = identity
         self.authority = authority
         self.work_items = work_items
+        self.execution_profiles = execution_profiles
+        self.work_graph = work_graph
         self.operator = operator or WorkItemOperatorService(work_items)
         self.audit = audit
         self.action_intents = action_intents
@@ -636,6 +644,11 @@ class ControlPlaneBrokerService:
         for key in ("member_path", "repository_resource_id"):
             if key in member_query:
                 query[key] = member_query[key]
+        if path == "/api/work-graph/edges":
+            operation = _OPERATION_BY_ID["work_graph.edge.create"]
+            if method != operation.method:
+                raise ControlPlaneBrokerDeniedError("method is not allowed for dependency creation")
+            return _ResolvedOperation(operation=operation, target_ref=None, query=query)
         repository_action = _REPOSITORY_ACTIONS.get(path)
         if repository_action is not None:
             operation = _OPERATION_BY_ID[repository_action[0]]
@@ -880,6 +893,27 @@ class ControlPlaneBrokerService:
                 "assignment requester identity is unavailable or unauthorized"
             ) from exc
 
+    def _operation_repository_id(self, assignment, operation_id, query, *, actor=None):
+        if assignment.execution_profile_id != "orchestration-admin":
+            return (self._read_repository_id(assignment, query)
+                    if operation_id.startswith("repository.read.")
+                    else self._writable_repository_id(assignment))
+        values = query.get("repository_resource_id")
+        if values is None or len(values) != 1 or not values[0].strip():
+            raise ControlPlaneBrokerRequestError("administrative operation requires one explicit repository_resource_id")
+        if self.execution_profiles is None:
+            raise ControlPlaneBrokerDeniedError("administrative execution capability is unavailable")
+        selected = values[0].strip()
+        requester = actor or self._requester_actor(assignment)
+        try:
+            self.execution_profiles.authorize_administrative_target(
+                assignment, operation_id=operation_id, repository_id=selected,
+                actor=requester, authority=self.authority,
+            )
+        except ValueError as exc:
+            raise ControlPlaneBrokerDeniedError(str(exc)) from exc
+        return selected
+
     @staticmethod
     def _writable_repository_id(assignment: ExecutionAssignment) -> str:
         if assignment.execution_profile_id != "repository-write":
@@ -964,12 +998,13 @@ class ControlPlaneBrokerService:
         requester_actor,
         operation: ControlPlaneBrokerOperation,
         payload: dict[str, Any],
+        repository_id: str | None = None,
     ) -> dict[str, Any]:
         if self.action_intents is None:
             raise ControlPlaneBrokerDeniedError(
                 "governed repository actions are unavailable"
             )
-        repository_id = self._writable_repository_id(assignment)
+        repository_id = repository_id or self._writable_repository_id(assignment)
         action_id = next(
             action_id
             for operation_id, action_id in _REPOSITORY_ACTIONS.values()
@@ -1116,12 +1151,15 @@ class ControlPlaneBrokerService:
         assignment: ExecutionAssignment,
         actor: AuthenticationActor,
         query: dict[str, list[str]] | None = None,
+        operation_id: str = "repository.read.metadata",
     ) -> tuple[str, str]:
         if self.code_hosts is None or self.action_intents is None:
             raise ControlPlaneBrokerDeniedError(
                 "governed repository reads are unavailable"
             )
-        repository_id = self._read_repository_id(assignment, query or {})
+        repository_id = self._operation_repository_id(
+            assignment, operation_id, query or {},
+        )
         action_registry = self.action_intents.execution.registry
         action_binding = self._repository_action_binding(
             action_registry=action_registry,
@@ -1168,6 +1206,7 @@ class ControlPlaneBrokerService:
             assignment=assignment,
             actor=actor,
             query=query,
+            operation_id=operation.id,
         )
         if operation.id == "repository.read.metadata":
             item = await self.code_hosts.repository(
@@ -1289,6 +1328,25 @@ class ControlPlaneBrokerService:
             raise ControlPlaneBrokerDeniedError(
                 "control-plane broker requires an assignment project"
             )
+        if assignment.execution_profile_id == "orchestration-admin":
+            if self.execution_profiles is None:
+                raise ControlPlaneBrokerDeniedError("administrative execution capability is unavailable")
+            requester = self._requester_actor(assignment)
+            try:
+                profile, _ = self.execution_profiles.resolve(
+                    assignment.execution_profile_id, organization_id=assignment.organization_id,
+                    workspace_id=assignment.workspace_id, project_id=assignment.project_id,
+                )
+                targets = resource_ids or profile.administrative_repository_ids[:1]
+                if not targets:
+                    raise ValueError("administrative target envelope is empty")
+                for target in targets:
+                    self.execution_profiles.authorize_administrative_target(
+                        assignment, operation_id=operation.id, repository_id=target,
+                        actor=requester, authority=self.authority,
+                    )
+            except ValueError as exc:
+                raise ControlPlaneBrokerDeniedError(str(exc)) from exc
         decision = self.authority.evaluate(
             AuthorityEvaluationRequest(
                 capability=operation.capability,
@@ -1313,13 +1371,15 @@ class ControlPlaneBrokerService:
         operation = resolved.operation
         actor = self._actor(assignment, worker_actor)
         repository_read = operation.id.startswith("repository.read.")
-        if "repository_resource_id" in resolved.query and not repository_read:
+        if ("repository_resource_id" in resolved.query and not repository_read
+                and assignment.execution_profile_id != "orchestration-admin"):
             raise ControlPlaneBrokerRequestError(
                 "repository_resource_id is only supported for repository fact reads"
             )
         requester_actor = (
             self._requester_actor(assignment)
-            if operation.id.startswith("repository.")
+            if assignment.execution_profile_id == "orchestration-admin"
+            or operation.id.startswith("repository.")
             or operation.id.startswith("action_intent.")
             or operation.id.startswith("deployment.local.")
             or operation.id == "control_plane.operations.list"
@@ -1334,8 +1394,9 @@ class ControlPlaneBrokerService:
             or operation.id.startswith("deployment.local.")
         ):
             resource_ids = (
-                self._read_repository_id(assignment, resolved.query)
-                if repository_read else self._writable_repository_id(assignment),
+                self._operation_repository_id(
+                    assignment, operation.id, resolved.query, actor=requester_actor
+                ),
             )
         elif resolved.target_ref is not None:
             state = self._state_for_target(assignment, resolved.target_ref)
@@ -1361,7 +1422,9 @@ class ControlPlaneBrokerService:
         if self.action_intents is None or intent_id is None:
             raise ControlPlaneBrokerDeniedError("delivery evidence is unavailable")
         intent = self.action_intents.get(intent_id, requester_actor)
-        repository_id = self._read_repository_id(assignment, query)
+        repository_id = self._operation_repository_id(
+            assignment, "repository.read.delivery-evidence", query, actor=requester_actor
+        )
         if (
             intent.action_id not in _DELIVERY_EVIDENCE_REPOSITORY_ACTION_IDS
             or intent.organization_id != assignment.organization_id
@@ -1425,7 +1488,21 @@ class ControlPlaneBrokerService:
                 )
             payload = decoded
 
-        if operation.id == "control_plane.operations.list":
+        if operation.id == "work_graph.edge.create":
+            if self.work_graph is None or assignment.execution_profile_id != "orchestration-admin":
+                raise ControlPlaneBrokerDeniedError("dependency administration requires an enabled administrative profile")
+            from codex_web.work_graph import WorkGraphEdgeCreate
+            edge_request = WorkGraphEdgeCreate.model_validate(payload)
+            source = self._state_for_target(assignment, edge_request.source_ref)
+            target = self._state_for_target(assignment, edge_request.target_ref)
+            self._authorize(assignment, operation, actor=requester_actor,
+                            resource_ids=tuple(dict.fromkeys((*source.resource_ids, *target.resource_ids))))
+            edge = self.work_graph.add_edge(
+                edge_request, scope=requester_actor.tenant,
+                actor_id=requester_actor.identity_id, project_id=assignment.project_id,
+            )
+            result = {"edge": edge.model_dump(mode="json")}
+        elif operation.id == "control_plane.operations.list":
             result = self.public_assignment_capability(assignment)
         elif operation.id == "deployment.local.status":
             result = self._local_deployment_status()
@@ -1564,6 +1641,9 @@ class ControlPlaneBrokerService:
                 requester_actor=requester_actor,
                 operation=operation,
                 payload=payload,
+                repository_id=self._operation_repository_id(
+                    assignment, operation.id, resolved.query, actor=requester_actor
+                ),
             )
         elif operation.id == "action_intent.reconcile":
             if self.action_intents is None:
@@ -1575,7 +1655,9 @@ class ControlPlaneBrokerService:
                 resolved.target_ref,
                 requester_actor,
             )
-            repository_id = self._writable_repository_id(assignment)
+            repository_id = self._operation_repository_id(
+                assignment, operation.id, resolved.query, actor=requester_actor
+            )
             reconcile_request = ActionIntentReconcileRequest.model_validate(
                 payload
             )

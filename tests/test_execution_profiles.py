@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishRequest
 from codex_web.execution_profile_seed import execution_profile_catalog_seed_payload
@@ -85,6 +87,57 @@ class ExecutionProfileTests(unittest.TestCase):
             self.assertEqual(profile.public()["administrativeRepositoryIds"], ["resource-connector"])
             with self.assertRaisesRegex(ValueError, "exact Project-scoped"):
                 profiles.resolve("orchestration-admin", project_id="project-b")
+
+    def test_administrative_envelope_rechecks_lease_roles_target_and_definition(self):
+        with tempfile.TemporaryDirectory() as raw:
+            registry = DefinitionRegistryService(DefinitionRegistryStore(
+                SQLiteStateStore(Path(raw) / "state.sqlite3")))
+            service = install_execution_profile_definitions(registry)
+            payload = self.administrative_payload()
+            record = registry.create_draft(DefinitionDraftCreate(
+                kind="execution-profile-catalog", definition_id="execution.profiles.default",
+                definition_schema_version="1.1", payload=payload, actor="fixture",
+                scope_type="project", scope_id="project-a"))
+            registry.publish(record.record_id, DefinitionPublishRequest(actor="fixture"))
+            profile, reference = service.resolve("orchestration-admin", project_id="project-a")
+            assignment = SimpleNamespace(
+                organization_id="org", workspace_id="workspace", project_id="project-a",
+                status="running", lease=SimpleNamespace(expires_at=200, fence=3, worker_id="worker"),
+                fence=3, assigned_worker_id="worker", deadline_at=200,
+                execution_profile_id="orchestration-admin", execution_profile_definition=reference,
+                agent_profile=SimpleNamespace(authority_role_id="escalation", execution_profile_id="orchestration-admin"),
+            )
+            actor = SimpleNamespace(organization_id="org", workspace_id="workspace")
+            authority = SimpleNamespace(role_ids_for_actor=Mock(return_value=("escalation",)))
+            def authorize(**changes):
+                return service.authorize_administrative_target(
+                    assignment, operation_id=changes.get("operation", "repository.issue.create"),
+                    repository_id=changes.get("target", "resource-connector"),
+                    actor=actor, authority=authority, now=changes.get("now", 100),
+                )
+            self.assertEqual(authorize(), profile)
+            for changes in ({"target": "resource-foreign"}, {"operation": "repository.branch.publish"}, {"now": 201}):
+                with self.subTest(changes=changes), self.assertRaises(ValueError):
+                    authorize(**changes)
+            assignment.lease.fence = 2
+            with self.assertRaisesRegex(ValueError, "live fenced"):
+                authorize()
+            assignment.lease.fence = 3
+            authority.role_ids_for_actor.return_value = ()
+            with self.assertRaisesRegex(ValueError, "live authority"):
+                authorize()
+            authority.role_ids_for_actor.return_value = ("escalation",)
+            actor.workspace_id = "foreign"
+            with self.assertRaisesRegex(ValueError, "live fenced"):
+                authorize()
+            actor.workspace_id = "workspace"
+            replacement = registry.create_draft(DefinitionDraftCreate(
+                kind="execution-profile-catalog", definition_id="execution.profiles.default",
+                definition_schema_version="1.1", payload=payload, actor="fixture",
+                scope_type="project", scope_id="project-a"))
+            registry.publish(replacement.record_id, DefinitionPublishRequest(actor="fixture"))
+            with self.assertRaisesRegex(ValueError, "no longer effective"):
+                authorize()
 
     def test_seed_contains_repository_and_orchestration_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

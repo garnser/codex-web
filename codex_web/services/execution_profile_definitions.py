@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from codex_web.definitions import (
     DefinitionContext,
     DefinitionDraftCreate,
@@ -99,6 +101,61 @@ class ExecutionProfileDefinitionService:
         ):
             raise ValueError("administrative execution targets require an exact Project-scoped schema 1.1 definition")
         return profile, reference_for(record)
+
+    def authorize_administrative_target(
+        self, assignment, *, operation_id: str, repository_id: str,
+        actor, authority, now: float | None = None,
+    ) -> ExecutionProfileContract:
+        """Validate an explicitly published administrative envelope, never Git access.
+
+        Authority for the operation is still evaluated by the broker/ActionIntent.
+        A pinned declaration must also remain effective; superseding/quarantining
+        its definition revokes the old assignment's administrative envelope.
+        """
+        observed = time.time() if now is None else float(now)
+        if (assignment.organization_id != actor.organization_id
+                or assignment.workspace_id != actor.workspace_id
+                or not assignment.project_id
+                or assignment.status not in {"claimed", "running"}
+                or assignment.lease is None
+                or assignment.lease.expires_at <= observed
+                or assignment.lease.fence != assignment.fence
+                or assignment.lease.worker_id != assignment.assigned_worker_id
+                or (assignment.deadline_at is not None and assignment.deadline_at <= observed)):
+            raise ValueError("administrative operation requires a matching live fenced assignment")
+        binding = assignment.agent_profile
+        if (binding is None or not binding.authority_role_id
+                or binding.execution_profile_id != assignment.execution_profile_id
+                or binding.authority_role_id not in authority.role_ids_for_actor(
+                    actor, project_id=assignment.project_id, now=observed)):
+            raise ValueError("administrative operation requires an explicit live authority Role binding")
+        profile, reference = self.resolve(
+            assignment.execution_profile_id,
+            organization_id=assignment.organization_id,
+            workspace_id=assignment.workspace_id,
+            project_id=assignment.project_id,
+        )
+        if reference != assignment.execution_profile_definition:
+            raise ValueError("administrative execution definition is no longer effective")
+        if (not profile.administrative_repository_ids
+                or repository_id not in profile.administrative_repository_ids
+                or operation_id not in profile.control_plane_operations):
+            raise ValueError("administrative operation or repository target is not explicitly declared")
+        # Scratch administration has no Git workspace or executable publication.
+        administrative_operation = (
+            operation_id.startswith("repository.read.")
+            or operation_id.startswith("work_item.")
+            or operation_id in {
+                "repository.issue.create", "repository.issue.comment", "repository.issue.update",
+                "repository.pull-request.upsert", "repository.pull-request.merge",
+                "repository.check.rerun", "action_intent.reconcile",
+                "project.read", "resource.read", "execution.read", "evidence.read",
+                "control_plane.operations.list", "work_graph.edge.create",
+            }
+        )
+        if not administrative_operation:
+            raise ValueError("operation requires a separate scoped execution capability")
+        return profile
 
     def public(
         self,
