@@ -41,16 +41,6 @@
     host.before(panel);
     const record = {fingerprint, panel, controller:null};
     panels.set(item.id, record);
-    panel.querySelector('[data-broker-graph]').addEventListener('click', event => {
-      if (generation !== viewGeneration || projectId !== currentProjectId()) return;
-      const graph = document.getElementById('work-graph-panel');
-      if (!graph) return;
-      event.preventDefault();
-      graph.scrollIntoView({block:'nearest'});
-      const refresh = document.getElementById('refresh-work-graph');
-      refresh?.focus();
-      refresh?.click();
-    });
     const button = panel.querySelector('button');
     const status = panel.querySelector('[role="status"]');
     button.addEventListener('click', async () => {

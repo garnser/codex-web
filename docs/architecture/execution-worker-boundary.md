@@ -913,12 +913,15 @@ Broker audit loads on explicit request, reports loading/denied/unavailable/empty
 states, and labels its latest twenty events as a bounded sample. Project changes
 discard old observations and fence late responses. Broker admission and queue/batch
 acceptance do not attest provider execution or recipient acknowledgement. Existing
-ActionIntent links select the assignment execution and expose its canonical target
+ActionIntent links open the existing Automations workspace, select the assignment
+execution and expose its canonical target
 resources, unknown/reconciliation state, provider receipts and verification history
 without rendering request bodies, provider output bodies or credential material.
 Operators use the existing Agent Profile/Definition and resource links to repair a
 missing, disabled or stale configuration, the worker inspector for lease/fence
-refusals, and the existing dependency graph for source/target Work Item context.
+refusals, and the existing Work Items workspace dependency graph for source/target Work
+Item context. Graph links navigate to that Project workspace rather than scrolling
+to a card hidden in another workspace.
 
 Worker redraws reattach an existing broker inspector only when its complete public
 assignment snapshot is unchanged. Its pending or loaded audit read then survives
