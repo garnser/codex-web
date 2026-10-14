@@ -91,6 +91,7 @@ class NotificationBatchAdmission(BaseModel):
     plan: NotificationBatchPlan
     claim_id: str = Field(min_length=1)
     phase: Literal["prepared", "native_outcome_unknown", "released"] = "prepared"
+    queue_order: tuple[str, ...] = Field(default=(), max_length=8192)
     claimed_at: float = Field(allow_inf_nan=False)
 
     @staticmethod
@@ -101,6 +102,9 @@ class NotificationBatchAdmission(BaseModel):
     def validate_identity(self):
         if self.id != self.identity(self.plan.id, self.claim_id):
             raise ValueError("notification admission identity changed")
+        if self.queue_order and (len(set(self.queue_order)) != len(self.queue_order)
+                or any(item.id not in self.queue_order for item in self.plan.members)):
+            raise ValueError("notification admission original queue order is invalid")
         return self
 
     @property

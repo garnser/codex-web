@@ -12,6 +12,9 @@ from codex_web.storage.sqlite_state import SQLiteStateStore
 from pathlib import Path
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from codex_web.storage.turn_queue import TurnQueueRepository
+from codex_web.services.notification_batches import NotificationBatchCoordinator
+from unittest.mock import patch
 
 
 class NotificationBatchPlanTests(unittest.TestCase):
@@ -240,3 +243,79 @@ class NotificationBatchPlanTests(unittest.TestCase):
                if name!='notification_batch_id'})
         with self.assertRaises(ValidationError):
             Legacy.model_validate(stored)
+
+    def coordinator(self):
+        queue=TurnQueueRepository(self.service.store.store,Path(self.temp.name)/'queues.json')
+        queue.put('thread-a',self.items)
+        return NotificationBatchCoordinator(queue=queue,preflight=self.service.store,clock=lambda:10)
+
+    def test_atomic_removal_preserves_concurrent_append_and_unrelated_original(self):
+        coordinator=self.coordinator();plan=self.select()
+        arrival=self.items[3].model_copy(update={'id':'arrival','message':'Concurrent arrival'})
+        coordinator.queue.update('thread-a',lambda items:[*items,arrival])
+        admission=coordinator.prepare(plan,claim_id='claim-one',current=lambda:True)
+        self.assertEqual([item.id for item in coordinator.queue.get('thread-a')],['original-4','arrival'])
+        self.assertEqual(admission.queue_order,('original-1','original-2','original-3','original-4','arrival'))
+        self.assertTrue(all(self.service.store.get(value).queued_turn_snapshot is not None for value in admission.attempt_ids))
+
+    def test_changed_last_copy_removes_none_and_keeps_prepared_recovery_visible(self):
+        coordinator=self.coordinator();plan=self.select()
+        coordinator.queue.update('thread-a',lambda items:[item.model_copy(update={'message':'Changed'})
+            if item.id=='original-3' else item for item in items])
+        with self.assertRaisesRegex(ValueError,'prepared recovery'):
+            coordinator.prepare(plan,claim_id='claim-one',current=lambda:True)
+        self.assertEqual(len(coordinator.queue.get('thread-a')),4)
+        batch_id=self.service.store.get('preflight-queued-original-1').notification_batch_id
+        self.assertEqual(self.service.store.get_notification_batch(batch_id).phase,'prepared')
+        with self.assertRaisesRegex(ValueError,'copy changed'):
+            coordinator.recover_prepared(batch_id,claim_id='claim-one',current=lambda:True)
+        self.assertEqual(coordinator.queue.get('thread-a')[2].message,'Changed')
+
+    def test_restart_after_removal_restores_exact_originals_and_releases_all(self):
+        coordinator=self.coordinator();plan=self.select()
+        admission=coordinator.prepare(plan,claim_id='claim-one',current=lambda:True)
+        queue=TurnQueueRepository(SQLiteStateStore(Path(self.temp.name)/'state.sqlite'),Path(self.temp.name)/'queues.json')
+        restored=NotificationBatchCoordinator(queue=queue,preflight=ExecutionPreflightStore(queue.store))
+        restored.recover_prepared(admission.id,claim_id='claim-one',current=lambda:True)
+        self.assertEqual([item.model_dump(mode='json') for item in queue.get('thread-a')],
+                         [item.model_dump(mode='json') for item in self.items])
+        self.assertTrue(all(restored.preflight.get(value).notification_batch_id is None for value in admission.attempt_ids))
+
+    def test_crash_after_restoration_before_release_is_idempotently_recoverable(self):
+        coordinator=self.coordinator();admission=coordinator.prepare(self.select(),claim_id='claim-one',current=lambda:True)
+        with patch.object(self.service.store,'transition_notification_batch',side_effect=RuntimeError('Injected crash')):
+            with self.assertRaises(RuntimeError):
+                coordinator.recover_prepared(admission.id,claim_id='claim-one',current=lambda:True)
+        self.assertEqual(len(coordinator.queue.get('thread-a')),4)
+        coordinator.recover_prepared(admission.id,claim_id='claim-one',current=lambda:True)
+        self.assertEqual(len(coordinator.queue.get('thread-a')),4)
+
+    def test_crash_before_removal_preserves_queue_and_prepared_claim_is_recoverable(self):
+        coordinator=self.coordinator();plan=self.select()
+        with patch.object(coordinator.queue,'remove_many_exact',side_effect=RuntimeError('Injected crash')):
+            with self.assertRaises(RuntimeError):
+                coordinator.prepare(plan,claim_id='claim-one',current=lambda:True)
+        self.assertEqual([item.id for item in coordinator.queue.get('thread-a')],[item.id for item in self.items])
+        batch_id=self.service.store.get('preflight-queued-original-1').notification_batch_id
+        coordinator.recover_prepared(batch_id,claim_id='claim-one',current=lambda:True)
+        self.assertEqual(len(coordinator.queue.get('thread-a')),4)
+        self.assertEqual(self.service.store.get('preflight-queued-original-1').status,'queued')
+
+    def test_lost_ownership_and_unknown_native_gate_refuse_restoration(self):
+        coordinator=self.coordinator();admission=coordinator.prepare(self.select(),claim_id='claim-one',current=lambda:True)
+        with self.assertRaises(ValueError):
+            coordinator.recover_prepared(admission.id,claim_id='claim-one',current=lambda:False)
+        self.assertEqual(len(coordinator.queue.get('thread-a')),1)
+        self.service.store.transition_notification_batch(admission.id,claim_id='claim-one',phase='native_outcome_unknown')
+        with self.assertRaises(ValueError):
+            coordinator.recover_prepared(admission.id,claim_id='claim-one',current=lambda:True)
+        self.assertEqual(len(coordinator.queue.get('thread-a')),1)
+
+    def test_restoration_preserves_concurrent_priority_when_original_peers_are_gone(self):
+        coordinator=self.coordinator();admission=coordinator.prepare(self.select(),claim_id='claim-one',current=lambda:True)
+        priority=self.items[3].model_copy(update={'id':'priority'})
+        ordinary=self.items[3].model_copy(update={'id':'ordinary'})
+        coordinator.queue.put('thread-a',[priority,ordinary])
+        coordinator.recover_prepared(admission.id,claim_id='claim-one',current=lambda:True,priority_ids=frozenset({'priority'}))
+        self.assertEqual([item.id for item in coordinator.queue.get('thread-a')],
+                         ['priority','original-1','original-2','original-3','ordinary'])

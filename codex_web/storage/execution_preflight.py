@@ -105,7 +105,7 @@ class ExecutionPreflightStore:
         value = self.store.record_get(self.NAMESPACE, "b/" + batch_id)
         return NotificationBatchAdmission.model_validate(value) if value is not None else None
 
-    def claim_notification_batch(self, plan, *, claim_id: str, now: float):
+    def claim_notification_batch(self, plan, *, claim_id: str, now: float, queue_order=()):
         """All member claims and the descriptor commit in one keyed transaction.
 
         This is retention/ownership only. No queue is removed and no native
@@ -115,7 +115,10 @@ class ExecutionPreflightStore:
         from codex_web.services.turn_queue_policy import TurnQueuePolicy
         plan = NotificationBatchPlan.model_validate(plan.model_dump(mode="python"))
         admission = NotificationBatchAdmission(id=NotificationBatchAdmission.identity(plan.id, claim_id),
-                                              plan=plan, claim_id=claim_id, claimed_at=now)
+                                              plan=plan, claim_id=claim_id, claimed_at=now, queue_order=queue_order)
+        if queue_order and (len(set(queue_order)) != len(queue_order)
+                            or any(item.id not in queue_order for item in plan.members)):
+            raise ValueError("notification batch original order is invalid")
         batch_key = "b/" + admission.id
         keys = tuple(self._attempt_key(value) for value in admission.attempt_ids)
         selected = (*keys, batch_key)
@@ -126,7 +129,8 @@ class ExecutionPreflightStore:
             previous = values[batch_key]
             if previous is not None:
                 existing = NotificationBatchAdmission.model_validate(previous)
-                if existing.claim_id != claim_id or existing.plan != plan or existing.phase != "prepared":
+                if (existing.claim_id != claim_id or existing.plan != plan or existing.queue_order != admission.queue_order
+                        or existing.phase != "prepared"):
                     raise ValueError("notification batch is already claimed or requires reconciliation")
                 for key, member, original in zip(keys, plan.members, plan.original_snapshots_json, strict=True):
                     current = ExecutionPreflightAttempt.model_validate(values[key])

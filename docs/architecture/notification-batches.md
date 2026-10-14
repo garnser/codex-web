@@ -1,6 +1,7 @@
 # Lossless provider notification batches
 
-**Draft contract for #1307.** The planner and preflight member-claim ledger exist
+**Draft contract for #1307.** The planner, preflight member-claim ledger and guarded
+scheduling coordinator exist
 on the implementation branch; native submission, complete batch lifecycle, per-original outcomes and inspector
 integration are not enabled by it. Delivery/remaining acceptance is tracked in
 [#1307](https://github.com/garnser/codex-web/issues/1307), not this document.
@@ -64,6 +65,21 @@ That state cannot release or use ordinary single-request update/put/retry paths;
 it needs batch-scoped authoritative reconciliation. Member snapshots, requested
 execution IDs and unrelated attempts remain unchanged. These operations do not
 remove queue copies or submit native calls.
+
+The draft scheduling coordinator durably captures original queue order before
+claiming members, then performs all-or-none exact removal in the existing keyed
+queue transaction. Caller-provided current authority/ownership checks and every
+retained original/claim are rechecked in that mutation. Concurrent appends and
+unrelated entries survive. A changed/missing member refuses removal and leaves
+the prepared descriptor available for guarded recovery.
+
+Prepared recovery atomically restores missing exact originals against surviving
+order anchors without overwriting changed copies; concurrent explicit priority
+remains distinct from ordinary arrivals. It then releases all claims. A crash
+after restoration but before release leaves exact copies plus protected claims
+and is safely repeatable. Lost ownership or a native-outcome-unknown descriptor
+refuses this recovery. These scheduling operations are not connected to native
+submission or enabled in production yet.
 
 Ordinary preflight serialization omits null batch membership, retaining its old
 shape. Claimed members carry `notification_batch_id`; old extra-forbid preflight
