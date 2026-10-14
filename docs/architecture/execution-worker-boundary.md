@@ -963,3 +963,21 @@ Already-open routed worker and ActionIntent workspaces load their canonical stat
 after controller imports finish, even when the legacy Developer panel is closed.
 A visible ActionIntent workspace clears the old actor and results on Project
 changes, then reads the new canonical scope with the existing response fences.
+
+### Deferred queue position
+
+A queued admission captures its physical queue order inside the same canonical
+per-thread mutation that removes the request. A later refusal or cancellation
+restores the complete original scheduling snapshot against surviving preceding
+or following peers. Concurrent explicit retries retain their priority, and new
+ordinary arrivals stay behind the deferred original. If no original peer remains,
+the existing retained preflight intent's explicit retry count supplies priority
+provenance; queue message text, caller labels and creation time cannot grant it.
+The priority lookup verifies the canonical Project and current verified thread
+route. It changes no request field or native outcome and creates no new registry.
+
+Cancellation can leave an unknown start in the retained recovery domain even
+when its original queue copy is restored. Restored position, missing receipts,
+queue absence and a stale maintenance blocker do not prove a negative native
+outcome. Existing recovery authorization and actual provider receipts remain
+required before an unknown original may be retried or treated as started.
