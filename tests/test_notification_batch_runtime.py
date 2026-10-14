@@ -172,7 +172,7 @@ class NotificationBatchRuntimeTests(unittest.TestCase):
             draft.id, ConfigurationPublishRequest(actor="fixture-admin")
         )
 
-    def plan(self, control):
+    def plan(self, control, result_contract_version=None):
         return select_notification_batch(
             self.items,
             anchor_id=self.items[0].id,
@@ -187,6 +187,7 @@ class NotificationBatchRuntimeTests(unittest.TestCase):
             max_members=control.max_members,
             max_context_bytes=control.max_context_bytes,
             control_snapshot=control,
+            result_contract_version=result_contract_version,
         )
 
     def test_default_disabled_and_published_values_have_exact_attribution(self):
@@ -412,6 +413,19 @@ class NotificationBatchRuntimeTests(unittest.TestCase):
         queues = TurnQueueRepository(self.state, Path(self.temp.name) / "queues.json")
         queues.put("thread-a", originals)
         host, binding, sessions, runtime = TurnExecutionStartTests()._service()
+        from codex_web.services.thread_transcript import ThreadTranscriptService
+        from codex_web.services.artifact_evidence import ArtifactEvidenceService
+        from codex_web.services.notification_results import NotificationResultCapture
+        from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
+        from codex_web.notification_outcomes import original_snapshot_digest
+        runtime.transcript = ThreadTranscriptService(self.state)
+        runtime.thread_history = runtime.transcript.history
+        evidence = ArtifactEvidenceService(ArtifactEvidenceStore(self.state))
+        capture = NotificationResultCapture(preflight=self.preflight.store, transcript=runtime.transcript,
+            evidence=evidence, actor_for=lambda batch: self.actor.model_copy(update={"identity_id": "fixture-result-capture"}),
+            project_for=lambda project_id: self.project)
+        host._capture_notification_results = MagicMock(wraps=capture.collect)
+        host._capture_notification_terminal = capture.on_terminal
         runtime.queued_preflight = self.preflight
         runtime.actor_resolver = self.controls.actor_resolver
         runtime.ownership = ReplicatedOwnershipService(
@@ -451,7 +465,7 @@ class NotificationBatchRuntimeTests(unittest.TestCase):
         self.assertEqual(queues.get("thread-a"), [])
         first = self.preflight.store.get("preflight-queued-" + originals[0].id)
         batch = self.preflight.store.get_notification_batch(first.notification_batch_id)
-        self.assertEqual(batch.plan.schema_version, "1.1")
+        self.assertEqual(batch.plan.schema_version, "1.2")
         self.assertEqual(
             batch.plan.control_snapshot.agent_profile_record_id, self.profile.record_id
         )
@@ -459,7 +473,24 @@ class NotificationBatchRuntimeTests(unittest.TestCase):
             [item.id for item in batch.plan.members], [item.id for item in originals]
         )
         self.assertEqual(batch.phase, "native_input_started")
+        host._capture_notification_results.assert_called_once_with(batch.id)
         for attempt_id in batch.attempt_ids:
             retained = self.preflight.store.get(attempt_id)
             self.assertEqual(retained.status, "reconciliation_required")
             self.assertIsNone(retained.queued_start_receipt)
+        from codex_web.agent_runtime import AgentRuntimeEvent
+        native_turn = batch.native_receipt.provider_native_turn_id
+        result = {"schema_version": "1.0", "admission_id": batch.id, "results": [
+            {"original_id": member.id, "original_snapshot_sha256": original_snapshot_digest(raw),
+                "disposition": "reconciled", "reason": "Synthetic native processing candidate"}
+            for member, raw in zip(batch.plan.members, batch.plan.original_snapshots_json, strict=True)]}
+        runtime.transcript.record_event("thread-a", AgentRuntimeEvent(event_type="item/completed", provider_native_turn_id=native_turn,
+            payload={"item": {"id": "fixture-final", "type": "agentMessage", "phase": "final_answer", "text": json.dumps(result)}}))
+        runtime.transcript.record_event("thread-a", AgentRuntimeEvent(event_type="turn/completed", provider_native_turn_id=native_turn))
+        runtime.record_terminal_turn_result({"method": "turn/completed", "params": {"threadId": "thread-a", "turnId": native_turn}})
+        self.assertEqual(len(evidence.store.load().evidence), len(originals))
+        self.assertEqual([method for method, _ in sessions.session.requests].count("turn/start"), 1)
+        self.assertTrue(all(self.preflight.store.get(key).status == "reconciliation_required" for key in batch.attempt_ids))
+        host._capture_notification_terminal = MagicMock(side_effect=RuntimeError("fixture capture unavailable"))
+        self.assertFalse(runtime.record_terminal_turn_result({"method": "turn/completed",
+            "params": {"threadId": "thread-a", "turnId": native_turn}}))

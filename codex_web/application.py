@@ -3495,6 +3495,32 @@ execution_preflight_service = ExecutionPreflightService(
 app.state.execution_preflight_service = execution_preflight_service
 turn_execution_service.queued_preflight = execution_preflight_service
 from codex_web.services.notification_outcomes import NotificationOutcomeInspection
+from codex_web.services.notification_results import NotificationResultCapture
+
+def _notification_result_actor(batch):
+    return identity_service.bootstrap_service_actor(
+        identity_id="service-notification-result-capture", name="Notification Result Capture",
+        scope=TenantScope(organization_id=batch.plan.organization_id, workspace_id=batch.plan.workspace_id),
+        service_scopes=("artifact-evidence:admin",),
+    )
+
+notification_result_capture = NotificationResultCapture(
+    preflight=execution_preflight_store, transcript=thread_transcript_service,
+    evidence=artifact_evidence_service, actor_for=_notification_result_actor,
+    project_for=project_service.get,
+)
+app.state.notification_result_capture = notification_result_capture
+
+def _capture_notification_result(callback, value):
+    try:
+        return callback(value)
+    except Exception as exc:
+        bot_runtime_telemetry.append({"type": "notification_result_capture_blocked",
+            "error_type": type(exc).__name__})
+        return None
+
+core._capture_notification_results = lambda batch_id: _capture_notification_result(notification_result_capture.collect, batch_id)
+core._capture_notification_terminal = lambda message: _capture_notification_result(notification_result_capture.on_terminal, message)
 
 notification_batch_inspection = NotificationBatchInspection(
     execution_preflight_store,
@@ -4772,7 +4798,8 @@ EXTRACTED_ROUTE_COUNTS = {
     ),
     "turns": _include_domain_router(
         build_turns_router(turn_service, thread_scope_service, queue_order_recovery_service, queued_bootstrap_recovery_service,
-            notification_batches=notification_batch_inspection,batch_recovery=notification_batch_recovery)
+            notification_batches=notification_batch_inspection,batch_recovery=notification_batch_recovery,
+            batch_results=notification_result_capture)
     ),
     "context": _include_domain_router(
         build_context_router(context_service, thread_scope_service)

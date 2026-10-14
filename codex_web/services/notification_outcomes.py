@@ -11,6 +11,7 @@ from codex_web.artifact_evidence import (
 from codex_web.notification_outcomes import (
     NotificationOriginalOutcomeBinding, OUTCOME_METADATA_KEY,
     OUTCOME_REVIEW_METHOD, original_snapshot_digest,
+    NOTIFICATION_RESULT_SOURCE,
 )
 
 
@@ -46,6 +47,7 @@ class NotificationOutcomeInspection:
             original = json.loads(raw)
             digest = original_snapshot_digest(raw)
             proof = []
+            candidates = set()
             blockers = set()
             review_conflict = False
             for evidence, binding in bindings.get(original["id"], []):
@@ -61,8 +63,9 @@ class NotificationOutcomeInspection:
                     or evidence.provider != receipt.provider_id
                     or evidence.observed_at < receipt.observed_at
                     or evidence.evidence_type != EvidenceType.RUNTIME_RESULT
-                    or evidence.result != (EvidenceResult.PASS
-                        if binding.disposition == "reconciled" else EvidenceResult.WARN)
+                    or not (evidence.result == EvidenceResult.INFO and evidence.source == NOTIFICATION_RESULT_SOURCE)
+                    and evidence.result != {"reconciled": EvidenceResult.PASS,
+                        "follow_up_required": EvidenceResult.WARN, "unresolved": EvidenceResult.INFO}[binding.disposition]
                 ):
                     blockers.add("execution_or_scope_binding_mismatch")
                     continue
@@ -82,6 +85,10 @@ class NotificationOutcomeInspection:
                 ):
                     blockers.add("evidence_inactive_or_expired")
                     continue
+                candidates.add(evidence.id)
+                if binding.disposition == "unresolved":
+                    blockers.add("native_proposal_unresolved")
+                    continue
                 reviews = [review for review in state.verifications if (
                     (review.organization_id, review.workspace_id) == scope
                     and review.evidence_ids == (evidence.id,)
@@ -91,6 +98,7 @@ class NotificationOutcomeInspection:
                     and review.method == OUTCOME_REVIEW_METHOD
                     and review.independent
                     and review.verifier_identity_id != evidence.producer_identity_id
+                    and review.verifier_identity_id != original.get("agent_profile_actor_id")
                     and review.verified_at >= evidence.created_at
                 )]
                 if not reviews:
@@ -101,6 +109,7 @@ class NotificationOutcomeInspection:
                     blockers.add("review_not_verified_or_conflicting")
                     review_conflict = True
                     continue
+                candidates.discard(evidence.id)
                 proof.append((binding.disposition, evidence.id, tuple(review.id for review in reviews)))
 
             dispositions = {item[0] for item in proof}
@@ -113,6 +122,7 @@ class NotificationOutcomeInspection:
                 "outcome": outcome,
                 "original_snapshot_sha256": digest,
                 "evidence_ids": sorted({item[1] for item in proof})[:16],
+                "candidate_evidence_ids": sorted(candidates)[:16],
                 "verification_ids": sorted({review_id for item in proof for review_id in item[2]})[:16],
                 "warnings": sorted(blockers) if outcome != "unresolved" else [],
                 "blockers": [] if outcome != "unresolved" else sorted(blockers) if blockers else ([] if proof else [

@@ -253,10 +253,14 @@ class ThreadHistoryRepository:
                 elif text:
                     agent["text"] = text
                 agent["status"] = "completed"
+                if completed.get("phase") in {"commentary", "final_answer", "final"}:
+                    agent["phase"] = completed["phase"]
                 agent["completedAt"] = now
             else:
                 turn["status"] = (
-                    "completed" if method == "turn/completed" else "failed"
+                    "completed" if method == "turn/completed"
+                    and (params.get("turn") or {}).get("status") not in {"failed", "interrupted"}
+                    and not params.get("error") else "failed"
                 )
                 turn["completedAt"] = now
             state["turns"] = state["turns"][-self.MAX_TURNS :]

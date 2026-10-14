@@ -38,6 +38,7 @@ from codex_web.data_governance import (
     GovernanceAction,
 )
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
+from codex_web.notification_outcomes import NOTIFICATION_RESULT_SOURCE, OUTCOME_METADATA_KEY
 from codex_web.services.artifact_content import ArtifactContentService
 from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.identity import AuthorizationError, TenantIsolationError
@@ -1187,6 +1188,10 @@ class ArtifactEvidenceService:
             # Product outcome feedback measures acceptance; it cannot act as
             # technical verification, even under a permissive review requirement.
             and item.source != "human-outcome/1.0"
+            # Notification proposals/reconciliation never establish technical
+            # business completion, even under a permissive evidence requirement.
+            and item.source != NOTIFICATION_RESULT_SOURCE
+            and OUTCOME_METADATA_KEY not in item.metadata
             and item.evidence_type != EvidenceType.USER_OUTCOME
         ]
         outcomes: list[EvidenceRequirementOutcome] = []

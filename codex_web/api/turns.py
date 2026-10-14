@@ -12,9 +12,10 @@ from codex_web.api.identity import request_actor
 from codex_web.models import TurnCreate, QueueOrderRepairRequest, QueuedBootstrapRecoveryRequest
 from codex_web.services.turns import TurnService
 from codex_web.notification_batches import NotificationBatchRecoveryRequest
+from codex_web.notification_results import NotificationResultCaptureRequest
 
 
-def build_turns_router(service: TurnService, scope: ThreadScopeService, order_recovery=None, bootstrap_recovery=None, notification_batches=None, batch_recovery=None) -> APIRouter:
+def build_turns_router(service: TurnService, scope: ThreadScopeService, order_recovery=None, bootstrap_recovery=None, notification_batches=None, batch_recovery=None, batch_results=None) -> APIRouter:
     router = APIRouter(tags=["turns"], dependencies=[Depends(thread_scope_dependency(scope))])
 
     @router.post("/api/threads/{thread_id}/resume")
@@ -76,6 +77,12 @@ def build_turns_router(service: TurnService, scope: ThreadScopeService, order_re
         async def inspect_notification_batch(thread_id: str, batch_id: str, request: Request):
             return notification_batches.detail(batch_id, thread_id=thread_id,
                 project=request.state.thread_project, actor=request_actor(request))
+
+    if batch_results is not None:
+        @router.post('/api/threads/{thread_id}/notification-batches/{batch_id}/results')
+        async def capture_batch_result(thread_id: str, batch_id: str, payload: NotificationResultCaptureRequest, request: Request):
+            return await asyncio.to_thread(batch_results.collect_for_operator, batch_id, payload,
+                thread_id=thread_id, project=request.state.thread_project, actor=request_actor(request))
 
     if batch_recovery is not None:
         @router.get('/api/threads/{thread_id}/notification-batches/{batch_id}/recovery')

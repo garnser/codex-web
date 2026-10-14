@@ -56,10 +56,13 @@ def _scope(item: QueuedTurn) -> str:
     return _json(values)
 
 
-def _native_input(identity, originals, routes):
+def _native_input(identity, originals, routes, result_contract_version=None):
+    from codex_web.notification_results import result_input_contract
+
     return HEADER + _json(
         {
             "batch_id": identity,
+            **({"result_contract": result_input_contract(originals)} if result_contract_version else {}),
             "originals": [json.loads(value) for value in originals],
             "queue_routes": [
                 {
@@ -75,7 +78,7 @@ def _native_input(identity, originals, routes):
 class NotificationBatchPlan(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["1.0", "1.1"] = "1.0"
+    schema_version: Literal["1.0", "1.1", "1.2"] = "1.0"
     id: str = Field(pattern=r"^notification-batch-[0-9a-f]{64}$")
     organization_id: str = Field(min_length=1)
     workspace_id: str = Field(min_length=1)
@@ -84,12 +87,15 @@ class NotificationBatchPlan(BaseModel):
     queue_snapshots_json: tuple[str, ...] = Field(min_length=2, max_length=16)
     max_context_bytes: int = Field(ge=256, le=262144)
     control_snapshot: NotificationBatchControlSnapshot | None = None
+    result_contract_version: Literal["1.0"] | None = None
 
     @model_serializer(mode="wrap")
     def serialize_control(self, handler):
         result = handler(self)
         if self.control_snapshot is None:
             result.pop("control_snapshot", None)
+        if self.result_contract_version is None:
+            result.pop("result_contract_version", None)
         return result
 
     @property
@@ -101,7 +107,7 @@ class NotificationBatchPlan(BaseModel):
 
     def native_input(self) -> str:
         return _native_input(
-            self.id, self.original_snapshots_json, self.queue_snapshots_json
+            self.id, self.original_snapshots_json, self.queue_snapshots_json, self.result_contract_version
         )
 
     @staticmethod
@@ -112,13 +118,15 @@ class NotificationBatchPlan(BaseModel):
         originals,
         routes,
         control_snapshot=None,
+        result_contract_version=None,
     ):
         return (
             "notification-batch-"
             + hashlib.sha256(
                 _json(
                     {
-                        "version": "1.1" if control_snapshot is not None else "1.0",
+                        "version": "1.2" if result_contract_version else "1.1" if control_snapshot is not None else "1.0",
+                        **({"result_contract_version": result_contract_version} if result_contract_version else {}),
                         "organization_id": organization_id,
                         "workspace_id": workspace_id,
                         "authority_scope_sha256": authority_scope_sha256,
@@ -140,8 +148,10 @@ class NotificationBatchPlan(BaseModel):
 
     @model_validator(mode="after")
     def validate_plan(self):
-        if (self.schema_version == "1.1") != (self.control_snapshot is not None):
+        if (self.schema_version in {"1.1", "1.2"}) != (self.control_snapshot is not None):
             raise ValueError("batch control snapshot/version mismatch")
+        if (self.schema_version == "1.2") != (self.result_contract_version is not None):
+            raise ValueError("batch result contract/version mismatch")
         if len(self.original_snapshots_json) != len(self.queue_snapshots_json):
             raise ValueError("batch originals/routes do not match")
         original_ids = [
@@ -176,6 +186,7 @@ class NotificationBatchPlan(BaseModel):
             self.original_snapshots_json,
             self.queue_snapshots_json,
             self.control_snapshot,
+            self.result_contract_version,
         ):
             raise ValueError("batch immutable snapshot fingerprint changed")
         if (
@@ -402,6 +413,7 @@ def select_notification_batch(
     max_members: int,
     max_context_bytes: int,
     control_snapshot: NotificationBatchControlSnapshot | None = None,
+    result_contract_version: Literal["1.0"] | None = None,
 ) -> NotificationBatchPlan | None:
     """Plan around the existing admission anchor without modifying any state.
 
@@ -411,6 +423,9 @@ def select_notification_batch(
     atomically recheck snapshots/claims before any removal or native admission.
     """
     if (
+        result_contract_version not in {None, "1.0"}
+        or (result_contract_version is not None and control_snapshot is None)
+        or
         type(max_members) is not int
         or type(max_context_bytes) is not int
         or not 2 <= max_members <= 16
@@ -470,14 +485,15 @@ def select_notification_batch(
             candidate_originals,
             candidate_routes,
             control_snapshot,
+            result_contract_version,
         )
         # Oversized candidates remain individual originals. No truncation or
         # partial prompt is used to make a group fit.
-        payload = _native_input(identity, candidate_originals, candidate_routes)
+        payload = _native_input(identity, candidate_originals, candidate_routes, result_contract_version)
         if len(payload.encode()) + _ADMISSION_PREFIX_BYTES > max_context_bytes:
             continue
         plan = NotificationBatchPlan(
-            schema_version="1.1" if control_snapshot is not None else "1.0",
+            schema_version="1.2" if result_contract_version else "1.1" if control_snapshot is not None else "1.0",
             id=identity,
             organization_id=organization_id,
             workspace_id=workspace_id,
@@ -486,6 +502,7 @@ def select_notification_batch(
             queue_snapshots_json=candidate_routes,
             max_context_bytes=max_context_bytes,
             control_snapshot=control_snapshot,
+            result_contract_version=result_contract_version,
         )
         originals, routes = list(candidate_originals), list(candidate_routes)
     return plan

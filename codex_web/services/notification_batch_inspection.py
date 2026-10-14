@@ -76,6 +76,9 @@ class NotificationBatchInspection:
         return {
             "id": batch.id,
             "schema_version": batch.schema_version,
+            "result_contract_version": batch.plan.result_contract_version,
+            "can_capture_results": self._can_review_recovery(actor)
+            and batch.plan.result_contract_version is not None and batch.native_receipt is not None,
             "phase": batch.phase,
             "thread_id": member.thread_id,
             "project_id": member.project_id,

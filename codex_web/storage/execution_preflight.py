@@ -106,6 +106,19 @@ class ExecutionPreflightStore:
         return NotificationBatchAdmission.model_validate(value) if value is not None else None
 
     @staticmethod
+    def _notification_native_key(thread_id, turn_id):
+        return "bn/" + hashlib.sha256(json.dumps([thread_id, turn_id], separators=(",", ":")).encode()).hexdigest()
+
+    def notification_batch_for_native_turn(self, thread_id, turn_id):
+        value = self.store.record_get(self.NAMESPACE, self._notification_native_key(thread_id, turn_id))
+        batch = self.get_notification_batch(value["batch_id"]) if value else None
+        if batch and batch.native_receipt and (
+            batch.native_receipt.thread_id, batch.native_receipt.provider_native_turn_id
+        ) == (thread_id, turn_id):
+            return batch
+        return None
+
+    @staticmethod
     def _notification_batch_prefix(thread_id, organization_id, workspace_id, project_id):
         scope = json.dumps([organization_id, workspace_id, project_id, thread_id], separators=(',', ':'))
         return 'bt/' + hashlib.sha256(scope.encode()).hexdigest() + '/'
@@ -336,16 +349,19 @@ class ExecutionPreflightStore:
         def record(values):
             nonlocal result
             current = NotificationBatchAdmission.model_validate(values[batch_key])
+            native_key = self._notification_native_key(receipt.thread_id, receipt.provider_native_turn_id)
+            if values[native_key] is not None and values[native_key] != {"batch_id": batch_id}:
+                raise ValueError("notification native turn already belongs to another admission")
             if current.native_receipt is not None:
                 if current.native_receipt != receipt:
                     raise ValueError("notification native receipt changed")
                 result = current
-                return {}
+                return {native_key: {"batch_id": batch_id}}
             if current != observed or current.phase != "native_outcome_unknown":
                 raise ValueError("notification native start was not durably fenced")
             result = NotificationBatchAdmission.model_validate({**current.model_dump(mode="python"),
                 "phase":"native_input_started", "native_receipt":receipt})
-            changes = {batch_key:result.model_dump(mode="json")}
+            changes = {batch_key:result.model_dump(mode="json"), native_key: {"batch_id": batch_id}}
             for key, queued, original in zip(keys,current.plan.members,current.plan.original_snapshots_json,strict=True):
                 member = ExecutionPreflightAttempt.model_validate(values[key])
                 if (member.notification_batch_id != batch_id or member.status != "reconciliation_required"
@@ -359,7 +375,8 @@ class ExecutionPreflightStore:
                 # Input delivery is known; per-original completion remains held.
                 changes[key]=member.model_copy(update={"updated_at":receipt.observed_at}).model_dump(mode="json")
             return changes
-        self.store.record_mutate(self.NAMESPACE,(*keys,batch_key),record)
+        native_key = self._notification_native_key(receipt.thread_id, receipt.provider_native_turn_id)
+        self.store.record_mutate(self.NAMESPACE,(*keys,batch_key,native_key),record)
         return result
 
     def consume_notification_native_start(self, batch_id, *, claim_id, requested_execution_id, thread_id, message):
