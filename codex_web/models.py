@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
 
 from codex_web.ux_briefs import UxBriefSelection, UxBriefTurnBinding
+from codex_web.notification_provenance import ProviderNotificationPin
 
 from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.definitions import DefinitionReference
@@ -550,6 +551,7 @@ class ExecutionPreflightAttempt(BaseModel):
     queued_turn_snapshot: dict[str, Any] | None = None
     queued_admission_claim_id: str | None = None
     queued_start_receipt: QueuedNativeStartReceipt | None = None
+    notification_batch_id: str | None = None
     scheduling_retirement: QueuedSchedulingRetirement | None = None
     bootstrap_recovery: QueuedBootstrapRecovery | None = None
     bootstrap_recovery_history: tuple[QueuedBootstrapRecovery, ...] = Field(default=(), max_length=8)
@@ -577,12 +579,14 @@ class ExecutionPreflightAttempt(BaseModel):
     updated_at: float
 
     @model_serializer(mode="wrap")
-    def serialize_bootstrap_recovery(self, handler):
+    def serialize_recovery_fields(self, handler):
         result = handler(self)
         if self.bootstrap_recovery is None:
             result.pop("bootstrap_recovery", None)
         if not self.bootstrap_recovery_history:
             result.pop("bootstrap_recovery_history", None)
+        if self.notification_batch_id is None:
+            result.pop("notification_batch_id", None)
         return result
 
 
@@ -646,12 +650,15 @@ class QueuedTurn(BaseModel):
     created_at: float
 
     memory_context_binding: UxBriefTurnBinding | None = None
+    provider_notification_pin: ProviderNotificationPin | None = None
 
     @model_serializer(mode="wrap")
     def serialize_context(self, handler):
         result = handler(self)
         if self.memory_context_binding is None:
             result.pop("memory_context_binding", None)
+        if self.provider_notification_pin is None:
+            result.pop("provider_notification_pin", None)
         return result
 
 

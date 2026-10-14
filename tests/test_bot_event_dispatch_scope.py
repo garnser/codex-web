@@ -14,6 +14,8 @@ from codex_web.services.bot_event_dispatch import (
     BotEventDispatchService, BotEventDispatchCompatibilityFacade,
 )
 from codex_web.services.bot_targets import BotTargetService
+from codex_web.notification_provenance import ProviderNotificationPin
+from codex_web.compatibility import CanonicalEventEnvelope
 
 
 class BotEventDispatchScopeTests(unittest.IsolatedAsyncioTestCase):
@@ -72,6 +74,17 @@ class BotEventDispatchScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.execution.enqueue_turn.call_args.kwargs["reply_target"], self.captured)
         self.assertEqual(self.reply_records["slack:PRIMARY:thread-1"], self.captured)
         self.execution.enqueue_turn.assert_called_once()
+
+    async def test_verified_provider_pin_survives_dispatch_queue_admission(self):
+        event=CanonicalEventEnvelope(event_id='event-1',event_type='task_source.event',source='gitlab:fixture',
+            occurred_at=1,tenant_id='local',workspace_id='default',payload={'project_id':self.binding.project_id,
+                'provider_event_type':'issue.updated'})
+        pin=ProviderNotificationPin.from_event(event,source_origin='gitlab',provider_event_kind='issue',
+            work_item_ref='group/project#1',message='Fixture notification')
+        await self.service.dispatch(self.binding,'Fixture notification','gitlab',work_item_ref='group/project#1',
+            provider_notification_pin=pin)
+        self.assertEqual(self.execution.enqueue_turn.call_args.kwargs['provider_notification_pin'],pin)
+        self.assertEqual(self.execution.find_duplicate_queued_turn.call_args.kwargs['provider_notification_pin'],pin)
 
     async def test_immediate_dispatch_and_recovery_revalidate_captured_target(self):
         self.install_captured_target()

@@ -170,6 +170,58 @@ class TurnQueueRepository:
         self.update(thread_id, update)
         return outcome
 
+    def remove_many_exact(self, thread_id: str, expected: tuple[QueuedTurn, ...], *, guard) -> str:
+        """All-or-none scheduling removal under the existing keyed transaction."""
+        if not 2 <= len(expected) <= 16 or len({item.id for item in expected}) != len(expected):
+            raise ValueError("invalid notification batch members")
+        if any(item.thread_id != thread_id for item in expected):
+            raise ValueError("notification batch queue scope differs")
+        outcome = "missing"
+        def remove(current):
+            nonlocal outcome
+            if not guard():
+                raise ValueError("notification batch authority/ownership changed")
+            for item in expected:
+                matches = [value for value in current if value.id == item.id]
+                if not matches:
+                    return current
+                if len(matches) != 1 or matches[0] != item:
+                    outcome = "changed"
+                    return current
+            outcome = "removed"
+            ids = {item.id for item in expected}
+            return [item for item in current if item.id not in ids]
+        self.update(thread_id, remove)
+        return outcome
+
+    def restore_many_exact(self, thread_id: str, originals: tuple[QueuedTurn, ...], *, order, guard,
+                           priority_ids=frozenset()):
+        """Restore missing originals without overwriting peers or changed copies."""
+        if (not 2 <= len(originals) <= 16 or len(set(order)) != len(order)
+                or len({item.id for item in originals}) != len(originals)
+                or any(item.thread_id != thread_id or item.id not in order for item in originals)):
+            raise ValueError("invalid notification batch restoration")
+        def restore(current):
+            if not guard():
+                raise ValueError("notification batch authority/ownership changed")
+            for original in originals:
+                matches = [item for item in current if item.id == original.id]
+                if matches and (len(matches) != 1 or matches[0] != original):
+                    raise ValueError("notification batch queue copy changed")
+            for original in sorted(originals, key=lambda item:order.index(item.id)):
+                if any(item.id == original.id for item in current):
+                    continue
+                position = order.index(original.id)
+                before, after = set(order[:position]), set(order[position+1:])
+                predecessor = max((index for index,item in enumerate(current) if item.id in before), default=-1)
+                successor = next((index for index,item in enumerate(current) if item.id in after), None)
+                index = predecessor + 1 if predecessor >= 0 else successor
+                if index is None:
+                    index = max((index for index,item in enumerate(current) if item.id in priority_ids), default=-1) + 1
+                current.insert(index, original.model_copy(deep=True))
+            return current
+        return self.update(thread_id, restore)
+
     def flush_legacy_mirror(self) -> None:
         started = __import__("time").perf_counter()
         success = False
@@ -246,6 +298,11 @@ class TurnQueueRepository:
         deduped: list[Any] = []
         seen_semantics: set[tuple[str, str]] = set()
         for item in result:
+            if item.get("provider_notification_pin") is not None:
+                # Distinct canonical provider events remain distinct originals,
+                # even when their projected message text happens to match.
+                deduped.append(item)
+                continue
             semantic = (
                 str(item.get("source") or ""),
                 str(item.get("message") or ""),
