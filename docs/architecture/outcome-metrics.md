@@ -58,8 +58,9 @@ is unknown, never accepted.
 | Tokens / USD per accepted outcome | Usage across every eligible attempt, including rejected work and retries | Accepted task count; null with no acceptance or any missing usage |
 | Runtime seconds per accepted outcome | Recorded runtime duration across eligible attempts | Accepted task count; never labelled human effort |
 
-Cost is the canonical runtime's recorded cost, not an inferred subscription charge
-or comparison price. Missing cost remains null. The UI exposes eligible/accepted
+Cost uses the canonical runtime's recorded `cost_usd` field. Comparison-pricing
+and quota resources are excluded; recorded usage cost may differ from billed
+subscription charges. Missing cost remains null. The UI exposes eligible/accepted
 counts, correction observation count and each unresolved outcome count, alongside
 the formula version and source records. Global acceptance includes unclassified
 tasks. Workload categories and selected template references are human observations;
