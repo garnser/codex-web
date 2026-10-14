@@ -1117,7 +1117,10 @@ class ExecutionWorkerService:
             item.procedure_discoveries = (*item.procedure_discoveries, discovery)
             item.updated_at = time.time()
             return state
-        state = self.store.update(apply)
+        current = self.store.assignment(assignment_id)
+        if current is None:
+            raise AssignmentNotFoundError("execution assignment not found")
+        state = self.store.update_assignment(current.assigned_worker_id or "", assignment_id, apply)
         return self._assignment(state, assignment_id, actor)
 
     def list_assignments(

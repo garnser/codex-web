@@ -331,3 +331,7 @@ The combined ActionIntent state contract is `1.4`. Migration from `1.3` preserve
 procedure discoveries and recovery snapshots unchanged; older records receive
 empty optional histories. Readers that cannot understand both admission records
 must upgrade before consuming state written by this version.
+
+Procedure-discovery evidence appended by these paths also uses the existing
+point assignment transaction, with live fence/lease checks. It must not scan or
+rewrite unrelated global worker/assignment records before provider execution.
