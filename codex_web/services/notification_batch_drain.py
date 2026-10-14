@@ -100,6 +100,7 @@ class NotificationBatchDrain:
             if control
             else policy["max_context_bytes"],
             control_snapshot=control,
+            result_contract_version="1.0" if control else None,
         )
         if plan is None:
             return False

@@ -242,6 +242,9 @@ API_DOMAINS.update({
 # now require canonical operational authority while ordinary progress/handoff
 # traffic remains compatible with authenticated-member workflows.
 EXACT_POLICIES: dict[tuple[str, str], ApiAuthorizationPolicy] = {
+    ('POST', '/api/threads/{thread_id}/notification-batches/{batch_id}/results'): ApiAuthorizationPolicy(
+        capability='api.evidence.write',level=AuthorityLevel.EXECUTE,access=ApiAccessMode.ADMIN,
+        required_assurance=AuthenticationAssurance.MFA,description='Capture completed native proposals as unverified canonical evidence without replay.'),
     ('GET', '/api/threads/{thread_id}/notification-batches/{batch_id}/recovery'): ApiAuthorizationPolicy(
         capability='execution.retry',level=AuthorityLevel.READ,access=ApiAccessMode.ADMIN,
         required_assurance=AuthenticationAssurance.MFA,description='Review exact original batch restoration scope without native execution.'),

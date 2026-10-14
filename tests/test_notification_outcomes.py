@@ -2,7 +2,7 @@ import json
 import unittest
 
 from codex_web.artifact_evidence import (
-    EvidenceCreate, EvidenceLifecycle, EvidenceResult, EvidenceType,
+    EvidenceCreate, EvidenceLifecycle, EvidenceRequirement, EvidenceResult, EvidenceType,
     VerificationCreate, VerificationResult,
 )
 from codex_web.notification_outcomes import (
@@ -101,6 +101,13 @@ class NotificationOutcomeTests(unittest.TestCase):
         self.proof(metadata={})
         self.assertEqual(self.outcome()["outcome"], "unresolved")
         self.assertEqual(self.outcome()["blockers"], ["per_original_evidence_required"])
+
+    def test_manual_notification_reconciliation_is_not_generic_business_completion(self):
+        self.proof()
+        self.assertEqual(self.outcome()["outcome"], "reconciled")
+        gate = self.evidence.evaluate(self.batch.plan.members[0].work_item_ref,
+            [EvidenceRequirement(id="runtime-completion", evidence_type=EvidenceType.RUNTIME_RESULT)], actor=self.actor)
+        self.assertFalse(gate.satisfied)
 
     def test_unreviewed_or_expired_metadata_cannot_revoke_current_verified_proof(self):
         self.proof()

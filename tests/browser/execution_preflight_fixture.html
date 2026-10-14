@@ -107,6 +107,7 @@
         outcome_counts:new URLSearchParams(location.search).has('batchOutcomes') ? {
           reconciled:1,follow_up_required:0,unresolved:1} : null,
         can_review_recovery:new URLSearchParams(location.search).has('batchRecovery'),
+        can_capture_results:new URLSearchParams(location.search).has('batchCapture'),
         oldest_created_at:1800000000,original_ids:['original-one','original-two'],
         recovery_state:batchPhase==='released' ? 'released_to_original_queue' : 'batch_reconciliation_required',
         project_id:'project-a',organization_id:'org-a',workspace_id:'workspace-a',
@@ -121,6 +122,12 @@
     const api = async (path, options = {}) => {
       window.__apiCalls.push({ path, method: options.method || "GET" });
       if (path.includes("/preflight-attempts?")) return { items: attempts };
+      if (path.endsWith('/notification-batches/fixture-batch/results')) {
+        window.__captureBody=JSON.parse(options.body);
+        if (new URLSearchParams(location.search).has('captureDenied')) throw new Error('Canonical result is unavailable or capture authority is denied');
+        if (new URLSearchParams(location.search).has('holdCapture')) return new Promise((resolve,reject)=>{window.__finishCapture={resolve,reject};});
+        return {evidence_ids:['fixture-captured-one','fixture-captured-two'],independently_verified:false};
+      }
       if (path.endsWith('/notification-batches/fixture-batch/recovery')) {
         if (new URLSearchParams(location.search).has('recoveryDenied')) throw new Error('Current Role authority denies restoration');
         if (options.method==='POST') {
@@ -150,6 +157,7 @@
           message:'Full original <img src=x onerror="window.__unsafe=true"> body'},
           admitted_route:{thread_id:'thread-1'},retained_status:'reconciliation_required',
           outcome:new URLSearchParams(location.search).has('batchOutcomes') ? 'reconciled' : 'unresolved',
+          candidate_evidence_ids:new URLSearchParams(location.search).has('batchCapture') ? ['fixture-unreviewed-proposal'] : [],
           evidence_ids:['fixture-evidence'],verification_ids:['fixture-independent-review'],blockers:[]},
           ...(new URLSearchParams(location.search).has('batchOutcomes') ? [{original:{id:'original-two',created_at:1800000000,
             message:'Second full notification'},retained_status:'reconciliation_required',outcome:'unresolved',

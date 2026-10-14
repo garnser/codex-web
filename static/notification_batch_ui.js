@@ -95,15 +95,32 @@ export function createNotificationBatchUi({ api, addMessage, captureView, loadTh
     detail.style.overflowWrap = "anywhere";
     detail.hidden = true;
     detail.setAttribute("aria-live", "polite");
+    const proofs=document.createElement('div');
     button.addEventListener("click", async () => {
       const current = captureView();
       button.disabled = true;
       detail.hidden = false;
       detail.textContent = "Loading retained originals…";
+      proofs.textContent='';
       try {
         const batch = await api(href);
         if (!current()) return;
         const originals = Array.isArray(batch.originals) ? batch.originals : [];
+        const seenProofs=new Set();
+        for (const original of originals) {
+          for (const [kind,ids] of [['evidence',[...(original.evidence_ids || []),...(original.candidate_evidence_ids || [])]],
+            ['verifications',original.verification_ids || []]]) {
+            for (const id of ids) {
+              const href=`/api/${kind}/${encodeURIComponent(id)}`;
+              if (seenProofs.has(href)) continue;
+              seenProofs.add(href);
+              const link=document.createElement('a');
+              link.href=href; link.target='_blank'; link.rel='noopener noreferrer';
+              link.textContent=`Inspect ${kind === 'evidence' ? 'evidence' : 'verification'} ${id}`;
+              proofs.append(link,document.createElement('br'));
+            }
+          }
+        }
         const control = batch.control_snapshot;
         const controls = control ? [
           'Controls retained at admission:',
@@ -125,6 +142,7 @@ export function createNotificationBatchUi({ api, addMessage, captureView, loadTh
             `Outcome blockers: ${(item.blockers || []).join(', ') || 'none'}`,
             `Other proof warnings: ${(item.warnings || []).join(', ') || 'none'}`,
             `Evidence: ${(item.evidence_ids || []).join(', ') || 'none'}; verification: ${(item.verification_ids || []).join(', ') || 'none'}`,
+            `Candidate evidence requiring review: ${(item.candidate_evidence_ids || []).join(', ') || 'none'}`,
             `Requested execution: ${original.execution_id || "none"}`,
             `Created: ${new Date(original.created_at * 1000).toISOString()}`,
             `Source: ${original.source || "unknown"}; work item: ${original.work_item_ref || "none"}`,
@@ -143,7 +161,29 @@ export function createNotificationBatchUi({ api, addMessage, captureView, loadTh
         if (current()) button.disabled = false;
       }
     });
-    body.append(button, detail);
+    body.append(button, detail, proofs);
+    if (summary?.can_capture_results && summary?.native_receipt) {
+      const capture=document.createElement('button');
+      capture.type='button';
+      capture.textContent='Capture completed native proposals';
+      const result=document.createElement('div');
+      result.setAttribute('aria-live','polite');
+      capture.addEventListener('click',async()=>{
+        const current=captureView();
+        capture.disabled=true;
+        result.textContent='Capturing proposals as unverified evidence. No native input will be sent.';
+        try {
+          const response=await api(href+'/results',{method:'POST',body:JSON.stringify({
+            expected_native_turn_id:summary.native_receipt.provider_native_turn_id})});
+          if (!current()) return;
+          result.textContent=`Captured evidence: ${(response.evidence_ids || []).join(', ')}. Independent review is still required; no native turn was started.`;
+          scheduleRefresh?.(0);
+        } catch (error) {
+          if (current()) result.textContent=`Cannot capture native proposals: ${error.message}`;
+        } finally {if (current()) capture.disabled=false;}
+      });
+      body.append(capture,result);
+    }
     if (summary?.can_review_recovery) attachRecovery(href,body);
   }
 

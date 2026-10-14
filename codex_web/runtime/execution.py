@@ -3137,6 +3137,10 @@ class TurnExecutionService:
                     if notification_batch_admission_id:
                         await asyncio.to_thread(self.queued_preflight.store.record_notification_native_start,
                             notification_batch_admission_id, receipt)
+                        capture = getattr(h, "_capture_notification_results", None)
+                        if callable(capture):
+                            with contextlib.suppress(Exception):
+                                await asyncio.to_thread(capture, notification_batch_admission_id)
                     else:
                         await asyncio.to_thread(self.queued_preflight.record_queued_native_start,
                             queued_admission_attempt_id, receipt)
@@ -4521,6 +4525,10 @@ class TurnExecutionService:
         error = _turn_failure_text(message)
         if not thread_id:
             return False
+        capture = getattr(h, "_capture_notification_terminal", None)
+        if callable(capture):
+            with contextlib.suppress(Exception):
+                capture(message)
         if method != "turn/failed" and status != "failed" and not error:
             self.terminal_failures.pop(thread_id, None)
             self.last_inputs.pop(thread_id, None)

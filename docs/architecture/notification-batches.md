@@ -11,7 +11,7 @@ outcomes and live qualification remain tracked in
 
 ## Planning boundary
 
-`NotificationBatchPlan` schemas1.0/1.1 store complete immutable original request
+`NotificationBatchPlan` schemas1.0/1.1/1.2 store complete immutable original request
 snapshots and separate current queue-route snapshots as canonical JSON strings.
 It fingerprints tenant and current effective authority scope, all originals and
 all routes. Decoding validates
@@ -146,7 +146,7 @@ input byte ceiling. These checks do not reinterpret missing receipts as nonstart
 
 New readers accept both plan versions. Schema1.0 shapes omit absent control
 snapshots and retain their original fingerprints. Automatically selected plans
-use1.1; older extra-forbid plan readers reject the new shape. Membership and
+use1.2 with the result protocol below; older extra-forbid plan readers reject the new shape. Membership and
 provider-pin mixed-writer/drain/backup/rollback constraints still apply. No
 production enablement, migration, deployment, per-original completion proof or
 live throughput acceptance follows from installing the adapter.
@@ -255,7 +255,7 @@ does not enable runtime processing or qualify production throughput tracked by
 ## Per-original evidence inspection
 
 Canonical Evidence metadata may carry `notification_original_outcome`, a JSON
-string conforming to `NotificationOriginalOutcomeBinding` schema1.0. It pins the
+string conforming to `NotificationOriginalOutcomeBinding` schema1.0/1.1. It pins the
 admission ID, original ID, SHA256 of the exact retained immutable original JSON,
 and a disposition of `reconciled` or `follow_up_required`. This is a code-owned
 protocol binding, not a mutable operational definition or an authority grant.
@@ -270,7 +270,8 @@ Evidence and any supporting artifacts must remain valid, active and unexpired.
 The JSON binding alone never establishes a result. A canonical Verification must
 target exactly that evidence, the same execution and Work Item, use method
 `notification-original-outcome/1.0`, and be independently `verified` by a different
-identity after evidence creation. Self-review, general review and a broad review
+identity after evidence creation, distinct from both the producer and the
+original execution actor. Self-review, general review and a broad review
 covering several evidence records cannot substitute for this exact binding.
 
 Inspection reads one canonical evidence snapshot per request. It exposes bounded
@@ -300,6 +301,72 @@ uses existing canonical API authorization and data-governance invalidation.
 Automated proof production, processing/follow-up integration, deployment and real
 Orchestrator useful-throughput qualification remain separate parent acceptance
 requirements; this read-only view cannot fulfill them by itself.
+
+## Structured native result capture
+
+New canonically controlled plans use schema1.2 and pin `result_contract_version`
+to1.0. Their native input includes a bounded machine-readable result contract and
+each original's immutable snapshot digest. It does not duplicate original bodies.
+The contract requires one final JSON object with schema_version, exact admission
+ID and results for every original ID/digest. Each result proposes `reconciled`,
+`follow_up_required` or `unresolved` with a1–1000-character reason. Final output
+has a32768 UTF8-byte structural ceiling; existing profile/worker output and cost
+limits still apply. The entire added input overhead participates in planning and
+native byte admission bounds. Legacy plan1.0/1.1 inputs, omitted fields and
+fingerprints remain unchanged; new plan identity includes the protocol version.
+
+Native receipt persistence atomically indexes the shared canonical thread/native
+turn under `bn/` in the existing preflight namespace. A conflicting receipt cannot
+associate that turn with another admission. The actual terminal callback finds
+the admission through that index. Receipt capture also checks for a terminal
+result already observed before the SDK start response, handling that race without
+another native input. Both use the existing runtime event/receipt paths; there
+is no additional scheduler or model call. Collector failures remain observational
+and cannot release member claims, replay input or prevent unrelated queue progress.
+
+The collector reads the exact canonical provider/runtime/native-turn transcript,
+requires successful completion and validates the entire final result before its
+first write. Missing/ambiguous final output, duplicate JSON keys/original IDs,
+changed membership/digests, malformed/oversized output, failed turns, foreign
+scope and changed retained claims cannot produce proposals. Canonical history
+preserves final/commentary phase and treats failed/interrupted native completion
+as failed. If the source turn has not completed, capture waits for its terminal
+event or an explicit reconciliation request; missing receipts never prove nonstart.
+
+Each original proposal becomes canonical `runtime_result` Evidence through the
+existing service and governance boundary, with binding schema1.1, actual execution
+and provider/native-turn provenance, source output digest and deterministic
+idempotency key. The registered capture service is the producer; native completion
+does not create a Verification. Reasons stay in the authorized canonical native
+transcript; Evidence stores a reason digest and fixed review-required summary,
+avoiding a new copy of arbitrary output. Captured evidence denies model context.
+Every captured proposal has result `info`. An `unresolved` proposal cannot become
+reconciliation merely through review. Reconciled/follow-up dispositions require
+the exact independent verification gate above. Captured proposal/reconciliation
+records, including manually produced per-original outcome bindings, are excluded
+from generic technical completion gates, including permissive
+requirements accepting informational results; notification review never establishes
+business completion.
+
+Repeated terminal events and restarted capture return the same canonical evidence
+IDs. A partial persistence failure can resume the remaining records; changed output
+refuses to overwrite previously captured evidence. An administrator with MFA and
+current `api.evidence.write` authority may explicitly reconcile capture through
+`POST .../notification-batches/{batch_id}/results`, submitting only the expected
+shared native turn ID. The caller cannot provide result text, disposition,
+evidence, replacement route or native input. This resumes observational capture
+from canonical state and never submits a model turn. The existing inspector shows
+candidate evidence IDs, review blockers and canonical Evidence/Verification links;
+reading history/detail remains read-only.
+
+Binding1.1 adds the unresolved proposal disposition. Older outcome inspectors
+reject1.1 and continue to show unresolved results rather than granting completion.
+Plan1.2 is strict-reader incompatible; the existing full-writer drain, verified
+backup and post-write rollback restrictions apply. The new native index is
+additive and is not silently backfilled during inspection. Evidence/Verification
+retain their existing persistence and data-governance contracts. Captured proposals
+do not qualify independently verified processing/follow-up, human-facing reply
+presentation, production rollout or real Orchestrator throughput acceptance.
 
 ## Guarded operator queue restoration
 
