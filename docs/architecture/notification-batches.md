@@ -9,7 +9,8 @@ integration are not enabled by it. Delivery/remaining acceptance is tracked in
 
 `NotificationBatchPlan` schema1.0 stores complete immutable original request
 snapshots and separate current queue-route snapshots as canonical JSON strings.
-It fingerprints tenant scope, all originals and all routes. Decoding validates
+It fingerprints tenant and current effective authority scope, all originals and
+all routes. Decoding validates
 unique unchanged IDs, compatible execution/reply scope, schema and context size.
 Detached member views cannot mutate stored originals. Native input includes each
 full original once, with current route pointers, rather than duplicating message
@@ -19,7 +20,13 @@ bodies in both projections. No source body is truncated to fit a batch.
 complete retained preflight attempts and separately attested provider-notification
 IDs. Those IDs must come from authoritative provider-event provenance; source
 strings, message parsing and caller task text cannot supply the attestation.
-The planner does not retrieve/establish that proof or grant authority.
+The planner does not retrieve/establish that proof or grant authority. A separate
+current effective-authority fingerprint is required for every member; identical
+profile IDs alone cannot establish equal Work Item/resource permissions. Native
+admission must resolve and recheck that authority, not trust a submitted hash.
+The attested provider source is caller-supplied data, not a code-owned provider
+catalog. Existing direct-human `web`/`slack` intake protocols are forbidden as
+notification origins even if a caller incorrectly includes their IDs.
 
 Eligible originals have queued, unstarted retained attempts in the same tenant
 and Project, exact matching immutable request snapshots, and pinned actor/Agent

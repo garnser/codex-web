@@ -30,6 +30,8 @@ class NotificationBatchPlanTests(unittest.TestCase):
     def select(self, items=None, **changes):
         values = dict(anchor_id=self.items[0].id, attempts_by_original_id=self.attempts,
                       verified_notification_ids=frozenset(item.id for item in self.items), organization_id='local',
+                      authority_scope_sha256_by_original_id={item.id:'a'*64 for item in self.items},
+                      notification_source_origin='gitlab',
                       workspace_id='default', max_members=3, max_context_bytes=65536)
         values.update(changes)
         return select_notification_batch(self.items if items is None else items, **values)
@@ -54,7 +56,7 @@ class NotificationBatchPlanTests(unittest.TestCase):
 
     def test_verified_replacement_preserves_immutable_original_and_current_route(self):
         originals=deepcopy(self.items[:2])
-        self.service.replacement_resolver=lambda old:'replacement-thread'
+        self.service.replacement_resolver=lambda old, **scope:'replacement-thread'
         moved=[]
         for original in originals:
             current=original.model_copy(deep=True)
@@ -94,13 +96,31 @@ class NotificationBatchPlanTests(unittest.TestCase):
         self.assertIsNone(self.select(self.items[:2], workspace_id='foreign'))
         self.assertIsNone(self.select(self.items[:2], verified_notification_ids=frozenset()))
 
+    def test_current_authority_scope_must_match_despite_same_profile(self):
+        self.assertIsNone(self.select(self.items[:2], authority_scope_sha256_by_original_id={}))
+        self.assertIsNone(self.select(self.items[:2], authority_scope_sha256_by_original_id={
+            'original-1':'a'*64,'original-2':'b'*64}))
+
+    def test_provider_selection_is_data_and_human_protocols_are_forbidden(self):
+        items=deepcopy(self.items[:2])
+        attempts=dict(self.attempts)
+        for item in items:
+            item.source='github'
+            attempts[item.id]=attempts[item.id].model_copy(update={
+                'source':'github','queued_turn_snapshot':item.model_dump(mode='json')})
+        self.assertIsNotNone(self.select(items,attempts_by_original_id=attempts,notification_source_origin='github'))
+        for source in ('web','slack','','SLACK','queued:slack'):
+            with self.subTest(source=source),self.assertRaises(ValueError):
+                self.select(notification_source_origin=source)
+
     def test_byte_bound_never_truncates_or_consumes_oversized_original(self):
         items=deepcopy(self.items)
         items[1].message='🧪' * 10000
         self.attempts[items[1].id]=self.service.retain_queued(items[1].model_copy(update={'id':'new-long'}), organization_id='local', workspace_id='default')
         # Use an entirely new original so the canonical store refuses no changed identity.
         items[1].id='new-long'; self.attempts[items[1].id]=self.attempts.pop('original-2')
-        plan=self.select(items, verified_notification_ids=frozenset(item.id for item in items), max_context_bytes=10000)
+        plan=self.select(items, verified_notification_ids=frozenset(item.id for item in items), max_context_bytes=10000,
+                         authority_scope_sha256_by_original_id={item.id:'a'*64 for item in items})
         self.assertEqual([item.id for item in plan.members], ['original-1','original-3','original-4'])
         self.assertEqual(len(items[1].message),10000)
         self.assertLessEqual(len(plan.native_input().encode()),10000)
@@ -122,7 +142,8 @@ class NotificationBatchPlanTests(unittest.TestCase):
             NotificationBatchPlan.model_validate(data)
 
     def test_invalid_bounds_and_explicit_retry_do_not_join_batch(self):
-        for changes in ({'max_members':17},{'max_members':1},{'max_context_bytes':255},{'max_context_bytes':262145}):
+        for changes in ({'max_members':17},{'max_members':1},{'max_members':2.5},{'max_members':True},
+                        {'max_context_bytes':255},{'max_context_bytes':262145},{'max_context_bytes':65536.5}):
             with self.subTest(changes=changes),self.assertRaises(ValueError):
                 self.select(**changes)
         attempts=dict(self.attempts)

@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.models import ExecutionPreflightAttempt, QueuedTurn
+from codex_web.services.turn_queue_policy import TurnQueuePolicy
 
 
 HEADER = (
@@ -42,6 +44,7 @@ class NotificationBatchPlan(BaseModel):
     id: str = Field(pattern=r"^notification-batch-[0-9a-f]{64}$")
     organization_id: str = Field(min_length=1)
     workspace_id: str = Field(min_length=1)
+    authority_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     original_snapshots_json: tuple[str, ...] = Field(min_length=2, max_length=16)
     queue_snapshots_json: tuple[str, ...] = Field(min_length=2, max_length=16)
     max_context_bytes: int = Field(ge=256, le=262144)
@@ -55,9 +58,10 @@ class NotificationBatchPlan(BaseModel):
         return _native_input(self.id, self.original_snapshots_json, self.queue_snapshots_json)
 
     @staticmethod
-    def identity(organization_id, workspace_id, originals, routes):
+    def identity(organization_id, workspace_id, authority_scope_sha256, originals, routes):
         return "notification-batch-" + hashlib.sha256(_json({
             "version": "1.0", "organization_id": organization_id, "workspace_id": workspace_id,
+            "authority_scope_sha256": authority_scope_sha256,
             "originals": list(originals), "routes": list(routes),
         }).encode()).hexdigest()
 
@@ -71,7 +75,7 @@ class NotificationBatchPlan(BaseModel):
             raise ValueError("batch original IDs are duplicate or changed")
         if any(_scope(item) != _scope(members[0]) for item in members):
             raise ValueError("batch queue execution/reply scope differs")
-        if self.id != self.identity(self.organization_id, self.workspace_id,
+        if self.id != self.identity(self.organization_id, self.workspace_id, self.authority_scope_sha256,
                                    self.original_snapshots_json, self.queue_snapshots_json):
             raise ValueError("batch immutable snapshot fingerprint changed")
         if len(self.native_input().encode()) > self.max_context_bytes:
@@ -80,12 +84,13 @@ class NotificationBatchPlan(BaseModel):
 
 
 def _eligible(original: QueuedTurn, attempt: ExecutionPreflightAttempt | None,
-              *, organization_id: str, workspace_id: str) -> str | None:
+              *, organization_id: str, workspace_id: str, notification_source_origin: str) -> str | None:
     if (attempt is None or attempt.status != "queued" or attempt.queued_start_receipt is not None
             or attempt.scheduling_retirement is not None or attempt.attempt_number != 1
             or attempt.queued_turn_snapshot is None
             or attempt.organization_id != organization_id or attempt.workspace_id != workspace_id
-            or attempt.project_id != original.project_id or original.source != "gitlab"
+            or attempt.project_id != original.project_id
+            or TurnQueuePolicy.source_origin(original.source) != notification_source_origin
             or original.handoff_requested_at is not None or not original.work_item_ref
             or not original.agent_profile_id or not original.agent_profile_revision
             or not original.agent_profile_actor_id or not original.execution_profile_id):
@@ -111,6 +116,8 @@ def select_notification_batch(
     items: list[QueuedTurn], *, anchor_id: str,
     attempts_by_original_id: dict[str, ExecutionPreflightAttempt],
     verified_notification_ids: frozenset[str], organization_id: str, workspace_id: str,
+    authority_scope_sha256_by_original_id: dict[str, str],
+    notification_source_origin: str,
     max_members: int, max_context_bytes: int,
 ) -> NotificationBatchPlan | None:
     """Plan around the existing admission anchor without modifying any state.
@@ -120,15 +127,24 @@ def select_notification_batch(
     does not supply that attestation or grant authority. Runtime integration must
     atomically recheck snapshots/claims before any removal or native admission.
     """
-    if not 2 <= max_members <= 16 or not 256 <= max_context_bytes <= 262144:
+    if (type(max_members) is not int or type(max_context_bytes) is not int
+            or not 2 <= max_members <= 16 or not 256 <= max_context_bytes <= 262144):
         raise ValueError("invalid notification batch bounds")
+    # These are existing direct-human intake protocols, not a provider catalog.
+    if (not re.fullmatch(r"[a-z][a-z0-9._-]{0,79}", notification_source_origin)
+            or notification_source_origin in {"web", "slack"}):
+        raise ValueError("invalid or human provider notification origin")
     if len({item.id for item in items}) != len(items):
         raise ValueError("duplicate original IDs in queue")
     anchor = next((item for item in items if item.id == anchor_id), None)
     if anchor is None or anchor.id not in verified_notification_ids:
         return None
+    authority_scope = authority_scope_sha256_by_original_id.get(anchor.id, "")
+    if not re.fullmatch(r"[0-9a-f]{64}", authority_scope):
+        return None
     first = _eligible(anchor, attempts_by_original_id.get(anchor.id),
-                      organization_id=organization_id, workspace_id=workspace_id)
+                      organization_id=organization_id, workspace_id=workspace_id,
+                      notification_source_origin=notification_source_origin)
     if first is None:
         return None
     originals, routes = [first], [_json(anchor.model_dump(mode="json"))]
@@ -138,15 +154,17 @@ def select_notification_batch(
     for item in items[items.index(anchor) + 1:]:
         if len(originals) >= max_members:
             break
-        if item.id not in verified_notification_ids or _scope(item) != _scope(anchor):
+        if (item.id not in verified_notification_ids or _scope(item) != _scope(anchor)
+                or authority_scope_sha256_by_original_id.get(item.id) != authority_scope):
             continue
         snapshot = _eligible(item, attempts_by_original_id.get(item.id),
-                             organization_id=organization_id, workspace_id=workspace_id)
+                             organization_id=organization_id, workspace_id=workspace_id,
+                             notification_source_origin=notification_source_origin)
         if snapshot is None:
             continue
         candidate_originals = (*originals, snapshot)
         candidate_routes = (*routes, _json(item.model_dump(mode="json")))
-        identity = NotificationBatchPlan.identity(organization_id, workspace_id,
+        identity = NotificationBatchPlan.identity(organization_id, workspace_id, authority_scope,
                                                   candidate_originals, candidate_routes)
         # Oversized candidates remain individual originals. No truncation or
         # partial prompt is used to make a group fit.
@@ -154,7 +172,7 @@ def select_notification_batch(
         if len(payload.encode()) > max_context_bytes:
             continue
         plan = NotificationBatchPlan(id=identity, organization_id=organization_id,
-            workspace_id=workspace_id, original_snapshots_json=candidate_originals,
+            workspace_id=workspace_id, authority_scope_sha256=authority_scope, original_snapshots_json=candidate_originals,
             queue_snapshots_json=candidate_routes, max_context_bytes=max_context_bytes)
         originals, routes = list(candidate_originals), list(candidate_routes)
     return plan
