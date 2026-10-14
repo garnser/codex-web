@@ -104,6 +104,8 @@
       attempts[0].can_retire_scheduling = true;
       attempts[0].can_reconcile_prestart = true;
       batches.push({id:'fixture-batch',phase:batchPhase,original_count:2,oldest_age_seconds:600,
+        outcome_counts:new URLSearchParams(location.search).has('batchOutcomes') ? {
+          reconciled:1,follow_up_required:0,unresolved:1} : null,
         can_review_recovery:new URLSearchParams(location.search).has('batchRecovery'),
         oldest_created_at:1800000000,original_ids:['original-one','original-two'],
         recovery_state:batchPhase==='released' ? 'released_to_original_queue' : 'batch_reconciliation_required',
@@ -146,7 +148,12 @@
           originals:[{original:{id:'original-one',execution_id:'requested-one',created_at:1800000000,
           source:'gitlab',work_item_ref:'fixture/repo#1',thread_id:'original-thread',
           message:'Full original <img src=x onerror="window.__unsafe=true"> body'},
-          admitted_route:{thread_id:'thread-1'},retained_status:'reconciliation_required',outcome:'unresolved'}]};
+          admitted_route:{thread_id:'thread-1'},retained_status:'reconciliation_required',
+          outcome:new URLSearchParams(location.search).has('batchOutcomes') ? 'reconciled' : 'unresolved',
+          evidence_ids:['fixture-evidence'],verification_ids:['fixture-independent-review'],blockers:[]},
+          ...(new URLSearchParams(location.search).has('batchOutcomes') ? [{original:{id:'original-two',created_at:1800000000,
+            message:'Second full notification'},retained_status:'reconciliation_required',outcome:'unresolved',
+            evidence_ids:[],verification_ids:[],blockers:['review_not_verified_or_conflicting']}] : [])]};
       }
       if (path.includes('/notification-batches')) {
         if (path.includes('?after=')) {

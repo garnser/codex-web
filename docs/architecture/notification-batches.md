@@ -223,8 +223,8 @@ The thread preflight surface loads bounded notification admission history and
 lets an authorized viewer inspect exact immutable originals and admitted routes.
 It distinguishes prepared, affirmative pre-worker refusal, native uncertainty,
 shared native input delivery and released claims. A shared receipt is shown once
-as aggregate delivery evidence; every historical batch member outcome remains
-explicitly unresolved until per-original canonical reconciliation exists.
+as aggregate delivery evidence; member outcomes remain unresolved unless current
+per-original canonical evidence and independent verification qualify below.
 Missing or changed retained attempts are visible as integrity failures without
 erasing their original descriptor snapshots or claiming successful processing.
 
@@ -249,8 +249,57 @@ Batch-bound members expose no individual retry, pre-start reconciliation,
 bootstrap recovery or scheduling-retirement controls. Their service entry points
 also return a batch-reconciliation conflict before attempting those mutations;
 the store's batch ownership fence remains authoritative. This inspection surface
-does not supply the still-required per-original outcome reconciliation or
-runtime enablement and live qualification tracked by #1307 and its #127 UI review.
+does not enable runtime processing or qualify production throughput tracked by
+#1307 and its #127 UI review.
+
+## Per-original evidence inspection
+
+Canonical Evidence metadata may carry `notification_original_outcome`, a JSON
+string conforming to `NotificationOriginalOutcomeBinding` schema1.0. It pins the
+admission ID, original ID, SHA256 of the exact retained immutable original JSON,
+and a disposition of `reconciled` or `follow_up_required`. This is a code-owned
+protocol binding, not a mutable operational definition or an authority grant.
+The existing Artifact/Evidence APIs own production, review and invalidation;
+there is no additional outcome ledger or write endpoint.
+
+An eligible record is canonical `runtime_result` evidence in the original tenant,
+Project and Work Item, bound to the shared receipt's actual execution ID, provider
+and native turn (external ID), observed no earlier than native input delivery.
+Reconciled evidence has result `pass`; follow-up evidence has result `warn`.
+Evidence and any supporting artifacts must remain valid, active and unexpired.
+The JSON binding alone never establishes a result. A canonical Verification must
+target exactly that evidence, the same execution and Work Item, use method
+`notification-original-outcome/1.0`, and be independently `verified` by a different
+identity after evidence creation. Self-review, general review and a broad review
+covering several evidence records cannot substitute for this exact binding.
+
+Inspection reads one canonical evidence snapshot per request. It exposes bounded
+proof IDs, snapshot digests, blockers and counts on the existing history/detail
+surface. Conflicting current dispositions or adverse independent reviews remain
+unresolved; it does
+not choose the most convenient latest record. Expired/invalidated evidence,
+changed retained originals or member claims also remove a projected result when
+no other current qualifying proof remains. Unreviewed, mismatched or inactive
+metadata cannot revoke a separate current verified result; such records are
+reported as warnings. Changed or missing retained claims always block the result.
+Invalid or incompatible binding JSON cannot create an outcome. Foreign records
+and other admissions are excluded without exposing their proof IDs.
+
+`reconciled` means independently reviewed reconciliation of this notification;
+it does not establish business acceptance, ACK, issue closure or permission to
+replay. `follow_up_required` identifies reviewed remaining work and does not
+enqueue or submit it. Inspection never changes an attempt status, member claim,
+queue, native receipt, admission phase or authority decision. Shared telemetry
+without the per-original binding and review leaves all individual outcomes
+unresolved. Missing evidence support fails closed.
+
+This additive inspection uses existing Evidence metadata and changes no persisted
+batch schema. Older readers continue to show unresolved outcomes; rollback loses
+only this projection, not proof or originals. The proof writing/review process
+uses existing canonical API authorization and data-governance invalidation.
+Automated proof production, processing/follow-up integration, deployment and real
+Orchestrator useful-throughput qualification remain separate parent acceptance
+requirements; this read-only view cannot fulfill them by itself.
 
 ## Guarded operator queue restoration
 
