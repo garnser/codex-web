@@ -247,6 +247,7 @@ class ExecutionPreflightService:
     def reconcile_prestart_refusal(self, attempt_id: str, *, actor: AuthenticationActor) -> ExecutionPreflightAttempt:
         initial = self.get(attempt_id, actor=actor)
         self._authorize(initial, actor, require_admin=True)
+        self._require_individual_recovery(initial)
         def update(current):
             # The recorded controller refusal occurs before native turn/start.
             # Absence, timeout, active markers and expired claims prove nothing.
@@ -589,6 +590,7 @@ class ExecutionPreflightService:
     def authorize_retry(self, attempt_id: str, *, actor: AuthenticationActor) -> ExecutionPreflightAttempt:
         current = self.get(attempt_id, actor=actor)
         self._authorize(current, actor, require_admin=True)
+        self._require_individual_recovery(current)
         if current.bootstrap_recovery is not None and current.bootstrap_recovery.state != 'created':
             raise HTTPException(status_code=409, detail={
                 'code':'bootstrap_recovery_pending',
@@ -607,6 +609,7 @@ class ExecutionPreflightService:
         """Commit once before bootstrap I/O; expiration never proves its outcome."""
         initial = self.get(attempt_id, actor=actor)
         self._authorize(initial, actor, require_admin=True)
+        self._require_individual_recovery(initial)
         if actor.principal_kind == PrincipalKind.HUMAN:
             try:
                 IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
@@ -671,6 +674,7 @@ class ExecutionPreflightService:
     ) -> ExecutionPreflightAttempt:
         current = self.get(attempt_id, actor=actor)
         self._authorize(current, actor, require_admin=True)
+        self._require_individual_recovery(current)
         return current
 
     def claim_retry(
@@ -812,6 +816,14 @@ class ExecutionPreflightService:
             return False
         return True
 
+    @staticmethod
+    def _require_individual_recovery(attempt):
+        if attempt.notification_batch_id is not None:
+            raise HTTPException(status_code=409, detail={
+                'code':'notification_batch_reconciliation_required',
+                'message':'This original belongs to a batch. Inspect and reconcile the shared admission before individual recovery.',
+                'batch_id':attempt.notification_batch_id})
+
     def public(
         self,
         attempt: ExecutionPreflightAttempt,
@@ -850,6 +862,11 @@ class ExecutionPreflightService:
         payload['retire_scheduling_href'] = (
             f'/api/threads/{attempt.replacement_thread_id or attempt.thread_id}/preflight-attempts/'
             f'{attempt.id}/retire-scheduling')
+        if attempt.notification_batch_id is not None:
+            for capability in ('can_retry', 'can_recover_bootstrap', 'can_reconcile_prestart', 'can_retire_scheduling'):
+                payload[capability] = False
+            payload['notification_batch_href'] = (
+                f'/api/threads/{attempt.replacement_thread_id or attempt.thread_id}/notification-batches/{attempt.notification_batch_id}')
         return payload
 
     def retry_payload(

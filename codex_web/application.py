@@ -109,6 +109,7 @@ from codex_web.services.thread_scope import ThreadScopeService
 from codex_web.services.queue_order_recovery import QueueOrderRecoveryService
 from codex_web.services.queued_bootstrap_recovery import QueuedBootstrapRecoveryService
 from codex_web.api.turns import build_turns_router
+from codex_web.services.notification_batch_inspection import NotificationBatchInspection
 from codex_web.api.ui import build_ui_router
 from codex_web.api.work_items import build_work_items_router
 from codex_web.api.work_graph import build_work_graph_router
@@ -3488,6 +3489,7 @@ execution_preflight_service = ExecutionPreflightService(
 )
 app.state.execution_preflight_service = execution_preflight_service
 turn_execution_service.queued_preflight = execution_preflight_service
+notification_batch_inspection = NotificationBatchInspection(execution_preflight_store)
 work_item_operator_service = WorkItemOperatorService(work_item_service)
 scheduling_retirement_service = QueuedSchedulingRetirementService(
     preflight=execution_preflight_service,
@@ -4745,7 +4747,8 @@ EXTRACTED_ROUTE_COUNTS = {
         build_threads_router(thread_service, thread_scope_service)
     ),
     "turns": _include_domain_router(
-        build_turns_router(turn_service, thread_scope_service, queue_order_recovery_service, queued_bootstrap_recovery_service)
+        build_turns_router(turn_service, thread_scope_service, queue_order_recovery_service, queued_bootstrap_recovery_service,
+            notification_batches=notification_batch_inspection)
     ),
     "context": _include_domain_router(
         build_context_router(context_service, thread_scope_service)

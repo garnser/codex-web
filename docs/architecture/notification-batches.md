@@ -175,3 +175,38 @@ age, native admission/uncertainty and individual outcomes, with canonical payloa
 and scope/provenance links. Refresh must remain read-only. Live acceptance needs
 actual useful throughput/oldest-actionable-age evidence from the original queue;
 synthetic fixtures or a shorter displayed queue do not prove it.
+
+## Read-only operator inspection
+
+The thread preflight surface loads bounded notification admission history and
+lets an authorized viewer inspect exact immutable originals and admitted routes.
+It distinguishes prepared, affirmative pre-worker refusal, native uncertainty,
+shared native input delivery and released claims. A shared receipt is shown once
+as aggregate delivery evidence; every historical batch member outcome remains
+explicitly unresolved until per-original canonical reconciliation exists.
+Missing or changed retained attempts are visible as integrity failures without
+erasing their original descriptor snapshots or claiming successful processing.
+
+`GET /api/threads/{thread_id}/notification-batches` returns schema1.0 summaries,
+including original count, oldest original age, exact scope, phase, recovery state,
+and a cursor. Pages are bounded to 50 admissions (20 by default). The detail GET
+at `.../notification-batches/{batch_id}` returns every original and its original
+requested execution ID, full body, actor/profile, repository and reply provenance.
+Both reuse canonical thread/Project, tenant and API read authorization. Refresh,
+pagination and detail inspection perform no admission/recovery or model calls.
+
+New claims atomically add an index under `bt/` in the existing preflight namespace;
+its prefix hashes the exact tenant/Project/thread tuple. Released history remains
+inspectable after member pointers are cleared. This index is additive and does
+not change the descriptor schema. Legacy unindexed descriptors remain directly
+inspectable by their retained membership link or known admission ID; history
+explicitly reports `indexed_admissions` and does not silently backfill on a read.
+Any existing unindexed production history must be accounted for during qualified
+deployment before live batch acceptance is claimed.
+
+Batch-bound members expose no individual retry, pre-start reconciliation,
+bootstrap recovery or scheduling-retirement controls. Their service entry points
+also return a batch-reconciliation conflict before attempting those mutations;
+the store's batch ownership fence remains authoritative. This inspection surface
+does not supply the still-required guarded batch recovery/outcome controls or
+runtime configuration/authority wiring tracked by #1307 and its #127 UI review.

@@ -242,6 +242,12 @@ API_DOMAINS.update({
 # now require canonical operational authority while ordinary progress/handoff
 # traffic remains compatible with authenticated-member workflows.
 EXACT_POLICIES: dict[tuple[str, str], ApiAuthorizationPolicy] = {
+    ('GET', '/api/threads/{thread_id}/notification-batches'): ApiAuthorizationPolicy(
+        capability='execution.retry', level=AuthorityLevel.READ, access=ApiAccessMode.AUTHENTICATED,
+        description='Inspect retained batch admission history within canonical thread and tenant scope.'),
+    ('GET', '/api/threads/{thread_id}/notification-batches/{batch_id}'): ApiAuthorizationPolicy(
+        capability='execution.retry', level=AuthorityLevel.READ, access=ApiAccessMode.AUTHENTICATED,
+        description='Inspect exact original notifications and the shared native receipt without replay.'),
     ("POST", "/api/memory/projects/{project_id}/ux-briefs/preview"): ApiAuthorizationPolicy(
         capability="api.memory.context-preview", level=AuthorityLevel.READ,
         access=ApiAccessMode.AUTHENTICATED,
