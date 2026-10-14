@@ -49,6 +49,8 @@ test('stale repair preserves reason and does not automatically retry',async({pag
 test('late response does not reload or alter another Project view',async({page})=>{
   await setup(page,{deferred:true});await page.getByLabel('Queue order repair reason').fill('Fixture');
   await page.getByRole('button',{name:'Repair scheduling order'}).click();
+  await page.getByLabel('Queue order repair reason').fill('Edited while pending');
+  await expect(page.getByRole('button',{name:'Repair scheduling order'})).toBeDisabled();
   await page.evaluate(()=>{window.generation++;window.resolveRepair({ok:true,audit_recorded:true});});
   expect(await page.evaluate(()=>window.loads)).toEqual([]);
   await expect(page.getByRole('status')).not.toContainText('Scheduling order repaired');

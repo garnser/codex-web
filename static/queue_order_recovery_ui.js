@@ -19,10 +19,11 @@ export function createQueueOrderRecoveryUi({api,addMessage,loadThread,scheduleRe
     const label=document.createElement('label');label.textContent='Reason for order repair ';
     const reason=document.createElement('input');reason.maxLength=1000;reason.setAttribute('aria-label','Queue order repair reason');label.append(reason);
     const button=document.createElement('button');button.type='button';button.textContent='Repair scheduling order';button.disabled=true;
-    reason.addEventListener('input',()=>{button.disabled=!reason.value.trim();});
+    let submitted=false;
+    reason.addEventListener('input',()=>{button.disabled=submitted||!reason.value.trim();});
     const status=document.createElement('div');status.setAttribute('role','status');
     button.addEventListener('click',async()=>{
-      if(!entry.current())return;button.disabled=true;status.textContent='Checking current queue and admission provenance…';
+      if(submitted||!entry.current())return;submitted=true;button.disabled=true;status.textContent='Checking current queue and admission provenance…';
       try{
         const response=await api(`/api/threads/${encodeURIComponent(threadId)}/queue/order-recovery`,{
           method:'POST',body:JSON.stringify({expected_snapshot_sha256:preview.snapshot_sha256,reason:reason.value.trim()})});
