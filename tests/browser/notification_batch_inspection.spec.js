@@ -59,3 +59,14 @@ test('failed older-history load preserves the current observed admission', async
   await expect(page.getByText('Shared native input delivered',{exact:true})).toBeVisible();
   await expect(page.getByRole('button',{name:'Load older admissions'})).toBeEnabled();
 });
+
+test('batch inspection exposes retained configuration and definition revisions', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?batch=native_input_started&batchControls');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+  await page.getByRole('button',{name:'Inspect batch originals'}).first().click();
+  await expect(page.locator('pre').first()).toContainText('Controls retained at admission:');
+  await expect(page.locator('pre').first()).toContainText('execution.profiles.default · revision 4');
+  await expect(page.locator('pre').first()).toContainText('authority.roles.default · revision 7');
+  await expect(page.locator('pre').first()).toContainText('execution.notification_batches.enabled = true; record fixture-config · revision 3');
+  expect(await page.evaluate(() => window.__apiCalls.every(call=>call.method==='GET'))).toBe(true);
+});

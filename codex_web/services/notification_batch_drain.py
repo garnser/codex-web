@@ -9,8 +9,17 @@ from codex_web.notification_provenance import verified_notification_ids
 
 
 class NotificationBatchDrain:
-    def __init__(self, *, coordinator, event_lookup, policy_for, authority_for):
+    def __init__(
+        self,
+        *,
+        coordinator,
+        event_lookup,
+        policy_for,
+        authority_for=None,
+        control_for=None,
+    ):
         self.coordinator = coordinator
+        self.control_for = control_for
         self.event_lookup, self.policy_for, self.authority_for = (
             event_lookup,
             policy_for,
@@ -47,13 +56,28 @@ class NotificationBatchDrain:
         )
         if anchor.id not in verified:
             return False
-        attempts, scopes = {}, {}
+        attempts, scopes, controls = {}, {}, {}
         for item in items:
             if item.id not in verified or item.project_id != project.id:
                 continue
-            scope = await asyncio.to_thread(self.authority_for, item, project)
+            control = (
+                await asyncio.to_thread(self.control_for, item, project)
+                if self.control_for
+                else None
+            )
+            scope = (
+                control.fingerprint()
+                if control is not None
+                else (
+                    await asyncio.to_thread(self.authority_for, item, project)
+                    if self.authority_for
+                    else None
+                )
+            )
             if not scope:
                 continue
+            if control is not None:
+                controls[item.id] = control
             scopes[item.id] = scope
             attempts[item.id] = await asyncio.to_thread(
                 runtime.queued_preflight.retain_queued,
@@ -61,6 +85,7 @@ class NotificationBatchDrain:
                 organization_id=project.organization_id,
                 workspace_id=project.workspace_id,
             )
+        control = controls.get(anchor.id)
         plan = select_notification_batch(
             items,
             anchor_id=anchor.id,
@@ -70,22 +95,24 @@ class NotificationBatchDrain:
             organization_id=project.organization_id,
             workspace_id=project.workspace_id,
             notification_source_origin=anchor.provider_notification_pin.source_origin,
-            max_members=policy["max_members"],
-            max_context_bytes=policy["max_context_bytes"],
+            max_members=control.max_members if control else policy["max_members"],
+            max_context_bytes=control.max_context_bytes
+            if control
+            else policy["max_context_bytes"],
+            control_snapshot=control,
         )
         if plan is None:
             return False
 
-        def current():
+        def current(allow_active=False):
             observed_fence = runtime.ownership.require_fence(
                 "thread-queue:" + anchor.thread_id
             )
             if observed_fence.fencing_token != fence.fencing_token:
                 return False
             if (
-                runtime.thread_is_active(anchor.thread_id)
-                or self.policy_for(actor, project) != policy
-            ):
+                not allow_active and runtime.thread_is_active(anchor.thread_id)
+            ) or self.policy_for(actor, project) != policy:
                 return False
             fresh = verified_notification_ids(
                 plan.members,
@@ -93,10 +120,21 @@ class NotificationBatchDrain:
                 organization_id=project.organization_id,
                 workspace_id=project.workspace_id,
             )
+
+            def current_scope(item):
+                if self.control_for is not None:
+                    current_control = self.control_for(item, project)
+                    return (
+                        current_control.fingerprint()
+                        if current_control is not None
+                        else None
+                    )
+                return self.authority_for(item, project)
+
             return all(
                 item.id in fresh
                 and runtime.automation_wait_reason(item.source) is None
-                and self.authority_for(item, project) == plan.authority_scope_sha256
+                and current_scope(item) == plan.authority_scope_sha256
                 for item in plan.members
             )
 
@@ -112,6 +150,7 @@ class NotificationBatchDrain:
                 project=project,
                 actor=actor,
                 current=current,
+                native_current=lambda: current(allow_active=True),
             )
         except Exception as exc:
             if admission is None:

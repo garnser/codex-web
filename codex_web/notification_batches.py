@@ -7,7 +7,8 @@ import json
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
+from codex_web.notification_batch_controls import NotificationBatchControlSnapshot
 
 from codex_web.models import (
     ExecutionPreflightAttempt,
@@ -74,7 +75,7 @@ def _native_input(identity, originals, routes):
 class NotificationBatchPlan(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "1.1"] = "1.0"
     id: str = Field(pattern=r"^notification-batch-[0-9a-f]{64}$")
     organization_id: str = Field(min_length=1)
     workspace_id: str = Field(min_length=1)
@@ -82,6 +83,14 @@ class NotificationBatchPlan(BaseModel):
     original_snapshots_json: tuple[str, ...] = Field(min_length=2, max_length=16)
     queue_snapshots_json: tuple[str, ...] = Field(min_length=2, max_length=16)
     max_context_bytes: int = Field(ge=256, le=262144)
+    control_snapshot: NotificationBatchControlSnapshot | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_control(self, handler):
+        result = handler(self)
+        if self.control_snapshot is None:
+            result.pop("control_snapshot", None)
+        return result
 
     @property
     def members(self) -> tuple[QueuedTurn, ...]:
@@ -97,19 +106,33 @@ class NotificationBatchPlan(BaseModel):
 
     @staticmethod
     def identity(
-        organization_id, workspace_id, authority_scope_sha256, originals, routes
+        organization_id,
+        workspace_id,
+        authority_scope_sha256,
+        originals,
+        routes,
+        control_snapshot=None,
     ):
         return (
             "notification-batch-"
             + hashlib.sha256(
                 _json(
                     {
-                        "version": "1.0",
+                        "version": "1.1" if control_snapshot is not None else "1.0",
                         "organization_id": organization_id,
                         "workspace_id": workspace_id,
                         "authority_scope_sha256": authority_scope_sha256,
                         "originals": list(originals),
                         "routes": list(routes),
+                        **(
+                            {
+                                "control_snapshot": control_snapshot.model_dump(
+                                    mode="json"
+                                )
+                            }
+                            if control_snapshot is not None
+                            else {}
+                        ),
                     }
                 ).encode()
             ).hexdigest()
@@ -117,6 +140,8 @@ class NotificationBatchPlan(BaseModel):
 
     @model_validator(mode="after")
     def validate_plan(self):
+        if (self.schema_version == "1.1") != (self.control_snapshot is not None):
+            raise ValueError("batch control snapshot/version mismatch")
         if len(self.original_snapshots_json) != len(self.queue_snapshots_json):
             raise ValueError("batch originals/routes do not match")
         original_ids = [
@@ -130,12 +155,27 @@ class NotificationBatchPlan(BaseModel):
             raise ValueError("batch original IDs are duplicate or changed")
         if any(_scope(item) != _scope(members[0]) for item in members):
             raise ValueError("batch queue execution/reply scope differs")
+        control = self.control_snapshot
+        if control is not None and (
+            control.organization_id != self.organization_id
+            or control.workspace_id != self.workspace_id
+            or control.project_id != members[0].project_id
+            or control.actor_id != members[0].agent_profile_actor_id
+            or control.agent_profile_id != members[0].agent_profile_id
+            or control.agent_profile_revision != members[0].agent_profile_revision
+            or control.execution_profile_id != members[0].execution_profile_id
+            or control.fingerprint() != self.authority_scope_sha256
+            or control.max_context_bytes != self.max_context_bytes
+            or len(members) > control.max_members
+        ):
+            raise ValueError("batch control snapshot scope differs")
         if self.id != self.identity(
             self.organization_id,
             self.workspace_id,
             self.authority_scope_sha256,
             self.original_snapshots_json,
             self.queue_snapshots_json,
+            self.control_snapshot,
         ):
             raise ValueError("batch immutable snapshot fingerprint changed")
         if (
@@ -297,6 +337,7 @@ def select_notification_batch(
     notification_source_origin: str,
     max_members: int,
     max_context_bytes: int,
+    control_snapshot: NotificationBatchControlSnapshot | None = None,
 ) -> NotificationBatchPlan | None:
     """Plan around the existing admission anchor without modifying any state.
 
@@ -364,6 +405,7 @@ def select_notification_batch(
             authority_scope,
             candidate_originals,
             candidate_routes,
+            control_snapshot,
         )
         # Oversized candidates remain individual originals. No truncation or
         # partial prompt is used to make a group fit.
@@ -371,6 +413,7 @@ def select_notification_batch(
         if len(payload.encode()) + _ADMISSION_PREFIX_BYTES > max_context_bytes:
             continue
         plan = NotificationBatchPlan(
+            schema_version="1.1" if control_snapshot is not None else "1.0",
             id=identity,
             organization_id=organization_id,
             workspace_id=workspace_id,
@@ -378,6 +421,7 @@ def select_notification_batch(
             original_snapshots_json=candidate_originals,
             queue_snapshots_json=candidate_routes,
             max_context_bytes=max_context_bytes,
+            control_snapshot=control_snapshot,
         )
         originals, routes = list(candidate_originals), list(candidate_routes)
     return plan

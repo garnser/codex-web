@@ -818,6 +818,7 @@ class NotificationBatchPlanTests(unittest.TestCase):
         self.assertEqual(
             [method for method, _ in sessions.session.requests].count("turn/start"), 1
         )
+
         with self.assertRaises(ValueError):
             asyncio.run(
                 coordinator.submit_native(
@@ -830,6 +831,117 @@ class NotificationBatchPlanTests(unittest.TestCase):
             )
         self.assertEqual(
             [method for method, _ in sessions.session.requests].count("turn/start"), 1
+        )
+
+    def test_changed_controls_before_native_gate_preserve_prepared_admission(self):
+        coordinator, admission, sessions, runtime, actor, project = (
+            self.native_runtime_fixture()
+        )
+        with self.assertRaises(ValueError):
+            asyncio.run(
+                coordinator.submit_native(
+                    admission,
+                    runtime=runtime,
+                    project=project,
+                    actor=actor,
+                    current=lambda: True,
+                    native_current=lambda: False,
+                )
+            )
+        self.assertEqual(
+            self.service.store.get_notification_batch(admission.id).phase, "prepared"
+        )
+        self.assertEqual(sessions.session.requests, [])
+
+    def test_selected_memory_context_cannot_exceed_the_native_batch_byte_bound(self):
+        from codex_web.ux_briefs import UxBriefTurnBinding, UxBriefSelection
+        from codex_web.identity import PrincipalKind
+
+        binding = UxBriefTurnBinding(
+            selection=UxBriefSelection(
+                knowledge_id="synthetic-brief",
+                version=1,
+                sha256="b" * 64,
+                sections=("observed_needs",),
+            ),
+            project_id="project-a",
+            organization_id="local",
+            workspace_id="default",
+            identity_id="actor-a",
+            principal_kind=PrincipalKind.HUMAN,
+            context_sha256="c" * 64,
+        )
+        self.items = [
+            item.model_copy(update={"memory_context_binding": binding})
+            for item in self.items
+        ]
+        for item in self.items:
+            attempt = self.attempts[item.id].model_copy(
+                update={"queued_turn_snapshot": item.model_dump(mode="json")}
+            )
+            self.service.store.put(attempt)
+            self.attempts[item.id] = attempt
+        coordinator, admission, sessions, runtime, actor, project = (
+            self.native_runtime_fixture()
+        )
+        runtime.memory_context_service = SimpleNamespace(
+            prepare=lambda binding, project: ({"context": "x" * 70000}, actor)
+        )
+        with self.assertRaises(ValueError):
+            asyncio.run(
+                coordinator.submit_native(
+                    admission,
+                    runtime=runtime,
+                    project=project,
+                    actor=actor,
+                    current=lambda: True,
+                )
+            )
+        self.assertEqual(
+            [method for method, _ in sessions.session.requests].count("turn/start"), 0
+        )
+        self.assertEqual(
+            self.service.store.get_notification_batch(admission.id).phase,
+            "native_outcome_unknown",
+        )
+
+    def test_changed_controls_after_routing_hold_uncertainty_without_native_replay(
+        self,
+    ):
+        coordinator, admission, sessions, runtime, actor, project = (
+            self.native_runtime_fixture()
+        )
+        current = MagicMock(side_effect=[True, False])
+        with self.assertRaises(ValueError):
+            asyncio.run(
+                coordinator.submit_native(
+                    admission,
+                    runtime=runtime,
+                    project=project,
+                    actor=actor,
+                    current=lambda: True,
+                    native_current=current,
+                )
+            )
+        self.assertEqual(
+            self.service.store.get_notification_batch(admission.id).phase,
+            "native_outcome_unknown",
+        )
+        self.assertEqual(
+            [method for method, _ in sessions.session.requests].count("turn/start"), 0
+        )
+        with self.assertRaises(ValueError):
+            asyncio.run(
+                coordinator.submit_native(
+                    admission,
+                    runtime=runtime,
+                    project=project,
+                    actor=actor,
+                    current=lambda: True,
+                )
+            )
+        self.assertEqual(
+            [method for method, _ in sessions.session.requests].count("turn/start"), 0
         )
 
     def test_controller_refusal_before_worker_routing_is_recoverable(self):

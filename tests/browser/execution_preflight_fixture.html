@@ -123,7 +123,12 @@
           return new Promise((resolve,reject) => {window.__finishBatchDetail={resolve,reject};});
         }
         if (new URLSearchParams(location.search).has('deniedBatchDetail')) throw new Error('Batch unavailable in this scope');
-        return {originals:[{original:{id:'original-one',execution_id:'requested-one',created_at:1800000000,
+        return {control_snapshot:new URLSearchParams(location.search).has('batchControls') ? {
+          agent_profile_record_id:'fixture-profile-record',execution_definition_ref:{definition_id:'execution.profiles.default',revision:4},
+          authority_definition_ref:{definition_id:'authority.roles.default',revision:7},
+          configuration_pins_json:[JSON.stringify({key:'execution.notification_batches.enabled',value:true,record_id:'fixture-config',revision:3})],
+          max_members:3,max_context_bytes:65536} : null,
+          originals:[{original:{id:'original-one',execution_id:'requested-one',created_at:1800000000,
           source:'gitlab',work_item_ref:'fixture/repo#1',thread_id:'original-thread',
           message:'Full original <img src=x onerror="window.__unsafe=true"> body'},
           admitted_route:{thread_id:'thread-1'},retained_status:'reconciliation_required',outcome:'unresolved'}]};

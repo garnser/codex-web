@@ -3,15 +3,15 @@
 The admission foundation is tracked by
 [#1416](https://github.com/garnser/codex-web/issues/1416). It provides a planner,
 preflight member-claim ledger, guarded scheduling coordinator, native submission
-path and optional owned-drain adapter. The application does not install that
-adapter: automatic production admission is disabled. Canonical runtime
-configuration/authority wiring, complete batch lifecycle, per-original outcomes,
-inspector integration and live qualification remain tracked in
+path and owned-drain adapter. The application installs that adapter through
+canonical configuration and authority services; its feature flag defaults to
+disabled. Complete batch lifecycle, guarded operator recovery, per-original
+outcomes and live qualification remain tracked in
 [#1307](https://github.com/garnser/codex-web/issues/1307).
 
 ## Planning boundary
 
-`NotificationBatchPlan` schema1.0 stores complete immutable original request
+`NotificationBatchPlan` schemas1.0/1.1 store complete immutable original request
 snapshots and separate current queue-route snapshots as canonical JSON strings.
 It fingerprints tenant and current effective authority scope, all originals and
 all routes. Decoding validates
@@ -107,8 +107,49 @@ removal and native submission. Missing ownership, actor resolution, enabled
 configuration or exact event proof leaves the individual path available. A failed
 claim never releases a competing owner's claim. A held or uncertain batch never
 falls through into a duplicate individual admission. The adapter is intentionally
-uninstalled until canonical wiring and the parent's operator/reconciliation
-qualification are delivered.
+connected to canonical runtime controls. Installation does not enable its
+feature flag or satisfy the parent's operator/reconciliation qualification.
+
+## Canonical runtime controls
+
+The Configuration Registry supplies `execution.notification_batches.enabled`
+(default false, with a deployment kill switch), `max_members` (default4,
+structural range2–16), and `max_context_bytes` (default65536, structural
+range256–262144) under the same prefix. Deployment, Organization, Workspace and
+Project targeting use the existing resolver and administration UI. Configuration
+never grants permission, starts a model, or globally resumes paused autonomy.
+
+Before grouping, each original resolves a current canonical actor and Project,
+its exact pinned Agent Profile through current invocation access, the published
+execution profile and live Role authority. The Work Item must belong to that
+tenant/Project and have no current handoff. Repository associations must converge
+with requested scope; all involved repositories must remain active and
+Project-bound. Coordinated scope cannot absorb unrequested repositories. Scratch
+profiles preserve their absence of filesystem repository rights. A current
+`api.threads.write` execution decision must allow the exact Project/resource set
+and one admission; existing worker/model budgets continue through the ordinary
+native path. The profile input-token ceiling also conservatively caps bytes.
+
+Schema1.1 plans retain a frozen `NotificationBatchControlSnapshot`: exact
+configuration record/revision/value pins, pinned profile record/hash, current
+profile access decision, execution and authority Definition references, matched
+authority grants/delegations, actor and Project scope, repository metadata, and
+effective bounds. These determine the authority fingerprint and plan identity.
+Source labels or an externally supplied fingerprint cannot create this snapshot
+in the installed adapter. Changed or unavailable controls refuse grouping.
+
+The captured controls and ownership fence are rechecked in guarded queue removal,
+at the native uncertainty gate, and immediately before adapter input delivery.
+A change before gate consumption leaves a prepared claim; a later change leaves
+uncertainty held without replay. Selected UX context is included in the delivered
+input byte ceiling. These checks do not reinterpret missing receipts as nonstart.
+
+New readers accept both plan versions. Schema1.0 shapes omit absent control
+snapshots and retain their original fingerprints. Automatically selected plans
+use1.1; older extra-forbid plan readers reject the new shape. Membership and
+provider-pin mixed-writer/drain/backup/rollback constraints still apply. No
+production enablement, migration, deployment, per-original completion proof or
+live throughput acceptance follows from installing the adapter.
 
 The explicit submission path preserves the original anchor's actor, Project,
 profile/revision, execution profile, repositories, reply destination, model,
@@ -209,4 +250,4 @@ bootstrap recovery or scheduling-retirement controls. Their service entry points
 also return a batch-reconciliation conflict before attempting those mutations;
 the store's batch ownership fence remains authoritative. This inspection surface
 does not supply the still-required guarded batch recovery/outcome controls or
-runtime configuration/authority wiring tracked by #1307 and its #127 UI review.
+runtime enablement and live qualification tracked by #1307 and its #127 UI review.

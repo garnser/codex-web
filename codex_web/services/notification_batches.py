@@ -101,7 +101,9 @@ class NotificationBatchCoordinator:
             batch_id, claim_id=claim_id, phase="released"
         )
 
-    async def submit_native(self, admission, *, runtime, project, actor, current):
+    async def submit_native(
+        self, admission, *, runtime, project, actor, current, native_current=None
+    ):
         if admission.phase != "prepared" or not self._guard(admission, current):
             raise ValueError("notification batch authority/ownership changed")
         member = admission.plan.members[0]
@@ -141,4 +143,5 @@ class NotificationBatchCoordinator:
             ),
             queued_admission_claim_id=admission.claim_id,
             notification_batch_admission_id=admission.id,
+            notification_batch_control_current=native_current or current,
         )
