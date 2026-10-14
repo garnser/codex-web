@@ -9,7 +9,7 @@ import json
 import re
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
 
 from codex_web.agent_providers import AgentProviderCapability
 from codex_web.compatibility import ContractSpec
@@ -17,8 +17,8 @@ from codex_web.authority import AuthorityApprovalRequirement, AuthorityEnvironme
 from codex_web.execution_workers import WorkerCapability
 from codex_web.resources import ResourceType
 
-PROCEDURE_CONTRACT = ContractSpec("skill-operational-procedure", "1.0", ("1.0",))
-PROCEDURE_SCHEMA_VERSION = PROCEDURE_CONTRACT.current
+PROCEDURE_CONTRACT = ContractSpec("skill-operational-procedure", "1.1", ("1.0", "1.1"))
+PROCEDURE_SCHEMA_VERSION = "1.0"
 PROCEDURE_MAX_BYTES = 64 * 1024
 Identifier = Annotated[str, Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")]
 Text = Annotated[str, Field(min_length=1, max_length=2000)]
@@ -127,9 +127,25 @@ class ProcedureImpact(ProcedureData):
     reversible: bool
 
 
+class ProcedureRecovery(ProcedureData):
+    mode: Literal["provider_rollback"]
+    origin_step_id: Identifier
+
+
+class ProcedureJudgment(ProcedureData):
+    # Declared novelty only: no tools, action proposal, or implicit authority.
+    reason: Text
+    role: Identifier
+    model_class: Identifier
+    max_calls: int = Field(ge=1, le=5, strict=True)
+    max_input_tokens: int = Field(ge=1, le=12000, strict=True)
+    max_output_tokens: int = Field(ge=1, le=4000, strict=True)
+    max_cost_usd: float = Field(gt=0, le=100)
+
+
 class ProcedureStep(ProcedureData):
     id: Identifier
-    kind: Literal["diagnostic", "mutation", "verification", "recovery"]
+    kind: Literal["diagnostic", "mutation", "verification", "recovery", "judgment"]
     description: Text
     inputs: tuple[ProcedureValueContract, ...] = Field(default=(), max_length=24)
     outputs: tuple[ProcedureValueContract, ...] = Field(min_length=1, max_length=24)
@@ -142,13 +158,21 @@ class ProcedureStep(ProcedureData):
     permissions: tuple[ProcedurePermission, ...] = Field(min_length=1, max_length=16)
     action: ProcedureAction | None = None
     worker: ProcedureWorkerOperation | None = None
+    recovery: ProcedureRecovery | None = None
+    judgment: ProcedureJudgment | None = None
     impact: ProcedureImpact | None = None
     verification_step_id: Identifier | None = None
 
     @model_validator(mode="after")
     def operation(self):
-        if (self.action is None) == (self.worker is None):
-            raise ValueError("step requires exactly one registered action or isolated worker operation")
+        if sum(x is not None for x in (self.action, self.worker, self.judgment)) != 1:
+            raise ValueError("step requires exactly one registered action, isolated worker operation or judgment")
+        if (self.kind == "judgment") != (self.judgment is not None):
+            raise ValueError("judgment must use a declared governed reasoning contract")
+        if self.recovery and self.kind != "recovery":
+            raise ValueError("provider rollback must be a recovery step")
+        if self.judgment and self.judgment.max_calls != self.max_attempts:
+            raise ValueError("judgment call limit must equal the bounded attempt limit")
         if self.kind in {"mutation", "recovery"} and self.action is None:
             raise ValueError("external mutation/recovery requires a registered ActionProvider operation")
         if self.kind in {"mutation", "recovery"} and (self.impact is None or self.verification_step_id is None):
@@ -162,8 +186,18 @@ class ProcedureStep(ProcedureData):
         return self
 
 
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        payload = handler(self)
+        if self.recovery is None:
+            payload.pop("recovery", None)
+        if self.judgment is None:
+            payload.pop("judgment", None)
+        return payload
+
+
 class OperationalProcedure(ProcedureData):
-    schema_version: Literal["1.0"] = PROCEDURE_SCHEMA_VERSION
+    schema_version: Literal["1.0", "1.1"] = PROCEDURE_SCHEMA_VERSION
     owner_identity_id: Identifier
     task_triggers: tuple[Identifier, ...] = Field(min_length=1, max_length=32)
     operation_triggers: tuple[Identifier, ...] = Field(min_length=1, max_length=32)
@@ -184,6 +218,8 @@ class OperationalProcedure(ProcedureData):
 
     @model_validator(mode="after")
     def bounded_contract(self):
+        if self.schema_version == "1.0" and any(s.judgment or s.recovery for s in self.steps):
+            raise ValueError("judgment/provider rollback requires procedure schema 1.1")
         from codex_web.skills import _contains_secret_material
 
         raw = json.dumps(self.model_dump(mode="json"), sort_keys=True)
@@ -236,6 +272,12 @@ class OperationalProcedure(ProcedureData):
                 raise ValueError("worker references unknown resource selector")
             if step.worker and step.worker.capability not in self.required_worker_capabilities:
                 raise ValueError("worker operation capability must be declared as required")
+            if step.recovery:
+                origin = seen.get(step.recovery.origin_step_id)
+                if origin is None or origin.kind != "mutation" or origin.action != step.action:
+                    raise ValueError("provider rollback requires an earlier mutation with the exact same action reference")
+                if step.max_attempts != 1:
+                    raise ValueError("provider rollback is single-attempt; uncertainty requires reconciliation")
             target = step.failure.recovery_step_id
             if target is not None:
                 recovery = next((s for s in self.steps if s.id == target), None)

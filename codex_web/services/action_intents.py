@@ -18,6 +18,7 @@ from codex_web.action_intents import (
     ActionIntentReconcileRequest,
     ActionIntentRetryRequest,
     ActionIntentRollbackRequest,
+    ActionIntentRollbackCheckpoint,
     ActionIntentStatus,
     ActionIntentVerificationReceipt,
     TERMINAL_ACTION_INTENT_STATUSES,
@@ -142,6 +143,7 @@ class ActionIntentService:
         self.maintenance_guard = maintenance_guard
         self.maintenance_admission = maintenance_admission
         self.status_notifier = status_notifier
+        self.procedure_execution = None
         self.procedure_discovery = procedure_discovery
         if procedure_discovery is not None:
             self.execution.procedure_admission = self.procedure_provider_admission
@@ -292,6 +294,7 @@ class ActionIntentService:
         definition,
         request: ActionRequest,
         actor: AuthenticationActor,
+        execution_id: str | None = None,
     ) -> ActionDecisionSnapshot:
         capabilities = tuple(
             sorted(
@@ -325,6 +328,7 @@ class ActionIntentService:
             )
 
         level = AuthorityLevel(definition.required_authority_level)
+        approval_roles = self.procedure_execution.authority_approval_roles(execution_id, request, actor) if self.procedure_execution is not None else ()
         decisions = [
             self.authority.evaluate(
                 AuthorityEvaluationRequest(
@@ -333,6 +337,7 @@ class ActionIntentService:
                     project_id=request.project_id,
                     resource_ids=request.resource_ids,
                     autonomous_risk=self._authority_risk(definition),
+                    approval_role_ids=approval_roles,
                 ),
                 actor=actor,
             )
@@ -765,7 +770,7 @@ class ActionIntentService:
             raise ActionRequirementError("procedure_scope_changed: request differs from canonical intent")
         requester = await asyncio.to_thread(self._requester_actor, intent)
         authority = await asyncio.to_thread(self._canonical_authority_snapshot,
-            definition=definition, request=intent.request, actor=requester)
+            definition=definition, request=intent.request, actor=requester, execution_id=intent.execution_id)
         if authority.outcome != ActionDecisionOutcome.ALLOW:
             raise ActionRequirementError("procedure_authority_denied: " + (authority.reason or "requester authority denied"))
         context = await asyncio.to_thread(self._procedure_context,
@@ -777,6 +782,10 @@ class ActionIntentService:
         if phase == "rollback":
             from dataclasses import replace
             context = replace(context, operation=intent.action_id + ".rollback", enforcement="canonical_rollback")
+        if self.procedure_execution is not None:
+            mediated = await self.procedure_execution.provider_admission(intent, requester, phase)
+            if mediated:
+                return
         previous = intent.procedure_discoveries[-1] if intent.procedure_discoveries else None
         discovery, _ = await asyncio.to_thread(self.procedure_discovery.discover, context, previous=previous)
         await asyncio.to_thread(self._record_procedure_discovery, intent.id, discovery)
@@ -797,6 +806,8 @@ class ActionIntentService:
                 raise ProcedureAdmissionError(discovery) from exc
         if not discovery.admitted:
             raise ProcedureAdmissionError(discovery)
+        if discovery.selected and self.procedure_execution is not None:
+            raise ProcedureAdmissionError(code="procedure_interpreter_required", message="Matched operational actions require a durable current procedure step")
 
     def _work_item_requirements(
         self,
@@ -902,9 +913,7 @@ class ActionIntentService:
         causation_id = context.causation_id if context else None
         intent_id = f"action-intent-{uuid.uuid4().hex}"
         authority_decision = self._canonical_authority_snapshot(
-            definition=definition,
-            request=request,
-            actor=actor,
+            definition=definition, request=request, actor=actor, execution_id=payload.execution_id,
         )
         security_decision = self._security_decision(
             binding=binding,
@@ -961,7 +970,8 @@ class ActionIntentService:
             context = self._procedure_context(actor=actor, request=request,
                 definition=definition, provider=provider, policy_source=payload.policy_decision.source,
                 policy_allows=payload.policy_decision.outcome != ActionDecisionOutcome.DENY, execution_id=payload.execution_id, assignment_id=assignment_id)
-            discovery, _ = self.procedure_discovery.discover(context)
+            pinned = self.procedure_execution.creation_discovery(payload, actor) if self.procedure_execution is not None else None
+            discovery, _ = (pinned, "") if pinned is not None else self.procedure_discovery.discover(context)
         denied = (
             (discovery is not None and not discovery.admitted)
             or
@@ -1382,6 +1392,8 @@ class ActionIntentService:
                             or item.lease.expires_at <= time.time()
                             or item.status not in {ActionIntentStatus.CLAIMED, ActionIntentStatus.EXECUTING}):
                         raise ActionIntentLeaseError("action intent lease is not active for worker")
+                    if item.rollback_checkpoint is not None:
+                        raise ActionIntentUnsafeRetryError("an attempted rollback cannot replay the forward mutation")
                     if item.status != ActionIntentStatus.CLAIMED or item.attempt >= item.retry_policy.max_attempts:
                         raise ActionIntentLeaseError("action intent claim is no longer executable")
                     state.intents[index] = item.model_copy(
@@ -1666,6 +1678,7 @@ class ActionIntentService:
                 definition=current_definition,
                 request=current_request,
                 actor=requester,
+                execution_id=pending.execution_id,
             )
         except Exception as exc:
             authority_recheck = ActionDecisionSnapshot(
@@ -1781,6 +1794,8 @@ class ActionIntentService:
                     self._execute_provider(intent, actor=actor),
                     timeout=intent.timeout_seconds,
                 )
+                if self.procedure_execution is not None:
+                    await asyncio.to_thread(self.procedure_execution.result_admission, intent, result)
             except asyncio.TimeoutError:
                 if self.capacity is not None:
                     await asyncio.to_thread(self.capacity.record_failure,
@@ -1972,6 +1987,8 @@ class ActionIntentService:
     ) -> ActionIntent:
         intent = self._intent(intent_id, actor)
         self._require_intent_control(intent, actor)
+        if intent.rollback_checkpoint is not None:
+            raise ActionIntentUnsafeRetryError("an attempted rollback cannot replay the forward mutation")
         if intent.attempt >= intent.retry_policy.max_attempts:
             raise ActionIntentConflictError("action intent retry limit reached")
         if intent.status in {
@@ -2177,6 +2194,19 @@ class ActionIntentService:
             if receipt.intent_id == intent.id and receipt.result is not None
         ]
         latest_result = results[-1] if results else None
+        if intent.rollback_checkpoint is not None:
+            rollback_receipt = next((r for r in state.receipts if r.id == intent.rollback_checkpoint.receipt_id), None)
+            if rollback_receipt is None:
+                rollback_receipt = next((r for r in reversed(state.receipts)
+                    if r.details.get("operation") == "rollback"
+                    and r.details.get("origin_receipt_id") == intent.rollback_checkpoint.origin_receipt_id
+                    and r.result is not None and r.result.status == "rolled_back"), None)
+            if rollback_receipt is None or rollback_receipt.result is None or rollback_receipt.result.status != "rolled_back":
+                return await asyncio.to_thread(self._set_status, intent.id, ActionIntentStatus.REQUIRES_RECONCILIATION,
+                    error="rollback outcome is unresolved; observe the provider and supply a durable rollback receipt before reconciliation")
+            checkpoint = intent.rollback_checkpoint.model_copy(update={"receipt_id": rollback_receipt.id, "status": "rolled_back", "error_code": None})
+            await asyncio.to_thread(self._rollback_checkpoint, intent.id, checkpoint)
+            return await asyncio.to_thread(self._set_status, intent.id, ActionIntentStatus.ROLLED_BACK)
 
         if latest_result is not None and latest_result.status == "rolled_back":
             return await asyncio.to_thread(self._set_status, intent.id, ActionIntentStatus.ROLLED_BACK)
@@ -2353,51 +2383,68 @@ class ActionIntentService:
             )
         return await asyncio.to_thread(self._set_status, intent.id, ActionIntentStatus.SUCCEEDED)
 
+    def _rollback_checkpoint(self, intent_id, checkpoint, *, reserve=False):
+        def apply(state):
+            item = state.intents[0]
+            if reserve and (item.rollback_checkpoint is not None
+                or item.status not in {ActionIntentStatus.SUCCEEDED, ActionIntentStatus.REQUIRES_RECONCILIATION}
+                or item.last_receipt_id != checkpoint.origin_receipt_id):
+                raise ActionIntentConflictError("rollback origin changed or was already attempted; reconcile instead of replaying it")
+            item.rollback_checkpoint = checkpoint
+            item.status = ActionIntentStatus.REQUIRES_RECONCILIATION
+            item.updated_at = time.time()
+            return state
+        guarded = self._publication_execution_guard(self.store.get(intent_id)) if reserve else {}
+        state = self.store.update(apply, intent_ids=(intent_id,), **guarded)
+        return state.intents[0]
+
     async def rollback(
-        self,
-        intent_id: str,
-        payload: ActionIntentRollbackRequest,
-        *,
-        actor: AuthenticationActor,
+        self, intent_id: str, payload: ActionIntentRollbackRequest, *, actor: AuthenticationActor,
     ) -> ActionIntent:
         self._require_worker(actor)
         intent = await asyncio.to_thread(self._intent, intent_id, actor)
-        if not intent.rollback_required and not intent.action_definition.capabilities.rollback:
+        if intent.rollback_checkpoint is not None:
+            # Durable receipt wins over a lost local response. Never send the
+            # provider the originating result a second time after interruption.
+            return await self.reconcile(intent.id, ActionIntentReconcileRequest(retry_if_idempotent=False), actor=actor)
+        if intent.status not in {ActionIntentStatus.SUCCEEDED, ActionIntentStatus.REQUIRES_RECONCILIATION}:
+            raise ActionIntentConflictError("rollback requires a known completed original action")
+        if not intent.action_definition.capabilities.rollback or not intent.action_definition.reversible:
             raise ActionIntentConflictError("action intent does not support rollback")
-        state = await asyncio.to_thread(self.store.load, intent_id=intent.id)
-        results = [
-            receipt.result
-            for receipt in state.receipts
-            if receipt.intent_id == intent.id
-            and receipt.result is not None
-            and receipt.result.status in {"succeeded", "dry_run"}
-        ]
-        if not results:
+        history = await asyncio.to_thread(self.store.load, intent_id=intent.id)
+        receipt = next((r for r in reversed(history.receipts) if r.result is not None
+            and r.result.status == "succeeded" and r.outcome == "completed"), None)
+        if receipt is None:
             raise ActionIntentConflictError("no completed provider result is available for rollback")
-        result = results[-1]
-        intent = await asyncio.to_thread(self._begin_recovery_rollback, intent)
+        checkpoint = ActionIntentRollbackCheckpoint(origin_receipt_id=receipt.id, status="running", started_at=time.time())
+        intent = await asyncio.to_thread(self._rollback_checkpoint, intent.id, checkpoint, reserve=True)
         try:
             from codex_web.procedure_discovery import procedure_action_intent
             with procedure_action_intent(intent.id):
-                rolled_back = await self.execution.rollback(
-                    intent.binding_id, result, actor=actor,
-                )
+                rolled_back = await asyncio.wait_for(self.execution.rollback(intent.binding_id, receipt.result, actor=actor, credential_ref=intent.credential_ref),
+                    timeout=intent.timeout_seconds)
+                if self.procedure_execution is not None:
+                    await asyncio.to_thread(self.procedure_execution.result_admission, intent, rolled_back)
         except Exception as exc:
-            return await asyncio.to_thread(self._set_status,
-                intent.id,
-                ActionIntentStatus.REQUIRES_RECONCILIATION,
-                error=f"rollback failed: {type(exc).__name__}",
-            )
-        await asyncio.to_thread(self._append_receipt,
-            intent,
-            result=rolled_back,
-            outcome="completed",
-            details={"operation": "rollback", "reason": payload.reason},
-        )
-        if rolled_back.status != "rolled_back":
-            return await asyncio.to_thread(self._set_status,
-                intent.id,
-                ActionIntentStatus.REQUIRES_RECONCILIATION,
-                error="provider rollback did not return rolled_back outcome",
-            )
-        return await asyncio.to_thread(self._set_status, intent.id, ActionIntentStatus.ROLLED_BACK)
+            # Known pre-invocation gate refusal is distinct from uncertain effects.
+            from codex_web.services.procedure_discovery import ProcedureAdmissionError
+            known = isinstance(exc, (ActionRequirementError, ProcedureAdmissionError)) or getattr(exc, "code", "").startswith("procedure_")
+            checkpoint.status = "failed" if known else "unknown"
+            checkpoint.error_code = getattr(exc, "code", type(exc).__name__)
+            await asyncio.to_thread(self._rollback_checkpoint, intent.id, checkpoint)
+            return await asyncio.to_thread(self._set_status, intent.id, ActionIntentStatus.REQUIRES_RECONCILIATION,
+                error=f"rollback {'refused' if known else 'outcome unknown'}: {checkpoint.error_code}",
+                failure=self._failure(intent, FailureReason.AUTHORITY_DENIED if known else FailureReason.UNKNOWN_OUTCOME,
+                    source_native_code=checkpoint.error_code, details={"operation":"rollback", "origin_receipt_id":receipt.id}))
+        saved = await asyncio.to_thread(self._append_receipt, intent, result=rolled_back,
+            outcome="completed" if rolled_back.status == "rolled_back" else "failed",
+            details={"operation": "rollback", "origin_receipt_id": receipt.id, "reason": payload.reason})
+        checkpoint.receipt_id = saved.id
+        checkpoint.status = "rolled_back" if rolled_back.status == "rolled_back" else "failed"
+        checkpoint.error_code = None if rolled_back.status == "rolled_back" else "provider_rollback_failed"
+        await asyncio.to_thread(self._rollback_checkpoint, intent.id, checkpoint)
+        return await asyncio.to_thread(self._set_status, intent.id,
+            ActionIntentStatus.ROLLED_BACK if rolled_back.status == "rolled_back" else ActionIntentStatus.REQUIRES_RECONCILIATION,
+            error=checkpoint.error_code,
+            failure=self._failure(intent, FailureReason.UNCLASSIFIED, source_native_code=checkpoint.error_code,
+                details={"operation":"rollback", "origin_receipt_id":receipt.id}) if checkpoint.error_code else None)

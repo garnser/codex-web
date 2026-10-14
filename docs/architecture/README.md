@@ -159,3 +159,5 @@ The target architecture is:
 - [Procedure discovery/admission](procedure-discovery.md) — deterministic exact
   Skill selection, bounded authorized guidance, mutation gates, provenance and
   explicit unsupported native-tool enforcement.
+
+- [Durable procedure execution](procedure-execution.md) — assignment checkpoints, isolated diagnostics, ActionIntent effects and originating-receipt rollback, Evidence and bounded governed judgment.

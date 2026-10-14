@@ -327,7 +327,7 @@ blockers in the existing intent; assignment-backed actions retain fenced evidenc
 A direct provider call cannot substitute for this admission. A procedure match
 never grants authority or creates an extra confirmation requirement.
 
-The combined ActionIntent state contract is `1.4`. Migration from `1.3` preserves
+The combined ActionIntent state contract is `1.5`. Migration from `1.3`/`1.4` preserves
 procedure discoveries and recovery snapshots unchanged; older records receive
 empty optional histories. Readers that cannot understand both admission records
 must upgrade before consuming state written by this version.
@@ -335,3 +335,4 @@ must upgrade before consuming state written by this version.
 Procedure-discovery evidence appended by these paths also uses the existing
 point assignment transaction, with live fence/lease checks. It must not scan or
 rewrite unrelated global worker/assignment records before provider execution.
+Procedure execution adds a single-attempt originating-receipt rollback checkpoint and forbids forward retry after any rollback attempt. ActionIntent document 1.5/keyed metadata 1.2 require compatible writers. See [procedure execution](procedure-execution.md) for crash, reconciliation and verification semantics.

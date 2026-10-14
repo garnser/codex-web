@@ -693,8 +693,9 @@ class ApprovalRequestService:
         request: ApprovalRequest,
         *,
         now: float,
-    ) -> None:
+    ) -> tuple[str, ...]:
         qualifying: set[str] = set()
+        qualifying_roles: set[str] = set()
         for decision in request.decisions:
             if decision.outcome != ApprovalDecisionOutcome.APPROVE:
                 continue
@@ -735,10 +736,13 @@ class ApprovalRequestService:
             )
             if not selectors_configured or eligible:
                 qualifying.add(live.identity_id)
+                qualifying_roles.update(authority_role_ids)
         if len(qualifying) < request.requirement.quorum:
             raise ApprovalStateError(
                 "approval quorum is no longer eligible at consumption time"
             )
+
+        return tuple(sorted(qualifying_roles))
 
     def _consumed_request(
         self,

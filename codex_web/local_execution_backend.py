@@ -898,28 +898,36 @@ class BubblewrapExecutionBackend:
                     + max(0, int(additional_disk_bytes))
                 )
 
-            disk_bytes = current_disk_bytes()
-            while process.poll() is None:
-                if poll_hook is not None:
-                    poll_hook()
-                now = time.monotonic()
-                if now >= deadline:
-                    timed_out = True
-                    limit_breach = "wall_seconds"
-                    self._kill_process_group(process)
-                    break
+            try:
                 disk_bytes = current_disk_bytes()
-                if disk_bytes > assignment.limits.disk_bytes:
-                    limit_breach = "disk_bytes"
-                    self._kill_process_group(process)
-                    break
-                time.sleep(
-                    min(
-                        self.poll_interval_seconds,
-                        max(0.0, deadline - now),
+                while process.poll() is None:
+                    if poll_hook is not None:
+                        poll_hook()
+                    now = time.monotonic()
+                    if now >= deadline:
+                        timed_out = True
+                        limit_breach = "wall_seconds"
+                        self._kill_process_group(process)
+                        break
+                    disk_bytes = current_disk_bytes()
+                    if disk_bytes > assignment.limits.disk_bytes:
+                        limit_breach = "disk_bytes"
+                        self._kill_process_group(process)
+                        break
+                    time.sleep(
+                        min(
+                            self.poll_interval_seconds,
+                            max(0.0, deadline - now),
+                        )
                     )
-                )
-            exit_code = process.wait()
+                exit_code = process.wait()
+            except BaseException:
+                # A lost lease/fence or cancelled owner must not leave executable
+                # work behind. This is the shared worker boundary, not a private
+                # procedure process supervisor.
+                self._kill_process_group(process)
+                process.wait()
+                raise
             disk_bytes = current_disk_bytes()
             if limit_breach is None and exit_code < 0:
                 signum = -exit_code

@@ -897,3 +897,110 @@ class LocalExecutionWorkerRuntime:
             result=result,
             evidence_id=evidence_id,
         )
+
+
+    def execute_procedure_operation(self, assignment, step, code, inputs):
+        """Execute immutable diagnostic bytes through the canonical sandbox.
+
+        This is a non-terminal operation on the already-owned assignment. It
+        neither claims a new worker nor completes the parent assignment.
+        """
+        import json
+        import tempfile
+        from codex_web.artifact_evidence import ArtifactLifecycle
+        from codex_web.execution_workers import NetworkPolicy, WorkerCapability
+        import hashlib
+        from codex_web.services.procedure_execution import bounded_data, ProcedureExecutionError
+        if len(code) > 65536 or hashlib.sha256(code).hexdigest() != step.worker.artifact_checksum:
+            raise ProcedureExecutionError("procedure_worker_artifact_integrity_failed")
+        if assignment.assigned_worker_id != self.worker.id:
+            raise ProcedureExecutionError("procedure_worker_transport_mismatch")
+        if self.artifact_evidence is None:
+            raise ProcedureExecutionError("procedure_worker_evidence_unavailable")
+        # An arbitrary Artifact gets no network, provider/runtime channel or
+        # credential-reference privilege from its parent. Read-only filesystem
+        # access alone cannot make an HTTP-capable diagnostic safe to repeat.
+        diagnostic = assignment.model_copy(update={
+            "sandbox": "read-only", "network": NetworkPolicy(), "secret_refs": (),
+            "runtime_binding": None, "agent_profile": None,
+            "required_capabilities": (WorkerCapability.COMMAND_EXECUTION,),
+            "limits": assignment.limits.model_copy(update={
+                "wall_seconds": min(assignment.limits.wall_seconds, step.timeout_seconds)})})
+        self.backend.validate_assignment(diagnostic)
+        workspace_path = self._workspace_path(assignment)
+        readonly_mounts, _ = self.repository_mounts(assignment)
+
+        def poll():
+            current = self.worker_service.store.assignment(assignment.id)
+            worker = self.worker_service.store.worker(self.worker.id)
+            if (current is None or current.fence != assignment.fence
+                or current.status not in {"claimed", "running"} or current.lease is None
+                or current.lease.expires_at <= time.time()
+                or current.lease.lease_token != assignment.lease.lease_token
+                or current.lease.worker_id != self.worker.id or current.assigned_worker_id != self.worker.id
+                or current.execution_id != assignment.execution_id or current.project_id != assignment.project_id
+                or current.execution_workspace_id != assignment.execution_workspace_id
+                or current.resource_ids != assignment.resource_ids
+                or (current.organization_id, current.workspace_id) != (assignment.organization_id, assignment.workspace_id)
+                or (current.deadline_at is not None and current.deadline_at <= time.time())
+                or worker is None or worker.lifecycle not in {"active", "draining"}
+                or worker.service_identity_id != self.worker_actor.identity_id
+                or (worker.organization_id, worker.workspace_id) != (assignment.organization_id, assignment.workspace_id)
+                or WorkerCapability.COMMAND_EXECUTION not in worker.capabilities
+                or step.worker.capability not in worker.capabilities
+                or "read-only" not in worker.supported_sandbox_profiles
+                or current.execution_contract_version not in worker.supported_execution_contract_versions):
+                raise ProcedureExecutionError("procedure_worker_live_fence_lost")
+            if self.worker_service.identity is None:
+                raise ProcedureExecutionError("procedure_worker_identity_unavailable")
+            self.worker_service.identity.actor_for_identity(self.worker_actor.identity_id, scope=self.worker_actor.tenant)
+            workspace = self._workspace(current)
+            resource_lease = self.workspace_service.store.lease(workspace.lease_id)
+            if (resource_lease is None or resource_lease.released_at is not None
+                or resource_lease.expires_at <= time.time() or resource_lease.execution_id != assignment.execution_id
+                or resource_lease.execution_workspace_id != workspace.id):
+                raise ProcedureExecutionError("procedure_worker_resource_lease_lost")
+            for resource_id in current.resource_ids:
+                resource = self.workspace_service.resources.get(resource_id, self.control_actor)
+                if resource.lifecycle != "active":
+                    raise ProcedureExecutionError("procedure_worker_resource_scope_revoked")
+
+        poll()
+        # Definitions contain references, not code. The retrieved artifact is
+        # untrusted executable input; only the execution-plane backend runs it.
+        with tempfile.TemporaryDirectory(prefix="procedure-artifact-") as directory:
+            source = Path(directory) / "diagnostic.py"
+            source.write_bytes(code)
+            result = self.backend.run(diagnostic, argv=("/usr/bin/python3", "/opt/procedure/diagnostic.py"),
+                workspace_path=workspace_path, trusted_readonly_mounts=(*readonly_mounts, (Path(directory), Path("/opt/procedure"))),
+                poll_hook=poll, environment={"PROCEDURE_INPUT_JSON": json.dumps(bounded_data(inputs))},
+                additional_disk_bytes=self.readonly_disk_bytes(assignment))
+        poll()
+        if not result.succeeded:
+            raise ProcedureExecutionError("procedure_diagnostic_failed")
+        observation = bounded_data(json.loads(result.stdout))
+        if set(observation) - {"outputs", "checks", "artifact_ids"}:
+            raise ProcedureExecutionError("procedure_diagnostic_output_contract")
+        proof = {}
+        for required in step.expected_evidence:
+            check_passed = observation.get('checks', {}).get(required.name) is True
+            artifact_ids = tuple(observation.get("artifact_ids", {}).get(required.name, ()))
+            if required.kind == "artifact" and not artifact_ids:
+                raise ProcedureExecutionError("procedure_diagnostic_artifact_missing")
+            for artifact_id in artifact_ids:
+                artifact = self.artifact_evidence.get_artifact(artifact_id, actor=self.worker_actor)
+                if artifact.lifecycle != ArtifactLifecycle.ACTIVE or artifact.project_id != assignment.project_id:
+                    raise ProcedureExecutionError("procedure_diagnostic_artifact_scope")
+            evidence = self.artifact_evidence.create_evidence(EvidenceCreate(
+                project_id=assignment.project_id, work_item_ref=assignment.work_item_ref,
+                execution_id=assignment.execution_id, execution_workspace_id=assignment.execution_workspace_id,
+                resource_ids=assignment.resource_ids, artifact_ids=artifact_ids,
+                evidence_type=EvidenceType.ARTIFACT_VERIFICATION,
+                result=EvidenceResult.PASS if check_passed else EvidenceResult.FAIL,
+                provider="isolated-execution-worker", source=f"procedure:{assignment.id}:{step.id}",
+                summary=f"Isolated diagnostic {'passed' if check_passed else 'failed'} {required.name}",
+                metadata={"worker_id": self.worker.id, "fence": assignment.fence,
+                    "artifact_checksum": step.worker.artifact_checksum}), actor=self.worker_actor,
+                idempotency_key=f"procedure:{assignment.id}:{step.id}:{assignment.procedure_checkpoint.steps[step.id].attempts}:{required.name}")
+            proof[required.name] = evidence.id
+        return {"outputs": observation.get("outputs", {}), "evidence": proof}

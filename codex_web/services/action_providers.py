@@ -49,6 +49,26 @@ class ActionRequirementError(ActionProviderError):
     pass
 
 
+class SensitiveActionOutputError(RuntimeError):
+    """A possible effect occurred, but its response cannot cross the credential boundary."""
+
+
+def _credential_safe_output(result, credential):
+    if credential:
+        def contains(value):
+            if isinstance(value, str):
+                return credential in value
+            if isinstance(value, Mapping):
+                return any(contains(key) or contains(item) for key, item in value.items())
+            if isinstance(value, (tuple, list)):
+                return any(contains(item) for item in value)
+            return False
+        if contains(result.model_dump(mode="json")):
+            # Never put the value or rejected output in exceptions/receipts.
+            raise SensitiveActionOutputError("provider returned protected credential material; reconcile the effect")
+    return result
+
+
 class ActionProviderRegistry:
     def __init__(self, store: ActionProviderStateStore) -> None:
         self.store = store
@@ -386,11 +406,8 @@ class ActionExecutionService:
             await self.procedure_admission(binding, provider, definition, request, actor, "execute")
 
         async def invoke(credential: str | None) -> ActionResult:
-            return await provider.execute(
-                request,
-                binding=binding,
-                credential=credential,
-            )
+            result = await provider.execute(request, binding=binding, credential=credential)
+            return _credential_safe_output(result, credential)
 
         if request.credential_ref:
             assert self.secret_broker is not None
@@ -424,11 +441,8 @@ class ActionExecutionService:
         definition.capabilities.require("verification")
 
         async def invoke(credential: str | None) -> ActionVerification:
-            return await provider.verify(
-                result,
-                binding=binding,
-                credential=credential,
-            )
+            verification = await provider.verify(result, binding=binding, credential=credential)
+            return _credential_safe_output(verification, credential)
 
         credential_ref = binding.credential_ref
         if credential_ref:
@@ -457,6 +471,7 @@ class ActionExecutionService:
         result: ActionResult,
         *,
         actor: AuthenticationActor,
+        credential_ref: str | None = None,
     ) -> ActionResult:
         binding = self.registry.binding(binding_id, actor)
         provider = self.registry.provider(
@@ -472,13 +487,14 @@ class ActionExecutionService:
             raise ActionRequirementError("action is not declared reversible")
 
         async def invoke(credential: str | None) -> ActionResult:
-            return await provider.rollback(
-                result,
-                binding=binding,
-                credential=credential,
-            )
+            rolled_back = await provider.rollback(result, binding=binding, credential=credential)
+            return _credential_safe_output(rolled_back, credential)
 
-        credential_ref = binding.credential_ref
+        if binding.credential_ref and credential_ref and binding.credential_ref != credential_ref:
+            raise ActionRequirementError("rollback cannot override its original provider binding credential")
+        credential_ref = binding.credential_ref or credential_ref
+        if definition.credential_required and credential_ref is None:
+            raise ActionRequirementError("rollback requires the originating credential reference")
         if credential_ref:
             if self.secret_broker is None:
                 raise ActionRequirementError("credential broker is unavailable")

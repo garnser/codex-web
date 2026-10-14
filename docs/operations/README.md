@@ -46,3 +46,5 @@ For local/container deployment details see [DOCKER.md](../../DOCKER.md).
 - [Failure taxonomy and retry contract](failure-taxonomy.md) — stable provider/runtime/policy/action reason codes, deterministic retryability, reconciliation safety, and metrics labels.
 
 - [Operational procedure Skills](skill-procedures.md) — author, import, scan, review and version bounded declarative procedures.
+
+- [Procedure execution and recovery](procedure-execution.md) — pinned checkpoints, approval waits, uncertainty and verified provider rollback.
