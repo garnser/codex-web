@@ -920,6 +920,8 @@ class ArtifactEvidenceService:
         plan = research_governance_plan(self.governance, record) if cascade else ()
         if self.organizational_memory is None and any(row.object_type == "organizational_memory" for row in plan):
             raise ArtifactEvidenceError("derived Memory governance adapter is unavailable")
+        if getattr(self, "procedure_outcomes", None) is None and any(row.object_type == "procedure_skill" for row in plan):
+            raise ArtifactEvidenceError("derived Skill governance adapter is unavailable")
         now = time.time()
         changed = False
         governance_content_tombstone: ArtifactContentPointer | None = None
@@ -1032,7 +1034,9 @@ class ArtifactEvidenceService:
 
         self.store.update(apply)
         for dependent in plan:
-            if dependent.object_type == "organizational_memory":
+            if dependent.object_type == "procedure_skill":
+                self.procedure_outcomes.erase(dependent, action)
+            elif dependent.object_type == "organizational_memory":
                 self.organizational_memory._governance_action(dependent, action, cascade=False)
             else:
                 self.apply_governance_action(dependent, action, cascade=False)

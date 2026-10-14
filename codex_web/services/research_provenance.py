@@ -14,7 +14,7 @@ def research_governance_plan(governance, root):
         return ()
     records = [row for row in governance.store.load().records
                if (row.organization_id, row.workspace_id) == (root.organization_id, root.workspace_id)
-               and row.object_type in {"organizational_memory", "artifact", "evidence"}]
+               and row.object_type in {"organizational_memory", "artifact", "evidence", "procedure_skill"}]
     affected = {root.id}
     while True:
         expanded = affected | {row.id for row in records if affected.intersection(row.source_record_ids)}

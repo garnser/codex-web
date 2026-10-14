@@ -47,6 +47,7 @@ class ProcedureExecutionService:
         self.control_actor, self.worker_runtime, self.models = control_actor, worker_runtime, models
         self.worker_actor = worker_actor
         self.clock = clock or time.time
+        self.outcome_drafts = None
 
     def get(self, assignment_id, actor):
         item = self.workers.store.assignment(assignment_id)
@@ -625,6 +626,17 @@ class ProcedureExecutionService:
         return True
 
     async def advance(self, assignment_id, *, actor):
+        assignment = await self._advance(assignment_id, actor=actor)
+        if self.outcome_drafts is not None and assignment.procedure_checkpoint.status in {
+            "completed", "recovered", "recovery_required"
+        }:
+            # Learning is downstream of the committed operational outcome. A
+            # conversion failure must never rewrite verified completion as a
+            # failed operational step. Retrying reuses the same source identity.
+            await self.outcome_drafts.on_completion(assignment, actor)
+        return assignment
+
+    async def _advance(self, assignment_id, *, actor):
         assignment = self.get(assignment_id, actor)
         self.intents.recover_stale_claims(organization_id=actor.organization_id, workspace_id=actor.workspace_id)
         if assignment.procedure_checkpoint is None:

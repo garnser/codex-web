@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import time
+import hashlib
+import json
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
@@ -286,13 +288,48 @@ class DefinitionRegistryService:
                 return record
         raise DefinitionNotFoundError(f"definition record not found: {record_id}")
 
-    def create_draft(self, payload: DefinitionDraftCreate) -> DefinitionRecord:
+    def create_draft(self, payload: DefinitionDraftCreate, *, idempotency_key: str | None = None,
+                     expected_latest_record_id: str | None = None) -> DefinitionRecord:
+        """Atomically deduplicate a source conversion and fence its revision base.
+
+        An empty expected ID means the slot must be absent. None preserves the
+        ordinary authoring contract. Idempotency is stored in canonical record
+        identity, not a second delivery/job store.
+        """
         schema = self.schemas.get(payload.kind, payload.definition_schema_version)
         normalized_payload = schema.validate(dict(payload.payload))
         scope_id = self._scope_id(payload.scope_type, payload.scope_id)
         created: list[DefinitionRecord] = []
+        duplicate = False
+        record_id = hashlib.sha256(json.dumps([
+            payload.kind, payload.definition_id, payload.scope_type.value, scope_id,
+            idempotency_key,
+        ]).encode()).hexdigest() if idempotency_key is not None else None
 
         def update(records: list[DefinitionRecord]) -> list[DefinitionRecord]:
+            nonlocal duplicate
+            if record_id is not None:
+                existing = next((r for r in records if r.record_id == record_id), None)
+                if existing is not None:
+                    latest = max((r for r in records if self._same_slot(r,
+                        definition_id=payload.definition_id, kind=payload.kind,
+                        scope_type=payload.scope_type, scope_id=scope_id)), key=lambda r:r.revision)
+                    if latest.record_id != existing.record_id:
+                        raise DefinitionConflictError("newer local revision requires source conflict review")
+                    incoming = definition_checksum(definition_id=payload.definition_id, kind=payload.kind,
+                        definition_schema_version=payload.definition_schema_version, payload=normalized_payload)
+                    if incoming != existing.checksum or existing.derived_from_record_id != payload.derived_from_record_id:
+                        raise DefinitionConflictError("idempotency key refers to different draft content")
+                    duplicate = True
+                    created.append(existing)
+                    return records
+            if expected_latest_record_id is not None:
+                latest = max((r for r in records if self._same_slot(r,
+                    definition_id=payload.definition_id, kind=payload.kind,
+                    scope_type=payload.scope_type, scope_id=scope_id)),
+                    key=lambda r: r.revision, default=None)
+                if (latest.record_id if latest else "") != expected_latest_record_id:
+                    raise DefinitionConflictError("draft source changed; review the concurrent revision")
             if payload.derived_from_record_id is not None:
                 source = next(
                     (
@@ -341,6 +378,7 @@ class DefinitionRegistryService:
                 + 1
             )
             record = DefinitionRecord(
+                **({"record_id": record_id} if record_id is not None else {}),
                 definition_id=payload.definition_id,
                 kind=payload.kind,
                 definition_schema_version=payload.definition_schema_version,
@@ -368,7 +406,8 @@ class DefinitionRegistryService:
             return [*records, record]
 
         self.store.update(update)
-        self._notify("definition.draft_created", created[0])
+        if not duplicate:
+            self._notify("definition.draft_created", created[0])
         return created[0]
 
     def validate(self, record_id: str, *, actor: str) -> DefinitionRecord:

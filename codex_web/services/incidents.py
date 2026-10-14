@@ -862,6 +862,10 @@ class IncidentService:
         state = self.store.update(apply)
         incident = state.incidents[incident.id]
         await self._emit(incident, "postmortem_created")
+        if getattr(self, "procedure_outcomes", None) is not None:
+            for assignment_id in payload.procedure_assignment_ids:
+                assignment = self.procedure_outcomes.runner.get(assignment_id, actor)
+                await self.procedure_outcomes.on_completion(assignment, actor, incident_id=incident.id)
         return incident, postmortem
 
     def reasoning_budget(

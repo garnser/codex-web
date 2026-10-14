@@ -1,5 +1,9 @@
 # Durable procedure execution
 
+Verified outcomes feed the governed, inactive
+[procedure draft conversion](procedure-outcomes.md) path. Publication and future
+assignment remain separate explicit operations.
+
 The interpreter is a facet of the canonical `ExecutionAssignment`, not a job,
 worker, approval or procedure catalog. It consumes published `agent.skill`
 procedures selected by canonical discovery. It never enables native operational

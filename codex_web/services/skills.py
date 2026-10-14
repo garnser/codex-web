@@ -130,6 +130,7 @@ class SkillService:
         self.procedure_actions = None
         self.procedure_resources = None
         self.procedure_scope_actor = None
+        self.outcome_drafts = None
         install_skill_definition_schema(
             definitions, validate_references=self._procedure_definition_reference_gate,
             publication_guard=self._procedure_definition_publication_gate,
@@ -178,6 +179,10 @@ class SkillService:
 
     def _validate_procedure_references(self, record: DefinitionRecord) -> None:
         skill = SkillDefinition.model_validate(record.payload)
+        if skill.lifecycle == SkillLifecycle.ARCHIVED:
+            return
+        if record.derived_from_record_id:
+            self._outcome_guard(self.definitions.get_record(record.derived_from_record_id))
         procedure = skill.operational_procedure
         if procedure is None or skill.lifecycle == SkillLifecycle.ARCHIVED:
             return
@@ -235,6 +240,9 @@ class SkillService:
 
     def _procedure_publication_guard(self, record: DefinitionRecord, publisher: str) -> None:
         skill = SkillDefinition.model_validate(record.payload)
+        if skill.lifecycle == SkillLifecycle.ARCHIVED:
+            return
+        self._outcome_guard(record, publication=True)
         if skill.operational_procedure is None or skill.lifecycle == SkillLifecycle.ARCHIVED:
             return
         self._assert_procedure_fresh(skill)
@@ -257,7 +265,8 @@ class SkillService:
         if now >= min(procedure.review_due_at, procedure.expires_at):
             raise SkillResolutionFailure("procedure_expired", "procedure has expired or requires freshness review")
 
-    def _assert_procedure_usable(self, record: DefinitionRecord) -> None:
+    def _assert_procedure_usable(self, record: DefinitionRecord, *, actor=None) -> None:
+        self._outcome_guard(record, actor=actor, phase="assignment")
         skill = SkillDefinition.model_validate(record.payload)
         self._assert_procedure_fresh(skill)
         if skill.operational_procedure is not None:
@@ -340,6 +349,35 @@ class SkillService:
 
     def bind_security(self, security: Any) -> None:
         self.security = security
+
+    def _outcome_guard(self, record, *, publication=False, actor=None, phase=None):
+        # Follow immutable ancestry so removing visible provenance in a local
+        # revision or rollback cannot shed source governance/publication gates.
+        current = record
+        seen = set()
+        derived_outcome = False
+        while current.record_id not in seen:
+            seen.add(current.record_id)
+            provenance = current.payload.get("provenance", {})
+            if provenance.get("source_type") == "governance_tombstone":
+                raise SkillConflict("source governance erased this derivation")
+            if provenance.get("source_type") == "procedure_outcome":
+                derived_outcome = True
+                if self.outcome_drafts is None:
+                    raise SkillConflict("outcome source governance is unavailable")
+                self.outcome_drafts.assert_source(current, candidate=record if publication else None, actor=actor)
+            if not current.derived_from_record_id:
+                break
+            current = self.definitions.get_record(current.derived_from_record_id)
+        if derived_outcome and (publication or phase):
+            if self.security is None:
+                raise SkillConflict("outcome Skill security service is unavailable")
+            actor = actor or (self.procedure_scope_actor(record) if self.procedure_scope_actor else None)
+            if actor is None:
+                raise SkillConflict("outcome security tenant scope is unavailable")
+            view = self._view(record)
+            view["skill"]["provenance"]["origin"] = SkillOrigin.IMPORTED.value
+            self.security.assert_allowed(view, actor=actor, phase="publish" if publication else phase)
 
     def bind_thread_settings(
         self,
@@ -866,7 +904,7 @@ class SkillService:
                 actor=actor,
                 phase="assignment",
             )
-        self._assert_procedure_usable(record)
+        self._assert_procedure_usable(record, actor=actor)
         return actual
 
     def validate_reference_for_scope(
@@ -1301,7 +1339,23 @@ class SkillService:
         payload: SkillPromotionRequest,
         *,
         actor: AuthenticationActor,
+        canonical_skill: SkillDefinition | None = None,
+        prior_record: DefinitionRecord | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
+        if canonical_skill is not None:
+            self._require_mutation(actor, owner_identity_id=canonical_skill.owner_identity_id)
+            record = self.definitions.create_draft(DefinitionDraftCreate(
+                definition_id=payload.skill_id, kind=SKILL_DEFINITION_KIND,
+                definition_schema_version=SKILL_DEFINITION_SCHEMA_VERSION,
+                scope_type=prior_record.scope_type if prior_record else DefinitionScope.WORKSPACE,
+                scope_id=prior_record.scope_id if prior_record else actor.workspace_id,
+                payload=canonical_skill.model_dump(mode="json"), actor=actor.identity_id,
+                reason=payload.reason,
+                derived_from_record_id=prior_record.record_id if prior_record else None,
+            ), idempotency_key=idempotency_key,
+                expected_latest_record_id=prior_record.record_id if prior_record else "")
+            return self._view(record, actor=actor)
         provenance = {
             "source_type": "verified_execution",
             "source_ref": payload.source_execution_id,
