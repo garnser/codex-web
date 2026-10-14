@@ -201,6 +201,7 @@ async function mockChatApi(page, { degradeFirstThreadRead = false, simulateReply
 test('CLI reply completed while inactive is restored from canonical Thread history', async ({ page }) => {
   const { threadTurns } = await mockChatApi(page);
   await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
+  await expect(page.locator('#messages')).toContainText('Loaded home-thread');
   await page.locator('#prompt').fill('Keep this prompt visible.');
   await page.locator('#prompt').press('Enter');
   await expect.poll(() => threadTurns['home-thread']?.length || 0).toBe(1);
