@@ -1080,7 +1080,10 @@ replay authority. A lost native response remains unknown; only the actual runtim
 response can produce the existing native start receipt. A locally observed
 operator revocation before input restores the exact original queue copy and
 records a blocked refusal. Ordinary retry remains an independently authorized
-operation. Existing maintenance/drain, worker/profile/scope, fencing, native
+operation. This negative witness uses the controller's typed pre-input refusal;
+a matching HTTP detail code from a native transport/adapter is untrusted outcome
+data and cannot establish nonstart. Such receipt-free responses remain unknown
+without queue restoration or replay permission. Existing maintenance/drain, worker/profile/scope, fencing, native
 uncertainty and provider checks stay effective.
 
 The preflight UI shows original scope, review reason/claim and actual native

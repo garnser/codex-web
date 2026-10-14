@@ -169,6 +169,26 @@ class QueuedOperatorAdmissionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException):self.preview()
         self.assertEqual(len(self.queues.get('thread-a')),2)
 
+    async def test_remote_matching_refusal_code_cannot_prove_input_was_unstarted(self):
+        request = self.sessions.session.request
+        sent = []
+        async def ambiguous_response(method, params=None):
+            if method == 'turn/start':
+                sent.append(params)
+                raise HTTPException(status_code=409, detail={
+                    'code':'operator_admission_refused', 'message':'synthetic untrusted native response'})
+            return await request(method, params)
+        self.sessions.session.request = ambiguous_response
+        result = await self.admit()
+        self.assertFalse(result['ok'])
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(result['attempt']['status'], 'reconciliation_required')
+        self.assertIsNone(result['attempt'].get('queued_start_receipt'))
+        self.assertFalse(any(item.id == self.f.items[1].id for item in self.queues.get('thread-a')))
+        with self.assertRaises(HTTPException):
+            self.preview()
+        self.assertEqual(len(sent), 1)
+
     async def test_concurrent_operator_requests_and_ordinary_drain_share_local_lock(self):
         request=self.request()
         preparing=asyncio.Event(); release=asyncio.Event()

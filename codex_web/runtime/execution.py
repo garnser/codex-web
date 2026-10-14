@@ -3778,8 +3778,10 @@ class TurnExecutionService:
                 return
             if retained_attempt is not None and not deferred_admission:
                 detail = exc.detail if isinstance(exc, HTTPException) and isinstance(exc.detail, dict) else None
-                known_unstarted = bool(detail and detail.get('code') in {
-                    'execution_preflight_blocked', 'thread_agent_profile_immutable', 'operator_admission_refused'}
+                from codex_web.services.queued_operator_admission import OperatorAdmissionPrestartRefusal
+                known_unstarted = bool((isinstance(exc, OperatorAdmissionPrestartRefusal)
+                    or (detail and detail.get('code') in {
+                        'execution_preflight_blocked', 'thread_agent_profile_immutable'}))
                     and not self.thread_is_active(thread_id))
                 await asyncio.to_thread(self.queued_preflight.queued_disposition,
                     retained_attempt.id,
