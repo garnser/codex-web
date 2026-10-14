@@ -1,3 +1,4 @@
+import { createQueueOrderRecoveryUi } from "./queue_order_recovery_ui.js";
 import { captureProjectView } from "./project_view_scope.js";
 export function createExecutionPreflightUi({
   api,
@@ -8,6 +9,7 @@ export function createExecutionPreflightUi({
   captureView = () => captureProjectView().current,
 }) {
   const attemptsByThread = new Map();
+  const orderRecovery=createQueueOrderRecoveryUi({api,addMessage,loadThread,scheduleRefresh,captureView});
 
   async function load(threadId, limit = 50) {
     const current = captureView();
@@ -20,6 +22,7 @@ export function createExecutionPreflightUi({
         threadId,
         Array.isArray(response?.items) ? response.items : [],
       );
+      await orderRecovery.load(threadId);
     } catch (error) {
       if (!current()) return;
       logEvent?.("preflight.error", { message: error.message });
@@ -28,6 +31,7 @@ export function createExecutionPreflightUi({
   }
 
   function render(threadId) {
+    orderRecovery.render(threadId);
     [...(attemptsByThread.get(threadId) || [])]
       .reverse()
       .forEach((attempt) => {

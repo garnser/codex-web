@@ -981,3 +981,26 @@ when its original queue copy is restored. Restored position, missing receipts,
 queue absence and a stale maintenance blocker do not prove a negative native
 outcome. Existing recovery authorization and actual provider receipts remain
 required before an unknown original may be retried or treated as started.
+
+### Historical scheduling-order repair
+
+The existing Thread queue exposes `GET /api/threads/{id}/queue/order-recovery`
+for a read-only proposal and `POST` on the same path for an explicit guarded
+repair. Apply requires administrator authority and human MFA-equivalent
+assurance, canonical Thread/Project/tenant scope, an inactive original/current
+Thread, and no active admission or retry claim. The request names the exact
+digest of both the queue and its retained intents plus a bounded operator reason.
+The backend derives the order; callers cannot submit replacement bodies, native
+outcomes or their own ordering list.
+
+Every queued entry must match its complete retained snapshot, with only verified
+replacement routing and diagnostic retry counters projected separately. Explicit
+retry priority keeps its current relative order; ordinary requests use original
+creation provenance with stable ties. The queue compare-and-swap rechecks scope,
+provenance, digest and the existing admission-ownership fence. It modifies only
+list order. A metadata-only recovery event identifies actor, scope, reason,
+original/resulting order and hashes. An audit write failure reports a committed
+order without inventing a receipt or retrying the operation. Preflight/native
+outcomes, original bodies, scope, profiles and reply destinations remain exact.
+The inspector distinguishes scheduling repair from outcome reconciliation and
+native retry, preserving denied/stale states and fencing late Project responses.

@@ -106,6 +106,7 @@ from codex_web.api.system import build_system_router
 from codex_web.api.telegram import build_telegram_router
 from codex_web.api.threads import build_threads_router
 from codex_web.services.thread_scope import ThreadScopeService
+from codex_web.services.queue_order_recovery import QueueOrderRecoveryService
 from codex_web.api.turns import build_turns_router
 from codex_web.api.ui import build_ui_router
 from codex_web.api.work_items import build_work_items_router
@@ -3511,6 +3512,14 @@ turn_execution_service.upgrade_turn_admission_guard = (
 )
 app.state.thread_service = thread_service
 app.state.turn_service = turn_service
+queue_order_recovery_service = QueueOrderRecoveryService(
+    queues=turn_queue_repository, preflight=execution_preflight_service,
+    replacement_resolver=thread_index_repository.replacement_thread_id,
+    thread_is_active=turn_execution_service.thread_is_active,
+    ownership=turn_execution_service.ownership, event_sink=bot_runtime_telemetry.append,
+)
+app.state.queue_order_recovery_service = queue_order_recovery_service
+
 project_delivery_service = ProjectDeliveryService(
     projects=project_service, identity=identity_service, scope=thread_scope_service,
     operator=work_item_operator_service,
@@ -4716,7 +4725,7 @@ EXTRACTED_ROUTE_COUNTS = {
         build_threads_router(thread_service, thread_scope_service)
     ),
     "turns": _include_domain_router(
-        build_turns_router(turn_service, thread_scope_service)
+        build_turns_router(turn_service, thread_scope_service, queue_order_recovery_service)
     ),
     "context": _include_domain_router(
         build_context_router(context_service, thread_scope_service)

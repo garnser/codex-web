@@ -250,6 +250,13 @@ EXACT_POLICIES: dict[tuple[str, str], ApiAuthorizationPolicy] = {
         capability="api.input-composition.preview", level=AuthorityLevel.READ,
         access=ApiAccessMode.AUTHENTICATED,
         description="Read-only deterministic task preview within the authenticated Project scope."),
+    ('GET', '/api/threads/{thread_id}/queue/order-recovery'): ApiAuthorizationPolicy(
+        capability='execution.retry', level=AuthorityLevel.READ,
+        access=ApiAccessMode.AUTHENTICATED, description='Inspect original queue-order provenance without replay.'),
+    ('POST', '/api/threads/{thread_id}/queue/order-recovery'): ApiAuthorizationPolicy(
+        capability='execution.retry', level=AuthorityLevel.EXECUTE, access=ApiAccessMode.ADMIN,
+        required_assurance=AuthenticationAssurance.MFA,
+        description='Repair historical scheduling order with administrator authority and MFA; never change native outcomes.'),
     ('POST', '/api/threads/{thread_id}/preflight-attempts/{attempt_id}/retire-scheduling'): ApiAuthorizationPolicy(
         capability='execution.retire-scheduling', level=AuthorityLevel.EXECUTE,
         access=ApiAccessMode.ADMIN, required_assurance=AuthenticationAssurance.MFA,

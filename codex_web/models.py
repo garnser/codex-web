@@ -231,6 +231,12 @@ class TurnCreate(BaseModel):
         return result
 
 
+class QueueOrderRepairRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+    expected_snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 class ApprovalDecision(BaseModel):
     decision: ApprovalDecisionValue
 
