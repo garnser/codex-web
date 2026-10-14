@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from codex_web.models import ExecutionPreflightAttempt, QueuedTurn
+from codex_web.models import ExecutionPreflightAttempt, QueuedTurn, QueuedNativeStartReceipt
 from codex_web.services.turn_queue_policy import TurnQueuePolicy
 
 
@@ -90,7 +90,8 @@ class NotificationBatchAdmission(BaseModel):
     id: str = Field(pattern=r"^notification-admission-[0-9a-f]{64}$")
     plan: NotificationBatchPlan
     claim_id: str = Field(min_length=1)
-    phase: Literal["prepared", "native_outcome_unknown", "released"] = "prepared"
+    phase: Literal["prepared", "native_outcome_unknown", "native_input_started", "released"] = "prepared"
+    native_receipt: QueuedNativeStartReceipt | None = None
     queue_order: tuple[str, ...] = Field(default=(), max_length=8192)
     claimed_at: float = Field(allow_inf_nan=False)
 
@@ -105,11 +106,20 @@ class NotificationBatchAdmission(BaseModel):
         if self.queue_order and (len(set(self.queue_order)) != len(self.queue_order)
                 or any(item.id not in self.queue_order for item in self.plan.members)):
             raise ValueError("notification admission original queue order is invalid")
+        if (self.phase == "native_input_started") != (self.native_receipt is not None):
+            raise ValueError("notification native receipt/phase mismatch")
+        if self.native_receipt and (self.native_receipt.admission_claim_id != self.claim_id
+                or self.native_receipt.requested_execution_id != self.id
+                or self.native_receipt.thread_id != self.plan.members[0].thread_id):
+            raise ValueError("notification native receipt belongs to another admission")
         return self
 
     @property
     def attempt_ids(self):
         return tuple("preflight-queued-" + item.id for item in self.plan.members)
+
+    def native_input(self):
+        return "Notification admission " + self.id + "\n" + self.plan.native_input()
 
 
 def _eligible(original: QueuedTurn, attempt: ExecutionPreflightAttempt | None,

@@ -1,8 +1,8 @@
 # Lossless provider notification batches
 
-**Draft contract for #1307.** The planner, preflight member-claim ledger and guarded
-scheduling coordinator exist
-on the implementation branch; native submission, complete batch lifecycle, per-original outcomes and inspector
+**Draft contract for #1307.** The planner, preflight member-claim ledger, guarded
+scheduling coordinator and explicit native submission path exist
+on the implementation branch; automatic admission selection, complete batch lifecycle, per-original outcomes and inspector
 integration are not enabled by it. Delivery/remaining acceptance is tracked in
 [#1307](https://github.com/garnser/codex-web/issues/1307), not this document.
 
@@ -79,7 +79,21 @@ remains distinct from ordinary arrivals. It then releases all claims. A crash
 after restoration but before release leaves exact copies plus protected claims
 and is safely repeatable. Lost ownership or a native-outcome-unknown descriptor
 refuses this recovery. These scheduling operations are not connected to native
-submission or enabled in production yet.
+automatic admission selection or enabled in production yet.
+
+The explicit submission path preserves the original anchor's actor, Project,
+profile/revision, execution profile, repositories, reply destination, model,
+sandbox/approval policy and contextual binding. Runtime checks these fields and
+the exact retained input before consuming the batch gate. Consumption records
+native-outcome-unknown before I/O; subsequent attempts cannot consume it again.
+
+The existing native adapter's actual start response supplies one aggregate
+`QueuedNativeStartReceipt`, bound to the admission/claim and thread. It is
+captured before later context-delivery audit bookkeeping. The admission becomes
+native-input-started; original attempts retain unresolved per-item outcomes and
+receive no fabricated individual start receipts. Duplicate identical receipt
+capture is idempotent, while changed or foreign receipts refuse mutation.
+Recorded native input delivery is not per-item completion or handoff acceptance.
 
 Ordinary preflight serialization omits null batch membership, retaining its old
 shape. Claimed members carry `notification_batch_id`; old extra-forbid preflight

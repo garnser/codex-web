@@ -202,6 +202,53 @@ class ExecutionPreflightStore:
         self.store.record_mutate(self.NAMESPACE, (*keys, batch_key), change)
         return result
 
+    def record_notification_native_start(self, batch_id, receipt):
+        from codex_web.notification_batches import NotificationBatchAdmission, _eligible
+        from codex_web.models import QueuedNativeStartReceipt
+        from codex_web.services.turn_queue_policy import TurnQueuePolicy
+        receipt = QueuedNativeStartReceipt.model_validate(receipt.model_dump(mode="python"))
+        observed = self.get_notification_batch(batch_id)
+        if observed is None:
+            raise KeyError(batch_id)
+        batch_key = "b/" + batch_id
+        keys = tuple(self._attempt_key(value) for value in observed.attempt_ids)
+        result = None
+        def record(values):
+            nonlocal result
+            current = NotificationBatchAdmission.model_validate(values[batch_key])
+            if current.native_receipt is not None:
+                if current.native_receipt != receipt:
+                    raise ValueError("notification native receipt changed")
+                result = current
+                return {}
+            if current != observed or current.phase != "native_outcome_unknown":
+                raise ValueError("notification native start was not durably fenced")
+            result = NotificationBatchAdmission.model_validate({**current.model_dump(mode="python"),
+                "phase":"native_input_started", "native_receipt":receipt})
+            changes = {batch_key:result.model_dump(mode="json")}
+            for key, queued, original in zip(keys,current.plan.members,current.plan.original_snapshots_json,strict=True):
+                member = ExecutionPreflightAttempt.model_validate(values[key])
+                if (member.notification_batch_id != batch_id or member.status != "reconciliation_required"
+                        or member.queued_admission_claim_id != current.claim_id or member.queued_start_receipt is not None):
+                    raise ValueError("notification batch member was fenced or changed")
+                checked=member.model_copy(update={"status":"queued", "notification_batch_id":None})
+                if _eligible(queued,checked,organization_id=current.plan.organization_id,
+                             workspace_id=current.plan.workspace_id,
+                             notification_source_origin=TurnQueuePolicy.source_origin(queued.source)) != original:
+                    raise ValueError("notification batch original changed")
+                # Input delivery is known; per-original completion remains held.
+                changes[key]=member.model_copy(update={"updated_at":receipt.observed_at}).model_dump(mode="json")
+            return changes
+        self.store.record_mutate(self.NAMESPACE,(*keys,batch_key),record)
+        return result
+
+    def consume_notification_native_start(self, batch_id, *, claim_id, requested_execution_id, thread_id, message):
+        observed = self.get_notification_batch(batch_id)
+        if (observed is None or observed.claim_id != claim_id or observed.id != requested_execution_id
+                or observed.plan.members[0].thread_id != thread_id or observed.native_input() != message):
+            raise ValueError("notification native submission does not match retained admission")
+        return self.transition_notification_batch(batch_id,claim_id=claim_id,phase="native_outcome_unknown")
+
     def retain_queued(self, attempt: ExecutionPreflightAttempt) -> ExecutionPreflightAttempt:
         """Commit the full request before queue removal; retries preserve its state."""
         def retain(raw):

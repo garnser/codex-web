@@ -1,10 +1,11 @@
 import json
+import asyncio
 import unittest
 from copy import deepcopy
 
 from pydantic import ValidationError
 
-from codex_web.models import BotReplyTarget, QueuedTurn
+from codex_web.models import BotReplyTarget, QueuedTurn, QueuedNativeStartReceipt, Project
 from codex_web.notification_batches import NotificationBatchPlan, select_notification_batch
 from codex_web.services.execution_preflight import ExecutionPreflightService
 from codex_web.storage.execution_preflight import ExecutionPreflightStore
@@ -15,6 +16,8 @@ from concurrent.futures import ThreadPoolExecutor
 from codex_web.storage.turn_queue import TurnQueueRepository
 from codex_web.services.notification_batches import NotificationBatchCoordinator
 from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
 
 
 class NotificationBatchPlanTests(unittest.TestCase):
@@ -319,3 +322,71 @@ class NotificationBatchPlanTests(unittest.TestCase):
         coordinator.recover_prepared(admission.id,claim_id='claim-one',current=lambda:True,priority_ids=frozenset({'priority'}))
         self.assertEqual([item.id for item in coordinator.queue.get('thread-a')],
                          ['priority','original-1','original-2','original-3','ordinary'])
+
+    def receipt(self, admission, **changes):
+        values=dict(admission_claim_id=admission.claim_id,requested_execution_id=admission.id,
+            execution_id='canonical-execution',thread_id='thread-a',provider_native_session_id='native-session',
+            provider_native_turn_id='native-turn',provider_id='fixture-provider',runtime_id='fixture-runtime',observed_at=20)
+        values.update(changes)
+        return QueuedNativeStartReceipt(**values)
+
+    def test_singleton_receipt_is_durable_without_inventing_original_completion(self):
+        coordinator=self.coordinator();admission=coordinator.prepare(self.select(),claim_id='claim-one',current=lambda:True)
+        self.service.store.consume_notification_native_start(admission.id,claim_id=admission.claim_id,
+            requested_execution_id=admission.id,thread_id='thread-a',message=admission.native_input())
+        receipt=self.receipt(admission)
+        recorded=self.service.store.record_notification_native_start(admission.id,receipt)
+        reopened=ExecutionPreflightStore(SQLiteStateStore(Path(self.temp.name)/'state.sqlite'))
+        self.assertEqual(reopened.get_notification_batch(admission.id).native_receipt,receipt)
+        self.assertEqual(reopened.record_notification_native_start(admission.id,receipt),recorded)
+        for attempt_id in admission.attempt_ids:
+            original=reopened.get(attempt_id)
+            self.assertEqual(original.status,'reconciliation_required')
+            self.assertIsNone(original.queued_start_receipt)
+        with self.assertRaises(ValueError):
+            reopened.record_notification_native_start(admission.id,self.receipt(admission,provider_native_turn_id='different'))
+        with self.assertRaises(ValueError):
+            reopened.consume_notification_native_start(admission.id,claim_id=admission.claim_id,
+                requested_execution_id=admission.id,thread_id='thread-a',message=admission.native_input())
+
+    def test_receipt_requires_exact_claim_scope_and_consumed_native_gate(self):
+        coordinator=self.coordinator();admission=coordinator.prepare(self.select(),claim_id='claim-one',current=lambda:True)
+        with self.assertRaises(ValueError):
+            self.service.store.record_notification_native_start(admission.id,self.receipt(admission))
+        self.service.store.consume_notification_native_start(admission.id,claim_id=admission.claim_id,
+            requested_execution_id=admission.id,thread_id='thread-a',message=admission.native_input())
+        for fields in ({'admission_claim_id':'foreign'},{'thread_id':'foreign'},{'requested_execution_id':'original-execution'}):
+            with self.subTest(fields=fields),self.assertRaises(ValueError):
+                self.service.store.record_notification_native_start(admission.id,self.receipt(admission,**fields))
+        self.assertIsNone(self.service.store.get_notification_batch(admission.id).native_receipt)
+
+    def test_tampered_native_body_cannot_consume_gate(self):
+        coordinator=self.coordinator();admission=coordinator.prepare(self.select(),claim_id='claim-one',current=lambda:True)
+        with self.assertRaises(ValueError):
+            self.service.store.consume_notification_native_start(admission.id,claim_id=admission.claim_id,
+                requested_execution_id=admission.id,thread_id='thread-a',message='Truncated original body')
+        self.assertEqual(self.service.store.get_notification_batch(admission.id).phase,'prepared')
+
+    def test_native_runtime_records_one_actual_fixture_receipt_and_refuses_second_start(self):
+        from tests.test_turn_execution import TurnExecutionStartTests
+        from codex_web.agent_profiles import AgentProfileExecutionBinding
+        from codex_web.execution_workers import ExecutionRuntimeBinding
+        coordinator=self.coordinator();admission=coordinator.prepare(self.select(),claim_id='claim-one',current=lambda:True)
+        host,binding,sessions,runtime=TurnExecutionStartTests()._service()
+        runtime.queued_preflight=self.service
+        profile=AgentProfileExecutionBinding(profile_id='agent-a',profile_revision=7,profile_record_id='profile-r7',
+            selected_provider_id='openai',selected_runtime_id='codex')
+        route=ExecutionRuntimeBinding(provider_id='openai',runtime_id='codex',capability_revision=1)
+        runtime._select_runtime_binding=AsyncMock(return_value=(route,profile))
+        assignment=sessions.session.validate_current()
+        assignment.agent_profile=profile;assignment.runtime_binding=route
+        sessions.session.validate_current=MagicMock(return_value=assignment)
+        actor=SimpleNamespace(identity_id='actor-a',organization_id='local',workspace_id='default')
+        project=Project(id='project-a',name='Fixture Project',path='/workspace/project',sandbox='workspace-write',approval_policy='on-request')
+        result=asyncio.run(coordinator.submit_native(admission,runtime=runtime,project=project,actor=actor,current=lambda:True))
+        recorded=self.service.store.get_notification_batch(admission.id)
+        self.assertEqual(recorded.native_receipt.provider_native_turn_id,result['turn']['id'])
+        self.assertEqual([method for method,_ in sessions.session.requests].count('turn/start'),1)
+        with self.assertRaises(ValueError):
+            asyncio.run(coordinator.submit_native(admission,runtime=runtime,project=project,actor=actor,current=lambda:True))
+        self.assertEqual([method for method,_ in sessions.session.requests].count('turn/start'),1)

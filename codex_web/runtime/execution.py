@@ -1842,6 +1842,7 @@ class TurnExecutionService:
         preserve_active_handoff: bool = False,
         queued_admission_attempt_id: str | None = None,
         queued_admission_claim_id: str | None = None,
+        notification_batch_admission_id: str | None = None,
     ) -> dict[str, Any]:
         self._require_automated_admission(source)
         scope = (project.organization_id, project.workspace_id)
@@ -1900,6 +1901,7 @@ class TurnExecutionService:
                     preserve_active_handoff=preserve_active_handoff,
                     queued_admission_attempt_id=queued_admission_attempt_id,
                     queued_admission_claim_id=queued_admission_claim_id,
+                    notification_batch_admission_id=notification_batch_admission_id,
                 )
         return await self._start_thread_turn_now_admitted(
             thread_id,
@@ -1927,6 +1929,7 @@ class TurnExecutionService:
             preserve_active_handoff=preserve_active_handoff,
             queued_admission_attempt_id=queued_admission_attempt_id,
             queued_admission_claim_id=queued_admission_claim_id,
+            notification_batch_admission_id=notification_batch_admission_id,
         )
 
     async def _start_thread_turn_now_admitted(
@@ -1957,8 +1960,36 @@ class TurnExecutionService:
         preserve_active_handoff: bool = False,
         queued_admission_attempt_id: str | None = None,
         queued_admission_claim_id: str | None = None,
+        notification_batch_admission_id: str | None = None,
     ) -> dict[str, Any]:
         h = self.host
+        if notification_batch_admission_id:
+            if queued_admission_attempt_id or not queued_admission_claim_id or self.queued_preflight is None:
+                raise ValueError("notification admission requires its exclusive retained claim")
+            batch = await asyncio.to_thread(self.queued_preflight.store.get_notification_batch,
+                                           notification_batch_admission_id)
+            if batch is None:
+                raise ValueError("notification admission is unavailable")
+            member = batch.plan.members[0]
+            if (project.id != member.project_id or project.organization_id != batch.plan.organization_id
+                    or project.workspace_id != batch.plan.workspace_id or actor is None
+                    or actor.identity_id != member.agent_profile_actor_id
+                    or actor.organization_id != batch.plan.organization_id or actor.workspace_id != batch.plan.workspace_id
+                    or sandbox != (member.sandbox or project.sandbox)
+                    or approval_policy != (member.approval_policy or project.approval_policy)
+                    or model != member.model or reasoning_effort != member.reasoning_effort
+                    or work_item_ref != member.work_item_ref or reply_target != member.reply_target
+                    or repository_resource_id != member.repository_resource_id
+                    or writable_repository_resource_ids != member.writable_repository_resource_ids
+                    or read_only_repository_resource_ids != member.read_only_repository_resource_ids
+                    or execution_profile_id != member.execution_profile_id
+                    or agent_profile_id != member.agent_profile_id or agent_profile_revision != member.agent_profile_revision
+                    or agent_profile_actor_id != member.agent_profile_actor_id
+                    or memory_context_binding != member.memory_context_binding):
+                raise ValueError("notification native request scope changed")
+            await asyncio.to_thread(self.queued_preflight.store.consume_notification_native_start,
+                notification_batch_admission_id, claim_id=queued_admission_claim_id,
+                requested_execution_id=execution_id, thread_id=thread_id, message=message)
         if self.upgrade_turn_admission_guard is not None:
             current_bootstrap = self._bootstrap_binding_for_thread(thread_id)
             await self._require_upgrade_turn_admission(
@@ -3062,6 +3093,26 @@ class TurnExecutionService:
                 actual_native_turn_id = runtime_turn_result.provider_native_turn_id or (
                     (runtime_turn_result.payload.get('turn') or {}).get('id')
                     if isinstance(runtime_turn_result.payload, dict) else None)
+                if ((queued_admission_attempt_id or notification_batch_admission_id) and queued_admission_claim_id
+                        and actual_native_turn_id and self.queued_preflight is not None):
+                    from codex_web.models import QueuedNativeStartReceipt
+                    queued_native_start_confirmed = True
+                    self.mark_thread_active(thread_id, turn_id=actual_native_turn_id)
+                    receipt = QueuedNativeStartReceipt(
+                            admission_claim_id=queued_admission_claim_id,
+                            requested_execution_id=requested_execution_id,
+                            execution_id=canonical_execution_id, thread_id=thread_id,
+                            provider_native_session_id=(runtime_turn_result.provider_native_session_id
+                                or native_session_id),
+                            provider_native_turn_id=actual_native_turn_id,
+                            provider_id=str(runtime_adapter.provider_id),
+                            runtime_id=str(runtime_adapter.runtime_id), observed_at=time.time())
+                    if notification_batch_admission_id:
+                        await asyncio.to_thread(self.queued_preflight.store.record_notification_native_start,
+                            notification_batch_admission_id, receipt)
+                    else:
+                        await asyncio.to_thread(self.queued_preflight.record_queued_native_start,
+                            queued_admission_attempt_id, receipt)
                 if memory_preview is not None and actual_native_turn_id:
                     try:
                         context_service.delivered(memory_preview, memory_actor,
@@ -3075,21 +3126,6 @@ class TurnExecutionService:
                         h._append_bot_event({"type": "memory_context_delivery_audit_failed",
                             "thread_id": thread_id, "execution_id": canonical_execution_id,
                             "error_type": type(audit_error).__name__})
-                if (queued_admission_attempt_id and queued_admission_claim_id
-                        and actual_native_turn_id and self.queued_preflight is not None):
-                    from codex_web.models import QueuedNativeStartReceipt
-                    queued_native_start_confirmed = True
-                    self.mark_thread_active(thread_id, turn_id=actual_native_turn_id)
-                    await asyncio.to_thread(self.queued_preflight.record_queued_native_start,
-                        queued_admission_attempt_id, QueuedNativeStartReceipt(
-                            admission_claim_id=queued_admission_claim_id,
-                            requested_execution_id=requested_execution_id,
-                            execution_id=canonical_execution_id, thread_id=thread_id,
-                            provider_native_session_id=(runtime_turn_result.provider_native_session_id
-                                or native_session_id),
-                            provider_native_turn_id=actual_native_turn_id,
-                            provider_id=str(runtime_adapter.provider_id),
-                            runtime_id=str(runtime_adapter.runtime_id), observed_at=time.time()))
                 if initial_turn_pending and self.bootstrap_bindings is not None:
                     self.bootstrap_bindings.mark_initial_turn_started(
                         thread_id,

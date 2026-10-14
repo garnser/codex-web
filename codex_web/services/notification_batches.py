@@ -56,3 +56,25 @@ class NotificationBatchCoordinator:
         if not self._guard(admission,current):
             raise ValueError("notification batch was fenced after queue restoration")
         return self.preflight.transition_notification_batch(batch_id,claim_id=claim_id,phase="released")
+
+    async def submit_native(self, admission, *, runtime, project, actor, current):
+        if not self._guard(admission,current):
+            raise ValueError("notification batch authority/ownership changed")
+        member=admission.plan.members[0]
+        if (project.id != member.project_id or project.organization_id != admission.plan.organization_id
+                or project.workspace_id != admission.plan.workspace_id or actor.identity_id != member.agent_profile_actor_id
+                or actor.organization_id != admission.plan.organization_id or actor.workspace_id != admission.plan.workspace_id):
+            raise ValueError("notification batch actor/Project scope differs")
+        return await runtime.start_thread_turn_now(member.thread_id,project=project,
+            message=admission.native_input(),sandbox=member.sandbox or project.sandbox,
+            approval_policy=member.approval_policy or project.approval_policy,
+            model=member.model,reasoning_effort=member.reasoning_effort,source="queued:"+member.source,
+            reply_target=member.reply_target,execution_id=admission.id,work_item_ref=member.work_item_ref,
+            repository_resource_id=member.repository_resource_id,
+            writable_repository_resource_ids=member.writable_repository_resource_ids,
+            read_only_repository_resource_ids=member.read_only_repository_resource_ids,
+            execution_profile_id=member.execution_profile_id,actor=actor,
+            agent_profile_id=member.agent_profile_id,agent_profile_revision=member.agent_profile_revision,
+            agent_profile_actor_id=member.agent_profile_actor_id,
+            **({"memory_context_binding":member.memory_context_binding} if member.memory_context_binding is not None else {}),
+            queued_admission_claim_id=admission.claim_id,notification_batch_admission_id=admission.id)
