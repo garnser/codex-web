@@ -66,6 +66,14 @@ def validate_delivery_runs(runs, revision, *, recovery_required):
     security = by_path.get('dynamic/github-code-scanning/codeql')
     configuration = security.security_configuration if security else None
     expected_security = expected_security_job_names(configuration)
+    security_result = security.security_result
+    if tests.event == 'pull_request' and security_result is None:
+        raise PublicationRecoveryConflict('Required native PR CodeQL result evidence is missing')
+    if security_result is not None and (security_result.get('protocol_version') != 'github-codeql-check/1'
+            or security_result.get('issuer') != 'github-advanced-security'
+            or security_result.get('revision') != revision or security_result.get('state') != 'completed'
+            or security_result.get('conclusion') != 'success'):
+        raise PublicationRecoveryConflict('Native CodeQL result is pending, failed, cancelled or incompatible')
     if recovery_required and (security.event != 'dynamic' or security.head_branch != 'main'):
         raise PublicationRecoveryConflict('Exact main security workflow trigger evidence is missing')
     security_names = [c.name for c in security.checks]
@@ -90,7 +98,8 @@ def validate_delivery_runs(runs, revision, *, recovery_required):
             candidate = release_names.get('immutable-recovery-candidate')
             promotion = release_names.get('qualified-release-promotion')
             if (run.event != 'workflow_run' or run.head_branch != 'main' or candidate is None or promotion is None
-                    or candidate.state != 'completed' or candidate.conclusion != 'success'):
+                    or candidate.state != 'completed' or candidate.conclusion != 'success'
+                    or not run.recovery_publication or run.recovery_publication.get('commit') != revision):
                 raise PublicationRecoveryConflict('Exact main recovery publication/qualification is missing or unproven')
         for check in run.checks:
             inapplicable = (run is tests and tests.selection_revision == revision and
@@ -102,5 +111,6 @@ def validate_delivery_runs(runs, revision, *, recovery_required):
                 raise PublicationRecoveryConflict(f'Job {check.name} has no successful or proven-inapplicable qualification')
             retained.append({**check.model_dump(mode='json'), 'workflow_run_id': run.external_id,
                 'workflow_path': run.workflow_path, 'workflow_event': run.event,
-                'selection_full': run.selection_full, 'security_configuration': run.security_configuration, 'inapplicable': check.conclusion == 'skipped'})
+                'control_revision': run.control_revision, 'tested_revision': run.tested_revision,
+                'selection_full': run.selection_full, 'security_result': run.security_result, 'security_configuration': run.security_configuration, 'recovery_publication': run.recovery_publication, 'inapplicable': check.conclusion == 'skipped'})
     return retained

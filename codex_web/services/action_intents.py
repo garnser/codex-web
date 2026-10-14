@@ -1306,6 +1306,11 @@ class ActionIntentService:
                     break
             return state
 
+        guarded = self._publication_execution_guard(intent)
+        updated = self.store.update(apply, intent_ids=(intent.id,), **guarded)
+        return next(item for item in updated.intents if item.id == intent.id)
+
+    def _publication_execution_guard(self, intent):
         scope = intent.publication_recovery_scope
         guarded = {}
         if scope is not None:
@@ -1328,6 +1333,23 @@ class ActionIntentService:
                 from codex_web.execution_workspaces import ExecutionWorkspace
                 workspace = ExecutionWorkspace.model_validate(self.store.store.record_get(WS, assignment.execution_workspace_id))
                 guarded = {"guard_rows": scope_rows(assignment, workspace), "guard": guard}
+        return guarded
+
+    def _begin_recovery_rollback(self, intent):
+        # A recovery rollback is also an external execution. Serialize its start
+        # with handoff and make the in-flight effect visible to completion gates.
+        guarded = self._publication_execution_guard(intent)
+        if not guarded:
+            return intent
+        def apply(state):
+            for index, item in enumerate(state.intents):
+                if item.id == intent.id:
+                    if (item.status not in TERMINAL_ACTION_INTENT_STATUSES or item.status == ActionIntentStatus.ROLLED_BACK
+                            or item.status != intent.status or item.last_receipt_id != intent.last_receipt_id):
+                        raise ActionIntentConflictError('Recovery rollback state changed or requires reconciliation')
+                    state.intents[index] = item.model_copy(update={'status':ActionIntentStatus.EXECUTING,
+                        'execution_started_at':time.time(), 'updated_at':time.time(), 'last_error':None})
+            return state
         updated = self.store.update(apply, intent_ids=(intent.id,), **guarded)
         return next(item for item in updated.intents if item.id == intent.id)
 
@@ -2263,6 +2285,7 @@ class ActionIntentService:
         if not results:
             raise ActionIntentConflictError("no completed provider result is available for rollback")
         result = results[-1]
+        intent = await asyncio.to_thread(self._begin_recovery_rollback, intent)
         try:
             rolled_back = await self.execution.rollback(
                 intent.binding_id,

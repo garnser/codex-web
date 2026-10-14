@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "stage": "candidate",
+  "commit": "fc7b53f3f5f98751148d5140db903d9200ba7e40",
+  "image_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "deterministic_qualification": {
+    "compose_nginx": true,
+    "clean_onboarding": true,
+    "restart": true,
+    "slack_socket_regression": true,
+    "stale_turn_regression": true,
+    "health_hot_path_regression": true,
+    "event_journal_regression": true
+  }
+}

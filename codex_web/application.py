@@ -2462,6 +2462,7 @@ control_plane_broker_service = ControlPlaneBrokerService(
     authority=authority_role_service,
     work_items=work_item_service,
     audit=control_plane_broker_audit_store,
+    local_execution_worker=local_execution_worker_runtime,
     action_intents=action_intent_service,
     code_hosts=code_host_service,
     execution_workspaces=execution_workspace_service,

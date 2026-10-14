@@ -1,0 +1,12 @@
+{
+  "total_count": 1,
+  "artifacts": [
+    {
+      "id": 11925905413,
+      "name": "recovery-candidate-fc7b53f3f5f98751148d5140db903d9200ba7e40",
+      "size_in_bytes": 6727,
+      "expired": false,
+      "digest": "sha256:8d9ba333768da32726f19cf903c91a082f7fe2c2c44e21cfcaf7994898a1d502"
+    }
+  ]
+}

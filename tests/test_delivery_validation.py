@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import gzip
+import base64
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -105,6 +107,27 @@ class DeliveryValidationTests(unittest.TestCase):
             with self.subTest(update=update), self.assertRaises(PublicationRecoveryConflict):
                 validate_delivery_runs((tests, recovery, security.model_copy(update=update)), self.revision, recovery_required=True)
 
+    def test_native_pr_security_result_required_and_failures_not_hidden_by_successful_analysis_jobs(self):
+        tests, recovery, security = self.runs()
+        tests=tests.model_copy(update={'event':'pull_request','head_branch':'source'})
+        observed=json.loads((ROOT/'1429-codeql-result.json').read_text())
+        proof={'protocol_version':'github-codeql-check/1','external_id':str(observed['id']),
+               'issuer':observed['app']['slug'],'revision':self.revision,'state':observed['status'],
+               'conclusion':observed['conclusion']}
+        validate_delivery_runs((tests,security.model_copy(update={'security_result':proof})),self.revision,recovery_required=False)
+        for change in (None, {'conclusion':'failure'}, {'conclusion':'cancelled'},
+                       {'state':'in_progress','conclusion':None}, {'conclusion':'skipped'}, {'issuer':'github-actions'}):
+            result=None if change is None else {**proof,**change}
+            with self.subTest(change=change),self.assertRaises(PublicationRecoveryConflict):
+                validate_delivery_runs((tests,security.model_copy(update={'security_result':result})),self.revision,recovery_required=False)
+
+    def test_control_workflow_revision_alone_does_not_prove_recovery_candidate_source(self):
+        tests, recovery, security = self.runs()
+        for proof in (None, {**recovery.recovery_publication, 'commit':'b'*40}):
+            with self.subTest(proof=proof), self.assertRaises(PublicationRecoveryConflict):
+                validate_delivery_runs((tests, recovery.model_copy(update={'recovery_publication':proof}), security),
+                                       self.revision, recovery_required=True)
+
     def test_exact_default_setup_aliases_normalize_without_observed_job_inference(self):
         tests, recovery, security = self.runs()
         self.assertEqual(SECURITY_CONFIGURATION['languages'],
@@ -119,6 +142,82 @@ class DeliveryValidationTests(unittest.TestCase):
 
 
 class GitHubValidationObservationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_candidate_source_is_independent_of_newer_workflow_control_revision(self):
+        import io, zipfile, hashlib
+        manifest=json.loads((ROOT/'candidate-protocol-conformance.json').read_text())
+        revision=manifest['commit']; control='b'*40
+        stream=io.BytesIO()
+        with zipfile.ZipFile(stream,'w') as archive:
+            archive.writestr('candidate-evidence.json',json.dumps(manifest))
+        raw=stream.getvalue()
+        candidate={**observation(38628116952,'artifacts')['artifacts'][0],
+                   'digest':'sha256:'+hashlib.sha256(raw).hexdigest()}
+        release={**observation(38628116952,'run'),'head_sha':control}
+        class Client:
+            async def get_json(inner, base, path, **kwargs):
+                if path.endswith('/code-scanning/default-setup'):return SECURITY_CONFIGURATION
+                if path.endswith('/commits/'+revision+'/check-runs'):return {'total_count':0,'check_runs':[]}
+                if path.endswith('/actions/runs'):
+                    return {'total_count':2,'workflow_runs':[observation(38627482110,'run'),observation(38627481555,'run')]}
+                if path.endswith('/actions/workflows/publish-release.yml/runs'):
+                    return {'total_count':1,'workflow_runs':[release]}
+                if path.endswith('/artifacts'):return {'total_count':1,'artifacts':[candidate]}
+                for run_id in (38627482110,38627481555,38628116952):
+                    if path.endswith('/'+str(run_id)+'/jobs'):
+                        jobs=observation(run_id,'jobs')
+                        if run_id==38628116952:
+                            jobs={'total_count':jobs['total_count'],'jobs':[{**j,'head_sha':control} for j in jobs['jobs']]}
+                        return jobs
+                raise AssertionError('Unexpected provider read '+path)
+            async def request_bytes(inner,*args,**kwargs):
+                if args[2].endswith('/zip'):return raw,False,'application/zip'
+                return (json.dumps({'full':'true','head':revision,'tested_revision':revision})+'\n').encode(),False,'text/plain'
+        provider=GitHubCodeHostProvider(client=Client())
+        binding=SimpleNamespace(base_url='https://api.github.com')
+        resource=Resource(organization_id='local',workspace_id='default',resource_type='repository',name='Repo',
+            aliases=[ResourceAlias(provider='github',namespace='repository',value='garnser/codex-web')])
+        facts=await provider.validation_runs(binding,resource,revision,credential='fixture-credential')
+        release_fact=next(f for f in facts if f.workflow_path.endswith('publish-release.yml'))
+        self.assertEqual(release_fact.control_revision,control)
+        self.assertEqual(release_fact.revision,revision)
+        self.assertEqual(release_fact.recovery_publication['commit'],revision)
+        validate_delivery_runs(facts,revision,recovery_required=True)
+
+    async def test_exact_recovery_artifact_manifest_is_bounded_and_independent_of_workflow_control_head(self):
+        import io, zipfile, hashlib
+        manifest=json.loads((ROOT / 'candidate-protocol-conformance.json').read_text())
+        revision=manifest['commit']
+        metadata=observation(38628116952, 'artifacts')
+        changes=[None, {'commit':'b'*40}, {'schema_version':'future'}, {'stage':'promotion'},
+                 {'deterministic_qualification':{'compose_nginx':True}}]
+        for change in changes:
+            current={**manifest, **(change or {})}
+            stream=io.BytesIO()
+            with zipfile.ZipFile(stream, 'w') as archive:
+                archive.writestr('candidate-evidence.json', json.dumps(current))
+            raw=stream.getvalue()
+            candidate={**metadata['artifacts'][0], 'digest':'sha256:'+hashlib.sha256(raw).hexdigest()}
+            class Client:
+                async def get_json(inner, *args, **kwargs):
+                    return {'total_count':1,'artifacts':[candidate]}
+                async def request_bytes(inner, *args, **kwargs):
+                    self.assertEqual(kwargs['max_bytes'],320 * 1024)
+                    return raw, False, 'application/zip'
+            provider=GitHubCodeHostProvider(client=Client())
+            binding=SimpleNamespace(base_url='https://api.github.com')
+            resource=Resource(organization_id='local',workspace_id='default',resource_type='repository',name='Repo',
+                aliases=[ResourceAlias(provider='github',namespace='repository',value='garnser/codex-web')])
+            if change is None:
+                proof=await provider._recovery_publication(binding,resource,38628116952,revision,credential='fixture-credential')
+                self.assertEqual(proof['commit'],revision)
+                self.assertEqual(proof['artifact_id'],str(candidate['id']))
+            else:
+                with self.subTest(change=change), self.assertRaises(CodeHostError):
+                    await provider._recovery_publication(binding,resource,38628116952,revision,credential='fixture-credential')
+            candidate['expired']=True
+            with self.assertRaises(CodeHostError):
+                await provider._recovery_publication(binding,resource,38628116952,revision,credential='fixture-credential')
+
     async def test_actual_pr_source_and_tested_merge_selection_are_distinct(self):
         selection = json.loads((ROOT / '1429-selection.json').read_text())
         run = observation(38626937167, 'run')
@@ -130,12 +229,19 @@ class GitHubValidationObservationTests(unittest.IsolatedAsyncioTestCase):
             async def get_json(inner, base, path, **kwargs):
                 if path.endswith('/code-scanning/default-setup'):
                     return SECURITY_CONFIGURATION
+                if path.endswith('/actions/workflows/publish-release.yml/runs'):
+                    return {'total_count':0,'workflow_runs':[]}
                 if path.endswith('/actions/runs'):
                     return {'total_count': 1, 'workflow_runs': [run]}
                 return jobs
             async def request_bytes(inner, *args, **kwargs):
-                output = {key: selection[key] for key in ('full', 'head', 'tested_revision')}
-                return ('2026-10-14T00:00:00Z ' + json.dumps(output) + '\n').encode(), False, 'text/plain'
+                self.assertEqual(kwargs['max_bytes'], 320 * 1024)
+                metadata=json.loads((ROOT/'1429-selection-log-metadata.json').read_text())
+                raw=gzip.decompress(base64.b64decode(metadata['content_gzip_base64']))
+                self.assertEqual(len(raw),86275)
+                self.assertEqual(raw.index(b'"head"'),metadata['operator_raw_head_offset'])
+                self.assertEqual(raw.index(b'"tested_revision"'),metadata['operator_raw_tested_revision_offset'])
+                return raw, False, 'text/plain'
         provider = GitHubCodeHostProvider(client=Client())
         binding = CodeHostProviderBinding(id='binding', organization_id='local', workspace_id='default',
             provider_type='github', provider_instance='github.com', base_url='https://api.github.com',
@@ -145,6 +251,30 @@ class GitHubValidationObservationTests(unittest.IsolatedAsyncioTestCase):
         observed = await provider.validation_runs(binding, resource, selection['head'], credential='fixture-credential')
         self.assertEqual(observed[0].selection_revision, selection['head'])
         self.assertTrue(observed[0].selection_full)
+        self.assertEqual(observed[0].tested_revision, selection['tested_revision'])
+
+    async def test_oversized_missing_ambiguous_or_truncated_selection_proof_is_refused(self):
+        selection=json.loads((ROOT/'1429-selection.json').read_text())
+        metadata=json.loads((ROOT/'1429-selection-log-metadata.json').read_text())
+        raw=gzip.decompress(base64.b64decode(metadata['content_gzip_base64']))
+        run=observation(38626937167,'run');jobs=observation(38626937167,'jobs')
+        proof=json.dumps({k:selection[k] for k in ('full','head','tested_revision')}).encode()+b'\n'
+        for content,truncated in ((raw,True),(raw+proof,False),(b'checkout only\n',False),(raw[:65536],True),
+                                  (b' '*327680+proof,True)):
+            class Client:
+                async def get_json(inner,base,path,**kwargs):
+                    if path.endswith('/code-scanning/default-setup'):return SECURITY_CONFIGURATION
+                    if path.endswith('/actions/runs'):return {'total_count':1,'workflow_runs':[run]}
+                    return jobs
+                async def request_bytes(inner,*args,**kwargs):
+                    bound=kwargs['max_bytes'];self.assertEqual(bound,327680)
+                    return content[:bound],truncated,'text/plain'
+            provider=GitHubCodeHostProvider(client=Client())
+            binding=SimpleNamespace(base_url='https://api.github.com')
+            resource=Resource(organization_id='local',workspace_id='default',resource_type='repository',name='Repo',
+                aliases=[ResourceAlias(provider='github',namespace='repository',value='garnser/codex-web')])
+            with self.subTest(size=len(content),truncated=truncated),self.assertRaises(CodeHostError):
+                await provider.validation_runs(binding,resource,selection['head'],credential='fixture-credential')
 
     async def test_exact_provider_selection_output_and_latest_attempt_are_used(self):
         revision = 'a' * 40
@@ -156,6 +286,8 @@ class GitHubValidationObservationTests(unittest.IsolatedAsyncioTestCase):
             async def get_json(inner, base, path, **kwargs):
                 if path.endswith('/code-scanning/default-setup'):
                     return SECURITY_CONFIGURATION
+                if path.endswith('/actions/workflows/publish-release.yml/runs'):
+                    return {'total_count':0,'workflow_runs':[]}
                 if path.endswith('/actions/runs'):
                     return {'total_count':2, 'workflow_runs':rows}
                 self.assertIn('/runs/2/jobs',path)

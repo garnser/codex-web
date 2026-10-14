@@ -1207,3 +1207,22 @@ share that lock. Unrelated rows are not decoded or rewritten. Ordinary workspace
 lifecycle updates likewise commit their existing state/evidence atomically, so a
 stale lifecycle snapshot cannot overwrite a newer handoff. Rare administrative
 handoff may inspect broader evidence. No execution or authority store is added.
+
+Recovery head/branch/dirty attestation executes through the existing assignment's
+local-worker runtime and Bubblewrap backend, never through control-plane Git
+subprocesses. The runtime rechecks canonical worker ownership, tenant/Project,
+execution subject, repository/profile pin, lease and fence. Its ephemeral
+inspection restriction makes the existing workspace and canonical Git metadata
+read-only, disables networking, bounds runtime/output, and supplies no broker
+socket, credentials or extra writable mounts. It does not mutate the assignment,
+claim/start/complete a worker or change its profile. Worker-controlled Git helper
+configuration remains untrusted executable content inside that isolation boundary.
+Ambient Git overrides are absent. External metadata outside the canonical
+repository is rejected before mounting; unavailable isolation yields an actionable
+refusal. Mutation repeats this inspection and then checks the lease again.
+
+CI qualifies this boundary using disposable repositories with executable fsmonitor
+and clean-filter configuration. Harmless host marker reproduction establishes the
+trigger; isolated inspection preserves clean/dirty/head observations while leaving
+host markers absent. The mandatory qualification refuses unsupported isolation
+rather than treating a skipped fixture or capability escalation as successful.

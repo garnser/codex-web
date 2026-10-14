@@ -4,14 +4,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import subprocess
+from pathlib import Path
+from codex_web.local_execution_backend import LocalExecutionBackendError
+from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntimeError
 import time
 
 from codex_web.execution_profiles import ExecutionProfileCatalogDefinition
 from codex_web.execution_workspaces import (
     PublicationRecoveryHandoff, PublicationRecoveryHandoffRequest, PublicationRecoveryProvenance,
 )
-from codex_web.definitions import reference_for
+from codex_web.definitions import DefinitionContext, reference_for
 from codex_web.code_hosts import CodeHostError
 from codex_web.services.delivery_validation import validate_delivery_runs
 from codex_web.models import WorkItemState
@@ -46,8 +48,10 @@ class PublicationRecoveryHandoffService:
         profiles.registry._validated_record(record)
         if reference_for(record) != assignment.execution_profile_definition or record.lifecycle != "published":
             raise PublicationRecoveryConflict("Pinned execution profile is unavailable or incompatible")
-        if record.scope_type == "project" and record.scope_id != assignment.project_id:
-            raise PublicationRecoveryConflict("Pinned execution profile belongs to a different Project")
+        context = DefinitionContext(organization_id=assignment.organization_id,
+                                    workspace_id=assignment.workspace_id, project_id=assignment.project_id)
+        if record.scope_id != context.scope_ids()[record.scope_type]:
+            raise PublicationRecoveryConflict("Pinned execution profile belongs to a different tenant/Project scope")
         now = time.time()
         if ((record.effective_from is not None and record.effective_from > now)
                 or (record.effective_until is not None and record.effective_until <= now)):
@@ -78,41 +82,58 @@ class PublicationRecoveryHandoffService:
             raise PublicationRecoveryConflict("Prior Work Item is not completed; verify its implementation and terminal source")
         return item
 
-    @staticmethod
-    def _head(workspace, expected):
+    def _head(self, workspace, expected, assignment):
         member = next((m for m in workspace.repository_members if m.resource_id == workspace.repository_resource_id), None)
-        if member is None or member.access_mode != "write":
-            raise PublicationRecoveryConflict("Writable repository member is missing")
+        runtime = getattr(self.broker, 'local_execution_worker', None)
+        if member is None or member.access_mode != 'write' or runtime is None:
+            raise PublicationRecoveryConflict('Assignment-owned isolated Git inspection is unavailable; inspect the canonical worker')
         try:
-            head = subprocess.run(["git", "-C", member.workspace_path, "rev-parse", "HEAD"],
-                                  check=True, capture_output=True, text=True, timeout=10).stdout.strip()
-            branch = subprocess.run(["git", "-C", member.workspace_path, "symbolic-ref", "--short", "HEAD"],
-                                    check=True, capture_output=True, text=True, timeout=10).stdout.strip()
-            dirty = subprocess.run(["git", "-C", member.workspace_path, "status", "--porcelain"],
-                                   check=True, capture_output=True, text=True, timeout=10).stdout.strip()
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise PublicationRecoveryConflict("Cannot attest repository head; inspect workspace") from exc
-        if head != expected or branch != member.branch_name or dirty:
-            raise PublicationRecoveryConflict("Repository head/branch is stale or dirty; preserve and review the current checkout")
+            path = Path(member.workspace_path).resolve(strict=True)
+            if not workspace.path or not path.is_relative_to(Path(workspace.path).resolve(strict=True)):
+                raise PublicationRecoveryConflict('Repository member escapes its canonical workspace')
+            observed = runtime.inspect_git_metadata(assignment, workspace_path=path, source_path=Path(member.source_path))
+        except (OSError, ValueError, LocalExecutionBackendError, LocalExecutionWorkerRuntimeError) as exc:
+            raise PublicationRecoveryConflict('Cannot attest repository head in isolation; inspect canonical worker/configuration') from exc
+        if observed['head'] != expected or observed['branch'] != member.branch_name or observed['dirty']:
+            raise PublicationRecoveryConflict('Repository head/branch is stale or dirty; preserve and review the current checkout')
 
     def _completion(self, documents, assignment, prior, selected_ids):
         store = self.intents.store
         state = store._state(documents[store.records_namespace])
         related = [i for i in state.intents if i.organization_id == assignment.organization_id
                    and i.workspace_id == assignment.workspace_id and i.project_id == assignment.project_id
-                   and prior.repository_resource_id in i.resource_ids
-                   and (i.work_item_ref == prior.work_item_ref or i.execution_id == prior.source_execution_id)]
+                   and ((i.publication_recovery_scope is not None
+                         and i.publication_recovery_scope.recovery == prior)
+                        or (i.publication_recovery_scope is None and prior.repository_resource_id in i.resource_ids
+                            and (i.work_item_ref == prior.work_item_ref or i.execution_id == prior.source_execution_id)))]
         receipts = {r.id: r for r in state.receipts}
         verifications = {v.id: v for v in state.verifications}
         for intent in related:
             if intent.status in {"pending", "claimed", "executing", "uncertain", "requires_reconciliation"}:
                 raise PublicationRecoveryConflict(f"Intent {intent.id} is {intent.status}; inspect/reconcile it before handoff")
-            if intent.status in {"failed", "cancelled", "rolled_back"}:
-                receipt = receipts.get(intent.last_receipt_id)
-                # No receipt, generic code or terminal label proves non-start.
-                if (receipt is None or receipt.outcome == "unknown"
-                        or any(r.outcome == "unknown" for r in state.receipts if r.intent_id == intent.id)):
-                    raise PublicationRecoveryConflict(f"Intent {intent.id} lacks authoritative terminal disposition; reconcile historical outcome")
+            receipt = receipts.get(intent.last_receipt_id)
+            historical_unknown = any(r.outcome == 'unknown' for r in state.receipts if r.intent_id == intent.id)
+            if (intent.status in {'failed', 'cancelled', 'rolled_back'} or historical_unknown
+                    or receipt is None or receipt.result is None):
+                proof = verifications.get(intent.last_verification_id)
+                # Neither a generic failure/precondition receipt nor a status
+                # label settles external effects. Require a matching provider
+                # result independently verified after execution and uncertainty.
+                if (receipt is None or receipt.outcome not in {'completed', 'failed'} or receipt.result is None
+                        or receipt.intent_id != intent.id or receipt.action_id != intent.action_id
+                        or receipt.provider_type != intent.provider_type or receipt.provider_instance != intent.provider_instance
+                        or receipt.idempotency_key != intent.idempotency_key
+                        or receipt.result.provider_binding_id != intent.binding_id or receipt.result.action_id != intent.action_id
+                        or receipt.result.status not in {'succeeded', 'failed', 'rolled_back'}
+                        or proof is None or proof.intent_id != intent.id or not proof.verified
+                        or proof.provider_verification is None or not proof.provider_verification.verified
+                        or not proof.provider_verification.evidence
+                        or proof.verified_at < receipt.result.completed_at
+                        or (proof.verified_at < receipt.received_at
+                            and receipt.details.get('operation') != 'provider-state-reconciliation')
+                        or any(proof.verified_at < r.received_at for r in state.receipts
+                               if r.intent_id == intent.id and r.outcome == 'unknown')):
+                    raise PublicationRecoveryConflict(f'Intent {intent.id} lacks provider-verified terminal disposition; reconcile historical outcome')
         selected = [i for i in related if i.id in selected_ids]
         if len(selected) != len(set(selected_ids)):
             raise PublicationRecoveryConflict("Completion intents are missing or outside prior scope")
@@ -199,7 +220,9 @@ class PublicationRecoveryHandoffService:
             raise PublicationRecoveryConflict("Expected prior scope, assignment fence or repository is stale; refresh inspection")
         old = self._work_item(documents["work_item_states"].get(prior.work_item_ref), assignment, request.repository_resource_id, target=False)
         target = self._work_item(documents["work_item_states"].get(request.work_item_ref), assignment, request.repository_resource_id, target=True)
-        await asyncio.to_thread(self._head, workspace, request.expected_head_revision)
+        if old.ref != prior.work_item_ref or target.ref != request.work_item_ref:
+            raise PublicationRecoveryConflict('Canonical Work Item record identity differs from the requested scope')
+        await asyncio.to_thread(self._head, workspace, request.expected_head_revision, assignment)
         related, intent_state, head, merge_revision, number = self._completion(documents, assignment, prior, request.completion_intent_ids)
         source = self.broker.work_items.task_source_registry.resolve(old, required=True)
         snapshot = await source.read(old.source_identity)
@@ -261,7 +284,7 @@ class PublicationRecoveryHandoffService:
                 raise PublicationRecoveryConflict("Published definitions changed during validation; preview again")
             if requirements and current["artifact_evidence"] != evidence_snapshot:
                 raise PublicationRecoveryConflict("Canonical completion evidence changed during validation; preview again")
-            self._head(latest_workspace, request.expected_head_revision)
+            self._head(latest_workspace, request.expected_head_revision, latest_assignment)
             current_related, current_intents, _, _, _ = self._completion(
                 current, latest_assignment, latest_prior, request.completion_intent_ids)
             # Git attestation and receipt validation are bounded but may outlast a short lease.

@@ -445,6 +445,7 @@ class ControlPlaneBrokerService:
         code_hosts: CodeHostService | None = None,
         execution_workspaces: ExecutionWorkspaceService | None = None,
         upgrades=None,
+        local_execution_worker=None,
         service_instance_id: str | None = None,
         execution_profiles=None,
         work_graph=None,
@@ -464,6 +465,7 @@ class ControlPlaneBrokerService:
         self.code_hosts = code_hosts
         self.execution_workspaces = execution_workspaces
         self.upgrades = upgrades
+        self.local_execution_worker = local_execution_worker
         self.service_instance_id = service_instance_id
         self.limits = limits or ControlPlaneBrokerLimits()
         self._clock = clock

@@ -227,3 +227,29 @@ the combined analysis language. Inspect the retained configuration observation,
 run and job IDs together. Disabled, unavailable, unknown or incompatible security
 configuration, omitted workflows or incomplete/failed/cancelled/pending selected
 security jobs block handoff. Operator metadata readback is not future authority.
+
+Repository Git configuration can execute helpers during status inspection. Recovery
+attestation uses the assignment-owned isolated local-worker boundary, restricted
+to read-only repository metadata and no network. If that boundary is unavailable
+or belongs to a different worker, stop at the typed inspection refusal and ask the
+canonical operator; do not run Git directly in the control plane or grant privileges.
+A generic failed/precondition receipt (including maintenance codes) does not settle
+old effects. Failed/rolled-back or historical unknown outcomes need a matching
+provider result and independently verified terminal evidence after execution and any unknown observation;
+old receipts and original status remain retained.
+
+Recovery publication additionally requires the existing immutable candidate
+artifact and its versioned manifest to identify the exact merged source, image
+digest and complete deterministic qualification. The workflow control revision
+alone cannot identify a `workflow_run` producer's source. Provider artifact
+inventory/digest and bounded in-memory ZIP/manifest validation retain only the
+safe protocol fields; no archive extraction, logs or secret material enter scope
+history. Missing, expired, truncated, ambiguous or mismatched candidate evidence
+refuses handoff and requires canonical publication inspection.
+
+Selection proof uses a complete bounded provider log read (the existing 320 KiB
+inspection ceiling). The qualified PR 1442 selection log is 86,275 bytes, with
+source/tested revision values beyond 64 KiB; regression evidence records those
+actual offsets and retains only the safe proof line. Logs are never persisted in
+handoff history. Overflow, truncation, ambiguity, absent proof or wrong revision
+requires canonical inspection rather than accepting an observed subset.

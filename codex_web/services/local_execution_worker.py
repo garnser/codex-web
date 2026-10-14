@@ -717,6 +717,24 @@ class LocalExecutionWorkerRuntime:
         )
         return evidence.id
 
+    def inspect_git_metadata(self, assignment, *, workspace_path: Path, source_path: Path):
+        """Inspect only this live worker's existing assignment; never claim/start/complete it."""
+        current = self._pending_assignment(assignment.id)
+        now = time.time()
+        if (current.assigned_worker_id != self.worker.id or current.fence != assignment.fence
+                or current.organization_id != assignment.organization_id or current.workspace_id != assignment.workspace_id
+                or current.project_id != assignment.project_id or current.created_by != assignment.created_by
+                or current.execution_id != assignment.execution_id or current.subject != assignment.subject
+                or current.repository_scope != assignment.repository_scope or current.repository_target != assignment.repository_target
+                or current.execution_profile_definition != assignment.execution_profile_definition
+                or current.execution_profile_id != assignment.execution_profile_id or current.agent_profile != assignment.agent_profile
+                or current.execution_workspace_id != assignment.execution_workspace_id
+                or current.status != AssignmentStatus.RUNNING or current.lease is None
+                or current.lease.worker_id != self.worker.id or current.lease.fence != current.fence
+                or current.lease.expires_at <= now or (current.deadline_at is not None and current.deadline_at <= now)):
+            raise LocalExecutionWorkerRuntimeError('Git inspection assignment ownership/lease/fence is stale')
+        return self.backend.inspect_git_metadata(current, workspace_path=workspace_path, source_path=source_path)
+
     def execute(
         self,
         assignment_id: str,

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import base64
 import json
+import io
+import hashlib
+import zipfile
 from datetime import datetime
 import re
 from urllib.parse import quote, urlparse
@@ -76,7 +79,6 @@ class GitHubCodeHostProvider:
                 CodeHostCapability.PULL_REQUEST_READ,
                 CodeHostCapability.REVIEW_READ,
                 CodeHostCapability.CHECKS_READ,
-                CodeHostCapability.VALIDATION_READ,
                 CodeHostCapability.JOB_LOGS_READ,
                 CodeHostCapability.ARTIFACTS_READ,
                 CodeHostCapability.RELEASE_READ,
@@ -346,6 +348,57 @@ class GitHubCodeHostProvider:
             if isinstance(item, dict) and item.get("id") is not None
         )
 
+    async def _recovery_publication(self, binding, resource, run_id, revision, *, credential, allow_absent=False):
+        """Interpret the existing immutable candidate-evidence v1 protocol, never logs."""
+        repository = _repository_name(resource)
+        data = await self.client.get_json(binding.base_url,
+            f"repos/{repository}/actions/runs/{run_id}/artifacts", token=credential, params={"per_page": 100})
+        rows = data.get('artifacts', []) if isinstance(data, dict) else []
+        if not isinstance(rows, list) or data.get('total_count') != len(rows) or len(rows) > 100:
+            raise CodeHostError('Recovery artifact inventory is incomplete or exceeds the inspection bound')
+        candidates = [row for row in rows if row.get('name') == 'recovery-candidate-' + revision]
+        if not candidates and allow_absent:
+            return None
+        if len(candidates) != 1 or candidates[0].get('expired') or candidates[0].get('size_in_bytes', 0) > 320 * 1024:
+            raise CodeHostError('Exact immutable recovery candidate artifact is missing, expired or ambiguous')
+        candidate = candidates[0]
+        downloaded = await self.artifact_download(binding, resource, int(candidate['id']),
+                                                   credential=credential, max_bytes=320 * 1024)
+        if downloaded.truncated:
+            raise CodeHostError('Recovery candidate artifact is truncated')
+        raw = base64.b64decode(downloaded.content_base64, validate=True)
+        digest = 'sha256:' + hashlib.sha256(raw).hexdigest()
+        if candidate.get('digest') and candidate['digest'] != digest:
+            raise CodeHostError('Recovery artifact digest does not match immutable provider metadata')
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                entries = archive.infolist()
+                if len(entries) > 64 or sum(entry.file_size for entry in entries) > 1048576:
+                    raise CodeHostError('Recovery artifact expanded contents exceed the inspection bound')
+                manifests = [entry for entry in entries if entry.filename == 'candidate-evidence.json']
+                if len(manifests) != 1:
+                    raise CodeHostError('Recovery candidate evidence manifest is missing or ambiguous')
+                with archive.open(manifests[0]) as member:
+                    payload = member.read(1048576 + 1)
+                if len(payload) > 1048576:
+                    raise CodeHostError('Recovery manifest exceeds the expanded read bound')
+                manifest = json.loads(payload)
+        except (ValueError, OSError, zipfile.BadZipFile, RuntimeError) as exc:
+            raise CodeHostError('Recovery candidate artifact protocol is unreadable or unsupported') from exc
+        # Structural requirements of the existing versioned candidate protocol.
+        flags = {'compose_nginx', 'clean_onboarding', 'restart', 'slack_socket_regression',
+                 'stale_turn_regression', 'health_hot_path_regression', 'event_journal_regression'}
+        qualification = manifest.get('deterministic_qualification') if isinstance(manifest, dict) else None
+        if (not isinstance(manifest, dict) or manifest.get('schema_version') != '1.0'
+                or manifest.get('stage') != 'candidate' or manifest.get('commit') != revision
+                or not re.fullmatch(r'sha256:[0-9a-f]{64}', str(manifest.get('image_digest', '')))
+                or not isinstance(qualification, dict) or set(qualification) != flags
+                or any(value is not True for value in qualification.values())):
+            raise CodeHostError('Recovery candidate does not prove exact source and complete deterministic qualification')
+        return {'artifact_id': str(candidate['id']), 'artifact_digest': digest,
+                'schema_version': '1.0', 'stage': 'candidate', 'commit': revision,
+                'image_digest': manifest['image_digest'], 'deterministic_qualification': qualification}
+
     async def validation_runs(self, binding, resource, revision, *, credential):
         """Bounded exact-revision workflow/job observations and selection output.
 
@@ -393,13 +446,13 @@ class GitHubCodeHostProvider:
             checks = tuple(CodeHostCheckFact(external_id=str(j["id"]), name=str(j["name"]),
                 state=str(j.get("status") or "unknown"), conclusion=j.get("conclusion"), revision=revision,
                 web_url=j.get("html_url")) for j in job_rows)
-            full = selected_revision = None
+            full = selected_revision = tested_revision = None
             if row["path"] == ".github/workflows/tests.yml":
                 selections = [j for j in job_rows if j["name"] == "validation-selection"]
                 if len(selections) == 1 and selections[0].get("conclusion") == "success":
-                    log = await self.job_logs(binding, resource, int(selections[0]["id"]), credential=credential, max_bytes=65536)
+                    log = await self.job_logs(binding, resource, int(selections[0]["id"]), credential=credential, max_bytes=320 * 1024)
                     if log.truncated:
-                        raise CodeHostError("Selection output is truncated; applicability is unproven")
+                        raise CodeHostError("Selection log exceeds the bounded complete read; inspect canonical selection proof (truncated evidence is refused)")
                     candidates = []
                     for line in log.content.splitlines():
                         start = line.find('{')
@@ -416,11 +469,69 @@ class GitHubCodeHostProvider:
                         raise CodeHostError("Exact selection output is missing or ambiguous")
                     full = candidates[0]["full"] == "true"
                     selected_revision = revision
+                    tested_revision = candidates[0].get("tested_revision")
+            security_result = None
+            if row['path'] == 'dynamic/github-code-scanning/codeql':
+                results = await self.client.get_json(binding.base_url,
+                    f'repos/{repository}/commits/{revision}/check-runs', token=credential,
+                    params={'per_page':100, 'filter':'latest'})
+                result_rows = results.get('check_runs', []) if isinstance(results, dict) else []
+                if not isinstance(result_rows, list) or results.get('total_count') != len(result_rows) or len(result_rows) > 100:
+                    raise CodeHostError('Security result check inventory is incomplete or exceeds inspection bound')
+                scanning = [r for r in result_rows if r.get('name') == 'CodeQL'
+                            and (r.get('app') or {}).get('slug') == 'github-advanced-security']
+                if len(scanning) > 1:
+                    raise CodeHostError('Native CodeQL result provenance is ambiguous')
+                if scanning:
+                    result = scanning[0]
+                    if result.get('head_sha') != revision:
+                        raise CodeHostError('Native CodeQL result does not identify the exact source')
+                    security_result = {'protocol_version':'github-codeql-check/1', 'external_id':str(result['id']),
+                        'issuer':result['app']['slug'], 'revision':revision, 'state':result.get('status'),
+                        'conclusion':result.get('conclusion'), 'web_url':result.get('html_url')}
+            recovery_publication = None
+            if row['path'] == '.github/workflows/publish-release.yml' and row.get('conclusion') == 'success':
+                recovery_publication = await self._recovery_publication(binding, resource, run_id, revision, credential=credential)
             facts.append(CodeHostValidationRunFact(external_id=str(run_id), workflow_path=row["path"],
                 event=str(row.get("event") or "unknown"), revision=revision, head_branch=row.get("head_branch"),
                 state=str(row.get("status") or "unknown"), conclusion=row.get("conclusion"),
-                selection_full=full, selection_revision=selected_revision, checks=checks,
-                security_configuration=security_configuration if row["path"] == "dynamic/github-code-scanning/codeql" else None))
+                selection_full=full, selection_revision=selected_revision, tested_revision=tested_revision,
+                control_revision=revision, checks=checks,
+                security_configuration=security_configuration if row["path"] == "dynamic/github-code-scanning/codeql" else None,
+                recovery_publication=recovery_publication, security_result=security_result))
+        # A workflow_run control SHA may have advanced independently of its
+        # producer. Find immutable evidence of the requested source without
+        # relabelling or trusting the control revision as candidate identity.
+        if (any(f.workflow_path == '.github/workflows/tests.yml' and f.event == 'push' and f.head_branch == 'main' for f in facts)
+                and not any(f.workflow_path == '.github/workflows/publish-release.yml' for f in facts)):
+            recent = await self.client.get_json(binding.base_url,
+                f'repos/{repository}/actions/workflows/publish-release.yml/runs', token=credential,
+                params={'per_page':20, 'branch':'main', 'event':'workflow_run'})
+            candidates = recent.get('workflow_runs', []) if isinstance(recent, dict) else []
+            if not isinstance(recent, dict) or 'total_count' not in recent or not isinstance(candidates, list) or len(candidates) > 20:
+                raise CodeHostError('Recent recovery workflow inventory is unsupported')
+            for row in candidates:
+                if (row.get('path') != '.github/workflows/publish-release.yml' or not row.get('id')
+                        or not re.fullmatch(r'[0-9a-f]{40}', str(row.get('head_sha', '')))):
+                    raise CodeHostError('Recovery workflow provenance is incomplete')
+                publication = await self._recovery_publication(binding, resource, int(row['id']), revision,
+                    credential=credential, allow_absent=True)
+                if publication is None:
+                    continue
+                jobs = await self.client.get_json(binding.base_url,
+                    f"repos/{repository}/actions/runs/{int(row['id'])}/jobs", token=credential,
+                    params={'per_page':100, 'filter':'latest'})
+                job_rows = jobs.get('jobs', []) if isinstance(jobs, dict) else []
+                if (not isinstance(job_rows, list) or jobs.get('total_count') != len(job_rows) or len(job_rows) > 100
+                        or any(j.get('head_sha') != row.get('head_sha') for j in job_rows)):
+                    raise CodeHostError('Recovery job evidence is incomplete or inconsistent')
+                facts.append(CodeHostValidationRunFact(external_id=str(row['id']), workflow_path=row['path'],
+                    event=str(row.get('event') or 'unknown'), revision=revision, control_revision=row.get('head_sha'),
+                    head_branch=row.get('head_branch'), state=str(row.get('status') or 'unknown'), conclusion=row.get('conclusion'),
+                    recovery_publication=publication, checks=tuple(CodeHostCheckFact(external_id=str(j['id']), name=str(j['name']),
+                        state=str(j.get('status') or 'unknown'), conclusion=j.get('conclusion'), revision=revision,
+                        web_url=j.get('html_url')) for j in job_rows)))
+                break
         return tuple(facts)
 
     async def job_logs(

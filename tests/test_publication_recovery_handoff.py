@@ -126,7 +126,11 @@ class PublicationRecoveryHandoffTests(unittest.IsolatedAsyncioTestCase):
                 runs[0] = runs[0].model_copy(update={"checks": (runs[0].checks[0].model_copy(update={"conclusion": "failure"}),) + runs[0].checks[1:]})
             return tuple(runs)
         self.worker_service = SimpleNamespace(store=self.workers_store)
+        # Service tests use explicit worker observations. Real executable-config
+        # regressions exercise the production isolation backend separately.
+        self.git_observation = {'head': self.head, 'branch': self.workspace.branch_name, 'dirty': ''}
         self.broker = SimpleNamespace(
+            local_execution_worker=SimpleNamespace(inspect_git_metadata=lambda *args, **kwargs: dict(self.git_observation)),
             execution_workspaces=self.workspaces,
             execution_profiles=self.profiles,
             action_intents=SimpleNamespace(store=self.action_store, execution_workers=self.worker_service,
@@ -186,7 +190,7 @@ class PublicationRecoveryHandoffTests(unittest.IsolatedAsyncioTestCase):
             await self.service.handoff(self.request, actor=self.actor)
         self.checks_good = True
         self.mutate(self.action_store.records_namespace, "intents:" + self.intents["code-host.branch.publish"].id, last_receipt_id=None)
-        with self.assertRaisesRegex(PublicationRecoveryConflict, "matching verified"):
+        with self.assertRaisesRegex(PublicationRecoveryConflict, "terminal disposition|matching verified"):
             await self.service.handoff(self.request, actor=self.actor)
 
     async def test_pending_uncertain_and_receipt_free_failed_intents_refuse(self):
@@ -197,6 +201,15 @@ class PublicationRecoveryHandoffTests(unittest.IsolatedAsyncioTestCase):
                 await self.service.handoff(self.request, actor=self.actor)
             self.store.record_apply(self.action_store.records_namespace, upserts={}, deletes=("intents:" + intent.id,))
         self.assertEqual(self.workspaces.get(self.workspace.id, self.actor).publication_recovery, self.prior)
+
+    async def test_tagged_nonrepository_pending_intent_also_protects_scope(self):
+        scope=PublicationRecoveryIntentScope(execution_workspace_id=self.workspace.id, recovery=self.prior,
+            execution_profile_definition=self.pin)
+        intent=self.make_intent('artifact.write',status='pending').model_copy(update={
+            'resource_ids':(), 'publication_recovery_scope':scope})
+        self.action_store.insert(intent)
+        with self.assertRaisesRegex(PublicationRecoveryConflict,'pending'):
+            await self.service.handoff(self.request,actor=self.actor)
 
     async def test_refs_publication_and_separate_verified_closure_use_typed_scope(self):
         upsert = self.intents["code-host.pull-request.upsert"]
@@ -272,17 +285,87 @@ class PublicationRecoveryHandoffTests(unittest.IsolatedAsyncioTestCase):
             for key in ("unrelated-0", "unrelated-999"):
                 self.assertEqual(self.store.record_get(namespace, key), unrelated[key])
 
-    async def test_known_failed_receipt_is_retained_without_relabelling(self):
+    async def test_provider_verified_failed_receipt_is_retained_without_relabelling(self):
         intent = self.make_intent("code-host.issue.comment", status="failed")
         receipt = ActionIntentReceipt(intent_id=intent.id, attempt=1, provider_type="github", provider_instance="github.com",
-            action_id=intent.action_id, idempotency_key=intent.idempotency_key, correlation_id="failed-original", outcome="failed")
-        intent = intent.model_copy(update={"last_receipt_id": receipt.id})
+            action_id=intent.action_id, idempotency_key=intent.idempotency_key, correlation_id="failed-original", outcome="failed",
+            result=ActionResult(provider_binding_id="github", action_id=intent.action_id, status="failed",
+                started_at=time.time(), completed_at=time.time()))
+        from codex_web.action_providers import ActionEvidence
+        proof = ActionIntentVerificationReceipt(intent_id=intent.id, verified=True,
+            provider_verification=ActionVerification(verified=True, evidence=(ActionEvidence(
+                evidence_type="provider-terminal-disposition", reference="github:verified-disposition"),)))
+        intent = intent.model_copy(update={"last_receipt_id": receipt.id, "last_verification_id": proof.id})
         def append(state):
-            state.intents.append(intent); state.receipts.append(receipt); return state
+            state.intents.append(intent); state.receipts.append(receipt); state.verifications.append(proof); return state
         self.action_store.update(append)
         result = await self.service.handoff(self.request, actor=self.actor)
         self.assertIn(receipt.id, result["handoff"]["receipt_ids"])
         self.assertEqual(self.action_store.get(intent.id), intent)
+
+    async def test_authoritative_reconciliation_can_settle_unknown_before_receipt_persistence(self):
+        from codex_web.action_providers import ActionEvidence
+        intent=self.intents['code-host.pull-request.merge']
+        original=next(r for r in self.receipts if r.intent_id==intent.id)
+        proof=next(v for v in self.verifications if v.intent_id==intent.id)
+        unknown=original.model_copy(update={'id':original.id+'-unknown','outcome':'unknown','result':None,
+                                           'received_at':original.result.completed_at})
+        settled=original.model_copy(update={'id':original.id+'-reconciled','received_at':proof.verified_at+0.000001,
+            'details':{'operation':'provider-state-reconciliation','provider_mutation_replayed':False}})
+        verified=proof.model_copy(update={'id':proof.id+'-reconciled','provider_verification':ActionVerification(
+            verified=True,evidence=(ActionEvidence(evidence_type='provider-state',reference='github:merge-state:10'),))})
+        updated=intent.model_copy(update={'last_receipt_id':settled.id,'last_verification_id':verified.id})
+        def append(state):
+            state.intents=[updated if i.id==intent.id else i for i in state.intents]
+            state.receipts.extend((unknown,settled));state.verifications.append(verified);return state
+        self.action_store.update(append)
+        result=await self.service.handoff(self.request,actor=self.actor)
+        self.assertIn(unknown.id,result['handoff']['receipt_ids'])
+        self.assertIn(settled.id,result['handoff']['receipt_ids'])
+
+    async def test_generic_failure_receipts_and_stale_or_missing_verification_do_not_prove_disposition(self):
+        from codex_web.action_providers import ActionEvidence
+        for status, outcome, result_present, proof_kind in (
+                ('failed', 'failed', False, 'none'), ('failed', 'failed', True, 'none'),
+                ('failed', 'failed', True, 'stale'), ('failed', 'failed', True, 'generic'),
+                ('succeeded', 'unknown', False, 'none')):
+            intent = self.make_intent('code-host.issue.comment', status=status)
+            result = ActionResult(provider_binding_id='github', action_id=intent.action_id, status='failed',
+                                  started_at=time.time(), completed_at=time.time()) if result_present else None
+            receipt = ActionIntentReceipt(intent_id=intent.id, attempt=1, provider_type='github', provider_instance='github.com',
+                action_id=intent.action_id, idempotency_key=intent.idempotency_key, correlation_id='generic',
+                outcome=outcome, result=result, details={'reason': 'ActionRequirementError', 'code': 'maintenance'})
+            proof = ActionIntentVerificationReceipt(intent_id=intent.id, verified=True,
+                verified_at=receipt.received_at - 1 if proof_kind == 'stale' else time.time(),
+                provider_verification=ActionVerification(verified=True, evidence=() if proof_kind == 'generic' else (
+                    ActionEvidence(evidence_type='provider-terminal-disposition', reference='fixture-proof'),)))
+            intent = intent.model_copy(update={'last_receipt_id': receipt.id,
+                'last_verification_id': None if proof_kind == 'none' else proof.id})
+            def append(state):
+                state.intents.append(intent); state.receipts.append(receipt); state.verifications.append(proof); return state
+            self.action_store.update(append)
+            with self.subTest(status=status, outcome=outcome, proof=proof_kind), self.assertRaisesRegex(PublicationRecoveryConflict, 'terminal disposition'):
+                await self.service.handoff(self.request, actor=self.actor)
+            self.store.record_apply(self.action_store.records_namespace, upserts={}, deletes=('intents:' + intent.id,))
+
+    async def test_isolated_git_observation_preserves_clean_dirty_branch_and_head_cas(self):
+        for changed in ({'dirty': ' M source.py'}, {'head': 'f' * 40}, {'branch': 'wrong'}):
+            original = dict(self.git_observation)
+            self.git_observation.update(changed)
+            with self.subTest(changed=changed), self.assertRaisesRegex(PublicationRecoveryConflict, 'stale or dirty'):
+                await self.service.handoff(self.request, actor=self.actor)
+            self.git_observation = original
+        self.broker.local_execution_worker = None
+        with self.assertRaisesRegex(PublicationRecoveryConflict, 'isolated Git inspection is unavailable'):
+            await self.service.handoff(self.request, actor=self.actor)
+
+    async def test_exact_profile_pin_cannot_cross_definition_tenant_scope(self):
+        record = self.profiles.registry.get_record(self.pin.record_id)
+        for scope_type, scope_id in (('organization', 'foreign'), ('workspace', 'foreign'), ('project', 'foreign')):
+            foreign = record.model_copy(update={'scope_type': scope_type, 'scope_id': scope_id})
+            with self.subTest(scope_type=scope_type), patch.object(self.profiles.registry, 'get_record', return_value=foreign):
+                with self.assertRaises(PublicationRecoveryConflict):
+                    await self.service.handoff(self.request, actor=self.actor)
 
     async def test_stale_scope_fence_head_and_expired_lease_fail(self):
         for changes in ({"expected_head_revision": "b" * 40}, {"expected_assignment_fence": 2},
@@ -337,6 +420,25 @@ class PublicationRecoveryHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(isinstance(r, dict) for r in results), 1)
         self.assertEqual(sum(isinstance(r, PublicationRecoveryConflict) for r in results), 1)
         self.assertEqual(len(self.workspaces.get(self.workspace.id, self.actor).publication_recovery_history), 1)
+
+    async def test_recovery_rollback_start_is_atomic_and_retired_scope_cannot_rollback(self):
+        from codex_web.services.action_intents import ActionIntentService
+        scope=PublicationRecoveryIntentScope(execution_workspace_id=self.workspace.id, recovery=self.prior,
+            execution_profile_definition=self.pin)
+        original=self.make_intent('artifact.write').model_copy(update={'publication_recovery_scope':scope})
+        self.action_store.insert(original)
+        service=object.__new__(ActionIntentService)
+        service.store=self.action_store;service.execution_workers=self.worker_service
+        running=service._begin_recovery_rollback(original)
+        self.assertEqual(running.status,'executing')
+        with self.assertRaisesRegex(PublicationRecoveryConflict,'executing'):
+            await self.service.handoff(self.request,actor=self.actor)
+        self.store.record_apply(self.action_store.records_namespace,upserts={},deletes=('intents:'+original.id,))
+        await self.service.handoff(self.request,actor=self.actor)
+        self.store.record_apply(self.action_store.records_namespace,upserts={'intents:'+original.id:original.model_dump(mode='json')})
+        with self.assertRaisesRegex(PublicationRecoveryConflict,'retired or changed'):
+            service._begin_recovery_rollback(original)
+        self.assertEqual(self.action_store.get(original.id),original)
 
     async def test_old_scope_creation_and_execution_are_fenced_atomically(self):
         scope = PublicationRecoveryIntentScope(execution_workspace_id=self.workspace.id, recovery=self.prior, execution_profile_definition=self.pin)

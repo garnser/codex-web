@@ -653,13 +653,17 @@ class CodeHostService:
 
     async def validation_runs(self, binding_id: str, resource_id: str, revision: str, *, actor: AuthenticationActor) -> tuple[CodeHostValidationRunFact, ...]:
         binding, provider = self.registry.resolve(binding_id, actor=actor)
-        self._require_capability(binding, provider, CodeHostCapability.VALIDATION_READ)
+        for capability in (CodeHostCapability.CHECKS_READ, CodeHostCapability.JOB_LOGS_READ, CodeHostCapability.ARTIFACTS_READ):
+            self._require_capability(binding, provider, capability)
         resource = self._resource(resource_id, actor=actor, binding=binding)
         if not callable(getattr(provider, "validation_runs", None)):
             raise CodeHostUnsupportedCapabilityError("Provider has no qualified validation observation adapter")
-        return await self._with_credential(binding, actor=actor, resource=resource,
-            operation="code-host.validation.read", callback=lambda credential: provider.validation_runs(
-                binding, resource, revision, credential=credential))
+        try:
+            return await self._with_credential(binding, actor=actor, resource=resource,
+                operation="code-host.validation.read", callback=lambda credential: provider.validation_runs(
+                    binding, resource, revision, credential=credential))
+        except (KeyError, TypeError, AttributeError, UnicodeError) as exc:
+            raise CodeHostError("Validation provider protocol is incomplete or unsupported; inspect canonical evidence") from exc
 
     async def job_logs(
         self, binding_id: str, resource_id: str, job_id: int, *,

@@ -16,7 +16,6 @@ class CodeHostCapability(StrEnum):
     PULL_REQUEST_READ = "pull_request.read"
     REVIEW_READ = "review.read"
     CHECKS_READ = "checks.read"
-    VALIDATION_READ = "validation.read"
     JOB_LOGS_READ = "job_logs.read"
     ARTIFACTS_READ = "artifacts.read"
     RELEASE_READ = "release.read"
@@ -156,7 +155,11 @@ class CodeHostValidationRunFact(BaseModel):
     conclusion: str | None = None
     selection_full: bool | None = None
     selection_revision: str | None = None
+    tested_revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    control_revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
     security_configuration: dict[str, Any] | None = None
+    security_result: dict[str, Any] | None = None
+    recovery_publication: dict[str, Any] | None = None
     checks: tuple[CodeHostCheckFact, ...]
 
 

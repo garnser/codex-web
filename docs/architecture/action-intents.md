@@ -287,7 +287,7 @@ receipts and canonical attribution establish issue/PR relationships independentl
 of close-keyword prose; separately verified terminal issue closure remains valid.
 
 Recovery qualification reads a versioned GitHub default-setup configuration through
-the existing CodeHost validation capability and credential-reference boundary,
+the existing CodeHost checks/logs/artifacts capabilities and credential-reference boundary,
 retaining its exact state/languages/update/query-suite observation with each job.
 Expected analysis membership comes from that configuration, with protocol alias
 normalization; successful observed jobs never define their own required set.
@@ -296,3 +296,25 @@ Only that canonical workflow metadata is included in the runtime build context;
 unsupported matrices and missing/unreadable packaging fail with typed recovery
 refusals. The Docker smoke gate executes these qualification regressions inside
 the supported image without network or writable runtime state.
+
+Recovery publication additionally requires the existing immutable candidate
+artifact and its versioned manifest to identify the exact merged source, image
+digest and complete deterministic qualification. The workflow control revision
+alone cannot identify a `workflow_run` producer's source. Provider artifact
+inventory/digest and bounded in-memory ZIP/manifest validation retain only the
+safe protocol fields; no archive extraction, logs or secret material enter scope
+history. Missing, expired, truncated, ambiguous or mismatched candidate evidence
+refuses handoff and requires canonical publication inspection.
+
+Every intent tagged with the retiring scope participates in the pending/unknown
+barrier, including intents whose immediate resource is an artifact rather than
+the repository. Untagged legacy attribution remains bounded to the originating
+repository/execution. Recovery rollback admission shares the same canonical
+scope guard and atomically marks the existing intent executing before the provider
+call; handoff cannot race that side effect or permit rollback under a retired scope.
+Native PR CodeQL results are inspected independently of analysis-job success,
+with exact source and native issuer provenance; missing/failed/cancelled/pending
+PR results refuse qualification. Recovery artifact source and workflow control
+revision are recorded separately. Bounded recent main workflow inspection can
+find a candidate whose control revision advanced, while its immutable artifact
+still proves the requested source; unknown or absent proof never grants eligibility.
