@@ -442,6 +442,7 @@ from codex_web.services.thread_bootstrap_bindings import (
 from codex_web.services.threads import ThreadService
 from codex_web.services.turn_queue_policy import install_turn_queue_policy
 from codex_web.services.turn_execution_binding import TurnExecutionBindingService
+from codex_web.services.procedure_discovery import ProcedureDiscoveryService
 from codex_web.services.turns import TurnService
 from codex_web.services.work_item_runs import WorkItemRunProjectionService
 from codex_web.services.work_item_execution import WorkItemExecutionLifecycleService
@@ -2064,6 +2065,13 @@ app.state.capacity_store = capacity_store
 app.state.capacity_service = capacity_service
 app.include_router(build_capacity_router(capacity_service))
 
+from codex_web.services.procedure_discovery import ProcedureSupportingContextService, ProcedureExecutionCapabilityService
+
+procedure_discovery_service = ProcedureDiscoveryService(skill_service, resource_catalog_service,
+    supporting_context=ProcedureSupportingContextService(organizational_memory_service), projects=project_service,
+    execution_capabilities=ProcedureExecutionCapabilityService(execution_worker_service, agent_runtime_registry, agent_provider_service))
+app.state.procedure_discovery_service = procedure_discovery_service
+
 action_intent_store = ActionIntentStore(state_store)
 action_intent_service = ActionIntentService(
     action_intent_store,
@@ -2077,10 +2085,15 @@ action_intent_service = ActionIntentService(
     capacity=capacity_service,
     execution_workers=execution_worker_service,
     execution_profiles=execution_profile_definition_service,
+    procedure_discovery=procedure_discovery_service,
 )
+action_execution_service.procedure_admission = action_intent_service.procedure_provider_admission
 app.include_router(build_action_intents_router(action_intent_service))
 app.state.action_intent_store = action_intent_store
 app.state.action_intent_service = action_intent_service
+from codex_web.api.procedure_discovery import build_procedure_discovery_router
+app.include_router(build_procedure_discovery_router(
+    procedure_discovery_service, action_execution_service, action_intent_service, project_service))
 
 release_store = ReleaseStore(state_store)
 release_service = ReleaseService(
@@ -2469,6 +2482,9 @@ control_plane_broker_service = ControlPlaneBrokerService(
     service_instance_id=instance_id,
     execution_profiles=execution_profile_definition_service,
 )
+from codex_web.services.procedure_discovery import BrokerProcedureAdmissionService
+control_plane_broker_service.procedure_admission = BrokerProcedureAdmissionService(
+    procedure_discovery_service, execution_worker_service, identity_service.local_trusted_actor())
 control_plane_broker_factory.configure(control_plane_broker_service)
 app.state.control_plane_broker_audit_store = control_plane_broker_audit_store
 app.state.control_plane_broker_service = control_plane_broker_service
@@ -3293,6 +3309,14 @@ turn_execution_service = install_turn_execution_service(
     transcript=thread_transcript_service,
     maintenance_admission=upgrade_service.native_turn_admission,
 )
+
+from codex_web.services.procedure_discovery import install_native_procedure_admission
+install_native_procedure_admission(turn_execution_service, agent_session_service,
+    procedure_discovery_service, execution_worker_service, thread_history_repository,
+    identity_service.local_trusted_actor(), execution_profile_definition_service)
+
+
+
 turn_execution_service.automated_admission_allowed = lambda: (
     runtime_policy.autonomy_enabled()
     and autonomy_controller.store.control().mode == "active"

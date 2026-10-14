@@ -228,11 +228,14 @@ class SecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
         for item in raw["intents"]:
             item.pop("security_policy", None)
             item.pop("security_decision", None)
+            item.pop("procedure_discoveries", None)
+            item.pop("procedure_deviation_reason", None)
 
         migrated = self.intents.store._decode(raw)
 
-        self.assertEqual(migrated.schema_version, "1.2")
+        self.assertEqual(migrated.schema_version, "1.3")
         migrated_intent = next(item for item in migrated.intents if item.id == intent.id)
+        self.assertEqual(migrated_intent.procedure_discoveries, ())
         self.assertEqual(
             migrated_intent.security_decision.outcome,
             SecurityDecisionOutcome.DENY,

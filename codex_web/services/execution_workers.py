@@ -1099,6 +1099,27 @@ class ExecutionWorkerService:
         self._notify_assignment(result, "assignment_created")
         return result
 
+    def record_procedure_discovery(self, assignment_id, discovery, *, expected_fence, actor):
+        """Append control-plane admission evidence without changing worker authority."""
+        if not self._admin(actor) and actor.identity_id != discovery.actor_identity_id:
+            raise AuthorizationError("procedure evidence must retain the authenticated requester")
+        def apply(state):
+            item = self._assignment(state, assignment_id, actor)
+            if item.fence != expected_fence or item.status not in {AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING}:
+                raise WorkerLeaseError("procedure discovery assignment fence/status changed")
+            if item.lease is None or item.lease.expires_at <= time.time():
+                raise WorkerLeaseError("procedure discovery requires a live assignment lease")
+            if (item.organization_id, item.workspace_id, item.project_id) != (
+                discovery.organization_id, discovery.workspace_id, discovery.project_id):
+                raise AuthorizationError("procedure discovery scope differs from assignment")
+            if len(item.procedure_discoveries) >= 64:
+                raise WorkerConflictError("procedure history limit: create a new admitted assignment")
+            item.procedure_discoveries = (*item.procedure_discoveries, discovery)
+            item.updated_at = time.time()
+            return state
+        state = self.store.update(apply)
+        return self._assignment(state, assignment_id, actor)
+
     def list_assignments(
         self,
         actor: AuthenticationActor,

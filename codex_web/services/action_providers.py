@@ -275,6 +275,7 @@ class ActionExecutionService:
         self.registry = registry
         self.resources = resources
         self.secret_broker = secret_broker
+        self.procedure_admission = None
 
     @staticmethod
     def _definition(provider: ActionProvider, action_id: str) -> ActionDefinition:
@@ -381,6 +382,8 @@ class ActionExecutionService:
     ) -> ActionResult:
         binding, provider, definition, request = self._resolve(binding_id, request, actor)
         definition.capabilities.require("execute")
+        if self.procedure_admission is not None:
+            await self.procedure_admission(binding, provider, definition, request, actor, "execute")
 
         async def invoke(credential: str | None) -> ActionResult:
             return await provider.execute(
@@ -463,6 +466,8 @@ class ActionExecutionService:
         )
         definition = self._definition(provider, result.action_id)
         definition.capabilities.require("rollback")
+        if self.procedure_admission is not None:
+            await self.procedure_admission(binding, provider, definition, result, actor, "rollback")
         if not definition.reversible:
             raise ActionRequirementError("action is not declared reversible")
 

@@ -737,6 +737,12 @@ class OrganizationalMemoryService:
         if query.authored_by:
             if item.provenance.authored_by not in query.authored_by:
                 return False
+        if query.canonical_target_refs:
+            # Canonical object identity is distinct from Knowledge-to-Knowledge
+            # relationships. Relation labels remain provenance, not authority.
+            wanted = {(ref.object_type, ref.object_id) for ref in query.canonical_target_refs}
+            if not wanted.intersection((ref.object_type, ref.object_id) for ref in item.canonical_refs):
+                return False
         if query.relationship_target_ids:
             targets = relationship_targets.get(item.id, set())
             if not set(query.relationship_target_ids).intersection(targets):

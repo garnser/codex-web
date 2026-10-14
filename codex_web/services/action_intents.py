@@ -125,6 +125,7 @@ class ActionIntentService:
         maintenance_guard=None,
         maintenance_admission=None,
         status_notifier=None,
+        procedure_discovery=None,
     ) -> None:
         self.store = store
         self.execution = execution
@@ -140,6 +141,9 @@ class ActionIntentService:
         self.maintenance_guard = maintenance_guard
         self.maintenance_admission = maintenance_admission
         self.status_notifier = status_notifier
+        self.procedure_discovery = procedure_discovery
+        if procedure_discovery is not None:
+            self.execution.procedure_admission = self.procedure_provider_admission
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
@@ -717,8 +721,71 @@ class ActionIntentService:
                 # unavailable canonical proof is a known precondition failure,
                 # never an uncertain external write requiring reconciliation.
                 raise ActionRequirementError("change request continuation proof unavailable before provider execution") from exc
-        with continuation_context(proof):
+        from codex_web.procedure_discovery import procedure_action_intent
+        with continuation_context(proof), procedure_action_intent(intent.id):
             return await self.execution.execute(intent.binding_id, intent.request, actor=actor)
+
+    def _procedure_context(self, *, actor, request, definition, provider, policy_source, policy_allows, execution_id):
+        context = self.procedure_discovery.action_context(actor=actor, request=request,
+            definition=definition, provider=provider, policy_source=policy_source, policy_allows=policy_allows)
+        if execution_id is not None and self.execution_workers is not None:
+            try:
+                assignment = self.execution_workers.assignment_for_execution(execution_id, actor=actor)
+                context = self.procedure_discovery.assignment_context(context, assignment, actor=actor)
+            except Exception:
+                from dataclasses import replace
+                context = replace(context, resolution_blockers=("procedure_assignment_lookup_failed",))
+        return context
+
+    def _record_procedure_discovery(self, intent_id, discovery):
+        def apply(state):
+            for index, item in enumerate(state.intents):
+                if item.id == intent_id:
+                    if len(item.procedure_discoveries) >= 64:
+                        raise ActionRequirementError("procedure_history_limit: create a new explicitly admitted intent")
+                    state.intents[index] = item.model_copy(update={
+                        "procedure_discoveries": (*item.procedure_discoveries, discovery),
+                        "updated_at": time.time(),
+                    })
+                    break
+            return state
+        self.store.update(apply, intent_ids=(intent_id,))
+
+    async def procedure_provider_admission(self, binding, provider, definition, request_or_result, worker, phase):
+        """Last common boundary before provider credential use and mutation."""
+        from codex_web.procedure_discovery import current_procedure_action_intent
+        intent_id = current_procedure_action_intent()
+        from codex_web.services.procedure_discovery import ProcedureAdmissionError
+        if intent_id is None:
+            raise ProcedureAdmissionError(code="procedure_unsupported_enforcement", message=
+                "procedure_unsupported_enforcement: direct provider mutation requires a canonical ActionIntent")
+        intent = await asyncio.to_thread(self._intent, intent_id, worker)
+        if binding.id != intent.binding_id or definition.action_id != intent.action_id:
+            raise ActionRequirementError("procedure_scope_changed: provider target differs from canonical intent")
+        if phase == "execute" and request_or_result != intent.request:
+            raise ActionRequirementError("procedure_scope_changed: request differs from canonical intent")
+        requester = await asyncio.to_thread(self._requester_actor, intent)
+        authority = await asyncio.to_thread(self._canonical_authority_snapshot,
+            definition=definition, request=intent.request, actor=requester)
+        if authority.outcome != ActionDecisionOutcome.ALLOW:
+            raise ActionRequirementError("procedure_authority_denied: " + (authority.reason or "requester authority denied"))
+        context = await asyncio.to_thread(self._procedure_context,
+            actor=requester, request=intent.request, definition=definition, provider=provider,
+            policy_source=intent.policy_decision.source,
+            policy_allows=intent.policy_decision.outcome != ActionDecisionOutcome.DENY, execution_id=intent.execution_id)
+        if phase == "rollback":
+            from dataclasses import replace
+            context = replace(context, operation=intent.action_id + ".rollback", enforcement="canonical_rollback")
+        previous = intent.procedure_discoveries[-1] if intent.procedure_discoveries else None
+        discovery, _ = await asyncio.to_thread(self.procedure_discovery.discover, context, previous=previous)
+        await asyncio.to_thread(self._record_procedure_discovery, intent.id, discovery)
+        if intent.execution_id is not None and self.execution_workers is not None:
+            assignment = await asyncio.to_thread(self.execution_workers.assignment_for_execution,
+                intent.execution_id, actor=requester)
+            await asyncio.to_thread(self.execution_workers.record_procedure_discovery,
+                assignment.id, discovery, expected_fence=assignment.fence, actor=requester)
+        if not discovery.admitted:
+            raise ProcedureAdmissionError(discovery)
 
     def _work_item_requirements(
         self,
@@ -870,7 +937,15 @@ class ActionIntentService:
                 )
             }
         )
+        discovery = None
+        if self.procedure_discovery is not None:
+            context = self._procedure_context(actor=actor, request=request,
+                definition=definition, provider=provider, policy_source=payload.policy_decision.source,
+                policy_allows=payload.policy_decision.outcome != ActionDecisionOutcome.DENY, execution_id=payload.execution_id)
+            discovery, _ = self.procedure_discovery.discover(context)
         denied = (
+            (discovery is not None and not discovery.admitted)
+            or
             authority_decision.outcome == ActionDecisionOutcome.DENY
             or payload.policy_decision.outcome == ActionDecisionOutcome.DENY
             or security_decision.outcome == SecurityDecisionOutcome.DENY
@@ -907,6 +982,8 @@ class ActionIntentService:
             action_definition=definition,
             request=provider_request,
             authority_decision=authority_decision,
+            procedure_discoveries=(discovery,) if discovery is not None else (),
+            procedure_deviation_reason=payload.procedure_deviation_reason,
             policy_decision=payload.policy_decision,
             security_policy=binding.security_policy,
             security_decision=security_decision,
@@ -927,7 +1004,8 @@ class ActionIntentService:
             updated_at=now,
             completed_at=now if denied else None,
             last_error=(
-                authority_decision.reason
+                "; ".join(discovery.blockers) if discovery is not None and not discovery.admitted and discovery.blockers
+                else authority_decision.reason
                 if authority_decision.outcome == ActionDecisionOutcome.DENY
                 else "; ".join(security_decision.reasons)
                 if security_decision.outcome == SecurityDecisionOutcome.DENY
@@ -2231,11 +2309,11 @@ class ActionIntentService:
             raise ActionIntentConflictError("no completed provider result is available for rollback")
         result = results[-1]
         try:
-            rolled_back = await self.execution.rollback(
-                intent.binding_id,
-                result,
-                actor=actor,
-            )
+            from codex_web.procedure_discovery import procedure_action_intent
+            with procedure_action_intent(intent.id):
+                rolled_back = await self.execution.rollback(
+                    intent.binding_id, result, actor=actor,
+                )
         except Exception as exc:
             return await asyncio.to_thread(self._set_status,
                 intent.id,

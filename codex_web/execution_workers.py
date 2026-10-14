@@ -9,6 +9,7 @@ from codex_web.agent_profiles import AgentProfileExecutionBinding
 
 from codex_web.compatibility import ContractSpec
 from codex_web.definitions import DefinitionReference
+from codex_web.procedure_discovery import ProcedureDiscovery
 from codex_web.execution_subjects import (
     ExecutionSubject,
     normalize_execution_subject,
@@ -20,8 +21,8 @@ from codex_web.resources import RepositoryExecutionScope, RepositoryExecutionTar
 
 EXECUTION_WORKER_CONTRACT = ContractSpec(
     "execution-worker-state",
-    "1.9",
-    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9"),
+    "1.10",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10"),
 )
 
 DEFAULT_SUPPORTED_SANDBOX_PROFILES: tuple[SandboxMode, ...] = (
@@ -417,6 +418,7 @@ class ExecutionAssignment(BaseModel):
     agent_profile: AgentProfileExecutionBinding | None = None
     skill_refs: tuple[DefinitionReference, ...] = ()
     skill_assignment_sources: dict[str, str] = Field(default_factory=dict)
+    procedure_discoveries: tuple[ProcedureDiscovery, ...] = ()
     status: AssignmentStatus = AssignmentStatus.PENDING
     fence: int = Field(default=0, ge=0)
     lease: AssignmentLease | None = None

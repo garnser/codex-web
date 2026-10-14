@@ -111,6 +111,7 @@ class AgentSessionService:
     def __init__(self, store: AgentSessionStore, registry: AgentRuntimeRegistry) -> None:
         self.store = store
         self.registry = registry
+        self.procedure_admission = None
 
     @staticmethod
     def _require_capability(
@@ -281,6 +282,8 @@ class AgentSessionService:
         native_id = session.provider_native_session_id
         if not native_id:
             raise AgentRuntimeError("agent session has no provider-native session id")
+        if self.procedure_admission is not None:
+            await self.procedure_admission(session, request, actor, "resume")
         result = await adapter.resume_session(native_id, request)
         now = time.time()
         updated = session.model_copy(
@@ -310,6 +313,8 @@ class AgentSessionService:
         native_id = session.provider_native_session_id
         if not native_id:
             raise AgentRuntimeError("agent session has no provider-native session id")
+        if self.procedure_admission is not None:
+            await self.procedure_admission(session, request, actor, "turn")
         self.store.upsert(
             session.model_copy(
                 update={
@@ -427,6 +432,8 @@ class AgentSessionService:
         native_id = session.provider_native_session_id
         if not native_id:
             raise AgentRuntimeError("agent session has no provider-native session id")
+        if self.procedure_admission is not None:
+            await self.procedure_admission(session, request, actor, "objective")
         return await adapter.set_objective(native_id, request)
 
     async def clear_objective(

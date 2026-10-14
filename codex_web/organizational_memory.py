@@ -442,6 +442,7 @@ class KnowledgeQuery(BaseModel):
     knowledge_ids: tuple[str, ...] = Field(default=(), max_length=50)
     tags: tuple[str, ...] = ()
     relationship_target_ids: tuple[str, ...] = ()
+    canonical_target_refs: tuple[KnowledgeCanonicalRef, ...] = Field(default=(), max_length=64)
     required_role_ids: tuple[str, ...] = ()
     authored_by: tuple[str, ...] = ()
     max_classification: DataClassification = DataClassification.CONFIDENTIAL
@@ -459,6 +460,7 @@ class KnowledgeQuery(BaseModel):
             "logical_keys",
             "knowledge_ids",
             "relationship_target_ids",
+            "canonical_target_refs",
             "required_role_ids",
             "authored_by",
         ):

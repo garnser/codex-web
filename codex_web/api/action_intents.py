@@ -43,6 +43,9 @@ def _error(exc: Exception) -> HTTPException:
     if isinstance(exc, (ActionIntentConflictError, ActionIntentLeaseError, ActionIntentUnsafeRetryError)):
         return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, ActionProviderError):
+        if getattr(exc, "code", None) is not None:
+            return HTTPException(status_code=409, detail={"code": exc.code, "message": str(exc),
+                **({"procedure_discovery": exc.procedure_discovery} if getattr(exc, "procedure_discovery", None) is not None else {})})
         return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, ActionIntentError):
         return HTTPException(status_code=400, detail=str(exc))

@@ -261,3 +261,12 @@ Code-host execution first validates its side-effect-free preparation contract. I
 A governed `code-host.branch.publish` request can explicitly set `expected_remote_absent: true` for a preserved `codex/` branch. This is mutually exclusive with `expected_remote_revision` and cannot be used for existing-MR recovery. The publisher uses `--force-with-lease=refs/heads/<branch>:` so creation fails atomically if another writer creates the remote ref. Omitting the field or setting it to false does not supply a recovery precondition. Writable workspace, active lease, tenant/resource scope, clean tree, exact local head and base ancestry checks still apply. The receipt output records the absence precondition. A failed or uncertain historical request must not be replayed; submit a new currently authorized request only after checking its disposition.
 
 Every assignment receives this recovery contract through the shared control-plane instructions, including bootstrap threads without a Work Item. Broker operation discovery exposes the publication parameters and mutually exclusive remote preconditions. The provider error names both supported recovery modes. Observe the destination through the governed repository reader: a confirmed absent preserved `codex/` ref requires explicit absence; an existing ref requires its observed full commit SHA. Timeout or denial is not evidence of absence. Keep the local checkout on the new assignment's attested branch, even when the publication destination is the preserved older branch. Released assignments require a new authorized assignment and active lease. Preserve local commits and evidence before release; publication and MR handoff still require successful receipts, exact remote verification and the existing owner/validation process.
+
+### Procedure discovery admission
+
+The shared provider mutation boundary also enforces the
+[procedure discovery contract](procedure-discovery.md). Creation and immediate
+pre-mutation results retain exact Skill references, context, candidates and
+blockers in the existing intent; assignment-backed actions retain fenced evidence.
+A direct provider call cannot substitute for this admission. A procedure match
+never grants authority or creates an extra confirmation requirement.
