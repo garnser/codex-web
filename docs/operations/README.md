@@ -44,3 +44,5 @@ For local/container deployment details see [DOCKER.md](../../DOCKER.md).
 - [Recovery release v0.2.0](recovery-release-v0.2.0.md) — immutable candidate build, nginx qualification, real-provider promotion evidence, v0.1 emergency-mount upgrade, and rollback.
 
 - [Failure taxonomy and retry contract](failure-taxonomy.md) — stable provider/runtime/policy/action reason codes, deterministic retryability, reconciliation safety, and metrics labels.
+
+- [Operational procedure Skills](skill-procedures.md) — author, import, scan, review and version bounded declarative procedures.

@@ -135,3 +135,7 @@ published compatible definition.
 See [Definition Registry architecture](../architecture/definition-registry.md),
 [Compatibility/versioning](../architecture/compatibility-versioning.md) and
 [Safe upgrades](../architecture/safe-upgrades.md).
+
+## Operational procedure Skills
+
+The optional `agent.skill` operational-procedure contract uses the same Definition revisions, checksum, validation, publication, quarantine and rollback. The full payload is visible in the Definition inspector; authenticated readers can obtain the code-owned JSON schema at `/api/skills/procedure-schema`. Generic Definition publication cannot bypass the procedure Skill security gate. See the [architecture contract](../architecture/skill-operational-procedures.md) and [operator workflow](../operations/skill-procedures.md). Structured authoring and previews are tracked in [the linked UI issue](https://github.com/garnser/codex-web/issues/1428).

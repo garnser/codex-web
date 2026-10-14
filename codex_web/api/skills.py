@@ -8,6 +8,7 @@ from codex_web.api.identity import request_actor
 from codex_web.services.definitions import (
     DefinitionApprovalRequiredError,
     DefinitionCompatibilityError,
+    DefinitionGateDeniedError,
     DefinitionConflictError,
     DefinitionError,
     DefinitionNotFoundError,
@@ -15,6 +16,7 @@ from codex_web.services.definitions import (
 from codex_web.services.identity import AuthorizationError
 from codex_web.services.skills import (
     SkillConflict,
+    SkillResolutionFailure,
     SkillError,
     SkillNotFound,
     SkillService,
@@ -66,6 +68,15 @@ def _security_matches(
 
 
 def _error(exc: Exception) -> HTTPException:
+    if isinstance(exc, DefinitionGateDeniedError):
+        return HTTPException(status_code=409, detail={
+            "code": exc.code, "message": str(exc), "gate": exc.gate,
+            "definitionReference": exc.definition_reference.model_dump(mode="json"),
+            "evidence": exc.evidence,
+        })
+    if isinstance(exc, SkillResolutionFailure):
+        return HTTPException(status_code=404 if exc.code == "procedure_missing" else 409,
+                             detail={"code": exc.code, "message": str(exc)})
     if isinstance(exc, AuthorizationError):
         return HTTPException(status_code=403, detail=str(exc))
     if isinstance(exc, (SkillNotFound, DefinitionNotFoundError)):
@@ -74,6 +85,7 @@ def _error(exc: Exception) -> HTTPException:
         exc,
         (
             SkillConflict,
+    SkillResolutionFailure,
             DefinitionConflictError,
             DefinitionApprovalRequiredError,
             SkillSecurityBlocked,
@@ -103,6 +115,13 @@ def _error(exc: Exception) -> HTTPException:
 
 def build_skills_router(service: SkillService) -> APIRouter:
     router = APIRouter(prefix="/api/skills", tags=["skills"])
+
+    @router.get("/procedure-schema")
+    async def procedure_schema(request: Request) -> dict[str, Any]:
+        request_actor(request)
+        from codex_web.skill_procedures import OperationalProcedure
+        return {"kind": "agent.skill", "definitionSchemaVersion": "1.0",
+                "field": "operational_procedure", "schema": OperationalProcedure.model_json_schema()}
 
     @router.get("")
     async def list_skills(
