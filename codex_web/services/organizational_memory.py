@@ -34,6 +34,8 @@ from codex_web.organizational_memory import (
     KnowledgeLifecycle,
     KnowledgeProcedurePromotion,
     KnowledgeProvenance,
+    KnowledgeOrigin,
+    KnowledgeOriginSource,
     KnowledgeQuery,
     KnowledgeRecord,
     KnowledgeRelationship,
@@ -544,6 +546,50 @@ class OrganizationalMemoryService:
                     "knowledge relationship target is outside tenant scope"
                 )
 
+    def _derived_provenance(
+        self,
+        provenance: KnowledgeProvenance,
+        relationships: tuple[KnowledgeRelationshipCreate, ...],
+        *,
+        actor: AuthenticationActor,
+        previous: KnowledgeRecord | None = None,
+    ) -> KnowledgeProvenance:
+        sources = [
+            self.get(row.target_knowledge_id, actor=actor)
+            for row in relationships
+            if row.relationship_type == KnowledgeRelationshipType.DERIVED_FROM
+        ]
+        if previous is not None:
+            sources.append(previous)
+        snapshots: dict[str, KnowledgeOriginSource] = {}
+        for source in sources:
+            snapshots[source.id] = KnowledgeOriginSource(
+                knowledge_id=source.id,
+                version=source.version,
+                origin=source.provenance.origin,
+                source_ref=source.provenance.source_ref,
+                source_revision=source.provenance.source_revision,
+            )
+            for snapshot in source.provenance.origin_sources:
+                snapshots[snapshot.knowledge_id] = snapshot
+        if any(snapshots.get(row.knowledge_id) != row for row in provenance.origin_sources):
+            raise KnowledgeValidationError("origin sources must match canonical derivation links")
+        origin = provenance.origin
+        origins = {source.provenance.origin for source in sources}
+        if "origin" in provenance.model_fields_set:
+            origins.add(origin)
+        if origins:
+            origin = next(iter(origins)) if len(origins) == 1 else KnowledgeOrigin.MIXED
+        return KnowledgeProvenance.model_validate({
+            **provenance.model_dump(),
+            "origin": origin,
+            "origin_sources": tuple(snapshots.values()),
+            "source_governance_record_ids": tuple(dict.fromkeys((
+                *provenance.source_governance_record_ids,
+                *(source.governance_record_id for source in sources),
+            ))),
+        })
+
     def _freshness(
         self,
         item: KnowledgeRecord,
@@ -677,6 +723,9 @@ class OrganizationalMemoryService:
             payload.relationships,
             actor=actor,
         )
+        payload = payload.model_copy(update={"provenance": self._derived_provenance(
+            payload.provenance, payload.relationships, actor=actor,
+        )})
 
         existing = [
             item
@@ -824,13 +873,24 @@ class OrganizationalMemoryService:
                 canonical_refs=payload.canonical_refs,
                 tags=payload.tags,
             )
+            incoming_provenance = self._derived_provenance(
+                payload.provenance, payload.relationships, actor=actor, previous=current,
+            )
             provenance_unchanged = (
                 current.provenance.source_kind == payload.provenance.source_kind
                 and current.provenance.source_ref == payload.provenance.source_ref
                 and current.provenance.source_revision == payload.provenance.source_revision
+                and current.provenance.origin == incoming_provenance.origin
+                and current.provenance.review_status == payload.provenance.review_status
                 and current.provenance.evidence_ids == payload.provenance.evidence_ids
-                and current.provenance.source_governance_record_ids
-                == payload.provenance.source_governance_record_ids
+                and set(payload.provenance.source_governance_record_ids).issubset(
+                    current.provenance.source_governance_record_ids
+                )
+                and {row.target_knowledge_id for row in payload.relationships
+                     if row.relationship_type == KnowledgeRelationshipType.DERIVED_FROM}
+                == {row.target_knowledge_id for row in self.store.load().relationships
+                    if row.source_knowledge_id == current.id
+                    and row.relationship_type == KnowledgeRelationshipType.DERIVED_FROM}
             )
             metadata_unchanged = (
                 current.object_type == payload.object_type
@@ -1080,6 +1140,13 @@ class OrganizationalMemoryService:
             normalized.relationships,
             actor=actor,
         )
+        merged_provenance = self._derived_provenance(
+            payload.provenance,
+            normalized.relationships,
+            actor=actor,
+            previous=current,
+        )
+        normalized = normalized.model_copy(update={"provenance": merged_provenance})
 
         next_id = f"knowledge-{uuid_hash(
             current.id,
@@ -1655,7 +1722,13 @@ class OrganizationalMemoryService:
             if len(items) >= query.budget.top_k or remaining < 32:
                 break
             source = (
-                f"{item.title}\n\n{item.summary}\n\n{item.content}"
+                f"Research origin: {item.provenance.origin.value}; "
+                f"review: {item.provenance.review_status} (metadata, not verification).\n"
+                + "".join(
+                    f"Source [memory:{row.knowledge_id}@v{row.version}]: {row.origin.value}\n"
+                    for row in item.provenance.origin_sources
+                )
+                + f"{item.title}\n\n{item.summary}\n\n{item.content}"
             )
             allowance = min(remaining, per_item_soft_cap)
             excerpt = self._truncate_to_tokens(source, allowance)
@@ -1856,6 +1929,11 @@ class OrganizationalMemoryService:
                         "content": "",
                         "tags": (),
                         "canonical_refs": (),
+                        "provenance": item.provenance.model_copy(update={
+                            "origin": KnowledgeOrigin.UNKNOWN,
+                            "origin_sources": (),
+                            "review_status": "unreviewed",
+                        }),
                         "lifecycle": lifecycle,
                         "invalid_reason": f"governance:{action.value}",
                         "updated_at": now,

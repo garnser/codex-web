@@ -24,6 +24,12 @@ function knowledge() {
       observed_at: 1890000000,
       evidence_ids: ['evidence-a'],
       source_governance_record_ids: [],
+      origin: 'mixed',
+      review_status: 'reviewed',
+      origin_sources: [
+        { knowledge_id: 'observed-session', version: 1, origin: 'human_observed', source_ref: 'session' },
+        { knowledge_id: 'simulated-session', version: 2, origin: 'ai_inference', source_ref: 'simulation' },
+      ],
     },
     classification: 'internal',
     governance_record_id: 'data-memory-a',
@@ -122,6 +128,10 @@ test('Memory workspace exposes provenance, versions, relationships and retrieval
   await dialog.locator('[data-memory-id="knowledge-adr"]').click();
   await expect(dialog).toContainText('github:garnser/codex-web:docs/adr/database.md');
   await expect(dialog).toContainText('data-memory-a');
+  await expect(dialog).toContainText('mixed · reviewed (metadata, not verification)');
+  await expect(dialog).toContainText('observed-session@v1: human_observed');
+  await expect(dialog).toContainText('simulated-session@v2: ai_inference');
+  await expect(dialog.getByRole('button', { name: 'simulated-session@v2: ai_inference' })).toBeVisible();
   await expect(dialog).toContainText('v1 · superseded');
   await expect(dialog).toContainText('supersedes');
 

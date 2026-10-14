@@ -17,6 +17,14 @@ ORGANIZATIONAL_MEMORY_MIGRATIONS = MigrationRegistry(
 )
 
 
+def _origin_metadata_v11(payload: dict[str, Any]) -> dict[str, Any]:
+    # Legacy source kinds/authorship cannot establish participant observation.
+    return {**payload, "schema_version": "1.1"}
+
+
+ORGANIZATIONAL_MEMORY_MIGRATIONS.register("1.0", "1.1", _origin_metadata_v11)
+
+
 class KnowledgeNotFoundError(KeyError):
     pass
 

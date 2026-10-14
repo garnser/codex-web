@@ -97,6 +97,31 @@ The Memory API exposes `GET /api/memory/index` for backend/index/embedding healt
 
 ## Retrieval provenance
 
+### Research origin
+
+Memory state schema `1.1` adds origin metadata to `KnowledgeProvenance`:
+`human_observed`, `secondary_research`, `ai_inference`, `mixed`, and `unknown`.
+Schema `1.0` records decode through the canonical migration registry with unknown
+origin and unreviewed status; authorship, source kind, or an observation timestamp
+cannot establish participant research. Older engines refuse the new state version.
+
+Origin and review status are descriptive metadata, never independent verification
+or authority to satisfy an evidence gate. Reviewing an AI hypothesis preserves
+its AI origin. Derivation through canonical `derived_from` relationships records
+exact source Knowledge IDs, versions, source references/revisions, and origins.
+Different source origins produce `mixed`; summaries retain source-level
+distinctions. Revision retains prior origin attribution rather than erasing it
+through a new provenance label. Caller-supplied origin snapshots must match the
+canonical sources. Sources pass existing tenant and memory-read checks.
+
+Derived records inherit source governance references, including classification,
+retention and deletion constraints, through the existing governance boundary.
+Governed redaction/deletion removes derived origin snapshots as well as summary
+content. Retrieval includes origin and source citations within its existing token
+budget and returns the structured provenance alongside excerpts. The Memory
+inspector shows origin, review status, and source-version attribution. No extra
+model calls, participant telemetry, or separate research store are introduced.
+
 Each search writes a metadata-only `KnowledgeRetrievalRun` containing:
 
 - tenant/workspace and actor
