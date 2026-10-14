@@ -18,6 +18,7 @@ from codex_web.models import (
     QueuedNativeStartReceipt,
     QueuedSchedulingRetirement,
     QueuedBootstrapRecovery,
+    QueuedBootstrapPrestartRefusal,
 )
 from codex_web.services.identity import IdentityService
 from codex_web.storage.execution_preflight import ExecutionPreflightStore
@@ -588,7 +589,7 @@ class ExecutionPreflightService:
     def authorize_retry(self, attempt_id: str, *, actor: AuthenticationActor) -> ExecutionPreflightAttempt:
         current = self.get(attempt_id, actor=actor)
         self._authorize(current, actor, require_admin=True)
-        if current.bootstrap_recovery is not None and current.bootstrap_recovery.state == 'pending':
+        if current.bootstrap_recovery is not None and current.bootstrap_recovery.state != 'created':
             raise HTTPException(status_code=409, detail={
                 'code':'bootstrap_recovery_pending',
                 'message':'Reconcile the fresh bootstrap before retrying the retained request.'})
@@ -634,15 +635,33 @@ class ExecutionPreflightService:
                 if (current.bootstrap_recovery.queued_turn_id != snapshot['id']
                         or current.bootstrap_recovery.queued_snapshot_sha256 != expected_snapshot_sha256):
                     raise HTTPException(status_code=409, detail='Bootstrap recovery identity changed.')
-                return current
+                if current.bootstrap_recovery.state != 'refused':
+                    return current
+                if len(current.bootstrap_recovery_history) >= 8:
+                    raise HTTPException(status_code=409, detail='Fresh bootstrap recovery limit reached.')
             reserved = True
             recovery = QueuedBootstrapRecovery(id='bootstrap-recovery-' + token,
                 queued_turn_id=snapshot['id'], queued_snapshot_sha256=expected_snapshot_sha256,
                 requested_by=actor.identity_id, requested_at=float(self.clock()), reason=reason,
                 bootstrap_id='bootstrap-' + token, execution_id='thread-bootstrap-' + token)
+            history = current.bootstrap_recovery_history
+            if current.bootstrap_recovery is not None:
+                history += (current.bootstrap_recovery,)
             return current.model_copy(update={'bootstrap_recovery':recovery,
+                'bootstrap_recovery_history':history,
                 'updated_at':float(self.clock())})
         return self.store.update(attempt_id, update), reserved
+
+    def record_bootstrap_refusal(self, attempt_id, *, recovery_id, code, message):
+        proof = QueuedBootstrapPrestartRefusal(code=code[:100], message=message[:1000],
+            observed_at=float(self.clock()))
+        def update(current):
+            recovery = current.bootstrap_recovery
+            if recovery is None or recovery.id != recovery_id or recovery.state != 'pending':
+                raise HTTPException(status_code=409, detail='Fresh bootstrap reservation changed.')
+            return current.model_copy(update={'bootstrap_recovery':recovery.model_copy(update={
+                'state':'refused', 'prestart_refusal':proof}), 'updated_at':float(self.clock())})
+        return self.store.update(attempt_id, update)
 
     def authorize_scheduling_retirement(
         self,
@@ -803,8 +822,15 @@ class ExecutionPreflightService:
         payload = attempt.model_dump(mode="json")
         payload["can_retry"] = (self.can_retry(actor)
             and attempt.scheduling_retirement is None
-            and (attempt.bootstrap_recovery is None or attempt.bootstrap_recovery.state != 'pending')
+            and (attempt.bootstrap_recovery is None or attempt.bootstrap_recovery.state == 'created')
             and attempt.status not in {"queued", "reconciliation_required", "started"})
+        payload['can_recover_bootstrap'] = (self.can_retry(actor)
+            and attempt.status == 'blocked' and attempt.scheduling_retirement is None
+            and attempt.queued_turn_snapshot is not None
+            and (attempt.bootstrap_recovery is not None or self.recorded_prestart_refusal(attempt)))
+        payload['bootstrap_recovery_href'] = (
+            f'/api/threads/{attempt.replacement_thread_id or attempt.thread_id}/preflight-attempts/'
+            f'{attempt.id}/bootstrap-recovery')
         payload['can_reconcile_prestart'] = (self.can_retry(actor)
             and attempt.scheduling_retirement is None
             and ((attempt.status == 'reconciliation_required' and self.recorded_prestart_refusal(attempt))

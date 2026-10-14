@@ -376,6 +376,19 @@ class _AlternateAdapter:
 
 
 class ThreadBootstrapCreateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_controller_refusal_is_distinct_from_same_shaped_provider_error(self):
+        from codex_web.services.threads import ThreadBootstrapPrestartRefusal
+        _, _, _, _, service = self._service()
+        with self.assertRaises(ThreadBootstrapPrestartRefusal):
+            await service.create(project_id='p1', bootstrap_token='invalid')
+        provider_error = ThreadBootstrapPrestartRefusal(status_code=503,
+            detail={'code':'execution_preflight_blocked', 'message':'Untrusted provider response'})
+        _, _, manager, _, service = self._service(session=_Session(error=provider_error))
+        with self.assertRaises(HTTPException) as caught:
+            await service.create(project_id='p1')
+        self.assertNotIsInstance(caught.exception, ThreadBootstrapPrestartRefusal)
+        self.assertEqual(manager.session.requests[0][0], 'thread/start')
+
     def _service(self, *, session=None, bindings=None, agent_sessions=None):
         host = _Host()
         binding_service = _BindingService()
@@ -529,10 +542,15 @@ class ThreadBootstrapCreateTests(unittest.IsolatedAsyncioTestCase):
         await service.create(
             project_id="p1",
             repository_resource_id="repo-app",
+            writable_repository_resource_ids=("repo-app", "repo-extra"),
             read_only_repository_resource_ids=("repo-docs",),
+            bootstrap_token="a" * 32,
         )
 
         call = planner.calls[0]
+        self.assertEqual(call['bootstrap_id'], 'bootstrap-' + 'a' * 32)
+        self.assertEqual(call['execution_id'], 'thread-bootstrap-' + 'a' * 32)
+        self.assertEqual(call['writable_repository_ids'], ('repo-app', 'repo-extra'))
         self.assertEqual(call["explicit_repository_id"], "repo-app")
         self.assertEqual(call["read_only_repository_ids"], ("repo-docs",))
         remembered = host.settings[0][1]

@@ -1,4 +1,5 @@
 import { createQueueOrderRecoveryUi } from "./queue_order_recovery_ui.js";
+import { createQueuedBootstrapRecoveryUi } from "./queued_bootstrap_recovery_ui.js";
 import { captureProjectView } from "./project_view_scope.js";
 export function createExecutionPreflightUi({
   api,
@@ -10,6 +11,7 @@ export function createExecutionPreflightUi({
 }) {
   const attemptsByThread = new Map();
   const orderRecovery=createQueueOrderRecoveryUi({api,addMessage,loadThread,scheduleRefresh,captureView});
+  const bootstrapRecovery=createQueuedBootstrapRecoveryUi({api,loadThread,scheduleRefresh,captureView});
 
   async function load(threadId, limit = 50) {
     const current = captureView();
@@ -130,6 +132,7 @@ export function createExecutionPreflightUi({
           "tool",
           new Date((attempt?.updated_at || Date.now() / 1000) * 1000),
         );
+        bootstrapRecovery.attach(attempt, card?.querySelector('.body'));
         if (
           status === "started"
           || (!attempt?.can_retry && !attempt?.can_reconcile_prestart && !attempt?.can_retire_scheduling)

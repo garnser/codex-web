@@ -869,6 +869,44 @@ receipt still records that original start. Existing preflight inspectors expose
 replacement routing separately from native outcome, with an attributed route
 restoration event. This adds no persisted field, model call or execution grant.
 
+### Fresh bootstrap recovery for a retained pre-start refusal
+
+The preflight inspector can explicitly request a fresh bootstrap when the
+canonical original thread is archived and a complete historical replacement
+chain is unavailable. Administrator authority and MFA for a human are required.
+The caller supplies the exact original-snapshot SHA-256 and a bounded reason;
+the retained original supplies the actor, immutable profile revision, execution
+profile, sandbox, approval policy and repository scopes. Missing provenance,
+active work, unknown original starts and existing verified routes refuse creation.
+
+The existing preflight record retains `bootstrap_recovery` version `1.0`, with
+states `pending`, `refused` and `created`. Legacy records omit this field and
+empty recovery history, preserving their previous serialization. Older readers
+refuse records containing the new field; deployment must declare that persisted
+contract boundary rather than imply source-only rollback. Original messages,
+request scopes, blockers, attempt counters and native outcome remain unchanged.
+
+Reservation commits before runtime creation and supplies correlated bootstrap
+and execution IDs to the existing assignment-bound ThreadService. A pending
+reservation cannot expire into another creation: subsequent requests reconcile
+only canonical bootstrap binding and assignment receipts. A returned thread ID
+alone cannot authorize routing. Verification requires the exact tenant, Project,
+bootstrap execution, pending initial Turn, profile revision and granted repository
+scope. The verified fresh edge and retained preflight transition commit together
+through the canonical store transaction, fencing concurrent original receipts.
+Inspection indexes can be rebuilt after that authoritative commit.
+
+ThreadService distinguishes its own preparation refusals from provider errors
+using a server-owned boundary immediately before provider thread creation.
+Definite pre-start refusals retain attributed proof and permit another explicit
+request; eight prior refused attempts are retained before further attempts are
+blocked. Errors after that boundary and cancellation remain unresolved, never
+inferred unstarted from missing receipts, queue absence or claim expiration.
+Fresh bootstrap recovery does not submit the original Turn. Existing Retry
+restores its exact queue copy after routing is verified, and ordinary admission
+still rechecks actor/profile authority and records actual native start receipts.
+Viewing or inspecting this workflow invokes no model and submits no native Turn.
+
 
 ### Project-scoped administrative target declarations
 

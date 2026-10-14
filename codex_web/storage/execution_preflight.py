@@ -219,7 +219,7 @@ class ExecutionPreflightStore:
             if not isinstance(payload, dict):
                 raise KeyError(attempt_id)
             current = ExecutionPreflightAttempt.model_validate(payload)
-            if current.bootstrap_recovery is not None and current.bootstrap_recovery.state == 'pending':
+            if current.bootstrap_recovery is not None and current.bootstrap_recovery.state != 'created':
                 return current.model_dump(mode="json")
             if current.status in {"queued", "reconciliation_required"}:
                 return current.model_dump(mode="json")
