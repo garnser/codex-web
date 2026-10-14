@@ -169,14 +169,14 @@ class QueuedOperatorAdmissionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException):self.preview()
         self.assertEqual(len(self.queues.get('thread-a')),2)
 
-    async def test_remote_matching_refusal_code_cannot_prove_input_was_unstarted(self):
+    async def assert_remote_code_remains_uncertain(self, code):
         request = self.sessions.session.request
         sent = []
         async def ambiguous_response(method, params=None):
             if method == 'turn/start':
                 sent.append(params)
                 raise HTTPException(status_code=409, detail={
-                    'code':'operator_admission_refused', 'message':'synthetic untrusted native response'})
+                    'code':code, 'message':'synthetic untrusted native response'})
             return await request(method, params)
         self.sessions.session.request = ambiguous_response
         result = await self.admit()
@@ -188,6 +188,38 @@ class QueuedOperatorAdmissionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException):
             self.preview()
         self.assertEqual(len(sent), 1)
+
+    async def test_remote_matching_refusal_code_cannot_prove_input_was_unstarted(self):
+        await self.assert_remote_code_remains_uncertain('operator_admission_refused')
+
+    async def test_remote_preflight_code_cannot_prove_input_was_unstarted(self):
+        await self.assert_remote_code_remains_uncertain('execution_preflight_blocked')
+
+    async def test_remote_profile_code_cannot_prove_input_was_unstarted(self):
+        await self.assert_remote_code_remains_uncertain('thread_agent_profile_immutable')
+
+    async def test_controller_binding_failure_restores_original_without_native_input(self):
+        from codex_web.services.turn_execution_binding import TurnExecutionBindingError
+        before = [q.model_dump(mode='json') for q in self.queues.get('thread-a')]
+        self.runtime.binding_service.prepare = MagicMock(side_effect=TurnExecutionBindingError(
+            'synthetic controller binding refusal', code='credential_reference_missing'))
+        result = await self.admit()
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['attempt']['status'], 'blocked')
+        self.assertIn('synthetic controller binding refusal', result['attempt']['last_error'])
+        self.assertEqual(self.starts(), [])
+        self.assertEqual([q.model_dump(mode='json') for q in self.queues.get('thread-a')], before)
+
+    async def test_controller_profile_failure_restores_original_without_native_input(self):
+        before = [q.model_dump(mode='json') for q in self.queues.get('thread-a')]
+        self.runtime.bootstrap_bindings = turn_fixtures._BootstrapBindings('thread-a')
+        assignment = self.sessions.session.validate_current()
+        assignment.agent_profile = assignment.agent_profile.model_copy(update={'profile_id': 'other'})
+        result = await self.admit()
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['attempt']['status'], 'blocked')
+        self.assertEqual(self.starts(), [])
+        self.assertEqual([q.model_dump(mode='json') for q in self.queues.get('thread-a')], before)
 
     async def test_concurrent_operator_requests_and_ordinary_drain_share_local_lock(self):
         request=self.request()

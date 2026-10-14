@@ -327,10 +327,15 @@ class QueuedAdmissionDrainTests(unittest.IsolatedAsyncioTestCase):
         from codex_web.models import Project
         from codex_web.runtime.execution import TurnExecutionService
         from tests.test_turn_execution import _Host
-        errors = [(HTTPException(status_code=503, detail={
+        from codex_web.runtime.execution import ExecutionPrestartRefusal
+        errors = [(ExecutionPrestartRefusal(status_code=503, detail={
             'code':'execution_preflight_blocked','message':'source alias missing',
             'blockers':[{'code':'workspace_provisioning_blocked','message':'source alias missing',
                          'retryable':False}]}), 'blocked'),
+            (HTTPException(status_code=503, detail={'code':'execution_preflight_blocked'}),
+             'reconciliation_required'),
+            (HTTPException(status_code=409, detail={'code':'thread_agent_profile_immutable'}),
+             'reconciliation_required'),
             (RuntimeError('native start response unavailable'), 'reconciliation_required')]
         for error, expected in errors:
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
