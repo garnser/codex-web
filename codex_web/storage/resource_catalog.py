@@ -7,15 +7,19 @@ from codex_web.resources import ResourceCatalogState
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
-RESOURCE_CATALOG_CONTRACT = ContractSpec("resource-catalog", "1.0", ("1.0",))
+RESOURCE_CATALOG_CONTRACT = ContractSpec("resource-catalog", "1.1", ("1.1",))
 RESOURCE_CATALOG_MIGRATIONS = MigrationRegistry("resource-catalog")
 RESOURCE_CATALOG_MIGRATIONS.register(
     "0.0",
     "1.0",
     lambda payload: {
-        "schema_version": RESOURCE_CATALOG_CONTRACT.current,
+        "schema_version": "1.0",
         **{key: value for key, value in payload.items() if key != "schema_version"},
     },
+)
+
+RESOURCE_CATALOG_MIGRATIONS.register(
+    "1.0", "1.1", lambda payload: {**payload, "schema_version": "1.1"},
 )
 
 

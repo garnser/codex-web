@@ -197,6 +197,15 @@ class DefinitionRegistryService:
 
     def _validated_record(self, record: DefinitionRecord) -> DefinitionRecord:
         self._validate_engine(record)
+        return self.validate_record_integrity(record)
+
+    def validate_record_integrity(self, record: DefinitionRecord) -> DefinitionRecord:
+        """Verify content before selector use without asserting runtime compatibility.
+
+        A consumer may reject a proven-unrelated record before engine compatibility
+        is relevant. Integrity/schema checks still prevent tampered selectors from
+        hiding a required candidate. Executable use also requires _validated_record.
+        """
         schema = self.schemas.get(record.kind, record.definition_schema_version)
         normalized = schema.validate(dict(record.payload))
         checksum = definition_checksum(

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from codex_web.action_providers import ActionDefinition, ActionRequest, ActionResult, ActionVerification
 from codex_web.artifact_evidence import EvidenceRequirement
 from codex_web.definitions import DefinitionReference
+from codex_web.procedure_discovery import ProcedureDiscovery
 from codex_web.failures import FailureRecord
 from codex_web.security import ExecutionSecurityPolicy, SecurityTrustDecision
 
@@ -105,6 +106,8 @@ class ActionIntent(BaseModel):
     request: ActionRequest
     authority_decision: ActionDecisionSnapshot
     authority_recheck: ActionDecisionSnapshot | None = None
+    procedure_discoveries: tuple[ProcedureDiscovery, ...] = ()
+    procedure_deviation_reason: str | None = Field(default=None, min_length=1, max_length=2000)
     policy_decision: ActionDecisionSnapshot
     security_policy: ExecutionSecurityPolicy
     security_decision: SecurityTrustDecision
@@ -195,7 +198,7 @@ class ActionInboxMessage(BaseModel):
 class ActionIntentState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.2"
+    schema_version: str = "1.3"
     intents: list[ActionIntent] = Field(default_factory=list)
     receipts: list[ActionIntentReceipt] = Field(default_factory=list)
     verifications: list[ActionIntentVerificationReceipt] = Field(default_factory=list)
@@ -205,6 +208,7 @@ class ActionIntentState(BaseModel):
 class ActionIntentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    procedure_deviation_reason: str | None = Field(default=None, min_length=1, max_length=2000)
     binding_id: str
     request: ActionRequest
     work_item_ref: str | None = None

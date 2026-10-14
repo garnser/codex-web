@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import uuid
 from enum import StrEnum
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -210,6 +211,14 @@ class ResourceProvenance(BaseModel):
     last_seen_at: float | None = None
 
 
+class ResourceOperationalContext(BaseModel):
+    """Current canonical applicability facts, independent of procedure content."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    environment: Literal["development", "test", "staging", "production"] | None = None
+    tags: tuple[Annotated[str, Field(min_length=1, max_length=160)], ...] = Field(default=(), max_length=24)
+    service_versions: dict[Annotated[str, Field(min_length=1, max_length=160)], Annotated[str, Field(pattern=r"^\d{1,6}\.\d{1,6}\.\d{1,6}$")]] = Field(default_factory=dict, max_length=16)
+
+
 class Resource(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -225,6 +234,7 @@ class Resource(BaseModel):
     lifecycle: ResourceLifecycle = ResourceLifecycle.ACTIVE
     aliases: list[ResourceAlias] = Field(default_factory=list)
     provenance: ResourceProvenance | None = None
+    operational_context: ResourceOperationalContext | None = None
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
@@ -272,7 +282,7 @@ class ProjectResourceBinding(BaseModel):
 class ResourceCatalogState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.0"
+    schema_version: str = "1.1"
     resources: list[Resource] = Field(default_factory=list)
     relationships: list[ResourceRelationship] = Field(default_factory=list)
     project_bindings: list[ProjectResourceBinding] = Field(default_factory=list)
@@ -289,6 +299,7 @@ class ResourceCreate(BaseModel):
     risk: ResourceRisk = ResourceRisk.MEDIUM
     aliases: list[ResourceAlias] = Field(default_factory=list)
     provenance: ResourceProvenance | None = None
+    operational_context: ResourceOperationalContext | None = None
 
 
 class ResourceUpdate(BaseModel):
@@ -302,6 +313,7 @@ class ResourceUpdate(BaseModel):
     lifecycle: ResourceLifecycle | None = None
     aliases: list[ResourceAlias] | None = None
     provenance: ResourceProvenance | None = None
+    operational_context: ResourceOperationalContext | None = None
 
 
 class RelationshipCreate(BaseModel):

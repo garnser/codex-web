@@ -133,3 +133,8 @@ Structured authoring, applicability previews, step traces, denied/blocked/expire
 states and contextual help are explicitly tracked by [the linked UI issue](https://github.com/garnser/codex-web/issues/1428).
 Discovery/admission, runtime execution and outcome-derived draft work remain separate
 contracts; this schema does not implement those downstream delivery slices.
+
+Discovery consumers use the [canonical discovery/admission contract](procedure-discovery.md).
+It preserves this exact Skill identity and fails visibly for unsupported native
+mutation enforcement. See the [operator guide](../operations/procedure-admission.md)
+for outcomes and provenance inspection.

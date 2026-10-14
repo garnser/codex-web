@@ -307,6 +307,8 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("api_client.js", source)
         self.assertIn("apiRequest", source)
         self.assertNotIn("fetch(", source)
+        self.assertIn("procedure_discovery_view.js", source)
+        self.assertLessEqual((STATIC / "procedure_discovery_view.js").stat().st_size, 3_000)
         self.assertIn("action_intent_outcome_view.js", source)
         self.assertLessEqual((STATIC / "action_intent_outcome_view.js").stat().st_size, 3_000)
 
