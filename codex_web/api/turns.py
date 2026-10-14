@@ -9,13 +9,13 @@ from codex_web.api.thread_scope import thread_scope_dependency
 from codex_web.services.thread_scope import ThreadScopeService
 
 from codex_web.api.identity import request_actor
-from codex_web.models import TurnCreate, QueueOrderRepairRequest, QueuedBootstrapRecoveryRequest
+from codex_web.models import TurnCreate, QueueOrderRepairRequest, QueuedBootstrapRecoveryRequest, QueuedOperatorAdmissionRequest
 from codex_web.services.turns import TurnService
 from codex_web.notification_batches import NotificationBatchRecoveryRequest
 from codex_web.notification_results import NotificationResultCaptureRequest
 
 
-def build_turns_router(service: TurnService, scope: ThreadScopeService, order_recovery=None, bootstrap_recovery=None, notification_batches=None, batch_recovery=None, batch_results=None) -> APIRouter:
+def build_turns_router(service: TurnService, scope: ThreadScopeService, order_recovery=None, bootstrap_recovery=None, notification_batches=None, batch_recovery=None, batch_results=None, operator_admission=None) -> APIRouter:
     router = APIRouter(tags=["turns"], dependencies=[Depends(thread_scope_dependency(scope))])
 
     @router.post("/api/threads/{thread_id}/resume")
@@ -94,6 +94,18 @@ def build_turns_router(service: TurnService, scope: ThreadScopeService, order_re
         async def restore_batch_originals(thread_id: str,batch_id: str,payload: NotificationBatchRecoveryRequest,request: Request):
             return await batch_recovery.recover(batch_id,payload,thread_id=thread_id,
                 project=request.state.thread_project,actor=request_actor(request))
+
+    if operator_admission is not None:
+        @router.get('/api/threads/{thread_id}/preflight-attempts/{attempt_id}/operator-admission')
+        async def preview_operator_admission(thread_id: str, attempt_id: str, request: Request):
+            return await asyncio.to_thread(operator_admission.preview, attempt_id,
+                thread_id=thread_id, project=request.state.thread_project, actor=request_actor(request))
+
+        @router.post('/api/threads/{thread_id}/preflight-attempts/{attempt_id}/operator-admission')
+        async def admit_original(thread_id: str, attempt_id: str,
+                                 payload: QueuedOperatorAdmissionRequest, request: Request):
+            return await operator_admission.admit(attempt_id, payload, thread_id=thread_id,
+                project=request.state.thread_project, actor=request_actor(request))
 
     @router.post(
         "/api/threads/{thread_id}/preflight-attempts/{attempt_id}/retry"

@@ -64,7 +64,9 @@ class ThreadScopeTests(unittest.IsolatedAsyncioTestCase):
             request.state.identity_actor = self.actor
             return await call_next(request)
         app.include_router(build_threads_router(self.delegate, self.scope))
-        app.include_router(build_turns_router(self.delegate, self.scope))
+        self.original_admission = SimpleNamespace(preview=Mock(return_value={'preview':True}),
+            admit=AsyncMock(return_value={'ok':True}))
+        app.include_router(build_turns_router(self.delegate, self.scope, operator_admission=self.original_admission))
         app.include_router(build_context_router(self.delegate, self.scope))
         app.include_router(build_project_ui_state_router(self.delegate, self.scope))
         self.client = TestClient(app)
@@ -76,6 +78,8 @@ class ThreadScopeTests(unittest.IsolatedAsyncioTestCase):
                   ('POST', '/unarchive'), ('POST', '/resume'), ('POST', '/replace'), ('POST', '/turns'),
                   ('GET', '/queue'), ('POST', '/queue/steer'), ('POST', '/queue/queued-id/steer'),
                   ('GET', '/preflight-attempts'), ('POST', '/preflight-attempts/attempt/retry'),
+                  ('GET', '/preflight-attempts/attempt/operator-admission'),
+                  ('POST', '/preflight-attempts/attempt/operator-admission'),
                   ('GET', '/context'), ('POST', '/compact')]
         for thread in ['thread-b', 'thread-foreign', 'missing']:
             for method, suffix in routes:
@@ -83,6 +87,8 @@ class ThreadScopeTests(unittest.IsolatedAsyncioTestCase):
                     response = self.client.request(method, f'/api/threads/{thread}{suffix}?project_id=a',
                         **({'json': {'project_id': 'a', 'message': 'hello', 'name': 'renamed'}} if method == 'POST' else {}))
                     self.assertEqual(response.status_code, 404, response.text)
+        self.original_admission.preview.assert_not_called()
+        self.original_admission.admit.assert_not_awaited()
         self.assertEqual(self.client.post('/api/turns/interrupt?thread_id=thread-b&project_id=a').status_code, 404)
         for delegate in vars(self.delegate).values():
             delegate.assert_not_called()
@@ -156,3 +162,14 @@ class ThreadScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.index.get('unknown-native'))
         result = await service.list('empty', actor=self.actor)
         self.assertEqual(result['data'], [])
+
+    def test_original_admission_payload_cannot_forge_source_actor_or_scope(self):
+        path='/api/threads/thread-a/preflight-attempts/attempt/operator-admission?project_id=a'
+        payload={'expected_snapshot_sha256':'a'*64,'expected_queue_sha256':'b'*64,'reason':'Reviewed original'}
+        for key, value in [('source','operator-retry'),('agent_profile_actor_id','other'),('project_id','b')]:
+            self.assertEqual(self.client.post(path,json={**payload,key:value}).status_code,404 if key == 'project_id' else 422)
+        self.original_admission.admit.assert_not_awaited()
+        self.assertEqual(self.client.get(path).status_code,200)
+        self.assertEqual(self.original_admission.preview.call_args.kwargs['project'].id,'a')
+        self.assertEqual(self.client.post(path,json=payload).status_code,200)
+        self.assertEqual(self.original_admission.admit.await_args.kwargs['actor'].identity_id,self.actor.identity_id)

@@ -1,3 +1,4 @@
+import {createQueuedOperatorAdmissionUi} from './queued_operator_admission_ui.js';
 import { createQueueOrderRecoveryUi } from "./queue_order_recovery_ui.js";
 import { createQueuedBootstrapRecoveryUi } from "./queued_bootstrap_recovery_ui.js";
 import { captureProjectView } from "./project_view_scope.js";
@@ -11,6 +12,7 @@ export function createExecutionPreflightUi({
   captureView = () => captureProjectView().current,
 }) {
   const attemptsByThread = new Map();
+  const operatorAdmission=createQueuedOperatorAdmissionUi({api,loadThread,scheduleRefresh,captureView});
   const batches = createNotificationBatchUi({api, addMessage, captureView, loadThread, scheduleRefresh});
   const orderRecovery=createQueueOrderRecoveryUi({api,addMessage,loadThread,scheduleRefresh,captureView});
   const bootstrapRecovery=createQueuedBootstrapRecoveryUi({api,loadThread,scheduleRefresh,captureView});
@@ -139,11 +141,19 @@ export function createExecutionPreflightUi({
           "tool",
           new Date((attempt?.updated_at || Date.now() / 1000) * 1000),
         );
+        if (attempt.operator_admission) {
+          const audit = document.createElement('pre');
+          audit.textContent = `Operator admission: ${attempt.operator_admission.requested_by}
+Reason: ${attempt.operator_admission.reason}
+Claim: ${attempt.operator_admission.claim_id}`;
+          card?.querySelector('.body')?.append(audit);
+        }
         if (batchMember) {
           batches.attach(attempt.notification_batch_href, card?.querySelector('.body'));
           return;
         }
         bootstrapRecovery.attach(attempt, card?.querySelector('.body'));
+        operatorAdmission.attach(attempt, card?.querySelector('.body'));
         if (
           status === "started"
           || (!attempt?.can_retry && !attempt?.can_reconcile_prestart && !attempt?.can_retire_scheduling)

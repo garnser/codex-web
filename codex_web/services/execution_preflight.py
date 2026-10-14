@@ -832,6 +832,13 @@ class ExecutionPreflightService:
     ) -> dict[str, Any]:
         self._authorize(attempt, actor)
         payload = attempt.model_dump(mode="json")
+        payload['can_admit_original'] = (self.can_retry(actor) and attempt.status == 'queued'
+            and attempt.queued_turn_snapshot is not None and attempt.queued_start_receipt is None
+            and attempt.started_at is None and attempt.scheduling_retirement is None
+            and attempt.notification_batch_id is None)
+        payload['operator_admission_href'] = (
+            f'/api/threads/{attempt.replacement_thread_id or attempt.thread_id}/preflight-attempts/'
+            f'{attempt.id}/operator-admission')
         payload["can_retry"] = (self.can_retry(actor)
             and attempt.scheduling_retirement is None
             and (attempt.bootstrap_recovery is None or attempt.bootstrap_recovery.state == 'created')

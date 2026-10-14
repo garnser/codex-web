@@ -119,8 +119,18 @@
           requested_execution_id:'fixture-batch',execution_id:'shared-native-execution'} : null});
     }
 
+    if (new URLSearchParams(location.search).has('operatorAdmission')) {
+      attempts[0].can_admit_original = true;
+      attempts[0].operator_admission_href = '/fixture/operator-admission';
+    }
     const api = async (path, options = {}) => {
       window.__apiCalls.push({ path, method: options.method || "GET" });
+      if (path === '/fixture/operator-admission') {
+        return {queued_turn_id:'original-queue-id',project_id:'project-a',source:'gitlab',
+          original_actor_id:'original-admin',agent_profile_id:'original-profile',agent_profile_revision:6,
+          execution_profile_id:'repository-write',writable_repository_resource_ids:['repo-app'],
+          read_only_repository_resource_ids:['repo-docs'],reply_target:null,snapshot_sha256:'a'.repeat(64),queue_sha256:'b'.repeat(64)};
+      }
       if (path.includes("/preflight-attempts?")) return { items: attempts };
       if (path.endsWith('/notification-batches/fixture-batch/results')) {
         window.__captureBody=JSON.parse(options.body);

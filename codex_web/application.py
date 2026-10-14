@@ -108,6 +108,7 @@ from codex_web.api.threads import build_threads_router
 from codex_web.services.thread_scope import ThreadScopeService
 from codex_web.services.queue_order_recovery import QueueOrderRecoveryService
 from codex_web.services.queued_bootstrap_recovery import QueuedBootstrapRecoveryService
+from codex_web.services.queued_operator_admission import QueuedOperatorAdmissionService
 from codex_web.api.turns import build_turns_router
 from codex_web.services.notification_batch_inspection import NotificationBatchInspection
 from codex_web.services.notification_batch_recovery import NotificationBatchRecoveryService
@@ -3591,6 +3592,13 @@ queued_bootstrap_recovery_service = QueuedBootstrapRecoveryService(
     ownership=turn_execution_service.ownership,
 )
 app.state.queued_bootstrap_recovery_service = queued_bootstrap_recovery_service
+queued_operator_admission_service = QueuedOperatorAdmissionService(
+    preflight=execution_preflight_service, runtime=turn_execution_service,
+    ownership=turn_execution_service.ownership, authority=authority_role_service,
+    resources=resource_catalog_service, actor_resolver=turn_execution_service.actor_resolver,
+    replacement_resolver=thread_index_repository.replacement_thread_id,
+)
+app.state.queued_operator_admission_service = queued_operator_admission_service
 
 project_delivery_service = ProjectDeliveryService(
     projects=project_service, identity=identity_service, scope=thread_scope_service,
@@ -4799,7 +4807,7 @@ EXTRACTED_ROUTE_COUNTS = {
     "turns": _include_domain_router(
         build_turns_router(turn_service, thread_scope_service, queue_order_recovery_service, queued_bootstrap_recovery_service,
             notification_batches=notification_batch_inspection,batch_recovery=notification_batch_recovery,
-            batch_results=notification_result_capture)
+            batch_results=notification_result_capture, operator_admission=queued_operator_admission_service)
     ),
     "context": _include_domain_router(
         build_context_router(context_service, thread_scope_service)
