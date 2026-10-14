@@ -5,6 +5,8 @@ use the production services. Original-work live acceptance remains separate.
 """
 from copy import deepcopy
 import json
+import subprocess
+import sys
 from unittest.mock import patch
 import unittest
 
@@ -322,3 +324,30 @@ class AdministrativeBrokerRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 403, body)
         self.assertEqual(self.provider.calls, 0)
         self.assertEqual(self.intents.store.load().intents, [])
+
+
+    async def test_unknown_receipt_is_readable_from_a_fresh_interpreter(self):
+        self.provider.unknown = True
+        status, _, body = await self.submit()
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body['item']['status'], 'uncertain')
+        before = self.intents.history(body['item']['id'], self.admin)
+        script = """
+import json, sys
+from pathlib import Path
+from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.storage.action_intents import ActionIntentStore
+state = ActionIntentStore(SQLiteStateStore(Path(sys.argv[1]))).load(intent_id=sys.argv[2])
+intent = next(item for item in state.intents if item.id == sys.argv[2])
+print(json.dumps({
+    'intent': intent.model_dump(mode='json'),
+    'receipts': [item.model_dump(mode='json') for item in state.receipts if item.intent_id == intent.id],
+    'verifications': [item.model_dump(mode='json') for item in state.verifications if item.intent_id == intent.id],
+    'inbox': [item.model_dump(mode='json') for item in state.inbox if item.intent_id == intent.id],
+}))
+"""
+        child = subprocess.run([sys.executable, '-c', script, str(self.sqlite.path), body['item']['id']],
+                               check=False, capture_output=True, text=True, timeout=15)
+        self.assertEqual(child.returncode, 0, child.stderr)
+        self.assertEqual(json.loads(child.stdout), before)
+        self.assertEqual(self.provider.calls, 1)
