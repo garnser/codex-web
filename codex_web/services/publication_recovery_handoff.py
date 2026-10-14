@@ -252,6 +252,18 @@ class PublicationRecoveryHandoffService:
                                           old.ref, requirements, actor=actor)
             if not gate.satisfied:
                 raise PublicationRecoveryConflict("Prior Work Item evidence requirements are not satisfied")
+        # Native broker and owning-admin UI use the same final procedure gate.
+        # Capture definitions first: a concurrent publication during discovery
+        # must fail the mutation CAS rather than silently changing admission.
+        procedure_admission = getattr(self.broker, "procedure_admission", None)
+        if procedure_admission is not None:
+            from codex_web.services.control_plane_broker import ControlPlaneBrokerRequestError
+            try:
+                await procedure_admission(assignment=assignment, actor=actor,
+                    operation=operation, resource_ids=(request.repository_resource_id,),
+                    payload=request.model_dump(mode="json"))
+            except ControlPlaneBrokerRequestError as exc:
+                raise PublicationRecoveryConflict(str(exc)) from exc
         if preview:
             return {"allowed": True, "prior_scope": prior.model_dump(mode="json"), "work_item_ref": target.ref,
                     "source_identity": snapshot.identity.model_dump(mode="json"), "validation_checks": checks,

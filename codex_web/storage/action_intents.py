@@ -11,7 +11,7 @@ from codex_web.compatibility import ContractSpec, MigrationRegistry
 from codex_web.storage.state_store import StateStore
 
 
-ACTION_INTENT_STATE_CONTRACT = ContractSpec("action-intent-state", "1.3", ("1.2", "1.3"))
+ACTION_INTENT_STATE_CONTRACT = ContractSpec("action-intent-state", "1.4", ("1.4",))
 ACTION_INTENT_STATE_MIGRATIONS = MigrationRegistry("action-intent-state")
 ACTION_INTENT_STATE_MIGRATIONS.register(
     "0.0",
@@ -21,6 +21,10 @@ ACTION_INTENT_STATE_MIGRATIONS.register(
         **{key: value for key, value in payload.items() if key != "schema_version"},
     },
 )
+ACTION_INTENT_STATE_MIGRATIONS.register(
+    "1.2", "1.3", lambda payload: {**payload, "schema_version": "1.3"},
+)
+
 
 
 def _security_migration(payload: dict[str, Any]) -> dict[str, Any]:
@@ -299,5 +303,5 @@ class ActionIntentStore:
         return result[0]
 
 ACTION_INTENT_STATE_MIGRATIONS.register(
-    "1.2", "1.3", lambda payload: {**payload, "schema_version": "1.3"},
+    "1.3", "1.4", lambda payload: {**payload, "schema_version": "1.4"},
 )

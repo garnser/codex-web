@@ -5,6 +5,7 @@
   const { referenceLink } = await import(`${BASE}/static/reference_navigation.js`);
   const { referenceAttributes, focusReference, workspaceIsVisible } = await import(`${BASE}/static/reference_links.js`);
   const { captureProjectView, currentProjectId } = await import(`${BASE}/static/project_view_scope.js`);
+  const { procedureHistoryHtml } = await import(`${BASE}/static/procedure_discovery_view.js`);
   const { decisionHtml, leaseHtml, failureHtml, recoveryHtml } = await import(`${BASE}/static/action_intent_outcome_view.js`);
   let actor = null;
   let intents = [];
@@ -124,6 +125,7 @@
       <small>Request parameter keys only: ${listText(paramKeys)}. Parameter values and provider output bodies are intentionally not rendered in this timeline.</small>
       ${decisionHtml("Authority", intent.authority_decision)}
       ${decisionHtml("Policy", intent.policy_decision)}
+
       <small>Security: ${escapeHtml(security.outcome || "unknown")} · source ${escapeHtml(security.source || "unknown")} · sandbox ${escapeHtml(security.sandbox || "unknown")} · network ${security.network_enabled ? "enabled" : "disabled"} · reasons ${listText(security.reasons)}</small>
       <small>Idempotency key: ${escapeHtml(intent.idempotency_key)} · provider idempotency: ${intent.provider_idempotency_supported ? "yes" : "no"} · attempt ${escapeHtml(intent.attempt)} / ${escapeHtml(retry.max_attempts || "unknown")} · backoff ${escapeHtml(retry.backoff_seconds ?? "unknown")}s</small>
       <small>Verification required: ${intent.verification_required ? "yes" : "no"} · rollback required: ${intent.rollback_required ? "yes" : "no"} · expected evidence rules: ${escapeHtml(intent.expected_evidence?.length || 0)} · timeout ${escapeHtml(intent.timeout_seconds)}s</small>
@@ -196,10 +198,7 @@
       const receipts = history.receipts || [];
       const verifications = history.verifications || [];
       const inbox = history.inbox || [];
-      host.innerHTML = `<div class="comm-entry">
-        <strong>Intent → provider execution → receipt → verification/reconciliation</strong>
-        <small>${receipts.length} provider receipt(s) · ${verifications.length} verification receipt(s) · ${inbox.length} callback message(s)</small>
-      </div>`
+      host.innerHTML = procedureHistoryHtml(history, currentProjectId())
         + receipts.map(receiptHtml).join("")
         + inbox.map(inboxHtml).join("")
         + verifications.map(verificationHtml).join("");

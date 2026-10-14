@@ -155,3 +155,7 @@ The target architecture is:
 - [Conversation channels](conversation-channels.md) — provider-neutral Slack/Telegram/Teams inbound normalization, capabilities, tenant-scoped dedupe/order handling, canonical routing provenance and outbound authority boundary.
 
 - [Product workspaces and shared explainability UI](product-workspaces.md) — first-class navigation over canonical domain surfaces, shared status/provenance vocabulary, Developer-card adoption, keyboard/deep-link behavior and no-shadow-state rules.
+
+- [Procedure discovery/admission](procedure-discovery.md) — deterministic exact
+  Skill selection, bounded authorized guidance, mutation gates, provenance and
+  explicit unsupported native-tool enforcement.

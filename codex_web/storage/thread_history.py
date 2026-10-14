@@ -17,7 +17,7 @@ class ThreadHistoryRepository:
     """
 
     NAMESPACE = "thread_history"
-    SCHEMA_VERSION = "1.0"
+    SCHEMA_VERSION = "1.1"
     MAX_TURNS = 1000
 
     def __init__(self, store: StateStore) -> None:
@@ -39,6 +39,8 @@ class ThreadHistoryRepository:
         if not isinstance(value, dict):
             return cls._empty(thread_id)
         state = copy.deepcopy(value)
+        if state.get("schemaVersion") == "1.0":
+            state["schemaVersion"] = cls.SCHEMA_VERSION
         if state.get("schemaVersion") != cls.SCHEMA_VERSION:
             raise RuntimeError(
                 "unsupported canonical thread history schema version: "
@@ -115,6 +117,18 @@ class ThreadHistoryRepository:
                     item["providerItemId"] = item_id
                 return item
         return None
+
+    def record_procedure_discovery(self, thread_id, execution_id, discovery):
+        """Metadata-only admission trace in the existing canonical Thread history."""
+        def apply(value):
+            state = self._normalize(value, thread_id)
+            history = state.setdefault("procedureDiscoveries", [])
+            if len(history) >= self.MAX_TURNS:
+                raise ValueError("procedure Thread history limit requires an explicit checkpoint")
+            history.append({"executionId": execution_id, "discovery": discovery.model_dump(mode="json")})
+            state["updatedAt"] = time.time()
+            return state
+        return self.store.record_update(self.NAMESPACE, thread_id, apply, default=self._empty(thread_id))
 
     def start_turn(
         self,

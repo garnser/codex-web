@@ -318,3 +318,16 @@ PR results refuse qualification. Recovery artifact source and workflow control
 revision are recorded separately. Bounded recent main workflow inspection can
 find a candidate whose control revision advanced, while its immutable artifact
 still proves the requested source; unknown or absent proof never grants eligibility.
+### Procedure discovery admission
+
+The shared provider mutation boundary also enforces the
+[procedure discovery contract](procedure-discovery.md). Creation and immediate
+pre-mutation results retain exact Skill references, context, candidates and
+blockers in the existing intent; assignment-backed actions retain fenced evidence.
+A direct provider call cannot substitute for this admission. A procedure match
+never grants authority or creates an extra confirmation requirement.
+
+The combined ActionIntent state contract is `1.4`. Migration from `1.3` preserves
+procedure discoveries and recovery snapshots unchanged; older records receive
+empty optional histories. Readers that cannot understand both admission records
+must upgrade before consuming state written by this version.

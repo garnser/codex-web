@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import time
@@ -178,6 +179,7 @@ class TurnExecutionService:
         self.host = host
         self.handoff_delivery_recorder: Callable[..., Any] | None = None
         self.queued_preflight = None
+        self.procedure_admission = None
         self.notification_batch_handler = None
         self.automated_admission_allowed: Callable[[], bool] | None = None
         try:
@@ -1089,6 +1091,12 @@ class TurnExecutionService:
         method: str,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if self.procedure_admission is not None and method in {"turn/start", "thread/resume", "thread/goal/set"}:
+            raise ExecutionPrestartRefusal(status_code=409, detail={
+                "code": "procedure_unsupported_enforcement",
+                "message": "Raw native mutation/resume must enter canonical turn admission; provider RPC cannot bypass procedure discovery",
+                "threadId": thread_id,
+            })
         if method == "turn/interrupt" and not (params or {}).get("turnId"):
             active = await asyncio.to_thread(self._active_turn, thread_id)
             if active is not None and active.turn_id:
@@ -2788,6 +2796,18 @@ class TurnExecutionService:
                     assignment_id = binding.assignment_id
                     workspace_id = binding.workspace_id
 
+            procedure_discovery = None
+            if self.procedure_admission is not None:
+                procedure_discovery, procedure_text = await self.procedure_admission(
+                    project=project, actor=actor or self.control_actor,
+                    thread_id=thread_id, execution_id=canonical_execution_id,
+                    assignment_id=assignment_id, sandbox=effective_sandbox,
+                    source=source, request_checksum=hashlib.sha256(message.encode()).hexdigest(),
+                )
+                if procedure_text:
+                    effective_developer_instructions = "\n\n".join(
+                        item for item in (effective_developer_instructions, procedure_text) if item)
+
             skill_context_selection = None
             effective_skill_refs = tuple(dict.fromkeys(
                 tuple(getattr(assignment, "skill_refs", ()) or ())
@@ -3356,6 +3376,7 @@ class TurnExecutionService:
                     and requested_execution_id != canonical_execution_id
                     else None
                 ),
+                "procedure_discovery": procedure_discovery.model_dump(mode="json") if procedure_discovery is not None else None,
                 "skill_context": (
                     skill_context_selection.model_dump(mode="json")
                     if skill_context_selection is not None

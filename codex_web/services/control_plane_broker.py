@@ -471,6 +471,7 @@ class ControlPlaneBrokerService:
         self._clock = clock
         self._monotonic = monotonic
         self._local_installers = {}
+        self.procedure_admission = None
 
     @staticmethod
     def operations() -> tuple[ControlPlaneBrokerOperation, ...]:
@@ -1595,6 +1596,15 @@ class ControlPlaneBrokerService:
                 )
             payload = decoded
 
+        if self.procedure_admission is not None:
+            procedure_targets = tuple(getattr(state, "resource_ids", ()) or assignment.resource_ids)
+            if operation.id == "work_graph.edge.create":
+                source_state = self._state_for_target(assignment, str(payload.get("source_ref") or ""))
+                target_state = self._state_for_target(assignment, str(payload.get("target_ref") or ""))
+                procedure_targets = tuple(dict.fromkeys((*source_state.resource_ids, *target_state.resource_ids)))
+            await self.procedure_admission(assignment=assignment, actor=requester_actor,
+                operation=operation, resource_ids=procedure_targets, payload=payload)
+
         if assignment.execution_profile_id == "orchestration-admin":
             # Administrative coordination never impersonates an implementer or
             # independent validator. These are agent-role fields, distinct from
@@ -1731,6 +1741,9 @@ class ControlPlaneBrokerService:
                     ) from materialization_exc
                 if assignment_validator is not None:
                     await asyncio.to_thread(assignment_validator)
+                if self.procedure_admission is not None:
+                    await self.procedure_admission(assignment=assignment, actor=requester_actor,
+                        operation=operation, resource_ids=assignment.resource_ids, payload=payload)
                 try:
                     refreshed = self.execution_workspaces.refresh_revision(
                         assignment.execution_workspace_id,
@@ -2470,6 +2483,8 @@ class AssignmentBoundControlPlaneBroker:
         authority_decision = None
         status = 500
         denial_reason = None
+        denial_code = "control_plane_broker_denied"
+        procedure_discovery = None
         correlation_id = uuid.uuid4().hex
         causation_id = None
         counted = False
@@ -2597,6 +2612,8 @@ class AssignmentBoundControlPlaneBroker:
         except ControlPlaneBrokerRequestError as exc:
             status = exc.status_code
             denial_reason = str(exc)
+            denial_code = getattr(exc, "code", denial_code)
+            procedure_discovery = getattr(exc, "procedure_discovery", None)
         except ControlPlaneBrokerDeniedError as exc:
             denial_reason = str(exc)
             if status == 500:
@@ -2642,7 +2659,8 @@ class AssignmentBoundControlPlaneBroker:
                             status,
                             {
                                 "error": {
-                                    "code": "control_plane_broker_denied",
+                                    "code": denial_code,
+                                    **({"procedure_discovery": procedure_discovery} if procedure_discovery is not None else {}),
                                     "message": denial_reason[:500],
                                     "correlation_id": correlation_id,
                                 }
