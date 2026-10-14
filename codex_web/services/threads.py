@@ -71,6 +71,10 @@ class _ThreadRuntimeTransport:
         )
 
 
+class ThreadBootstrapPrestartRefusal(HTTPException):
+    """Controller-owned proof that provider thread creation was never called."""
+
+
 class ThreadService:
     """Thread/query operations that do not own turn queue orchestration yet."""
 
@@ -852,7 +856,27 @@ class ThreadService:
             "revision": current_revision,
         }
 
-    async def create(
+    async def create(self, *args, **kwargs) -> dict[str, Any]:
+        provider_start_called = False
+        def before_provider_start():
+            nonlocal provider_start_called
+            provider_start_called = True
+        try:
+            return await self._create(*args, **kwargs, before_provider_start=before_provider_start)
+        except Exception as exc:
+            if provider_start_called:
+                if isinstance(exc, ThreadBootstrapPrestartRefusal):
+                    # An adapter cannot supply controller pre-start authority
+                    # after the provider boundary, even with the same type.
+                    raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+                raise
+            if isinstance(exc, HTTPException):
+                raise ThreadBootstrapPrestartRefusal(status_code=exc.status_code, detail=exc.detail) from exc
+            raise ThreadBootstrapPrestartRefusal(status_code=503, detail={
+                'code':'bootstrap_prestart_failed',
+                'message':'Bootstrap preparation failed before provider thread startup.'}) from exc
+
+    async def _create(
         self,
         project_id: str | None = None,
         sandbox: str | None = None,
@@ -867,7 +891,17 @@ class ThreadService:
         actor: AuthenticationActor | None = None,
         agent_profile_id: str | None = None,
         agent_profile_revision: int | None = None,
+        writable_repository_resource_ids: tuple[str, ...] = (),
+        bootstrap_token: str | None = None,
+        before_provider_start: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        # Internal recovery correlation; the public create request cannot set it.
+        if bootstrap_token is not None:
+            try:
+                if uuid.UUID(hex=bootstrap_token).hex != bootstrap_token:
+                    raise ValueError('noncanonical bootstrap token')
+            except (ValueError, AttributeError) as exc:
+                raise HTTPException(status_code=422, detail='Invalid bootstrap recovery correlation.') from exc
         (
             binding_service,
             _default_session_manager,
@@ -982,7 +1016,7 @@ class ThreadService:
                 },
             )
         session_manager = self._manager_for_binding(runtime_binding)
-        token = uuid.uuid4().hex
+        token = bootstrap_token or uuid.uuid4().hex
         bootstrap_id = f"bootstrap-{token}"
         execution_id = f"thread-bootstrap-{token}"
 
@@ -999,6 +1033,8 @@ class ThreadService:
                 read_only_repository_ids=read_only_repository_resource_ids,
                 execution_profile_id=effective_execution_profile_id,
                 agent_profile=agent_profile_binding,
+                **({'writable_repository_ids':writable_repository_resource_ids}
+                   if writable_repository_resource_ids else {}),
             )
         except TurnExecutionBindingError as exc:
             raise HTTPException(
@@ -1082,6 +1118,8 @@ class ThreadService:
             session,
         )
         try:
+            if before_provider_start is not None:
+                before_provider_start()
             runtime_result = await runtime_adapter.create_session(runtime_request)
             response = runtime_result.payload
         except asyncio.CancelledError as exc:

@@ -253,6 +253,14 @@ EXACT_POLICIES: dict[tuple[str, str], ApiAuthorizationPolicy] = {
     ('GET', '/api/threads/{thread_id}/queue/order-recovery'): ApiAuthorizationPolicy(
         capability='execution.retry', level=AuthorityLevel.READ,
         access=ApiAccessMode.AUTHENTICATED, description='Inspect original queue-order provenance without replay.'),
+    ('GET', '/api/threads/{thread_id}/preflight-attempts/{attempt_id}/bootstrap-recovery'): ApiAuthorizationPolicy(
+        capability='execution.retry', level=AuthorityLevel.READ, access=ApiAccessMode.ADMIN,
+        required_assurance=AuthenticationAssurance.MFA,
+        description='Inspect exact-scope fresh bootstrap recovery with administrator authority.'),
+    ('POST', '/api/threads/{thread_id}/preflight-attempts/{attempt_id}/bootstrap-recovery'): ApiAuthorizationPolicy(
+        capability='execution.retry', level=AuthorityLevel.EXECUTE, access=ApiAccessMode.ADMIN,
+        required_assurance=AuthenticationAssurance.MFA,
+        description='Create or reconcile one correlated fresh bootstrap for a proven unstarted retained request.'),
     ('POST', '/api/threads/{thread_id}/queue/order-recovery'): ApiAuthorizationPolicy(
         capability='execution.retry', level=AuthorityLevel.EXECUTE, access=ApiAccessMode.ADMIN,
         required_assurance=AuthenticationAssurance.MFA,

@@ -43,6 +43,14 @@ class ThreadIndexRepository:
         self, old_thread_id: str, new_thread_id: str, *,
         project_id: str, provenance: dict[str, Any],
     ) -> None:
+        self.store.update(self.REPLACEMENTS_NAMESPACE,
+            self.replacement_updater(old_thread_id, new_thread_id,
+                project_id=project_id, provenance=provenance),
+            default={"version":1, "edges":{}})
+
+    @staticmethod
+    def replacement_updater(old_thread_id: str, new_thread_id: str, *,
+                            project_id: str, provenance: dict[str, Any]):
         """Record an actual bootstrap replacement, never a name-based guess.
 
         One transactional graph update fences conflicting replacements and
@@ -97,8 +105,7 @@ class ThreadIndexRepository:
             edges[old_thread_id] = edge
             return {"version": 1, "edges": edges}
 
-        self.store.update(self.REPLACEMENTS_NAMESPACE, update,
-                          default={"version": 1, "edges": {}})
+        return update
 
     def remember_recorded_replacements(self, records: list[dict[str, Any]]) -> None:
         """Atomically import a verified historical chain without rewriting edges."""

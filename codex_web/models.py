@@ -494,6 +494,47 @@ class QueuedSchedulingRetirement(BaseModel):
         return self
 
 
+class QueuedBootstrapPrestartRefusal(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    phase: Literal["before_provider_thread_start"] = "before_provider_thread_start"
+    code: str = Field(min_length=1, max_length=100)
+    message: str = Field(min_length=1, max_length=1000)
+    observed_at: float
+
+
+class QueuedBootstrapRecovery(BaseModel):
+    """A fresh bootstrap intent, separate from the original native outcome."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    version: Literal["1.0"] = "1.0"
+    id: str = Field(min_length=1)
+    state: Literal["pending", "created", "refused"] = "pending"
+    queued_turn_id: str = Field(min_length=1)
+    queued_snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    requested_by: str = Field(min_length=1)
+    requested_at: float
+    reason: str = Field(min_length=1, max_length=1000)
+    bootstrap_id: str = Field(min_length=1)
+    execution_id: str = Field(min_length=1)
+    destination_thread_id: str | None = Field(default=None, min_length=1)
+    prestart_refusal: QueuedBootstrapPrestartRefusal | None = None
+
+    @model_validator(mode="after")
+    def validate_destination(self):
+        if (self.state == "created") != (self.destination_thread_id is not None):
+            raise ValueError("created bootstrap recovery requires its canonical destination")
+        if (self.state == "refused") != (self.prestart_refusal is not None):
+            raise ValueError("refused bootstrap recovery requires controller pre-start proof")
+        return self
+
+
+class QueuedBootstrapRecoveryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+    expected_snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 class ExecutionPreflightAttempt(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -510,6 +551,8 @@ class ExecutionPreflightAttempt(BaseModel):
     queued_admission_claim_id: str | None = None
     queued_start_receipt: QueuedNativeStartReceipt | None = None
     scheduling_retirement: QueuedSchedulingRetirement | None = None
+    bootstrap_recovery: QueuedBootstrapRecovery | None = None
+    bootstrap_recovery_history: tuple[QueuedBootstrapRecovery, ...] = Field(default=(), max_length=8)
     sandbox: SandboxMode | None = None
     approval_policy: ApprovalPolicy | None = None
     model: str | None = None
@@ -532,6 +575,15 @@ class ExecutionPreflightAttempt(BaseModel):
     last_error: str | None = None
     created_at: float
     updated_at: float
+
+    @model_serializer(mode="wrap")
+    def serialize_bootstrap_recovery(self, handler):
+        result = handler(self)
+        if self.bootstrap_recovery is None:
+            result.pop("bootstrap_recovery", None)
+        if not self.bootstrap_recovery_history:
+            result.pop("bootstrap_recovery_history", None)
+        return result
 
 
 class ActiveThreadTurn(BaseModel):

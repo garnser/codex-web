@@ -8,11 +8,11 @@ from codex_web.api.thread_scope import thread_scope_dependency
 from codex_web.services.thread_scope import ThreadScopeService
 
 from codex_web.api.identity import request_actor
-from codex_web.models import TurnCreate, QueueOrderRepairRequest
+from codex_web.models import TurnCreate, QueueOrderRepairRequest, QueuedBootstrapRecoveryRequest
 from codex_web.services.turns import TurnService
 
 
-def build_turns_router(service: TurnService, scope: ThreadScopeService, order_recovery=None) -> APIRouter:
+def build_turns_router(service: TurnService, scope: ThreadScopeService, order_recovery=None, bootstrap_recovery=None) -> APIRouter:
     router = APIRouter(tags=["turns"], dependencies=[Depends(thread_scope_dependency(scope))])
 
     @router.post("/api/threads/{thread_id}/resume")
@@ -81,6 +81,19 @@ def build_turns_router(service: TurnService, scope: ThreadScopeService, order_re
     @router.post('/api/threads/{thread_id}/preflight-attempts/{attempt_id}/reconcile-prestart')
     async def reconcile_prestart(thread_id: str, attempt_id: str, request: Request) -> dict[str, Any]:
         return service.reconcile_preflight(thread_id, attempt_id, actor=request_actor(request))
+
+    if bootstrap_recovery is not None:
+        @router.get('/api/threads/{thread_id}/preflight-attempts/{attempt_id}/bootstrap-recovery')
+        async def preview_bootstrap_recovery(thread_id: str, attempt_id: str, request: Request):
+            return bootstrap_recovery.preview(attempt_id, thread_id=thread_id,
+                project=request.state.thread_project, actor=request_actor(request))
+
+        @router.post('/api/threads/{thread_id}/preflight-attempts/{attempt_id}/bootstrap-recovery')
+        async def recover_bootstrap(thread_id: str, attempt_id: str,
+                                    payload: QueuedBootstrapRecoveryRequest, request: Request):
+            return await bootstrap_recovery.recover(attempt_id, thread_id=thread_id,
+                project=request.state.thread_project, actor=request_actor(request),
+                expected_snapshot_sha256=payload.expected_snapshot_sha256, reason=payload.reason)
 
     @router.post('/api/threads/{thread_id}/preflight-attempts/{attempt_id}/retire-scheduling')
     async def retire_scheduling(thread_id: str, attempt_id: str, request: Request) -> dict[str, Any]:
