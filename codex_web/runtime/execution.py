@@ -174,6 +174,7 @@ class TurnExecutionService:
         self.host = host
         self.handoff_delivery_recorder: Callable[..., Any] | None = None
         self.queued_preflight = None
+        self.notification_batch_handler = None
         self.automated_admission_allowed: Callable[[], bool] | None = None
         try:
             self._event_loop = asyncio.get_running_loop()
@@ -3498,6 +3499,12 @@ class TurnExecutionService:
                     continue
                 if attempt.status != 'queued':
                     continue
+                if self.notification_batch_handler is not None:
+                    handled = await self.notification_batch_handler.try_drain(
+                        self, candidate, candidate_project)
+                    if handled:
+                        await self.publish_queue_status(thread_id)
+                        return
                 if self.automation_wait_reason(candidate.source) is not None:
                     continue
                 attempt, claim_id = await asyncio.to_thread(

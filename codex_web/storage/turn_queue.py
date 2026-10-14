@@ -298,6 +298,11 @@ class TurnQueueRepository:
         deduped: list[Any] = []
         seen_semantics: set[tuple[str, str]] = set()
         for item in result:
+            if item.get("provider_notification_pin") is not None:
+                # Distinct canonical provider events remain distinct originals,
+                # even when their projected message text happens to match.
+                deduped.append(item)
+                continue
             semantic = (
                 str(item.get("source") or ""),
                 str(item.get("message") or ""),

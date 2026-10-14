@@ -1,10 +1,13 @@
 # Lossless provider notification batches
 
-**Draft contract for #1307.** The planner, preflight member-claim ledger, guarded
-scheduling coordinator and explicit native submission path exist
-on the implementation branch; automatic admission selection, complete batch lifecycle, per-original outcomes and inspector
-integration are not enabled by it. Delivery/remaining acceptance is tracked in
-[#1307](https://github.com/garnser/codex-web/issues/1307), not this document.
+The admission foundation is tracked by
+[#1416](https://github.com/garnser/codex-web/issues/1416). It provides a planner,
+preflight member-claim ledger, guarded scheduling coordinator, native submission
+path and optional owned-drain adapter. The application does not install that
+adapter: automatic production admission is disabled. Canonical runtime
+configuration/authority wiring, complete batch lifecycle, per-original outcomes,
+inspector integration and live qualification remain tracked in
+[#1307](https://github.com/garnser/codex-web/issues/1307).
 
 ## Planning boundary
 
@@ -40,8 +43,8 @@ The verifier reloads the exact canonical event and checks its kind, checksum,
 scope and message binding. Missing/changed/foreign events or handoff/notes cannot
 qualify an original. An old source label or message never gains a pin by inference.
 Pinned requests are excluded from legacy destructive wakeup/notification
-compaction and pin identity participates in queue deduplication. Automatic drain
-selection and its authority/lease integration remain draft work.
+compaction and pin identity participates in queue deduplication. Legacy queue
+save also preserves distinct pinned originals with identical projected messages.
 
 Eligible originals have queued, unstarted retained attempts in the same tenant
 and Project, exact matching immutable request snapshots, and pinned actor/Agent
@@ -58,7 +61,8 @@ revision/actor, model/sandbox/approval policy and contextual bindings cannot be
 merged into broader scope.
 
 Caller-supplied planning bounds are constrained to2–16 originals and256–262144
-UTF8 bytes. These are structural ceilings, not operational defaults or authority.
+UTF8 bytes, including the admission identifier envelope. These are structural
+ceilings, not operational defaults or authority.
 Runtime limits must resolve from current canonical published policy/profile/
 Definition controls with exact attribution. Oversized/incompatible entries remain
 ordinary originals, while later compatible entries keep queue order. A plan
@@ -92,8 +96,19 @@ order anchors without overwriting changed copies; concurrent explicit priority
 remains distinct from ordinary arrivals. It then releases all claims. A crash
 after restoration but before release leaves exact copies plus protected claims
 and is safely repeatable. Lost ownership or a native-outcome-unknown descriptor
-refuses this recovery. These scheduling operations are not connected to native
-automatic admission selection or enabled in production yet.
+refuses this recovery. These operations are not enabled in production yet.
+
+The optional `NotificationBatchDrain` adapter runs inside the existing owned queue
+drain, around its existing admission candidate. It scans at most 256 entries from
+that anchor, reloads canonical events, retains eligible originals and requires
+trusted configuration and current authority callbacks. It rechecks the same
+ownership fencing token, automation admission, policy and authority before queue
+removal and native submission. Missing ownership, actor resolution, enabled
+configuration or exact event proof leaves the individual path available. A failed
+claim never releases a competing owner's claim. A held or uncertain batch never
+falls through into a duplicate individual admission. The adapter is intentionally
+uninstalled until canonical wiring and the parent's operator/reconciliation
+qualification are delivered.
 
 The explicit submission path preserves the original anchor's actor, Project,
 profile/revision, execution profile, repositories, reply destination, model,
@@ -120,8 +135,19 @@ and cannot trigger another submission.
 Ordinary preflight serialization omits null batch membership, retaining its old
 shape. Claimed members carry `notification_batch_id`; old extra-forbid preflight
 readers reject that field rather than silently dropping ownership. The admission
-descriptor is explicitly schema1.0. Qualified full-writer deployment and declared
-rollback/skew limits remain prerequisites before writing membership in production.
+descriptor is explicitly schema1.0. Ordinary queue rows omit absent provider
+pins. Old queue readers ignore a present pin, so mixed writers are unsupported
+once pinned events are emitted: they could compact those originals without proof.
+No backfill or inference from old source strings is permitted.
+
+This foundation performs no production migration or deployment. A qualified
+deployment must stop every queue/preflight writer and native admission, verify a
+canonical backup, install the batch-aware release on every writer, and verify
+retained originals before resuming. Source-only rollback is supported only before
+the first provider-pin or batch-membership write. After that boundary, rollback
+requires a qualified backup restore with native-outcome reconciliation; draining
+or deleting descriptors cannot make an older writer safe. New readers accept old
+rows with absent pins/membership, without making them eligible for batching.
 
 The existing turn queue, keyed preflight records and ownership/fencing primitives
 must own batch admission and recovery. Complete originals must be durably retained
