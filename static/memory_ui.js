@@ -93,8 +93,10 @@ function ensureShell() {
   document.body.appendChild(dialog);
 
   button.addEventListener('click', async () => {
-    dialog.showModal();
+    if (!dialog.open) dialog.showModal();
     await refreshAll();
+    const source = new URLSearchParams(location.search).get('knowledge_id');
+    if (source) await selectKnowledge(source);
   });
   dialog.querySelector('.memory-close').addEventListener('click', () => dialog.close());
   dialog.querySelector('.memory-refresh').addEventListener('click', refreshAll);
@@ -366,3 +368,4 @@ async function refreshRetrievalHistory() {
 }
 
 ensureShell();
+if (new URLSearchParams(location.search).get('knowledge_id')) document.getElementById('memory-button')?.click();

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.definitions import DefinitionReference
 from codex_web.artifact_evidence import EvidenceRequirement
@@ -97,7 +97,7 @@ class ExecutionContractV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["1.4"] = EXECUTION_CONTRACT_SCHEMA_VERSION
+    schema_version: Literal["1.4", "1.5"] = EXECUTION_CONTRACT_SCHEMA_VERSION
     work_item_ref: str = Field(min_length=1)
     role_id: str = Field(min_length=1)
     agent_id: str | None = None
@@ -111,6 +111,12 @@ class ExecutionContractV1(BaseModel):
     required_evidence: tuple[EvidenceRequirement, ...] = ()
     success_criteria: tuple[str, ...]
     failure_conditions: tuple[str, ...]
+
+    @model_validator(mode="after")
+    def validate_research_version(self):
+        if self.schema_version == "1.4" and any(item.observed_research for item in self.required_evidence):
+            raise ValueError("observed research requirements need execution contract schema 1.5")
+        return self
 
     def compact_public(self) -> dict[str, object]:
         """Return stable machine-readable data without null target noise."""
@@ -145,6 +151,7 @@ def execution_contract_for_work_item(
     failure = lifecycle.failure_reason
 
     return ExecutionContractV1(
+        schema_version="1.5" if any(item.observed_research for item in lifecycle.evidence_requirements) else "1.4",
         work_item_ref=state.ref,
         role_id=role.id,
         agent_id=agent_id,

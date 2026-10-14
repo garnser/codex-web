@@ -60,7 +60,7 @@ from codex_web.retrieval import (
 )
 from codex_web.services.authority_roles import AuthorityRoleService
 from codex_web.services.data_governance import DataGovernanceService
-from codex_web.services.research_provenance import derived_source_freshness
+from codex_web.services.research_provenance import derived_source_freshness, derive_research_provenance, research_governance_plan, research_sources_readable, research_evidence_freshness
 from codex_web.storage.organizational_memory import (
     KnowledgeConflictError,
     KnowledgeNotFoundError,
@@ -178,10 +178,12 @@ class OrganizationalMemoryService:
         encoder: DeterministicSemanticEncoder | None = None,
         retrieval_backend: RetrievalBackend | None = None,
         embedding_identity_validator: EmbeddingIdentityValidator | None = None,
+        artifact_evidence=None,
         clock=time.time,
     ) -> None:
         self.store = store
         self.governance = governance
+        self.artifact_evidence = artifact_evidence
         self.authority = authority
         self.encoder = encoder or DeterministicSemanticEncoder()
         self.retrieval_backend = (
@@ -548,48 +550,10 @@ class OrganizationalMemoryService:
                 )
 
     def _derived_provenance(
-        self,
-        provenance: KnowledgeProvenance,
-        relationships: tuple[KnowledgeRelationshipCreate, ...],
-        *,
-        actor: AuthenticationActor,
-        previous: KnowledgeRecord | None = None,
+        self, provenance, relationships, *, actor, project_id, previous=None,
     ) -> KnowledgeProvenance:
-        sources = [
-            self.get(row.target_knowledge_id, actor=actor)
-            for row in relationships
-            if row.relationship_type == KnowledgeRelationshipType.DERIVED_FROM
-        ]
-        if previous is not None:
-            sources.append(previous)
-        snapshots: dict[str, KnowledgeOriginSource] = {}
-        for source in sources:
-            snapshots[source.id] = KnowledgeOriginSource(
-                knowledge_id=source.id,
-                version=source.version,
-                origin=source.provenance.origin,
-                source_ref=source.provenance.source_ref,
-                source_revision=source.provenance.source_revision,
-            )
-            for snapshot in source.provenance.origin_sources:
-                snapshots[snapshot.knowledge_id] = snapshot
-        if any(snapshots.get(row.knowledge_id) != row for row in provenance.origin_sources):
-            raise KnowledgeValidationError("origin sources must match canonical derivation links")
-        origin = provenance.origin
-        origins = {source.provenance.origin for source in sources}
-        if "origin" in provenance.model_fields_set:
-            origins.add(origin)
-        if origins:
-            origin = next(iter(origins)) if len(origins) == 1 else KnowledgeOrigin.MIXED
-        return KnowledgeProvenance.model_validate({
-            **provenance.model_dump(),
-            "origin": origin,
-            "origin_sources": tuple(snapshots.values()),
-            "source_governance_record_ids": tuple(dict.fromkeys((
-                *provenance.source_governance_record_ids,
-                *(source.governance_record_id for source in sources),
-            ))),
-        })
+        return derive_research_provenance(self, provenance, relationships,
+            actor=actor, project_id=project_id, previous=previous, invalid=KnowledgeValidationError)
 
     def _freshness(
         self,
@@ -616,6 +580,8 @@ class OrganizationalMemoryService:
             return KnowledgeFreshness.EXPIRED
         if item.review_after is not None and current >= item.review_after:
             return KnowledgeFreshness.STALE
+        if research_evidence_freshness(self, item) is not None:
+            return KnowledgeFreshness.INVALID
         if item.provenance.origin_sources:
             records = records if records is not None else {row.id: row for row in self.store.load().records}
             source_status = derived_source_freshness(item, records, now=current)
@@ -731,7 +697,7 @@ class OrganizationalMemoryService:
             actor=actor,
         )
         payload = payload.model_copy(update={"provenance": self._derived_provenance(
-            payload.provenance, payload.relationships, actor=actor,
+            payload.provenance, payload.relationships, actor=actor, project_id=payload.project_id,
         )})
 
         existing = [
@@ -881,7 +847,7 @@ class OrganizationalMemoryService:
                 tags=payload.tags,
             )
             incoming_provenance = self._derived_provenance(
-                payload.provenance, payload.relationships, actor=actor, previous=current,
+                payload.provenance, payload.relationships, actor=actor, project_id=payload.project_id, previous=current,
             )
             provenance_unchanged = (
                 current.provenance.source_kind == payload.provenance.source_kind
@@ -1150,7 +1116,7 @@ class OrganizationalMemoryService:
         merged_provenance = self._derived_provenance(
             payload.provenance,
             normalized.relationships,
-            actor=actor,
+            actor=actor, project_id=current.project_id,
             previous=current,
         )
         normalized = normalized.model_copy(update={"provenance": merged_provenance})
@@ -1338,6 +1304,8 @@ class OrganizationalMemoryService:
             and item.lifecycle != KnowledgeLifecycle.CURRENT
         ):
             raise KnowledgeNotFoundError(knowledge_id)
+        if not research_sources_readable(self, item, actor):
+            raise KnowledgeAuthorizationError("derived research source read is denied")
         return item
 
     def list(
@@ -1350,10 +1318,14 @@ class OrganizationalMemoryService:
         rows: list[KnowledgeRecord] = []
         authority_cache: dict[tuple[str | None, DataClassification], bool] = {}
         role_cache: dict[str | None, tuple[str, ...]] = {}
-        for item in self.store.list(
+        candidates = self.store.list(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
-        ):
+        )
+        record_map = {item.id: item for item in candidates}
+        for item in candidates:
+            if not research_sources_readable(self, item, actor, record_map):
+                continue
             if project_id is not None and item.project_id != project_id:
                 continue
             if not include_inactive and item.lifecycle != KnowledgeLifecycle.CURRENT:
@@ -1505,6 +1477,9 @@ class OrganizationalMemoryService:
         lifecycle_filtered: list[tuple[KnowledgeRecord, KnowledgeFreshness]] = []
 
         for item in candidates:
+            if not research_sources_readable(self, item, actor, record_map):
+                denied.append(KnowledgeDeniedCandidate(knowledge_id=item.id, reason="authority:research_source_read_denied"))
+                continue
             freshness = self._freshness(item, now=now, records=record_map)
             if freshness == KnowledgeFreshness.SUPERSEDED:
                 if not query.include_superseded:
@@ -1879,8 +1854,13 @@ class OrganizationalMemoryService:
         self,
         governed_record: GovernedDataRecord,
         action: GovernanceAction,
+        *, cascade: bool = True,
     ) -> str:
         target_id = governed_record.object_id
+        plan = research_governance_plan(self.governance, governed_record) if cascade else ()
+        dependent_proof = [row for row in plan if row.object_type in {"artifact", "evidence"}]
+        if dependent_proof and self.artifact_evidence is None:
+            raise KnowledgeValidationError("derived Artifact/Evidence governance adapter is unavailable")
         state = self.store.load()
         direct = next(
             (item for item in state.records if item.id == target_id),
@@ -1980,6 +1960,8 @@ class OrganizationalMemoryService:
         self.store.update_state(apply)
         for knowledge_id in affected:
             self._index_delete(knowledge_id)
+        for dependent in dependent_proof:
+            self.artifact_evidence.apply_governance_action(dependent, action, cascade=False)
         return (
             f"memory:{target_id}:{action.value}:"
             + ",".join(sorted(affected))

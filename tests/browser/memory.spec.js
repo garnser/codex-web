@@ -153,3 +153,12 @@ test('Memory workspace stays usable on a phone viewport', async ({ page }) => {
   await expect(dialog.locator('.memory-layout')).toBeVisible();
   await expect(dialog.locator('.memory-query')).toBeVisible();
 });
+
+test('a research source link opens exact canonical Memory provenance', async ({ page }) => {
+  await installRoutes(page);
+  await page.goto('http://127.0.0.1:18766/tests/browser/memory_fixture.html?knowledge_id=knowledge-adr');
+  const dialog = page.locator('#memory-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('.memory-detail')).toContainText('github:garnser/codex-web:docs/adr/database.md');
+  await expect(dialog.locator('.memory-detail')).toContainText('mixed · reviewed (metadata, not verification)');
+});
