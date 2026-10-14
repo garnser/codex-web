@@ -11,7 +11,7 @@ export function createExecutionPreflightUi({
   captureView = () => captureProjectView().current,
 }) {
   const attemptsByThread = new Map();
-  const batches = createNotificationBatchUi({api, addMessage, captureView});
+  const batches = createNotificationBatchUi({api, addMessage, captureView, loadThread, scheduleRefresh});
   const orderRecovery=createQueueOrderRecoveryUi({api,addMessage,loadThread,scheduleRefresh,captureView});
   const bootstrapRecovery=createQueuedBootstrapRecoveryUi({api,loadThread,scheduleRefresh,captureView});
 

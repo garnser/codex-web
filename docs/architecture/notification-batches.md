@@ -5,7 +5,7 @@ The admission foundation is tracked by
 preflight member-claim ledger, guarded scheduling coordinator, native submission
 path and owned-drain adapter. The application installs that adapter through
 canonical configuration and authority services; its feature flag defaults to
-disabled. Complete batch lifecycle, guarded operator recovery, per-original
+disabled. Complete batch lifecycle and per-original
 outcomes and live qualification remain tracked in
 [#1307](https://github.com/garnser/codex-web/issues/1307).
 
@@ -249,5 +249,42 @@ Batch-bound members expose no individual retry, pre-start reconciliation,
 bootstrap recovery or scheduling-retirement controls. Their service entry points
 also return a batch-reconciliation conflict before attempting those mutations;
 the store's batch ownership fence remains authoritative. This inspection surface
-does not supply the still-required guarded batch recovery/outcome controls or
+does not supply the still-required per-original outcome reconciliation or
 runtime enablement and live qualification tracked by #1307 and its #127 UI review.
+
+## Guarded operator queue restoration
+
+An administrator with MFA and current canonical `execution.retry` authority can
+review an admission through its `/recovery` GET and return its exact originals
+through the corresponding POST. The request contains only a reviewed admission
+digest and a bounded reason. It cannot supply a native-outcome assertion,
+replacement thread, profile, repository or reply override. Inspection remains
+read-only; restoration never starts a native turn or resumes paused autonomy.
+
+Only `prepared` or affirmatively `prestart_refused` admissions with complete
+retained member claims and original queue-order provenance can restore. Missing
+receipts, timeouts, expired claims, inactive markers and model assertions never
+qualify `native_outcome_unknown` or `native_input_started` admissions. Their
+unresolved originals remain held for authoritative reconciliation.
+
+Before queue mutation, an atomic member/descriptor check stores an immutable
+recovery reservation. That reservation fences ordinary release and native gate
+consumption. Queue ownership, current administrator/Role authority, repository
+bindings, canonical replacement route and the reserved descriptor are rechecked
+inside guarded mutations. Exact restoration preserves concurrent arrivals and
+human Slack priority. Changed queue copies refuse overwrite. Verified replacement
+routing changes only internal thread/reply-thread pointers; original request
+snapshots, IDs, bodies, timestamps and scope stay unchanged.
+
+Final release atomically clears every member claim, records the recovery outcome
+and projected replacement pointer, and adds inspection indices for the destination
+thread. A crash after reservation or queue restoration leaves protected originals;
+the same reviewed request can resume without duplicate insertion or native replay.
+No per-original success, ACK or business completion is inferred from restoration.
+
+Admissions with recovery use descriptor schema1.1 and a typed schema1.0 recovery
+record. Legacy descriptor1.0 shapes omit absent recovery fields. New readers
+support both; older strict readers reject1.1. Existing full-writer drain, verified
+backup and rollback limitations still apply before production writes. This control
+does not complete per-original native outcome reconciliation or live throughput
+qualification required by #1307.

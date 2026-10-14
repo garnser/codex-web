@@ -222,6 +222,19 @@ class TurnQueueRepository:
             return current
         return self.update(thread_id, restore)
 
+    def remove_present_originals_exact(self, thread_id, originals, *, guard):
+        """Remove only exact surviving copies during reserved route recovery."""
+        def remove(current):
+            if not guard():
+                raise ValueError('notification recovery ownership changed')
+            expected={item.id:item for item in originals}
+            for item_id,item in expected.items():
+                copies=[value for value in current if value.id==item_id]
+                if copies and (len(copies)!=1 or copies[0]!=item):
+                    raise ValueError('notification recovery queue copy changed')
+            return [item for item in current if item.id not in expected]
+        return self.update(thread_id,remove)
+
     def flush_legacy_mirror(self) -> None:
         started = __import__("time").perf_counter()
         success = False

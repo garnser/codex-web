@@ -13,7 +13,7 @@ class NotificationBatchCoordinator:
         if not current():
             return False
         observed = self.preflight.get_notification_batch(admission.id)
-        if observed != admission or observed.phase not in {
+        if observed != admission or observed.recovery is not None or observed.phase not in {
             "prepared",
             "prestart_refused",
         }:

@@ -186,10 +186,31 @@ class NotificationBatchPlan(BaseModel):
         return self
 
 
+class NotificationBatchRecoveryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+    expected_admission_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class NotificationBatchRecovery(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["1.0"] = "1.0"
+    id: str = Field(pattern=r"^notification-recovery-[0-9a-f]{32}$")
+    state: Literal["reserved", "released"] = "reserved"
+    source_admission_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    requested_by: str = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=1000)
+    requested_at: float = Field(allow_inf_nan=False)
+    target_thread_id: str = Field(min_length=1)
+    restoration_snapshots_json: tuple[str, ...] = Field(min_length=2, max_length=16)
+    authority_decision_json: str = Field(max_length=32768)
+    released_at: float | None = Field(default=None, allow_inf_nan=False)
+
+
 class NotificationBatchAdmission(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "1.1"] = "1.0"
     id: str = Field(pattern=r"^notification-admission-[0-9a-f]{64}$")
     plan: NotificationBatchPlan
     claim_id: str = Field(min_length=1)
@@ -211,6 +232,21 @@ class NotificationBatchAdmission(BaseModel):
     ) = None
     queue_order: tuple[str, ...] = Field(default=(), max_length=8192)
     claimed_at: float = Field(allow_inf_nan=False)
+    recovery: NotificationBatchRecovery | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_recovery(self, handler):
+        result = handler(self)
+        if self.recovery is None:
+            result.pop("recovery", None)
+        return result
+
+    def recovery_source_digest(self):
+        return hashlib.sha256(
+            _json(
+                self.model_dump(mode="json", exclude={"recovery", "schema_version"})
+            ).encode()
+        ).hexdigest()
 
     @staticmethod
     def identity(plan_id, claim_id):
@@ -221,6 +257,8 @@ class NotificationBatchAdmission(BaseModel):
 
     @model_validator(mode="after")
     def validate_identity(self):
+        if (self.schema_version == "1.1") != (self.recovery is not None):
+            raise ValueError("notification recovery/version mismatch")
         if self.id != self.identity(self.plan.id, self.claim_id):
             raise ValueError("notification admission identity changed")
         if self.queue_order and (
@@ -243,6 +281,32 @@ class NotificationBatchAdmission(BaseModel):
             or self.native_receipt.thread_id != self.plan.members[0].thread_id
         ):
             raise ValueError("notification native receipt belongs to another admission")
+        if self.recovery is not None:
+            recovery = self.recovery
+            if (
+                (recovery.state == "released") != (self.phase == "released")
+                or self.phase not in {"prepared", "prestart_refused", "released"}
+                or (recovery.state == "released") != (recovery.released_at is not None)
+            ):
+                raise ValueError("notification recovery/phase mismatch")
+            restored = tuple(
+                QueuedTurn.model_validate_json(raw)
+                for raw in recovery.restoration_snapshots_json
+            )
+            if len(restored) != len(self.plan.members):
+                raise ValueError("notification restoration member count changed")
+            for original, current in zip(self.plan.members, restored, strict=True):
+                expected = original.model_copy(deep=True)
+                expected.thread_id = recovery.target_thread_id
+                if (
+                    expected.reply_target
+                    and expected.reply_target.thread_id == original.thread_id
+                ):
+                    expected.reply_target.thread_id = recovery.target_thread_id
+                if current != expected:
+                    raise ValueError(
+                        "notification restoration changes original scope or content"
+                    )
         return self
 
     @property

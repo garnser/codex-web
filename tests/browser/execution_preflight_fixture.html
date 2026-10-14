@@ -104,6 +104,7 @@
       attempts[0].can_retire_scheduling = true;
       attempts[0].can_reconcile_prestart = true;
       batches.push({id:'fixture-batch',phase:batchPhase,original_count:2,oldest_age_seconds:600,
+        can_review_recovery:new URLSearchParams(location.search).has('batchRecovery'),
         oldest_created_at:1800000000,original_ids:['original-one','original-two'],
         recovery_state:batchPhase==='released' ? 'released_to_original_queue' : 'batch_reconciliation_required',
         project_id:'project-a',organization_id:'org-a',workspace_id:'workspace-a',
@@ -118,6 +119,20 @@
     const api = async (path, options = {}) => {
       window.__apiCalls.push({ path, method: options.method || "GET" });
       if (path.includes("/preflight-attempts?")) return { items: attempts };
+      if (path.endsWith('/notification-batches/fixture-batch/recovery')) {
+        if (new URLSearchParams(location.search).has('recoveryDenied')) throw new Error('Current Role authority denies restoration');
+        if (options.method==='POST') {
+          window.__recoveryBody=JSON.parse(options.body);
+          if (new URLSearchParams(location.search).has('holdRecovery')) return new Promise((resolve,reject)=>{window.__finishRecovery={resolve,reject};});
+          if (new URLSearchParams(location.search).has('recoveryConflict')) throw new Error('Reviewed admission changed');
+          return {ok:true,state:'released',threadId:'replacement-thread',native_started:false};
+        }
+        return {expected_admission_sha256:'a'.repeat(64),original_count:2,original_ids:['original-one','original-two'],
+          original_thread_id:'thread-1',target_thread_id:'replacement-thread',
+          effect:'Return exact originals to the queue without starting native work.',
+          can_restore:!new URLSearchParams(location.search).has('recoveryUnknown'),
+          blocker:'Native outcome remains unknown.'};
+      }
       if (path.includes('/notification-batches/')) {
         if (new URLSearchParams(location.search).has('holdBatchDetail')) {
           return new Promise((resolve,reject) => {window.__finishBatchDetail={resolve,reject};});
