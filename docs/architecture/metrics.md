@@ -25,6 +25,10 @@ Freshness is explicit:
 
 Callers must not treat stale, missing, or partial data as current fact merely because an aggregate value is present.
 
+When observation times are equal, `last` and history ordering use canonical
+ingestion time before the stable observation ID. This lets a late correction to
+the same measured window replace its previous current value deterministically.
+
 ## Idempotency and provenance
 
 Observation ingestion requires a caller-supplied idempotency key. Repeating the same key and content returns the existing canonical observation; reusing a key with different content fails closed.

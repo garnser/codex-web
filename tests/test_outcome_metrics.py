@@ -299,3 +299,43 @@ class OutcomeMetricTests(unittest.TestCase):
         report = self.evaluate()
         self.assertEqual(report["eligible_count"], 1)
         self.assertEqual(report["cohorts"][0]["values"]["tokens_per_accepted_outcome"], 100)
+
+    def test_late_reopen_updates_current_metric_at_the_same_enrollment_window_end(self):
+        usage = self.usage()
+        accepted = self.feedback(usage)
+        first = self.service.publish(self.evaluate(), actor=self.actor)
+        self.feedback(usage, "reopened", idempotency_key="late-reopen", supersedes_evidence_id=accepted.id)
+        second = self.service.publish(self.evaluate(), actor=self.actor)
+        metric_id = first[0]["metric_id"]
+        self.assertEqual(metric_id, second[0]["metric_id"])
+        # Force the old ID to sort later, making a UUID-only tie-break fail.
+        def old_id_last(state):
+            state.observations = [row.model_copy(update={"id":"zz-old"})
+                if row.id == first[0]["observation_id"] else row for row in state.observations]
+            return state
+        self.metrics.store.update(old_id_last)
+        self.assertEqual(self.metrics.evaluate(metric_id, scope=self.actor.tenant, at=self.now).value, 0)
+        self.assertEqual(self.metrics.history(metric_id, scope=self.actor.tenant)[0].id, second[0]["observation_id"])
+
+    def test_incompatible_definition_is_refused_instead_of_relabelling_measurement(self):
+        from codex_web.metrics import MetricDefinitionUpdate
+        self.feedback(self.usage())
+        report = self.evaluate()
+        published = self.service.publish(report, actor=self.actor)
+        self.metrics.update_definition(published[0]["metric_id"],
+            MetricDefinitionUpdate(unit="unrelated", reason="Synthetic compatibility fault"),
+            scope=self.actor.tenant, actor_id=self.actor.identity_id)
+        with self.assertRaisesRegex(ValueError, "incompatible"):
+            self.service.publish(report, actor=self.actor)
+
+    def test_foreign_runtime_evidence_is_omitted_with_a_partial_scope_reason(self):
+        from codex_web.artifact_evidence import EvidenceCreate
+        foreign = self.evidence.create_evidence(EvidenceCreate(project_id="foreign",
+            evidence_type="runtime_result", result="pass"), actor=self.actor)
+        usage = self.usage(evidence_ids=(foreign.id,))
+        self.feedback(usage)
+        report = self.evaluate()
+        task = report["cohorts"][0]["tasks"][0]
+        self.assertEqual(task["source_evidence_ids"], [])
+        self.assertIn("outside_project", task["limitation"])
+        self.assertEqual(report["status"], "partial")

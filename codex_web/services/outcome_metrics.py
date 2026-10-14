@@ -14,7 +14,7 @@ from codex_web.agent_runtime_usage import RuntimeTerminalOutcome
 from codex_web.artifact_evidence import (ArtifactLifecycle, EvidenceCreate,
     EvidenceLifecycle, EvidenceResult, EvidenceType)
 from codex_web.identity import PrincipalKind
-from codex_web.metrics import MetricDefinitionCreate, MetricObservationCreate
+from codex_web.metrics import MetricAggregation, MetricDefinitionCreate, MetricObservationCreate, MetricValueType
 from codex_web.outcome_metrics import OutcomeFeedbackCreate, UserOutcome
 from codex_web.services.identity import AuthorizationError
 
@@ -256,14 +256,19 @@ class OutcomeMetricService:
                     continue
                 key = f"outcomes.v1.{cohort_key}.{name}"
                 definition = definitions.get(key)
+                unit = ("ratio" if name.endswith("rate") else "USD" if name.startswith("cost")
+                    else "seconds" if "seconds" in name else "tokens" if name.startswith("tokens") else "count")
                 if definition is None:
                     definition = self.metrics.create_definition(MetricDefinitionCreate(
                         key=key, name=name.replace("_", " ").capitalize(),
                         description=f"{FORMULA_VERSION}; workload={cohort['workload']}; {name}. See exact observation Evidence and outcome window.",
-                        owner_identity_id=actor.identity_id, unit=("ratio" if name.endswith("rate") else
-                            "USD" if name.startswith("cost") else "seconds" if "seconds" in name else "tokens" if name.startswith("tokens") else "count"),
+                        owner_identity_id=actor.identity_id, unit=unit,
                         source_requirements=(FORMULA_VERSION,), freshness_seconds=86400, project_id=report["project_id"]),
                         scope=actor.tenant, actor_id=actor.identity_id)
+                elif (definition.unit != unit or definition.aggregation != MetricAggregation.LAST
+                    or definition.value_type != MetricValueType.NUMBER
+                    or definition.source_requirements != (FORMULA_VERSION,)):
+                    raise ValueError("outcome Metric definition is incompatible with its calculation contract")
                 evidence_ids = tuple(sorted({snapshot.id} | {eid for task in cohort["tasks"] for eid in
                     [*task["source_evidence_ids"], *task["feedback_history_ids"]]}))
                 observation = self.metrics.ingest(definition.id, MetricObservationCreate(
