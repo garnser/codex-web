@@ -47,11 +47,22 @@ def build_metrics_router(service: MetricService) -> APIRouter:
         IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
         return actor
 
+    def outcome_access(item, actor):
+        if not item.key.startswith("outcomes.v1."):
+            return True
+        if actor.principal_kind == PrincipalKind.SERVICE:
+            return {"metrics:admin", "artifact-evidence:admin"}.issubset(actor.service_scopes)
+        try:
+            IdentityService.require_admin(actor)
+            return True
+        except AuthorizationError:
+            return False
+
     def require_project_scope(metric_id: str, project_id: str | None, *, actor) -> None:
-        if project_id is None:
-            return  # Preserve the explicitly workspace-wide API for existing consumers.
         item = service.get_definition(metric_id, scope=actor.tenant)
-        if item.project_id != project_id:
+        if not outcome_access(item, actor):
+            raise MetricNotFoundError("Metric not found")
+        if project_id is not None and item.project_id != project_id:
             raise MetricNotFoundError("Metric not found")
 
     @router.get("")
@@ -66,6 +77,7 @@ def build_metrics_router(service: MetricService) -> APIRouter:
             project_id=project_id,
             resource_id=resource_id,
         )
+        rows = tuple(row for row in rows if outcome_access(row, actor))
         return {
             "items": [
                 {

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 
+from codex_web.execution_contract_seed import execution_role_catalog_seed_payload
+from codex_web.execution_role_models import ExecutionRoleCatalogDefinition
 from codex_web.models import WorkItemHandoff, WorkItemState
 from codex_web.services.work_item_dispatch_prompt import WorkItemDispatchPromptPolicy
 
@@ -77,3 +79,23 @@ class WorkItemDispatchPromptTests(unittest.TestCase):
                 self.assertEqual(state.model_dump(), before)
                 if handoff and handoff.status == "pending":
                     self.assertIn("/ack", message)
+
+
+    def test_validation_contract_accepts_pending_checkpoint_as_disposition(self):
+        catalog = ExecutionRoleCatalogDefinition.model_validate(execution_role_catalog_seed_payload())
+        role = catalog.role_map['quinn']
+        # The primary disposition requirement must allow the checkpoint; an
+        # additional wait instruction cannot override a mandatory handback.
+        disposition = role.required_artifacts[0]
+        self.assertIn('pending-CI checkpoint', disposition)
+        self.assertIn('retaining validation ownership', disposition)
+        self.assertIn('terminal provider evidence', disposition)
+        self.assertTrue(any('Carl' in item and 'runner' in item for item in role.hands_to))
+        self.assertTrue(any('implementation owner' in item and 'code defects' in item for item in role.hands_to))
+        state = self.state.model_copy(update={'current_owner':'Quinn',
+            'validation_owner':'Quinn','current_stage':'validation_running','next_owner':None})
+        before = state.model_dump()
+        message = self.policy.render(state)
+        self.assertTrue(message.startswith('Quinn:'))
+        self.assertIn('Retain the responsible owner and validation stage', message)
+        self.assertEqual(state.model_dump(), before)

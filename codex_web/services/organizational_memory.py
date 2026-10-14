@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from contextvars import ContextVar
 import math
 import re
 import time
@@ -34,7 +36,10 @@ from codex_web.organizational_memory import (
     KnowledgeLifecycle,
     KnowledgeProcedurePromotion,
     KnowledgeProvenance,
+    KnowledgeOrigin,
+    KnowledgeOriginSource,
     KnowledgeQuery,
+    KnowledgeContextSelection,
     KnowledgeRecord,
     KnowledgeRelationship,
     KnowledgeCanonicalRef,
@@ -58,6 +63,7 @@ from codex_web.retrieval import (
 )
 from codex_web.services.authority_roles import AuthorityRoleService
 from codex_web.services.data_governance import DataGovernanceService
+from codex_web.services.research_provenance import derived_source_freshness, derive_research_provenance, research_governance_plan, research_sources_readable, research_evidence_freshness
 from codex_web.storage.organizational_memory import (
     KnowledgeConflictError,
     KnowledgeNotFoundError,
@@ -163,6 +169,9 @@ class DeterministicSemanticEncoder:
         )
 
 
+_MEMORY_SOURCE_READ_STACK = ContextVar("memory_source_read_stack", default=frozenset())
+
+
 class OrganizationalMemoryService:
     """Governed, provenance-aware, authority-scoped organizational retrieval."""
 
@@ -175,10 +184,12 @@ class OrganizationalMemoryService:
         encoder: DeterministicSemanticEncoder | None = None,
         retrieval_backend: RetrievalBackend | None = None,
         embedding_identity_validator: EmbeddingIdentityValidator | None = None,
+        artifact_evidence=None,
         clock=time.time,
     ) -> None:
         self.store = store
         self.governance = governance
+        self.artifact_evidence = artifact_evidence
         self.authority = authority
         self.encoder = encoder or DeterministicSemanticEncoder()
         self.retrieval_backend = (
@@ -544,11 +555,47 @@ class OrganizationalMemoryService:
                     "knowledge relationship target is outside tenant scope"
                 )
 
+    def _prepare_typed_content(self, payload, actor):
+        if payload.object_type == KnowledgeObjectType.UX_BRIEF:
+            from codex_web.services.ux_briefs import UxBriefService
+            return UxBriefService(self)._prepared(payload, project_id=payload.project_id, actor=actor)
+        return payload
+
+    def _sources_readable(self, item, actor, records=None):
+        stack = _MEMORY_SOURCE_READ_STACK.get()
+        identity = (item.organization_id, item.workspace_id, item.id)
+        if identity in stack or len(stack) >= 32:
+            return False
+        token = _MEMORY_SOURCE_READ_STACK.set(stack | {identity})
+        try:
+            if not research_sources_readable(self, item, actor, records):
+                return False
+            if item.provenance.origin_sources:
+                record_map = records if records is not None else {row.id: row for row in self.store.load().records}
+                for ref in item.provenance.origin_sources:
+                    source = record_map.get(ref.knowledge_id)
+                    if source is not None and source.object_type == KnowledgeObjectType.UX_BRIEF:
+                        if not self._sources_readable(source, actor, record_map):
+                            return False
+            if item.object_type == KnowledgeObjectType.UX_BRIEF and item.content:
+                from codex_web.services.ux_brief_sources import brief_sources_readable
+                return brief_sources_readable(self, item, actor)
+            return True
+        finally:
+            _MEMORY_SOURCE_READ_STACK.reset(token)
+
+    def _derived_provenance(
+        self, provenance, relationships, *, actor, project_id, previous=None,
+    ) -> KnowledgeProvenance:
+        return derive_research_provenance(self, provenance, relationships,
+            actor=actor, project_id=project_id, previous=previous, invalid=KnowledgeValidationError)
+
     def _freshness(
         self,
         item: KnowledgeRecord,
         *,
         now: float | None = None,
+        records: dict[str, KnowledgeRecord] | None = None,
     ) -> KnowledgeFreshness:
         current = float(self.clock()) if now is None else now
         if item.lifecycle == KnowledgeLifecycle.SUPERSEDED:
@@ -568,7 +615,35 @@ class OrganizationalMemoryService:
             return KnowledgeFreshness.EXPIRED
         if item.review_after is not None and current >= item.review_after:
             return KnowledgeFreshness.STALE
+        if item.object_type == KnowledgeObjectType.UX_BRIEF and item.content:
+            from codex_web.services.ux_brief_sources import brief_source_freshness
+            source_status = brief_source_freshness(self, item, records=records)
+            if source_status is not None:
+                return source_status
+        if research_evidence_freshness(self, item) is not None:
+            return KnowledgeFreshness.INVALID
+        if item.provenance.origin_sources:
+            records = records if records is not None else {row.id: row for row in self.store.load().records}
+            for ref in item.provenance.origin_sources:
+                source = records.get(ref.knowledge_id)
+                if source is not None and source.object_type == KnowledgeObjectType.UX_BRIEF:
+                    from codex_web.services.ux_brief_sources import brief_source_freshness
+                    status = brief_source_freshness(self, source, records=records)
+                    if status is not None:
+                        return status
+            source_status = derived_source_freshness(item, records, now=current)
+            if source_status is not None:
+                return source_status
         return KnowledgeFreshness.FRESH
+
+    @staticmethod
+    def context_header(item, *, include_source_lineage=True):
+        header = (f"Research origin: {item.provenance.origin.value}; "
+            f"review: {item.provenance.review_status} (metadata, not verification).\n")
+        if include_source_lineage:
+            header += "".join(f"Source [memory:{row.knowledge_id}@v{row.version}]: {row.origin.value}\n"
+                for row in item.provenance.origin_sources)
+        return header
 
     @staticmethod
     def _token_estimate(text: str) -> int:
@@ -641,6 +716,8 @@ class OrganizationalMemoryService:
         query: KnowledgeQuery,
         relationship_targets: dict[str, set[str]],
     ) -> bool:
+        if query.knowledge_ids and item.id not in query.knowledge_ids:
+            return False
         if query.object_types and item.object_type not in query.object_types:
             return False
         if query.project_ids and item.project_id not in query.project_ids:
@@ -673,10 +750,14 @@ class OrganizationalMemoryService:
         actor: AuthenticationActor,
     ) -> KnowledgeRecord:
         self._require_write(actor, project_id=payload.project_id)
+        payload = self._prepare_typed_content(payload, actor)
         self._validate_relationship_targets(
             payload.relationships,
             actor=actor,
         )
+        payload = payload.model_copy(update={"provenance": self._derived_provenance(
+            payload.provenance, payload.relationships, actor=actor, project_id=payload.project_id,
+        )})
 
         existing = [
             item
@@ -793,6 +874,8 @@ class OrganizationalMemoryService:
 
         results: list[tuple[str, KnowledgeRecord]] = []
         for payload in batch.items:
+            self._require_write(actor, project_id=payload.project_id)
+            payload = self._prepare_typed_content(payload, actor)
             existing = [
                 item
                 for item in self.store.list(
@@ -824,13 +907,24 @@ class OrganizationalMemoryService:
                 canonical_refs=payload.canonical_refs,
                 tags=payload.tags,
             )
+            incoming_provenance = self._derived_provenance(
+                payload.provenance, payload.relationships, actor=actor, project_id=payload.project_id, previous=current,
+            )
             provenance_unchanged = (
                 current.provenance.source_kind == payload.provenance.source_kind
                 and current.provenance.source_ref == payload.provenance.source_ref
                 and current.provenance.source_revision == payload.provenance.source_revision
+                and current.provenance.origin == incoming_provenance.origin
+                and current.provenance.review_status == payload.provenance.review_status
                 and current.provenance.evidence_ids == payload.provenance.evidence_ids
-                and current.provenance.source_governance_record_ids
-                == payload.provenance.source_governance_record_ids
+                and set(payload.provenance.source_governance_record_ids).issubset(
+                    current.provenance.source_governance_record_ids
+                )
+                and {row.target_knowledge_id for row in payload.relationships
+                     if row.relationship_type == KnowledgeRelationshipType.DERIVED_FROM}
+                == {row.target_knowledge_id for row in self.store.load().relationships
+                    if row.source_knowledge_id == current.id
+                    and row.relationship_type == KnowledgeRelationshipType.DERIVED_FROM}
             )
             metadata_unchanged = (
                 current.object_type == payload.object_type
@@ -1076,10 +1170,18 @@ class OrganizationalMemoryService:
                 else current.valid_until
             ),
         )
+        normalized = self._prepare_typed_content(normalized, actor)
         self._validate_relationship_targets(
             normalized.relationships,
             actor=actor,
         )
+        merged_provenance = self._derived_provenance(
+            normalized.provenance,
+            normalized.relationships,
+            actor=actor, project_id=current.project_id,
+            previous=current,
+        )
+        normalized = normalized.model_copy(update={"provenance": merged_provenance})
 
         next_id = f"knowledge-{uuid_hash(
             current.id,
@@ -1264,6 +1366,8 @@ class OrganizationalMemoryService:
             and item.lifecycle != KnowledgeLifecycle.CURRENT
         ):
             raise KnowledgeNotFoundError(knowledge_id)
+        if not self._sources_readable(item, actor):
+            raise KnowledgeAuthorizationError("derived research source read is denied")
         return item
 
     def list(
@@ -1276,10 +1380,14 @@ class OrganizationalMemoryService:
         rows: list[KnowledgeRecord] = []
         authority_cache: dict[tuple[str | None, DataClassification], bool] = {}
         role_cache: dict[str | None, tuple[str, ...]] = {}
-        for item in self.store.list(
+        candidates = self.store.list(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
-        ):
+        )
+        record_map = {item.id: item for item in candidates}
+        for item in candidates:
+            if not self._sources_readable(item, actor, record_map):
+                continue
             if project_id is not None and item.project_id != project_id:
                 continue
             if not include_inactive and item.lifecycle != KnowledgeLifecycle.CURRENT:
@@ -1406,9 +1514,16 @@ class OrganizationalMemoryService:
         query: KnowledgeQuery,
         *,
         actor: AuthenticationActor,
+        context_projection: Callable[[KnowledgeRecord], str] | None = None,
+        context_selection: KnowledgeContextSelection | None = None,
     ) -> KnowledgeRetrievalResult:
+        if context_projection is not None and context_selection is None:
+            raise KnowledgeValidationError("a context projection requires exact selection pins")
+        if context_selection is not None and context_selection.max_context_tokens != query.budget.max_context_tokens:
+            raise KnowledgeValidationError("selection and retrieval context budgets must agree")
         state = self.store.load()
         relationships = self._relationship_targets(state)
+        record_map = {item.id: item for item in state.records}
         now = float(self.clock())
         candidates = [
             item
@@ -1430,7 +1545,10 @@ class OrganizationalMemoryService:
         lifecycle_filtered: list[tuple[KnowledgeRecord, KnowledgeFreshness]] = []
 
         for item in candidates:
-            freshness = self._freshness(item, now=now)
+            if not self._sources_readable(item, actor, record_map):
+                denied.append(KnowledgeDeniedCandidate(knowledge_id=item.id, reason="authority:research_source_read_denied"))
+                continue
+            freshness = self._freshness(item, now=now, records=record_map)
             if freshness == KnowledgeFreshness.SUPERSEDED:
                 if not query.include_superseded:
                     continue
@@ -1510,6 +1628,18 @@ class OrganizationalMemoryService:
                         reason=f"governance:{decision.reason}",
                     )
                 )
+
+        for item, _freshness in lifecycle_filtered:
+            if item.governance_record_id not in governance_allowed:
+                continue
+            brief_sources = [item] if item.object_type == KnowledgeObjectType.UX_BRIEF else []
+            brief_sources.extend(record_map[ref.knowledge_id] for ref in item.provenance.origin_sources
+                if ref.knowledge_id in record_map and record_map[ref.knowledge_id].object_type == KnowledgeObjectType.UX_BRIEF)
+            if brief_sources:
+                from codex_web.services.ux_brief_sources import brief_context_allowed
+                if not all(brief_context_allowed(self, source, actor, query.max_classification) for source in brief_sources):
+                    governance_allowed.discard(item.governance_record_id)
+                    denied.append(KnowledgeDeniedCandidate(knowledge_id=item.id, reason="governance:brief_source_context_denied"))
 
         authorized_rows = [
             (item, freshness)
@@ -1654,10 +1784,21 @@ class OrganizationalMemoryService:
         ) in selected_pool:
             if len(items) >= query.budget.top_k or remaining < 32:
                 break
-            source = (
-                f"{item.title}\n\n{item.summary}\n\n{item.content}"
-            )
+            if context_selection is not None and (
+                item.id != context_selection.knowledge_id or item.version != context_selection.version
+                or item.content_sha256 != context_selection.sha256
+            ):
+                denied.append(KnowledgeDeniedCandidate(knowledge_id=item.id, reason="context_selection_revision_mismatch"))
+                continue
+            projected_context = (context_projection(item) if context_projection is not None
+                else f"{item.title}\n\n{item.summary}\n\n{item.content}")
+            if not projected_context.strip():
+                continue
+            source = self.context_header(item, include_source_lineage=context_projection is None) + projected_context
             allowance = min(remaining, per_item_soft_cap)
+            if context_projection is not None and self._token_estimate(source) > allowance:
+                denied.append(KnowledgeDeniedCandidate(knowledge_id=item.id, reason="context_projection_budget_exceeded"))
+                continue
             excerpt = self._truncate_to_tokens(source, allowance)
             estimated = self._token_estimate(excerpt)
             if estimated > remaining:
@@ -1718,6 +1859,9 @@ class OrganizationalMemoryService:
             mode="json",
             exclude={"text"},
         )
+        if context_selection is not None:
+            filters["context_selection"] = context_selection.model_dump(mode="json")
+            query_digest = hashlib.sha256(json.dumps({"query": query.model_dump(mode="json"), "selection": filters["context_selection"]}, sort_keys=True).encode()).hexdigest()
         run = KnowledgeRetrievalRun(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
@@ -1798,8 +1942,13 @@ class OrganizationalMemoryService:
         self,
         governed_record: GovernedDataRecord,
         action: GovernanceAction,
+        *, cascade: bool = True,
     ) -> str:
         target_id = governed_record.object_id
+        plan = research_governance_plan(self.governance, governed_record) if cascade else ()
+        dependent_proof = [row for row in plan if row.object_type in {"artifact", "evidence"}]
+        if dependent_proof and self.artifact_evidence is None:
+            raise KnowledgeValidationError("derived Artifact/Evidence governance adapter is unavailable")
         state = self.store.load()
         direct = next(
             (item for item in state.records if item.id == target_id),
@@ -1856,6 +2005,11 @@ class OrganizationalMemoryService:
                         "content": "",
                         "tags": (),
                         "canonical_refs": (),
+                        "provenance": item.provenance.model_copy(update={
+                            "origin": KnowledgeOrigin.UNKNOWN,
+                            "origin_sources": (),
+                            "review_status": "unreviewed",
+                        }),
                         "lifecycle": lifecycle,
                         "invalid_reason": f"governance:{action.value}",
                         "updated_at": now,
@@ -1894,6 +2048,8 @@ class OrganizationalMemoryService:
         self.store.update_state(apply)
         for knowledge_id in affected:
             self._index_delete(knowledge_id)
+        for dependent in dependent_proof:
+            self.artifact_evidence.apply_governance_action(dependent, action, cascade=False)
         return (
             f"memory:{target_id}:{action.value}:"
             + ",".join(sorted(affected))

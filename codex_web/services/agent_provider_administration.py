@@ -24,8 +24,8 @@ class AgentProviderAdministration:
         try:
             self.service._require_admin(actor)
             return True, None
-        except AuthorizationError as exc:
-            return False, str(exc)
+        except AuthorizationError:
+            return False, "Agent provider administration requires administrator authority and elevated assurance, or the agent-providers:admin service scope."
 
     def catalog(self, actor):
         allowed, reason = self.permissions(actor)

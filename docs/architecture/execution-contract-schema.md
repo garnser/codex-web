@@ -22,6 +22,14 @@ The contract follows the repository architecture policy:
 
 ## Version 1.4
 
+Research-specific evidence contracts use schema `1.5` when a canonical requirement
+sets `observed_research=true`. The flag requires eligible current observed-source
+proof and independent human `observed-user-research` verification through the
+Artifact/Evidence gate. Descriptive origin or review labels do not satisfy it.
+Ordinary engineering contracts retain `1.4` and omit false research flags;
+explicit research requirements are rejected under `1.4` rather than silently
+ignored by an older consumer.
+
 Schema `1.4` is a backward-compatible evolution of the v1 contract family. It retains the structured resume/accounting and isolated-workspace target introduced by earlier v1 revisions and adds machine-readable evidence requirements without changing canonical ownership or permission semantics.
 
 `ExecutionContractV1` contains:

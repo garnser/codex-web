@@ -1,0 +1,15 @@
+#ux-brief-editor { padding: 10px 16px; border-bottom: 1px solid var(--line); max-height: 55vh; overflow: auto; }
+#ux-brief-editor summary { cursor: pointer; font-weight: 600; }
+#ux-brief-editor label { display: grid; gap: 4px; min-width: 0; }
+#ux-brief-editor p, #ux-brief-pins { font-size: .85rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+#ux-brief-editor .ux-brief-fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; margin: 10px 0; }
+#ux-brief-editor textarea { width: 100%; box-sizing: border-box; }
+#ux-brief-editor .ux-brief-section { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
+@media(max-width:600px) { #ux-brief-editor .ux-brief-fields, #ux-brief-editor .ux-brief-section { grid-template-columns: minmax(0,1fr); } }
+
+#ux-brief-picker { padding: 8px 12px; max-height: 45vh; overflow: auto; min-width: 0; }
+#ux-brief-picker summary { cursor: pointer; }
+#ux-brief-picker p, #ux-picker-status, #ux-picker-sources { font-size: .85rem; overflow-wrap: anywhere; }
+#ux-brief-picker select { max-width: 100%; }
+#ux-picker-sections { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+#ux-picker-context { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }

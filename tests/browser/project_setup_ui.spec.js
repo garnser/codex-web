@@ -313,3 +313,17 @@ test('late setup plan and apply preserve newer typing and acknowledge only submi
   await expect(input).toHaveValue(latest);
   await expect(dialog.locator('[data-dirty-editor-status]')).toHaveText('Unsaved changes');
 });
+
+test('unavailable Project identifier in setup heading remains literal text', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/project_setup_ui_fixture.html');
+  await page.locator('#project-setup-launch').click();
+  const hostile = `<img src=x onerror="window.codeScanningXss=true"> & '"`;
+  await page.evaluate(async projectId => {
+    document.body.dataset.projectId = projectId;
+    window.fetch = async () => new Response('{}', { status: 503 });
+    await window.CodexProjectSetup.refresh();
+  }, hostile);
+  await expect(page.locator('.project-setup-hero h3')).toHaveText(hostile);
+  await expect(page.locator('.project-setup-hero h3 img')).toHaveCount(0);
+  expect(await page.evaluate(() => window.codeScanningXss)).toBeUndefined();
+});

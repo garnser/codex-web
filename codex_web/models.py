@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
+
+from codex_web.ux_briefs import UxBriefSelection, UxBriefTurnBinding
 
 from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.definitions import DefinitionReference
@@ -218,6 +220,15 @@ class TurnCreate(BaseModel):
     execution_profile_id: str | None = None
     agent_profile_id: str | None = None
     agent_profile_revision: int | None = Field(default=None, ge=1)
+
+    memory_context_selection: UxBriefSelection | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_context(self, handler):
+        result = handler(self)
+        if self.memory_context_selection is None:
+            result.pop("memory_context_selection", None)
+        return result
 
 
 class ApprovalDecision(BaseModel):
@@ -542,6 +553,15 @@ class ActiveThreadTurn(BaseModel):
     resume_attempts: int = 0
     last_resume_at: float | None = None
 
+    memory_context_binding: UxBriefTurnBinding | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_context(self, handler):
+        result = handler(self)
+        if self.memory_context_binding is None:
+            result.pop("memory_context_binding", None)
+        return result
+
 
 class QueuedTurn(BaseModel):
     id: str
@@ -566,6 +586,15 @@ class QueuedTurn(BaseModel):
     reply_target: BotReplyTarget | None = None
     attempts: int = 0
     created_at: float
+
+    memory_context_binding: UxBriefTurnBinding | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_context(self, handler):
+        result = handler(self)
+        if self.memory_context_binding is None:
+            result.pop("memory_context_binding", None)
+        return result
 
 
 class ThreadRename(BaseModel):

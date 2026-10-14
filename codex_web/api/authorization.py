@@ -242,6 +242,14 @@ API_DOMAINS.update({
 # now require canonical operational authority while ordinary progress/handoff
 # traffic remains compatible with authenticated-member workflows.
 EXACT_POLICIES: dict[tuple[str, str], ApiAuthorizationPolicy] = {
+    ("POST", "/api/memory/projects/{project_id}/ux-briefs/preview"): ApiAuthorizationPolicy(
+        capability="api.memory.context-preview", level=AuthorityLevel.READ,
+        access=ApiAccessMode.AUTHENTICATED,
+        description="Governed read-only section preview; Memory authority and Project tenant checks remain enforced."),
+    ("POST", "/api/projects/{project_id}/care/preview"): ApiAuthorizationPolicy(
+        capability="api.input-composition.preview", level=AuthorityLevel.READ,
+        access=ApiAccessMode.AUTHENTICATED,
+        description="Read-only deterministic task preview within the authenticated Project scope."),
     ('POST', '/api/threads/{thread_id}/preflight-attempts/{attempt_id}/retire-scheduling'): ApiAuthorizationPolicy(
         capability='execution.retire-scheduling', level=AuthorityLevel.EXECUTE,
         access=ApiAccessMode.ADMIN, required_assurance=AuthenticationAssurance.MFA,

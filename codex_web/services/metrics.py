@@ -359,7 +359,7 @@ class MetricService:
             rows = [row for row in rows if row.observed_at >= start_at]
         if end_at is not None:
             rows = [row for row in rows if row.observed_at <= end_at]
-        rows.sort(key=lambda row: (row.observed_at, row.id), reverse=True)
+        rows.sort(key=lambda row: (row.observed_at, row.ingested_at, row.id), reverse=True)
         return tuple(rows[:limit])
 
     @staticmethod
@@ -371,7 +371,8 @@ class MetricService:
             return None, ()
         rows = sorted(observations, key=lambda row: (row.observed_at, row.id))
         if definition.aggregation == MetricAggregation.LAST:
-            newest = rows[-1]
+            # A corrected projection can share the original measured window.
+            newest = max(rows, key=lambda row: (row.observed_at, row.ingested_at, row.id))
             return newest.value, (newest.id,)
         if definition.aggregation == MetricAggregation.COUNT:
             return len(rows), tuple(row.id for row in rows)

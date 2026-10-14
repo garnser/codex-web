@@ -394,8 +394,8 @@ def _load_dev_health_report(*, force_refresh: bool, errors: list[str]) -> dict[s
         return report
     try:
         _refresh_dev_health_report()
-    except Exception as exc:
-        errors.append(f"Unable to refresh dev health report: {exc}")
+    except Exception:
+        errors.append("Unable to refresh dev health report; check the health report generator.")
         fallback = _load_json_file(DEV_HEALTH_CACHE_PATH, errors=None, label="cached dev health report")
         if fallback is not None:
             return fallback
@@ -439,9 +439,9 @@ def _load_json_file(path: Path, *, errors: list[str] | None, label: str) -> dict
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except Exception:
         if errors is not None:
-            errors.append(f"Unable to read {label}: {exc}")
+            errors.append(f"Unable to read {label}; check report availability and format.")
         return None
 
 

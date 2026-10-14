@@ -131,7 +131,7 @@ function render() {
   const latestOps = Array.isArray(latest?.plan?.operations) ? latest.plan.operations : [];
   const planOps = Array.isArray(plan?.operations) ? plan.operations : [];
   body.innerHTML =
-    '<section class="project-setup-summary"><div class="project-setup-hero"><div><small>Project readiness</small><h3>' + esc(state.project?.name || state.projectId) + '</h3><p>' +
+    '<section class="project-setup-summary"><div class="project-setup-hero"><div><small>Project readiness</small><h3 data-setup-project-name></h3><p>' +
     esc(readinessSummary) +
     '</p></div>' + badge(state.readiness?.status) + '</div><div class="project-setup-metrics"><div><span>Semantic</span><strong>' + (state.readiness?.semantic_ready ? "Ready" : "Blocked") +
     '</strong></div><div><span>Execution</span><strong>' + (state.readiness?.execution_ready ? "Ready" : "Blocked") +
@@ -146,6 +146,7 @@ function render() {
     '<section data-setup-panel="plan" hidden><div class="project-setup-toolbar"><button type="button" class="ghost-button" data-setup-preflight>Run preflight</button><button type="button" class="ghost-button" data-setup-plan>Build plan</button><label><input type="checkbox" data-setup-approve> Approve material authority changes</label><button type="button" class="primary-button" data-setup-apply ' + (!plan || state.plan?.blocked || state.applying ? "disabled" : "") + '>' + (state.applying ? "Applying…" : "Apply reviewed plan") + '</button></div>' +
     (plan ? '<div class="project-setup-plan-summary"><code>' + esc(plan.id) + '</code></div><div class="project-setup-operations">' + planOps.map(operationHtml).join("") + '</div>' : '<div class="project-setup-empty">Build a deterministic plan before applying changes.</div>') +
     '<details class="project-setup-manifest-panel"><summary>Advanced: normalized desired state</summary><p>References only. Never place raw credentials here.</p><textarea aria-label="Project bootstrap manifest" data-project-setup-manifest rows="16" spellcheck="false"></textarea><button type="button" class="ghost-button" data-setup-reset>Reset from Project</button></details></section>';
+  body.querySelector("[data-setup-project-name]").textContent = state.project?.name || state.projectId;
   if (state.actionState) {
     body.querySelector("[data-setup-action-feedback]").replaceChildren(actionFeedback(state.actionState));
   }

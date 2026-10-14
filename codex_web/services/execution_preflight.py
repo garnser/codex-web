@@ -265,6 +265,17 @@ class ExecutionPreflightService:
             raise ValueError('retained queued request identity changed')
         return attempt
 
+    def has_explicit_queue_priority(self, queued: QueuedTurn) -> bool:
+        """A canonical retry claim increments this retained intent's attempt number.
+
+        This is ordering provenance, never permission to start or evidence about
+        a native outcome. Queue bodies and creation timestamps cannot grant it.
+        """
+        attempt = self.retained_queued(queued)
+        return bool(attempt is not None and attempt.attempt_number > 1
+            and attempt.project_id == queued.project_id
+            and (attempt.replacement_thread_id or attempt.thread_id) == queued.thread_id)
+
     def queue_retry_committed(self, attempt_id: str, *, claim_id: str) -> ExecutionPreflightAttempt:
         def update(current):
             if current.status != 'retrying' or current.retry_claim_id != claim_id:

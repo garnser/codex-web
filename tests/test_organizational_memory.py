@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from codex_web.data_governance import (
@@ -19,10 +20,12 @@ from codex_web.organizational_memory import (
     KnowledgeCreate,
     KnowledgeFreshness,
     KnowledgeIngestBatch,
+    KnowledgeInvalidate,
     KnowledgeLifecycle,
     KnowledgeObjectType,
     KnowledgeProcedurePromotion,
     KnowledgeProvenance,
+    KnowledgeOrigin,
     KnowledgeQuery,
     KnowledgeRelationshipCreate,
     KnowledgeRelationshipType,
@@ -33,7 +36,7 @@ from codex_web.organizational_memory import (
 from codex_web.services.authority_roles import install_authority_roles
 from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.definitions import DefinitionRegistryService
-from codex_web.services.organizational_memory import OrganizationalMemoryService
+from codex_web.services.organizational_memory import OrganizationalMemoryService, KnowledgeValidationError, KnowledgeAuthorizationError
 from codex_web.retrieval import (
     DeterministicLocalEmbeddingProvider,
     LocalLexicalRetrievalBackend,
@@ -81,6 +84,172 @@ class OrganizationalMemoryTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def _research(self, key, origin=None, *, sources=(), reviewed=False, **metadata):
+        provenance = {"source_kind": "manual", "source_ref": f"research:{key}"}
+        if origin is not None:
+            provenance["origin"] = origin
+        if reviewed:
+            provenance["review_status"] = "reviewed"
+        return self.service.create(KnowledgeCreate(
+            logical_key=key, object_type="other", title=key,
+            summary="Research finding", content="Research finding content",
+            provenance=KnowledgeProvenance(**provenance),
+            relationships=tuple(KnowledgeRelationshipCreate(
+                target_knowledge_id=source.id, relationship_type="derived_from",
+            ) for source in sources),
+            **metadata,
+        ), actor=self.actor)
+
+    def test_source_invalidation_excludes_derived_summary_from_context(self):
+        source = self._research("invalidated-source", "human_observed")
+        summary = self._research("invalidated-summary", sources=(source,))
+        self.service.invalidate(source.id, KnowledgeInvalidate(reason="Finding withdrawn"), actor=self.actor)
+        self.assertEqual(self.service.freshness(summary), KnowledgeFreshness.INVALID)
+        result = self.service.search(KnowledgeQuery(logical_keys=(summary.logical_key,)), actor=self.actor)
+        self.assertEqual(result.items, ())
+        historical = self.service.search(KnowledgeQuery(
+            logical_keys=(summary.logical_key,), include_invalid=True,
+        ), actor=self.actor)
+        self.assertEqual(historical.items[0].freshness, KnowledgeFreshness.INVALID)
+
+    def test_source_supersession_requires_explicit_new_source_revision(self):
+        source = self._research("revised-source", "human_observed")
+        old_summary = self._research("old-source-summary", sources=(source,))
+        revised = self.service.revise(source.id, KnowledgeRevise(
+            provenance=KnowledgeProvenance(source_kind="manual", source_ref="updated-session"),
+            content="Corrected finding", reason="Correct source finding",
+        ), actor=self.actor)
+        self.assertEqual(self.service.freshness(revised), KnowledgeFreshness.FRESH)
+        self.assertEqual(self.service.freshness(old_summary), KnowledgeFreshness.STALE)
+        self.assertEqual(self.service.search(KnowledgeQuery(
+            logical_keys=(old_summary.logical_key,),
+        ), actor=self.actor).items, ())
+        new_summary = self._research("new-source-summary", sources=(revised,))
+        self.assertEqual(self.service.freshness(new_summary), KnowledgeFreshness.FRESH)
+        self.assertIn(source.id, {row.knowledge_id for row in new_summary.provenance.origin_sources})
+
+    def test_source_expiry_propagates_without_rewriting_historical_origin(self):
+        source = self._research("expiring-source", "human_observed", valid_until=self.now + 10)
+        summary = self._research("expiring-summary", sources=(source,))
+        self.now += 11
+        self.assertEqual(self.service.freshness(summary), KnowledgeFreshness.EXPIRED)
+        self.assertEqual(self.service.search(KnowledgeQuery(
+            logical_keys=(summary.logical_key,),
+        ), actor=self.actor).items, ())
+        historical = self.service.search(KnowledgeQuery(
+            logical_keys=(summary.logical_key,), include_stale=True,
+        ), actor=self.actor)
+        self.assertEqual(historical.items[0].freshness, KnowledgeFreshness.EXPIRED)
+        self.assertEqual(historical.items[0].provenance.origin, KnowledgeOrigin.HUMAN_OBSERVED)
+
+    def test_derived_summary_cannot_bypass_revoked_source_role_access(self):
+        role = self.service._role_ids(self.actor, project_id=None)[0]
+        source = self._research("role-protected-research", "human_observed", required_role_ids=(role,))
+        summary = self._research("role-protected-summary", sources=(source,))
+        with patch.object(self.service, "_role_ids", return_value=()):
+            with self.assertRaises(KnowledgeAuthorizationError):
+                self.service.get(summary.id, actor=self.actor)
+            result = self.service.search(KnowledgeQuery(logical_keys=(summary.logical_key,)), actor=self.actor)
+            visible = self.service.list(actor=self.actor)
+        self.assertEqual(result.items, ())
+        self.assertIn("authority:research_source_read_denied", [row.reason for row in result.denied])
+        self.assertNotIn(summary.id, {row.id for row in visible})
+
+    def test_legacy_origin_defaults_unknown_without_inferring_authorship(self):
+        source = self._research("legacy")
+        state = self.store.store.get(self.store.namespace)
+        state["schema_version"] = "1.0"
+        for row in state["records"]:
+            for key in ("origin", "review_status", "origin_sources"):
+                row["provenance"].pop(key)
+        self.store.store.put(self.store.namespace, state)
+        restored = self.store.get(source.id)
+        self.assertEqual(restored.provenance.origin, KnowledgeOrigin.UNKNOWN)
+        self.assertEqual(self.store.load().schema_version, "1.2")
+
+    def test_mixed_summary_retains_exact_source_origins_in_retrieval(self):
+        observed = self._research("observed", "human_observed")
+        simulated = self._research("simulated", "ai_inference", reviewed=True)
+        summary = self._research("mixed-summary", sources=(observed, simulated))
+        restored = self.store.get(summary.id)
+        self.assertEqual(restored.provenance.origin, KnowledgeOrigin.MIXED)
+        self.assertEqual({row.knowledge_id: row.origin for row in restored.provenance.origin_sources}, {
+            observed.id: KnowledgeOrigin.HUMAN_OBSERVED,
+            simulated.id: KnowledgeOrigin.AI_INFERENCE,
+        })
+        result = self.service.search(KnowledgeQuery(text="Research", budget=KnowledgeRetrievalBudget(top_k=10)), actor=self.actor)
+        item = next(item for item in result.items if item.knowledge_id == summary.id)
+        self.assertIn("Research origin: mixed", item.context_excerpt)
+        self.assertIn(f"[memory:{simulated.id}@v1]: ai_inference", item.context_excerpt)
+
+    def test_human_review_and_revision_cannot_launder_synthetic_origin(self):
+        simulated = self._research("synthetic", "ai_inference")
+        revised = self.service.revise(simulated.id, KnowledgeRevise(
+            provenance=KnowledgeProvenance(source_kind="manual", source_ref="review", review_status="reviewed"),
+            reason="Human reviewed the hypothesis",
+        ), actor=self.actor)
+        self.assertEqual(revised.provenance.origin, KnowledgeOrigin.AI_INFERENCE)
+        self.assertEqual(revised.provenance.review_status, "reviewed")
+        relabelled = self.service.revise(revised.id, KnowledgeRevise(
+            provenance=KnowledgeProvenance(source_kind="manual", source_ref="relabel", origin="human_observed"),
+            reason="Attempt to replace synthetic attribution",
+        ), actor=self.actor)
+        self.assertEqual(relabelled.provenance.origin, KnowledgeOrigin.MIXED)
+        self.assertIn(simulated.id, {row.knowledge_id for row in relabelled.provenance.origin_sources})
+
+    def test_derived_source_redaction_removes_summary_and_source_origins(self):
+        observed = self._research("private-session", "human_observed")
+        summary = self._research("private-summary", sources=(observed,))
+        request = self.governance.request_action(GovernanceActionRequest(
+            record_id=observed.governance_record_id,
+            action=GovernanceAction.REDACT, reason="Source research redacted",
+        ), actor=self.actor)
+        self.governance.execute_request(request.id, actor=self.actor)
+        self.assertEqual(self.store.get(summary.id).lifecycle, KnowledgeLifecycle.REDACTED)
+        self.assertEqual(self.store.get(summary.id).provenance.origin_sources, ())
+
+    def test_origin_sources_cannot_be_forged_or_linked_across_tenants(self):
+        source = self._research("scoped-source", "ai_inference")
+        foreign = self.store.create(source.model_copy(update={
+            "id": "foreign-knowledge", "organization_id": "other", "workspace_id": "other",
+        }))
+        payload = KnowledgeCreate(
+            logical_key="foreign-summary", object_type="other", title="Summary",
+            summary="Research summary", content="Research content",
+            provenance=KnowledgeProvenance(source_kind="manual", source_ref="summary"),
+            relationships=(KnowledgeRelationshipCreate(
+                target_knowledge_id=foreign.id, relationship_type="derived_from",
+            ),),
+        )
+        with self.assertRaises(KnowledgeValidationError):
+            self.service.create(payload, actor=self.actor)
+        forged = payload.model_copy(update={"relationships": (), "provenance": KnowledgeProvenance(
+            source_kind="manual", source_ref="summary", origin="human_observed",
+            origin_sources=({"knowledge_id": source.id, "version": 1,
+                "origin": "human_observed", "source_ref": "invented"},),
+        )})
+        with self.assertRaises(KnowledgeValidationError):
+            self.service.create(forged, actor=self.actor)
+
+    def test_ingestion_retry_preserves_mixed_origin_without_extra_versions(self):
+        observed = self._research("ingest-observed", "human_observed")
+        simulated = self._research("ingest-synthetic", "ai_inference")
+        payload = KnowledgeCreate(
+            logical_key="ingested-summary", object_type="other", title="Summary",
+            summary="Summary", content="Research content",
+            provenance=KnowledgeProvenance(source_kind="import", source_ref="summary"),
+            relationships=tuple(KnowledgeRelationshipCreate(
+                target_knowledge_id=source.id, relationship_type="derived_from",
+            ) for source in (observed, simulated)),
+        )
+        batch = KnowledgeIngestBatch(items=(payload,))
+        first = self.service.ingest(batch, actor=self.actor)[0][1]
+        outcome, retried = self.service.ingest(batch, actor=self.actor)[0]
+        self.assertEqual(outcome, "unchanged")
+        self.assertEqual(retried.id, first.id)
+        self.assertEqual(retried.provenance.origin, KnowledgeOrigin.MIXED)
+
 
     def _create(
         self,

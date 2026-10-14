@@ -5,7 +5,7 @@ import json
 import time
 import uuid
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -18,8 +18,8 @@ from codex_web.data_governance import (
 
 ORGANIZATIONAL_MEMORY_CONTRACT = ContractSpec(
     "organizational-memory-state",
-    "1.0",
-    ("1.0",),
+    "1.2",
+    ("1.0", "1.1", "1.2"),
 )
 
 MAX_MEMORY_RELATIONSHIPS = 100
@@ -44,6 +44,7 @@ class KnowledgeObjectType(StrEnum):
     DECISION = "decision"
     PROCEDURE = "procedure"
     OTHER = "other"
+    UX_BRIEF = "ux_context_brief"
 
 
 class KnowledgeLifecycle(StrEnum):
@@ -99,6 +100,26 @@ class KnowledgeCanonicalRef(BaseModel):
     relation: str = Field(default="references", min_length=1, max_length=100)
 
 
+class KnowledgeOrigin(StrEnum):
+    HUMAN_OBSERVED = "human_observed"
+    SECONDARY_RESEARCH = "secondary_research"
+    AI_INFERENCE = "ai_inference"
+    MIXED = "mixed"
+    UNKNOWN = "unknown"
+
+
+class KnowledgeOriginSource(BaseModel):
+    """Exact canonical source attribution; a label is not verification."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    knowledge_id: str
+    version: int = Field(ge=1)
+    origin: KnowledgeOrigin
+    source_ref: str
+    source_revision: str | None = None
+
+
 class KnowledgeProvenance(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
@@ -111,6 +132,11 @@ class KnowledgeProvenance(BaseModel):
     observed_at: float = Field(default_factory=time.time)
     evidence_ids: tuple[str, ...] = ()
     source_governance_record_ids: tuple[str, ...] = ()
+    origin: KnowledgeOrigin = KnowledgeOrigin.UNKNOWN
+    review_status: str = Field(default="unreviewed", pattern=r"^(unreviewed|reviewed)$")
+    # Resolved by the service from canonical derivation links, never trusted
+    # as caller-provided independent or observed-source proof.
+    origin_sources: tuple[KnowledgeOriginSource, ...] = Field(default=(), max_length=100)
 
     @model_validator(mode="after")
     def normalize(self) -> "KnowledgeProvenance":
@@ -383,6 +409,28 @@ class KnowledgeRetrievalBudget(BaseModel):
     progressive: bool = True
 
 
+class KnowledgeContextSource(BaseModel):
+    """Bounded revision attribution for a source selected by a core context builder."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+    kind: Literal["knowledge", "artifact", "evidence"]
+    record_id: str = Field(min_length=1, max_length=500)
+    revision: str = Field(min_length=1, max_length=1000)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class KnowledgeContextSelection(BaseModel):
+    """Metadata-only projection pins; never a body or a claim of provider delivery."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    knowledge_id: str = Field(min_length=1, max_length=500)
+    version: int = Field(ge=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sections: tuple[Annotated[str, Field(max_length=100, pattern=r"^[A-Za-z0-9_.:-]+$")], ...] = Field(min_length=1, max_length=50)
+    sources: tuple[KnowledgeContextSource, ...] = Field(default=(), max_length=16)
+    max_context_tokens: int = Field(default=2000, ge=1, le=MAX_MEMORY_CONTEXT_TOKENS)
+
+
 class KnowledgeQuery(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -391,6 +439,7 @@ class KnowledgeQuery(BaseModel):
     project_ids: tuple[str, ...] = ()
     include_company_scope: bool = False
     logical_keys: tuple[str, ...] = ()
+    knowledge_ids: tuple[str, ...] = Field(default=(), max_length=50)
     tags: tuple[str, ...] = ()
     relationship_target_ids: tuple[str, ...] = ()
     required_role_ids: tuple[str, ...] = ()
@@ -408,6 +457,7 @@ class KnowledgeQuery(BaseModel):
         for field_name in (
             "project_ids",
             "logical_keys",
+            "knowledge_ids",
             "relationship_target_ids",
             "required_role_ids",
             "authored_by",

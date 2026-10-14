@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
@@ -31,6 +32,14 @@ class EntitlementControlTests(unittest.TestCase):
 
     def take_control(self):
         self.admin.set_control(EntitlementControlUpdate(kind='external', guidance='Contact the plan administrator'), actor=self.controller, expected_revision=self.revision())
+
+    def test_denial_projection_does_not_disclose_exception_payload(self):
+        with patch.object(self.admin, 'require_control', side_effect=AuthorizationError('private-token /internal/path')):
+            result = self.admin.snapshot(self.actor)
+        self.assertFalse(result['can_manage'])
+        self.assertTrue(result['denial_reason'])
+        self.assertNotIn('private-token', str(result))
+        self.assertNotIn('/internal/path', str(result))
 
     def test_external_controller_blocks_all_human_and_unrelated_service_mutations(self):
         self.take_control()

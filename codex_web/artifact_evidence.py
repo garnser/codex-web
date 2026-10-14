@@ -6,10 +6,12 @@ import uuid
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
 
 from codex_web.artifact_content import ArtifactContentPointer
 from codex_web.data_governance import DataClassification, GovernanceAction
+from codex_web.organizational_memory import KnowledgeOrigin, KnowledgeOriginSource
+from codex_web.identity import PrincipalKind
 
 
 class ArtifactType(StrEnum):
@@ -37,6 +39,7 @@ class EvidenceType(StrEnum):
     TEST_RESULT = "test_result"
     CI_CHECK = "ci_check"
     REVIEW = "review"
+    USER_OUTCOME = "user_outcome"
     SECURITY_SCAN = "security_scan"
     DEPLOYMENT_VERIFICATION = "deployment_verification"
     POLICY_EVALUATION = "policy_evaluation"
@@ -87,6 +90,9 @@ class Artifact(BaseModel):
     execution_workspace_id: str | None = None
     resource_ids: tuple[str, ...] = ()
     artifact_type: ArtifactType
+    knowledge_ids: tuple[str, ...] = Field(default=(), max_length=100)
+    research_origin: KnowledgeOrigin = KnowledgeOrigin.UNKNOWN
+    research_sources: tuple[KnowledgeOriginSource, ...] = Field(default=(), max_length=1024)
     name: str = Field(min_length=1)
     producer_identity_id: str
     provider: str | None = None
@@ -125,6 +131,9 @@ class Evidence(BaseModel):
     execution_workspace_id: str | None = None
     resource_ids: tuple[str, ...] = ()
     evidence_type: EvidenceType
+    knowledge_ids: tuple[str, ...] = Field(default=(), max_length=100)
+    research_origin: KnowledgeOrigin = KnowledgeOrigin.UNKNOWN
+    research_sources: tuple[KnowledgeOriginSource, ...] = Field(default=(), max_length=1024)
     artifact_ids: tuple[str, ...] = ()
     producer_identity_id: str
     provider: str | None = None
@@ -161,6 +170,7 @@ class Verification(BaseModel):
     artifact_ids: tuple[str, ...] = ()
     evidence_ids: tuple[str, ...] = ()
     verifier_identity_id: str
+    verifier_principal_kind: PrincipalKind | None = None
     independent: bool
     method: str = Field(min_length=1)
     result: VerificationResult
@@ -189,6 +199,7 @@ class EvidenceRequirement(BaseModel):
     min_count: int = Field(default=1, ge=1)
     accepted_results: tuple[EvidenceResult, ...] = (EvidenceResult.PASS,)
     independent_verification: bool = False
+    observed_research: bool = False
     max_age_seconds: float | None = Field(default=None, gt=0.0)
     provider: str | None = None
 
@@ -197,6 +208,13 @@ class EvidenceRequirement(BaseModel):
         if not self.accepted_results:
             raise ValueError("evidence requirement requires at least one accepted result")
         return self
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        payload = handler(self)
+        if not self.observed_research:
+            payload.pop("observed_research", None)
+        return payload
 
 
 class EvidenceRequirementOutcome(BaseModel):
@@ -227,6 +245,7 @@ class ArtifactCreate(BaseModel):
     execution_workspace_id: str | None = None
     resource_ids: tuple[str, ...] = ()
     artifact_type: ArtifactType
+    knowledge_ids: tuple[str, ...] = Field(default=(), max_length=100)
     name: str = Field(min_length=1)
     provider: str | None = None
     source: str | None = None
@@ -254,6 +273,7 @@ class EvidenceCreate(BaseModel):
     execution_workspace_id: str | None = None
     resource_ids: tuple[str, ...] = ()
     evidence_type: EvidenceType
+    knowledge_ids: tuple[str, ...] = Field(default=(), max_length=100)
     artifact_ids: tuple[str, ...] = ()
     provider: str | None = None
     source: str | None = None
@@ -308,7 +328,7 @@ class EvidenceEvaluationRequest(BaseModel):
 class ArtifactEvidenceState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.1"
+    schema_version: str = "1.3"
     artifacts: list[Artifact] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
     verifications: list[Verification] = Field(default_factory=list)

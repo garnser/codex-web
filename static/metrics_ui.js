@@ -1,4 +1,6 @@
 import { request } from './api_client.js';
+import { installOutcomeMetrics } from './outcome_metrics_ui.js';
+let outcomeMetrics = null;
 
 const state = {
   workspaceWide: false,
@@ -52,6 +54,7 @@ function activeMetricScope() {
 }
 
 function clearProjectState(projectId) {
+  outcomeMetrics?.sync(projectId);
   state.listController?.abort();
   state.detailController?.abort();
   state.generation += 1;
@@ -115,6 +118,8 @@ function ensureShell() {
       </div>
     </div>`;
   document.body.appendChild(dialog);
+  outcomeMetrics = installOutcomeMetrics(dialog.querySelector('.metrics-shell'));
+  outcomeMetrics.sync(activeMetricScope());
 
   button.addEventListener('click', async () => {
     state.workspaceWide = false;

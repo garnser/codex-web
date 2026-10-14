@@ -1,4 +1,5 @@
-import { request } from './api_client.js';
+import { request, apiBase } from './api_client.js';
+import { installUxBriefEditor } from './ux_brief_editor.js';
 
 const state = {
   records: [],
@@ -30,7 +31,7 @@ function ensureShell() {
 
   const link = document.createElement('link');
   link.rel = 'stylesheet';
-  link.href = '/static/memory_ui.css';
+  link.href = apiBase() + '/static/memory_ui.css';
   document.head.appendChild(link);
 
   const button = document.createElement('button');
@@ -68,6 +69,7 @@ function ensureShell() {
           <option value="project">Projects</option>
           <option value="goal">Goals</option>
           <option value="decision">Decisions</option>
+          <option value="ux_context_brief">UX context briefs</option>
           <option value="other">Other</option>
         </select>
         <label>Top K <input class="memory-top-k" type="number" min="1" max="50" value="8" /></label>
@@ -91,10 +93,13 @@ function ensureShell() {
       </div>
     </div>`;
   document.body.appendChild(dialog);
+  installUxBriefEditor({host:dialog,getProjectId:()=>document.body.dataset.projectId||'home',onSaved:refreshAll});
 
   button.addEventListener('click', async () => {
-    dialog.showModal();
+    if (!dialog.open) dialog.showModal();
     await refreshAll();
+    const source = new URLSearchParams(location.search).get('knowledge_id');
+    if (source) await selectKnowledge(source);
   });
   dialog.querySelector('.memory-close').addEventListener('click', () => dialog.close());
   dialog.querySelector('.memory-refresh').addEventListener('click', refreshAll);
@@ -177,7 +182,7 @@ function renderRecords() {
     <button type="button" class="memory-row ${item.id === state.selectedKnowledgeId ? 'selected' : ''}" data-memory-id="${esc(item.id)}">
       <strong>${esc(item.title)}</strong>
       <span>${esc(item.object_type)} · v${esc(item.version)} · ${esc(item.project_id || 'company')}</span>
-      <small>${badge(item.freshness)} ${badge(item.lifecycle)} · ${esc(item.provenance?.source_kind || 'unknown')}</small>
+      <small>${badge(item.freshness)} ${badge(item.lifecycle)} · ${esc(item.provenance?.source_kind || 'unknown')} · origin ${esc(item.provenance?.origin || 'unknown')} · ${esc(item.provenance?.review_status || 'unreviewed')}</small>
     </button>`).join('');
   host.querySelectorAll('.memory-row').forEach((row) => row.addEventListener('click', () => selectKnowledge(row.dataset.memoryId)));
 }
@@ -241,6 +246,8 @@ function renderKnowledgeDetail() {
       <div><span>Governance record</span><strong>${esc(item.governance_record_id)}</strong></div>
       <div><span>Source</span><strong>${esc(provenance.source_kind)} · ${esc(provenance.source_ref)}</strong></div>
       <div><span>Source revision</span><strong>${esc(provenance.source_revision || '—')}</strong></div>
+      <div><span>Research origin / review</span><strong>${esc(provenance.origin || 'unknown')} · ${esc(provenance.review_status || 'unreviewed')} (metadata, not verification)</strong></div>
+      <div><span>Derived source origins</span><strong>${(provenance.origin_sources || []).map(source => `<button type="button" class="ghost-button" data-memory-source="${esc(source.knowledge_id)}">${esc(source.knowledge_id)}@v${esc(source.version)}: ${esc(source.origin)}</button>`).join(' · ') || 'No derived sources'}</strong></div>
       <div><span>Author / observed</span><strong>${esc(provenance.authored_by || '—')} · ${esc(fmtTime(provenance.observed_at))}</strong></div>
       <div><span>Review after</span><strong>${esc(fmtTime(item.review_after))}</strong></div>
       <div><span>Valid until</span><strong>${esc(fmtTime(item.valid_until))}</strong></div>
@@ -263,6 +270,9 @@ function renderKnowledgeDetail() {
         <article><strong>${esc(rel.relationship_type)}</strong><span>${esc(rel.source_knowledge_id)} → ${esc(rel.target_knowledge_id)}</span><small>${esc(rel.note || '')}</small></article>
       `).join('') || '<p class="memory-muted">No relationships.</p>'}</div>
     </section>`;
+  host.querySelectorAll('[data-memory-source]').forEach(button => {
+    button.addEventListener('click', () => selectKnowledge(button.dataset.memorySource));
+  });
 }
 
 async function selectRetrieval(id) {
@@ -300,6 +310,7 @@ function renderRetrieval(run, liveItems = []) {
       <div><span>Embedding</span><strong>${esc(run.embedding_model_id ? `${run.embedding_provider_id}/${run.embedding_model_id}@${run.embedding_model_revision || '—'}` : 'none')}</strong></div>
       <div><span>Created</span><strong>${esc(fmtTime(run.created_at))}</strong></div>
       <div><span>Filters</span><strong>${esc(JSON.stringify(run.filters || {}))}</strong></div>
+      <div><span>Native delivery</span><strong>${run.filters?.native_delivery?.delivery_proven ? `Accepted native turn ${esc(run.filters.native_delivery.native_turn_id)} · Thread ${esc(run.filters.native_delivery.thread_id)} · execution ${esc(run.filters.native_delivery.execution_id)}` : "Preview / retrieval only · native delivery unproven"}</strong></div>
     </section>
     <section class="memory-card">
       <h4>Selected knowledge · why it influenced the run</h4>
@@ -308,6 +319,7 @@ function renderRetrieval(run, liveItems = []) {
         return `<article>
           <strong>[memory:${esc(id)}@v${esc(item.version || '?')}] · score ${esc(scores[id] ?? '—')}</strong>
           <span>${esc(item.title || id)} · ${esc(freshness[id] || item.freshness || 'unknown')}</span>
+          <small>Origin ${esc(item.provenance?.origin || 'unknown')} · ${esc(item.provenance?.review_status || 'unreviewed')} (metadata, not verification)</small>
           <small>${esc((item.reasons || []).join(' · ') || 'Selection reasons are preserved on live retrieval results; historical run stores score/freshness and canonical IDs.')}</small>
         </article>`;
       }).join('') || '<p class="memory-muted">No knowledge selected.</p>'}</div>
@@ -360,3 +372,4 @@ async function refreshRetrievalHistory() {
 }
 
 ensureShell();
+if (new URLSearchParams(location.search).get('knowledge_id')) document.getElementById('memory-button')?.click();

@@ -67,13 +67,19 @@ from codex_web.api.legacy_project_migration import build_legacy_project_migratio
 from codex_web.api.goals import build_goals_router
 from codex_web.api.home import build_home_router
 from codex_web.api.metrics import build_metrics_router
+from codex_web.api.outcome_metrics import build_outcome_metrics_router
 from codex_web.api.ux_telemetry import build_ux_telemetry_router
 from codex_web.api.goal_decompositions import build_goal_decompositions_router
 from codex_web.api.goal_execution_bindings import build_goal_execution_bindings_router
 from codex_web.api.input_plugins import build_input_plugins_router
+from codex_web.api.care_composer import build_care_composer_router
+from codex_web.care_composer import bootstrap_care_examples
+from codex_web.services.care_composer import CareComposerService
 from codex_web.api.model_gateway import build_model_gateway_router
 from codex_web.api.orchestration import build_orchestration_router
 from codex_web.api.organizational_memory import build_organizational_memory_router
+from codex_web.services.ux_briefs import UxBriefService
+from codex_web.services.ux_brief_turns import UxBriefTurnService
 from codex_web.api.identity import build_identity_router, install_identity_middleware
 from codex_web.api.projects import build_projects_router
 from codex_web.api.project_ui_state import build_project_ui_state_router
@@ -339,6 +345,7 @@ from codex_web.services.github_code_host import GitHubCodeHostProvider
 from codex_web.services.goals import GoalService
 from codex_web.services.home_overview import HomeOverviewService
 from codex_web.services.metrics import MetricService
+from codex_web.services.outcome_metrics import OutcomeMetricService
 from codex_web.services.ux_telemetry import UxTelemetryService
 from codex_web.services.ux_telemetry_configuration import install_ux_telemetry_configuration
 from codex_web.services.goal_decomposition_commit import (
@@ -785,6 +792,7 @@ definition_registry_service = DefinitionRegistryService(
     notifier=_definition_change_notifier,
 )
 skill_service = SkillService(definition_registry_service)
+bootstrap_care_examples(definition_registry_service)
 app.state.skill_service = skill_service
 skill_scanner_registry = SkillScannerRegistry()
 
@@ -1030,6 +1038,8 @@ thread_index_repository = install_thread_index_repository(
 thread_history_repository = ThreadHistoryRepository(state_store)
 app.state.thread_history_repository = thread_history_repository
 project_service = ProjectService(project_repository)
+care_composer_service = CareComposerService(skill_service)
+app.include_router(build_care_composer_router(care_composer_service,project_service))
 app.include_router(build_entitlements_router(entitlement_service, project_service))
 app.include_router(build_secrets_router(secret_broker, project_service))
 thread_scope_service = ThreadScopeService(project_service, agent_session_service, thread_index_repository)
@@ -1089,8 +1099,11 @@ organizational_memory_service = OrganizationalMemoryService(
 )
 app.state.organizational_memory_store = organizational_memory_store
 app.state.organizational_memory_service = organizational_memory_service
+ux_brief_service = UxBriefService(organizational_memory_service)
+app.state.ux_brief_service = ux_brief_service
 app.include_router(
-    build_organizational_memory_router(organizational_memory_service)
+    build_organizational_memory_router(organizational_memory_service,
+        brief_service=ux_brief_service, projects=project_service)
 )
 
 approval_request_store = ApprovalRequestStore(state_store)
@@ -1543,7 +1556,9 @@ artifact_evidence_service = ArtifactEvidenceService(
     governance=data_governance_service,
     content=artifact_content_service,
     content_backend_resolver=_artifact_content_backend,
+    organizational_memory=organizational_memory_service,
 )
+organizational_memory_service.artifact_evidence = artifact_evidence_service
 data_governance_service.register_action_handler(
     "artifact",
     artifact_evidence_service.apply_governance_action,
@@ -2448,6 +2463,11 @@ control_plane_broker_service.work_graph = work_graph_service
 app.include_router(build_work_graph_router(work_graph_service, project_service))
 metric_store = MetricStore(state_store)
 metric_service = MetricService(metric_store)
+outcome_metric_service = OutcomeMetricService(metrics=metric_service,
+    evidence=artifact_evidence_service, telemetry=agent_runtime_telemetry_service,
+    identity=identity_service, projects=project_service)
+app.state.outcome_metric_service = outcome_metric_service
+app.include_router(build_outcome_metrics_router(outcome_metric_service))
 app.state.metric_store = metric_store
 app.state.metric_service = metric_service
 app.include_router(build_metrics_router(metric_service))
@@ -3468,6 +3488,8 @@ scheduling_retirement_service = QueuedSchedulingRetirementService(
 )
 app.state.scheduling_retirement_service = scheduling_retirement_service
 
+ux_brief_turn_service = UxBriefTurnService(ux_brief_service, identity_service)
+turn_execution_service.memory_context_service = ux_brief_turn_service
 turn_service = TurnService(
     projects=project_runtime_service,
     settings=thread_execution_settings_service,
@@ -3482,6 +3504,7 @@ turn_service = TurnService(
     preflight=execution_preflight_service,
     scheduling_retirement=scheduling_retirement_service,
     agent_profiles=agent_profile_service,
+    memory_context=ux_brief_turn_service,
 )
 turn_execution_service.upgrade_turn_admission_guard = (
     upgrade_service.worker_assignment_allowed

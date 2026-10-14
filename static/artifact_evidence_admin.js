@@ -136,6 +136,18 @@
     return `<button type="button" class="ghost-button" data-artifact-evidence-invalidate="${kind}" data-record-id="${escapeHtml(item.id)}">Invalidate</button>`;
   }
 
+  function researchLinks(item) {
+    const project = item.project_id || document.body?.dataset.projectId || document.body?.dataset.activeProject;
+    const route = project ? `${BASE}/projects/${encodeURIComponent(project)}/memory` : `${BASE}/`;
+    const snapshots = new Map((item.research_sources || []).map(source => [source.knowledge_id, source]));
+    const ids = [...new Set([...(item.knowledge_ids || []), ...snapshots.keys()])];
+    return ids.map(id => {
+      const source = snapshots.get(id);
+      const label = source ? `${id}@v${source.version}: ${source.origin}` : id;
+      return `<a href="${route}?knowledge_id=${encodeURIComponent(id)}">${escapeHtml(label)}</a>`;
+    }).join(', ') || 'none';
+  }
+
   function renderArtifacts() {
     const host = document.getElementById("artifact-list");
     if (!host) return;
@@ -148,6 +160,7 @@
         <small>Work: ${escapeHtml(item.work_item_ref || "none")} · execution: ${escapeHtml(item.execution_id || "none")} · execution workspace: ${escapeHtml(item.execution_workspace_id || "none")} · project: ${escapeHtml(item.project_id || "none")}</small>
         <small>Resources: ${listText(item.resource_ids)} · provider: ${escapeHtml(item.provider || "none")} · source: ${escapeHtml(item.source || "none")} · external ID: ${escapeHtml(item.external_id || "none")} ${sourceLink}</small>
         <small>Revision: ${escapeHtml(item.revision || "none")} · digest: ${escapeHtml(digestText(item.digest))}</small>
+        <small>Research origin: ${escapeHtml(item.research_origin || 'unknown')} · Knowledge sources: ${researchLinks(item)} · origin metadata is not verification</small>
         <small>Supersedes: ${escapeHtml(item.supersedes_id || "none")} · superseded by: ${escapeHtml(item.superseded_by_id || "none")} · retention: ${timeText(item.retention_expires_at)}</small>
         ${item.invalidation_reason ? `<small>Invalidated: ${timeText(item.invalidated_at)} · ${escapeHtml(item.invalidation_reason)}</small>` : ""}
         ${governanceHtml(governanceFor(item.id))}
@@ -168,6 +181,7 @@
         <small>Work: ${escapeHtml(item.work_item_ref || "none")} · execution: ${escapeHtml(item.execution_id || "none")} · execution workspace: ${escapeHtml(item.execution_workspace_id || "none")} · project: ${escapeHtml(item.project_id || "none")}</small>
         <small>Artifacts: ${listText(item.artifact_ids)} · provider: ${escapeHtml(item.provider || "none")} · source: ${escapeHtml(item.source || "none")} · external ID: ${escapeHtml(item.external_id || "none")} ${sourceLink}</small>
         <small>Summary: ${escapeHtml(item.summary || "none")} · digest: ${escapeHtml(digestText(item.digest))}</small>
+        <small>Research origin: ${escapeHtml(item.research_origin || 'unknown')} · Knowledge sources: ${researchLinks(item)} · origin metadata is not verification</small>
         <small>Retention: ${timeText(item.retention_expires_at)} · governance ID: ${escapeHtml(item.governance_record_id || "none")}</small>
         ${item.invalidation_reason ? `<small>Invalidated: ${timeText(item.invalidated_at)} · ${escapeHtml(item.invalidation_reason)}</small>` : ""}
         ${governanceHtml(governanceFor(item.id))}
@@ -183,6 +197,7 @@
     host.innerHTML = rows.map((item) => `<details class="comm-entry">
       <summary><strong>${escapeHtml(item.result)} · ${item.independent ? "independent" : "producer-related"} · ${escapeHtml(item.method)}</strong></summary>
       <small>ID: ${escapeHtml(item.id)} · verifier: ${escapeHtml(item.verifier_identity_id)} · verified: ${timeText(item.verified_at)}</small>
+      <small>Verifier kind: ${escapeHtml(item.verifier_principal_kind || 'unknown')}</small>
       <small>Work: ${escapeHtml(item.work_item_ref || "none")} · execution: ${escapeHtml(item.execution_id || "none")}</small>
       <small>Artifacts: ${listText(item.artifact_ids)} · evidence: ${listText(item.evidence_ids)}</small>
       <small>Findings: ${listText(item.findings)} · provider: ${escapeHtml(item.provider || "none")} · source: ${escapeHtml(item.source || "none")} ${safeLink(item.deep_link)}</small>
@@ -212,6 +227,7 @@
           <strong>${escapeHtml(outcome.requirement_id)} · ${outcome.satisfied ? "satisfied" : "missing"}</strong>
           <small>Requirement: ${escapeHtml(req?.evidence_type || "unknown")} · artifact type ${escapeHtml(req?.artifact_type || "any")} · minimum ${escapeHtml(req?.min_count || "unknown")} · accepted ${listText(req?.accepted_results)}</small>
           <small>Independent verification required: ${req?.independent_verification ? "yes" : "no"} · provider: ${escapeHtml(req?.provider || "any")} · max age: ${escapeHtml(req?.max_age_seconds ?? "none")}</small>
+          <small>Observed-source human proof required: ${req?.observed_research ? 'yes' : 'no'}</small>
           <small>Matching evidence: ${listText(outcome.matching_evidence_ids)} · verifications: ${listText(outcome.verification_ids)} · reason: ${escapeHtml(outcome.reason || "satisfied")}</small>
         </div>`;
       }).join("")}
@@ -327,5 +343,6 @@
     if (panel?.open) refresh().catch(console.error);
   }
 
-  window.addEventListener("DOMContentLoaded", bind);
+  if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", bind, { once: true });
+  else bind();
 })();
