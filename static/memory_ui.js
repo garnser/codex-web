@@ -1,4 +1,4 @@
-import { request } from './api_client.js';
+import { request, apiBase } from './api_client.js';
 import { installUxBriefEditor } from './ux_brief_editor.js';
 
 const state = {
@@ -31,7 +31,7 @@ function ensureShell() {
 
   const link = document.createElement('link');
   link.rel = 'stylesheet';
-  link.href = '/static/memory_ui.css';
+  link.href = apiBase() + '/static/memory_ui.css';
   document.head.appendChild(link);
 
   const button = document.createElement('button');
