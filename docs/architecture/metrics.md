@@ -25,6 +25,10 @@ Freshness is explicit:
 
 Callers must not treat stale, missing, or partial data as current fact merely because an aggregate value is present.
 
+When observation times are equal, `last` and history ordering use canonical
+ingestion time before the stable observation ID. This lets a late correction to
+the same measured window replace its previous current value deterministically.
+
 ## Idempotency and provenance
 
 Observation ingestion requires a caller-supplied idempotency key. Repeating the same key and content returns the existing canonical observation; reusing a key with different content fails closed.
@@ -67,3 +71,9 @@ drill-down, labeled as such in the explorer. This preserves company KPI
 inspection without treating an absent Project as a request for global data.
 Opening the normal Metrics launcher or switching Project exits this mode and
 restores Project-scoped reads. API tenant and mutation authority remain unchanged.
+
+The [human outcome calculation contract](outcome-metrics.md) extends canonical
+Metrics with acceptance, correction and explicitly measured human effort. It
+joins runtime usage and review Evidence deterministically, preserves unresolved
+outcomes and measurement omissions, and keeps the separate UX collector
+content-free. Outcome Metrics retain the joined Evidence read authority.

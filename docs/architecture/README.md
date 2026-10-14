@@ -104,6 +104,7 @@ If architecture changes materially while implementing an issue, update the relev
 - [Typed configuration and feature rollout](configuration.md) — deterministic scope precedence, versioned publication/rollback, feature targeting, reference values, and configuration-vs-policy/definition boundaries.
 - [Input plugin composition pipeline](input-plugin-pipeline.md) — deterministic pluggable request composition, field security classes, bounded provenance, and model-gateway integration.
 - [Observability, correlation, and service health](observability.md) — correlation/causation propagation, secret-safe telemetry, bounded metrics, tracing seams, and deterministic readiness/autonomy health.
+- [Human acceptance and outcome metrics](outcome-metrics.md) — canonical review observations, explicit effort, eligible cohorts, runtime usage joins, missing measurements and immutable Metric projection Evidence.
 - [Data governance](data-governance.md) — canonical classification, retention, legal-hold, governed deletion/redaction, export authorization, residency propagation, and model-context filtering boundary.
 - [Entitlements, quotas, and usage metering](entitlements.md) — hosted/service capability access, deterministic quota enforcement, idempotent metering, reconciliation, and provider-neutral usage export.
 - [Encryption at rest and key management](encryption-key-management.md) — envelope encryption, scoped/versioned key references, rotation/revocation, restore manifests, and pluggable key backends.

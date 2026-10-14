@@ -8,5 +8,6 @@ These examples show both success and healthy failure behavior.
 - [Autonomy, refusal, approval, escalation and reconciliation](autonomy-failure-recovery.md)
 - [Business Operations: CRM + billing success and recovery](business-operations-crm-billing.md)
 - [Role-specific governed Business Operations examples](business-executive-roles.md)
+- [Acceptance, human review effort and outcome cost](accepted-outcome-comparison.md)
 
 The examples use fictional organizations, repositories, identities and credentials. Any resemblance to production data is accidental.

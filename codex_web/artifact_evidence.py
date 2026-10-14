@@ -39,6 +39,7 @@ class EvidenceType(StrEnum):
     TEST_RESULT = "test_result"
     CI_CHECK = "ci_check"
     REVIEW = "review"
+    USER_OUTCOME = "user_outcome"
     SECURITY_SCAN = "security_scan"
     DEPLOYMENT_VERIFICATION = "deployment_verification"
     POLICY_EVALUATION = "policy_evaluation"
@@ -327,7 +328,7 @@ class EvidenceEvaluationRequest(BaseModel):
 class ArtifactEvidenceState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.2"
+    schema_version: str = "1.3"
     artifacts: list[Artifact] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
     verifications: list[Verification] = Field(default_factory=list)

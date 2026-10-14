@@ -67,6 +67,7 @@ from codex_web.api.legacy_project_migration import build_legacy_project_migratio
 from codex_web.api.goals import build_goals_router
 from codex_web.api.home import build_home_router
 from codex_web.api.metrics import build_metrics_router
+from codex_web.api.outcome_metrics import build_outcome_metrics_router
 from codex_web.api.ux_telemetry import build_ux_telemetry_router
 from codex_web.api.goal_decompositions import build_goal_decompositions_router
 from codex_web.api.goal_execution_bindings import build_goal_execution_bindings_router
@@ -344,6 +345,7 @@ from codex_web.services.github_code_host import GitHubCodeHostProvider
 from codex_web.services.goals import GoalService
 from codex_web.services.home_overview import HomeOverviewService
 from codex_web.services.metrics import MetricService
+from codex_web.services.outcome_metrics import OutcomeMetricService
 from codex_web.services.ux_telemetry import UxTelemetryService
 from codex_web.services.ux_telemetry_configuration import install_ux_telemetry_configuration
 from codex_web.services.goal_decomposition_commit import (
@@ -2461,6 +2463,11 @@ control_plane_broker_service.work_graph = work_graph_service
 app.include_router(build_work_graph_router(work_graph_service, project_service))
 metric_store = MetricStore(state_store)
 metric_service = MetricService(metric_store)
+outcome_metric_service = OutcomeMetricService(metrics=metric_service,
+    evidence=artifact_evidence_service, telemetry=agent_runtime_telemetry_service,
+    identity=identity_service, projects=project_service)
+app.state.outcome_metric_service = outcome_metric_service
+app.include_router(build_outcome_metrics_router(outcome_metric_service))
 app.state.metric_store = metric_store
 app.state.metric_service = metric_service
 app.include_router(build_metrics_router(metric_service))
