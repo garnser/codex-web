@@ -494,6 +494,30 @@ class QueuedSchedulingRetirement(BaseModel):
         return self
 
 
+class QueuedBootstrapRecovery(BaseModel):
+    """A fresh bootstrap intent, separate from the original native outcome."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    version: Literal["1.0"] = "1.0"
+    id: str = Field(min_length=1)
+    state: Literal["pending", "created"] = "pending"
+    queued_turn_id: str = Field(min_length=1)
+    queued_snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    requested_by: str = Field(min_length=1)
+    requested_at: float
+    reason: str = Field(min_length=1, max_length=1000)
+    bootstrap_id: str = Field(min_length=1)
+    execution_id: str = Field(min_length=1)
+    destination_thread_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_destination(self):
+        if (self.state == "created") != (self.destination_thread_id is not None):
+            raise ValueError("created bootstrap recovery requires its canonical destination")
+        return self
+
+
 class ExecutionPreflightAttempt(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -510,6 +534,7 @@ class ExecutionPreflightAttempt(BaseModel):
     queued_admission_claim_id: str | None = None
     queued_start_receipt: QueuedNativeStartReceipt | None = None
     scheduling_retirement: QueuedSchedulingRetirement | None = None
+    bootstrap_recovery: QueuedBootstrapRecovery | None = None
     sandbox: SandboxMode | None = None
     approval_policy: ApprovalPolicy | None = None
     model: str | None = None
@@ -532,6 +557,13 @@ class ExecutionPreflightAttempt(BaseModel):
     last_error: str | None = None
     created_at: float
     updated_at: float
+
+    @model_serializer(mode="wrap")
+    def serialize_bootstrap_recovery(self, handler):
+        result = handler(self)
+        if self.bootstrap_recovery is None:
+            result.pop("bootstrap_recovery", None)
+        return result
 
 
 class ActiveThreadTurn(BaseModel):

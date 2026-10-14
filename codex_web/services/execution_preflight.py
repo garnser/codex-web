@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import time
 import uuid
+import hashlib
+import json
 from typing import Any, Callable
 
 from fastapi import HTTPException
 
-from codex_web.identity import AuthenticationActor
+from codex_web.identity import AuthenticationActor, AuthenticationAssurance, PrincipalKind
 from codex_web.models import (
     ExecutionPreflightAttempt,
     ExecutionPreflightBlocker,
@@ -15,6 +17,7 @@ from codex_web.models import (
     QueuedTurn,
     QueuedNativeStartReceipt,
     QueuedSchedulingRetirement,
+    QueuedBootstrapRecovery,
 )
 from codex_web.services.identity import IdentityService
 from codex_web.storage.execution_preflight import ExecutionPreflightStore
@@ -585,7 +588,61 @@ class ExecutionPreflightService:
     def authorize_retry(self, attempt_id: str, *, actor: AuthenticationActor) -> ExecutionPreflightAttempt:
         current = self.get(attempt_id, actor=actor)
         self._authorize(current, actor, require_admin=True)
+        if current.bootstrap_recovery is not None and current.bootstrap_recovery.state == 'pending':
+            raise HTTPException(status_code=409, detail={
+                'code':'bootstrap_recovery_pending',
+                'message':'Reconcile the fresh bootstrap before retrying the retained request.'})
         return current
+
+    @staticmethod
+    def queued_snapshot_digest(snapshot: dict[str, Any]) -> str:
+        return hashlib.sha256(json.dumps(snapshot, sort_keys=True,
+            separators=(',', ':')).encode()).hexdigest()
+
+    def reserve_bootstrap_recovery(
+        self, attempt_id: str, *, actor: AuthenticationActor,
+        expected_snapshot_sha256: str, reason: str,
+    ) -> tuple[ExecutionPreflightAttempt, bool]:
+        """Commit once before bootstrap I/O; expiration never proves its outcome."""
+        initial = self.get(attempt_id, actor=actor)
+        self._authorize(initial, actor, require_admin=True)
+        if actor.principal_kind == PrincipalKind.HUMAN:
+            try:
+                IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+        reason = reason.strip()
+        if not reason or len(reason) > 1000:
+            raise HTTPException(status_code=422, detail='Bootstrap recovery requires a bounded reason.')
+        token = uuid.uuid4().hex
+        reserved = False
+        def update(current):
+            nonlocal reserved
+            reserved = False
+            self._authorize(current, actor, require_admin=True)
+            snapshot = current.queued_turn_snapshot
+            if (snapshot is None or self.queued_snapshot_digest(snapshot) != expected_snapshot_sha256):
+                raise HTTPException(status_code=409, detail={
+                    'code':'bootstrap_recovery_snapshot_changed',
+                    'message':'The original queued request no longer matches the recovery preview.'})
+            if (current.status != 'blocked' or current.scheduling_retirement is not None
+                    or not self.recorded_prestart_refusal(current)):
+                raise HTTPException(status_code=409, detail={
+                    'code':'bootstrap_recovery_unavailable',
+                    'message':'Fresh bootstrap recovery requires a proven unstarted, blocked original request.'})
+            if current.bootstrap_recovery is not None:
+                if (current.bootstrap_recovery.queued_turn_id != snapshot['id']
+                        or current.bootstrap_recovery.queued_snapshot_sha256 != expected_snapshot_sha256):
+                    raise HTTPException(status_code=409, detail='Bootstrap recovery identity changed.')
+                return current
+            reserved = True
+            recovery = QueuedBootstrapRecovery(id='bootstrap-recovery-' + token,
+                queued_turn_id=snapshot['id'], queued_snapshot_sha256=expected_snapshot_sha256,
+                requested_by=actor.identity_id, requested_at=float(self.clock()), reason=reason,
+                bootstrap_id='bootstrap-' + token, execution_id='thread-bootstrap-' + token)
+            return current.model_copy(update={'bootstrap_recovery':recovery,
+                'updated_at':float(self.clock())})
+        return self.store.update(attempt_id, update), reserved
 
     def authorize_scheduling_retirement(
         self,
@@ -603,8 +660,7 @@ class ExecutionPreflightService:
         *,
         actor: AuthenticationActor,
     ) -> tuple[ExecutionPreflightAttempt, str | None, bool]:
-        current = self.get(attempt_id, actor=actor)
-        self._authorize(current, actor, require_admin=True)
+        current = self.authorize_retry(attempt_id, actor=actor)
         if current.status == "started":
             return current, None, False
         if current.scheduling_retirement is not None:
@@ -747,6 +803,7 @@ class ExecutionPreflightService:
         payload = attempt.model_dump(mode="json")
         payload["can_retry"] = (self.can_retry(actor)
             and attempt.scheduling_retirement is None
+            and (attempt.bootstrap_recovery is None or attempt.bootstrap_recovery.state != 'pending')
             and attempt.status not in {"queued", "reconciliation_required", "started"})
         payload['can_reconcile_prestart'] = (self.can_retry(actor)
             and attempt.scheduling_retirement is None
