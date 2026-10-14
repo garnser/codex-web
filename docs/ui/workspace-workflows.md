@@ -29,6 +29,22 @@ The UI is a view over canonical state. A button, badge, or panel does not grant 
 
 A missing Thread deep link, lost Project scope, repeated Project choice, or inability to tell which repository will be modified is accidental friction. Explicit target selection required by policy is intentional governance.
 
+For optional request preparation, open **Thread settings**. **UX knowledge** lets
+you select brief sections, preview current context and inspect its source links.
+**Structured task** offers starting examples and fields for context, action,
+constraints, examples and references. **Compose editable preview** returns to the
+main message box; review and edit the request before sending. **Return to message**
+also closes settings and focuses the message box without submitting anything.
+
+Closing settings keeps an unfinished selection or structured draft active. If a
+preview is required, Send opens the relevant setting and focuses its preview
+button. Collapse **Structured task** to use plain chat with that draft retained.
+After accepted admission, the completed optional selection and structured mode
+clear, allowing ordinary follow-ups. Failed submission retains the draft; inspect
+Thread/queue status before retrying an uncertain outcome. Drafts belong to their
+Project, Thread and repository scope. Opening settings or preparing context does
+not invoke model reasoning; permissions and freshness still apply at turn start.
+
 ## Runs: understand status and choose the next action
 
 1. Open **Runs / Execution** from the active Project or follow a Run link from its Work Item.

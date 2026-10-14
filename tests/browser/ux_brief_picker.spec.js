@@ -1,8 +1,9 @@
 const {test,expect}=require('@playwright/test');
+const {mountSettings,openSettings}=require('./context_picker_fixture');
 async function setup(page,{omitted=false}={}){
-  await page.goto('http://127.0.0.1:18766/static/ux_brief_picker.js');
+  await mountSettings(page,'Build a recovery view');
   await page.evaluate(async({omitted})=>{
-    document.body.innerHTML='<div class="composer"><textarea id="prompt">Build a recovery view</textarea></div>';
+
     window.scope={projectId:'a',threadId:'t',repositoryResourceId:'repo'};
     const {installUxBriefPicker}=await import('/static/ux_brief_picker.js');
     window.picker=installUxBriefPicker({prompt:document.querySelector('#prompt'),getScope:()=>window.scope,
@@ -12,7 +13,7 @@ async function setup(page,{omitted=false}={}){
         {items:[{id:'brief-1',title:'Recovery brief',version:1,content_sha256:'a'.repeat(64),freshness:'fresh',
           content:JSON.stringify({sections:{observed_needs:{text:'User needs'},approved_copy:{text:'Try again'}}})}]}});
   },{omitted});
-  await page.locator('#ux-brief-picker summary').click();
+  await openSettings(page);await page.locator('#ux-brief-picker summary').click();
   await page.locator('#ux-picker-brief').selectOption('brief-1');
   await page.locator('#ux-picker-sections input[value="observed_needs"]').check();
 }
@@ -46,4 +47,27 @@ test('mobile keyboard selection fits viewport',async({page})=>{
   await page.locator('#ux-picker-preview').focus();await page.keyboard.press('Enter');
   await expect(page.locator('#ux-picker-status')).toContainText('Preview ready');
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+});
+
+test('late UX preview is fenced while settings are closed and original scope selection survives',async({page})=>{
+  await setup(page);
+  await page.evaluate(async()=>{
+    document.querySelector('#ux-brief-picker').remove();
+    const {installUxBriefPicker}=await import('/static/ux_brief_picker.js');
+    window.picker=installUxBriefPicker({prompt:document.querySelector('#prompt'),getScope:()=>scope,
+      request:async(path,options)=>options?new Promise(resolve=>window.pending=resolve):
+        {items:[{id:'brief-1',title:'Brief',version:1,content_sha256:'a'.repeat(64),freshness:'fresh',
+          content:JSON.stringify({sections:{observed_needs:{text:'Need'}}})}]}});
+  });
+  await page.locator('#ux-brief-picker summary').click();
+  await page.locator('#ux-picker-brief').selectOption('brief-1');await page.locator('#ux-picker-sections input').check();
+  await page.locator('#ux-picker-preview').click();await expect(page.locator('#ux-picker-status')).toContainText('Checking context');
+  await page.locator('#thread-context-return').click();await expect(page.locator('#prompt')).toBeFocused();
+  await page.evaluate(()=>{scope={...scope,repositoryResourceId:'other'};picker.sync();pending({context:'Wrong scope',selection:{knowledge_id:'brief-1'}});});
+  expect(await page.evaluate(()=>picker.prepare())).toBeNull();await expect(page.locator('#ux-picker-context')).toHaveText('');
+  await page.evaluate(()=>{scope={...scope,repositoryResourceId:'repo'};picker.sync();});
+  expect(await page.evaluate(()=>picker.prepare().blocked)).toBe(true);
+  await expect(page.locator('#ux-picker-preview')).toBeFocused();
+  await expect(page.locator('#ux-picker-status')).toContainText('Thread settings → UX knowledge');
+  await expect(page.locator('#prompt')).toHaveValue('Build a recovery view');
 });

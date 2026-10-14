@@ -41,6 +41,19 @@ export function updatePayload(current, updates) {
   };
 }
 
+export function revealSetting(control, target) {
+  const menu = control.closest('#thread-settings-menu');
+  if (menu) menu.open = true;
+  control.open = true;
+  target?.focus();
+}
+
+export function returnToPrompt(control, prompt) {
+  const menu = control.closest('#thread-settings-menu');
+  if (menu) menu.open = false;
+  prompt.focus();
+}
+
 export function install({
   byId,
   activeThreadId,
@@ -51,9 +64,14 @@ export function install({
   renderRepositories,
 }) {
   const menu = byId("thread-settings-menu");
+  byId("thread-context-return")?.addEventListener("click", () => {
+    returnToPrompt(menu, byId("prompt"));
+  });
   document.addEventListener("click", (event) => {
     if (menu.open && !menu.contains(event.target)) menu.open = false;
-  });
+  // Close an existing popover before Send can reveal required-preview guidance.
+  // A bubbling handler would immediately hide the setting opened by that click.
+  }, { capture: true });
   menu.addEventListener("keydown", (event) => {
     if (event.key !== "Escape" || !menu.open) return;
     event.preventDefault();

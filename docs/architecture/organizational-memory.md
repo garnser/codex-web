@@ -218,6 +218,11 @@ source lineage or other brief sections. Selection and freshness consume no model
 calls. A preview/retrieval audit is not proof of provider delivery or a trusted
 execution continuation checkpoint.
 
+The optional **Thread settings → UX knowledge** picker preserves section selection,
+preview and source links within the existing settings surface. **Return to message**
+closes settings and focuses the editable request; selection remains active for
+admission. Required-preview guidance reopens the picker.
+
 The optional chat composer picker sends `TurnCreate.memory_context_selection`.
 The server binds exact section/source pins, the Project/tenant and original
 principal to a context digest. Queued and active turns persist this bounded

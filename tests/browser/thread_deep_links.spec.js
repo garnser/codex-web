@@ -1,11 +1,12 @@
 const { test, expect } = require('@playwright/test');
+const {baseURL,openSettings}=require('./context_picker_fixture');
 
 for (const outcome of ['success', 'failure']) {
   test(`project switch clears previous threads while the new list is pending (${outcome})`, async ({ page }) => {
     await mockChatApi(page);
     let pending;
     await page.route('**/api/projects/alpha/ui-state?*', route => { pending = route; });
-    await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+    await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
     await expect(page.locator('#thread-title')).toHaveText('Home thread');
     await expect(page.locator('#threads .item')).toHaveCount(2);
 
@@ -36,7 +37,7 @@ test('browser Back clears current threads and fences a late project response', a
   await mockChatApi(page);
   let pending;
   await page.route('**/api/projects/alpha/ui-state?*', route => { pending = route; });
-  await page.goto('http://127.0.0.1:18766/projects/home/chat');
+  await page.goto(baseURL+'/projects/home/chat');
   await expect(page.locator('#threads')).toContainText('Home thread');
   await page.locator('#product-project-switcher').selectOption('alpha');
   await expect.poll(() => Boolean(pending)).toBe(true);
@@ -50,7 +51,7 @@ test('browser Back clears current threads and fences a late project response', a
 
 test('same-project refresh retains its threads while a new list is pending', async ({ page }) => {
   await mockChatApi(page);
-  await page.goto('http://127.0.0.1:18766/projects/home/chat');
+  await page.goto(baseURL+'/projects/home/chat');
   await expect(page.locator('#threads .item')).toHaveCount(2);
   let pending;
   await page.route('**/api/projects/home/ui-state?*', route => { pending = route; });
@@ -64,7 +65,7 @@ test('same-project refresh retains its threads while a new list is pending', asy
 test('the thread list omits rows explicitly belonging to another Project', async ({ page }) => {
   const { threads } = await mockChatApi(page);
   threads.alpha.push(threads.home[0]);
-  await page.goto('http://127.0.0.1:18766/projects/alpha/chat');
+  await page.goto(baseURL+'/projects/alpha/chat');
   await expect(page.locator('#threads')).toContainText('Alpha thread');
   await expect(page.locator('#threads .item')).toHaveCount(1);
   await expect(page.locator('#threads')).not.toContainText('Home thread');
@@ -188,7 +189,7 @@ async function mockChatApi(page, { degradeFirstThreadRead = false, simulateReply
 
 test('CLI reply completed while inactive is restored from canonical Thread history', async ({ page }) => {
   const { threadTurns } = await mockChatApi(page);
-  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
   await page.locator('#prompt').fill('Keep this prompt visible.');
   await page.locator('#prompt').press('Enter');
   await expect.poll(() => threadTurns['home-thread']?.length || 0).toBe(1);
@@ -245,7 +246,7 @@ test('usage panel renders provider resources and only meters authoritative denom
     ],
   } }));
 
-  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
   await page.locator('.token-footer > summary').click();
   await expect(page.locator('#usage-resources .usage-resource')).toHaveCount(4);
   await expect(page.locator('[data-resource-id="codex:primary"] [role="progressbar"]')).toHaveAttribute('aria-valuenow', '64');
@@ -259,7 +260,7 @@ test('usage panel renders provider resources and only meters authoritative denom
 
 test('project-scoped Thread deep links, reload, and Back/Forward restore conversation selection', async ({ page }) => {
   const { reads } = await mockChatApi(page);
-  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
   await expect(page.locator('#thread-title')).toHaveText('Home thread');
   await expect(page).toHaveURL(/projects\/home\/chat\?thread=home-thread/);
 
@@ -272,7 +273,7 @@ test('project-scoped Thread deep links, reload, and Back/Forward restore convers
   await expect(page).toHaveURL(/projects\/home\/chat\?thread=home-thread/);
   await expect(page.locator('#thread-title')).toHaveText('Home thread');
 
-  await page.goto('http://127.0.0.1:18766/projects/alpha/chat?thread=alpha-thread');
+  await page.goto(baseURL+'/projects/alpha/chat?thread=alpha-thread');
   await page.evaluate(() => sessionStorage.clear());
   await page.reload();
   await expect(page.locator('#thread-title')).toHaveText('Alpha thread');
@@ -283,7 +284,7 @@ test('project-scoped Thread deep links, reload, and Back/Forward restore convers
 
 test('Thread selection history is restored and Project switching drops the previous Thread', async ({ page }) => {
   const { reads } = await mockChatApi(page);
-  await page.goto('http://127.0.0.1:18766/projects/home/chat');
+  await page.goto(baseURL+'/projects/home/chat');
   await page.locator('#threads .item-main', { hasText: 'Home thread' }).click({ force: true });
   await expect(page.locator('#thread-title')).toHaveText('Home thread');
   await page.goBack();
@@ -304,7 +305,7 @@ test('Thread selection history is restored and Project switching drops the previ
 
 test('a Thread from another Project is rejected visibly without loading its conversation', async ({ page }) => {
   const { reads } = await mockChatApi(page);
-  await page.goto('http://127.0.0.1:18766/projects/alpha/chat?thread=home-thread');
+  await page.goto(baseURL+'/projects/alpha/chat?thread=home-thread');
   await expect(page.locator('#messages')).toContainText('This Thread is unavailable in the active Project.');
   await expect(page).not.toHaveURL(/thread=home-thread/);
   expect(reads).not.toContain('home-thread');
@@ -323,7 +324,7 @@ for (const action of ['name', 'archive']) {
     await mockChatApi(page);
     let pending;
     await page.route(`**/api/threads/home-thread/${action}?*`, route => { pending = route; });
-    await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+    await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
     await expect(page.locator('#thread-title')).toHaveText('Home thread');
     await page.locator('#thread-settings-menu > summary').click();
     if (action === 'name') page.once('dialog', dialog => dialog.accept('Old visit rename'));
@@ -348,7 +349,7 @@ test('sending while Thread creation is pending cannot deliver the prompt into an
     if (route.request().method() === 'POST') pending = route;
     else return route.fallback();
   });
-  await page.goto('http://127.0.0.1:18766/projects/home/chat');
+  await page.goto(baseURL+'/projects/home/chat');
   await expect(page.locator('#threads')).toContainText('Home thread');
   await page.locator('#prompt').fill('Original Project prompt');
   await page.locator('#prompt').press('Enter');
@@ -369,7 +370,7 @@ test('sending while Thread creation is pending cannot deliver the prompt into an
 for (const action of ['name', 'archive']) {
   test(`current Thread ${action} completion still updates the selected conversation`, async ({ page }) => {
     await mockChatApi(page);
-    await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+    await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
     await expect(page.locator('#thread-title')).toHaveText('Home thread');
     await page.locator('#thread-settings-menu > summary').click();
     if (action === 'name') page.once('dialog', dialog => dialog.accept('Current rename'));
@@ -386,7 +387,7 @@ test('archived Thread offers canonical unarchive in its original Project visit',
     restored.push(new URL(route.request().url()).searchParams.get('project_id'));
     return route.fulfill({ json: {} });
   });
-  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
   await expect(page.locator('#thread-title')).toHaveText('Home thread');
   await page.locator('#thread-settings-menu > summary').click();
   await page.locator('#archive-thread').click();
@@ -401,7 +402,7 @@ test('a previous conversation send failure does not appear in the current conver
   await mockChatApi(page);
   let pending;
   await page.route('**/api/threads/home-thread/turns?*', route => { pending = route; });
-  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
   await expect(page.locator('#thread-title')).toHaveText('Home thread');
   await page.locator('#prompt').fill('Old conversation message');
   await page.locator('#prompt').press('Enter');
@@ -422,7 +423,7 @@ for (const outcome of ['success', 'failure']) {
       eligible: true, autoEnabled: true, autoThresholdPercent: 80,
     } }));
     await page.route('**/api/threads/home-thread/compact?*', route => { pending = route; });
-    await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+    await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
     await expect(page.locator('#compact-context')).toBeEnabled();
     await page.locator('.token-footer > summary').click();
     await page.locator('#compact-context').click();
@@ -448,7 +449,7 @@ test('loading earlier activity performs a scoped read for the already selected T
       limit: url.searchParams.get('message_limit'), project: url.searchParams.get('project_id'),
     });
   });
-  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
   await expect(page.locator('#thread-title')).toHaveText('Home thread');
   await expect(page.locator('#thread-history-control button')).toBeEnabled();
   await page.locator('#thread-history-control button').click();
@@ -459,7 +460,7 @@ test('loading earlier activity performs a scoped read for the already selected T
 
 test('selecting a Thread again retries a detail read that did not render', async ({ page }) => {
   const { reads } = await mockChatApi(page, { degradeFirstThreadRead: true });
-  await page.goto('http://127.0.0.1:18766/projects/home/chat');
+  await page.goto(baseURL+'/projects/home/chat');
 
   await page.locator('#threads .item-main', { hasText: 'Home thread' }).click({ force: true });
   await expect(page.locator('#messages')).toContainText('Thread temporarily unavailable');
@@ -471,16 +472,16 @@ test('selecting a Thread again retries a detail read that did not render', async
 
 test('a reply completed while another Thread is selected loads on return', async ({ page }) => {
   const { reads } = await mockChatApi(page, { simulateReply: true });
-  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
   await expect(page.locator('#messages')).toContainText('Loaded home-thread');
 
   await page.locator('#prompt').fill('Reply after I switch Threads');
   await page.locator('#send').click();
-  await page.goto('http://127.0.0.1:18766/projects/alpha/chat?thread=alpha-thread');
+  await page.goto(baseURL+'/projects/alpha/chat?thread=alpha-thread');
   await expect(page.locator('#thread-title')).toHaveText('Alpha thread');
   await page.waitForTimeout(150);
 
-  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
   await expect(page.locator('#messages')).toContainText('Reply completed while another thread was selected');
   expect(reads.filter((id) => id === 'home-thread').length).toBeGreaterThanOrEqual(2);
 });
@@ -497,9 +498,9 @@ for(const queued of [false,true]) test(`structured preview enters existing Threa
     expect(body.fields.references).toEqual(['issue:1370']);
     await route.fulfill({json:{message:'Action: Investigate defect\nReferences: issue:1370',template_ref:reference,suggestions:[]}});
   });
-  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
   await expect(page.locator('#thread-title')).toHaveText('Home thread');
-  await page.locator('#care-composer summary').click();
+  await openSettings(page);await page.locator('#care-composer summary').click();
   await page.locator('#care-example').selectOption('0');
   await page.locator('#care-preview').click();
   await expect(page.locator('#prompt')).toHaveValue(/Investigate defect/);
@@ -509,6 +510,12 @@ for(const queued of [false,true]) test(`structured preview enters existing Threa
     'Edited investigation request\n\nStarting example: care.investigate-defect r3 · record skill-record · checksum fixture-checksum');
   await expect(page.locator('#care-action')).toHaveValue('');
   await expect(page.locator('#care-status')).toContainText('Request accepted');
+  await expect(page.locator('#thread-settings-menu')).not.toHaveAttribute('open');
+  await expect(page.locator('#care-composer')).not.toHaveAttribute('open');
+  await page.locator('#prompt').fill('Ordinary follow-up after structured request');
+  await page.locator('#send').click();
+  await expect.poll(()=>threadTurns['home-thread']?.[0]?.items[0]?.content[0]?.text).toBe('Ordinary follow-up after structured request');
+  await expect(page.locator('#thread-settings-menu')).not.toHaveAttribute('open');
 });
 
 test('denied structured admission keeps editable draft in its original Thread',async({page})=>{
@@ -516,9 +523,9 @@ test('denied structured admission keeps editable draft in its original Thread',a
   await page.route('**/api/projects/home/care/examples',route=>route.fulfill({json:{items:[]}}));
   await page.route('**/api/projects/home/care/preview',route=>route.fulfill({json:{message:'Retained structured request',suggestions:[]}}));
   await page.route('**/api/threads/home-thread/turns?*',route=>route.fulfill({status:403,json:{detail:'Admission denied'}}));
-  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
   await expect(page.locator('#thread-title')).toHaveText('Home thread');
-  await page.locator('#care-composer summary').click();
+  await openSettings(page);await page.locator('#care-composer summary').click();
   await page.locator('#care-action').fill('Investigate denial');
   await page.locator('#care-preview').click();
   await expect(page.locator('#prompt')).toHaveValue('Retained structured request');
@@ -527,4 +534,80 @@ test('denied structured admission keeps editable draft in its original Thread',a
   await expect(page.locator('#prompt')).toHaveValue('Retained structured request');
   await expect(page.locator('#care-action')).toHaveValue('Investigate denial');
   await expect(page.locator('#thread-title')).toHaveText('Home thread');
+});
+
+for (const width of [1280, 390]) test(`optional request preparation lives in keyboard-accessible settings (${width}px)`, async ({page}) => {
+  await page.setViewportSize({width, height:844});
+  const {threadTurns}=await mockChatApi(page);
+  const reads=[];
+  await page.route('**/api/projects/home/care/**', route=>{reads.push(route.request().url());return route.fulfill({json:{items:[]}});});
+  await page.route('**/api/memory/projects/home/ux-briefs', route=>{reads.push(route.request().url());return route.fulfill({json:{items:[]}});});
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
+  await expect(page.locator('#thread-title')).toHaveText('Home thread');
+  await expect(page.locator('.composer #care-composer, .composer #ux-brief-picker')).toHaveCount(0);
+  await expect(page.locator('#thread-settings-menu #care-composer')).toHaveCount(1);
+  await expect(page.locator('#thread-settings-menu #ux-brief-picker')).toHaveCount(1);
+  await expect(page.locator('#care-composer')).not.toBeVisible();
+  const summary=page.locator('#thread-settings-menu > summary');
+  await summary.focus();await page.keyboard.press('Enter');
+  await expect(page.locator('#care-composer')).toBeVisible();
+  expect(reads).toEqual([]);expect(threadTurns).toEqual({});
+  await page.keyboard.press('Escape');await expect(summary).toBeFocused();
+  await page.keyboard.press('Enter');
+  await page.locator('#thread-context-return').click();
+  await expect(page.locator('#prompt')).toBeFocused();
+  await expect(page.locator('#care-composer')).not.toBeVisible();
+  await page.locator('#prompt').fill('Plain chat stays usable');await page.locator('#send').click();
+  await expect.poll(()=>threadTurns['home-thread']?.[0]?.items[0]?.content[0]?.text).toBe('Plain chat stays usable');
+  expect(reads).toEqual([]);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+});
+
+test('missing structured preview reopens settings and focuses preparation without submitting',async({page})=>{
+  const {threadTurns}=await mockChatApi(page);
+  await page.route('**/api/projects/home/care/examples',route=>route.fulfill({json:{items:[]}}));
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
+  await expect(page.locator('#thread-title')).toHaveText('Home thread');
+  await openSettings(page);await page.locator('#care-composer summary').click();
+  await page.locator('#care-action').fill('Uncomposed task');
+  await page.locator('#thread-context-return').click();await page.locator('#prompt').fill('Draft');
+  await page.locator('#send').click();
+  await expect(page.locator('#care-preview')).toBeFocused();
+  await expect(page.locator('#care-status')).toContainText('Thread settings → Structured task');
+  await expect(page.locator('#prompt')).toHaveValue('Draft');expect(threadTurns).toEqual({});
+});
+
+test('UX preview guidance opens settings and selected provenance reaches Thread admission',async({page})=>{
+  const {threadTurns}=await mockChatApi(page);
+  const selection={knowledge_id:'brief',version:1,sha256:'a'.repeat(64),sections:['observed_needs'],
+    max_context_tokens:2000,sources:[{kind:'knowledge',record_id:'source',revision:'2',sha256:'b'.repeat(64)}]};
+  await page.route('**/api/memory/projects/home/ux-briefs',route=>route.fulfill({json:{items:[{
+    id:'brief',title:'User needs',version:1,content_sha256:selection.sha256,freshness:'fresh',
+    content:JSON.stringify({sections:{observed_needs:{text:'Need a useful recovery view'}}})
+  }]}}));
+  await page.route('**/api/memory/projects/home/ux-briefs/preview',route=>route.fulfill({json:{
+    context:'Need a useful recovery view',packed_tokens:20,selection,omitted:[]
+  }}));
+  let admitted;
+  await page.route('**/api/threads/home-thread/turns?*',async route=>{
+    if(route.request().method()==='POST')admitted=route.request().postDataJSON();
+    await route.fallback();
+  });
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
+  await expect(page.locator('#thread-title')).toHaveText('Home thread');
+  await openSettings(page);await page.locator('#ux-brief-picker summary').click();
+  await page.locator('#ux-picker-brief').selectOption('brief');
+  await page.locator('#ux-picker-sections input[value="observed_needs"]').check();
+  await page.locator('#thread-context-return').click();await page.locator('#prompt').fill('Build a recovery view');
+  await page.locator('#send').click();
+  await expect(page.locator('#ux-picker-preview')).toBeFocused();
+  await expect(page.locator('#ux-picker-status')).toContainText('Thread settings → UX knowledge');
+  expect(threadTurns).toEqual({});
+  await page.locator('#ux-picker-preview').click();
+  await expect(page.locator('#ux-picker-sources a')).toHaveAttribute('href','/api/memory/source');
+  await page.locator('#thread-context-return').click();await page.locator('#send').click();
+  await expect.poll(()=>admitted?.memory_context_selection).toEqual(selection);
+  expect(admitted.message).toBe('Build a recovery view');
+  await expect(page.locator('#ux-picker-brief')).toHaveValue('');
+  await expect(page.locator('#thread-settings-menu')).not.toHaveAttribute('open');
 });
