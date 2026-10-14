@@ -236,6 +236,9 @@ class OutcomeMetricService:
 
     def publish(self, report, *, actor):
         """Explicitly materialize an exact projection in existing Metric state."""
+        self._project(report["project_id"], actor)
+        if report["formula_version"] != FORMULA_VERSION:
+            raise ValueError("outcome projection version is incompatible with this engine")
         observations = []
         fingerprint = hashlib.sha256(json.dumps(report, sort_keys=True).encode()).hexdigest()
         snapshot = self.evidence.create_evidence(EvidenceCreate(
@@ -248,8 +251,9 @@ class OutcomeMetricService:
                 for cohort in report["cohorts"] for task in cohort["tasks"]
                 for eid in [*task["feedback_history_ids"], *task["source_evidence_ids"]]})))
         for cohort in report["cohorts"]:
-            cohort_key = hashlib.sha256(json.dumps({key:cohort[key] for key in
-                ("workload", "model_ids", "template_artifact_id", "template_revision")}, sort_keys=True).encode()).hexdigest()[:16]
+            cohort_key = hashlib.sha256(json.dumps({"project_id":report["project_id"],
+                **{key:cohort[key] for key in ("workload", "model_ids", "template_artifact_id", "template_revision")}},
+                sort_keys=True).encode()).hexdigest()
             definitions = {row.key:row for row in self.metrics.list_definitions(scope=actor.tenant, project_id=report["project_id"])}
             for name, value in cohort["values"].items():
                 if value is None:
@@ -275,7 +279,7 @@ class OutcomeMetricService:
                     value=float(value), source=FORMULA_VERSION, evidence_ids=evidence_ids,
                     observed_at=report["window"]["end_at"], window_start=report["window"]["start_at"],
                     window_end=report["window"]["end_at"], partial=cohort["status"] == "partial",
-                    external_record_ref=f"{FORMULA_VERSION}:{fingerprint}", idempotency_key=fingerprint + ":" + name),
+                    external_record_ref=f"{FORMULA_VERSION}:{fingerprint}", idempotency_key=snapshot.id + ":" + name),
                     scope=actor.tenant, actor_id=actor.identity_id)
                 observations.append({"metric_id": definition.id, "metric_revision": definition.revision,
                                      "observation_id": observation.id, "projection_evidence_id":snapshot.id})

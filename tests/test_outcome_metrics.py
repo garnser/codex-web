@@ -339,3 +339,30 @@ class OutcomeMetricTests(unittest.TestCase):
         self.assertEqual(task["source_evidence_ids"], [])
         self.assertIn("outside_project", task["limitation"])
         self.assertEqual(report["status"], "partial")
+
+    def test_identical_cohorts_publish_to_distinct_project_definitions(self):
+        self.feedback(self.usage())
+        first_report = self.evaluate()
+        first = self.service.publish(first_report, actor=self.actor)
+        self.service.projects = SimpleNamespace(get=lambda project_id, scope:SimpleNamespace(id=project_id))
+        usage = self.usage("second", project_id="second-project")
+        self.service.feedback(OutcomeFeedbackCreate(runtime_usage_id=usage.id, outcome="accepted",
+            workload="documentation", correction_required=False, review_count=1, intervention_count=0,
+            review_seconds=30, idempotency_key="second"), project_id="second-project", actor=self.actor)
+        second_report = self.evaluate(project_id="second-project")
+        second = self.service.publish(second_report, actor=self.actor)
+        self.assertTrue({row["metric_id"] for row in first}.isdisjoint(row["metric_id"] for row in second))
+        self.assertEqual(len(self.metrics.list_definitions(scope=self.actor.tenant, project_id="p")), 8)
+        self.assertEqual(len(self.metrics.list_definitions(scope=self.actor.tenant, project_id="second-project")), 8)
+
+    def test_same_projection_from_distinct_authorized_publishers_preserves_attribution(self):
+        self.feedback(self.usage())
+        report = self.evaluate()
+        first = self.service.publish(report, actor=self.actor)
+        other = self.actor.model_copy(update={"identity_id":"other-publisher"})
+        second = self.service.publish(report, actor=other)
+        self.assertEqual(first[0]["metric_id"], second[0]["metric_id"])
+        self.assertNotEqual(first[0]["projection_evidence_id"], second[0]["projection_evidence_id"])
+        self.assertEqual(self.evidence.get_evidence(second[0]["projection_evidence_id"], actor=other).producer_identity_id,
+                         other.identity_id)
+        self.assertEqual(self.service.publish(report, actor=other), second)
