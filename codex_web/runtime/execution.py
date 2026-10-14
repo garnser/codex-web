@@ -949,6 +949,8 @@ class TurnExecutionService:
         self,
         thread_id: str,
         queued_id: str,
+        *,
+        order_snapshot: list[str] | None = None,
     ) -> QueuedTurn | None:
         selected: dict[str, QueuedTurn] = {}
 
@@ -956,6 +958,8 @@ class TurnExecutionService:
             for index, queued in enumerate(items):
                 if queued.id != queued_id:
                     continue
+                if order_snapshot is not None:
+                    order_snapshot[:] = [item.id for item in items]
                 selected["item"] = items.pop(index)
                 break
             return items
@@ -3454,7 +3458,7 @@ class TurnExecutionService:
                     await asyncio.to_thread(self.queued_preflight.queued_disposition,
                         attempt.id, status="queued", claim_id=claim_id)
                     continue
-                queued = self.pop_queued_turn(thread_id, candidate.id)
+                queued = self.pop_queued_turn(thread_id, candidate.id, order_snapshot=original_order)
                 if queued is not None:
                     retained_attempt = attempt
                     admission_claim_id = claim_id
@@ -3467,18 +3471,35 @@ class TurnExecutionService:
         else:
             candidate = next((item for item in TurnQueuePolicy.admission_candidates(h._thread_queue(thread_id))
                               if self.automation_wait_reason(item.source) is None), None)
-            queued = self.pop_queued_turn(thread_id, candidate.id) if candidate else None
+            queued = self.pop_queued_turn(thread_id, candidate.id, order_snapshot=original_order) if candidate else None
         if not queued:
             await self.publish_queue_status(thread_id)
             return
         original_queued = queued.model_copy(deep=True)
-        def restore_original_position():
+        def restore_original_position(original=original_queued):
             def restore(items):
-                if any(item.id == original_queued.id for item in items):
+                if any(item.id == original.id for item in items):
                     return items
-                preceding = set(original_order[:original_order.index(original_queued.id)])
-                index = next((i for i, item in enumerate(items) if item.id not in preceding), len(items))
-                items.insert(index, original_queued)
+                position = original_order.index(original.id)
+                preceding = set(original_order[:position])
+                following = set(original_order[position + 1:])
+                # Anchor to surviving original peers. A concurrent explicit
+                # retry inserted ahead of them must keep its priority; ordinary
+                # arrivals behind them must not overtake the deferred original.
+                predecessor = max((i for i, item in enumerate(items)
+                    if item.id in preceding), default=-1)
+                successor = next((i for i, item in enumerate(items)
+                    if item.id in following), None)
+                index = predecessor + 1 if predecessor >= 0 else successor
+                if index is None:
+                    # With no surviving peer, only the existing durable retry
+                    # intent can establish explicit priority. New ordinary
+                    # arrivals retain FIFO behind the older deferred request.
+                    priority_positions = [i for i, item in enumerate(items)
+                        if self.queued_preflight is not None
+                        and self.queued_preflight.has_explicit_queue_priority(item)]
+                    index = max(priority_positions, default=-1) + 1
+                items.insert(index, original)
                 return items
             self._update_thread_queue(thread_id, restore)
 
@@ -3500,7 +3521,10 @@ class TurnExecutionService:
                         if original.reply_target and original.reply_target.thread_id == original.thread_id:
                             original.reply_target = original.reply_target.model_copy(update={'thread_id':target})
                         original.thread_id = target
-                        self.requeue_turn_front(original)
+                        if target == thread_id:
+                            restore_original_position(original)
+                        else:
+                            self.requeue_turn_front(original)
                         if target != thread_id:
                             self.schedule_queue_drain(target)
                     # The recovery domain owns the original request. A fenced
@@ -3623,8 +3647,7 @@ class TurnExecutionService:
             # already owns its execution (including an unknown start result).
             reschedule_queue = False
             if not self.thread_is_active(thread_id):
-                queued.attempts = max(0, queued.attempts - 1)
-                self.requeue_turn_front(queued)
+                restore_original_position()
             raise
         except Exception as exc:
             detail = exc.detail if isinstance(exc, HTTPException) and isinstance(exc.detail, dict) else None
