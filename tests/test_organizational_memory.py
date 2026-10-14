@@ -19,6 +19,7 @@ from codex_web.organizational_memory import (
     KnowledgeCreate,
     KnowledgeFreshness,
     KnowledgeIngestBatch,
+    KnowledgeInvalidate,
     KnowledgeLifecycle,
     KnowledgeObjectType,
     KnowledgeProcedurePromotion,
@@ -83,7 +84,7 @@ class OrganizationalMemoryTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def _research(self, key, origin=None, *, sources=(), reviewed=False):
+    def _research(self, key, origin=None, *, sources=(), reviewed=False, **metadata):
         provenance = {"source_kind": "manual", "source_ref": f"research:{key}"}
         if origin is not None:
             provenance["origin"] = origin
@@ -96,7 +97,50 @@ class OrganizationalMemoryTests(unittest.TestCase):
             relationships=tuple(KnowledgeRelationshipCreate(
                 target_knowledge_id=source.id, relationship_type="derived_from",
             ) for source in sources),
+            **metadata,
         ), actor=self.actor)
+
+    def test_source_invalidation_excludes_derived_summary_from_context(self):
+        source = self._research("invalidated-source", "human_observed")
+        summary = self._research("invalidated-summary", sources=(source,))
+        self.service.invalidate(source.id, KnowledgeInvalidate(reason="Finding withdrawn"), actor=self.actor)
+        self.assertEqual(self.service.freshness(summary), KnowledgeFreshness.INVALID)
+        result = self.service.search(KnowledgeQuery(logical_keys=(summary.logical_key,)), actor=self.actor)
+        self.assertEqual(result.items, ())
+        historical = self.service.search(KnowledgeQuery(
+            logical_keys=(summary.logical_key,), include_invalid=True,
+        ), actor=self.actor)
+        self.assertEqual(historical.items[0].freshness, KnowledgeFreshness.INVALID)
+
+    def test_source_supersession_requires_explicit_new_source_revision(self):
+        source = self._research("revised-source", "human_observed")
+        old_summary = self._research("old-source-summary", sources=(source,))
+        revised = self.service.revise(source.id, KnowledgeRevise(
+            provenance=KnowledgeProvenance(source_kind="manual", source_ref="updated-session"),
+            content="Corrected finding", reason="Correct source finding",
+        ), actor=self.actor)
+        self.assertEqual(self.service.freshness(revised), KnowledgeFreshness.FRESH)
+        self.assertEqual(self.service.freshness(old_summary), KnowledgeFreshness.STALE)
+        self.assertEqual(self.service.search(KnowledgeQuery(
+            logical_keys=(old_summary.logical_key,),
+        ), actor=self.actor).items, ())
+        new_summary = self._research("new-source-summary", sources=(revised,))
+        self.assertEqual(self.service.freshness(new_summary), KnowledgeFreshness.FRESH)
+        self.assertIn(source.id, {row.knowledge_id for row in new_summary.provenance.origin_sources})
+
+    def test_source_expiry_propagates_without_rewriting_historical_origin(self):
+        source = self._research("expiring-source", "human_observed", valid_until=self.now + 10)
+        summary = self._research("expiring-summary", sources=(source,))
+        self.now += 11
+        self.assertEqual(self.service.freshness(summary), KnowledgeFreshness.EXPIRED)
+        self.assertEqual(self.service.search(KnowledgeQuery(
+            logical_keys=(summary.logical_key,),
+        ), actor=self.actor).items, ())
+        historical = self.service.search(KnowledgeQuery(
+            logical_keys=(summary.logical_key,), include_stale=True,
+        ), actor=self.actor)
+        self.assertEqual(historical.items[0].freshness, KnowledgeFreshness.EXPIRED)
+        self.assertEqual(historical.items[0].provenance.origin, KnowledgeOrigin.HUMAN_OBSERVED)
 
     def test_legacy_origin_defaults_unknown_without_inferring_authorship(self):
         source = self._research("legacy")

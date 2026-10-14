@@ -122,6 +122,18 @@ budget and returns the structured provenance alongside excerpts. The Memory
 inspector shows origin, review status, and source-version attribution. No extra
 model calls, participant telemetry, or separate research store are introduced.
 
+Derived research freshness also checks the lifecycle and deadlines of exact cited
+source versions. An invalid, redacted, deleted, missing or foreign source makes
+the derived finding invalid for normal retrieval; superseded sources make it
+stale, and source validity/retention expiry makes it expired. Explicit historical
+queries retain those labels. A newer source version is never silently substituted.
+When a record explicitly cites a newer version with historical attribution, the
+newest cited version of each source logical key determines source freshness.
+Historical attribution within the finding's own revision lineage does not make
+its current revision stale. Canonical source lifecycle and historical origins
+remain unchanged; the derived freshness is calculated using one retrieval-state
+snapshot before ranking or context packing.
+
 Each search writes a metadata-only `KnowledgeRetrievalRun` containing:
 
 - tenant/workspace and actor

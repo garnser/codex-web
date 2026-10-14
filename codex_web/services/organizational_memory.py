@@ -60,6 +60,7 @@ from codex_web.retrieval import (
 )
 from codex_web.services.authority_roles import AuthorityRoleService
 from codex_web.services.data_governance import DataGovernanceService
+from codex_web.services.research_provenance import derived_source_freshness
 from codex_web.storage.organizational_memory import (
     KnowledgeConflictError,
     KnowledgeNotFoundError,
@@ -595,6 +596,7 @@ class OrganizationalMemoryService:
         item: KnowledgeRecord,
         *,
         now: float | None = None,
+        records: dict[str, KnowledgeRecord] | None = None,
     ) -> KnowledgeFreshness:
         current = float(self.clock()) if now is None else now
         if item.lifecycle == KnowledgeLifecycle.SUPERSEDED:
@@ -614,6 +616,11 @@ class OrganizationalMemoryService:
             return KnowledgeFreshness.EXPIRED
         if item.review_after is not None and current >= item.review_after:
             return KnowledgeFreshness.STALE
+        if item.provenance.origin_sources:
+            records = records if records is not None else {row.id: row for row in self.store.load().records}
+            source_status = derived_source_freshness(item, records, now=current)
+            if source_status is not None:
+                return source_status
         return KnowledgeFreshness.FRESH
 
     @staticmethod
@@ -1476,6 +1483,7 @@ class OrganizationalMemoryService:
     ) -> KnowledgeRetrievalResult:
         state = self.store.load()
         relationships = self._relationship_targets(state)
+        record_map = {item.id: item for item in state.records}
         now = float(self.clock())
         candidates = [
             item
@@ -1497,7 +1505,7 @@ class OrganizationalMemoryService:
         lifecycle_filtered: list[tuple[KnowledgeRecord, KnowledgeFreshness]] = []
 
         for item in candidates:
-            freshness = self._freshness(item, now=now)
+            freshness = self._freshness(item, now=now, records=record_map)
             if freshness == KnowledgeFreshness.SUPERSEDED:
                 if not query.include_superseded:
                     continue
