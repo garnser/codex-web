@@ -27,8 +27,8 @@ class ModelProviderAdministration:
             if actor.principal_kind != PrincipalKind.SERVICE:
                 IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
             return True, None
-        except AuthorizationError as exc:
-            return False, str(exc)
+        except AuthorizationError:
+            return False, "Model provider administration requires administrator authority and elevated assurance, or the model-gateway:admin service scope."
 
     def catalog(self, actor):
         allowed, reason = self.permissions(actor)

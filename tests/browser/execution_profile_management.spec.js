@@ -180,3 +180,15 @@ test('administrative targets are preserved in a Project-scoped schema 1.1 draft'
   expect(saved.repository_access).toBe('none');
   expect(saved.control_plane_operations).toEqual(['repository.issue.create', 'work_graph.edge.create']);
 });
+
+test('Project identifier in catalog provenance remains literal text', async ({ page }) => {
+  await mount(page);
+  const hostile = `<img src=x onerror="window.codeScanningXss=true"> & '"`;
+  await page.evaluate(projectId => {
+    document.body.dataset.projectId = projectId;
+    window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId } }));
+  }, hostile);
+  await expect(page.locator('[data-profile-source]')).toContainText(hostile);
+  await expect(page.locator('[data-profile-source] img')).toHaveCount(0);
+  expect(await page.evaluate(() => window.codeScanningXss)).toBeUndefined();
+});

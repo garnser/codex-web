@@ -77,7 +77,11 @@ async function load(force = false) {
               if (!latest.available || !latest.can_manage) { validation.show([{ message: 'Impact or administration authority is unavailable; no change can be applied.' }]); return; }
               if (latest.expected_revision !== impact.expected_revision) { validation.show([{ message: 'Binding changed; reload and review current state before editing.' }]); return; }
               const changed = Object.keys(payload).filter(key => JSON.stringify(payload[key]) !== JSON.stringify(provider[key]));
-              form.querySelector('[data-binding-impact]').innerHTML = `<p>Change ${esc(changed.join(', ') || 'none')} for ${esc(id)} in ${esc(catalog.organization_id)}/${esc(catalog.workspace_id)}. Lifecycle: ${esc(provider.lifecycle || provider.status)} → ${esc(payload.lifecycle || payload.status)}. References are validated by the canonical API when saving.</p>${impactHTML(latest)}`;
+              const summary = document.createElement('p');
+              summary.textContent = `Change ${changed.join(', ') || 'none'} for ${id} in ${catalog.organization_id}/${catalog.workspace_id}. Lifecycle: ${provider.lifecycle || provider.status} → ${payload.lifecycle || payload.status}. References are validated by the canonical API when saving.`;
+              const impactNode = form.querySelector('[data-binding-impact]');
+              impactNode.innerHTML = impactHTML(latest);
+              impactNode.prepend(summary);
               reviewed = { payload, submitted, revision: latest.expected_revision }; save.disabled = false;
             } catch (error) { if (current()) validation.server(error); }
             finally { busy = false; }

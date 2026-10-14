@@ -213,8 +213,8 @@ class WorkItemOperatorService:
             error: str | None = None
             try:
                 source = self._source_for_configuration(project.id, configuration, required=False)
-            except Exception as exc:
-                error = str(exc)[:500]
+            except Exception:
+                error = "Task source unavailable. Review the Project task source configuration."
             source_type = str(configuration.source_type)
             seen_types.add(source_type.casefold())
             items.append(
@@ -293,8 +293,8 @@ class WorkItemOperatorService:
             return None
         try:
             contract = builder(state)
-        except Exception as exc:
-            return {"error": str(exc)[:500]}
+        except Exception:
+            return {"error": "Execution contract unavailable. Review the Work Item execution configuration."}
         compact = getattr(contract, "compact_public", None)
         if callable(compact):
             return compact()
@@ -308,8 +308,8 @@ class WorkItemOperatorService:
         error: str | None = None
         try:
             source = self._source_for_state(state, required=False)
-        except Exception as exc:
-            error = str(exc)[:500]
+        except Exception:
+            error = "Task source unavailable. Review the Project task source configuration."
         identity = state.source_identity
         return {
             "configuration": (

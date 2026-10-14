@@ -191,10 +191,10 @@ def build_automations_router(
                     workspace_id=actor.workspace_id,
                     project_id=project_id,
                 )
-            except AutomationScheduleMaterializationError as exc:
+            except AutomationScheduleMaterializationError:
                 # Publication already succeeded; report schedule repair separately
                 # rather than pretending the versioned Definition mutation failed.
-                schedule_error = str(exc)
+                schedule_error = "Schedule reconciliation failed. Review the published Automation schedule and retry reconciliation."
             return {
                 "record": published.model_dump(mode="json"),
                 "schedule": (
