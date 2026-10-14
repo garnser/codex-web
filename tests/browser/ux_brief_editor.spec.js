@@ -78,3 +78,19 @@ test('Memory explorer keeps the record pane in the remaining grid space',async({
   await page.locator('#ux-brief-editor').waitFor();
   await expect.poll(async()=>page.locator('.memory-layout').evaluate(node=>node.getBoundingClientRect().height)).toBeGreaterThan(300);
 });
+
+test('Memory stylesheet respects a prefixed installation route',async({page})=>{
+  const path=require('node:path');
+  await page.route('**/codex/static/**',async route=>{
+    const name=new URL(route.request().url()).pathname.split('/').pop();
+    await route.fulfill({path:path.resolve(__dirname,'../../static',name)});
+  });
+  await page.route('**/static/memory_ui.css',async route=>{
+    if(new URL(route.request().url()).pathname.startsWith('/codex/'))return route.fallback();
+    return route.fulfill({status:404,body:'Root stylesheet unavailable on a prefixed installation'});
+  });
+  await page.goto('http://127.0.0.1:18766/codex/static/memory_ui.js');
+  await page.evaluate(async()=>{await import('/codex/static/memory_ui.js');document.getElementById('memory-dialog').showModal();});
+  await expect(page.locator('link[href="/codex/static/memory_ui.css"]')).toHaveCount(1);
+  await expect.poll(async()=>page.locator('.memory-shell').evaluate(node=>getComputedStyle(node).display)).toBe('grid');
+});
