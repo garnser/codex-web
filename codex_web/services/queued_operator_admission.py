@@ -15,6 +15,10 @@ from codex_web.services.identity import IdentityService
 from codex_web.services.queue_order_recovery import QueueOrderRecoveryService
 
 
+class OperatorAdmissionPrestartRefusal(HTTPException):
+    """Controller witness raised before native turn input, never from a response code."""
+
+
 class QueuedOperatorAdmissionService:
     def __init__(self, *, preflight, runtime, ownership, authority, resources,
                  actor_resolver, replacement_resolver, clock=time.time):
@@ -24,7 +28,7 @@ class QueuedOperatorAdmissionService:
 
     @staticmethod
     def refuse(message):
-        raise HTTPException(status_code=409, detail={
+        raise OperatorAdmissionPrestartRefusal(status_code=409, detail={
             'code':'operator_admission_refused', 'message':message, 'retryable':False})
 
     def authorize(self, attempt, project, actor):

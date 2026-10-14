@@ -79,12 +79,16 @@ def _turn_failure_text(message: dict[str, Any]) -> str | None:
     return str(raw_error).strip() or None
 
 
+class ExecutionPrestartRefusal(HTTPException):
+    """Controller-owned routing/profile refusal raised before native turn input."""
+
+
 def _execution_preflight_blocked(
     exc: TurnExecutionBindingError,
 ) -> HTTPException:
     """Translate deterministic binding failures at every bootstrap boundary."""
 
-    return HTTPException(
+    return ExecutionPrestartRefusal(
         status_code=503,
         detail={
             "code": "execution_preflight_blocked",
@@ -448,7 +452,7 @@ class TurnExecutionService:
         except AgentCapacityRoutingError:
             raise
         except AgentRoutingBlockedError as exc:
-            raise HTTPException(
+            raise ExecutionPrestartRefusal(
                 status_code=409,
                 detail={
                     "code": "execution_preflight_blocked",
@@ -472,7 +476,7 @@ class TurnExecutionService:
             else:
                 code = "execution_profile_incompatible"
                 remediation = "/api/agent-providers"
-            raise HTTPException(
+            raise ExecutionPrestartRefusal(
                 status_code=409,
                 detail={
                     "code": "execution_preflight_blocked",
@@ -899,7 +903,7 @@ class TurnExecutionService:
             if self.queued_preflight is not None:
                 retained = self.queued_preflight.store.matching_queued(queued.model_dump(mode='json'))
                 if retained is not None:
-                    raise HTTPException(status_code=409, detail={
+                    raise ExecutionPrestartRefusal(status_code=409, detail={
                         'code':'execution_preflight_blocked',
                         'message':'This original request is retained for recovery; use its existing preflight action.',
                         'attemptId':retained.id,'retainedMessage':True,
@@ -2209,7 +2213,7 @@ class TurnExecutionService:
                         and recovered_profile.profile_revision != agent_profile_revision
                     )
                 ):
-                    raise HTTPException(
+                    raise ExecutionPrestartRefusal(
                         status_code=409,
                         detail={
                             "code": "thread_agent_profile_immutable",
@@ -2236,7 +2240,7 @@ class TurnExecutionService:
                         selected_profile.profile_id != agent_profile_id or (
                             agent_profile_revision is not None
                             and selected_profile.profile_revision != agent_profile_revision)):
-                        raise HTTPException(status_code=409, detail={
+                        raise ExecutionPrestartRefusal(status_code=409, detail={
                             'code':'execution_preflight_blocked',
                             'message':'Canonical recovery did not select the exact requested profile revision.',
                             'retryable':False})
@@ -2255,7 +2259,7 @@ class TurnExecutionService:
                     ):
                         # Resolving a missing profile cannot implicitly change
                         # an inherited or explicitly requested runtime.
-                        raise HTTPException(
+                        raise ExecutionPrestartRefusal(
                             status_code=409,
                             detail={
                                 "code": "execution_preflight_blocked",
@@ -2526,7 +2530,7 @@ class TurnExecutionService:
                             != agent_profile_revision
                         )
                     ):
-                        raise HTTPException(
+                        raise ExecutionPrestartRefusal(
                             status_code=409,
                             detail={
                                 "code": "thread_agent_profile_immutable",
@@ -2794,7 +2798,7 @@ class TurnExecutionService:
             ))
             if effective_skill_refs:
                 if self.skill_context_resolver is None:
-                    raise HTTPException(
+                    raise ExecutionPrestartRefusal(
                         status_code=503,
                         detail={
                             "code": "execution_preflight_blocked",
@@ -2825,7 +2829,7 @@ class TurnExecutionService:
                         message,
                     )
                 except Exception as exc:
-                    raise HTTPException(
+                    raise ExecutionPrestartRefusal(
                         status_code=503,
                         detail={
                             "code": "execution_preflight_blocked",
@@ -3778,8 +3782,10 @@ class TurnExecutionService:
                 return
             if retained_attempt is not None and not deferred_admission:
                 detail = exc.detail if isinstance(exc, HTTPException) and isinstance(exc.detail, dict) else None
-                known_unstarted = bool(detail and detail.get('code') in {
-                    'execution_preflight_blocked', 'thread_agent_profile_immutable', 'operator_admission_refused'}
+                from codex_web.services.queued_operator_admission import OperatorAdmissionPrestartRefusal
+                # Native HTTP detail codes are outcome data, never proof of nonstart.
+                known_unstarted = bool(isinstance(exc,
+                    (OperatorAdmissionPrestartRefusal, ExecutionPrestartRefusal))
                     and not self.thread_is_active(thread_id))
                 await asyncio.to_thread(self.queued_preflight.queued_disposition,
                     retained_attempt.id,
