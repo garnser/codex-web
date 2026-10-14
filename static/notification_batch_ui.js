@@ -1,5 +1,5 @@
 // Presentation only. Inspecting originals never admits, releases or retries work.
-export function createNotificationBatchUi({ api, addMessage, captureView }) {
+export function createNotificationBatchUi({ api, addMessage, captureView, loadThread, scheduleRefresh }) {
   const history = new Map();
   const cards = new Map();
   const labels = {
@@ -30,7 +30,62 @@ export function createNotificationBatchUi({ api, addMessage, captureView }) {
     }
   }
 
-  function attach(href, body) {
+  function attachRecovery(href, body) {
+    const review=document.createElement('button');
+    review.type='button';
+    review.textContent='Review queue restoration';
+    const section=document.createElement('div');
+    section.setAttribute('aria-live','polite');
+    review.addEventListener('click',async()=>{
+      const current=captureView();
+      review.disabled=true;
+      section.textContent='Loading canonical restoration scope…';
+      try {
+        const preview=await api(href+'/recovery');
+        if (!current()) return;
+        section.textContent=`${preview.original_count} originals: ${(preview.original_ids || []).join(', ')}. Original thread: ${preview.original_thread_id}; destination: ${preview.target_thread_id}. ${preview.effect}`;
+        if (!preview.can_restore) {
+          section.append(document.createTextNode(` ${preview.blocker || 'Restoration is unavailable.'}`));
+          return;
+        }
+        const label=document.createElement('label');
+        label.textContent='Reason for returning these originals to the queue';
+        const reason=document.createElement('textarea');
+        reason.maxLength=1000;
+        reason.value=preview.reserved_reason || '';
+        label.append(reason);
+        const restore=document.createElement('button');
+        restore.type='button';
+        restore.textContent='Return originals to queue';
+        restore.disabled=!reason.value.trim();
+        reason.addEventListener('input',()=>{restore.disabled=!reason.value.trim();});
+        const result=document.createElement('div');
+        restore.addEventListener('click',async()=>{
+          const stillCurrent=captureView();
+          restore.disabled=true;
+          result.textContent='Restoring reviewed originals…';
+          try {
+            const response=await api(href+'/recovery',{method:'POST',body:JSON.stringify({
+              expected_admission_sha256:preview.expected_admission_sha256,reason:reason.value.trim()})});
+            if (!stillCurrent()) return;
+            result.textContent='Originals returned to the queue. No native turn was started; individual outcomes remain unresolved.';
+            await loadThread?.(response.threadId);
+            if (stillCurrent()) scheduleRefresh?.(0);
+          } catch (error) {
+            if (stillCurrent()) {result.textContent=`Restoration refused: ${error.message}`; restore.disabled=false;}
+          }
+        });
+        section.append(label,restore,result);
+      } catch (error) {
+        if (current()) section.textContent=`Cannot review restoration: ${error.message}`;
+      } finally {
+        if (current()) review.disabled=false;
+      }
+    });
+    body.append(review,section);
+  }
+
+  function attach(href, body, summary=null) {
     if (!body || !href) return;
     const button = document.createElement("button");
     button.type = "button";
@@ -86,6 +141,7 @@ export function createNotificationBatchUi({ api, addMessage, captureView }) {
       }
     });
     body.append(button, detail);
+    if (summary?.can_review_recovery) attachRecovery(href,body);
   }
 
   function render(threadId) {
@@ -118,7 +174,7 @@ export function createNotificationBatchUi({ api, addMessage, captureView }) {
       const card = addMessage(labels[batch.phase] || "Unknown batch state · reconciliation required",
         lines.join("\n"), "tool", new Date(batch.oldest_created_at * 1000));
       rendered.push(card);
-      attach(batch.detail_href, card?.querySelector(".body"));
+      attach(batch.detail_href, card?.querySelector(".body"),batch);
     }
     if (snapshot.next) {
       const card = addMessage("More notification admission history", "Older admissions are available.", "tool", new Date());

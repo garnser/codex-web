@@ -4,6 +4,8 @@ import json
 import time
 
 from fastapi import HTTPException
+from codex_web.identity import AuthenticationAssurance
+from codex_web.services.identity import IdentityService
 
 
 class NotificationBatchInspection:
@@ -20,17 +22,32 @@ class NotificationBatchInspection:
             or (project.organization_id, project.workspace_id)
             != (actor.organization_id, actor.workspace_id)
             or any(
-                member.thread_id != thread_id or member.project_id != project.id
+                member.thread_id != batch.plan.members[0].thread_id
+                or member.project_id != project.id
                 for member in batch.plan.members
             )
             or any(
                 json.loads(raw).get("project_id") != project.id
                 for raw in batch.plan.original_snapshots_json
             )
+            or thread_id
+            not in {
+                batch.plan.members[0].thread_id,
+                batch.recovery.target_thread_id if batch.recovery else None,
+            }
         ):
             raise HTTPException(status_code=404, detail="notification batch not found")
 
-    def _summary(self, batch):
+    @staticmethod
+    def _can_review_recovery(actor):
+        try:
+            IdentityService.require_admin(actor)
+            IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+            return True
+        except (PermissionError, RuntimeError, AttributeError):
+            return False
+
+    def _summary(self, batch, actor=None):
         originals = [json.loads(raw) for raw in batch.plan.original_snapshots_json]
         oldest = min(item["created_at"] for item in originals)
         member = batch.plan.members[0]
@@ -64,6 +81,13 @@ class NotificationBatchInspection:
             else "batch_reconciliation_required",
             "per_original_completion": "unresolved",
             "detail_href": f"/api/threads/{member.thread_id}/notification-batches/{batch.id}",
+            "recovery": batch.recovery.model_dump(
+                mode="json", exclude={"restoration_snapshots_json"}
+            )
+            if batch.recovery
+            else None,
+            "can_review_recovery": self._can_review_recovery(actor)
+            and batch.phase in {"prepared", "prestart_refused"},
         }
 
     def list(self, *, thread_id, project, actor, limit=20, after=None):
@@ -91,7 +115,7 @@ class NotificationBatchInspection:
                 )
             except HTTPException:
                 continue
-            visible.append(self._summary(batch))
+            visible.append(self._summary(batch, actor))
         return {
             "schema_version": "1.0",
             "threadId": thread_id,
@@ -103,7 +127,7 @@ class NotificationBatchInspection:
     def detail(self, batch_id, *, thread_id, project, actor):
         batch = self.preflight.get_notification_batch(batch_id)
         self._authorize(batch, thread_id=thread_id, project=project, actor=actor)
-        payload = self._summary(batch)
+        payload = self._summary(batch, actor)
         originals = []
         for attempt_id, raw, route in zip(
             batch.attempt_ids,
@@ -139,5 +163,10 @@ class NotificationBatchInspection:
                     "outcome": "unresolved",
                 }
             )
-        return {**payload, "originals": originals,
-            'control_snapshot':batch.plan.control_snapshot.model_dump(mode='json') if batch.plan.control_snapshot else None}
+        return {
+            **payload,
+            "originals": originals,
+            "control_snapshot": batch.plan.control_snapshot.model_dump(mode="json")
+            if batch.plan.control_snapshot
+            else None,
+        }

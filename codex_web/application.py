@@ -110,6 +110,7 @@ from codex_web.services.queue_order_recovery import QueueOrderRecoveryService
 from codex_web.services.queued_bootstrap_recovery import QueuedBootstrapRecoveryService
 from codex_web.api.turns import build_turns_router
 from codex_web.services.notification_batch_inspection import NotificationBatchInspection
+from codex_web.services.notification_batch_recovery import NotificationBatchRecoveryService
 from codex_web.services.notification_batch_runtime import NotificationBatchRuntimeControls, install_notification_batch_configuration
 from codex_web.services.notification_batch_drain import NotificationBatchDrain
 from codex_web.services.notification_batches import NotificationBatchCoordinator
@@ -3503,6 +3504,11 @@ turn_execution_service.notification_batch_handler = NotificationBatchDrain(
     event_lookup=canonical_event_store.event,policy_for=notification_batch_controls.policy_for,
     control_for=notification_batch_controls.resolve)
 app.state.notification_batch_controls = notification_batch_controls
+notification_batch_recovery = NotificationBatchRecoveryService(preflight=execution_preflight_store,
+    queues=turn_queue_repository,ownership=replicated_ownership_service,authority=authority_role_service,
+    projects=project_service,resources=resource_catalog_service,
+    replacement_resolver=thread_index_repository.replacement_thread_id,
+    actor_resolver=turn_execution_service.actor_resolver)
 work_item_operator_service = WorkItemOperatorService(work_item_service)
 scheduling_retirement_service = QueuedSchedulingRetirementService(
     preflight=execution_preflight_service,
@@ -4761,7 +4767,7 @@ EXTRACTED_ROUTE_COUNTS = {
     ),
     "turns": _include_domain_router(
         build_turns_router(turn_service, thread_scope_service, queue_order_recovery_service, queued_bootstrap_recovery_service,
-            notification_batches=notification_batch_inspection)
+            notification_batches=notification_batch_inspection,batch_recovery=notification_batch_recovery)
     ),
     "context": _include_domain_router(
         build_context_router(context_service, thread_scope_service)

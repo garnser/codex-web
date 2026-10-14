@@ -120,7 +120,8 @@ class ExecutionPreflightStore:
         batches = []
         for row in rows.values():
             batch = self.get_notification_batch(row['batchId'])
-            if batch is not None and batch.plan.members[0].thread_id == thread_id:
+            if batch is not None and thread_id in {batch.plan.members[0].thread_id,
+                    batch.recovery.target_thread_id if batch.recovery else None}:
                 batches.append(batch)
         return batches, cursor
 
@@ -201,6 +202,8 @@ class ExecutionPreflightStore:
             current = NotificationBatchAdmission.model_validate(values[batch_key])
             if current != observed or current.claim_id != claim_id:
                 raise ValueError("notification batch claim changed")
+            if current.recovery is not None:
+                raise ValueError('notification batch is reserved for operator recovery')
             if (phase not in {"native_outcome_unknown", "released"}
                     or current.phase not in ({"prepared","prestart_refused"} if phase == "released" else {"prepared"})):
                 raise ValueError("notification batch needs authoritative native reconciliation")
@@ -225,6 +228,98 @@ class ExecutionPreflightStore:
             return changes
 
         self.store.record_mutate(self.NAMESPACE, (*keys, batch_key), change)
+        return result
+
+    @staticmethod
+    def _notification_recovery_members(admission, values):
+        from codex_web.notification_batches import _eligible
+        from codex_web.services.turn_queue_policy import TurnQueuePolicy
+        members=[]
+        for payload, queued, original in zip(values,admission.plan.members,
+                admission.plan.original_snapshots_json,strict=True):
+            member=ExecutionPreflightAttempt.model_validate(payload)
+            expected='admitting' if admission.phase=='prepared' else 'reconciliation_required'
+            if (member.notification_batch_id!=admission.id or member.queued_admission_claim_id!=admission.claim_id
+                    or member.status!=expected or member.queued_start_receipt is not None or member.started_at is not None):
+                raise ValueError('notification recovery member changed or has a native start')
+            checked=member.model_copy(update={'status':'queued','notification_batch_id':None})
+            if _eligible(queued,checked,organization_id=admission.plan.organization_id,
+                    workspace_id=admission.plan.workspace_id,
+                    notification_source_origin=TurnQueuePolicy.source_origin(queued.source)) != original:
+                raise ValueError('notification recovery original changed')
+            members.append(member)
+        return members
+
+    def reserve_notification_recovery(self, batch_id, recovery, *, expected_admission_sha256, guard):
+        from codex_web.notification_batches import NotificationBatchAdmission
+        observed=self.get_notification_batch(batch_id)
+        if observed is None:
+            raise KeyError(batch_id)
+        batch_key='b/'+batch_id
+        keys=tuple(self._attempt_key(attempt_id) for attempt_id in observed.attempt_ids)
+        result=None
+        def reserve(values):
+            nonlocal result
+            if not guard():
+                raise ValueError('notification recovery authority or ownership changed')
+            current=NotificationBatchAdmission.model_validate(values[batch_key])
+            if current!=observed:
+                raise ValueError('notification recovery admission changed')
+            if current.recovery is not None:
+                if (current.recovery.source_admission_sha256!=expected_admission_sha256
+                        or current.recovery.requested_by!=recovery.requested_by or current.recovery.reason!=recovery.reason
+                        or current.recovery.target_thread_id!=recovery.target_thread_id
+                        or current.recovery.restoration_snapshots_json!=recovery.restoration_snapshots_json):
+                    raise ValueError('notification recovery reservation belongs to another review')
+                result=current
+                return {}
+            if (current.phase not in {'prepared','prestart_refused'} or not current.queue_order
+                    or current.recovery_source_digest()!=expected_admission_sha256):
+                raise ValueError('notification admission is not a reviewed unstarted batch')
+            self._notification_recovery_members(current,[values[key] for key in keys])
+            result=NotificationBatchAdmission.model_validate({**current.model_dump(mode='python'),
+                'schema_version':'1.1','recovery':recovery})
+            return {batch_key:result.model_dump(mode='json')}
+        self.store.record_mutate(self.NAMESPACE,(*keys,batch_key),reserve)
+        return result
+
+    def release_notification_recovery(self, batch_id, *, recovery_id, now, guard):
+        from codex_web.notification_batches import NotificationBatchAdmission
+        from codex_web.models import QueuedTurn
+        observed=self.get_notification_batch(batch_id)
+        if observed is None:
+            raise KeyError(batch_id)
+        batch_key='b/'+batch_id
+        keys=tuple(self._attempt_key(attempt_id) for attempt_id in observed.attempt_ids)
+        result=None
+        def release(values):
+            nonlocal result
+            if not guard():
+                raise ValueError('notification recovery authority or ownership changed')
+            current=NotificationBatchAdmission.model_validate(values[batch_key])
+            if current!=observed or current.recovery is None or current.recovery.id!=recovery_id:
+                raise ValueError('notification recovery reservation changed')
+            if current.recovery.state=='released':
+                result=current
+                return {}
+            members=self._notification_recovery_members(current,[values[key] for key in keys])
+            changes={}
+            for key,member,raw in zip(keys,members,current.recovery.restoration_snapshots_json,strict=True):
+                restored=QueuedTurn.model_validate_json(raw)
+                updated=member.model_copy(update={'status':'queued','notification_batch_id':None,
+                    'queued_admission_claim_id':None,'updated_at':now,
+                    'replacement_thread_id':restored.thread_id if restored.thread_id!=member.thread_id else member.replacement_thread_id})
+                changes[key]=updated.model_dump(mode='json')
+                changes[f't/{restored.thread_id}/{self._inverse_timestamp(member.created_at):016d}/{member.id}']={'attemptId':member.id}
+            completed=current.recovery.model_copy(update={'state':'released','released_at':now})
+            result=NotificationBatchAdmission.model_validate({**current.model_dump(mode='python'),
+                'phase':'released','recovery':completed})
+            changes[batch_key]=result.model_dump(mode='json')
+            prefix=self._notification_batch_prefix(completed.target_thread_id,current.plan.organization_id,
+                current.plan.workspace_id,current.plan.members[0].project_id)
+            changes[f'{prefix}{self._inverse_timestamp(current.claimed_at):016d}/{current.id}']={'batchId':current.id}
+            return changes
+        self.store.record_mutate(self.NAMESPACE,(*keys,batch_key),release)
         return result
 
     def record_notification_native_start(self, batch_id, receipt):

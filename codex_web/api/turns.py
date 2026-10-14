@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import asyncio
 
 from fastapi import APIRouter, Depends, Request
 
@@ -10,9 +11,10 @@ from codex_web.services.thread_scope import ThreadScopeService
 from codex_web.api.identity import request_actor
 from codex_web.models import TurnCreate, QueueOrderRepairRequest, QueuedBootstrapRecoveryRequest
 from codex_web.services.turns import TurnService
+from codex_web.notification_batches import NotificationBatchRecoveryRequest
 
 
-def build_turns_router(service: TurnService, scope: ThreadScopeService, order_recovery=None, bootstrap_recovery=None, notification_batches=None) -> APIRouter:
+def build_turns_router(service: TurnService, scope: ThreadScopeService, order_recovery=None, bootstrap_recovery=None, notification_batches=None, batch_recovery=None) -> APIRouter:
     router = APIRouter(tags=["turns"], dependencies=[Depends(thread_scope_dependency(scope))])
 
     @router.post("/api/threads/{thread_id}/resume")
@@ -74,6 +76,17 @@ def build_turns_router(service: TurnService, scope: ThreadScopeService, order_re
         async def inspect_notification_batch(thread_id: str, batch_id: str, request: Request):
             return notification_batches.detail(batch_id, thread_id=thread_id,
                 project=request.state.thread_project, actor=request_actor(request))
+
+    if batch_recovery is not None:
+        @router.get('/api/threads/{thread_id}/notification-batches/{batch_id}/recovery')
+        async def preview_batch_recovery(thread_id: str,batch_id: str,request: Request):
+            return await asyncio.to_thread(batch_recovery.preview,batch_id,thread_id=thread_id,
+                project=request.state.thread_project,actor=request_actor(request))
+
+        @router.post('/api/threads/{thread_id}/notification-batches/{batch_id}/recovery')
+        async def restore_batch_originals(thread_id: str,batch_id: str,payload: NotificationBatchRecoveryRequest,request: Request):
+            return await batch_recovery.recover(batch_id,payload,thread_id=thread_id,
+                project=request.state.thread_project,actor=request_actor(request))
 
     @router.post(
         "/api/threads/{thread_id}/preflight-attempts/{attempt_id}/retry"
