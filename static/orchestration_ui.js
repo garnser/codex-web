@@ -1,4 +1,5 @@
 import { confirmAction } from './action_confirmation.js';
+import { installEvaluationQuality } from './evaluation_quality_ui.js';
 
 const esc = (value) => String(value ?? "")
   .replaceAll("&", "&amp;")
@@ -298,6 +299,7 @@ function evaluationRunMarkup(run) {
       </div>
       ${failed.length ? `<div class="orch-sublist"><strong>Failed invariants</strong>${failed.map((item) => `<div class="orch-subrecord">${esc(item.kind)} · expected ${esc(item.expected)} · actual ${esc(item.actual)}${item.detail ? ` · ${esc(item.detail)}` : ""}</div>`).join("")}</div>` : ""}
       <div class="orch-links">
+        <button type="button" class="ghost-button" data-evaluation-quality="${esc(run.id)}">Human quality review</button>
         ${run.evidence_id ? `<a href="/api/evidence/${encodeURIComponent(run.evidence_id)}" target="_blank" rel="noreferrer">Evidence ${esc(run.evidence_id)}</a>` : ""}
         ${run.baseline_run_id ? `<a href="/api/evaluations/runs/${encodeURIComponent(run.baseline_run_id)}" target="_blank" rel="noreferrer">Baseline ${esc(run.baseline_run_id)}</a>` : ""}
       </div>
@@ -524,6 +526,7 @@ function buildPanel() {
   `;
 
   panel.querySelector("[data-orch-refresh]").addEventListener("click", () => load(panel));
+  installEvaluationQuality(panel);
   panel.querySelector("[data-orch-apply-filter]").addEventListener("click", () => load(panel));
   panel.querySelector("[data-orch-pause]").addEventListener("click", () => mutate(panel, "/api/autonomy/pause", { method: "POST" }));
   panel.querySelector("[data-orch-resume]").addEventListener("click", async () => {

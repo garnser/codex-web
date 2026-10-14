@@ -235,16 +235,18 @@ class ArtifactEvidenceService:
         artifact_id: str,
         *,
         actor: AuthenticationActor,
+        state: ArtifactEvidenceState | None = None,
     ) -> Artifact:
-        return self._artifact(self.store.load(), artifact_id, actor)
+        return self._artifact(state if state is not None else self.store.load(), artifact_id, actor)
 
     def get_evidence(
         self,
         evidence_id: str,
         *,
         actor: AuthenticationActor,
+        state: ArtifactEvidenceState | None = None,
     ) -> Evidence:
-        return self._evidence(self.store.load(), evidence_id, actor)
+        return self._evidence(state if state is not None else self.store.load(), evidence_id, actor)
 
     def list_artifacts(
         self,
@@ -266,8 +268,10 @@ class ArtifactEvidenceService:
         *,
         work_item_ref: str | None = None,
         include_inactive: bool = True,
+        state: ArtifactEvidenceState | None = None,
     ) -> list[Evidence]:
-        items = [item for item in self.store.load().evidence if self._same_scope(item, actor)]
+        state = state if state is not None else self.store.load()
+        items = [item for item in state.evidence if self._same_scope(item, actor)]
         if work_item_ref is not None:
             items = [item for item in items if item.work_item_ref == work_item_ref]
         if not include_inactive:
@@ -617,6 +621,18 @@ class ArtifactEvidenceService:
         self.store.update(apply)
         return artifact
 
+    @staticmethod
+    def _idempotent_evidence_id(actor: AuthenticationActor, source: str, key: str) -> str:
+        scoped_key = "\0".join((actor.organization_id, actor.workspace_id, actor.identity_id, source, key))
+        return "evidence-" + hashlib.sha256(scoped_key.encode()).hexdigest()
+
+    def find_idempotent_evidence(self, *, actor: AuthenticationActor, source: str,
+                                idempotency_key: str) -> Evidence | None:
+        try:
+            return self.get_evidence(self._idempotent_evidence_id(actor, source, idempotency_key), actor=actor)
+        except EvidenceNotFoundError:
+            return None
+
     def create_evidence(self, payload: EvidenceCreate, *, actor: AuthenticationActor,
                         idempotency_key: str | None = None,
                         source_evidence_ids: tuple[str, ...] = ()) -> Evidence:
@@ -667,9 +683,7 @@ class ArtifactEvidenceService:
             metadata=payload.metadata,
         )
         if idempotency_key is not None:
-            key = "\0".join((actor.organization_id, actor.workspace_id,
-                actor.identity_id, payload.source or "", idempotency_key))
-            evidence.id = "evidence-" + hashlib.sha256(key.encode()).hexdigest()
+            evidence.id = self._idempotent_evidence_id(actor, payload.source or "", idempotency_key)
             evidence.metadata = {**evidence.metadata, "idempotency_payload_sha256":
                 hashlib.sha256(json.dumps({"payload":payload.model_dump(mode="json"),
                     "source_evidence_ids":sorted(set(source_evidence_ids))}, sort_keys=True).encode()).hexdigest()}
