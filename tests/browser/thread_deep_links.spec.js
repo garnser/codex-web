@@ -70,7 +70,7 @@ test('the thread list omits rows explicitly belonging to another Project', async
   await expect(page.locator('#threads')).not.toContainText('Home thread');
 });
 
-async function mockChatApi(page, { degradeFirstThreadRead = false, simulateReply = false } = {}) {
+async function mockChatApi(page, { degradeFirstThreadRead = false, simulateReply = false, queued = false } = {}) {
   const fs = require('fs');
   const path = require('path');
   const html = fs.readFileSync(path.join(__dirname, '../../static/index.html'), 'utf8')
@@ -139,7 +139,7 @@ async function mockChatApi(page, { degradeFirstThreadRead = false, simulateReply
           content: [{ type: 'inputText', text: payload.message }],
         }],
       }];
-      await route.fulfill({ json: { queued: false, turn: { id: `turn-${threadId}` } } });
+      await route.fulfill({ json: { queued, queuedId: queued ? 'queued-care' : null, queueDepth: queued ? 1 : 0, turn: { id: `turn-${threadId}` } } });
       return;
     }
     const threadMatch = path.match(/^\/api\/threads\/([^/]+)$/);
@@ -483,4 +483,48 @@ test('a reply completed while another Thread is selected loads on return', async
   await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
   await expect(page.locator('#messages')).toContainText('Reply completed while another thread was selected');
   expect(reads.filter((id) => id === 'home-thread').length).toBeGreaterThanOrEqual(2);
+});
+
+for(const queued of [false,true]) test(`structured preview enters existing Thread turn path with editable text and exact example reference (queued=${queued})`, async ({page}) => {
+  const {threadTurns}=await mockChatApi(page,{queued});
+  const reference={definition_id:'care.investigate-defect',revision:3,record_id:'skill-record',checksum:'fixture-checksum'};
+  await page.route('**/api/projects/home/care/examples',route=>route.fulfill({json:{items:[{
+    name:'Investigate a defect',allowed:true,reference,fields:{action:'Investigate defect',references:['issue:1370']}
+  }]}}));
+  await page.route('**/api/projects/home/care/preview',async route=>{
+    const body=route.request().postDataJSON();
+    expect(body.template_ref).toEqual(reference);
+    expect(body.fields.references).toEqual(['issue:1370']);
+    await route.fulfill({json:{message:'Action: Investigate defect\nReferences: issue:1370',template_ref:reference,suggestions:[]}});
+  });
+  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await expect(page.locator('#thread-title')).toHaveText('Home thread');
+  await page.locator('#care-composer summary').click();
+  await page.locator('#care-example').selectOption('0');
+  await page.locator('#care-preview').click();
+  await expect(page.locator('#prompt')).toHaveValue(/Investigate defect/);
+  await page.locator('#prompt').fill('Edited investigation request');
+  await page.locator('#send').click();
+  await expect.poll(()=>threadTurns['home-thread']?.[0]?.items[0]?.content[0]?.text).toBe(
+    'Edited investigation request\n\nStarting example: care.investigate-defect r3 · record skill-record · checksum fixture-checksum');
+  await expect(page.locator('#care-action')).toHaveValue('');
+  await expect(page.locator('#care-status')).toContainText('Request accepted');
+});
+
+test('denied structured admission keeps editable draft in its original Thread',async({page})=>{
+  await mockChatApi(page);
+  await page.route('**/api/projects/home/care/examples',route=>route.fulfill({json:{items:[]}}));
+  await page.route('**/api/projects/home/care/preview',route=>route.fulfill({json:{message:'Retained structured request',suggestions:[]}}));
+  await page.route('**/api/threads/home-thread/turns?*',route=>route.fulfill({status:403,json:{detail:'Admission denied'}}));
+  await page.goto('http://127.0.0.1:18766/projects/home/chat?thread=home-thread');
+  await expect(page.locator('#thread-title')).toHaveText('Home thread');
+  await page.locator('#care-composer summary').click();
+  await page.locator('#care-action').fill('Investigate denial');
+  await page.locator('#care-preview').click();
+  await expect(page.locator('#prompt')).toHaveValue('Retained structured request');
+  await page.locator('#send').click();
+  await expect(page.locator('#care-status')).toContainText('Submission failed');
+  await expect(page.locator('#prompt')).toHaveValue('Retained structured request');
+  await expect(page.locator('#care-action')).toHaveValue('Investigate denial');
+  await expect(page.locator('#thread-title')).toHaveText('Home thread');
 });

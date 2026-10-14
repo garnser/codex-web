@@ -71,6 +71,9 @@ from codex_web.api.ux_telemetry import build_ux_telemetry_router
 from codex_web.api.goal_decompositions import build_goal_decompositions_router
 from codex_web.api.goal_execution_bindings import build_goal_execution_bindings_router
 from codex_web.api.input_plugins import build_input_plugins_router
+from codex_web.api.care_composer import build_care_composer_router
+from codex_web.care_composer import bootstrap_care_examples
+from codex_web.services.care_composer import CareComposerService
 from codex_web.api.model_gateway import build_model_gateway_router
 from codex_web.api.orchestration import build_orchestration_router
 from codex_web.api.organizational_memory import build_organizational_memory_router
@@ -785,6 +788,7 @@ definition_registry_service = DefinitionRegistryService(
     notifier=_definition_change_notifier,
 )
 skill_service = SkillService(definition_registry_service)
+bootstrap_care_examples(definition_registry_service)
 app.state.skill_service = skill_service
 skill_scanner_registry = SkillScannerRegistry()
 
@@ -1030,6 +1034,8 @@ thread_index_repository = install_thread_index_repository(
 thread_history_repository = ThreadHistoryRepository(state_store)
 app.state.thread_history_repository = thread_history_repository
 project_service = ProjectService(project_repository)
+care_composer_service = CareComposerService(skill_service)
+app.include_router(build_care_composer_router(care_composer_service,project_service))
 app.include_router(build_entitlements_router(entitlement_service, project_service))
 app.include_router(build_secrets_router(secret_broker, project_service))
 thread_scope_service = ThreadScopeService(project_service, agent_session_service, thread_index_repository)

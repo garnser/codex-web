@@ -74,6 +74,27 @@ A plugin does not get an implicit right to expand cost/output budgets. Gated bud
 
 The no-plugin pipeline is an identity function. Existing provider execution is therefore unchanged when no plugins are configured.
 
+### Optional CARE task preview
+
+The Project-scoped CARE preview composes optional context, requested action/output,
+task constraints, examples and references through the existing input-plugin
+engine's `compose` phase. Its patch changes only one user message; identity,
+policy, approval, sandbox and other protected fields remain core-owned. Unknown
+or protected structured fields refuse. Rules inside the message are task guidance,
+not executable configuration. Composition and missing-field suggestions consume
+zero model calls and are bounded to 16,000 characters with at most eight bounded
+references.
+
+Two initial examples are published as `agent.skill` Definitions with declarative
+`care.json` template assets. Bootstrap fills only missing Definition slots and
+preserves operator revisions. Selection resolves an exact published Skill
+reference, including checksum/revision and existing visibility, lifecycle,
+effective-window and security controls. A denied or incompatible example is
+reported as unavailable. Preview provenance uses the engine's existing metadata
+hashes and exact Definition reference; request bodies are not copied into UX
+telemetry. The preview operation is authenticated and read-only within the
+canonical Project tenant scope.
+
 ## Provenance
 
 Each plugin step records metadata only:
@@ -189,3 +210,13 @@ Actual transport mechanics must be composed outside this wrapper through the app
 The injected-invoker design prevents this core slice from creating a new ambient subprocess/network escape hatch merely to support input composition. A later production adapter may bind these contracts to those canonical execution/network/connector primitives without changing the pipeline security model.
 
 Prompt Master remains a reference integration, not a required dependency and not part of the execution kernel.
+
+The optional browser panel retains drafts only in memory, keyed by Project,
+Thread and execution repository scope. Late preview results are discarded after
+scope or field changes. Preview edits enter the existing Thread turn endpoint
+and its queue/admission controls; creating a Thread rebinds only that captured
+scope. Validation or denied submission retains the original draft, and late
+failure/acceptance cannot replace a newer edit. The panel displays the exact
+starting Skill record/revision/checksum and appends that attribution to the
+user request. Closing it restores ordinary free-text submission. Draft bodies
+are neither written to browser storage nor included in frontend API telemetry.
