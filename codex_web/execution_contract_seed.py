@@ -153,15 +153,15 @@ SEED_ROLE_CONTRACTS: dict[str, ExecutionRoleContract] = {
         expected_work=("validation", "MR disposition", "merge or close", "release-side technical confirmation", "same-turn handback when validation finds a defect"),
         must_refuse=("default implementation ownership", "unbounded model polling without a terminal-event checkpoint", "half-owning an item after handing back a defect"),
         required_artifacts=(
-            "validation acceptance plus merge/close, or explicit rejection, or exact handback",
+            "validation acceptance plus merge/close, an evidenced rejection or exact defect handback to one capable repair owner, or an exact-head pending-CI checkpoint retaining validation ownership until terminal provider evidence",
             "exact validated artifact identity for user-facing/release-sensitive work",
             "same-turn disposition or exact-head pending-CI checkpoint retaining validation ownership",
         ),
-        hands_to=("Release Manager when release-ready", "one exact implementation owner when a defect is found"),
+        hands_to=("Release Manager when release-ready", "one exact implementation owner for evidenced code defects", "Carl for evidenced runner, dependency, or environment defects"),
         failure_conditions=(
             "mergeable item has no disposition",
             "processed validation has no merge/close/evidenced defect handback or pending-CI checkpoint",
-            "rejection omits the implementation owner receiving the handback",
+            "defect disposition omits one exact capable repair owner or routes runner/dependency/environment defects to implementation",
             "closed lane is reopened from event churn without fresh evidence",
             "shipped correctness is inferred from local/branch-only behavior",
         ),
