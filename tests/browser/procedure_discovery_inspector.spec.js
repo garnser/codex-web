@@ -23,7 +23,7 @@ test('canonical discovery history exposes exact pins and blockers, escapes conte
     }
     return route.fulfill({status:404,json:{detail:'unavailable'}});
   });
-  await page.goto(`${process.env.PROCEDURE_TEST_BASE_URL || 'http://127.0.0.1:18766'}/procedure-inspector-fixture`);
+  await page.goto(`${process.env.CODEX_WEB_BROWSER_BASE_URL || 'http://127.0.0.1:18766'}/procedure-inspector-fixture`);
   await page.locator('[data-action-intent-row="intent-a"] > summary').click();
   await page.getByRole('button',{name:'Load side-effect timeline'}).click();
   const history=page.locator('#action-intent-history-intent-a');

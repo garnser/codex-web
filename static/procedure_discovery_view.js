@@ -15,7 +15,7 @@ export function procedureDiscoveriesHtml(intent, projectId) {
 }
 
 export function procedureHistoryHtml(history, projectId) {
-  const intent = history.intent;
+  const intent = history.intent || {};
   const receipts = history.receipts || [];
   const verifications = history.verifications || [];
   const inbox = history.inbox || [];

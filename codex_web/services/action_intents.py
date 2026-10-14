@@ -780,10 +780,19 @@ class ActionIntentService:
         discovery, _ = await asyncio.to_thread(self.procedure_discovery.discover, context, previous=previous)
         await asyncio.to_thread(self._record_procedure_discovery, intent.id, discovery)
         if intent.execution_id is not None and self.execution_workers is not None:
-            assignment = await asyncio.to_thread(self.execution_workers.assignment_for_execution,
-                intent.execution_id, actor=requester)
-            await asyncio.to_thread(self.execution_workers.record_procedure_discovery,
-                assignment.id, discovery, expected_fence=assignment.fence, actor=requester)
+            try:
+                assignment = await asyncio.to_thread(self.execution_workers.assignment_for_execution,
+                    intent.execution_id, actor=requester)
+                await asyncio.to_thread(self.execution_workers.record_procedure_discovery,
+                    assignment.id, discovery, expected_fence=assignment.fence, actor=requester)
+            except Exception as exc:
+                # No provider has been invoked. Lookup/fence failure here must
+                # remain a typed precondition failure, never an unknown write.
+                if discovery.admitted:
+                    discovery = discovery.model_copy(update={"outcome": "failed",
+                        "blockers": (*discovery.blockers, "procedure_assignment_evidence_unavailable")})
+                    await asyncio.to_thread(self._record_procedure_discovery, intent.id, discovery)
+                raise ProcedureAdmissionError(discovery) from exc
         if not discovery.admitted:
             raise ProcedureAdmissionError(discovery)
 

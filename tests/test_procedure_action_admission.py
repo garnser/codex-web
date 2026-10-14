@@ -203,3 +203,22 @@ class ProcedureActionAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('procedure_assignment_lookup_failed', intent.procedure_discoveries[0].blockers)
         self.assertNotIn('sensitive', str(intent.procedure_discoveries[0]))
         self.assertEqual(self.ops.calls, [])
+
+    async def test_assignment_lookup_failure_at_mutation_remains_known_precondition(self):
+        intent = self.create()
+        with patch.object(self.workers, 'assignment_for_execution', side_effect=OSError('sensitive lookup')):
+            completed = await self._execute(intent)
+        self.assertEqual(completed.status, ActionIntentStatus.FAILED)
+        self.assertEqual(completed.procedure_discoveries[-1].outcome, 'failed')
+        self.assertEqual(self.ops.calls, [])
+        self.assertNotIn('unknown', [r['outcome'] for r in self.service.history(intent.id, self.actor)['receipts']])
+
+    async def test_assignment_evidence_fence_failure_prevents_mutation(self):
+        from codex_web.services.execution_workers import WorkerLeaseError
+        intent = self.create()
+        with patch.object(self.workers, 'record_procedure_discovery', side_effect=WorkerLeaseError('stale fence')):
+            completed = await self._execute(intent)
+        self.assertEqual(completed.status, ActionIntentStatus.FAILED)
+        self.assertIn('procedure_assignment_evidence_unavailable', completed.procedure_discoveries[-1].blockers)
+        self.assertEqual(self.ops.calls, [])
+        self.assertNotIn('unknown', [r['outcome'] for r in self.service.history(intent.id, self.actor)['receipts']])
