@@ -87,6 +87,11 @@ This first slice intentionally does not add an LLM-as-judge. A future semantic
 quality evaluator must be bounded and may only supplement these deterministic
 checks.
 
+The [offline rubric scoring library](evaluation-rubrics.md) supplies revision-pinned
+criterion arithmetic and baseline comparisons as a separate prerequisite. It
+does not authenticate human annotations or replace replay assertions and does
+not yet persist results into evaluation runs.
+
 ## Regression comparison
 
 Candidate runs can reference a historical baseline run. Comparison records
