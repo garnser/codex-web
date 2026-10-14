@@ -139,4 +139,5 @@ class NotificationBatchInspection:
                     "outcome": "unresolved",
                 }
             )
-        return {**payload, "originals": originals}
+        return {**payload, "originals": originals,
+            'control_snapshot':batch.plan.control_snapshot.model_dump(mode='json') if batch.plan.control_snapshot else None}

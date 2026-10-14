@@ -110,6 +110,9 @@ from codex_web.services.queue_order_recovery import QueueOrderRecoveryService
 from codex_web.services.queued_bootstrap_recovery import QueuedBootstrapRecoveryService
 from codex_web.api.turns import build_turns_router
 from codex_web.services.notification_batch_inspection import NotificationBatchInspection
+from codex_web.services.notification_batch_runtime import NotificationBatchRuntimeControls, install_notification_batch_configuration
+from codex_web.services.notification_batch_drain import NotificationBatchDrain
+from codex_web.services.notification_batches import NotificationBatchCoordinator
 from codex_web.api.ui import build_ui_router
 from codex_web.api.work_items import build_work_items_router
 from codex_web.api.work_graph import build_work_graph_router
@@ -759,6 +762,7 @@ app.include_router(build_scheduler_router(scheduler_service))
 
 configuration_registry_store = ConfigurationRegistryStore(state_store)
 configuration_service = ConfigurationService(configuration_registry_store)
+notification_batch_configuration_specs = install_notification_batch_configuration(configuration_service)
 codex_worker_configuration_spec = install_codex_worker_configuration(
     configuration_service
 )
@@ -3490,6 +3494,15 @@ execution_preflight_service = ExecutionPreflightService(
 app.state.execution_preflight_service = execution_preflight_service
 turn_execution_service.queued_preflight = execution_preflight_service
 notification_batch_inspection = NotificationBatchInspection(execution_preflight_store)
+notification_batch_controls = NotificationBatchRuntimeControls(configuration=configuration_service,
+    projects=project_service,profiles=agent_profile_service,execution_profiles=execution_profile_definition_service,
+    authority=authority_role_service,resources=resource_catalog_service,
+    actor_resolver=turn_execution_service.actor_resolver,work_item=work_item_state_machine._work_item_state)
+turn_execution_service.notification_batch_handler = NotificationBatchDrain(
+    coordinator=NotificationBatchCoordinator(queue=turn_queue_repository,preflight=execution_preflight_store),
+    event_lookup=canonical_event_store.event,policy_for=notification_batch_controls.policy_for,
+    control_for=notification_batch_controls.resolve)
+app.state.notification_batch_controls = notification_batch_controls
 work_item_operator_service = WorkItemOperatorService(work_item_service)
 scheduling_retirement_service = QueuedSchedulingRetirementService(
     preflight=execution_preflight_service,

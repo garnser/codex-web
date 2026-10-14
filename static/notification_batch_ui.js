@@ -49,7 +49,20 @@ export function createNotificationBatchUi({ api, addMessage, captureView }) {
         const batch = await api(href);
         if (!current()) return;
         const originals = Array.isArray(batch.originals) ? batch.originals : [];
-        detail.textContent = originals.map(item => {
+        const control = batch.control_snapshot;
+        const controls = control ? [
+          'Controls retained at admission:',
+          `Agent profile record: ${control.agent_profile_record_id}`,
+          `Execution definition: ${control.execution_definition_ref?.definition_id} · revision ${control.execution_definition_ref?.revision}`,
+          `Authority definition: ${control.authority_definition_ref?.definition_id} · revision ${control.authority_definition_ref?.revision}`,
+          ...(control.configuration_pins_json || []).map(raw => {
+            const pin = JSON.parse(raw);
+            return `Configuration: ${pin.key} = ${pin.value}; record ${pin.record_id || 'default'} · revision ${pin.revision ?? 'default'}`;
+          }),
+          `Admission bounds: ${control.max_members} originals; ${control.max_context_bytes} UTF8 bytes`,
+          '',
+        ].join('\n') : '';
+        detail.textContent = controls + originals.map(item => {
           const original = item.original || {};
           const {message, ...provenance} = original;
           return [

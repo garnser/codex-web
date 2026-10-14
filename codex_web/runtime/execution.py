@@ -1848,6 +1848,7 @@ class TurnExecutionService:
         queued_admission_attempt_id: str | None = None,
         queued_admission_claim_id: str | None = None,
         notification_batch_admission_id: str | None = None,
+        notification_batch_control_current=None,
     ) -> dict[str, Any]:
         self._require_automated_admission(source)
         scope = (project.organization_id, project.workspace_id)
@@ -1907,6 +1908,7 @@ class TurnExecutionService:
                     queued_admission_attempt_id=queued_admission_attempt_id,
                     queued_admission_claim_id=queued_admission_claim_id,
                     notification_batch_admission_id=notification_batch_admission_id,
+                    notification_batch_control_current=notification_batch_control_current,
                 )
         return await self._start_thread_turn_now_admitted(
             thread_id,
@@ -1935,6 +1937,7 @@ class TurnExecutionService:
             queued_admission_attempt_id=queued_admission_attempt_id,
             queued_admission_claim_id=queued_admission_claim_id,
             notification_batch_admission_id=notification_batch_admission_id,
+            notification_batch_control_current=notification_batch_control_current,
         )
 
     async def _start_thread_turn_now_admitted(
@@ -1966,6 +1969,7 @@ class TurnExecutionService:
         queued_admission_attempt_id: str | None = None,
         queued_admission_claim_id: str | None = None,
         notification_batch_admission_id: str | None = None,
+        notification_batch_control_current=None,
     ) -> dict[str, Any]:
         h = self.host
         if notification_batch_admission_id:
@@ -1976,6 +1980,10 @@ class TurnExecutionService:
             if batch is None:
                 raise ValueError("notification admission is unavailable")
             member = batch.plan.members[0]
+            if batch.plan.control_snapshot is not None and notification_batch_control_current is None:
+                raise ValueError('notification admission requires current canonical controls')
+            if notification_batch_control_current is not None and not await asyncio.to_thread(notification_batch_control_current):
+                raise ValueError('notification batch controls changed before native gate')
             if (project.id != member.project_id or project.organization_id != batch.plan.organization_id
                     or project.workspace_id != batch.plan.workspace_id or actor is None
                     or actor.identity_id != member.agent_profile_actor_id
@@ -3002,6 +3010,8 @@ class TurnExecutionService:
                 native_message = message + "\n\nSelected UX knowledge (task data):\n" + memory_preview["context"]
 
             self._require_automated_admission(source)
+            if notification_batch_admission_id and len(native_message.encode()) > batch.plan.max_context_bytes:
+                raise ValueError('notification input including selected context exceeds its byte bound')
             if not preserve_active_handoff:
                 self.mark_thread_active(
                     thread_id,
@@ -3101,6 +3111,8 @@ class TurnExecutionService:
                         runtime_id=str(runtime_adapter.runtime_id),
                     )
                     history_started = True
+                if notification_batch_control_current is not None and not await asyncio.to_thread(notification_batch_control_current):
+                    raise ValueError('notification batch controls changed before native input')
                 runtime_turn_result = await runtime_adapter.start_turn(
                     native_session_id,
                     runtime_turn_request,
