@@ -88,6 +88,15 @@ class ActionIntentWorkItemSuccess(BaseModel):
     note: str | None = None
 
 
+class ActionIntentRollbackCheckpoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    origin_receipt_id: str
+    status: Literal["running", "unknown", "failed", "rolled_back"]
+    started_at: float
+    receipt_id: str | None = None
+    error_code: str | None = None
+
+
 class ActionIntent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -119,6 +128,7 @@ class ActionIntent(BaseModel):
     expected_evidence: tuple[EvidenceRequirement, ...] = ()
     verification_required: bool = False
     rollback_required: bool = False
+    rollback_checkpoint: ActionIntentRollbackCheckpoint | None = None
     timeout_seconds: float
     retry_policy: ActionIntentRetryPolicy
     status: ActionIntentStatus = ActionIntentStatus.PENDING
@@ -200,7 +210,7 @@ class ActionInboxMessage(BaseModel):
 class ActionIntentState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.4"
+    schema_version: str = "1.5"
     intents: list[ActionIntent] = Field(default_factory=list)
     receipts: list[ActionIntentReceipt] = Field(default_factory=list)
     verifications: list[ActionIntentVerificationReceipt] = Field(default_factory=list)

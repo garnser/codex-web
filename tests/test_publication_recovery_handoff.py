@@ -180,12 +180,14 @@ class PublicationRecoveryHandoffTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_combined_action_contract_migration_preserves_both_admission_records(self):
         from codex_web.procedure_discovery import ProcedureDiscovery
+        from codex_web.action_intents import ActionIntentRollbackCheckpoint
         discovery = ProcedureDiscovery(actor_identity_id=self.actor.identity_id, organization_id="local",
             workspace_id="default", project_id="home", resource_ids=(self.fixture.repo.id,),
             operation="code-host.branch.publish", context_checksum="exact-context", evaluated_at=time.time(),
             outcome="no_match", policy_source="policy:canonical", policy_allows=True)
         intent = next(iter(self.intents.values())).model_copy(update={
             "procedure_discoveries": (discovery,),
+            "rollback_checkpoint": ActionIntentRollbackCheckpoint(origin_receipt_id="receipt-historical", status="unknown", started_at=time.time()),
             "publication_recovery_scope": PublicationRecoveryIntentScope(
                 execution_workspace_id=self.workspace.id, recovery=self.prior,
                 execution_profile_definition=self.pin),
@@ -193,7 +195,7 @@ class PublicationRecoveryHandoffTests(unittest.IsolatedAsyncioTestCase):
         raw = ActionIntentState(intents=[intent]).model_dump(mode="json")
         raw["schema_version"] = "1.3"
         migrated = self.action_store._decode(raw)
-        self.assertEqual(migrated.schema_version, "1.4")
+        self.assertEqual(migrated.schema_version, "1.5")
         self.assertEqual(migrated.intents[0], intent)
 
     async def test_success_retains_proofs_subject_expiry_and_receipts(self):

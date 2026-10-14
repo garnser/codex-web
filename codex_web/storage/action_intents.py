@@ -11,7 +11,7 @@ from codex_web.compatibility import ContractSpec, MigrationRegistry
 from codex_web.storage.state_store import StateStore
 
 
-ACTION_INTENT_STATE_CONTRACT = ContractSpec("action-intent-state", "1.4", ("1.4",))
+ACTION_INTENT_STATE_CONTRACT = ContractSpec("action-intent-state", "1.5", ("1.5",))
 ACTION_INTENT_STATE_MIGRATIONS = MigrationRegistry("action-intent-state")
 ACTION_INTENT_STATE_MIGRATIONS.register(
     "0.0",
@@ -24,7 +24,7 @@ ACTION_INTENT_STATE_MIGRATIONS.register(
 ACTION_INTENT_STATE_MIGRATIONS.register(
     "1.2", "1.3", lambda payload: {**payload, "schema_version": "1.3"},
 )
-
+ACTION_INTENT_STATE_MIGRATIONS.register("1.3", "1.4", lambda payload: {**payload, "schema_version": "1.4"})
 
 
 def _security_migration(payload: dict[str, Any]) -> dict[str, Any]:
@@ -201,13 +201,13 @@ class ActionIntentStore:
             self.store.record_mutate(self.records_namespace, (), lambda _current: {})
         meta = self.store.record_get(self.records_namespace, self._meta_key)
         if meta is not None:
-            if meta == {"schema_version": "1.0"}:
+            if meta in ({"schema_version": "1.0"}, {"schema_version": "1.1"}):
                 def upgrade(current):
-                    if current[self._meta_key] not in ({"schema_version": "1.0"}, {"schema_version": "1.1"}):
+                    if current[self._meta_key] not in ({"schema_version": "1.0"}, {"schema_version": "1.1"}, {"schema_version": "1.2"}):
                         raise ValueError("unsupported action intent records schema")
-                    return {self._meta_key: {"schema_version": "1.1"}}
+                    return {self._meta_key: {"schema_version": "1.2"}}
                 self.store.record_mutate(self.records_namespace, (self._meta_key,), upgrade)
-            elif meta != {"schema_version": "1.1"}:
+            elif meta != {"schema_version": "1.2"}:
                 raise ValueError("unsupported action intent records schema")
             return
         # Upgrade both namespaces under the shared transaction lock. The old
@@ -216,7 +216,7 @@ class ActionIntentStore:
             records = documents[self.records_namespace]
             if self._meta_key not in records:
                 records = self._records(self._decode(documents[self.namespace]))
-                records[self._meta_key] = {"schema_version": "1.1"}
+                records[self._meta_key] = {"schema_version": "1.2"}
             return {self.records_namespace: records, self.namespace: documents[self.namespace]}
         self.store.update_many(
             {self.namespace: ActionIntentState().model_dump(mode="json"), self.records_namespace: {}},
@@ -303,5 +303,5 @@ class ActionIntentStore:
         return result[0]
 
 ACTION_INTENT_STATE_MIGRATIONS.register(
-    "1.3", "1.4", lambda payload: {**payload, "schema_version": "1.4"},
+    "1.4", "1.5", lambda payload: {**payload, "schema_version": "1.5"},
 )

@@ -1397,3 +1397,23 @@ class LocalExecutionWorkerRuntimeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PollOwnershipCleanupTests(unittest.TestCase):
+    def test_lost_owner_kills_and_reaps_the_canonical_process_group(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace=Path(temporary)
+            process=Mock(pid=99999999)
+            process.poll.return_value=None
+            process.wait.return_value=-9
+            backend=BubblewrapExecutionBackend(executable="/usr/bin/bwrap",probe_runner=_probe_success,
+                popen=lambda *args,**kwargs:process)
+            assignment=_assignment()
+            def lost_owner():
+                raise RuntimeError("controlled lease loss")
+            with patch.object(backend,'_kill_process_group') as kill:
+                with self.assertRaisesRegex(RuntimeError,'controlled lease loss'):
+                    backend.run(assignment,argv=('python3','-c','pass'),workspace_path=workspace,poll_hook=lost_owner)
+            kill.assert_called_once_with(process)
+            process.wait.assert_called_once()

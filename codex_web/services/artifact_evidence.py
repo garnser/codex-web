@@ -530,11 +530,20 @@ class ArtifactEvidenceService:
         updated = self.store.update(apply)
         return next(item for item in updated.artifacts if item.id == artifact.id)
 
-    def create_artifact(self, payload: ArtifactCreate, *, actor: AuthenticationActor) -> Artifact:
+    def create_artifact(self, payload: ArtifactCreate, *, actor: AuthenticationActor,
+                        source_artifact_ids: tuple[str, ...] = (),
+                        source_evidence_ids: tuple[str, ...] = ()) -> Artifact:
         sources = self._research_sources(payload.knowledge_ids, actor=actor, project_id=payload.project_id)
         self._validate_resources(payload.resource_ids, actor)
         self._validate_work_item_ref(payload.work_item_ref, actor)
         state = self.store.load()
+        if len(source_artifact_ids) + len(source_evidence_ids) > 64:
+            raise ArtifactEvidenceConflictError("derived Artifact source limit exceeded")
+        derived_sources = [self._artifact(state, sid, actor) for sid in source_artifact_ids]
+        derived_sources += [self._evidence(state, sid, actor) for sid in source_evidence_ids]
+        if any(source.project_id != payload.project_id or source.lifecycle not in {"active", "valid"}
+               or not source.governance_record_id for source in derived_sources):
+            raise ArtifactEvidenceConflictError("derived Artifact requires current governed sources in the same Project")
         superseded = None
         if payload.supersedes_artifact_id:
             superseded = self._artifact(state, payload.supersedes_artifact_id, actor)
@@ -583,7 +592,8 @@ class ArtifactEvidenceService:
                     retention_expires_at=payload.retention_expires_at,
                     retention_action=payload.retention_action,
                     residency_tags=payload.residency_tags,
-                    source_record_ids=(*source_record_ids, *(source.governance_record_id for source in sources)),
+                    source_record_ids=(*source_record_ids, *(source.governance_record_id for source in sources),
+                        *(source.governance_record_id for source in derived_sources)),
                     deny_model_context=payload.deny_model_context,
                     reason="artifact_created",
                 ),

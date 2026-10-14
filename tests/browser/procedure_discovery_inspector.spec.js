@@ -19,7 +19,7 @@ test('canonical discovery history exposes exact pins and blockers, escapes conte
     if(path === '/api/identity/me') return route.fulfill({json:{identity_id:'human-a',principal_kind:'human',assurance:'local_trusted',roles:['admin']}});
     if(path === '/api/action-intents/intent-a/history') {
       if (++calls === 2) { historyRequested(); await held; }
-      return route.fulfill({json:{intent:{...row,procedure_discoveries:[discovery]},receipts:[],verifications:[],inbox:[]}});
+      return route.fulfill({json:{intent:{...row,procedure_discoveries:[discovery],rollback_checkpoint:{status:"unknown",origin_receipt_id:"receipt-original",receipt_id:null,error_code:"provider_timeout <script>bad()</script>"}},receipts:[],verifications:[],inbox:[]}});
     }
     return route.fulfill({status:404,json:{detail:'unavailable'}});
   });
@@ -33,6 +33,10 @@ test('canonical discovery history exposes exact pins and blockers, escapes conte
   await expect(history.locator('script')).toHaveCount(0);
   await expect(history).toContainText('canonical:policy');
   await expect(history).toContainText('memory:guide@3');
+  await expect(history).toContainText('Originating-intent rollback · unknown');
+  await expect(history).toContainText('receipt-original');
+  await expect(history).toContainText('pending reconciliation');
+  await expect(history).toContainText('provider_timeout <script>bad()</script>');
   expect(await page.evaluate(()=>document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.getByRole('button',{name:'Load side-effect timeline'}).click();
   await requested;

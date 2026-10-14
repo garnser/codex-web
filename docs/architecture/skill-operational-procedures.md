@@ -138,3 +138,5 @@ Discovery consumers use the [canonical discovery/admission contract](procedure-d
 It preserves this exact Skill identity and fails visibly for unsupported native
 mutation enforcement. See the [operator guide](../operations/procedure-admission.md)
 for outcomes and provenance inspection.
+
+Procedure contract 1.1 adds declared governed judgment and originating-intent provider rollback; 1.0 serialization/checksums remain unchanged. See [durable execution](procedure-execution.md) for the runtime and compatibility contracts.

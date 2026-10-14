@@ -2091,6 +2091,17 @@ action_execution_service.procedure_admission = action_intent_service.procedure_p
 app.include_router(build_action_intents_router(action_intent_service))
 app.state.action_intent_store = action_intent_store
 app.state.action_intent_service = action_intent_service
+from codex_web.services.procedure_execution import ProcedureExecutionService
+from codex_web.api.procedure_execution import build_procedure_execution_router
+procedure_execution_service = ProcedureExecutionService(
+    workers=execution_worker_service, skills=skill_service, discovery=procedure_discovery_service,
+    intents=action_intent_service, evidence=artifact_evidence_service, identity=identity_service,
+    authority=authority_role_service, approvals=approval_request_service, attention=attention_service,
+    control_actor=identity_service.local_trusted_actor(), worker_runtime=local_execution_worker_runtime,
+    models=model_gateway_service, worker_actor=local_worker_actor)
+action_intent_service.procedure_execution = procedure_execution_service
+app.state.procedure_execution_service = procedure_execution_service
+app.include_router(build_procedure_execution_router(procedure_execution_service))
 from codex_web.api.procedure_discovery import build_procedure_discovery_router
 app.include_router(build_procedure_discovery_router(
     procedure_discovery_service, action_execution_service, action_intent_service, project_service))
