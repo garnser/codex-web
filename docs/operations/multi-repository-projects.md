@@ -253,3 +253,14 @@ source/tested revision values beyond 64 KiB; regression evidence records those
 actual offsets and retains only the safe proof line. Logs are never persisted in
 handoff history. Overflow, truncation, ambiguity, absent proof or wrong revision
 requires canonical inspection rather than accepting an observed subset.
+
+The required unit CI job qualifies executable-config Git inspection on GitHub's
+native Ubuntu 22.04 image. The 24.04 runner refused Bubblewrap network-namespace
+loopback setup (`Failed RTM_NEWADDR: Operation not permitted`), so this check
+uses an explicit supported native image instead of changing AppArmor/sysctls,
+adding capabilities, running privileged containers or accepting a skipped test.
+Other CI jobs and the supported application image retain their existing paths.
+A future runner migration must demonstrate these mandatory marker tests on its
+replacement image before removing this pin. See the
+[upstream restriction](https://github.com/containers/bubblewrap/issues/632) and
+[GitHub image metadata](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2204-Readme.md).
