@@ -11,6 +11,7 @@ from codex_web.storage.execution_preflight import ExecutionPreflightStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 from pathlib import Path
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 
 class NotificationBatchPlanTests(unittest.TestCase):
@@ -149,3 +150,93 @@ class NotificationBatchPlanTests(unittest.TestCase):
         attempts=dict(self.attempts)
         attempts[self.items[1].id]=attempts[self.items[1].id].model_copy(update={'attempt_number':2})
         self.assertIsNone(self.select(self.items[:2],attempts_by_original_id=attempts))
+
+    def test_atomic_claim_reopen_and_idempotent_retry_preserve_originals(self):
+        plan=self.select()
+        before={key:value.queued_turn_snapshot for key,value in self.attempts.items()}
+        admission=self.service.store.claim_notification_batch(plan,claim_id='claim-one',now=10)
+        reopened=ExecutionPreflightStore(SQLiteStateStore(Path(self.temp.name)/'state.sqlite'))
+        self.assertEqual(reopened.get_notification_batch(admission.id),admission)
+        self.assertEqual(reopened.claim_notification_batch(plan,claim_id='claim-one',now=20),admission)
+        for member in plan.members:
+            stored=reopened.get('preflight-queued-'+member.id)
+            self.assertEqual(stored.notification_batch_id,admission.id)
+            self.assertEqual(stored.status,'admitting')
+            self.assertEqual(stored.queued_turn_snapshot,before[member.id])
+            self.assertIsNone(stored.queued_start_receipt)
+        self.assertEqual(reopened.get('preflight-queued-original-4').status,'queued')
+
+    def test_failed_last_member_rechecks_commit_no_partial_claim(self):
+        plan=self.select()
+        self.service.store.update('preflight-queued-original-3',lambda current:current.model_copy(update={'status':'reconciliation_required'}))
+        with self.assertRaises(ValueError):
+            self.service.store.claim_notification_batch(plan,claim_id='claim-one',now=10)
+        self.assertEqual(self.service.store.get('preflight-queued-original-1').status,'queued')
+        self.assertEqual(self.service.store.get('preflight-queued-original-2').status,'queued')
+        self.assertIsNone(self.service.store.get('preflight-queued-original-1').notification_batch_id)
+
+    def test_concurrent_claims_have_one_owner_for_all_members(self):
+        plan=self.select()
+        def claim(value):
+            store=ExecutionPreflightStore(SQLiteStateStore(Path(self.temp.name)/'state.sqlite'))
+            try:
+                return store.claim_notification_batch(plan,claim_id=value,now=10)
+            except ValueError:
+                return None
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results=list(pool.map(claim,['claim-one','claim-two']))
+        winners=[value for value in results if value is not None]
+        self.assertEqual(len(winners),1)
+        self.assertEqual({self.service.store.get(value).queued_admission_claim_id
+                          for value in winners[0].attempt_ids},{winners[0].claim_id})
+
+    def test_prepared_release_allows_new_claim_without_erasing_history(self):
+        plan=self.select()
+        first=self.service.store.claim_notification_batch(plan,claim_id='claim-one',now=10)
+        released=self.service.store.transition_notification_batch(first.id,claim_id='claim-one',phase='released')
+        second=self.service.store.claim_notification_batch(plan,claim_id='claim-two',now=20)
+        self.assertNotEqual(first.id,second.id)
+        self.assertEqual(self.service.store.get_notification_batch(first.id),released)
+        self.assertEqual(self.service.store.get('preflight-queued-original-1').notification_batch_id,second.id)
+
+    def test_native_unknown_is_durable_and_cannot_release_or_single_retry(self):
+        plan=self.select()
+        admission=self.service.store.claim_notification_batch(plan,claim_id='claim-one',now=10)
+        self.service.store.transition_notification_batch(admission.id,claim_id='claim-one',phase='native_outcome_unknown')
+        reopened=ExecutionPreflightStore(SQLiteStateStore(Path(self.temp.name)/'state.sqlite'))
+        self.assertEqual(reopened.get_notification_batch(admission.id).phase,'native_outcome_unknown')
+        with self.assertRaises(ValueError):
+            reopened.transition_notification_batch(admission.id,claim_id='claim-one',phase='released')
+        with self.assertRaises(ValueError):
+            reopened.claim_retry('preflight-queued-original-1',claim_id='retry',now=30)
+        with self.assertRaises(ValueError):
+            self.service.begin_queued_start('preflight-queued-original-1',claim_id='claim-one')
+        with self.assertRaises(ValueError):
+            reopened.put(self.attempts['original-1'].model_copy(update={'status':'blocked'}))
+        self.assertTrue(all(reopened.get(value).status=='reconciliation_required' for value in admission.attempt_ids))
+
+    def test_claim_loss_fences_every_member_before_native_gate(self):
+        plan=self.select()
+        admission=self.service.store.claim_notification_batch(plan,claim_id='claim-one',now=10)
+        # Inject a changed retained claim directly in isolated fixture storage.
+        key='a/preflight-queued-original-3'
+        self.service.store.store.record_update(self.service.store.NAMESPACE,key,
+            lambda raw:dict(raw,queued_admission_claim_id='other-claim'),default=None)
+        with self.assertRaises(ValueError):
+            self.service.store.transition_notification_batch(admission.id,claim_id='claim-one',phase='native_outcome_unknown')
+        self.assertEqual(self.service.store.get_notification_batch(admission.id).phase,'prepared')
+        self.assertEqual(self.service.store.get('preflight-queued-original-1').status,'admitting')
+
+    def test_legacy_preflight_shape_is_exact_until_batch_membership_exists(self):
+        ordinary=self.attempts[self.items[0].id]
+        self.assertNotIn('notification_batch_id',ordinary.model_dump(mode='json'))
+        admission=self.service.store.claim_notification_batch(self.select(),claim_id='claim-one',now=10)
+        stored=self.service.store.get(admission.attempt_ids[0]).model_dump(mode='json')
+        self.assertIn('notification_batch_id',stored)
+        # The old model uses extra=forbid, hence does not silently lose membership.
+        from pydantic import create_model,ConfigDict
+        Legacy=create_model('LegacyPreflightFields',__config__=ConfigDict(extra='forbid'),
+            **{name:(field.annotation,field.default) for name,field in type(ordinary).model_fields.items()
+               if name!='notification_batch_id'})
+        with self.assertRaises(ValidationError):
+            Legacy.model_validate(stored)

@@ -86,15 +86,117 @@ class ExecutionPreflightStore:
 
     def put(self, attempt: ExecutionPreflightAttempt) -> None:
         payload = attempt.model_dump(mode="json")
-        self.store.record_apply(
-            self.NAMESPACE,
-            upserts={
+        key = self._attempt_key(attempt.id)
+        def write(values):
+            if values[key] is not None:
+                current = ExecutionPreflightAttempt.model_validate(values[key])
+                if current.notification_batch_id is not None and current != attempt:
+                    raise ValueError("notification batch member requires batch-scoped recovery")
+            return {
                 self._attempt_key(attempt.id): payload,
                 self._thread_key(attempt): {
                     "attemptId": attempt.id,
                 },
-            },
-        )
+            }
+        self.store.record_mutate(self.NAMESPACE, (key,), write)
+
+    def get_notification_batch(self, batch_id: str):
+        from codex_web.notification_batches import NotificationBatchAdmission
+        value = self.store.record_get(self.NAMESPACE, "b/" + batch_id)
+        return NotificationBatchAdmission.model_validate(value) if value is not None else None
+
+    def claim_notification_batch(self, plan, *, claim_id: str, now: float):
+        """All member claims and the descriptor commit in one keyed transaction.
+
+        This is retention/ownership only. No queue is removed and no native
+        outcome or permission is inferred. Caller must recheck authority/fencing.
+        """
+        from codex_web.notification_batches import NotificationBatchAdmission, NotificationBatchPlan, _eligible
+        from codex_web.services.turn_queue_policy import TurnQueuePolicy
+        plan = NotificationBatchPlan.model_validate(plan.model_dump(mode="python"))
+        admission = NotificationBatchAdmission(id=NotificationBatchAdmission.identity(plan.id, claim_id),
+                                              plan=plan, claim_id=claim_id, claimed_at=now)
+        batch_key = "b/" + admission.id
+        keys = tuple(self._attempt_key(value) for value in admission.attempt_ids)
+        selected = (*keys, batch_key)
+        outcome = None
+
+        def claim(values):
+            nonlocal outcome
+            previous = values[batch_key]
+            if previous is not None:
+                existing = NotificationBatchAdmission.model_validate(previous)
+                if existing.claim_id != claim_id or existing.plan != plan or existing.phase != "prepared":
+                    raise ValueError("notification batch is already claimed or requires reconciliation")
+                for key, member, original in zip(keys, plan.members, plan.original_snapshots_json, strict=True):
+                    current = ExecutionPreflightAttempt.model_validate(values[key])
+                    if (current.notification_batch_id != admission.id or current.status != "admitting"
+                            or current.queued_admission_claim_id != claim_id):
+                        raise ValueError("notification batch member claim changed")
+                    checked = current.model_copy(update={"status":"queued", "notification_batch_id":None})
+                    if _eligible(member, checked, organization_id=plan.organization_id, workspace_id=plan.workspace_id,
+                                 notification_source_origin=TurnQueuePolicy.source_origin(member.source)) != original:
+                        raise ValueError("notification batch original changed")
+                outcome = existing
+                return {}
+            changes = {}
+            for key, member, original in zip(keys, plan.members, plan.original_snapshots_json, strict=True):
+                if values[key] is None:
+                    raise ValueError("notification batch original is not retained")
+                current = ExecutionPreflightAttempt.model_validate(values[key])
+                snapshot = _eligible(member, current, organization_id=plan.organization_id,
+                    workspace_id=plan.workspace_id, notification_source_origin=TurnQueuePolicy.source_origin(member.source))
+                if snapshot != original:
+                    raise ValueError("notification batch original changed or is not eligible")
+                changes[key] = current.model_copy(update={"status": "admitting",
+                    "notification_batch_id": admission.id, "queued_admission_claim_id": claim_id,
+                    "updated_at": now}).model_dump(mode="json")
+            changes[batch_key] = admission.model_dump(mode="json")
+            outcome = admission
+            return changes
+
+        self.store.record_mutate(self.NAMESPACE, selected, claim)
+        return outcome
+
+    def transition_notification_batch(self, batch_id: str, *, claim_id: str, phase: str):
+        """Fence all members before native I/O, or release only a prepared claim."""
+        from codex_web.notification_batches import NotificationBatchAdmission, _eligible
+        from codex_web.services.turn_queue_policy import TurnQueuePolicy
+        observed = self.get_notification_batch(batch_id)
+        if observed is None:
+            raise KeyError(batch_id)
+        batch_key = "b/" + batch_id
+        keys = tuple(self._attempt_key(value) for value in observed.attempt_ids)
+        result = None
+
+        def change(values):
+            nonlocal result
+            current = NotificationBatchAdmission.model_validate(values[batch_key])
+            if current != observed or current.claim_id != claim_id:
+                raise ValueError("notification batch claim changed")
+            if phase not in {"native_outcome_unknown", "released"} or current.phase != "prepared":
+                raise ValueError("notification batch needs authoritative native reconciliation")
+            changes = {}
+            for key, queued, original in zip(keys, current.plan.members, current.plan.original_snapshots_json, strict=True):
+                member = ExecutionPreflightAttempt.model_validate(values[key])
+                if (member.notification_batch_id != batch_id or member.status != "admitting"
+                        or member.queued_admission_claim_id != claim_id or member.queued_start_receipt is not None):
+                    raise ValueError("notification batch member was fenced or changed")
+                checked = member.model_copy(update={"status":"queued", "notification_batch_id":None})
+                if _eligible(queued, checked, organization_id=current.plan.organization_id,
+                             workspace_id=current.plan.workspace_id,
+                             notification_source_origin=TurnQueuePolicy.source_origin(queued.source)) != original:
+                    raise ValueError("notification batch original changed")
+                updates = {"status": "reconciliation_required" if phase == "native_outcome_unknown" else "queued"}
+                if phase == "released":
+                    updates.update(notification_batch_id=None, queued_admission_claim_id=None)
+                changes[key] = member.model_copy(update=updates).model_dump(mode="json")
+            result = current.model_copy(update={"phase": phase})
+            changes[batch_key] = result.model_dump(mode="json")
+            return changes
+
+        self.store.record_mutate(self.NAMESPACE, (*keys, batch_key), change)
+        return result
 
     def retain_queued(self, attempt: ExecutionPreflightAttempt) -> ExecutionPreflightAttempt:
         """Commit the full request before queue removal; retries preserve its state."""
@@ -145,6 +247,8 @@ class ExecutionPreflightStore:
             if not isinstance(payload, dict):
                 raise KeyError(attempt_id)
             current = ExecutionPreflightAttempt.model_validate(payload)
+            if current.notification_batch_id is not None:
+                raise ValueError("notification batch member requires batch-scoped recovery")
             updated = updater(current.model_copy(deep=True))
             if (
                 updated.id != current.id
@@ -221,6 +325,8 @@ class ExecutionPreflightStore:
             current = ExecutionPreflightAttempt.model_validate(payload)
             if current.bootstrap_recovery is not None and current.bootstrap_recovery.state != 'created':
                 return current.model_dump(mode="json")
+            if current.notification_batch_id is not None:
+                raise ValueError("notification batch member requires batch-scoped recovery")
             if current.status in {"queued", "reconciliation_required"}:
                 return current.model_dump(mode="json")
             if current.status == "started":

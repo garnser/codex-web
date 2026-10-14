@@ -550,6 +550,7 @@ class ExecutionPreflightAttempt(BaseModel):
     queued_turn_snapshot: dict[str, Any] | None = None
     queued_admission_claim_id: str | None = None
     queued_start_receipt: QueuedNativeStartReceipt | None = None
+    notification_batch_id: str | None = None
     scheduling_retirement: QueuedSchedulingRetirement | None = None
     bootstrap_recovery: QueuedBootstrapRecovery | None = None
     bootstrap_recovery_history: tuple[QueuedBootstrapRecovery, ...] = Field(default=(), max_length=8)
@@ -577,12 +578,14 @@ class ExecutionPreflightAttempt(BaseModel):
     updated_at: float
 
     @model_serializer(mode="wrap")
-    def serialize_bootstrap_recovery(self, handler):
+    def serialize_recovery_fields(self, handler):
         result = handler(self)
         if self.bootstrap_recovery is None:
             result.pop("bootstrap_recovery", None)
         if not self.bootstrap_recovery_history:
             result.pop("bootstrap_recovery_history", None)
+        if self.notification_batch_id is None:
+            result.pop("notification_batch_id", None)
         return result
 
 

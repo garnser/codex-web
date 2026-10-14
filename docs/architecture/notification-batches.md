@@ -1,7 +1,7 @@
 # Lossless provider notification batches
 
-**Draft contract for #1307.** The planner exists on the implementation branch;
-native admission, durable batch lifecycle, per-original outcomes and inspector
+**Draft contract for #1307.** The planner and preflight member-claim ledger exist
+on the implementation branch; native submission, complete batch lifecycle, per-original outcomes and inspector
 integration are not enabled by it. Delivery/remaining acceptance is tracked in
 [#1307](https://github.com/garnser/codex-web/issues/1307), not this document.
 
@@ -50,6 +50,26 @@ ordinary originals, while later compatible entries keep queue order. A plan
 neither mutates a queue nor claims admission, native startup, ACK or completion.
 
 ## Native integration boundary
+
+The draft store uses existing keyed preflight namespace records: `b/` admission
+descriptors and original `a/` member attempts. A plan/claim-derived admission ID
+keeps released-claim history when the same originals are claimed again. All member
+claims and the descriptor commit through one bounded `record_mutate` transaction.
+Idempotent claiming rechecks every original snapshot and claim. Competing owners
+cannot acquire different subsets of the same plan.
+
+A prepared claim may release all members together. Before any future native I/O,
+an atomic gate changes the descriptor and every member to native-outcome-unknown.
+That state cannot release or use ordinary single-request update/put/retry paths;
+it needs batch-scoped authoritative reconciliation. Member snapshots, requested
+execution IDs and unrelated attempts remain unchanged. These operations do not
+remove queue copies or submit native calls.
+
+Ordinary preflight serialization omits null batch membership, retaining its old
+shape. Claimed members carry `notification_batch_id`; old extra-forbid preflight
+readers reject that field rather than silently dropping ownership. The admission
+descriptor is explicitly schema1.0. Qualified full-writer deployment and declared
+rollback/skew limits remain prerequisites before writing membership in production.
 
 The existing turn queue, keyed preflight records and ownership/fencing primitives
 must own batch admission and recovery. Complete originals must be durably retained

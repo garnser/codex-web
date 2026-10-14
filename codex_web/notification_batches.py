@@ -83,10 +83,35 @@ class NotificationBatchPlan(BaseModel):
         return self
 
 
+class NotificationBatchAdmission(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["1.0"] = "1.0"
+    id: str = Field(pattern=r"^notification-admission-[0-9a-f]{64}$")
+    plan: NotificationBatchPlan
+    claim_id: str = Field(min_length=1)
+    phase: Literal["prepared", "native_outcome_unknown", "released"] = "prepared"
+    claimed_at: float = Field(allow_inf_nan=False)
+
+    @staticmethod
+    def identity(plan_id, claim_id):
+        return "notification-admission-" + hashlib.sha256((plan_id + "\0" + claim_id).encode()).hexdigest()
+
+    @model_validator(mode="after")
+    def validate_identity(self):
+        if self.id != self.identity(self.plan.id, self.claim_id):
+            raise ValueError("notification admission identity changed")
+        return self
+
+    @property
+    def attempt_ids(self):
+        return tuple("preflight-queued-" + item.id for item in self.plan.members)
+
+
 def _eligible(original: QueuedTurn, attempt: ExecutionPreflightAttempt | None,
               *, organization_id: str, workspace_id: str, notification_source_origin: str) -> str | None:
     if (attempt is None or attempt.status != "queued" or attempt.queued_start_receipt is not None
-            or attempt.scheduling_retirement is not None or attempt.attempt_number != 1
+            or attempt.scheduling_retirement is not None or attempt.notification_batch_id is not None or attempt.attempt_number != 1
             or attempt.queued_turn_snapshot is None
             or attempt.organization_id != organization_id or attempt.workspace_id != workspace_id
             or attempt.project_id != original.project_id
@@ -99,9 +124,16 @@ def _eligible(original: QueuedTurn, attempt: ExecutionPreflightAttempt | None,
     if set(snapshot) - set(QueuedTurn.model_fields):
         return None
     retained = QueuedTurn.model_validate(snapshot)
-    if (retained.id != original.id or retained.thread_id != attempt.thread_id
+    if (attempt.id != "preflight-queued-" + original.id
+            or attempt.execution_id != (retained.execution_id or "reserved-queue-" + retained.id)
+            or retained.id != original.id or retained.thread_id != attempt.thread_id
             or retained.message != attempt.message or retained.source != attempt.source):
         return None
+    for field in ("sandbox", "approval_policy", "model", "reasoning_effort", "repository_resource_id",
+                  "writable_repository_resource_ids", "read_only_repository_resource_ids", "execution_profile_id",
+                  "agent_profile_id", "agent_profile_revision", "agent_profile_actor_id"):
+        if getattr(attempt, field) != getattr(retained, field):
+            return None
     projected = retained.model_copy(deep=True)
     if attempt.replacement_thread_id:
         if projected.reply_target and projected.reply_target.thread_id == projected.thread_id:
