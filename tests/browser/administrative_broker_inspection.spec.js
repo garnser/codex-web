@@ -3,7 +3,9 @@ const origin = process.env.CODEX_WEB_BROWSER_TEST_ORIGIN || 'http://127.0.0.1:18
 const assignment = (project='project-a', id='assignment-a') => ({
   id, project_id:project, execution_id:'execution-a', execution_profile_id:'orchestration-admin',
   work_item_ref:'group/source#1', brokered_control_plane:{enabled:true,
-    operations:[{id:'repository.issue.create'},{id:'work_graph.edge.create'}], assignment_context:{
+    operations:[{id:'repository.issue.create'},{id:'work_graph.edge.create'},
+      {id:'repository.read.delivery-evidence',path_template:'/api/action-intents/{intent_id}/delivery-evidence',
+        supported_action_ids:['code-host.branch.publish','code-host.pull-request.upsert','<img src=x onerror=alert(1)>']}], assignment_context:{
       agent_profile:{profile_id:'orchestrator',profile_revision:8,profile_record_id:'profile-eight',role_id:'orchestrator'},
       declared_repository_scope:{writable_repository_ids:[],read_only_repository_ids:[]},
       declared_administrative_scope:{repository_ids:['repository-a','<img src=x onerror=alert(1)>'],
@@ -35,6 +37,10 @@ test('administrative declaration, pinned attribution and actual denied audit rem
   await expect(panel).toContainText('authority.roles.default@r3');
   await expect(panel).toContainText('assignment-requester');
   await expect(panel).toContainText('Git scope: writable none');
+  await expect(panel).toContainText('Delivery evidence: read-only');
+  await expect(panel).toContainText('code-host.pull-request.upsert');
+  await expect(panel).toContainText('/api/action-intents/{intent_id}/delivery-evidence');
+  await expect(panel).toContainText('missing receipts or timestamps alone do not prove provider outcome');
   await expect(panel.locator('img,script')).toHaveCount(0);
   await expect(panel.getByRole('link',{name:'View resource: repository-a',exact:true}).first()).toHaveAttribute('href','/projects/project-a/resources?consumer_type=resource&consumer_id=repository-a');
   expect(reads).toEqual([]);
