@@ -51,6 +51,9 @@ from codex_web.code_hosts import (
     CodeHostTransientError,
 )
 from codex_web.execution_workers import ExecutionAssignment
+from codex_web.execution_workspaces import PublicationRecoveryHandoffRequest
+from codex_web.services.publication_recovery import PublicationRecoveryConflict
+from codex_web.services.publication_recovery_handoff import PublicationRecoveryHandoffService
 from codex_web.identity import AuthenticationActor, TenantScope
 from codex_web.models import (
     WorkItemAckCreate,
@@ -442,6 +445,7 @@ class ControlPlaneBrokerService:
         code_hosts: CodeHostService | None = None,
         execution_workspaces: ExecutionWorkspaceService | None = None,
         upgrades=None,
+        local_execution_worker=None,
         service_instance_id: str | None = None,
         execution_profiles=None,
         work_graph=None,
@@ -461,6 +465,7 @@ class ControlPlaneBrokerService:
         self.code_hosts = code_hosts
         self.execution_workspaces = execution_workspaces
         self.upgrades = upgrades
+        self.local_execution_worker = local_execution_worker
         self.service_instance_id = service_instance_id
         self.limits = limits or ControlPlaneBrokerLimits()
         self._clock = clock
@@ -522,6 +527,7 @@ class ControlPlaneBrokerService:
                     ),
                 }
         if item.id == "repository.workspace.publication-recovery":
+            result["handoff_request_body"] = PublicationRecoveryHandoffRequest.model_json_schema()
             result["request_body"] = {
                 "type": "object",
                 "required": ["work_item_ref"],
@@ -578,6 +584,19 @@ class ControlPlaneBrokerService:
         enabled = assignment.execution_profile_id in CONTROL_PLANE_EXECUTION_PROFILES
         context = self._public_assignment_context(assignment) if enabled else None
         operations = [self.public_operation(item) for item in OPERATIONS] if enabled else []
+        if (context is not None and assignment.execution_workspace_id and self.execution_workspaces is not None
+                and getattr(self.execution_workspaces, "store", None) is not None):
+            workspace = self.execution_workspaces.store.workspace(assignment.execution_workspace_id)
+            if (workspace is not None and workspace.organization_id == assignment.organization_id
+                    and workspace.workspace_id == assignment.workspace_id and workspace.project_id == assignment.project_id
+                    and workspace.execution_id == assignment.execution_id and workspace.subject == assignment.subject):
+                context["publication_recovery"] = {
+                    "current_scope": workspace.publication_recovery.model_dump(mode="json") if workspace.publication_recovery else None,
+                    "retired_scopes": [entry.model_dump(mode="json") for entry in workspace.publication_recovery_history],
+                    "workspace_id": workspace.id,
+                    "next_action": "Inspect exact current/retired evidence; reconcile unresolved intents before previewing a handoff",
+                }
+
         if enabled and assignment.execution_profile_id == "orchestration-admin":
             envelope = {"repository_ids": [], "operation_ids": [],
                         "definition": (assignment.execution_profile_definition.model_dump(mode="json")
@@ -1106,6 +1125,13 @@ class ControlPlaneBrokerService:
                 "execution_workspace_id": assignment.execution_workspace_id,
             }
         intent_work_item_ref = assignment.work_item_ref
+        if intent_work_item_ref is None and self.execution_workspaces and assignment.execution_workspace_id:
+            recovery = await asyncio.to_thread(self.execution_workspaces.publication_recovery,
+                assignment.execution_workspace_id, repository_id, actor=requester_actor)
+            if recovery is not None:
+                if recovery.assignment_id != assignment.id or recovery.assignment_fence != assignment.fence:
+                    raise ControlPlaneBrokerDeniedError("publication recovery provenance does not match the live assignment fence")
+                intent_work_item_ref = recovery.work_item_ref
         if (
             action_id == CODE_HOST_BRANCH_PUBLISH_ACTION_ID
             and parameters.get("existing_change_request_number") is not None
@@ -1192,6 +1218,7 @@ class ControlPlaneBrokerService:
                 ),
             ),
             actor=requester_actor,
+            assignment_id=assignment.id,
         )
         return await self._claim_and_execute_repository_intent(
             intent.id, assignment=assignment, worker_actor=worker_actor,
@@ -1761,6 +1788,19 @@ class ControlPlaneBrokerService:
                     }
                 ),
             }
+        elif (operation.id == "repository.workspace.publication-recovery"
+              and "expected_prior_scope" in payload):
+            handoff_request = PublicationRecoveryHandoffRequest.model_validate(payload)
+            if (handoff_request.expected_assignment_id != assignment.id
+                    or handoff_request.expected_assignment_fence != assignment.fence
+                    or handoff_request.execution_workspace_id != assignment.execution_workspace_id):
+                raise ControlPlaneBrokerRequestError("handoff assignment/workspace/fence precondition is stale", status_code=409)
+            if assignment_validator is not None:
+                await asyncio.to_thread(assignment_validator)
+            try:
+                result = await PublicationRecoveryHandoffService(self).handoff(handoff_request, actor=requester_actor)
+            except PublicationRecoveryConflict as exc:
+                raise ControlPlaneBrokerRequestError(str(exc), status_code=409) from exc
         elif operation.id == "repository.workspace.publication-recovery":
             if self.execution_workspaces is None or not assignment.execution_workspace_id:
                 raise ControlPlaneBrokerDeniedError(

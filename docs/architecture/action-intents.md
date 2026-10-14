@@ -262,6 +262,62 @@ A governed `code-host.branch.publish` request can explicitly set `expected_remot
 
 Every assignment receives this recovery contract through the shared control-plane instructions, including bootstrap threads without a Work Item. Broker operation discovery exposes the publication parameters and mutually exclusive remote preconditions. The provider error names both supported recovery modes. Observe the destination through the governed repository reader: a confirmed absent preserved `codex/` ref requires explicit absence; an existing ref requires its observed full commit SHA. Timeout or denial is not evidence of absence. Keep the local checkout on the new assignment's attested branch, even when the publication destination is the preserved older branch. Released assignments require a new authorized assignment and active lease. Preserve local commits and evidence before release; publication and MR handoff still require successful receipts, exact remote verification and the existing owner/validation process.
 
+### Publication-recovery revision fencing
+
+Scope-bound code-host intents retain `publication_recovery_scope`, the exact
+workspace recovery provenance and execution-profile Definition reference. All
+broker-created repository intents in an active recovery scope receive its Work
+Item attribution without relabelling the underlying execution. Canonical scope
+is captured by the service and cannot be supplied as an authority assertion in
+an ActionIntentCreate request. Insert and provider-execution admission atomically
+recheck the recovery revision with live workspace/worker/assignment state.
+Completed-issue handoff shares that transaction boundary and retains old intent
+and receipt history. An old revision never executes against the replacement
+scope. See the execution-worker boundary for completion evidence, compatibility
+and operator confirmation contracts. Ordinary unscoped and Work Item executions
+retain their existing paths. No new model calls or provider mutations are added.
+
+The scoped broker admission path carries an internal exact assignment lookup hint
+and uses bounded cross-collection record deltas for its new recovery guards.
+Guarded insert/execution reads the specific outbox row or idempotency index plus
+four scope rows, using the same locks as retirement. Read counts and unrelated-row
+preservation are tested; guards do not load global intent, worker or workspace
+collections. Existing unscoped execution lookups remain compatible. Typed provider
+receipts and canonical attribution establish issue/PR relationships independently
+of close-keyword prose; separately verified terminal issue closure remains valid.
+
+Recovery qualification reads a versioned GitHub default-setup configuration through
+the existing CodeHost checks/logs/artifacts capabilities and credential-reference boundary,
+retaining its exact state/languages/update/query-suite observation with each job.
+Expected analysis membership comes from that configuration, with protocol alias
+normalization; successful observed jobs never define their own required set.
+The existing literal functional matrix in `tests.yml` supplies shard membership.
+Only that canonical workflow metadata is included in the runtime build context;
+unsupported matrices and missing/unreadable packaging fail with typed recovery
+refusals. The Docker smoke gate executes these qualification regressions inside
+the supported image without network or writable runtime state.
+
+Recovery publication additionally requires the existing immutable candidate
+artifact and its versioned manifest to identify the exact merged source, image
+digest and complete deterministic qualification. The workflow control revision
+alone cannot identify a `workflow_run` producer's source. Provider artifact
+inventory/digest and bounded in-memory ZIP/manifest validation retain only the
+safe protocol fields; no archive extraction, logs or secret material enter scope
+history. Missing, expired, truncated, ambiguous or mismatched candidate evidence
+refuses handoff and requires canonical publication inspection.
+
+Every intent tagged with the retiring scope participates in the pending/unknown
+barrier, including intents whose immediate resource is an artifact rather than
+the repository. Untagged legacy attribution remains bounded to the originating
+repository/execution. Recovery rollback admission shares the same canonical
+scope guard and atomically marks the existing intent executing before the provider
+call; handoff cannot race that side effect or permit rollback under a retired scope.
+Native PR CodeQL results are inspected independently of analysis-job success,
+with exact source and native issuer provenance; missing/failed/cancelled/pending
+PR results refuse qualification. Recovery artifact source and workflow control
+revision are recorded separately. Bounded recent main workflow inspection can
+find a candidate whose control revision advanced, while its immutable artifact
+still proves the requested source; unknown or absent proof never grants eligibility.
 ### Procedure discovery admission
 
 The shared provider mutation boundary also enforces the
@@ -270,3 +326,12 @@ pre-mutation results retain exact Skill references, context, candidates and
 blockers in the existing intent; assignment-backed actions retain fenced evidence.
 A direct provider call cannot substitute for this admission. A procedure match
 never grants authority or creates an extra confirmation requirement.
+
+The combined ActionIntent state contract is `1.4`. Migration from `1.3` preserves
+procedure discoveries and recovery snapshots unchanged; older records receive
+empty optional histories. Readers that cannot understand both admission records
+must upgrade before consuming state written by this version.
+
+Procedure-discovery evidence appended by these paths also uses the existing
+point assignment transaction, with live fence/lease checks. It must not scan or
+rewrite unrelated global worker/assignment records before provider execution.

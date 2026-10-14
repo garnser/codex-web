@@ -160,6 +160,7 @@
       return `<details class="comm-entry" ${referenceAttributes("assignment", item.id)}>
         <summary><strong>${escapeHtml(subjectText(item))} · ${escapeHtml(item.execution_id)} · ${escapeHtml(item.status)}</strong></summary>
         <small>Assignment: ${escapeHtml(item.id)} · worker: ${referenceLink("worker", item.assigned_worker_id)}${worker ? ` (${escapeHtml(worker.pool)} / ${escapeHtml(worker.lifecycle)})` : ""} · execution workspace: ${escapeHtml(item.execution_workspace_id || "none")}</small>
+        ${item.brokered_control_plane?.assignment_context?.publication_recovery ? `<small>Current and retired publication recovery: ${escapeHtml(JSON.stringify(item.brokered_control_plane.assignment_context.publication_recovery))}</small>` : ""}
         <small>Project: ${escapeHtml(item.project_id || "none")} · resources: ${(item.resource_ids || []).map(id => referenceLink("resource", id)).join(", ") || "none"} · base revision: ${escapeHtml(item.base_revision || "none")} · contract: ${escapeHtml(item.execution_contract_version)}</small>
         <small>Required capabilities: ${listText(item.required_capabilities)} · sandbox: ${escapeHtml(item.sandbox)} · approval policy: ${escapeHtml(item.approval_policy)}</small>
         <small>Network: ${network.enabled ? "enabled" : "disabled"} · allowlist: ${listText(network.allowed_hosts)} · deadline: ${timeText(item.deadline_at)}</small>

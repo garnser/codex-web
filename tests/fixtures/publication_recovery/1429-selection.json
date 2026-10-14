@@ -1,0 +1,8 @@
+{
+  "run_id": 38626937167,
+  "job_id": 116068368867,
+  "full": "true",
+  "head": "e3f0b09253298a36bd08296d959d69c0607dafca",
+  "tested_revision": "f5fc6656b3f3de475595ae0c5a5af38a42beb243",
+  "provenance": "Operator readback of canonical provider selection log on issue 1440"
+}

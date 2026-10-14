@@ -6,6 +6,13 @@
   let inspections = [];
   let projects = [];
   let resources = [];
+  const {createWorkspacePresenters} = await import(`${BASE}/static/execution_workspace_presenters.js`);
+  const {integrationHtml, repositoryMembersHtml} = createWorkspacePresenters({escapeHtml, resourceNames, timeText});
+  const {createPublicationRecoveryUI} = await import(`${BASE}/static/publication_recovery_handoff.js`);
+  const {render: recoveryHtml, submit: handoff} = createPublicationRecoveryUI({
+    BASE, escapeHtml, timeText, canRecover, getActor: () => actor,
+    getInspections: () => inspections, refresh, setStatus,
+  });
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -123,26 +130,6 @@
     </div>`;
   }
 
-  function integrationHtml(workspace) {
-    const integration = workspace.integration || {};
-    return `<small>Integration: ${escapeHtml(integration.strategy || "none")} · outcome ${escapeHtml(integration.outcome || "pending")} · target ${escapeHtml(integration.target_revision || "none")} · result ${escapeHtml(integration.resulting_revision || "none")}</small>
-      ${integration.conflicts?.length ? `<small>Conflicts: ${integration.conflicts.map(escapeHtml).join(" · ")}</small>` : ""}
-      <small>Integration recorded by: ${escapeHtml(integration.recorded_by || "none")} · ${timeText(integration.recorded_at)}</small>`;
-  }
-
-  function repositoryMembersHtml(workspace) {
-    const members = workspace.repository_members || [];
-    if (!members.length) {
-      return "<small>Repository members: legacy/single-repository projection.</small>";
-    }
-    return `<div class="comm-log">${members.map((member) => `<div class="comm-entry">
-      <strong>${escapeHtml(resourceNames([member.resource_id]))} · ${escapeHtml(member.access_mode)}</strong>
-      <small>Source: ${escapeHtml(member.source_path)} · workspace: ${escapeHtml(member.workspace_path)}</small>
-      <small>Sandbox path: ${escapeHtml(member.sandbox_path)} · branch: ${escapeHtml(member.branch_name || "detached/read-only")}</small>
-      <small>Revision: ${escapeHtml(member.base_revision)} → ${escapeHtml(member.head_revision)} · disk ${bytes(member.disk_bytes)}</small>
-    </div>`).join("")}</div>`;
-  }
-
   function renderItem(item) {
     const workspace = item.workspace;
     const lease = item.lease;
@@ -155,7 +142,7 @@
       <small>Owner: ${escapeHtml(workspace.owner_identity_id)} · resources: ${escapeHtml(resourceNames(workspace.resource_ids))}</small>
       <small>Repository resource: ${escapeHtml(workspace.repository_resource_id || "none")} · branch: ${escapeHtml(workspace.branch_name || "none")}</small>
       <small>Path: ${escapeHtml(workspace.path || "none")} · base revision: ${escapeHtml(workspace.base_revision || "none")} · head revision: ${escapeHtml(workspace.head_revision || "none")}</small>
-      ${workspace.publication_recovery ? `<small>Publication recovery (does not relabel the execution subject): ${escapeHtml(JSON.stringify(workspace.publication_recovery))}</small>` : '<small>Publication recovery: none.</small>'}
+      ${recoveryHtml(item)}
       ${repositoryMembersHtml(workspace)}
       <small>Disk: requested ${bytes(workspace.requested_disk_bytes)} · actual ${workspace.actual_disk_bytes == null ? "unknown" : bytes(workspace.actual_disk_bytes)}</small>
       <small>Created: ${timeText(workspace.created_at)} · updated: ${timeText(workspace.updated_at)} · cleaned: ${timeText(workspace.cleaned_at)}</small>
@@ -296,6 +283,10 @@
     document.getElementById("execution-workspace-search")?.addEventListener("input", render);
     document.getElementById("execution-workspace-state-filter")?.addEventListener("change", render);
     document.getElementById("recover-execution-workspaces")?.addEventListener("click", () => recoverExpired().catch(console.error));
+    document.getElementById("execution-workspace-list")?.addEventListener("submit", (event) => {
+      const form = event.target.closest?.("[data-recovery-handoff]");
+      if (form) { event.preventDefault(); handoff(form).catch(console.error); }
+    });
     document.getElementById("execution-workspace-list")?.addEventListener("click", (event) => {
       const eventsButton = event.target.closest?.("[data-workspace-events]");
       if (eventsButton) {
@@ -311,5 +302,6 @@
     if (panel?.open) refresh().catch(console.error);
   }
 
-  window.addEventListener("DOMContentLoaded", bind);
+  if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", bind);
+  else bind();
 })();

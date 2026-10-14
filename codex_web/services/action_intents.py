@@ -83,6 +83,7 @@ from codex_web.services.execution_workers import (
 )
 from codex_web.services.security_boundary import SecurityBoundaryService
 from codex_web.storage.action_intents import ActionIntentStore
+from codex_web.services.publication_recovery import WS, capture_scope, execution_assignment, intent_guard, scope_rows
 
 
 class ActionIntentError(RuntimeError):
@@ -541,6 +542,7 @@ class ActionIntentService:
         execution_id: str | None,
         request: ActionRequest,
         actor: AuthenticationActor,
+        assignment_id: str | None = None,
     ) -> None:
         if execution_id is None:
             return
@@ -559,10 +561,7 @@ class ActionIntentService:
             )
 
         try:
-            assignment = self.execution_workers.assignment_for_execution(
-                execution_id,
-                actor=actor,
-            )
+            assignment = execution_assignment(self.execution_workers, execution_id, actor, assignment_id)
         except (AssignmentNotFoundError, WorkerConflictError) as exc:
             raise ActionIntentConflictError(
                 "execution-bound repository action requires a matching canonical execution assignment"
@@ -725,12 +724,12 @@ class ActionIntentService:
         with continuation_context(proof), procedure_action_intent(intent.id):
             return await self.execution.execute(intent.binding_id, intent.request, actor=actor)
 
-    def _procedure_context(self, *, actor, request, definition, provider, policy_source, policy_allows, execution_id):
+    def _procedure_context(self, *, actor, request, definition, provider, policy_source, policy_allows, execution_id, assignment_id=None):
         context = self.procedure_discovery.action_context(actor=actor, request=request,
             definition=definition, provider=provider, policy_source=policy_source, policy_allows=policy_allows)
         if execution_id is not None and self.execution_workers is not None:
             try:
-                assignment = self.execution_workers.assignment_for_execution(execution_id, actor=actor)
+                assignment = execution_assignment(self.execution_workers, execution_id, actor, assignment_id)
                 context = self.procedure_discovery.assignment_context(context, assignment, actor=actor)
             except Exception:
                 from dataclasses import replace
@@ -772,7 +771,9 @@ class ActionIntentService:
         context = await asyncio.to_thread(self._procedure_context,
             actor=requester, request=intent.request, definition=definition, provider=provider,
             policy_source=intent.policy_decision.source,
-            policy_allows=intent.policy_decision.outcome != ActionDecisionOutcome.DENY, execution_id=intent.execution_id)
+            policy_allows=intent.policy_decision.outcome != ActionDecisionOutcome.DENY, execution_id=intent.execution_id,
+            assignment_id=(intent.publication_recovery_scope.recovery.assignment_id
+                           if intent.publication_recovery_scope else None))
         if phase == "rollback":
             from dataclasses import replace
             context = replace(context, operation=intent.action_id + ".rollback", enforcement="canonical_rollback")
@@ -781,8 +782,9 @@ class ActionIntentService:
         await asyncio.to_thread(self._record_procedure_discovery, intent.id, discovery)
         if intent.execution_id is not None and self.execution_workers is not None:
             try:
-                assignment = await asyncio.to_thread(self.execution_workers.assignment_for_execution,
-                    intent.execution_id, actor=requester)
+                assignment = await asyncio.to_thread(execution_assignment, self.execution_workers,
+                    intent.execution_id, requester,
+                    intent.publication_recovery_scope.recovery.assignment_id if intent.publication_recovery_scope else None)
                 await asyncio.to_thread(self.execution_workers.record_procedure_discovery,
                     assignment.id, discovery, expected_fence=assignment.fence, actor=requester)
             except Exception as exc:
@@ -813,8 +815,15 @@ class ActionIntentService:
         payload: ActionIntentCreate,
         *,
         actor: AuthenticationActor,
+        assignment_id: str | None = None,
     ) -> ActionIntent:
         request = payload.request
+        recovery_admission = capture_scope(self.execution_workers, request, payload.execution_id, actor, assignment_id)
+        if recovery_admission is not None:
+            recovery_scope = recovery_admission[0]
+            if payload.work_item_ref not in {None, recovery_scope.recovery.work_item_ref}:
+                raise ActionIntentConflictError("ActionIntent Work Item differs from current publication recovery scope")
+            payload = payload.model_copy(update={"work_item_ref": recovery_scope.recovery.work_item_ref})
         if (
             request.organization_id != actor.organization_id
             or request.workspace_id != actor.workspace_id
@@ -835,6 +844,7 @@ class ActionIntentService:
             payload.execution_id,
             request,
             actor,
+            assignment_id,
         )
         self._change_request_continuation(
             request, binding_id=binding.id, execution_id=payload.execution_id,
@@ -950,7 +960,7 @@ class ActionIntentService:
         if self.procedure_discovery is not None:
             context = self._procedure_context(actor=actor, request=request,
                 definition=definition, provider=provider, policy_source=payload.policy_decision.source,
-                policy_allows=payload.policy_decision.outcome != ActionDecisionOutcome.DENY, execution_id=payload.execution_id)
+                policy_allows=payload.policy_decision.outcome != ActionDecisionOutcome.DENY, execution_id=payload.execution_id, assignment_id=assignment_id)
             discovery, _ = self.procedure_discovery.discover(context)
         denied = (
             (discovery is not None and not discovery.admitted)
@@ -1024,9 +1034,12 @@ class ActionIntentService:
             ),
             failure=denied_failure,
             work_item_success=payload.work_item_success,
+            publication_recovery_scope=recovery_admission[0] if recovery_admission else None,
         )
 
-        persisted = self.store.insert(intent)
+        persisted = self.store.insert(intent, **({
+            "guard_rows": recovery_admission[1], "guard": recovery_admission[2],
+        } if recovery_admission else {}))
         if persisted.id != intent.id and (
             self._idempotency_request_identity(persisted.request)
             != self._idempotency_request_identity(request)
@@ -1383,7 +1396,51 @@ class ActionIntentService:
                     break
             return state
 
-        updated = self.store.update(apply, intent_ids=(intent.id,))
+        guarded = self._publication_execution_guard(intent)
+        updated = self.store.update(apply, intent_ids=(intent.id,), **guarded)
+        return next(item for item in updated.intents if item.id == intent.id)
+
+    def _publication_execution_guard(self, intent):
+        scope = intent.publication_recovery_scope
+        guarded = {}
+        if scope is not None:
+            def guard(documents):
+                intent_guard(documents, assignment_id=scope.recovery.assignment_id,
+                    workspace_id=scope.execution_workspace_id, actor_id=intent.requested_by,
+                    expected_scope=scope, expected_profile=scope.execution_profile_definition,
+                    created_at=intent.created_at)
+            assignment = self.execution_workers.store.assignment(scope.recovery.assignment_id)
+            from codex_web.execution_workspaces import ExecutionWorkspace
+            workspace = ExecutionWorkspace.model_validate(self.store.store.record_get(WS, scope.execution_workspace_id))
+            guarded = {"guard_rows": scope_rows(assignment, workspace), "guard": guard}
+        elif intent.execution_id and intent.action_id.startswith("code-host.") and self.execution_workers:
+            assignment = self.execution_workers.assignment_for_execution(intent.execution_id, actor=self._requester_actor(intent))
+            if getattr(assignment, "execution_workspace_id", None):
+                def guard(documents):
+                    raw = documents[WS].get(assignment.execution_workspace_id)
+                    if raw and raw.get("publication_recovery_history"):
+                        raise ActionIntentConflictError("Legacy ActionIntent scope was retired; inspect receipts instead of replaying")
+                from codex_web.execution_workspaces import ExecutionWorkspace
+                workspace = ExecutionWorkspace.model_validate(self.store.store.record_get(WS, assignment.execution_workspace_id))
+                guarded = {"guard_rows": scope_rows(assignment, workspace), "guard": guard}
+        return guarded
+
+    def _begin_recovery_rollback(self, intent):
+        # A recovery rollback is also an external execution. Serialize its start
+        # with handoff and make the in-flight effect visible to completion gates.
+        guarded = self._publication_execution_guard(intent)
+        if not guarded:
+            return intent
+        def apply(state):
+            for index, item in enumerate(state.intents):
+                if item.id == intent.id:
+                    if (item.status not in TERMINAL_ACTION_INTENT_STATUSES or item.status == ActionIntentStatus.ROLLED_BACK
+                            or item.status != intent.status or item.last_receipt_id != intent.last_receipt_id):
+                        raise ActionIntentConflictError('Recovery rollback state changed or requires reconciliation')
+                    state.intents[index] = item.model_copy(update={'status':ActionIntentStatus.EXECUTING,
+                        'execution_started_at':time.time(), 'updated_at':time.time(), 'last_error':None})
+            return state
+        updated = self.store.update(apply, intent_ids=(intent.id,), **guarded)
         return next(item for item in updated.intents if item.id == intent.id)
 
     def _append_receipt(
@@ -1603,6 +1660,7 @@ class ActionIntentService:
             await asyncio.to_thread(
                 self._validate_execution_repository_scope,
                 pending.execution_id, current_request, requester,
+                pending.publication_recovery_scope.recovery.assignment_id if pending.publication_recovery_scope else None,
             )
             authority_recheck = await asyncio.to_thread(self._canonical_authority_snapshot,
                 definition=current_definition,
@@ -2317,6 +2375,7 @@ class ActionIntentService:
         if not results:
             raise ActionIntentConflictError("no completed provider result is available for rollback")
         result = results[-1]
+        intent = await asyncio.to_thread(self._begin_recovery_rollback, intent)
         try:
             from codex_web.procedure_discovery import procedure_action_intent
             with procedure_action_intent(intent.id):

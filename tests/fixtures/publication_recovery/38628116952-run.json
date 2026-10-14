@@ -1,0 +1,12 @@
+{
+  "id": 38628116952,
+  "path": ".github/workflows/publish-release.yml",
+  "head_sha": "fc7b53f3f5f98751148d5140db903d9200ba7e40",
+  "run_number": 598,
+  "run_attempt": 1,
+  "status": "completed",
+  "conclusion": "success",
+  "event": "workflow_run",
+  "head_branch": "main",
+  "html_url": "https://github.com/garnser/codex-web/actions/runs/38628116952"
+}

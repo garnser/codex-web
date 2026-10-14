@@ -143,6 +143,26 @@ class CodeHostCheckFact(BaseModel):
     web_url: str | None = None
 
 
+class CodeHostValidationRunFact(BaseModel):
+    """Provider-observed workflow provenance; callers cannot assert applicability."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    external_id: str
+    workflow_path: str
+    event: str
+    revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    head_branch: str | None = None
+    state: str
+    conclusion: str | None = None
+    selection_full: bool | None = None
+    selection_revision: str | None = None
+    tested_revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    control_revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    security_configuration: dict[str, Any] | None = None
+    security_result: dict[str, Any] | None = None
+    recovery_publication: dict[str, Any] | None = None
+    checks: tuple[CodeHostCheckFact, ...]
+
+
 class CodeHostJobLogFact(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 

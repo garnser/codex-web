@@ -22,7 +22,7 @@ class FrontendBoundaryTests(unittest.TestCase):
     def test_action_review_modules_remain_bounded(self) -> None:
         budgets = {"skill_action_confirmation.js": 3_000, "collaboration_lifecycle_dialog.js": 4_000, "action_confirmation.js": 6_000, "action_confirmation.css": 2_500,
                    "extension_confirmation.js": 3_000, "key_lifecycle_confirmation.js": 3_000,
-                   "resource_lifecycle_confirmation.js": 3_500}
+                   "resource_lifecycle_confirmation.js": 3_500, "publication_recovery_handoff.js": 7_000, "execution_workspace_presenters.js": 3_000}
         for name, maximum in budgets.items():
             with self.subTest(module=name):
                 self.assertLessEqual((STATIC / name).stat().st_size, maximum)

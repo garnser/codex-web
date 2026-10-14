@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import resource
 import shutil
@@ -789,6 +790,52 @@ class BubblewrapExecutionBackend:
                 minimum_process_count=minimum_process_count,
             ),
         )
+
+    def inspect_git_metadata(self, assignment, *, workspace_path: Path, source_path: Path):
+        """Read-only/no-network inspection under the existing assignment sandbox.
+
+        Repository helpers remain untrusted executable content inside isolation.
+        No host Git configuration, credentials, broker socket, runtime tools or
+        extra writable mounts enter this restricted invocation.
+        """
+        workspace = workspace_path.resolve(strict=True)
+        metadata = self.discover_git_metadata(workspace) or (workspace / '.git').resolve(strict=True)
+        if metadata is not None and not metadata.is_relative_to(workspace):
+            canonical_metadata = self.discover_git_metadata(source_path)
+            if canonical_metadata is None:
+                canonical_metadata = (source_path / '.git').resolve(strict=True)
+            if not metadata.is_relative_to(canonical_metadata):
+                raise LocalExecutionPolicyError('Git metadata escapes the canonical repository')
+        restricted = assignment.model_copy(update={
+            'sandbox': 'read-only',
+            'network': assignment.network.model_copy(update={'enabled': False, 'allowed_hosts': ()}),
+            'limits': assignment.limits.model_copy(update={'wall_seconds': min(10, assignment.limits.wall_seconds)}),
+        })
+        script = (
+            "import json,subprocess; "
+            "g=lambda *a: subprocess.run(['/usr/bin/git','--no-optional-locks','-c','core.fsmonitor=false',*a],"
+            "check=True,capture_output=True,text=True,timeout=3).stdout.strip(); "
+            "print(json.dumps({'head':g('rev-parse','HEAD'),"
+            "'branch':g('symbolic-ref','--short','HEAD'),"
+            "'dirty':g('status','--porcelain')}))"
+        )
+        result = self.run(restricted, argv=('/usr/bin/env', '-i',
+            'PATH=/usr/local/bin:/usr/bin:/bin', 'GIT_CONFIG_NOSYSTEM=1',
+            'GIT_CONFIG_GLOBAL=/dev/null', 'GIT_OPTIONAL_LOCKS=0',
+            'python3', '-I', '-S', '-c', script),
+            workspace_path=workspace, git_metadata_path=metadata,
+            environment={'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null',
+                         'GIT_OPTIONAL_LOCKS': '0'})
+        if not result.succeeded or result.output_truncated:
+            raise LocalExecutionPolicyError('Isolated Git inspection failed; inspect worker isolation/configuration')
+        try:
+            observation = json.loads(result.stdout)
+        except (ValueError, TypeError) as exc:
+            raise LocalExecutionPolicyError('Isolated Git inspection returned invalid metadata') from exc
+        if (not isinstance(observation, dict) or set(observation) != {'head', 'branch', 'dirty'}
+                or any(not isinstance(value, str) for value in observation.values())):
+            raise LocalExecutionPolicyError('Isolated Git inspection returned incompatible metadata')
+        return observation
 
     def run(
         self,

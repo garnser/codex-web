@@ -175,3 +175,92 @@ Preserve native thread IDs/history, audit/evidence records, branches with unmerg
 A qualified multi-repository Project demonstrates deterministic repository selection, one mutable checkout per mutation, read-only sibling context, safe concurrency, orchestration-only execution without Git authority, allowlisted/fenced/audited broker operations, no raw admin credentials, fail-closed symlink/path escapes, durable/idempotent preflight retry, resumable migration without duplicate Resources, truthful compatibility expiry, and fail-closed rootless-Podman execution readiness.
 
 See [Multi-repository security qualification](multi-repository-security-qualification.md) for the automated evidence matrix.
+
+## Handoff after completing one publication-recovery issue
+
+Use the existing Execution Workspace inspector to inspect the live current scope,
+owner, original subject, repository, assignment fence and lease. Preserve exact
+successful branch, change-request and merge ActionIntent IDs; inspect their original
+receipts and verification records. Verify old-issue authoritative terminal state,
+implementation relation and successful source/main checks. An unresolved pending
+or uncertain action requires canonical reconciliation before handoff; do not retry
+it, lower scope expiry, edit stored state or infer non-start from missing receipts.
+
+The owning stepped-up administrator selects the next canonically owned open Work
+Item, supplies completion intent IDs and the observed full current Git head, then
+previews the handoff. Preview returns source revision, merge revision, exact checks
+and the impact of retiring only this issue scope. Confirmation submits the same
+expected prior scope, assignment/fence, workspace, repository and head plus the
+same idempotency key. Server-side validation repeats at commit. On conflict or
+expiry, inspect fresh canonical state and receipts before preparing a new request.
+An exact repeated committed request is idempotent; a changed request needs a fresh
+key and current preconditions. Do not automatically repeat an ambiguous request.
+
+Inspect the resulting current scope and retained retired scope. Original subject,
+execution, workspace, worker and expiry remain unchanged; all old intents, receipts,
+verification and Definition attribution remain inspectable. Handoff never provisions
+a worker, installs a release, resumes autonomy or replays old actions. Publication
+still uses guarded remote-head preconditions and its canonical ActionProvider.
+A source fixture is not evidence that an installed older application can hand off
+live work. Installation and operational qualification remain separate governed work.
+
+A `Refs` publication does not need to auto-close its issue. Complete main
+qualification, close through the canonical issue/provider path, then hand off
+using the exact typed scope and owned publication/merge receipts. Inspect workflow
+selection and applicability proof along with exact run/job IDs: focused-documentation
+may be skipped by full validation selection, and release promotion may be skipped
+by the candidate workflow trigger. Those proven omissions are distinct from missing,
+failed/cancelled required jobs or pending/failed recovery publication. An unknown
+skip or unavailable selection evidence is a blocker, never permission to proceed.
+
+Handoff requires the complete functional shard matrix from the packaged canonical
+`tests.yml` protocol, not merely a successful observed subset. The supported image
+retains only that workflow file from `.github`; image qualification exercises both
+successful validation and actionable missing/unreadable/incompatible protocol
+refusals. An incompatible image/protocol needs operator inspection, not a retry
+or a weaker aggregate.
+
+Both exact source and merged-main qualification require the CodeQL workflow and
+all analysis jobs selected by fresh authenticated GitHub default-setup metadata.
+The versioned provider interpretation folds JavaScript/TypeScript aliases into
+the combined analysis language. Inspect the retained configuration observation,
+run and job IDs together. Disabled, unavailable, unknown or incompatible security
+configuration, omitted workflows or incomplete/failed/cancelled/pending selected
+security jobs block handoff. Operator metadata readback is not future authority.
+
+Repository Git configuration can execute helpers during status inspection. Recovery
+attestation uses the assignment-owned isolated local-worker boundary, restricted
+to read-only repository metadata and no network. If that boundary is unavailable
+or belongs to a different worker, stop at the typed inspection refusal and ask the
+canonical operator; do not run Git directly in the control plane or grant privileges.
+A generic failed/precondition receipt (including maintenance codes) does not settle
+old effects. Failed/rolled-back or historical unknown outcomes need a matching
+provider result and independently verified terminal evidence after execution and any unknown observation;
+old receipts and original status remain retained.
+
+Recovery publication additionally requires the existing immutable candidate
+artifact and its versioned manifest to identify the exact merged source, image
+digest and complete deterministic qualification. The workflow control revision
+alone cannot identify a `workflow_run` producer's source. Provider artifact
+inventory/digest and bounded in-memory ZIP/manifest validation retain only the
+safe protocol fields; no archive extraction, logs or secret material enter scope
+history. Missing, expired, truncated, ambiguous or mismatched candidate evidence
+refuses handoff and requires canonical publication inspection.
+
+Selection proof uses a complete bounded provider log read (the existing 320 KiB
+inspection ceiling). The qualified PR 1442 selection log is 86,275 bytes, with
+source/tested revision values beyond 64 KiB; regression evidence records those
+actual offsets and retains only the safe proof line. Logs are never persisted in
+handoff history. Overflow, truncation, ambiguity, absent proof or wrong revision
+requires canonical inspection rather than accepting an observed subset.
+
+The required unit CI job qualifies executable-config Git inspection on GitHub's
+native Ubuntu 22.04 image. The 24.04 runner refused Bubblewrap network-namespace
+loopback setup (`Failed RTM_NEWADDR: Operation not permitted`), so this check
+uses an explicit supported native image instead of changing AppArmor/sysctls,
+adding capabilities, running privileged containers or accepting a skipped test.
+Other CI jobs and the supported application image retain their existing paths.
+A future runner migration must demonstrate these mandatory marker tests on its
+replacement image before removing this pin. See the
+[upstream restriction](https://github.com/containers/bubblewrap/issues/632) and
+[GitHub image metadata](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2204-Readme.md).

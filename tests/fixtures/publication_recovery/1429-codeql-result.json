@@ -1,0 +1,12 @@
+{
+  "id": 116068639625,
+  "name": "CodeQL",
+  "head_sha": "e3f0b09253298a36bd08296d959d69c0607dafca",
+  "status": "completed",
+  "conclusion": "success",
+  "html_url": "https://github.com/garnser/codex-web/runs/116068639625",
+  "app": {
+    "id": 57789,
+    "slug": "github-advanced-security"
+  }
+}

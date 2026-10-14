@@ -581,6 +581,54 @@ class PostgresStateStore:
                 success=success,
             )
 
+    def record_mutate_many(self, selected, updater):
+        """Bounded cross-collection rows; same advisory locks as update_many.
+
+        Sorted namespace locks protect dynamic outbox index/receipt keys and
+        serialize with existing per-record and bulk canonical transitions.
+        """
+        if not selected:
+            raise ValueError("record_mutate_many requires selected namespaces")
+        started = time.perf_counter()
+        success = False
+        try:
+            with self._connection() as connection:
+                with connection.cursor() as cursor:
+                    self._lock_many(cursor, tuple(selected))
+                    current = {}
+                    for namespace, keys in selected.items():
+                        self._ensure_record_collection_in_cursor(cursor, namespace)
+                        current[namespace] = {}
+                        for key in dict.fromkeys(keys):
+                            cursor.execute("SELECT payload FROM codex_state_documents WHERE namespace = %s FOR UPDATE",
+                                (state_record_storage_key(namespace, str(key)),))
+                            current[namespace][key] = self._decode(cursor.fetchone())
+                    changes = updater(current)
+                    if not isinstance(changes, dict) or set(changes) - set(selected):
+                        raise TypeError("record_mutate_many must return deltas for selected collections")
+                    for namespace, delta in changes.items():
+                        if not isinstance(delta, dict):
+                            raise TypeError("collection delta must be a mapping")
+                        changed, deleted_revision = False, 0.0
+                        for key, payload in delta.items():
+                            storage_key = state_record_storage_key(namespace, str(key))
+                            if payload is None:
+                                cursor.execute("DELETE FROM codex_state_documents WHERE namespace = %s RETURNING updated_at",
+                                               (storage_key,))
+                                deleted = cursor.fetchone()
+                                if deleted is not None:
+                                    changed = True
+                                    deleted_revision = max(deleted_revision, deleted[0])
+                            else:
+                                self._upsert(cursor, storage_key, payload)
+                                changed = True
+                        if changed:
+                            self._touch_record_revision(cursor, namespace, minimum=deleted_revision)
+            success = True
+            return changes
+        finally:
+            self._keyed_mutation_metrics.observe(time.perf_counter() - started, success=success)
+
     def record_mutate(
         self,
         namespace: str,

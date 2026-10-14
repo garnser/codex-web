@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, HTTPException
 
 from codex_web.api.identity import request_actor
+from codex_web.execution_workspaces import PublicationRecoveryHandoffRequest
+from codex_web.services.publication_recovery import PublicationRecoveryConflict
+from codex_web.services.publication_recovery_handoff import PublicationRecoveryHandoffService
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.services.control_plane_broker import ControlPlaneBrokerService
 from codex_web.services.identity import IdentityService
@@ -55,5 +58,21 @@ def build_control_plane_broker_router(
             "items": [item.model_dump(mode="json") for item in events],
             "count": len(events),
         }
+
+    async def recovery_handoff(payload, request, *, preview):
+        actor = _operator_actor(request)
+        try:
+            return await PublicationRecoveryHandoffService(service).handoff(payload, actor=actor, preview=preview)
+        except (PublicationRecoveryConflict, ValueError, LookupError) as exc:
+            raise HTTPException(status_code=409, detail={"code": "publication_recovery_handoff_denied",
+                "reason": str(exc), "next_action": "Inspect current scope, ownership and exact completion receipts; do not replay unknown intents"}) from exc
+
+    @router.post("/publication-recovery/preview")
+    async def preview_recovery_handoff(payload: PublicationRecoveryHandoffRequest, request: Request):
+        return await recovery_handoff(payload, request, preview=True)
+
+    @router.post("/publication-recovery/handoff")
+    async def commit_recovery_handoff(payload: PublicationRecoveryHandoffRequest, request: Request):
+        return await recovery_handoff(payload, request, preview=False)
 
     return router

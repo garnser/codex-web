@@ -1,0 +1,17 @@
+{
+  "job_id": 116068368867,
+  "run_id": 38626937167,
+  "provider_raw_byte_count": 86275,
+  "provider_truncated": false,
+  "provider_redacted": true,
+  "sanitized_byte_count": 86282,
+  "proof_line_start": 81675,
+  "operator_raw_head_offset": 81848,
+  "operator_raw_tested_revision_offset": 81900,
+  "content_policy": "Actual canonical broker proof line retained verbatim; other bytes masked, with provider redaction expansion removed before proof to restore independently observed raw size/offsets. No checkout log or credential material retained.",
+  "fixture_encoding": "gzip-base64",
+  "content_gzip_base64": "H4sIAAAAAAAC/+2du5LTQBBF8/sVXY53t/SwZMspESlFREKNpRHrwtjgxxJQ/Duo+IJlbWlGczak8Ezf7tvPGUlm//sne9OfxtjwjTLedLXbyvK65TTp/3z1z3SThRQUsxQAZ8JwhHF2HjE8KRgAGseOmoA5ip7wd08fGk+cu4c/jQJF4ZY7d81JGou7o2lNkzv5/QKUxvupYi9NJpNPM0Yri6+Ai0kpYW2nIGFpCsEViLYUlEEUuzpnvtlESVwRQVBEzAm90rJImgnsEYMChDHnzDThEkBE/Cjqu+QT3e10oET4Lnw9aPcRcgQb1oRUxsx9LtIpiT2JJeScNLoTIUOAVhLygAtc4AIXuMAFLnCBC1zgAhe4wAUucIELXOBCXqbIyZzKTbU35xPp3UASjOYuB/txbozuyYrc75tdPwN7kushaBBJlTANSkPiSDKTQM3uychAR526B6ZZIAq0sIqKiegN4435CS5FOOVVAom3Iak/9i0koBE3rvtgf6P+IFYnnCOFVdnXOEDkBSekCgodAh7uxsSA/cGeLvsF3ygcqKYpnshwvPScmSMMYcKBPahYsAUVI9HAmPjz4C8fjOCsPkUe8iEMqg/25q4ysZ3oTn2FjyMJ8yQ6TJhH1kEjxD9YSFVIDMATmPLSlRkTLvpfOEecoZZJtoZK5gk0BmWMbxiaUx5QthF7sAeNK8MsrGRcOePSM/UIskT2BVqOvYhASENkMg4WkQHfRDPUmMZshX6d6G58FpEPDXHnDjtjf2SaQDJO2qEgbOBl3zTqNGTGDXFCi3GLiNDGfJoBAMxH8+wJ08k3aAJ2MgXCOmnKwiO7cJB78zykl+x7i8BNusPHjfs/7MtYhP0pZJEDVnI4ZtxIwE9AzxN8nD7Q1ILWmGpzqkQcJLnjm5ST+D/DDh5BIzcjBXWzcVeMCI8U3CYi7lGp0wkTNeECEYgsgCeQE2GFMbVFDmolJpR4P/h5AQ+xg/swlOrsTnmGTEx0qCeYjDAxNc7OYRPawUboCYmQlcrEODGi54XkUJ5yjVE3uk5O3ykxmkyOro3vjsU/31Z0u42sUqWZfBQAMs0kuqSgy7tivNfit1tXgQSCUOQINXUoMGfS1Ou8wgBFVtSPefaYLz/mzWbZbKryqS6yVZHnn+zXor/u94uNLS6nq1882OLk3fl4GP7lw/Vw2X3zD3bx58uDvXtvx5NdD18Px58H++4uz9Y+u8MX321sWMRe3H7XucvueLCT/3HdnXz3NKy4dWc/rJe70uVZ33RNVq3y2rdZ3a67tVvVfZa7bOXafl20WTv85tm7bviNL/tsmzVFVRbN2pX1tsvWRVN3TdV0dfN3hWzVub51w28GMX33+eRfdufdPwh91bd1XdXbsi87v1xVVVM5n7WVq1xfrt2y2PptsSwXvxVseRH6kQAfdGCyETggMTufvwI0J2MqQhyav9PICBnJQcXoM4ctjBs7IEyYBDjNRZzRxg36A9CHHjUDUQEA",
+  "fixture_byte_count": 86275,
+  "fixture_head_offset": 81848,
+  "fixture_tested_revision_offset": 81900
+}

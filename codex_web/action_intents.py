@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from codex_web.action_providers import ActionDefinition, ActionRequest, ActionResult, ActionVerification
 from codex_web.artifact_evidence import EvidenceRequirement
 from codex_web.definitions import DefinitionReference
+from codex_web.execution_workspaces import PublicationRecoveryIntentScope
 from codex_web.procedure_discovery import ProcedureDiscovery
 from codex_web.failures import FailureRecord
 from codex_web.security import ExecutionSecurityPolicy, SecurityTrustDecision
@@ -136,6 +137,7 @@ class ActionIntent(BaseModel):
     last_receipt_id: str | None = None
     last_verification_id: str | None = None
     work_item_success: ActionIntentWorkItemSuccess | None = None
+    publication_recovery_scope: PublicationRecoveryIntentScope | None = None
 
     @model_validator(mode="after")
     def normalize(self) -> "ActionIntent":
@@ -198,7 +200,7 @@ class ActionInboxMessage(BaseModel):
 class ActionIntentState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.3"
+    schema_version: str = "1.4"
     intents: list[ActionIntent] = Field(default_factory=list)
     receipts: list[ActionIntentReceipt] = Field(default_factory=list)
     verifications: list[ActionIntentVerificationReceipt] = Field(default_factory=list)
