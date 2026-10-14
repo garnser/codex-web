@@ -115,6 +115,7 @@ class TurnService:
         preflight: ExecutionPreflightService | None = None,
         scheduling_retirement: QueuedSchedulingRetirementService | None = None,
         agent_profiles: AgentProfileService | None = None,
+        memory_context=None,
     ) -> None:
         self.projects = projects
         self.settings = settings
@@ -129,6 +130,7 @@ class TurnService:
         self.preflight = preflight
         self.scheduling_retirement = scheduling_retirement
         self.agent_profiles = agent_profiles
+        self.memory_context = memory_context
 
     async def resume(
         self,
@@ -256,6 +258,12 @@ class TurnService:
     ) -> dict[str, Any]:
         self.recovery.raise_if_thread_replaced(thread_id)
         project = self.projects.get(payload.project_id)
+        memory_context_binding = None
+        if payload.memory_context_selection is not None:
+            if self.memory_context is None:
+                raise HTTPException(status_code=409, detail={"code": "memory_context_unavailable"})
+            memory_context_binding = self.memory_context.bind(
+                payload.memory_context_selection, project=project, actor=actor)
         agent_profile_id = payload.agent_profile_id
         agent_profile_revision = payload.agent_profile_revision
         agent_profile_actor_id: str | None = None
@@ -438,6 +446,7 @@ class TurnService:
                 agent_profile_id=agent_profile_id,
                 agent_profile_revision=agent_profile_revision,
                 agent_profile_actor_id=agent_profile_actor_id,
+                **({"memory_context_binding": memory_context_binding} if memory_context_binding is not None else {}),
             )
             queue_depth = self.queue_policy.depth(thread_id)
             event_payload: dict[str, Any] = {
@@ -531,6 +540,7 @@ class TurnService:
                 agent_profile_id=agent_profile_id,
                 agent_profile_revision=agent_profile_revision,
                 agent_profile_actor_id=agent_profile_actor_id,
+                **({"memory_context_binding": memory_context_binding} if memory_context_binding is not None else {}),
             )
             if self.preflight is not None and actor is not None:
                 self.preflight.mark_started_for_execution(
@@ -983,6 +993,7 @@ class TurnService:
                 agent_profile_id=queued.agent_profile_id,
                 agent_profile_revision=queued.agent_profile_revision,
                 agent_profile_actor_id=queued.agent_profile_actor_id,
+                **({"memory_context_binding": queued.memory_context_binding} if queued.memory_context_binding is not None else {}),
                 source=f"steer:{queued.source}",
                 reply_target=queued.reply_target,
                 execution_id=queued.execution_id,

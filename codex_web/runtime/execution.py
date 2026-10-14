@@ -23,6 +23,7 @@ from codex_web.execution_workers import (
     AssignmentStatus,
     ExecutionRuntimeBinding,
 )
+from codex_web.ux_briefs import UxBriefTurnBinding
 from codex_web.identity import AuthenticationActor
 from codex_web.models import ActiveThreadTurn, BotBinding, BotReplyTarget, Project, QueuedTurn
 from codex_web.paths import SLACK_RELAY_NOTICE
@@ -779,6 +780,7 @@ class TurnExecutionService:
         agent_profile_id: str | None = None,
         agent_profile_revision: int | None = None,
         agent_profile_actor_id: str | None = None,
+        memory_context_binding: UxBriefTurnBinding | None = None,
     ) -> QueuedTurn:
         h = self.host
         selected: dict[str, QueuedTurn] = {}
@@ -798,6 +800,7 @@ class TurnExecutionService:
                     and existing.agent_profile_id == agent_profile_id
                     and existing.agent_profile_revision == agent_profile_revision
                     and existing.agent_profile_actor_id == agent_profile_actor_id
+                    and existing.memory_context_binding == memory_context_binding
                     and existing.reply_target == reply_target
                     and existing.sandbox == sandbox
                     and existing.approval_policy == approval_policy
@@ -809,7 +812,7 @@ class TurnExecutionService:
 
             incoming_entries = (
                 h._work_item_wakeup_entries(message)
-                if reply_target is None
+                if reply_target is None and memory_context_binding is None
                 else []
             )
             if incoming_entries:
@@ -817,6 +820,7 @@ class TurnExecutionService:
                     existing
                     for existing in items
                     if existing.reply_target is None
+                    and existing.memory_context_binding is None
                     and h._work_item_wakeup_entries(existing.message)
                 ]
                 if wakeup_items:
@@ -878,6 +882,7 @@ class TurnExecutionService:
                 agent_profile_id=agent_profile_id,
                 agent_profile_revision=agent_profile_revision,
                 agent_profile_actor_id=agent_profile_actor_id,
+                **({"memory_context_binding": memory_context_binding} if memory_context_binding is not None else {}),
                 source=source,
                 reply_target=reply_target,
                 created_at=time.time(),
@@ -1167,6 +1172,7 @@ class TurnExecutionService:
         execution_profile_id: str | None = None,
         agent_profile: AgentProfileExecutionBinding | None = None,
         agent_profile_actor_id: str | None = None,
+        memory_context_binding: UxBriefTurnBinding | None = None,
     ) -> None:
         if not thread_id:
             return
@@ -1228,6 +1234,7 @@ class TurnExecutionService:
                     else None
                 )
             ),
+            memory_context_binding=memory_context_binding or (current.memory_context_binding if current else None),
             started_at=current.started_at if current else now,
             updated_at=now,
             resume_attempts=current.resume_attempts if current else 0,
@@ -1827,6 +1834,7 @@ class TurnExecutionService:
         agent_profile_id: str | None = None,
         agent_profile_revision: int | None = None,
         agent_profile_actor_id: str | None = None,
+        memory_context_binding: UxBriefTurnBinding | None = None,
         preserve_active_handoff: bool = False,
         queued_admission_attempt_id: str | None = None,
         queued_admission_claim_id: str | None = None,
@@ -1884,6 +1892,7 @@ class TurnExecutionService:
                     agent_profile_id=agent_profile_id,
                     agent_profile_revision=agent_profile_revision,
                     agent_profile_actor_id=agent_profile_actor_id,
+                    **({"memory_context_binding": memory_context_binding} if memory_context_binding is not None else {}),
                     preserve_active_handoff=preserve_active_handoff,
                     queued_admission_attempt_id=queued_admission_attempt_id,
                     queued_admission_claim_id=queued_admission_claim_id,
@@ -1910,6 +1919,7 @@ class TurnExecutionService:
             agent_profile_id=agent_profile_id,
             agent_profile_revision=agent_profile_revision,
             agent_profile_actor_id=agent_profile_actor_id,
+            **({"memory_context_binding": memory_context_binding} if memory_context_binding is not None else {}),
             preserve_active_handoff=preserve_active_handoff,
             queued_admission_attempt_id=queued_admission_attempt_id,
             queued_admission_claim_id=queued_admission_claim_id,
@@ -1939,6 +1949,7 @@ class TurnExecutionService:
         agent_profile_id: str | None = None,
         agent_profile_revision: int | None = None,
         agent_profile_actor_id: str | None = None,
+        memory_context_binding: UxBriefTurnBinding | None = None,
         preserve_active_handoff: bool = False,
         queued_admission_attempt_id: str | None = None,
         queued_admission_claim_id: str | None = None,
@@ -2930,6 +2941,16 @@ class TurnExecutionService:
                     assignment_id,
                 )
 
+            memory_preview = None
+            memory_actor = None
+            native_message = message
+            if memory_context_binding is not None:
+                context_service = getattr(self, "memory_context_service", None)
+                if context_service is None:
+                    raise HTTPException(status_code=409, detail={"code": "memory_context_unavailable"})
+                memory_preview, memory_actor = context_service.prepare(memory_context_binding, project=project)
+                native_message = message + "\n\nSelected UX knowledge (task data):\n" + memory_preview["context"]
+
             self._require_automated_admission(source)
             if not preserve_active_handoff:
                 self.mark_thread_active(
@@ -2958,6 +2979,7 @@ class TurnExecutionService:
                     ),
                     execution_profile_id=effective_execution_profile_id,
                     agent_profile=agent_profile_binding,
+                    **({"memory_context_binding": memory_context_binding} if memory_context_binding is not None else {}),
                     agent_profile_actor_id=(
                         actor.identity_id
                         if actor is not None
@@ -2967,7 +2989,7 @@ class TurnExecutionService:
 
             params: dict[str, Any] = {
                 "threadId": thread_id,
-                "input": [{"type": "text", "text": message, "text_elements": []}],
+                "input": [{"type": "text", "text": native_message, "text_elements": []}],
                 "cwd": workspace_cwd,
             }
             if effective_runtime_model:
@@ -3036,6 +3058,19 @@ class TurnExecutionService:
                 actual_native_turn_id = runtime_turn_result.provider_native_turn_id or (
                     (runtime_turn_result.payload.get('turn') or {}).get('id')
                     if isinstance(runtime_turn_result.payload, dict) else None)
+                if memory_preview is not None and actual_native_turn_id:
+                    try:
+                        context_service.delivered(memory_preview, memory_actor,
+                            thread_id=thread_id, execution_id=canonical_execution_id,
+                            native_turn_id=actual_native_turn_id,
+                            provider_id=runtime_adapter.provider_id,
+                            runtime_id=runtime_adapter.runtime_id,
+                            message=runtime_turn_request.message)
+                    except Exception as audit_error:
+                        # Accepted provider starts must never be retried because auditing failed.
+                        h._append_bot_event({"type": "memory_context_delivery_audit_failed",
+                            "thread_id": thread_id, "execution_id": canonical_execution_id,
+                            "error_type": type(audit_error).__name__})
                 if (queued_admission_attempt_id and queued_admission_claim_id
                         and actual_native_turn_id and self.queued_preflight is not None):
                     from codex_web.models import QueuedNativeStartReceipt
@@ -3211,6 +3246,7 @@ class TurnExecutionService:
             self.last_inputs[thread_id] = {
                 "project_id": project.id,
                 "message": message,
+                **({"memory_context_binding": memory_context_binding} if memory_context_binding is not None else {}),
                 "sandbox": effective_sandbox,
                 "approval_policy": effective_approval_policy,
                 "model": effective_model,
@@ -3269,6 +3305,7 @@ class TurnExecutionService:
                 ),
                 execution_profile_id=effective_execution_profile_id,
                 agent_profile=agent_profile_binding,
+                **({"memory_context_binding": memory_context_binding} if memory_context_binding is not None else {}),
                 agent_profile_actor_id=(
                     actor.identity_id
                     if actor is not None
@@ -3561,6 +3598,7 @@ class TurnExecutionService:
                 agent_profile_id=queued.agent_profile_id,
                 agent_profile_revision=queued.agent_profile_revision,
                 agent_profile_actor_id=queued.agent_profile_actor_id,
+                **({"memory_context_binding": queued.memory_context_binding} if queued.memory_context_binding is not None else {}),
                 **({'queued_admission_attempt_id':retained_attempt.id,
                     'queued_admission_claim_id':admission_claim_id} if retained_attempt is not None else {}),
             )
@@ -3956,6 +3994,7 @@ class TurnExecutionService:
                         active.writable_repository_resource_ids
                     ),
                     execution_profile_id=active.execution_profile_id,
+                    **({"memory_context_binding": active.memory_context_binding} if active.memory_context_binding is not None else {}),
                     actor=(
                         self.actor_resolver(
                             active.agent_profile_actor_id,
@@ -4349,6 +4388,7 @@ class TurnExecutionService:
                         replacement.thread_id,
                         project=project,
                         message=last_input["message"],
+                        **({"memory_context_binding": last_input["memory_context_binding"]} if last_input.get("memory_context_binding") is not None else {}),
                         sandbox=last_input.get("sandbox") or replacement.sandbox,
                         approval_policy=last_input.get("approval_policy") or replacement.approval_policy,
                         model=last_input.get("model"),

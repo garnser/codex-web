@@ -170,3 +170,77 @@ Executive reasoning retrieves memory before model invocation. Both the compatibi
 The Memory workspace is an inspectable operator surface over canonical knowledge and retrieval provenance. It exposes scope, type, lifecycle/freshness, classification/retention, provenance, versions, relationships, derived backend/index/embedding revision, selected/denied candidates, scores, reasons, and packed token budgets. The UI explicitly labels the index as derived/rebuildable state rather than canonical truth and remains usable at phone viewport widths.
 
 The legacy `/api/executive/knowledge` compatibility surface routes to Organizational Memory when the composed application is running. It no longer creates a second Executive reasoning source; standalone compatibility tests may still instantiate the legacy store when Organizational Memory is intentionally absent.
+
+## Typed UX context briefs
+
+Memory state schema `1.2` introduces the `ux_context_brief` Knowledge type.
+Migration from `1.1` preserves existing records, content digests, source attribution,
+relationships and lifecycle. Older engines refuse the new state version; rollout
+requires the canonical migration and backup/restore qualification, and an older
+reader is not a supported rollback target.
+
+Brief content uses the bounded `ux-context-brief/1.0` format: target users,
+observed needs, journeys, design constraints, approved copy examples,
+uncertainties and evaluation criteria. Each section carries optional exact
+Knowledge/Artifact/Evidence source pins. Knowledge pins use immutable record ID,
+version and content digest. Artifact pins also retain the declared external
+revision; Artifact and Evidence pins fingerprint the exact canonical record,
+so a revision label alone cannot conceal changed content or lifecycle. Negative
+Evidence outcomes remain inspectable source context rather than being treated
+as invalid source records.
+
+All Memory create, revise and ingest entry points validate brief content and
+resolve source pins through canonical services. They inherit source governance
+and derive Knowledge provenance through existing relationships. Source Project,
+tenancy and read authority are checked before curation. Ordinary reads, lists
+and retrieval also enforce source access; source changes, invalidation, deletion,
+supersession and expiry propagate to brief freshness and dependent memory.
+Context filtering rechecks current source-governance ancestry, including
+constraints tightened after curation. Recursive source checks are bounded and
+fail closed for cycles or unavailable sources.
+
+Project-bound brief views live within `/api/memory/projects/{project_id}/ux-briefs`
+and reuse Memory reader/writer scopes, authority, tenant checks and human mutation
+step-up. The Memory dialog includes a guided authoring/revision editor. Source
+updates require explicit inspection and repinning; a save does not silently
+substitute new source revisions. Drafts remain in memory for their original
+Project, and denied or failed saves retain their fields.
+
+A core-owned context projection can request exact Knowledge IDs and selected
+sections through the existing retrieval pipeline. The engine checks exact ID,
+version and digest after authority/governance filtering and before projection.
+It records bounded section/source pins in the existing metadata-only retrieval
+run. Source review dates, origin/review labels and outcome metadata accompany
+selected references. Complete sections and their attribution either fit the
+context budget or are omitted with an explicit reason; projection output is not
+silently cut through a source citation. Selection avoids injecting unrelated
+source lineage or other brief sections. Selection and freshness consume no model
+calls. A preview/retrieval audit is not proof of provider delivery or a trusted
+execution continuation checkpoint.
+
+The optional chat composer picker sends `TurnCreate.memory_context_selection`.
+The server binds exact section/source pins, the Project/tenant and original
+principal to a context digest. Queued and active turns persist this bounded
+binding, without source prose or credentials. Legacy turns omit the absent
+field, preserving their queue/preflight snapshot digests. Delayed admission and
+recovery resolve current canonical identity membership and, for a service, its
+current unrevoked/unexpired token grant. Native admission previews the exact
+selection again after worker/bootstrap awaits. Missing permissions, changed
+sources, omissions, changed context or scope refuse delivery with
+`memory_context_denied`; the engine never substitutes a newer brief.
+
+Selected context is task data in the existing user message. It does not grant
+execution authority or alter developer instructions. Only a runtime start
+response containing a native turn ID records `filters.native_delivery` on the
+existing Memory retrieval audit. That receipt contains exact selected pins via
+`context_selection`, context/message digests, Thread/execution and native
+provider/runtime attribution, without copied source text. An ambiguous start
+has no proven receipt. An audit write failure after provider acceptance emits
+metadata-only telemetry and never retries the accepted native start. The Memory
+retrieval inspector distinguishes accepted delivery from preview/retrieval.
+
+The guided editor and picker link exact canonical Knowledge/Artifact/Evidence
+records, preserve scoped in-memory drafts on failure and use no model calls or
+browser persistent storage. Product/user facts stay in Memory; reusable task
+instructions stay in versioned Skills. Ordinary free-text requests and CARE
+composition can use the same optional selection.

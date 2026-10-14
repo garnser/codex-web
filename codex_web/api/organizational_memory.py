@@ -32,6 +32,7 @@ from codex_web.storage.organizational_memory import (
 
 def build_organizational_memory_router(
     service: OrganizationalMemoryService,
+    *, brief_service=None, projects=None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/memory", tags=["organizational-memory"])
 
@@ -125,6 +126,13 @@ def build_organizational_memory_router(
             payload["tags"] = []
         payload["freshness"] = service.freshness(item).value
         return payload
+
+    if brief_service is not None:
+        from codex_web.api.ux_briefs import build_ux_brief_router
+        if projects is None:
+            raise TypeError("UX brief routes require canonical Project scope")
+        router.include_router(build_ux_brief_router(brief_service, projects,
+            reader=reader, writer=writer, translate=translate, view=view))
 
     @router.get("")
     async def list_memory(

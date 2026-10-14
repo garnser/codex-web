@@ -1028,6 +1028,50 @@ class _BootstrapBindings:
 
 
 class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
+    async def test_selected_memory_revalidated_at_native_boundary_and_recorded_only_after_acceptance(self):
+        from codex_web.ux_briefs import UxBriefTurnBinding, UxBriefSelection
+        binding = UxBriefTurnBinding(selection=UxBriefSelection(knowledge_id="brief-exact", version=1,
+            sha256="a"*64, sections=("observed_needs",)), project_id="p1", organization_id="local",
+            workspace_id="default", identity_id="human", principal_kind="human", context_sha256="b"*64)
+        for mode in ("accepted", "revoked", "unknown", "audit_failure"):
+            with self.subTest(mode=mode):
+                host, _, sessions, service = self._service()
+                context = SimpleNamespace(prepare=Mock(return_value=({"context":"Pinned UX observations"}, "actor")),
+                    delivered=Mock())
+                service.memory_context_service = context
+                if mode == "revoked":
+                    context.prepare.side_effect = HTTPException(status_code=409, detail={"code":"memory_context_denied"})
+                if mode == "audit_failure":
+                    context.delivered.side_effect = RuntimeError("metadata persistence failure")
+                original = sessions.session.request
+                async def request(method, params=None):
+                    if method == "turn/start":
+                        context.prepare.assert_called_once()
+                        context.delivered.assert_not_called()
+                        self.assertIn("Pinned UX observations", params["input"][0]["text"])
+                        if mode == "unknown":
+                            raise asyncio.TimeoutError("ambiguous provider outcome")
+                    return await original(method, params)
+                sessions.session.request = request
+                kwargs = dict(project=Project(id="p1", name="Project", path="/workspace/project"),
+                    message="Build recovery view", sandbox="workspace-write", approval_policy="on-request",
+                    memory_context_binding=binding)
+                if mode == "revoked":
+                    with self.assertRaises(HTTPException):
+                        await service.start_thread_turn_now("t1", **kwargs)
+                    self.assertFalse(any(method=="turn/start" for method, _ in sessions.session.requests))
+                    context.delivered.assert_not_called()
+                elif mode == "unknown":
+                    with self.assertRaises(asyncio.TimeoutError):
+                        await service.start_thread_turn_now("t1", **kwargs)
+                    context.delivered.assert_not_called()
+                else:
+                    await service.start_thread_turn_now("t1", **kwargs)
+                    context.delivered.assert_called_once()
+                    self.assertEqual(context.delivered.call_args.kwargs["native_turn_id"], "turn-1")
+                    self.assertEqual(service.last_inputs["t1"]["message"], "Build recovery view")
+                    self.assertEqual(service.last_inputs["t1"]["memory_context_binding"], binding)
+
     async def test_scoped_read_context_does_not_inherit_unrelated_thread_defaults(self):
         for source, ref, explicit, expected, supplied in [
             ('owner-work-watchdog', 'group/app#49', (), (), False),

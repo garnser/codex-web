@@ -1,4 +1,5 @@
 import { request } from './api_client.js';
+import { installUxBriefEditor } from './ux_brief_editor.js';
 
 const state = {
   records: [],
@@ -68,6 +69,7 @@ function ensureShell() {
           <option value="project">Projects</option>
           <option value="goal">Goals</option>
           <option value="decision">Decisions</option>
+          <option value="ux_context_brief">UX context briefs</option>
           <option value="other">Other</option>
         </select>
         <label>Top K <input class="memory-top-k" type="number" min="1" max="50" value="8" /></label>
@@ -91,6 +93,7 @@ function ensureShell() {
       </div>
     </div>`;
   document.body.appendChild(dialog);
+  installUxBriefEditor({host:dialog,getProjectId:()=>document.body.dataset.projectId||'home',onSaved:refreshAll});
 
   button.addEventListener('click', async () => {
     if (!dialog.open) dialog.showModal();
@@ -307,6 +310,7 @@ function renderRetrieval(run, liveItems = []) {
       <div><span>Embedding</span><strong>${esc(run.embedding_model_id ? `${run.embedding_provider_id}/${run.embedding_model_id}@${run.embedding_model_revision || '—'}` : 'none')}</strong></div>
       <div><span>Created</span><strong>${esc(fmtTime(run.created_at))}</strong></div>
       <div><span>Filters</span><strong>${esc(JSON.stringify(run.filters || {}))}</strong></div>
+      <div><span>Native delivery</span><strong>${run.filters?.native_delivery?.delivery_proven ? `Accepted native turn ${esc(run.filters.native_delivery.native_turn_id)} · Thread ${esc(run.filters.native_delivery.thread_id)} · execution ${esc(run.filters.native_delivery.execution_id)}` : "Preview / retrieval only · native delivery unproven"}</strong></div>
     </section>
     <section class="memory-card">
       <h4>Selected knowledge · why it influenced the run</h4>
