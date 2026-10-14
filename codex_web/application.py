@@ -3494,7 +3494,12 @@ execution_preflight_service = ExecutionPreflightService(
 )
 app.state.execution_preflight_service = execution_preflight_service
 turn_execution_service.queued_preflight = execution_preflight_service
-notification_batch_inspection = NotificationBatchInspection(execution_preflight_store)
+from codex_web.services.notification_outcomes import NotificationOutcomeInspection
+
+notification_batch_inspection = NotificationBatchInspection(
+    execution_preflight_store,
+    outcomes=NotificationOutcomeInspection(artifact_evidence_service),
+)
 notification_batch_controls = NotificationBatchRuntimeControls(configuration=configuration_service,
     projects=project_service,profiles=agent_profile_service,execution_profiles=execution_profile_definition_service,
     authority=authority_role_service,resources=resource_catalog_service,

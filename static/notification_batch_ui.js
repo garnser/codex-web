@@ -122,6 +122,9 @@ export function createNotificationBatchUi({ api, addMessage, captureView, loadTh
           const {message, ...provenance} = original;
           return [
             `Original ${original.id || "unknown"} · outcome ${item.outcome || "unresolved"}`,
+            `Outcome blockers: ${(item.blockers || []).join(', ') || 'none'}`,
+            `Other proof warnings: ${(item.warnings || []).join(', ') || 'none'}`,
+            `Evidence: ${(item.evidence_ids || []).join(', ') || 'none'}; verification: ${(item.verification_ids || []).join(', ') || 'none'}`,
             `Requested execution: ${original.execution_id || "none"}`,
             `Created: ${new Date(original.created_at * 1000).toISOString()}`,
             `Source: ${original.source || "unknown"}; work item: ${original.work_item_ref || "none"}`,
@@ -155,12 +158,15 @@ export function createNotificationBatchUi({ api, addMessage, captureView, loadTh
     }
     for (const batch of snapshot.items || []) {
       const receipt = batch.native_receipt;
+      const counts = batch.outcome_counts;
       const lines = [
         `Batch: ${batch.id}`,
         `Original count: ${batch.original_count}; oldest age: ${Math.floor(batch.oldest_age_seconds || 0)} seconds`,
         `Original IDs: ${(batch.original_ids || []).join(", ")}`,
         `Recovery: ${batch.recovery_state}`,
-        "Every original outcome remains unresolved. Shared admission or native completion does not prove success or ACK.",
+        counts ? `Original outcomes: ${counts.reconciled} reconciled; ${counts.follow_up_required} require follow-up; ${counts.unresolved} unresolved.`
+          : "Every original outcome remains unresolved.",
+        "Notification reconciliation does not prove ACK, business acceptance or issue closure. Shared native completion does not prove individual outcomes.",
         `Project: ${batch.project_id}; tenant: ${batch.organization_id}/${batch.workspace_id}`,
         `Agent profile: ${batch.agent_profile_id} · revision ${batch.agent_profile_revision}`,
         `Execution profile: ${batch.execution_profile_id}`,

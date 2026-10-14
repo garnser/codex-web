@@ -9,8 +9,9 @@ from codex_web.services.identity import IdentityService
 
 
 class NotificationBatchInspection:
-    def __init__(self, preflight, *, clock=time.time):
+    def __init__(self, preflight, *, outcomes=None, clock=time.time):
         self.preflight = preflight
+        self.outcomes = outcomes
         self.clock = clock
 
     @staticmethod
@@ -47,10 +48,31 @@ class NotificationBatchInspection:
         except (PermissionError, RuntimeError, AttributeError):
             return False
 
-    def _summary(self, batch, actor=None):
+    def _outcomes(self, batch, state):
+        if self.outcomes is None:
+            return {member.id: {"outcome": "unresolved", "blockers": ["outcome_inspection_unavailable"],
+                "evidence_ids": [], "verification_ids": []} for member in batch.plan.members}
+        results = self.outcomes.project(batch, state=state, now=self.clock())
+        for attempt_id, raw in zip(batch.attempt_ids, batch.plan.original_snapshots_json, strict=True):
+            original = json.loads(raw)
+            retained = self.preflight.get(attempt_id)
+            if results[original["id"]]["outcome"] != "unresolved" and (
+                retained is None or retained.queued_turn_snapshot != original
+                or retained.notification_batch_id != batch.id
+                or retained.queued_admission_claim_id != batch.claim_id
+                or retained.status != "reconciliation_required"
+            ):
+                results[original["id"]]["outcome"] = "unresolved"
+                results[original["id"]]["blockers"].append("retained_original_changed_or_missing")
+        return results
+
+    def _summary(self, batch, actor=None, outcomes=None):
         originals = [json.loads(raw) for raw in batch.plan.original_snapshots_json]
         oldest = min(item["created_at"] for item in originals)
         member = batch.plan.members[0]
+        counts = {key: 0 for key in ("reconciled", "follow_up_required", "unresolved")}
+        for item in (outcomes or self._outcomes(batch, None)).values():
+            counts[item["outcome"]] += 1
         return {
             "id": batch.id,
             "schema_version": batch.schema_version,
@@ -79,7 +101,8 @@ class NotificationBatchInspection:
             else "released_to_original_queue"
             if batch.phase == "released"
             else "batch_reconciliation_required",
-            "per_original_completion": "unresolved",
+            "per_original_completion": "unresolved" if counts["unresolved"] else "verified_reconciliation",
+            "outcome_counts": counts,
             "detail_href": f"/api/threads/{member.thread_id}/notification-batches/{batch.id}",
             "recovery": batch.recovery.model_dump(
                 mode="json", exclude={"restoration_snapshots_json"}
@@ -108,6 +131,7 @@ class NotificationBatchInspection:
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         visible = []
+        state = self.outcomes.snapshot() if self.outcomes else None
         for batch in batches:
             try:
                 self._authorize(
@@ -115,7 +139,7 @@ class NotificationBatchInspection:
                 )
             except HTTPException:
                 continue
-            visible.append(self._summary(batch, actor))
+            visible.append(self._summary(batch, actor, self._outcomes(batch, state)))
         return {
             "schema_version": "1.0",
             "threadId": thread_id,
@@ -127,7 +151,8 @@ class NotificationBatchInspection:
     def detail(self, batch_id, *, thread_id, project, actor):
         batch = self.preflight.get_notification_batch(batch_id)
         self._authorize(batch, thread_id=thread_id, project=project, actor=actor)
-        payload = self._summary(batch, actor)
+        outcomes = self._outcomes(batch, self.outcomes.snapshot() if self.outcomes else None)
+        payload = self._summary(batch, actor, outcomes)
         originals = []
         for attempt_id, raw, route in zip(
             batch.attempt_ids,
@@ -160,7 +185,7 @@ class NotificationBatchInspection:
                     "retention_integrity": "matches_original"
                     if retained and retained.queued_turn_snapshot == json.loads(raw)
                     else "changed_or_missing",
-                    "outcome": "unresolved",
+                    **outcomes[json.loads(raw)["id"]],
                 }
             )
         return {

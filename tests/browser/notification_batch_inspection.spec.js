@@ -70,3 +70,18 @@ test('batch inspection exposes retained configuration and definition revisions',
   await expect(page.locator('pre').first()).toContainText('execution.notification_batches.enabled = true; record fixture-config · revision 3');
   expect(await page.evaluate(() => window.__apiCalls.every(call=>call.method==='GET'))).toBe(true);
 });
+
+test('verified individual outcomes show proof and blockers without enabling replay', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?batch=native_input_started&batchOutcomes');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+  await expect(page.getByText('Original outcomes: 1 reconciled; 0 require follow-up; 1 unresolved.',{exact:false})).toBeVisible();
+  await expect(page.getByText('Notification reconciliation does not prove ACK, business acceptance or issue closure.',{exact:false})).toBeVisible();
+  await page.getByRole('button',{name:'Inspect batch originals'}).first().click();
+  const detail=page.locator('pre').first();
+  await expect(detail).toContainText('Original original-one · outcome reconciled');
+  await expect(detail).toContainText('Evidence: fixture-evidence; verification: fixture-independent-review');
+  await expect(detail).toContainText('Original original-two · outcome unresolved');
+  await expect(detail).toContainText('Outcome blockers: review_not_verified_or_conflicting');
+  await expect(page.getByRole('button',{name:/^Retry$|Return originals to queue/})).toHaveCount(0);
+  expect(await page.evaluate(() => window.__apiCalls.every(call=>call.method==='GET'))).toBe(true);
+});
