@@ -42,8 +42,9 @@ from codex_web.services.resources import ResourceCatalogService
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
 from codex_web.services.research_evidence import (
     OBSERVED_RESEARCH_METHOD, ResearchSourceError, research_sources,
-    research_origin, observed_verifications,
+    research_origin, research_source_snapshots, observed_verifications,
 )
+from codex_web.services.research_provenance import research_governance_plan
 
 
 class ArtifactEvidenceError(RuntimeError):
@@ -544,6 +545,7 @@ class ArtifactEvidenceService:
             artifact_type=payload.artifact_type,
             knowledge_ids=tuple(dict.fromkeys(payload.knowledge_ids)),
             research_origin=research_origin(sources),
+            research_sources=research_source_snapshots(sources),
             name=payload.name,
             provider=payload.provider,
             source=payload.source,
@@ -643,6 +645,7 @@ class ArtifactEvidenceService:
             evidence_type=payload.evidence_type,
             knowledge_ids=tuple(dict.fromkeys(payload.knowledge_ids)),
             research_origin=research_origin(sources),
+            research_sources=research_source_snapshots(sources),
             artifact_ids=payload.artifact_ids,
             provider=payload.provider,
             source=payload.source,
@@ -727,6 +730,7 @@ class ArtifactEvidenceService:
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
             verifier_identity_id=actor.identity_id,
+            verifier_principal_kind=actor.principal_kind,
             independent=independent,
             work_item_ref=work_item_ref,
             execution_id=payload.execution_id,
@@ -845,12 +849,16 @@ class ArtifactEvidenceService:
         self,
         record: GovernedDataRecord,
         action: GovernanceAction,
+        *, cascade: bool = True,
     ) -> str:
         """Apply governance to canonical metadata and managed content.
 
         Managed byte content is tombstoned before the canonical mutation is
         recorded. External Git/provider content remains outside this handler.
         """
+        plan = research_governance_plan(self.governance, record) if cascade else ()
+        if self.organizational_memory is None and any(row.object_type == "organizational_memory" for row in plan):
+            raise ArtifactEvidenceError("derived Memory governance adapter is unavailable")
         now = time.time()
         changed = False
         governance_content_tombstone: ArtifactContentPointer | None = None
@@ -962,6 +970,11 @@ class ArtifactEvidenceService:
             return state
 
         self.store.update(apply)
+        for dependent in plan:
+            if dependent.object_type == "organizational_memory":
+                self.organizational_memory._governance_action(dependent, action, cascade=False)
+            else:
+                self.apply_governance_action(dependent, action, cascade=False)
         suffix = "applied" if changed else "already_absent"
         return f"artifact-evidence:{record.object_type}:{record.object_id}:{action.value}:{suffix}"
 

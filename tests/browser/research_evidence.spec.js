@@ -15,12 +15,17 @@ test('research evidence inspection shows origin, exact Memory source links and g
     if(path==='/api/artifacts')return route.fulfill({json:{items:[{
       id:'report-a',project_id:'project-a',artifact_type:'report',name:'Research report',lifecycle:'active',
       research_origin:'mixed',knowledge_ids:['observed-source','synthetic-source'],
+      research_sources:[{knowledge_id:'observed-source',version:1,origin:'human_observed'},
+        {knowledge_id:'synthetic-source',version:2,origin:'ai_inference'}],
     }]}});
     if(path==='/api/evidence')return route.fulfill({json:{items:[{
       id:'evidence-a',project_id:'project-a',evidence_type:'review',result:'pass',lifecycle:'valid',
       research_origin:'ai_inference',knowledge_ids:['synthetic-source'],
     }]}});
     if(path==='/api/identity/me')return route.fulfill({json:{identity_id:'viewer',roles:['member'],assurance:'mfa'}});
+    if(path.startsWith('/api/evidence-requirements/work-items/'))return route.fulfill({json:{requirements:[{
+      id:'real-users',evidence_type:'review',observed_research:true,
+    }]}});
     if(path.startsWith('/api/evidence-evaluations/work-items/'))return route.fulfill({json:{
       work_item_ref:'group/app#42',satisfied:false,outcomes:[{requirement_id:'real-users',satisfied:false,
         reason:'requires current observed sources and independent human observed-user-research verification'}],
@@ -32,7 +37,8 @@ test('research evidence inspection shows origin, exact Memory source links and g
   await expect(page.locator('#artifact-list')).toContainText('Research origin: mixed');
   await expect(page.locator('#evidence-list')).toContainText('Research origin: ai_inference');
   await page.locator('#artifact-list details').evaluate(node=>{node.open=true});
-  await expect(page.locator('#artifact-list').getByRole('link',{name:'observed-source'})).toHaveAttribute('href','/projects/project-a/memory?knowledge_id=observed-source');
+  await expect(page.locator('#artifact-list').getByRole('link',{name:'observed-source@v1: human_observed'})).toHaveAttribute('href','/projects/project-a/memory?knowledge_id=observed-source');
   await page.locator('#evaluate-evidence-gate').click();
   await expect(page.locator('#evidence-gate-result')).toContainText('independent human observed-user-research verification');
+  await expect(page.locator('#evidence-gate-result')).toContainText('Observed-source human proof required: yes');
 });

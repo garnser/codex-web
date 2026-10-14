@@ -1545,6 +1545,7 @@ artifact_evidence_service = ArtifactEvidenceService(
     content_backend_resolver=_artifact_content_backend,
     organizational_memory=organizational_memory_service,
 )
+organizational_memory_service.artifact_evidence = artifact_evidence_service
 data_governance_service.register_action_handler(
     "artifact",
     artifact_evidence_service.apply_governance_action,

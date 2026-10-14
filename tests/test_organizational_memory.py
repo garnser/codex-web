@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from codex_web.data_governance import (
@@ -35,7 +36,7 @@ from codex_web.organizational_memory import (
 from codex_web.services.authority_roles import install_authority_roles
 from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.definitions import DefinitionRegistryService
-from codex_web.services.organizational_memory import OrganizationalMemoryService, KnowledgeValidationError
+from codex_web.services.organizational_memory import OrganizationalMemoryService, KnowledgeValidationError, KnowledgeAuthorizationError
 from codex_web.retrieval import (
     DeterministicLocalEmbeddingProvider,
     LocalLexicalRetrievalBackend,
@@ -141,6 +142,19 @@ class OrganizationalMemoryTests(unittest.TestCase):
         ), actor=self.actor)
         self.assertEqual(historical.items[0].freshness, KnowledgeFreshness.EXPIRED)
         self.assertEqual(historical.items[0].provenance.origin, KnowledgeOrigin.HUMAN_OBSERVED)
+
+    def test_derived_summary_cannot_bypass_revoked_source_role_access(self):
+        role = self.service._role_ids(self.actor, project_id=None)[0]
+        source = self._research("role-protected-research", "human_observed", required_role_ids=(role,))
+        summary = self._research("role-protected-summary", sources=(source,))
+        with patch.object(self.service, "_role_ids", return_value=()):
+            with self.assertRaises(KnowledgeAuthorizationError):
+                self.service.get(summary.id, actor=self.actor)
+            result = self.service.search(KnowledgeQuery(logical_keys=(summary.logical_key,)), actor=self.actor)
+            visible = self.service.list(actor=self.actor)
+        self.assertEqual(result.items, ())
+        self.assertIn("authority:research_source_read_denied", [row.reason for row in result.denied])
+        self.assertNotIn(summary.id, {row.id for row in visible})
 
     def test_legacy_origin_defaults_unknown_without_inferring_authorship(self):
         source = self._research("legacy")

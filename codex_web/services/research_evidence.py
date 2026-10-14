@@ -1,9 +1,10 @@
 """Resolve research provenance and eligible observed-source verification."""
 
-from codex_web.organizational_memory import KnowledgeFreshness, KnowledgeOrigin
-from codex_web.artifact_evidence import ArtifactLifecycle, EvidenceLifecycle, EvidenceResult, VerificationResult
+from codex_web.organizational_memory import KnowledgeFreshness, KnowledgeOrigin, KnowledgeOriginSource
+from codex_web.artifact_evidence import ArtifactLifecycle, EvidenceLifecycle, VerificationResult
 from codex_web.services.organizational_memory import KnowledgeAuthorizationError
 from codex_web.storage.organizational_memory import KnowledgeNotFoundError
+from codex_web.identity import PrincipalKind
 
 OBSERVED_RESEARCH_METHOD = "observed-user-research"
 
@@ -38,6 +39,18 @@ def research_origin(sources):
     return next(iter(origins)) if len(origins) == 1 else KnowledgeOrigin.MIXED
 
 
+def research_source_snapshots(sources):
+    snapshots = {}
+    for source in sources:
+        snapshots[source.id] = KnowledgeOriginSource(knowledge_id=source.id, version=source.version,
+            origin=source.provenance.origin, source_ref="memory:"+source.id)
+        for parent in source.provenance.origin_sources:
+            snapshots[parent.knowledge_id] = parent.model_copy(update={
+                "source_ref": "memory:"+parent.knowledge_id, "source_revision": None,
+            })
+    return tuple(snapshots.values())
+
+
 def observed_verifications(item, *, memory, state, actor, verify_content, now, max_age_seconds=None):
     """A source label alone never qualifies; exact source proof must be reviewed."""
     try:
@@ -60,10 +73,10 @@ def observed_verifications(item, *, memory, state, actor, verify_content, now, m
     evidence_ids = {evidence_id for source in observed
                     if source.provenance.origin == KnowledgeOrigin.HUMAN_OBSERVED
                     for evidence_id in source.provenance.evidence_ids}
-    eligible = set()
+    eligible = {}
     artifacts = {row.id: row for row in state.artifacts}
     for proof in state.evidence:
-        if proof.id not in evidence_ids or proof.lifecycle != EvidenceLifecycle.VALID or proof.result != EvidenceResult.PASS:
+        if proof.id not in evidence_ids or proof.lifecycle != EvidenceLifecycle.VALID:
             continue
         if (proof.organization_id, proof.workspace_id) != (actor.organization_id, actor.workspace_id):
             continue
@@ -82,9 +95,11 @@ def observed_verifications(item, *, memory, state, actor, verify_content, now, m
             continue
         if not all(verify_content(source) for source in linked):
             continue
-        eligible.add(proof.id)
+        eligible[proof.id] = {proof.producer_identity_id, *(source.producer_identity_id for source in linked)}
     return tuple(row.id for row in state.verifications
                  if (row.organization_id, row.workspace_id) == (actor.organization_id, actor.workspace_id)
                  and row.result == VerificationResult.VERIFIED and row.independent
+                 and row.verifier_principal_kind == PrincipalKind.HUMAN
                  and row.method == OBSERVED_RESEARCH_METHOD
-                 and eligible.intersection(row.evidence_ids))
+                 and any(proof_id in eligible and row.verifier_identity_id not in eligible[proof_id]
+                         for proof_id in row.evidence_ids))

@@ -10,7 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serial
 
 from codex_web.artifact_content import ArtifactContentPointer
 from codex_web.data_governance import DataClassification, GovernanceAction
-from codex_web.organizational_memory import KnowledgeOrigin
+from codex_web.organizational_memory import KnowledgeOrigin, KnowledgeOriginSource
+from codex_web.identity import PrincipalKind
 
 
 class ArtifactType(StrEnum):
@@ -90,6 +91,7 @@ class Artifact(BaseModel):
     artifact_type: ArtifactType
     knowledge_ids: tuple[str, ...] = Field(default=(), max_length=100)
     research_origin: KnowledgeOrigin = KnowledgeOrigin.UNKNOWN
+    research_sources: tuple[KnowledgeOriginSource, ...] = Field(default=(), max_length=1024)
     name: str = Field(min_length=1)
     producer_identity_id: str
     provider: str | None = None
@@ -130,6 +132,7 @@ class Evidence(BaseModel):
     evidence_type: EvidenceType
     knowledge_ids: tuple[str, ...] = Field(default=(), max_length=100)
     research_origin: KnowledgeOrigin = KnowledgeOrigin.UNKNOWN
+    research_sources: tuple[KnowledgeOriginSource, ...] = Field(default=(), max_length=1024)
     artifact_ids: tuple[str, ...] = ()
     producer_identity_id: str
     provider: str | None = None
@@ -166,6 +169,7 @@ class Verification(BaseModel):
     artifact_ids: tuple[str, ...] = ()
     evidence_ids: tuple[str, ...] = ()
     verifier_identity_id: str
+    verifier_principal_kind: PrincipalKind | None = None
     independent: bool
     method: str = Field(min_length=1)
     result: VerificationResult
