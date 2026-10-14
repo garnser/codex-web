@@ -419,3 +419,26 @@ class ActionProviderApiAssuranceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CredentialOutputBoundaryTests(unittest.TestCase):
+    def test_mapping_keys_and_values_at_every_depth_are_protected(self):
+        from types import SimpleNamespace
+        from codex_web.services.action_providers import _credential_safe_output, SensitiveActionOutputError
+        credential = 'controlled-fixture-credential'
+        for body in (
+            {credential: 'public-marker'},
+            {'output': {credential: 'public-marker'}},
+            {'output': [{'nested': [{credential: 'public-marker'}]}]},
+            {'output': {'safe': credential}},
+            {'evidence': [{'metadata': {credential: 'public-marker'}}]},
+        ):
+            with self.subTest(body=body):
+                result = SimpleNamespace(model_dump=lambda **kwargs: body)
+                with self.assertRaises(SensitiveActionOutputError) as caught:
+                    _credential_safe_output(result, credential)
+                self.assertNotIn(credential, str(caught.exception))
+                self.assertNotIn('public-marker', str(caught.exception))
+        safe = SimpleNamespace(model_dump=lambda **kwargs: {'output': [{'safe': 'public-marker'}]})
+        self.assertIs(_credential_safe_output(safe, credential), safe)
+        self.assertIs(_credential_safe_output(safe, None), safe)

@@ -340,6 +340,8 @@ class ProcedureExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.runner.start(self.assignment.id,definition=self.pin,input_snapshot_id=self.snapshot.id,actor=self.actor)
 
     def configure(self, content):
+        if 'execute_mapping_key' in self._testMethodName or 'verify_metadata_key' in self._testMethodName:
+            content['steps'][0]['max_attempts'] = 2
         if 'awaiting_approval' in self._testMethodName:
             content['steps'][2]['permissions'][0]['approvals']={'count':1}
         if 'retry_exhaustion' in self._testMethodName:
@@ -965,3 +967,76 @@ class ProcedureExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(checkpoint.status, 'recovery_required', checkpoint)
         self.assertEqual(self.provider.calls, ['fixture.backup'])
         self.assertTrue(checkpoint.attention_id)
+
+
+    def assert_rejected_credential_body_absent(self, checkpoint, intent_id):
+        persisted = json.dumps(self.intents.history(intent_id, self.actor)) + checkpoint.model_dump_json()
+        persisted += self.intents.store.load(intent_id=intent_id).model_dump_json()
+        self.assertNotIn(self.expected_fixture_credential, persisted)
+        self.assertNotIn('rejected-key-body-marker', persisted)
+        from codex_web.action_intents import ActionIntentRetryRequest
+        from codex_web.services.action_intents import ActionIntentUnsafeRetryError
+        with self.assertRaises(ActionIntentUnsafeRetryError):
+            self.intents.retry(intent_id, ActionIntentRetryRequest(reason='must reconcile'), actor=self.actor)
+
+    async def test_secret_reference_execute_mapping_key_rejection_stays_uncertain_after_restart(self):
+        original = self.provider.execute
+        async def leak(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            return result.model_copy(update={'output': {'nested': [{'deeper': [{
+                self.expected_fixture_credential: 'rejected-key-body-marker'}]}]}})
+        with patch.object(self.provider, 'execute', side_effect=leak) as invoke:
+            checkpoint = await self.advance()
+            self.assertEqual(checkpoint.status, 'reconciliation_required', checkpoint)
+            intent_id = checkpoint.steps['backup'].action_intent_id
+            self.assertEqual(self.intents.get(intent_id, self.actor).status, 'uncertain')
+            self.rebuild()
+            checkpoint = await self.advance()
+            self.assertEqual(invoke.call_count, 1)
+        self.assertEqual(checkpoint.status, 'reconciliation_required')
+        self.assert_rejected_credential_body_absent(checkpoint, intent_id)
+
+    async def test_secret_reference_verify_metadata_key_rejection_requires_reconciliation(self):
+        from codex_web.action_providers import ActionEvidence
+        async def leak(*args, **kwargs):
+            self.assertEqual(kwargs['credential'], self.expected_fixture_credential)
+            return ActionVerification(verified=True, evidence=(ActionEvidence(evidence_type='controlled',
+                metadata={self.expected_fixture_credential: 'rejected-key-body-marker'}),))
+        with patch.object(self.provider, 'verify', side_effect=leak) as invoke:
+            checkpoint = await self.advance()
+            self.assertEqual(checkpoint.status, 'reconciliation_required', checkpoint)
+            intent_id = checkpoint.steps['backup'].action_intent_id
+            self.assertEqual(self.intents.get(intent_id, self.actor).status, 'requires_reconciliation')
+            history = self.intents.history(intent_id, self.actor)
+            self.assertTrue(history['receipts'])
+            self.assertIsNone(history['verifications'][-1]['provider_verification'])
+            self.rebuild()
+            checkpoint = await self.advance()
+            self.assertEqual(invoke.call_count, 1)
+        self.assertEqual(checkpoint.status, 'reconciliation_required')
+        self.assert_rejected_credential_body_absent(checkpoint, intent_id)
+
+    async def test_secret_reference_rollback_mapping_key_rejection_never_replays_restoration(self):
+        await self.through_change()
+        self.config.write_text(json.dumps({'workers': ['failed'], 'http_status': 503, 'rotation': 2}))
+        await self.advance()
+        original = self.provider.rollback
+        async def leak(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            return result.model_copy(update={'output': {'nested': [{self.expected_fixture_credential:
+                'rejected-key-body-marker'}]}})
+        with patch.object(self.provider, 'rollback', side_effect=leak) as invoke:
+            checkpoint = await self.advance()
+            self.assertEqual(checkpoint.status, 'reconciliation_required', checkpoint)
+            intent_id = checkpoint.steps['rollback'].action_intent_id
+            origin = self.intents.get(intent_id, self.actor)
+            self.assertEqual(origin.credential_ref, self.secret_fixture_ref)
+            self.assertEqual(origin.status, 'requires_reconciliation')
+            self.assertEqual(origin.rollback_checkpoint.status, 'unknown')
+            self.assertEqual(json.loads(self.config.read_text())['rotation'], 1)
+            self.rebuild()
+            checkpoint = await self.advance()
+            self.assertEqual(invoke.call_count, 1)
+        self.assertEqual(checkpoint.status, 'reconciliation_required')
+        self.assertEqual(self.provider.rollbacks, 1)
+        self.assert_rejected_credential_body_absent(checkpoint, intent_id)

@@ -58,8 +58,8 @@ def _credential_safe_output(result, credential):
         def contains(value):
             if isinstance(value, str):
                 return credential in value
-            if isinstance(value, dict):
-                return any(contains(item) for item in value.values())
+            if isinstance(value, Mapping):
+                return any(contains(key) or contains(item) for key, item in value.items())
             if isinstance(value, (tuple, list)):
                 return any(contains(item) for item in value)
             return False
