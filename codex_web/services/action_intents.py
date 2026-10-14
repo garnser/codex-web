@@ -83,6 +83,7 @@ from codex_web.services.execution_workers import (
 )
 from codex_web.services.security_boundary import SecurityBoundaryService
 from codex_web.storage.action_intents import ActionIntentStore
+from codex_web.services.publication_recovery import WS, capture_scope, execution_assignment, intent_guard, scope_rows
 
 
 class ActionIntentError(RuntimeError):
@@ -537,6 +538,7 @@ class ActionIntentService:
         execution_id: str | None,
         request: ActionRequest,
         actor: AuthenticationActor,
+        assignment_id: str | None = None,
     ) -> None:
         if execution_id is None:
             return
@@ -555,10 +557,7 @@ class ActionIntentService:
             )
 
         try:
-            assignment = self.execution_workers.assignment_for_execution(
-                execution_id,
-                actor=actor,
-            )
+            assignment = execution_assignment(self.execution_workers, execution_id, actor, assignment_id)
         except (AssignmentNotFoundError, WorkerConflictError) as exc:
             raise ActionIntentConflictError(
                 "execution-bound repository action requires a matching canonical execution assignment"
@@ -737,8 +736,15 @@ class ActionIntentService:
         payload: ActionIntentCreate,
         *,
         actor: AuthenticationActor,
+        assignment_id: str | None = None,
     ) -> ActionIntent:
         request = payload.request
+        recovery_admission = capture_scope(self.execution_workers, request, payload.execution_id, actor, assignment_id)
+        if recovery_admission is not None:
+            recovery_scope = recovery_admission[0]
+            if payload.work_item_ref not in {None, recovery_scope.recovery.work_item_ref}:
+                raise ActionIntentConflictError("ActionIntent Work Item differs from current publication recovery scope")
+            payload = payload.model_copy(update={"work_item_ref": recovery_scope.recovery.work_item_ref})
         if (
             request.organization_id != actor.organization_id
             or request.workspace_id != actor.workspace_id
@@ -759,6 +765,7 @@ class ActionIntentService:
             payload.execution_id,
             request,
             actor,
+            assignment_id,
         )
         self._change_request_continuation(
             request, binding_id=binding.id, execution_id=payload.execution_id,
@@ -937,9 +944,12 @@ class ActionIntentService:
             ),
             failure=denied_failure,
             work_item_success=payload.work_item_success,
+            publication_recovery_scope=recovery_admission[0] if recovery_admission else None,
         )
 
-        persisted = self.store.insert(intent)
+        persisted = self.store.insert(intent, **({
+            "guard_rows": recovery_admission[1], "guard": recovery_admission[2],
+        } if recovery_admission else {}))
         if persisted.id != intent.id and (
             self._idempotency_request_identity(persisted.request)
             != self._idempotency_request_identity(request)
@@ -1296,7 +1306,29 @@ class ActionIntentService:
                     break
             return state
 
-        updated = self.store.update(apply, intent_ids=(intent.id,))
+        scope = intent.publication_recovery_scope
+        guarded = {}
+        if scope is not None:
+            def guard(documents):
+                intent_guard(documents, assignment_id=scope.recovery.assignment_id,
+                    workspace_id=scope.execution_workspace_id, actor_id=intent.requested_by,
+                    expected_scope=scope, expected_profile=scope.execution_profile_definition,
+                    created_at=intent.created_at)
+            assignment = self.execution_workers.store.assignment(scope.recovery.assignment_id)
+            from codex_web.execution_workspaces import ExecutionWorkspace
+            workspace = ExecutionWorkspace.model_validate(self.store.store.record_get(WS, scope.execution_workspace_id))
+            guarded = {"guard_rows": scope_rows(assignment, workspace), "guard": guard}
+        elif intent.execution_id and intent.action_id.startswith("code-host.") and self.execution_workers:
+            assignment = self.execution_workers.assignment_for_execution(intent.execution_id, actor=self._requester_actor(intent))
+            if getattr(assignment, "execution_workspace_id", None):
+                def guard(documents):
+                    raw = documents[WS].get(assignment.execution_workspace_id)
+                    if raw and raw.get("publication_recovery_history"):
+                        raise ActionIntentConflictError("Legacy ActionIntent scope was retired; inspect receipts instead of replaying")
+                from codex_web.execution_workspaces import ExecutionWorkspace
+                workspace = ExecutionWorkspace.model_validate(self.store.store.record_get(WS, assignment.execution_workspace_id))
+                guarded = {"guard_rows": scope_rows(assignment, workspace), "guard": guard}
+        updated = self.store.update(apply, intent_ids=(intent.id,), **guarded)
         return next(item for item in updated.intents if item.id == intent.id)
 
     def _append_receipt(
@@ -1516,6 +1548,7 @@ class ActionIntentService:
             await asyncio.to_thread(
                 self._validate_execution_repository_scope,
                 pending.execution_id, current_request, requester,
+                pending.publication_recovery_scope.recovery.assignment_id if pending.publication_recovery_scope else None,
             )
             authority_recheck = await asyncio.to_thread(self._canonical_authority_snapshot,
                 definition=current_definition,

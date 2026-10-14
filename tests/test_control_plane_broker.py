@@ -315,7 +315,7 @@ class _ExecutingActionIntents:
         self.created = []
         self.claimed = []
 
-    def create(self, payload, *, actor):
+    def create(self, payload, *, actor, assignment_id=None):
         self.created.append((payload, actor))
         return SimpleNamespace(id="action-intent-gitlab")
 
@@ -2361,9 +2361,9 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                             if not release.wait(timeout=2):
                                 timed_out.append(name)
 
-                    def create(inner, payload, *, actor):
+                    def create(inner, payload, *, actor, assignment_id=None):
                         inner.observe("create", actor)
-                        return super().create(payload, actor=actor)
+                        return super().create(payload, actor=actor, assignment_id=assignment_id)
 
                     def claim(inner, payload, *, actor, intent_id):
                         inner.observe("claim", actor)

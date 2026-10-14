@@ -6,6 +6,8 @@ import time
 from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from codex_web.definitions import DefinitionReference
+
 from codex_web.execution_subjects import (
     ExecutionSubject,
     ExecutionSubjectKind,
@@ -117,6 +119,51 @@ class PublicationRecoveryProvenance(BaseModel):
     expires_at: float
 
 
+class PublicationRecoveryIntentScope(BaseModel):
+    """Exact canonical recovery revision used to admit an external action."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    execution_workspace_id: str
+    recovery: PublicationRecoveryProvenance
+    execution_profile_definition: DefinitionReference
+
+
+class PublicationRecoveryHandoff(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    request_fingerprint: str
+    prior_scope: PublicationRecoveryProvenance
+    current_scope: PublicationRecoveryProvenance
+    execution_profile_definition: DefinitionReference
+    agent_profile_record_id: str
+    head_revision: str
+    authorized_by: str
+    retired_at: float
+    source_identity: dict
+    source_state: str
+    completion_intent_ids: tuple[str, ...]
+    intent_ids: tuple[str, ...]
+    receipt_ids: tuple[str, ...]
+    verification_ids: tuple[str, ...]
+    validation_checks: tuple[dict, ...]
+    merge_revision: str
+
+
+class PublicationRecoveryHandoffRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    work_item_ref: str = Field(min_length=1, max_length=500)
+    expected_prior_scope: PublicationRecoveryProvenance
+    expected_assignment_id: str
+    expected_assignment_fence: int = Field(ge=1)
+    execution_workspace_id: str
+    repository_resource_id: str
+    expected_head_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    completion_intent_ids: tuple[str, ...] = Field(min_length=2, max_length=16)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
 class ExecutionWorkspaceLease(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -218,6 +265,7 @@ class ExecutionWorkspace(BaseModel):
         default_factory=dict
     )
     publication_recovery: PublicationRecoveryProvenance | None = None
+    publication_recovery_history: tuple[PublicationRecoveryHandoff, ...] = ()
 
     @model_validator(mode="after")
     def normalize_subject(self) -> "ExecutionWorkspace":
@@ -321,7 +369,7 @@ class ExecutionWorkspaceEvent(BaseModel):
 class ExecutionWorkspaceState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.6"
+    schema_version: str = "1.7"
     workspaces: list[ExecutionWorkspace] = Field(default_factory=list)
     leases: list[ExecutionWorkspaceLease] = Field(default_factory=list)
     events: list[ExecutionWorkspaceEvent] = Field(default_factory=list)

@@ -479,6 +479,53 @@ class SQLiteStateStore:
                 success=success,
             )
 
+    def record_mutate_many(self, selected, updater):
+        """Inspect bounded rows across canonical collections under one writer lock.
+
+        Dynamic output keys (outbox indexes and receipts) share the same lock;
+        unselected records are neither decoded nor rewritten. This serializes
+        with both record_mutate and cross-domain update_many.
+        """
+        if not selected:
+            raise ValueError("record_mutate_many requires selected namespaces")
+        started = time.perf_counter()
+        success = False
+        try:
+            with self._write_connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                current = {}
+                for namespace, keys in selected.items():
+                    self._ensure_record_collection_in_connection(connection, namespace)
+                    current[namespace] = {}
+                    for key in dict.fromkeys(keys):
+                        row = connection.execute("SELECT payload FROM state_documents WHERE namespace = ?",
+                            (state_record_storage_key(namespace, str(key)),)).fetchone()
+                        current[namespace][key] = self._decode(row)
+                changes = updater(current)
+                if not isinstance(changes, dict) or set(changes) - set(selected):
+                    raise TypeError("record_mutate_many must return deltas for selected collections")
+                for namespace, delta in changes.items():
+                    if not isinstance(delta, dict):
+                        raise TypeError("collection delta must be a mapping")
+                    changed, deleted_revision = False, 0.0
+                    for key, payload in delta.items():
+                        storage_key = state_record_storage_key(namespace, str(key))
+                        if payload is None:
+                            deleted = connection.execute("DELETE FROM state_documents WHERE namespace = ? RETURNING updated_at",
+                                                         (storage_key,)).fetchone()
+                            if deleted is not None:
+                                changed = True
+                                deleted_revision = max(deleted_revision, deleted[0])
+                        else:
+                            self._upsert(connection, storage_key, payload)
+                            changed = True
+                    if changed:
+                        self._touch_record_revision(connection, namespace, minimum=deleted_revision)
+            success = True
+            return changes
+        finally:
+            self._keyed_mutation_metrics.observe(time.perf_counter() - started, success=success)
+
     def record_mutate(
         self,
         namespace: str,

@@ -456,6 +456,12 @@ jobs:
             --tag codex-web:test \
             .
         if: ${{ needs.changes.outputs.full == 'true' }}
+      - name: Qualify packaged recovery validation protocol
+        run: |
+          docker run --rm --network none --read-only \
+            --entrypoint python codex-web:test \
+            -m unittest tests.test_delivery_validation
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Verify pinned Codex version
         run: |
           expected="$(awk -F= '$1 == "CODEX_VERSION" {print $2}' .env.example)"

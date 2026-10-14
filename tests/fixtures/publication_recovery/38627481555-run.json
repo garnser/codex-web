@@ -1,0 +1,12 @@
+{
+  "id": 38627481555,
+  "path": "dynamic/github-code-scanning/codeql",
+  "head_sha": "fc7b53f3f5f98751148d5140db903d9200ba7e40",
+  "run_number": 115,
+  "run_attempt": 1,
+  "status": "completed",
+  "conclusion": "success",
+  "event": "dynamic",
+  "head_branch": "main",
+  "html_url": "https://github.com/garnser/codex-web/actions/runs/38627481555"
+}

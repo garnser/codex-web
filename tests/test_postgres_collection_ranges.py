@@ -13,6 +13,28 @@ from tests import test_autonomy_append_scaling as fixtures
 
 
 class CollectionRangeContract:
+    def test_cross_collection_bounded_transaction_is_atomic_and_preserves_unselected_rows(self):
+        self.backend.record_replace('scope', {'owner': {'fence': 1}, 'unrelated': {'keep': True}})
+        self.backend.record_replace('outbox', {'intent': {'attempt': 0}, 'foreign': {'keep': True}})
+        def admit(current):
+            self.assertEqual(current['scope'], {'owner': {'fence': 1}})
+            self.assertEqual(current['outbox'], {'intent': {'attempt': 0}})
+            return {'outbox': {'intent': {'attempt': 1}, 'receipt': {'intent': 'intent'}}}
+        self.backend.record_mutate_many({'scope': ('owner',), 'outbox': ('intent',)}, admit)
+        self.assertEqual(self.backend.record_get('scope', 'unrelated'), {'keep': True})
+        self.assertEqual(self.backend.record_get('outbox', 'foreign'), {'keep': True})
+        self.assertEqual(self.backend.record_get('outbox', 'intent'), {'attempt': 1})
+        before = self.backend.record_items('outbox')
+        def abort(current):
+            current['outbox']['intent']['attempt'] = 99
+            raise ValueError('stale scope')
+        with self.assertRaisesRegex(ValueError, 'stale scope'):
+            self.backend.record_mutate_many({'scope': ('owner',), 'outbox': ('intent',)}, abort)
+        self.assertEqual(self.backend.record_items('outbox'), before)
+        with self.assertRaises(TypeError):
+            self.backend.record_mutate_many({'scope': ('owner',)}, lambda current: {'outside': {'grant': True}})
+        self.assertIsNone(self.backend.record_get('outside', 'grant'))
+
     def test_batch_collection_probe_is_fresh_and_handles_encoded_names(self):
         names = ("worker/雪:%", "missing", "legacy", "worker/雪:%neighbor")
         self.backend.record_replace(names[0], {})

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from datetime import datetime
 import re
 from urllib.parse import quote, urlparse
@@ -13,6 +14,7 @@ from codex_web.code_hosts import (
     CodeHostArtifactFact,
     CodeHostCapability,
     CodeHostCheckFact,
+    CodeHostValidationRunFact,
     CodeHostJobLogFact,
     CodeHostCommitFact,
     CodeHostCompareFact,
@@ -74,6 +76,7 @@ class GitHubCodeHostProvider:
                 CodeHostCapability.PULL_REQUEST_READ,
                 CodeHostCapability.REVIEW_READ,
                 CodeHostCapability.CHECKS_READ,
+                CodeHostCapability.VALIDATION_READ,
                 CodeHostCapability.JOB_LOGS_READ,
                 CodeHostCapability.ARTIFACTS_READ,
                 CodeHostCapability.RELEASE_READ,
@@ -342,6 +345,83 @@ class GitHubCodeHostProvider:
             for item in rows
             if isinstance(item, dict) and item.get("id") is not None
         )
+
+    async def validation_runs(self, binding, resource, revision, *, credential):
+        """Bounded exact-revision workflow/job observations and selection output.
+
+        This is a provider read through the existing credential boundary. Logs
+        are interpreted only as the selection engine's structured output, never
+        as instructions or as evidence of provider-action non-start.
+        """
+        repository = _repository_name(resource)
+        data = await self.client.get_json(binding.base_url, f"repos/{repository}/actions/runs",
+            token=credential, params={"head_sha": revision, "per_page": 100})
+        rows = data.get("workflow_runs", []) if isinstance(data, dict) else []
+        if not isinstance(rows, list) or int(data.get("total_count", len(rows))) != len(rows) or len(rows) > 100:
+            raise CodeHostError("Exact-revision workflow evidence exceeds inspection bound")
+        latest = {}
+        for row in rows:
+            if row.get("head_sha") != revision:
+                continue
+            path = str(row.get("path") or "")
+            if not path or not row.get("id"):
+                raise CodeHostError("Workflow provenance is incomplete")
+            order = (int(row.get("run_number", 0)), int(row.get("run_attempt", 0)), int(row["id"]))
+            if path not in latest or order > latest[path][0]:
+                latest[path] = (order, row)
+        if len(latest) > 16:
+            raise CodeHostError("Workflow evidence exceeds inspection bound")
+        # Default setup is canonical provider configuration, not an expected-job
+        # set guessed from whichever successful jobs happened to be observed.
+        security_configuration = await self.client.get_json(binding.base_url,
+            f"repos/{repository}/code-scanning/default-setup", token=credential)
+        if not isinstance(security_configuration, dict):
+            raise CodeHostError("Security applicability configuration is unavailable")
+        security_configuration = {key: security_configuration.get(key)
+            for key in ("state", "languages", "updated_at", "query_suite")}
+        security_configuration["protocol_version"] = "github-codeql-default-setup/1"
+        facts = []
+        for _, row in latest.values():
+            run_id = int(row["id"])
+            jobs = await self.client.get_json(binding.base_url, f"repos/{repository}/actions/runs/{run_id}/jobs",
+                token=credential, params={"per_page": 100, "filter": "latest"})
+            job_rows = jobs.get("jobs", []) if isinstance(jobs, dict) else []
+            if not isinstance(job_rows, list) or int(jobs.get("total_count", len(job_rows))) != len(job_rows) or len(job_rows) > 100:
+                raise CodeHostError("Workflow job evidence exceeds inspection bound")
+            if any(j.get("head_sha") != revision for j in job_rows):
+                raise CodeHostError("Workflow job source revision is missing or inconsistent")
+            checks = tuple(CodeHostCheckFact(external_id=str(j["id"]), name=str(j["name"]),
+                state=str(j.get("status") or "unknown"), conclusion=j.get("conclusion"), revision=revision,
+                web_url=j.get("html_url")) for j in job_rows)
+            full = selected_revision = None
+            if row["path"] == ".github/workflows/tests.yml":
+                selections = [j for j in job_rows if j["name"] == "validation-selection"]
+                if len(selections) == 1 and selections[0].get("conclusion") == "success":
+                    log = await self.job_logs(binding, resource, int(selections[0]["id"]), credential=credential, max_bytes=65536)
+                    if log.truncated:
+                        raise CodeHostError("Selection output is truncated; applicability is unproven")
+                    candidates = []
+                    for line in log.content.splitlines():
+                        start = line.find('{')
+                        if start < 0:
+                            continue
+                        try:
+                            parsed = json.loads(line[start:])
+                        except ValueError:
+                            continue
+                        if (parsed.get("full") in {"true", "false"}
+                                and (parsed.get("head") == revision or parsed.get("tested_revision") == revision)):
+                            candidates.append(parsed)
+                    if len(candidates) != 1:
+                        raise CodeHostError("Exact selection output is missing or ambiguous")
+                    full = candidates[0]["full"] == "true"
+                    selected_revision = revision
+            facts.append(CodeHostValidationRunFact(external_id=str(run_id), workflow_path=row["path"],
+                event=str(row.get("event") or "unknown"), revision=revision, head_branch=row.get("head_branch"),
+                state=str(row.get("status") or "unknown"), conclusion=row.get("conclusion"),
+                selection_full=full, selection_revision=selected_revision, checks=checks,
+                security_configuration=security_configuration if row["path"] == "dynamic/github-code-scanning/codeql" else None))
+        return tuple(facts)
 
     async def job_logs(
         self, binding: CodeHostProviderBinding, resource: Resource, job_id: int,

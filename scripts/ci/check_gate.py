@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from pathlib import Path
 
 
 OWNERS = {
@@ -17,6 +19,24 @@ OWNERS = {
     "docker-smoke": "docker",
     "rootless-podman-worker": "podman-worker",
 }
+
+
+def expected_functional_shard_names() -> frozenset[str]:
+    """Read the shipped workflow's literal matrix; unsupported evolution fails closed."""
+    try:
+        workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/tests.yml').read_text()
+    except (OSError, UnicodeError) as exc:
+        raise ValueError('Canonical CI protocol is missing or unreadable; inspect the packaged workflow metadata') from exc
+    job = re.search(r'^  functional-shards:\n(.*?)(?=^  [a-zA-Z][\w-]*:|\Z)', workflow, re.M | re.S)
+    strategy_matrix = re.search(r'^      matrix:\n(.*?)(?=^    steps:|\Z)', job.group(1) if job else '', re.M | re.S)
+    matrix = re.fullmatch(r'        shard:\n((?:          - [0-9]+\n)+)',
+                          strategy_matrix.group(1) if strategy_matrix else '')
+    if not matrix:
+        raise ValueError('Canonical functional shard matrix is missing or unsupported; inspect packaged CI protocol compatibility')
+    shards = re.findall(r'          - ([0-9]+)', matrix.group(1))
+    if len(shards) != len(set(shards)) or not shards:
+        raise ValueError('Canonical functional shard matrix is ambiguous')
+    return frozenset(f'chromium-functional-shard-{shard}' for shard in shards)
 
 
 def validate(check: str, needs: dict, *, selection_only: bool = False) -> str:

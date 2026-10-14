@@ -14,6 +14,9 @@ class ExecutionWorkspaceAdminUiTests(unittest.TestCase):
             encoding="utf-8"
         )
 
+        javascript += (ROOT / "static" / "publication_recovery_handoff.js").read_text(encoding="utf-8")
+        javascript += (ROOT / "static" / "execution_workspace_presenters.js").read_text(encoding="utf-8")
+
         self.assertIn('id="execution-workspace-list"', html)
         self.assertIn('id="recover-execution-workspaces"', html)
         self.assertIn('apiRequest("/api/execution-workspaces/inspection")', javascript)

@@ -17,8 +17,8 @@ from codex_web.identity import TenantScope
 
 EXECUTION_WORKSPACE_STATE_CONTRACT = ContractSpec(
     "execution-workspace-state",
-    "1.6",
-    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6"),
+    "1.7",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7"),
 )
 EXECUTION_WORKSPACE_STATE_MIGRATIONS = MigrationRegistry("execution-workspace-state")
 EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
@@ -186,6 +186,11 @@ EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
 )
 
 
+EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
+    "1.6", "1.7", lambda payload: {**payload, "schema_version": "1.7"},
+)
+
+
 class ExecutionWorkspaceStateStore:
     namespace = "execution_workspaces"
     workspace_namespace = "execution_workspaces.workspaces"
@@ -347,34 +352,19 @@ class ExecutionWorkspaceStateStore:
         updater: Callable[[ExecutionWorkspaceState], ExecutionWorkspaceState],
     ) -> ExecutionWorkspaceState:
         with self._lock:
-            current = self._load_unlocked()
-            before_workspaces = {
-                item.id: item.model_dump(mode="json") for item in current.workspaces
-            }
-            before_leases = {
-                item.id: item.model_dump(mode="json") for item in current.leases
-            }
-            before_events = self._event_records(current.events)
-            updated = updater(current)
-            after_workspaces = {
-                item.id: item.model_dump(mode="json") for item in updated.workspaces
-            }
-            after_leases = {
-                item.id: item.model_dump(mode="json") for item in updated.leases
-            }
-            self._apply_records(
-                self.workspace_namespace,
-                before_workspaces,
-                after_workspaces,
-            )
-            self._apply_records(
-                self.lease_namespace,
-                before_leases,
-                after_leases,
-            )
-            self._apply_records(
-                self.event_namespace,
-                before_events,
-                self._event_records(updated.events),
-            )
-            return updated
+            self._ensure_records()
+            namespaces = (self.workspace_namespace, self.lease_namespace, self.event_namespace)
+            def apply(documents):
+                current = self._decode({"schema_version": EXECUTION_WORKSPACE_STATE_CONTRACT.current,
+                    "workspaces": list(documents[self.workspace_namespace].values()),
+                    "leases": list(documents[self.lease_namespace].values()),
+                    "events": list(documents[self.event_namespace].values())})
+                updated = updater(current)
+                return {self.workspace_namespace: {item.id: item.model_dump(mode="json") for item in updated.workspaces},
+                    self.lease_namespace: {item.id: item.model_dump(mode="json") for item in updated.leases},
+                    self.event_namespace: self._event_records(updated.events)}
+            documents = self.store.update_many({name: {} for name in namespaces}, apply)
+            return self._decode({"schema_version": EXECUTION_WORKSPACE_STATE_CONTRACT.current,
+                "workspaces": list(documents[self.workspace_namespace].values()),
+                "leases": list(documents[self.lease_namespace].values()),
+                "events": list(documents[self.event_namespace].values())})

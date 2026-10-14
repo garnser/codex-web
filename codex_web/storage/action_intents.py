@@ -11,7 +11,7 @@ from codex_web.compatibility import ContractSpec, MigrationRegistry
 from codex_web.storage.state_store import StateStore
 
 
-ACTION_INTENT_STATE_CONTRACT = ContractSpec("action-intent-state", "1.2", ("1.2",))
+ACTION_INTENT_STATE_CONTRACT = ContractSpec("action-intent-state", "1.3", ("1.2", "1.3"))
 ACTION_INTENT_STATE_MIGRATIONS = MigrationRegistry("action-intent-state")
 ACTION_INTENT_STATE_MIGRATIONS.register(
     "0.0",
@@ -135,7 +135,7 @@ class ActionIntentStore:
         ))
         return self.get(alias["id"]) if alias is not None else None
 
-    def insert(self, intent: ActionIntent) -> ActionIntent:
+    def insert(self, intent: ActionIntent, *, guard_rows=None, guard=None) -> ActionIntent:
         self._ensure_records()
         alias_key = self._idempotency_key(intent.organization_id, intent.workspace_id,
                                           intent.binding_id, intent.action_id, intent.idempotency_key)
@@ -147,7 +147,14 @@ class ActionIntentStore:
                 return {}
             result.append(intent.id)
             return self._records(ActionIntentState(intents=[intent]))
-        self.store.record_mutate(self.records_namespace, (alias_key,), apply)
+        if guard is None:
+            self.store.record_mutate(self.records_namespace, (alias_key,), apply)
+        else:
+            def guarded(documents):
+                guard(documents)
+                records = documents[self.records_namespace]
+                return {self.records_namespace: apply({alias_key: records.get(alias_key)})}
+            self.store.record_mutate_many({**guard_rows, self.records_namespace: (alias_key,)}, guarded)
         if result[0] == intent.id:
             return intent
         existing = self.get(result[0])
@@ -190,7 +197,13 @@ class ActionIntentStore:
             self.store.record_mutate(self.records_namespace, (), lambda _current: {})
         meta = self.store.record_get(self.records_namespace, self._meta_key)
         if meta is not None:
-            if meta != {"schema_version": "1.0"}:
+            if meta == {"schema_version": "1.0"}:
+                def upgrade(current):
+                    if current[self._meta_key] not in ({"schema_version": "1.0"}, {"schema_version": "1.1"}):
+                        raise ValueError("unsupported action intent records schema")
+                    return {self._meta_key: {"schema_version": "1.1"}}
+                self.store.record_mutate(self.records_namespace, (self._meta_key,), upgrade)
+            elif meta != {"schema_version": "1.1"}:
                 raise ValueError("unsupported action intent records schema")
             return
         # Upgrade both namespaces under the shared transaction lock. The old
@@ -199,7 +212,7 @@ class ActionIntentStore:
             records = documents[self.records_namespace]
             if self._meta_key not in records:
                 records = self._records(self._decode(documents[self.namespace]))
-                records[self._meta_key] = {"schema_version": "1.0"}
+                records[self._meta_key] = {"schema_version": "1.1"}
             return {self.records_namespace: records, self.namespace: documents[self.namespace]}
         self.store.update_many(
             {self.namespace: ActionIntentState().model_dump(mode="json"), self.records_namespace: {}},
@@ -257,7 +270,8 @@ class ActionIntentStore:
         self.store.put(self.namespace, self.load().model_dump(mode="json"))
 
     def update(self, updater: Callable[[ActionIntentState], ActionIntentState], *,
-               intent_ids: tuple[str, ...] | None = None) -> ActionIntentState:
+               intent_ids: tuple[str, ...] | None = None,
+               guard_rows=None, guard=None) -> ActionIntentState:
         self._ensure_records()
         # Compatibility/bulk callers can still transform a complete snapshot;
         # execution hot paths explicitly select only their target intent rows.
@@ -273,5 +287,17 @@ class ActionIntentStore:
             changes.update({key: None for key in before.keys() - after.keys()})
             result.append(updated)
             return changes
-        self.store.record_mutate(self.records_namespace, keys, apply)
+        if guard is None:
+            self.store.record_mutate(self.records_namespace, keys, apply)
+        else:
+            def guarded(documents):
+                guard(documents)
+                records = documents[self.records_namespace]
+                changes = apply({key: records.get(key) for key in keys})
+                return {self.records_namespace: changes}
+            self.store.record_mutate_many({**guard_rows, self.records_namespace: keys}, guarded)
         return result[0]
+
+ACTION_INTENT_STATE_MIGRATIONS.register(
+    "1.2", "1.3", lambda payload: {**payload, "schema_version": "1.3"},
+)

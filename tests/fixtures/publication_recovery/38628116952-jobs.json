@@ -1,0 +1,21 @@
+{
+  "total_count": 2,
+  "jobs": [
+    {
+      "id": 116072422835,
+      "name": "immutable-recovery-candidate",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/garnser/codex-web/actions/runs/38628116952/job/116072422835",
+      "head_sha": "fc7b53f3f5f98751148d5140db903d9200ba7e40"
+    },
+    {
+      "id": 116072424650,
+      "name": "qualified-release-promotion",
+      "status": "completed",
+      "conclusion": "skipped",
+      "html_url": "https://github.com/garnser/codex-web/actions/runs/38628116952/job/116072424650",
+      "head_sha": "fc7b53f3f5f98751148d5140db903d9200ba7e40"
+    }
+  ]
+}

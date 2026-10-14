@@ -1,5 +1,9 @@
 .git
-.github
+# Retain only the canonical CI protocol used by recovery qualification.
+.github/**
+!.github/workflows
+.github/workflows/**
+!.github/workflows/tests.yml
 .venv
 __pycache__
 *.py[cod]

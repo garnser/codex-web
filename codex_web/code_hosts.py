@@ -16,6 +16,7 @@ class CodeHostCapability(StrEnum):
     PULL_REQUEST_READ = "pull_request.read"
     REVIEW_READ = "review.read"
     CHECKS_READ = "checks.read"
+    VALIDATION_READ = "validation.read"
     JOB_LOGS_READ = "job_logs.read"
     ARTIFACTS_READ = "artifacts.read"
     RELEASE_READ = "release.read"
@@ -141,6 +142,22 @@ class CodeHostCheckFact(BaseModel):
     conclusion: str | None = None
     revision: str | None = None
     web_url: str | None = None
+
+
+class CodeHostValidationRunFact(BaseModel):
+    """Provider-observed workflow provenance; callers cannot assert applicability."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    external_id: str
+    workflow_path: str
+    event: str
+    revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    head_branch: str | None = None
+    state: str
+    conclusion: str | None = None
+    selection_full: bool | None = None
+    selection_revision: str | None = None
+    security_configuration: dict[str, Any] | None = None
+    checks: tuple[CodeHostCheckFact, ...]
 
 
 class CodeHostJobLogFact(BaseModel):

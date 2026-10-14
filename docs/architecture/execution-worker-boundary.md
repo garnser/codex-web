@@ -369,8 +369,9 @@ That provenance permits the existing GitLab-MR recovery contract to consume the
 Work Item's independently verified issue relation while preserving all existing
 exact-local-head, observed-remote-head, source-branch, provider-project and MR
 state checks. A live workspace can hold only one active recovery scope; a
-different issue, repository, assignment or fence is refused until the old scope
-expires with its original assignment/workspace bound. Released, expired,
+different issue, repository, assignment or fence is refused by ordinary single-issue
+authorization. A live completed issue can advance only through the governed
+handoff described below; expiry is never lowered to force that transition. Released, expired,
 cross-Project, cross-repository, unowned and concurrent replacement requests
 fail before ActionIntent creation. The eventual branch ActionIntent is attributed
 to the recovery Work Item and original execution. The workspace inspector shows
@@ -379,7 +380,7 @@ ActionIntent inspector shows the Work Item/execution attribution. This adds no
 provider credential exposure, Orchestrator authority, Operator provisioning
 requirement or automatic intent replay.
 
-The execution-workspace persisted contract is version `1.6`. Version `1.5`
+The execution-workspace persisted contract is version `1.7`. Version `1.5`
 migrates additively with no recovery scope. Older readers that reject unknown
 workspace fields cannot read newly scoped records, so rollback requires the
 canonical pre-transition snapshot or expiry/removal of those records; source-only
@@ -1108,3 +1109,101 @@ Definition, scheduler, external provider operation or automatic LLM call is adde
 Live acceptance for #1425/#1318 still requires the original revision-pinned native
 receipt and preservation of the existing uncertain requests; synthetic fixtures
 are protocol coverage rather than that evidence.
+
+### Completed publication-recovery handoff
+
+The existing `POST /api/repository-workspace/publication-recovery` broker
+operation additionally accepts `PublicationRecoveryHandoffRequest`. The ordinary
+`{work_item_ref}` request remains compatible. Handoff requires the complete exact
+`expected_prior_scope`, assignment ID/fence, execution workspace, repository and
+full current Git head, plus a bounded set of completion ActionIntent IDs and an
+idempotency key. It changes only the current recovery issue scope. It preserves
+the bootstrap/thread subject, execution identity, worker, workspace, owner,
+lease and original recovery expiry; it neither grants authority nor starts work.
+
+The requester must own the canonical workspace/assignment and the new open Work
+Item through the pinned agent profile/role. The old completed Work Item must
+retain that implementation owner. Tenant, Project, singular writable repository,
+worker trust/capabilities, assignment/workspace leases, fence and exact published
+execution-profile pin are checked from canonical records. The existing authority
+policy and profile Definition control publication; Work Item evidence requirements
+remain authoritative. The engine-owned hard minimum requires verified canonical
+branch-publication and implementation-merge receipts identifying the same source
+head, a verified owned change-request publication with matching branch/head and exact
+canonical issue/scope attribution, fresh terminal
+TaskSource proof, and qualified exact-source/merge-head provider runs. A closed
+label or a caller-supplied success assertion is insufficient. No mutable parallel
+catalog is introduced: definitions and requirements remain in their existing
+registries; schema, fencing and proof validation remain code.
+
+Pending, claimed, executing, uncertain and reconciliation-required prior-issue or
+originating-execution intents block retirement. A receipt-free failed/cancelled
+intent, or retained unresolved unknown receipt, also blocks it: absence of a receipt,
+a generic failure or maintenance message cannot prove that no mutation started.
+Known failed receipts are retained without changing the original intent. ActionIntent
+IDs, receipt/verification IDs, exact terminal source revision, validation checks,
+assignment/fence/lease/source subject, profile Definition and authenticated actor
+are retained on immutable `publication_recovery_history` entries in the existing
+workspace. Current and retired scope are separately inspectable.
+
+Recovery-attributed repository intents snapshot their exact recovery revision and
+profile pin. Intent insertion and execution admission use the same StateStore
+cross-domain transaction boundary as handoff. Handoff rechecks the current scope,
+assignment/lease, owner, Work Items, published definitions, completion receipts,
+evidence and local head while committing. Thus a delayed old-scope creation fails
+rather than inheriting a new issue, an executing intent blocks retirement, and a
+retained old intent cannot enter provider execution under the replacement scope.
+Legacy intents without a scope snapshot cannot gain a later retired scope's
+replacement authority. These checks do not reinterpret unknown historical effects.
+Exact repeated handoffs return their retained receipt; conflicting keys, concurrent
+different transitions and stale/expired/cross-scope preconditions fail visibly.
+
+Owning administrators can preview and confirm through
+`POST /api/control-plane-broker/publication-recovery/preview` and `/handoff`, using
+canonical identity/step-up and the same service/authority guards. This is a scope
+mutation, not worker impersonation. The workspace inspector renders exact retired
+proofs and offers the confirmation flow; the ActionIntent inspector exposes the
+scope snapshot and directs retired requests to receipt inspection. Errors include
+a reason and next action and retain the UI draft. There is no UI-only enforcement.
+
+Workspace state `1.6 → 1.7` adds an empty history to legacy records without changing
+existing subjects or recovery provenance. ActionIntent state `1.2 → 1.3` adds an
+optional scope snapshot; keyed-record metadata `1.0 → 1.1` makes older readers
+reject the new execution contract. Unknown future versions fail closed. Retired
+history is never removed to make an older binary work. Downgrade requires a
+compatible reader or a controlled pre-transition canonical snapshot with explicit
+side-effect reconciliation; source-only rollback is not promised. No deployment
+or genuine live handoff qualification follows from source tests alone.
+
+Handoff does not require automatic close/fix/resolve prose in a PR body. The exact
+canonical Work Item/recovery-scope attribution, originating execution/owner and
+workspace, owned branch/PR receipts and merged head establish the relation.
+`Refs` with separate issue closure after main qualification is supported; an
+arbitrary mention with mismatched typed scope, head or ownership is not proof.
+Legacy broker receipts without a Work Item field must still match the one-issue
+workspace provenance, origin, publication branch/head and scope authorization time.
+
+Delivery validation consumes bounded typed observations through the existing
+CodeHost/credential/resource boundary. The GitHub validation adapter reads the
+latest exact-revision workflow attempt, complete bounded job list and successful
+selection job's exact structured output (64 KiB limit). The existing canonical
+`check_gate.validate` and `OWNERS` protocol validate required selection/owner jobs.
+Skipped focused-documentation is admissible only for a proven full selection;
+unselected functional shards require a proven prose-only selection. Recovery
+publication on the merge/main revision must be successful. Promotion is
+inapplicable only under the recorded `workflow_run` candidate trigger, following
+the existing release workflow's selection contract. Missing required jobs, failed
+or cancelled selection, unknown skips and pending/failed recovery remain blockers.
+No caller-supplied applicability flag or blanket skipped-job acceptance is used.
+Exact workflow/job IDs, revisions, event and applicability proof are retained.
+
+Routine scoped ActionIntent insertion/execution uses `record_mutate_many` with
+only its outbox row/index and exact workspace, lease, assignment and worker rows.
+Broker-supplied originating assignment IDs are internal lookup hints; the service
+re-reads and validates canonical identity/scope, and the hint is not a request
+schema field or grant. SQLite uses its existing writer transaction; PostgreSQL
+uses the same sorted namespace locks as bulk handoff. Dynamic index/receipt writes
+share that lock. Unrelated rows are not decoded or rewritten. Ordinary workspace
+lifecycle updates likewise commit their existing state/evidence atomically, so a
+stale lifecycle snapshot cannot overwrite a newer handoff. Rare administrative
+handoff may inspect broader evidence. No execution or authority store is added.

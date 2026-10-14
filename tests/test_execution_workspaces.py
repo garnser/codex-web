@@ -587,7 +587,7 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         migrated_lease = next(
             item for item in state.leases if item.execution_workspace_id == workspace.id
         )
-        self.assertEqual(state.schema_version, "1.6")
+        self.assertEqual(state.schema_version, "1.7")
         self.assertEqual(migrated_workspace.subject.kind, ExecutionSubjectKind.WORK_ITEM)
         self.assertEqual(migrated_workspace.subject.ref, self.work_item.ref)
         self.assertEqual(migrated_lease.subject, migrated_workspace.subject)
@@ -637,7 +637,7 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         state = ExecutionWorkspaceStateStore(legacy_sqlite).load()
         migrated = next(item for item in state.workspaces if item.id == workspace.id)
 
-        self.assertEqual(state.schema_version, "1.6")
+        self.assertEqual(state.schema_version, "1.7")
         self.assertEqual(
             migrated.repository_outcome_status,
             RepositoryOutcomeStatus.BLOCKED,
