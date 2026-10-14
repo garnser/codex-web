@@ -2,7 +2,8 @@
 #care-composer summary { cursor: pointer; font-weight: 600; }
 #care-composer p, #care-provenance { display: block; font-size: .88rem; overflow-wrap: anywhere; }
 #care-composer .care-fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; margin: 10px 0; }
-#care-composer label { display: grid; gap: 4px; }
+#care-composer label { display: grid; gap: 4px; min-width: 0; }
+#care-composer textarea, #care-composer select { width: 100%; min-width: 0; box-sizing: border-box; }
 #care-composer textarea { min-height: 64px; }
 #care-status, .care-scope { margin: 8px 0; overflow-wrap: anywhere; }
 @media(max-width:640px) { #care-composer .care-fields { grid-template-columns: minmax(0,1fr); } }

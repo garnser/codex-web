@@ -76,6 +76,13 @@ The no-plugin pipeline is an identity function. Existing provider execution is t
 
 ### Optional CARE task preview
 
+Open **Thread settings → Structured task (optional)** to prepare a request.
+Composing a preview returns focus to the main message box for review and editing.
+Closing Thread settings retains the active structured draft; collapsing Structured
+task permits plain chat. Missing-preview guidance reopens the relevant setting.
+Accepted admission clears the completed structured mode so an ordinary follow-up
+needs no preview. Rejection retains the scoped draft for review and retry.
+
 The Project-scoped CARE preview composes optional context, requested action/output,
 task constraints, examples and references through the existing input-plugin
 engine's `compose` phase. Its patch changes only one user message; identity,

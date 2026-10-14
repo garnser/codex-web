@@ -1,3 +1,4 @@
+import {revealSetting} from './thread_settings_ui.js';
 import {installCareComposer} from "./care_composer.js";
 import {apiBase} from "./api_client.js";
 const scopeKey=scope=>JSON.stringify([scope.projectId,scope.threadId,scope.repositoryResourceId,
@@ -6,11 +7,11 @@ const sourcePath=source=>source.kind==='knowledge'?`/api/memory/${encodeURICompo
   `/api/${source.kind==='artifact'?'artifacts':'evidence'}/${encodeURIComponent(source.record_id)}`;
 
 export function installUxBriefPicker({prompt,getScope,request}){
-  const host=prompt?.closest('.composer');
+  const host=prompt?.ownerDocument.getElementById('thread-context-controls');
   if(!host)return {sync(){},prepare:()=>null,valid:()=>true,accepted(){},rejected(){}};
-  const root=document.createElement('details');root.id='ux-brief-picker';
+  const root=document.createElement('details');root.id='ux-brief-picker';root.className='thread-profile-details';
   root.innerHTML='<summary>UX knowledge (optional)</summary><p>Select relevant observations and constraints from this Project. Preview checks current sources and permissions; the turn checks them again when it starts.</p><label>Brief <select id="ux-picker-brief"><option value="">No brief</option></select></label><fieldset id="ux-picker-sections"><legend>Sections to include</legend></fieldset><button id="ux-picker-preview" type="button">Preview selected context</button><div id="ux-picker-status" role="status" aria-live="polite"></div><pre id="ux-picker-context"></pre><div id="ux-picker-sources"></div>';
-  host.prepend(root);
+  host.append(root);
   const style=document.createElement('link');style.rel='stylesheet';style.href=apiBase()+'/static/ux_brief_editor.css';document.head.append(style);
   const node=id=>root.querySelector('#ux-picker-'+id),drafts=new Map();
   let key=scopeKey(getScope()),draft={id:'',sections:[],selection:null},items=[],generation=0;
@@ -48,13 +49,13 @@ export function installUxBriefPicker({prompt,getScope,request}){
       if(result.omitted?.length||!result.context){status('Context unavailable: '+(result.omitted||[]).map(row=>`${row.section}: ${row.reason}`).join('; ')+'. Adjust the selection and preview again.');return;}
       draft.selection=result.selection;save();status(`Preview ready · ${result.packed_tokens} context tokens · delivery not yet proven. Sources and permissions are checked again at turn start.`);
     }catch{if(captured===scopeKey(getScope())&&turn===generation)status('Preview failed. Selection retained.');}});
-  function prepare(){sync();if(!draft.id)return null;if(!draft.selection){root.open=true;status('Preview selected UX knowledge before sending.');node('preview').focus();return {blocked:true};}
+  function prepare(){sync();if(!draft.id)return null;if(!draft.selection){status('Preview selected UX knowledge in Thread settings → UX knowledge before sending.');revealSetting(root,node('preview'));return {blocked:true};}
     return {scope:getScope(),key,selection:draft.selection};}
   function valid(ticket,createdThreadId){if(!ticket)return true;sync();const now=getScope();
     if(scopeKey(now)===ticket.key)return true;
     if(createdThreadId&&!ticket.scope.threadId&&now.threadId===createdThreadId&&scopeKey({...now,threadId:null})===scopeKey({...ticket.scope,threadId:null})){
       ticket.key=key;draft={id:ticket.selection.knowledge_id,sections:[...ticket.selection.sections],selection:ticket.selection};save();return true;}
-    status('Scope changed before sending. Inspect the selection again.');return false;}
+    status('Scope changed before sending. Inspect the selection in Thread settings → UX knowledge again.');revealSetting(root,node('preview'));return false;}
   function accepted(ticket){if(!ticket||scopeKey(getScope())!==ticket.key||draft.selection!==ticket.selection)return;
     draft={id:'',sections:[],selection:null};save();node('brief').value='';clearPreview();sections();status('Selection delivered to turn admission. Inspect Memory retrieval history for native delivery evidence.');}
   function rejected(ticket){if(ticket&&scopeKey(getScope())===ticket.key)status('Submission failed. Selection retained; inspect turn status before retrying an uncertain outcome.');}

@@ -896,6 +896,14 @@ h1 {
   border-top: 1px solid var(--line);
 }
 
+.thread-context-settings {
+  min-width: 0;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.thread-context-settings > p { font-size: 12px; color: var(--muted); }
+
 .execution-profile-summary {
   max-width: 360px;
   color: var(--muted);
