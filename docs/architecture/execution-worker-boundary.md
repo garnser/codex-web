@@ -306,8 +306,12 @@ repository actions evaluate the assignment requester through canonical Role
 authority; the fenced worker service identity remains the executing principal.
 
 The caller's catalog includes an additive `assignment_context` with only
-assignment/execution/workspace IDs, the execution profile, pinned agent profile
-ID/revision/record/role and declared writable/read-only repository IDs. This is
+assignment/execution/workspace IDs, the execution profile and its pinned
+`execution_profile_definition` reference (ID, kind, schema version, record ID,
+revision and checksum), pinned agent profile ID/revision/record/role and declared
+writable/read-only repository IDs. The Definition reference is serialized from
+the immutable assignment without resolving or substituting a newer published
+record; legacy unpinned assignments report `null`. This is
 immutable assignment provenance, not effective authority or live-lease proof;
 every operation still performs its own scope/authority/fencing checks. Disabled
 broker profiles redact that context. No lease material, credentials, secret

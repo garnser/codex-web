@@ -37,7 +37,7 @@ from codex_web.control_plane_broker import (
     ControlPlaneBrokerDecision,
     ControlPlaneBrokerLimits,
 )
-from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishRequest
+from codex_web.definitions import DefinitionDraftCreate, DefinitionPublishRequest, DefinitionReference
 from codex_web.execution_subjects import ExecutionSubject, ExecutionSubjectKind
 from codex_web.execution_workers import (
     AssignmentLease,
@@ -1700,6 +1700,29 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(disabled["enabled"])
         self.assertIsNone(disabled["assignment_context"])
         self.assertEqual(disabled["operations"], [])
+
+    async def test_catalog_reports_exact_pinned_execution_profile_definition_without_lookup(self):
+        for profile_id in ('repository-write', 'orchestration-only'):
+            for revision in (1, 3):
+                with self.subTest(profile=profile_id, revision=revision):
+                    reference = DefinitionReference(
+                        definition_id='execution.profiles.project', kind='execution-profile-catalog',
+                        definition_schema_version='1.0', revision=revision,
+                        record_id=f'profile-definition-{revision}', checksum=str(revision) * 64)
+                    assignment = self.assignment.model_copy(update={
+                        'execution_profile_id': profile_id,
+                        'execution_profile_definition': reference,
+                    })
+                    with patch.object(self.registry, 'get_record', side_effect=AssertionError('must not resolve current state')):
+                        context = self.service.public_assignment_capability(assignment)['assignment_context']
+                    self.assertEqual(context['execution_profile_definition'], reference.model_dump(mode='json'))
+                    self.assertTrue(context['effective_authority_requires_operation_checks'])
+                    disabled = self.service.public_assignment_capability(assignment.model_copy(
+                        update={'execution_profile_id': 'unsupported-profile'}))
+                    self.assertIsNone(disabled['assignment_context'])
+        legacy = self.assignment.model_copy(update={'execution_profile_definition': None})
+        self.assertIsNone(self.service.public_assignment_capability(legacy)
+                          ['assignment_context']['execution_profile_definition'])
 
     async def test_operator_and_worker_catalogs_share_repository_request_metadata(self):
         from fastapi import FastAPI
