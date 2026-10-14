@@ -8,11 +8,11 @@ from codex_web.api.thread_scope import thread_scope_dependency
 from codex_web.services.thread_scope import ThreadScopeService
 
 from codex_web.api.identity import request_actor
-from codex_web.models import TurnCreate
+from codex_web.models import TurnCreate, QueueOrderRepairRequest
 from codex_web.services.turns import TurnService
 
 
-def build_turns_router(service: TurnService, scope: ThreadScopeService) -> APIRouter:
+def build_turns_router(service: TurnService, scope: ThreadScopeService, order_recovery=None) -> APIRouter:
     router = APIRouter(tags=["turns"], dependencies=[Depends(thread_scope_dependency(scope))])
 
     @router.post("/api/threads/{thread_id}/resume")
@@ -93,6 +93,17 @@ def build_turns_router(service: TurnService, scope: ThreadScopeService) -> APIRo
     @router.get("/api/threads/{thread_id}/queue")
     async def thread_queue(thread_id: str) -> dict[str, Any]:
         return service.queue(thread_id)
+
+    if order_recovery is not None:
+        @router.get("/api/threads/{thread_id}/queue/order-recovery")
+        async def preview_queue_order(thread_id: str, request: Request):
+            return order_recovery.preview(thread_id, project=request.state.thread_project,
+                actor=request_actor(request))
+
+        @router.post("/api/threads/{thread_id}/queue/order-recovery")
+        async def repair_queue_order(thread_id: str, payload: QueueOrderRepairRequest, request: Request):
+            return await order_recovery.repair(thread_id, payload,
+                project=request.state.thread_project, actor=request_actor(request))
 
     @router.post("/api/threads/{thread_id}/queue/steer")
     async def steer_latest(thread_id: str) -> dict[str, Any]:
