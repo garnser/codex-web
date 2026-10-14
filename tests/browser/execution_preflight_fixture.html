@@ -94,9 +94,48 @@
         requested_execution_id:'original-request-execution', execution_id:'actual-bootstrap-execution'};
     }
 
+    const batches = [];
+    const batchPhase = new URLSearchParams(location.search).get('batch');
+    if (batchPhase) {
+      attempts[0].notification_batch_id = 'fixture-batch';
+      attempts[0].notification_batch_href = '/api/threads/thread-1/notification-batches/fixture-batch';
+      // Deliberately stale individual flags must not expose replay actions.
+      attempts[0].can_retry = true;
+      attempts[0].can_retire_scheduling = true;
+      attempts[0].can_reconcile_prestart = true;
+      batches.push({id:'fixture-batch',phase:batchPhase,original_count:2,oldest_age_seconds:600,
+        oldest_created_at:1800000000,original_ids:['original-one','original-two'],
+        recovery_state:batchPhase==='released' ? 'released_to_original_queue' : 'batch_reconciliation_required',
+        project_id:'project-a',organization_id:'org-a',workspace_id:'workspace-a',
+        agent_profile_id:'original-profile',agent_profile_revision:6,execution_profile_id:'repository-write',
+        repository_resource_id:'repo-app',writable_repository_resource_ids:['repo-app'],
+        read_only_repository_resource_ids:[],detail_href:attempts[0].notification_batch_href,
+        native_receipt:batchPhase==='native_input_started' ? {
+          provider_native_turn_id:'shared-native-turn',provider_id:'fixture-provider',runtime_id:'fixture-runtime',
+          requested_execution_id:'fixture-batch',execution_id:'shared-native-execution'} : null});
+    }
+
     const api = async (path, options = {}) => {
       window.__apiCalls.push({ path, method: options.method || "GET" });
       if (path.includes("/preflight-attempts?")) return { items: attempts };
+      if (path.includes('/notification-batches/')) {
+        if (new URLSearchParams(location.search).has('holdBatchDetail')) {
+          return new Promise((resolve,reject) => {window.__finishBatchDetail={resolve,reject};});
+        }
+        if (new URLSearchParams(location.search).has('deniedBatchDetail')) throw new Error('Batch unavailable in this scope');
+        return {originals:[{original:{id:'original-one',execution_id:'requested-one',created_at:1800000000,
+          source:'gitlab',work_item_ref:'fixture/repo#1',thread_id:'original-thread',
+          message:'Full original <img src=x onerror="window.__unsafe=true"> body'},
+          admitted_route:{thread_id:'thread-1'},retained_status:'reconciliation_required',outcome:'unresolved'}]};
+      }
+      if (path.includes('/notification-batches')) {
+        if (path.includes('?after=')) {
+          if (new URLSearchParams(location.search).has('deniedBatchHistory')) throw new Error('Older history unavailable');
+          return {items:[{...batches[0],id:'fixture-older-batch',phase:'released',
+            original_ids:['older-one','older-two'],recovery_state:'released_to_original_queue'}],next_cursor:null};
+        }
+        return {items:batches,next_cursor:new URLSearchParams(location.search).has('pagedBatch') ? 'fixture-cursor' : null};
+      }
       if (path.endsWith('/reconcile-prestart')) return {ok:true, threadId:'thread-1'};
       if (path.endsWith('/retire-scheduling')) return {ok:true, threadId:'thread-1'};
       if (path.endsWith("/retry")) {

@@ -1,6 +1,7 @@
 import { createQueueOrderRecoveryUi } from "./queue_order_recovery_ui.js";
 import { createQueuedBootstrapRecoveryUi } from "./queued_bootstrap_recovery_ui.js";
 import { captureProjectView } from "./project_view_scope.js";
+import { createNotificationBatchUi } from "./notification_batch_ui.js";
 export function createExecutionPreflightUi({
   api,
   addMessage,
@@ -10,6 +11,7 @@ export function createExecutionPreflightUi({
   captureView = () => captureProjectView().current,
 }) {
   const attemptsByThread = new Map();
+  const batches = createNotificationBatchUi({api, addMessage, captureView});
   const orderRecovery=createQueueOrderRecoveryUi({api,addMessage,loadThread,scheduleRefresh,captureView});
   const bootstrapRecovery=createQueuedBootstrapRecoveryUi({api,loadThread,scheduleRefresh,captureView});
 
@@ -25,6 +27,7 @@ export function createExecutionPreflightUi({
         Array.isArray(response?.items) ? response.items : [],
       );
       await orderRecovery.load(threadId);
+      await batches.load(threadId);
     } catch (error) {
       if (!current()) return;
       logEvent?.("preflight.error", { message: error.message });
@@ -34,6 +37,7 @@ export function createExecutionPreflightUi({
 
   function render(threadId) {
     orderRecovery.render(threadId);
+    batches.render(threadId);
     [...(attemptsByThread.get(threadId) || [])]
       .reverse()
       .forEach((attempt) => {
@@ -50,6 +54,7 @@ export function createExecutionPreflightUi({
         const retirement = attempt?.scheduling_retirement || null;
         const schedulingRetired = retirement?.state === "retired";
         const schedulingRetirementPrepared = retirement?.state === "prepared";
+        const batchMember = Boolean(attempt?.notification_batch_id);
 
         if (status !== "started") {
           addMessage(
@@ -90,7 +95,8 @@ export function createExecutionPreflightUi({
         ].filter(Boolean);
         const lines = [
           `Preflight attempt ${Number(attempt?.attempt_number || 1)} · ${status}`,
-          status === 'reconciliation_required'
+          batchMember ? `Shared notification admission: ${attempt.notification_batch_id}. Individual recovery is unavailable; inspect the batch receipt and retained originals.`
+            : status === 'reconciliation_required'
             ? 'Native start outcome is unknown. Reconcile the original execution before retrying.'
             : status === 'queued' ? 'Original request retained for admission; no start is confirmed.'
               : status === 'admitting' ? 'Pre-start admission reserved. Retry fences this reservation before native startup.' : '',
@@ -122,7 +128,8 @@ export function createExecutionPreflightUi({
         ].filter(Boolean);
 
         const card = addMessage(
-          schedulingRetired ? (attempt.queued_start_receipt
+          batchMember ? "Batch original retained · outcome unresolved"
+            : schedulingRetired ? (attempt.queued_start_receipt
             ? "Scheduling retired · native start confirmed"
             : "Scheduling retired · native outcome unknown")
             : schedulingRetirementPrepared ? "Scheduling retirement requires reconciliation"
@@ -132,6 +139,10 @@ export function createExecutionPreflightUi({
           "tool",
           new Date((attempt?.updated_at || Date.now() / 1000) * 1000),
         );
+        if (batchMember) {
+          batches.attach(attempt.notification_batch_href, card?.querySelector('.body'));
+          return;
+        }
         bootstrapRecovery.attach(attempt, card?.querySelector('.body'));
         if (
           status === "started"

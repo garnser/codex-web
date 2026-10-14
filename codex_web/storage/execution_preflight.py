@@ -105,6 +105,25 @@ class ExecutionPreflightStore:
         value = self.store.record_get(self.NAMESPACE, "b/" + batch_id)
         return NotificationBatchAdmission.model_validate(value) if value is not None else None
 
+    @staticmethod
+    def _notification_batch_prefix(thread_id, organization_id, workspace_id, project_id):
+        scope = json.dumps([organization_id, workspace_id, project_id, thread_id], separators=(',', ':'))
+        return 'bt/' + hashlib.sha256(scope.encode()).hexdigest() + '/'
+
+    def notification_batches_for_thread(self, thread_id: str, *, organization_id, workspace_id, project_id,
+                                        limit=20, after=None):
+        prefix = self._notification_batch_prefix(thread_id, organization_id, workspace_id, project_id)
+        if after is not None and not after.startswith(prefix):
+            raise ValueError("notification batch cursor belongs to another thread")
+        rows, cursor = self.store.record_page(self.NAMESPACE, key_prefix=prefix,
+            limit=max(1, min(int(limit), 50)), after=after)
+        batches = []
+        for row in rows.values():
+            batch = self.get_notification_batch(row['batchId'])
+            if batch is not None and batch.plan.members[0].thread_id == thread_id:
+                batches.append(batch)
+        return batches, cursor
+
     def claim_notification_batch(self, plan, *, claim_id: str, now: float, queue_order=()):
         """All member claims and the descriptor commit in one keyed transaction.
 
@@ -120,8 +139,11 @@ class ExecutionPreflightStore:
                             or any(item.id not in queue_order for item in plan.members)):
             raise ValueError("notification batch original order is invalid")
         batch_key = "b/" + admission.id
+        index_prefix = self._notification_batch_prefix(plan.members[0].thread_id,
+            plan.organization_id, plan.workspace_id, plan.members[0].project_id)
+        index_key = f"{index_prefix}{self._inverse_timestamp(now):016d}/{admission.id}"
         keys = tuple(self._attempt_key(value) for value in admission.attempt_ids)
-        selected = (*keys, batch_key)
+        selected = (*keys, batch_key, index_key)
         outcome = None
 
         def claim(values):
@@ -156,6 +178,7 @@ class ExecutionPreflightStore:
                     "notification_batch_id": admission.id, "queued_admission_claim_id": claim_id,
                     "updated_at": now}).model_dump(mode="json")
             changes[batch_key] = admission.model_dump(mode="json")
+            changes[index_key] = {"batchId": admission.id}
             outcome = admission
             return changes
 

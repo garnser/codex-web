@@ -12,7 +12,7 @@ from codex_web.models import TurnCreate, QueueOrderRepairRequest, QueuedBootstra
 from codex_web.services.turns import TurnService
 
 
-def build_turns_router(service: TurnService, scope: ThreadScopeService, order_recovery=None, bootstrap_recovery=None) -> APIRouter:
+def build_turns_router(service: TurnService, scope: ThreadScopeService, order_recovery=None, bootstrap_recovery=None, notification_batches=None) -> APIRouter:
     router = APIRouter(tags=["turns"], dependencies=[Depends(thread_scope_dependency(scope))])
 
     @router.post("/api/threads/{thread_id}/resume")
@@ -63,6 +63,17 @@ def build_turns_router(service: TurnService, scope: ThreadScopeService, order_re
             actor=request_actor(request),
             limit=limit,
         )
+
+    if notification_batches is not None:
+        @router.get('/api/threads/{thread_id}/notification-batches')
+        async def list_notification_batches(thread_id: str, request: Request, limit: int = 20, after: str | None = None):
+            return notification_batches.list(thread_id=thread_id,
+                project=request.state.thread_project, actor=request_actor(request), limit=limit, after=after)
+
+        @router.get('/api/threads/{thread_id}/notification-batches/{batch_id}')
+        async def inspect_notification_batch(thread_id: str, batch_id: str, request: Request):
+            return notification_batches.detail(batch_id, thread_id=thread_id,
+                project=request.state.thread_project, actor=request_actor(request))
 
     @router.post(
         "/api/threads/{thread_id}/preflight-attempts/{attempt_id}/retry"
