@@ -93,3 +93,12 @@ for code PRs. Gates are folded into existing jobs to avoid redundant wrapper
 runners. Prose-only PRs avoid the heavy suites. Full
 main runs provide continuing regression coverage but do not substitute for
 applicable pre-merge checks.
+
+The administrative broker runtime tests compose the database-backed Agent Profile,
+Definition, worker claim/start and ActionIntent services behind the actual Unix
+socket broker. A synthetic conformance provider supplies controlled receipts and
+unknown outcomes without external effects. Its reusable global execution-profile
+template has no administrative targets; only the exact Project catalog supplies
+the administrative envelope. These checks cover execution-time revocation and
+retained idempotency/history, while original-provider input delivery and genuine
+independent review require their own evidence.
