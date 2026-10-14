@@ -1208,6 +1208,26 @@ gitlab_action_provider = GitLabActionProvider(
 action_provider_registry.register(gitlab_action_provider)
 app.state.gitlab_action_provider = gitlab_action_provider
 
+
+def _procedure_definition_scope_actor(record):
+    if record.scope_type.value != "workspace":
+        return None
+    workspace = next((w for w in identity_service.state().workspaces if w.id == record.scope_id), None)
+    if workspace is None:
+        return None
+    from codex_web.identity import AuthenticationActor, AuthenticationAssurance, PrincipalKind
+    return AuthenticationActor(
+        identity_id="procedure-contract-metadata", principal_kind=PrincipalKind.SERVICE,
+        organization_id=workspace.organization_id, workspace_id=workspace.id,
+        assurance=AuthenticationAssurance.SERVICE_TOKEN, service_scopes=(),
+    )
+
+
+skill_service.bind_procedure_contracts(
+    actions=action_provider_registry, resources=resource_catalog_service,
+    scope_actor=_procedure_definition_scope_actor,
+)
+
 control_plane_broker_factory = DeferredControlPlaneBrokerFactory()
 execution_worker_store = ExecutionWorkerStore(state_store)
 

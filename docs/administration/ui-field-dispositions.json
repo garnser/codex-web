@@ -200,11 +200,15 @@
           "input_expectations",
           "output_expectations",
           "owner_identity_id",
-          "provenance"
+          "provenance",
+          "operational_procedure"
         ],
         "lifecycle": [
           "lifecycle"
         ]
+      },
+      "notes": {
+        "operational_procedure": "Versioned through canonical Skill/Definition API and bundles; inspect full JSON/revision/schema. Structured Skill editing and applicability/trace UI are tracked by https://github.com/garnser/codex-web/issues/1428."
       }
     }
   }

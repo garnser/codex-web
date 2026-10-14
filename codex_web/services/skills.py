@@ -24,6 +24,8 @@ from codex_web.identity import (
 )
 from codex_web.services.definitions import (
     DefinitionConflictError,
+    DefinitionCompatibilityError,
+    DefinitionGateDeniedError,
     DefinitionKindSchema,
     DefinitionNotFoundError,
     DefinitionRegistryService,
@@ -41,6 +43,7 @@ from codex_web.skills import (
     SkillDefinition,
     SkillLifecycle,
     SkillLifecycleChange,
+    SkillOrigin,
     SkillPromotionRequest,
     SkillPublish,
     SkillRollback,
@@ -60,27 +63,53 @@ class SkillConflict(SkillError):
     pass
 
 
+class SkillResolutionFailure(SkillConflict):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 def validate_skill_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return SkillDefinition.model_validate(payload).model_dump(mode="json")
+    normalized = SkillDefinition.model_validate(payload).model_dump(mode="json")
+    # Preserve the legacy normalized payload/checksum when no extension exists.
+    if normalized["operational_procedure"] is None:
+        normalized.pop("operational_procedure")
+    return normalized
+
+
+def _unbound_procedure_gate(record: DefinitionRecord, *args) -> None:
+    if record.payload.get("operational_procedure") is not None:
+        raise DefinitionGateDeniedError(
+            "procedure_gate_unavailable", "operational procedure service gates are not bound",
+            record=record, gate="initialization",
+        )
 
 
 def install_skill_definition_schema(
     definitions: DefinitionRegistryService,
+    *,
+    validate_references=None,
+    publication_guard=None,
 ) -> None:
     try:
-        definitions.schemas.get(
-            SKILL_DEFINITION_KIND,
-            SKILL_DEFINITION_SCHEMA_VERSION,
-        )
-        return
-    except Exception:
-        pass
-    definitions.register_schema(
-        DefinitionKindSchema(
-            kind=SKILL_DEFINITION_KIND,
-            schema_version=SKILL_DEFINITION_SCHEMA_VERSION,
+        schema = definitions.schemas.get(SKILL_DEFINITION_KIND, SKILL_DEFINITION_SCHEMA_VERSION)
+    except DefinitionCompatibilityError:
+        definitions.register_schema(DefinitionKindSchema(
+            kind=SKILL_DEFINITION_KIND, schema_version=SKILL_DEFINITION_SCHEMA_VERSION,
             validate=validate_skill_payload,
-        )
+            validate_references=validate_references or _unbound_procedure_gate,
+            publication_guard=publication_guard or _unbound_procedure_gate,
+        ))
+        return
+    if schema.validate is not validate_skill_payload:
+        raise DefinitionConflictError("agent.skill schema uses an incompatible code-owned validator")
+    if validate_references is None and publication_guard is None:
+        return  # never unbind an already composed canonical service
+    if schema.validate_references not in {None, _unbound_procedure_gate} or schema.publication_guard not in {None, _unbound_procedure_gate}:
+        raise DefinitionConflictError("agent.skill procedure gates are already bound")
+    definitions.schemas.bind_guards(
+        schema, validate_references=validate_references or _unbound_procedure_gate,
+        publication_guard=publication_guard or _unbound_procedure_gate,
     )
 
 
@@ -98,7 +127,213 @@ class SkillService:
         self.thread_settings: Any | None = None
         self.thread_inherited_skill_refs: Callable[[str, AuthenticationActor], tuple[DefinitionReference, ...]] | None = None
         self.clock = clock
-        install_skill_definition_schema(definitions)
+        self.procedure_actions = None
+        self.procedure_resources = None
+        self.procedure_scope_actor = None
+        install_skill_definition_schema(
+            definitions, validate_references=self._procedure_definition_reference_gate,
+            publication_guard=self._procedure_definition_publication_gate,
+        )
+
+    def bind_procedure_contracts(self, *, actions, resources, scope_actor) -> None:
+        """Bind trusted metadata readers, not execution or credential transports."""
+        self.procedure_actions = actions
+        self.procedure_resources = resources
+        self.procedure_scope_actor = scope_actor
+
+    def _procedure_definition_gate(self, record: DefinitionRecord, gate: str, callback, *args) -> None:
+        from codex_web.services.action_providers import ActionProviderError
+        from codex_web.services.resources import ResourceNotFoundError
+        from codex_web.services.skill_security import SkillSecurityBlocked
+
+        try:
+            callback(record, *args)
+        except (SkillError, ActionProviderError, ResourceNotFoundError, SkillSecurityBlocked) as exc:
+            code = "procedure_reference_invalid" if gate == "references" else "procedure_publication_blocked"
+            evidence = {}
+            if isinstance(exc, SkillResolutionFailure):
+                code = exc.code
+            if isinstance(exc, SkillSecurityBlocked):
+                code = "procedure_security_blocked"
+                actor = self.procedure_scope_actor(record) if self.procedure_scope_actor else None
+                if actor is not None and self.security is not None:
+                    from codex_web.skill_security import SKILL_SECURITY_POLICY_ID, SKILL_SECURITY_POLICY_KIND
+                    view = self._view(record)
+                    evidence["security"] = self.security.summary(view, actor=actor)
+                    try:
+                        policy = self.definitions.resolve(
+                            definition_id=SKILL_SECURITY_POLICY_ID, kind=SKILL_SECURITY_POLICY_KIND,
+                            context=self._context(actor), now=float(self.clock()),
+                        )
+                        evidence["policyReference"] = reference_for(policy).model_dump(mode="json")
+                    except DefinitionNotFoundError:
+                        evidence["policyReference"] = None  # existing code-owned default policy
+            raise DefinitionGateDeniedError(code, str(exc), record=record, gate=gate, evidence=evidence) from exc
+
+    def _procedure_definition_reference_gate(self, record: DefinitionRecord) -> None:
+        self._procedure_definition_gate(record, "references", self._validate_procedure_references)
+
+    def _procedure_definition_publication_gate(self, record: DefinitionRecord, publisher: str) -> None:
+        self._procedure_definition_gate(record, "publication", self._procedure_publication_guard, publisher)
+
+    def _validate_procedure_references(self, record: DefinitionRecord) -> None:
+        skill = SkillDefinition.model_validate(record.payload)
+        procedure = skill.operational_procedure
+        if procedure is None or skill.lifecycle == SkillLifecycle.ARCHIVED:
+            return
+        if self.procedure_scope_actor is None:
+            raise SkillConflict("procedure tenant metadata resolution is unavailable")
+        actor = self.procedure_scope_actor(record)
+        if actor is None:
+            raise SkillConflict("operational procedures require a canonical tenant workspace scope")
+        # Resource IDs and operations are resolved in the Definition's tenant,
+        # never the publisher's chosen tenant or a credential from its content.
+        for selector in procedure.resource_selectors:
+            for resource_id in selector.resource_ids:
+                if self.procedure_resources is None:
+                    raise SkillConflict("procedure Resource registry is unavailable")
+                resource = self.procedure_resources.get(resource_id, actor)
+                if resource.resource_type not in selector.resource_types:
+                    raise SkillConflict("procedure Resource selector type is incompatible")
+        from codex_web.authority import AUTHORITY_LEVEL_RANK, AuthorityLevel
+        for step in procedure.steps:
+            if step.action is None:
+                continue
+            if self.procedure_actions is None:
+                raise SkillConflict("procedure ActionProvider registry is unavailable")
+            ref = step.action
+            provider = self.procedure_actions.provider(ref.provider_type, ref.provider_instance, actor=actor)
+            if provider.contract_version != ref.provider_contract_version:
+                raise SkillResolutionFailure("procedure_incompatible", "registered ActionProvider contract version differs from procedure reference")
+            operation = next((a for a in provider.actions() if a.action_id == ref.action_id), None)
+            if operation is None:
+                raise SkillConflict("procedure references an unsupported ActionProvider operation")
+            if step.timeout_seconds > operation.timeout_seconds or step.max_attempts > operation.retry_max_attempts:
+                raise SkillConflict("procedure step exceeds registered operation timeout/retry bounds")
+            if step.kind in {"diagnostic", "verification"} and operation.required_authority_level != "read":
+                raise SkillConflict("diagnostic/verification must reference a read-only operation")
+            if step.kind in {"mutation", "recovery"} and not operation.capabilities.execute:
+                raise SkillConflict("mutation/recovery requires an executable registered operation")
+            if step.max_attempts > 1 and step.kind in {"mutation", "recovery"} and not operation.capabilities.idempotency:
+                raise SkillConflict("mutating retries require registered idempotency support")
+            if operation.executable_artifact:
+                from codex_web.execution_workers import WorkerCapability
+                if WorkerCapability.COMMAND_EXECUTION not in procedure.required_worker_capabilities:
+                    raise SkillConflict("executable ActionProvider work requires an isolated worker capability")
+            if step.impact is not None and step.impact.reversible and not operation.reversible:
+                raise SkillConflict("procedure impact cannot claim unsupported reversibility")
+            if step.kind == "recovery" and not operation.reversible:
+                raise SkillConflict("recovery requires a registered reversible operation")
+            selector = next(s for s in procedure.resource_selectors if s.id == ref.resource_selector)
+            if not set(operation.required_resource_types).issubset(selector.resource_types):
+                raise SkillConflict("procedure selector lacks registered operation Resource types")
+            for capability in operation.required_authority:
+                if not any(p.capability == capability and p.resource_selector == ref.resource_selector
+                           and AUTHORITY_LEVEL_RANK[p.level] >= AUTHORITY_LEVEL_RANK[AuthorityLevel(operation.required_authority_level)]
+                           for p in step.permissions):
+                    raise SkillConflict("procedure omits registered operation permission requirements")
+
+    def _procedure_publication_guard(self, record: DefinitionRecord, publisher: str) -> None:
+        skill = SkillDefinition.model_validate(record.payload)
+        if skill.operational_procedure is None or skill.lifecycle == SkillLifecycle.ARCHIVED:
+            return
+        self._assert_procedure_fresh(skill)
+        if self.security is None or self.procedure_scope_actor is None:
+            raise SkillConflict("procedure publication security gate is unavailable")
+        actor = self.procedure_scope_actor(record)
+        if actor is None:
+            raise SkillConflict("procedure publication requires canonical tenant scope")
+        # Same revision/checksum/policy gate for Skills, generic Definitions and
+        # rollback. No stored field can disable or replace this code-owned hook.
+        self.security.assert_allowed(self._view(record), actor=actor, phase="publish")
+
+    def _assert_procedure_fresh(self, skill: SkillDefinition) -> None:
+        procedure = skill.operational_procedure
+        if procedure is None:
+            return
+        now = float(self.clock())
+        if now < procedure.reviewed_at:
+            raise SkillResolutionFailure("procedure_incompatible", "procedure review date is in the future")
+        if now >= min(procedure.review_due_at, procedure.expires_at):
+            raise SkillResolutionFailure("procedure_expired", "procedure has expired or requires freshness review")
+
+    def _assert_procedure_usable(self, record: DefinitionRecord) -> None:
+        skill = SkillDefinition.model_validate(record.payload)
+        self._assert_procedure_fresh(skill)
+        if skill.operational_procedure is not None:
+            history = [r for r in self.definitions.list_records(kind=record.kind, definition_id=record.definition_id)
+                       if r.scope_type == record.scope_type and r.scope_id == record.scope_id
+                       and (r.published_at is not None or r.lifecycle in {DefinitionLifecycle.DISABLED, DefinitionLifecycle.QUARANTINED})]
+            latest = max(history, key=lambda r: r.revision, default=record)
+            if latest.lifecycle == DefinitionLifecycle.QUARANTINED:
+                raise SkillResolutionFailure("procedure_quarantined", "current operational procedure is quarantined")
+            if latest.lifecycle == DefinitionLifecycle.DISABLED:
+                raise SkillResolutionFailure("procedure_disabled", "current operational procedure is disabled")
+            if SkillDefinition.model_validate(latest.payload).lifecycle == SkillLifecycle.ARCHIVED:
+                raise SkillResolutionFailure("procedure_disabled", "current operational procedure is archived")
+            self._validate_procedure_references(record)
+
+    def validate_required_procedure(self, reference: DefinitionReference, *, actor: AuthenticationActor) -> DefinitionReference:
+        """Required-procedure facet of ordinary exact Skill reference validation.
+
+        No discovery, policy admission, planning, step dispatch or model calls.
+        """
+        from codex_web.services.action_providers import ActionProviderError
+        from codex_web.services.resources import ResourceNotFoundError
+        from codex_web.services.skill_security import SkillSecurityBlocked
+
+        try:
+            record = self.definitions.get_record(reference.record_id)
+            self._assert_visible_record(record, actor)
+            if record.lifecycle == DefinitionLifecycle.QUARANTINED:
+                raise SkillResolutionFailure("procedure_quarantined", "required operational procedure is quarantined")
+            if record.lifecycle == DefinitionLifecycle.DISABLED:
+                raise SkillResolutionFailure("procedure_disabled", "required operational procedure is disabled")
+            slot_history = [r for r in self._records(record.definition_id, actor=actor)
+                            if r.scope_type == record.scope_type and r.scope_id == record.scope_id
+                            and (r.published_at is not None or r.lifecycle in {DefinitionLifecycle.DISABLED, DefinitionLifecycle.QUARANTINED})]
+            latest = max(slot_history, key=lambda r: r.revision, default=record)
+            if latest.lifecycle == DefinitionLifecycle.QUARANTINED:
+                raise SkillResolutionFailure("procedure_quarantined", "current operational procedure is quarantined")
+            if latest.lifecycle == DefinitionLifecycle.DISABLED:
+                raise SkillResolutionFailure("procedure_disabled", "current operational procedure is disabled")
+            if latest.effective_until is not None and float(self.clock()) >= latest.effective_until:
+                raise SkillResolutionFailure("procedure_expired", "current operational procedure effective window expired")
+            valid = self.validate_reference(reference, actor=actor)
+            record = self.definitions.get_record(valid.record_id)
+            if SkillDefinition.model_validate(record.payload).operational_procedure is None:
+                raise SkillResolutionFailure("procedure_missing", "required operational procedure is absent")
+            return valid
+        except SkillResolutionFailure:
+            raise
+        except (SkillNotFound, DefinitionNotFoundError) as exc:
+            raise SkillResolutionFailure("procedure_missing", "required operational procedure is unavailable in this tenant") from exc
+        except DefinitionCompatibilityError as exc:
+            raise SkillResolutionFailure("procedure_incompatible", "required operational procedure schema/engine is incompatible") from exc
+        except (SkillError, DefinitionConflictError, ValueError, ActionProviderError,
+                ResourceNotFoundError, SkillSecurityBlocked, AuthorizationError) as exc:
+            # Preserve the canonical gate's reason, with a stable typed facet.
+            message = str(exc)
+            code = "procedure_incompatible"
+            if "quarantin" in message.casefold():
+                code = "procedure_quarantined"
+            elif "disabled" in message.casefold() or "archived" in message.casefold() or "never published" in message:
+                code = "procedure_disabled"
+            elif "effective" in message.casefold():
+                code = "procedure_expired"
+            elif "security" in message.casefold():
+                code = "procedure_security_blocked"
+            raise SkillResolutionFailure(code, message) from exc
+
+    def validate_required_procedure_for_scope(
+        self, reference: DefinitionReference, *, organization_id: str, workspace_id: str,
+    ) -> DefinitionReference:
+        # Read-only validation projection; no service scopes or action authority.
+        return self.validate_required_procedure(reference, actor=AuthenticationActor(
+            identity_id="procedure-contract-runtime", principal_kind=PrincipalKind.SERVICE,
+            organization_id=organization_id, workspace_id=workspace_id,
+            assurance=AuthenticationAssurance.SERVICE_TOKEN, service_scopes=(),
+        ))
 
     def bind_profiles(self, profiles: Any) -> None:
         self.profiles = profiles
@@ -394,6 +629,7 @@ class SkillService:
             input_expectations=payload.input_expectations,
             output_expectations=payload.output_expectations,
             owner_identity_id=actor.identity_id,
+            operational_procedure=payload.operational_procedure,
             provenance=payload.provenance,
         )
         record = self.definitions.create_draft(
@@ -427,7 +663,7 @@ class SkillService:
         updates = {
             field: getattr(payload, field)
             for field in fields
-            if getattr(payload, field) is not None
+            if getattr(payload, field) is not None or field == "operational_procedure"
         }
         next_skill = current_skill.model_copy(update=updates)
         # Re-validate invariants after model_copy so malicious update payloads
@@ -630,6 +866,7 @@ class SkillService:
                 actor=actor,
                 phase="assignment",
             )
+        self._assert_procedure_usable(record)
         return actual
 
     def validate_reference_for_scope(
@@ -697,6 +934,7 @@ class SkillService:
                 actor=security_actor,
                 phase="assignment",
             )
+        self._assert_procedure_usable(record)
         return actual
 
     def requirements_for_refs_scoped(
@@ -719,6 +957,9 @@ class SkillService:
             )
             provider.extend(skill.required_provider_capabilities)
             worker.extend(skill.required_worker_capabilities)
+            if skill.operational_procedure is not None:
+                provider.extend(skill.operational_procedure.required_provider_capabilities)
+                worker.extend(skill.operational_procedure.required_worker_capabilities)
         return tuple(dict.fromkeys(provider)), tuple(dict.fromkeys(worker))
 
     def requirements_for_refs(
@@ -736,6 +977,9 @@ class SkillService:
             )
             provider.extend(skill.required_provider_capabilities)
             worker.extend(skill.required_worker_capabilities)
+            if skill.operational_procedure is not None:
+                provider.extend(skill.operational_procedure.required_provider_capabilities)
+                worker.extend(skill.operational_procedure.required_worker_capabilities)
         return tuple(dict.fromkeys(provider)), tuple(dict.fromkeys(worker))
 
     @staticmethod
@@ -988,6 +1232,7 @@ class SkillService:
             ),
             input_expectations=skill.input_expectations,
             output_expectations=skill.output_expectations,
+            operational_procedure=skill.operational_procedure,
             provenance=skill.provenance.model_copy(
                 update={
                     "source_ref": (
@@ -1037,6 +1282,7 @@ class SkillService:
         provenance = manifest.provenance.model_copy(
             update={
                 "source_type": "import",
+                "origin": SkillOrigin.IMPORTED,
                 "imported_at": float(self.clock()),
             }
         )

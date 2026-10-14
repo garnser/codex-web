@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.agent_providers import AgentProviderCapability
 from codex_web.execution_workers import WorkerCapability
+from codex_web.skill_procedures import OperationalProcedure
 
 SKILL_DEFINITION_KIND = "agent.skill"
 SKILL_DEFINITION_SCHEMA_VERSION = "1.0"
@@ -177,12 +178,15 @@ class SkillDefinition(BaseModel):
     required_worker_capabilities: tuple[WorkerCapability, ...] = ()
     input_expectations: tuple[str, ...] = Field(default=(), max_length=30)
     output_expectations: tuple[str, ...] = Field(default=(), max_length=30)
+    operational_procedure: OperationalProcedure | None = None
     owner_identity_id: str = Field(min_length=1, max_length=300)
     lifecycle: SkillLifecycle = SkillLifecycle.ACTIVE
     provenance: SkillProvenance = Field(default_factory=SkillProvenance)
 
     @model_validator(mode="after")
     def normalize(self) -> "SkillDefinition":
+        if self.operational_procedure is not None and any(asset.kind == SkillAssetKind.HELPER_SCRIPT for asset in self.assets):
+            raise ValueError("operational procedures cannot embed executable helper assets")
         if _contains_secret_material(self.instructions):
             raise ValueError("skill instructions appear to contain raw secret material")
         if (
@@ -261,11 +265,14 @@ class SkillCreate(BaseModel):
     required_worker_capabilities: tuple[WorkerCapability, ...] = ()
     input_expectations: tuple[str, ...] = ()
     output_expectations: tuple[str, ...] = ()
+    operational_procedure: OperationalProcedure | None = None
     provenance: SkillProvenance = Field(default_factory=SkillProvenance)
     reason: str | None = Field(default=None, max_length=1000)
 
     @model_validator(mode="after")
     def validate_create(self) -> "SkillCreate":
+        if self.operational_procedure is not None and any(asset.kind == SkillAssetKind.HELPER_SCRIPT for asset in self.assets):
+            raise ValueError("operational procedures cannot embed executable helper assets")
         if _contains_secret_material(self.instructions):
             raise ValueError("skill instructions appear to contain raw secret material")
         if len(self.assets) > SKILL_MAX_ASSETS:
@@ -299,6 +306,7 @@ class SkillUpdate(BaseModel):
     required_worker_capabilities: tuple[WorkerCapability, ...] | None = None
     input_expectations: tuple[str, ...] | None = None
     output_expectations: tuple[str, ...] | None = None
+    operational_procedure: OperationalProcedure | None = None
     provenance: SkillProvenance | None = None
     reason: str = Field(min_length=1, max_length=1000)
 

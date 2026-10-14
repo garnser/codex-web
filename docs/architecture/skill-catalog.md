@@ -37,3 +37,7 @@ The initial adapter accepts catalog bundles supplied to the API. Provider-specif
 Discovery and import remain separate. Discovery records source health, transport, evidence, available categories, counts, and upstream removals without creating Definitions. Operators can then import one Skill, selected Skills, a category, or the full snapshot. Approved auto-import categories can select new items during discovery, but every result is still an inactive Definition draft and passes the revision-bound security policy before publication or assignment.
 
 Upstream taxonomy is stored in immutable provenance alongside the upstream location and transport. Canonical categories and tags remain local fields. A synchronization can preserve a local taxonomy-only revision while applying changed upstream content; any other local content change still blocks synchronization and requires an explicit override or fork. Existing Thread assignments remain pinned to their earlier Definition records, so upstream changes cannot alter a running execution.
+
+## Operational procedures
+
+Skills may carry an optional versioned [operational-procedure contract](skill-operational-procedures.md). The same canonical identity, revision/checksum, source import, security and lifecycle boundaries apply. Imported runbooks remain inactive drafts; requirements never grant action or worker authority.

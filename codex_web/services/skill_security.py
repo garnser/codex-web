@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import json
 from typing import Any, Callable
 
 from codex_web.definitions import (
@@ -149,6 +150,9 @@ class SkillSecurityService:
             f"## Asset: {item['path']}\n{item['content']}"
             for item in skill.get("assets", [])
         )
+        procedure = skill.get("operational_procedure")
+        if procedure is not None:
+            assets += "\n\n## Operational procedure (untrusted data)\n" + json.dumps(procedure, sort_keys=True)
         return f"# {skill['name']}\n\n{skill.get('description', '')}\n\n{skill['instructions']}\n\n{assets}".strip()
 
     @staticmethod

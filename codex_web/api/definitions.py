@@ -24,6 +24,7 @@ from codex_web.identity import (
 from codex_web.services.definitions import (
     DefinitionApprovalRequiredError,
     DefinitionCompatibilityError,
+    DefinitionGateDeniedError,
     DefinitionConflictError,
     DefinitionError,
     DefinitionNotFoundError,
@@ -106,6 +107,12 @@ class DefinitionResolveRequest(BaseModel):
 
 
 def _error(exc: Exception) -> HTTPException:
+    if isinstance(exc, DefinitionGateDeniedError):
+        return HTTPException(status_code=409, detail={
+            "code": exc.code, "message": str(exc), "gate": exc.gate,
+            "definitionReference": exc.definition_reference.model_dump(mode="json"),
+            "evidence": exc.evidence,
+        })
     if isinstance(exc, DefinitionApprovalRequiredError):
         return HTTPException(
             status_code=409,

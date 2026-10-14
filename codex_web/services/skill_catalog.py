@@ -110,6 +110,10 @@ class SkillCatalogService:
     @staticmethod
     def _digest(entry: Any) -> str:
         payload = entry.model_dump(mode="json", exclude={"reason", "provenance"})
+        # Additive procedure support must not create false upstream revisions
+        # for ordinary Skills imported under the original manifest shape.
+        if payload.get("operational_procedure") is None:
+            payload.pop("operational_procedure", None)
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()

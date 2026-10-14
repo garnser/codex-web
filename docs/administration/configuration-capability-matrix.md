@@ -78,3 +78,5 @@ An `API` disposition is allowed only where a first-class product mutation flow i
 | Recovery policy archive/retirement and deployment recovery actions | No canonical policy archive/retirement or deployment reset primitive is exposed. Policy-only rollback does not restore deleted backup bytes or revoke completed operations. | Operations / Recovery Policy & Evidence supports typed updates and retained-policy rollback; deployment recovery remains governed by its own qualification and action boundaries. |
 
 Any new `API` cell added to the matrix must be accompanied by an entry here (or an equivalent linked rationale) that names both the reason and the owning follow-up surface.
+
+Operational-procedure Skill authoring currently uses the canonical Skill/Definition JSON API and bundle workflow, with full payload inspection and authenticated schema exposure. The structured Skill form, applicability previews and traces are tracked by [the linked UI issue](https://github.com/garnser/codex-web/issues/1428); these capabilities must reuse the same revision/security/policy boundaries.

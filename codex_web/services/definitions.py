@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from codex_web.compatibility import ContractVersion
@@ -33,6 +33,18 @@ class DefinitionNotFoundError(LookupError):
 
 class DefinitionConflictError(RuntimeError):
     pass
+
+
+class DefinitionGateDeniedError(DefinitionConflictError):
+    """Expected schema/dependency/security denial at the registry boundary."""
+
+    def __init__(self, code: str, message: str, *, record: DefinitionRecord, gate: str,
+                 evidence: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.gate = gate
+        self.definition_reference = reference_for(record)
+        self.evidence = evidence or {}
 
 
 class DefinitionCompatibilityError(RuntimeError):
@@ -73,6 +85,8 @@ class DefinitionKindSchema:
     schema_version: str
     validate: DefinitionValidator
     assess_publish: DefinitionPublicationAssessor | None = None
+    validate_references: Callable[[DefinitionRecord], None] | None = None
+    publication_guard: Callable[[DefinitionRecord, str], None] | None = None
 
 
 class DefinitionSchemaRegistry:
@@ -88,6 +102,18 @@ class DefinitionSchemaRegistry:
                 f"definition schema already registered: {schema.kind}@{schema.schema_version}"
             )
         self._schemas[key] = schema
+
+    def bind_guards(self, schema: DefinitionKindSchema, *, validate_references, publication_guard) -> None:
+        """Attach trusted service seams to an unchanged code-owned validator.
+
+        Initialization only: callers must present the registered schema object;
+        this cannot replace payload validators or any persisted Definition data.
+        """
+        key = (schema.kind, schema.schema_version)
+        if self._schemas.get(key) is not schema:
+            raise DefinitionConflictError("definition schema changed before guard binding")
+        self._schemas[key] = replace(schema, validate_references=validate_references,
+                                     publication_guard=publication_guard)
 
     def get(self, kind: str, schema_version: str) -> DefinitionKindSchema:
         try:
@@ -327,6 +353,8 @@ class DefinitionRegistryService:
                 max_engine_version=payload.max_engine_version,
                 derived_from_record_id=payload.derived_from_record_id,
             )
+            if schema.validate_references is not None:
+                schema.validate_references(record)
             created.append(record)
             return [*records, record]
 
@@ -344,6 +372,9 @@ class DefinitionRegistryService:
             if selected.lifecycle not in {DefinitionLifecycle.DRAFT, DefinitionLifecycle.VALIDATED}:
                 raise DefinitionConflictError("only draft/validated definitions can be validated")
             self._validated_record(selected)
+            schema = self.schemas.get(selected.kind, selected.definition_schema_version)
+            if schema.validate_references is not None:
+                schema.validate_references(selected)
             result = selected.model_copy(
                 update={
                     "lifecycle": DefinitionLifecycle.VALIDATED,
@@ -499,6 +530,11 @@ class DefinitionRegistryService:
                 "only draft/validated definitions can be published"
             )
         selected = self._validated_record(selected)
+        schema = self.schemas.get(selected.kind, selected.definition_schema_version)
+        if schema.validate_references is not None:
+            schema.validate_references(selected)
+        if schema.publication_guard is not None:
+            schema.publication_guard(selected, request.actor)
         active = self._active_same_slot(records, selected)
         active_revision = active.revision if active else None
         if (
