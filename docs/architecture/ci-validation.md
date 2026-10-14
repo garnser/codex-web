@@ -100,5 +100,7 @@ socket broker. A synthetic conformance provider supplies controlled receipts and
 unknown outcomes without external effects. Its reusable global execution-profile
 template has no administrative targets; only the exact Project catalog supplies
 the administrative envelope. These checks cover execution-time revocation and
-retained idempotency/history, while original-provider input delivery and genuine
-independent review require their own evidence.
+retained idempotency/history, including a retry through a replacement Unix socket
+broker that preserves the unknown receipt without another provider execution.
+A fresh interpreter separately verifies persisted receipt history. Original-provider
+input delivery and genuine independent review require their own evidence.

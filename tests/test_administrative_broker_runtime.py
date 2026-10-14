@@ -229,6 +229,29 @@ class AdministrativeBrokerRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.provider.calls, 1)
         self.assertEqual(self.intents.history(body['item']['id'], self.admin), before)
 
+    async def test_broker_replacement_retains_unknown_outcome_without_provider_replay(self):
+        self.provider.unknown = True
+        status, _, body = await self.submit()
+        self.assertEqual(status, 200, body)
+        intent_id = body['item']['id']
+        self.assertEqual(body['item']['status'], 'uncertain')
+        history = self.intents.history(intent_id, self.admin)
+        await self.broker.stop()
+        self.intents = ActionIntentService(ActionIntentStore(self.sqlite), self.intents.execution,
+            authority=self.authority, identity=self.identity, execution_workers=self.workers,
+            execution_profiles=self.profiles)
+        self.service.action_intents = self.intents
+        self.broker = AssignmentBoundControlPlaneBroker(self.service, assignment=self.assignment,
+            worker_id=self.worker.id, worker_actor=self.worker_actor, fence=self.assignment.fence,
+            validator=lambda:self.workers.assignment_for_execution(self.assignment.execution_id, actor=self.admin))
+        await self.broker.start()
+        status, _, duplicate = await self.submit()
+        self.assertEqual(status, 200, duplicate)
+        self.assertEqual(duplicate['item']['id'], intent_id)
+        self.assertEqual(duplicate['item']['status'], 'uncertain')
+        self.assertEqual(self.intents.history(intent_id, self.admin), history)
+        self.assertEqual(self.provider.calls, 1)
+
     async def test_role_binding_revoked_after_creation_blocks_execution(self):
         original = self.intents.create
         def create_then_revoke(*args, **kwargs):
