@@ -1049,3 +1049,52 @@ order without inventing a receipt or retrying the operation. Preflight/native
 outcomes, original bodies, scope, profiles and reply destinations remain exact.
 The inspector distinguishes scheduling repair from outcome reconciliation and
 native retry, preserving denied/stale states and fencing late Project responses.
+
+### One reviewed original while automation remains paused
+
+The retained-request inspector can review and admit one `queued`, proven-unstarted
+original through `GET/POST .../preflight-attempts/{id}/operator-admission`.
+The POST requires `expected_snapshot_sha256`, `expected_queue_sha256` and a bounded
+operator reason. Human administrator/MFA and current canonical `execution.retry`
+Role authority are evaluated against the exact Project and original repository
+Resources. The original runtime actor is separately resolved by native admission;
+the operator neither replaces that actor nor changes its Profile revision,
+execution settings, source, input, repository scope or reply destination.
+
+Admission requires a single unchanged queue copy, an inactive original/destination
+Thread and the canonical same-Project replacement edge, if any. Started, unknown,
+retired, batch-owned, competing, stale or malformed requests fail closed. Only the
+existing retry counter and verified replacement Thread/reply routing may differ
+from the immutable retained snapshot. Automatic admission must remain paused.
+The action never enables autonomy or schedules other queue members.
+
+The canonical queue ownership lease and a shared local queue-admission lock cover
+review, reservation, atomic exact-copy removal and native delivery. A reservation
+uses the existing preflight claim/status lifecycle; `operator_admission` version
+`1.0` records the operator, reason, claim and reviewed hashes. The bounded in-memory
+validator rechecks current authority, Resources, immutable snapshot, claim, pause
+and live ownership at setup and immediately before adapter input delivery. It
+expires after 120 seconds and is never recreated from persisted operator metadata.
+A restart retains pending/unknown admissions for reconciliation, without granting
+replay authority. A lost native response remains unknown; only the actual runtime
+response can produce the existing native start receipt. A locally observed
+operator revocation before input restores the exact original queue copy and
+records a blocked refusal. Ordinary retry remains an independently authorized
+operation. Existing maintenance/drain, worker/profile/scope, fencing, native
+uncertainty and provider checks stay effective.
+
+The preflight UI shows original scope, review reason/claim and actual native
+receipt or unresolved state. Reading it makes no model call or native submission.
+Denied or stale results retain the draft and require fresh inspection; late
+responses cannot mutate another Project view.
+
+The new field is omitted on old records, preserving their serialization. Readers
+with the field read version `1.0`; old strict readers cannot read an admission
+record carrying it. Qualified installation must drain **all writers/native
+admission** before this feature is used. After the first persisted operator
+admission, source-only rollback to a reader without this field is unsupported;
+use the existing verified snapshot/restore and compatibility path. No new role,
+Definition, scheduler, external provider operation or automatic LLM call is added.
+Live acceptance for #1425/#1318 still requires the original revision-pinned native
+receipt and preservation of the existing uncertain requests; synthetic fixtures
+are protocol coverage rather than that evidence.

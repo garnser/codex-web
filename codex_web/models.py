@@ -536,6 +536,27 @@ class QueuedBootstrapRecoveryRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
 
 
+class QueuedOperatorAdmissionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_queue_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class QueuedOperatorAdmission(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["1.0"] = "1.0"
+
+    claim_id: str = Field(min_length=1)
+    requested_by: str = Field(min_length=1)
+    requested_at: float
+    reason: str = Field(min_length=1, max_length=1000)
+    snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    queue_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class ExecutionPreflightAttempt(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -550,6 +571,7 @@ class ExecutionPreflightAttempt(BaseModel):
     message: str = Field(min_length=1)
     queued_turn_snapshot: dict[str, Any] | None = None
     queued_admission_claim_id: str | None = None
+    operator_admission: QueuedOperatorAdmission | None = None
     queued_start_receipt: QueuedNativeStartReceipt | None = None
     notification_batch_id: str | None = None
     scheduling_retirement: QueuedSchedulingRetirement | None = None
@@ -581,6 +603,8 @@ class ExecutionPreflightAttempt(BaseModel):
     @model_serializer(mode="wrap")
     def serialize_recovery_fields(self, handler):
         result = handler(self)
+        if self.operator_admission is None:
+            result.pop("operator_admission", None)
         if self.bootstrap_recovery is None:
             result.pop("bootstrap_recovery", None)
         if not self.bootstrap_recovery_history:

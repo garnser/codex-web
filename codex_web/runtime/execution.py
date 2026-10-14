@@ -209,6 +209,7 @@ class TurnExecutionService:
             weakref.WeakValueDictionary()
         )
         self.queue_drain_tasks: dict[str, asyncio.Task[None]] = {}
+        self.queue_admission_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
         self.terminal_recovery_tasks: dict[str, asyncio.Task[None]] = {}
         self.assignment_completion_tasks: dict[str, asyncio.Task[None]] = {}
         self.thread_completion_tasks: dict[str, asyncio.Task[None]] = {}
@@ -714,7 +715,10 @@ class TurnExecutionService:
             "retryable": True,
         }
 
-    def _require_automated_admission(self, source: str) -> None:
+    def _require_automated_admission(self, source: str, operator_admission_validator=None) -> None:
+        if operator_admission_validator is not None:
+            operator_admission_validator()
+            return
         reason = self.automation_wait_reason(source)
         if reason is not None:
             raise AutomatedAdmissionPaused(status_code=409, detail=reason)
@@ -1849,8 +1853,9 @@ class TurnExecutionService:
         queued_admission_claim_id: str | None = None,
         notification_batch_admission_id: str | None = None,
         notification_batch_control_current=None,
+        operator_admission_validator=None,
     ) -> dict[str, Any]:
-        self._require_automated_admission(source)
+        self._require_automated_admission(source, operator_admission_validator)
         scope = (project.organization_id, project.workspace_id)
         if (
             self.maintenance_admission is not None
@@ -1909,6 +1914,7 @@ class TurnExecutionService:
                     queued_admission_claim_id=queued_admission_claim_id,
                     notification_batch_admission_id=notification_batch_admission_id,
                     notification_batch_control_current=notification_batch_control_current,
+                    operator_admission_validator=operator_admission_validator,
                 )
         return await self._start_thread_turn_now_admitted(
             thread_id,
@@ -1938,6 +1944,7 @@ class TurnExecutionService:
             queued_admission_claim_id=queued_admission_claim_id,
             notification_batch_admission_id=notification_batch_admission_id,
             notification_batch_control_current=notification_batch_control_current,
+            operator_admission_validator=operator_admission_validator,
         )
 
     async def _start_thread_turn_now_admitted(
@@ -1970,6 +1977,7 @@ class TurnExecutionService:
         queued_admission_claim_id: str | None = None,
         notification_batch_admission_id: str | None = None,
         notification_batch_control_current=None,
+        operator_admission_validator=None,
     ) -> dict[str, Any]:
         h = self.host
         if notification_batch_admission_id:
@@ -3009,7 +3017,7 @@ class TurnExecutionService:
                 memory_preview, memory_actor = context_service.prepare(memory_context_binding, project=project)
                 native_message = message + "\n\nSelected UX knowledge (task data):\n" + memory_preview["context"]
 
-            self._require_automated_admission(source)
+            self._require_automated_admission(source, operator_admission_validator)
             if notification_batch_admission_id and len(native_message.encode()) > batch.plan.max_context_bytes:
                 raise ValueError('notification input including selected context exceeds its byte bound')
             if not preserve_active_handoff:
@@ -3113,6 +3121,8 @@ class TurnExecutionService:
                     history_started = True
                 if notification_batch_control_current is not None and not await asyncio.to_thread(notification_batch_control_current):
                     raise ValueError('notification batch controls changed before native input')
+                if operator_admission_validator is not None:
+                    await asyncio.to_thread(operator_admission_validator)
                 runtime_turn_result = await runtime_adapter.start_turn(
                     native_session_id,
                     runtime_turn_request,
@@ -3454,20 +3464,26 @@ class TurnExecutionService:
         await self.publish_queue_status(thread_id)
         return response
 
+    def queue_admission_lock(self, thread_id: str) -> asyncio.Lock:
+        lock = self.queue_admission_locks.get(thread_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self.queue_admission_locks[thread_id] = lock
+        return lock
+
     async def drain_thread_queue(self, thread_id: str) -> None:
-        if self.ownership is None:
-            await self._drain_thread_queue_owned(thread_id)
-            return
+        async with self.queue_admission_lock(thread_id):
+            if self.ownership is None:
+                await self._drain_thread_queue_owned(thread_id)
+                return
 
-        async def operation() -> None:
-            await self._drain_thread_queue_owned(thread_id)
+            async def operation() -> None:
+                await self._drain_thread_queue_owned(thread_id)
 
-        await self.ownership.run_exclusive(
-            f"thread-queue:{thread_id}",
-            operation,
-        )
+            await self.ownership.run_exclusive(f"thread-queue:{thread_id}", operation)
 
-    async def _drain_thread_queue_owned(self, thread_id: str) -> None:
+    async def _drain_thread_queue_owned(self, thread_id: str, *, operator_original=None,
+                                       operator_admission_validator=None) -> None:
         h = self.host
         if not thread_id:
             await self.publish_queue_status(thread_id)
@@ -3484,7 +3500,23 @@ class TurnExecutionService:
         retained_attempt = None
         admission_claim_id = None
         original_order = [item.id for item in h._thread_queue(thread_id)]
-        if self.queued_preflight is not None:
+        if operator_original is not None:
+            candidate, retained_attempt, admission_claim_id = operator_original
+            operator_admission_validator()
+            selected = {}
+            def remove_reviewed(items):
+                from codex_web.services.queue_order_recovery import QueueOrderRecoveryService
+                if QueueOrderRecoveryService.digest(items) != retained_attempt.operator_admission.queue_sha256:
+                    raise HTTPException(status_code=409, detail='Reviewed queue changed before exact removal')
+                matches = [item for item in items if item.id == candidate.id]
+                if len(matches) != 1 or matches[0].model_dump(mode='json') != candidate.model_dump(mode='json'):
+                    raise HTTPException(status_code=409, detail='Reviewed original queue copy changed or disappeared')
+                original_order[:] = [item.id for item in items]
+                selected['item'] = matches[0]
+                return [item for item in items if item.id != candidate.id]
+            self._update_thread_queue(thread_id, remove_reviewed)
+            queued = selected['item']
+        elif self.queued_preflight is not None:
             items = h._thread_queue(thread_id)
             if not items:
                 await self.publish_queue_status(thread_id)
@@ -3577,9 +3609,9 @@ class TurnExecutionService:
             self._update_thread_queue(thread_id, restore)
 
         queued.attempts += 1
-        reschedule_queue = True
+        reschedule_queue = operator_original is None
         try:
-            self._require_automated_admission(queued.source)
+            self._require_automated_admission(queued.source, operator_admission_validator)
             if retained_attempt is not None:
                 # This durable gate commits before any native start. A crash
                 # afterwards is explicitly unknown, never an automatic replay.
@@ -3696,6 +3728,8 @@ class TurnExecutionService:
                 agent_profile_revision=queued.agent_profile_revision,
                 agent_profile_actor_id=queued.agent_profile_actor_id,
                 **({"memory_context_binding": queued.memory_context_binding} if queued.memory_context_binding is not None else {}),
+                **({'operator_admission_validator':operator_admission_validator}
+                   if operator_admission_validator is not None else {}),
                 **({'queued_admission_attempt_id':retained_attempt.id,
                     'queued_admission_claim_id':admission_claim_id} if retained_attempt is not None else {}),
             )
@@ -3745,7 +3779,7 @@ class TurnExecutionService:
             if retained_attempt is not None and not deferred_admission:
                 detail = exc.detail if isinstance(exc, HTTPException) and isinstance(exc.detail, dict) else None
                 known_unstarted = bool(detail and detail.get('code') in {
-                    'execution_preflight_blocked', 'thread_agent_profile_immutable'}
+                    'execution_preflight_blocked', 'thread_agent_profile_immutable', 'operator_admission_refused'}
                     and not self.thread_is_active(thread_id))
                 await asyncio.to_thread(self.queued_preflight.queued_disposition,
                     retained_attempt.id,
@@ -3753,6 +3787,8 @@ class TurnExecutionService:
                     detail=detail or {'message':str(exc),'code':'native_start_outcome_unknown'},
                     claim_id=admission_claim_id,
                 )
+                if operator_original is not None and known_unstarted:
+                    restore_original_position()
                 # The complete request now belongs to the existing durable
                 # preflight recovery domain, rather than a retry-exhaustion drop.
                 h._append_bot_event({'type':'queued_turn_retained_for_recovery',

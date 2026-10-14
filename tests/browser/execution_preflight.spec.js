@@ -142,3 +142,14 @@ test('eligible unknown scheduling exposes the bounded admin retirement action', 
   expect(await page.evaluate(() => window.__apiCalls.find(item => item.method === 'POST').path)).toContain('/retire-scheduling');
   expect(await page.evaluate(() => window.__reloadCalls)).toEqual(['thread-1']);
 });
+
+
+test('existing retained inspector attaches reviewed single-original admission', async ({page}) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?disposition=queued&operatorAdmission');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+  await page.getByRole('button', {name:'Review single original admission'}).click();
+  await expect(page.locator('.message.tool')).toContainText('Actor: original-admin');
+  await expect(page.locator('.message.tool')).toContainText('Read-only repositories: repo-docs');
+  await expect(page.getByRole('button', {name:'Admit this original once'})).toBeDisabled();
+  expect(await page.evaluate(() => window.__apiCalls.filter(call => call.method === 'POST').length)).toBe(0);
+});
