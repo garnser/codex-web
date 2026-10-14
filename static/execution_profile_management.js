@@ -81,8 +81,13 @@ function bind() {
       source = response.items.find(item => item.record_id === catalog.definition.record_id);
       if (!source) throw new Error('Effective catalog revision is unavailable');
       actor = identity.actor || identity;
-      node('source').innerHTML = `<p>Effective catalog: ${esc(source.scope_type)} ${esc(source.scope_id || '')} · r${esc(source.revision)} · ${esc(source.lifecycle)}.</p>
-        <p>Source checksum: <code>${esc(source.checksum)}</code>. Changes create a Project draft for ${esc(currentProjectId())}.</p>`;
+      const catalogSummary = document.createElement('p');
+      catalogSummary.textContent = `Effective catalog: ${source.scope_type} ${source.scope_id || ''} · r${source.revision} · ${source.lifecycle}.`;
+      const checksumSummary = document.createElement('p');
+      const checksum = document.createElement('code');
+      checksum.textContent = source.checksum;
+      checksumSummary.append('Source checksum: ', checksum, `. Changes create a Project draft for ${currentProjectId()}.`);
+      node('source').replaceChildren(catalogSummary, checksumSummary);
       node('history').href = recordPath(currentProjectId(), source.record_id);
       renderList(); controls();
       status(manageable() ? 'Choose a profile or create a new one. Server authorization and validation apply to every mutation.' : 'Read only: managing Project definitions requires admin authority and elevated assurance, or a service definitions:admin scope.');

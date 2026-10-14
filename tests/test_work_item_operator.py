@@ -4,6 +4,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -150,6 +151,21 @@ class WorkItemOperatorTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_operator_projections_do_not_disclose_exception_payloads(self):
+        error = RuntimeError('private-token /internal/path')
+        with patch.object(self.service, '_source_for_configuration', side_effect=error):
+            catalog = self.service.task_source_catalog()
+        with patch.object(self.service, '_source_for_state', side_effect=error), patch.object(
+            self.service, 'execution_contract', side_effect=error
+        ):
+            detail = self.service.detail('TASK-42')
+        self.assertFalse(detail['external']['available'])
+        self.assertIn('unavailable', detail['external']['error'])
+        self.assertIn('unavailable', detail['execution_contract']['error'])
+        self.assertIn('unavailable', catalog['items'][0]['error'])
+        self.assertNotIn('private-token', str((catalog, detail)))
+        self.assertNotIn('/internal/path', str((catalog, detail)))
 
     def test_detail_explains_canonical_external_contract_and_actions(self) -> None:
         detail = self.service.detail("TASK-42")

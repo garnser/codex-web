@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
+from codex_web.services.identity import AuthorizationError
 from types import SimpleNamespace
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -22,6 +24,14 @@ class ModelProviderAdministrationTests(unittest.TestCase):
         self.gateway.upsert_provider(self.payload, actor=self.actor)
         self.admin = ModelProviderAdministration(self.gateway, agents=self.store,
             profiles=SimpleNamespace(load=lambda: SimpleNamespace(revisions=[])))
+
+    def test_denial_projection_does_not_disclose_exception_payload(self):
+        with patch.object(self.gateway, '_require_admin', side_effect=AuthorizationError('private-token /internal/path')):
+            result = self.admin.catalog(self.actor)
+        self.assertFalse(result['can_manage'])
+        self.assertTrue(result['denial_reason'])
+        self.assertNotIn('private-token', str(result))
+        self.assertNotIn('/internal/path', str(result))
 
     def test_provider_fingerprint_conflict_does_not_overwrite_current_configuration(self):
         impact = self.admin.impact('model-one', self.actor)

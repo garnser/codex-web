@@ -162,7 +162,7 @@ def install_identity_middleware(app: Any, service: IdentityService) -> None:
                         from fastapi.responses import JSONResponse
                         return JSONResponse(
                             status_code=exc.status_code,
-                            content={"detail": str(exc)},
+                            content={"detail": "API authorization denied"},
                         )
                     raise
         except IdentityError as exc:

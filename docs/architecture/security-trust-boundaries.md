@@ -13,6 +13,22 @@ The canonical trust model classifies data into explicit zones:
 
 Untrusted content may contain useful facts and requested work. It cannot grant itself permissions, redefine identity, weaken approval/sandbox policy, create trusted authorization evidence, or authorize an external side effect.
 
+## Browser text and operator error projections
+
+URL-derived identifiers displayed in Project Setup headings, Execution Profile
+provenance, and provider change previews are assigned through DOM text APIs.
+These text fields must not become HTML fragments.
+
+Provider and entitlement administration denial projections, API authorization
+middleware responses, Automation publication schedule-repair feedback, devstatus
+report-loading errors, and Work Item operator source/contract errors use fixed
+public messages rather than exception strings. Exception messages can contain
+filesystem paths, upstream response bodies, or credentials; truncation and HTML
+escaping do not make them suitable for public error details. Preserve HTTP status,
+canonical state, and repair/unavailable signals independently of exception text.
+Successful Automation publication remains successful when schedule reconciliation
+fails, with separate bounded repair feedback.
+
 ## Model boundary
 
 Every effective developer-instruction contract includes the mandatory security trust-boundary rule.

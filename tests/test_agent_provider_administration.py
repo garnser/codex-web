@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
+from codex_web.services.identity import AuthorizationError
 from types import SimpleNamespace
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -31,6 +33,14 @@ class AgentProviderAdministrationTests(unittest.TestCase):
             definitions=SimpleNamespace(load=lambda: self.definitions),
             projects=SimpleNamespace(list=lambda scope: [SimpleNamespace(id='owned')]),
             resources=SimpleNamespace(list=lambda actor: []))
+
+    def test_denial_projection_does_not_disclose_exception_payload(self):
+        with patch.object(self.service, '_require_admin', side_effect=AuthorizationError('private-token /internal/path')):
+            result = self.admin.catalog(self.actor)
+        self.assertFalse(result['can_manage'])
+        self.assertTrue(result['denial_reason'])
+        self.assertNotIn('private-token', str(result))
+        self.assertNotIn('/internal/path', str(result))
 
     def test_atomic_revision_checks_preserve_current_binding_and_creation_boundary(self):
         updated = self.service.upsert(self.payload.model_copy(update={'display_name': 'New name'}), actor=self.actor, expected_revision=1)

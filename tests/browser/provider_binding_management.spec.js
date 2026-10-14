@@ -112,3 +112,17 @@ test('late impact after A-B-A cannot populate a departed editor', async ({ page 
   await expect(page.locator('[data-binding-save]')).toBeDisabled();
   await expect(page.locator('#provider-binding-content')).not.toContainText('STALE IMPACT');
 });
+
+test('URL provider identifier in change preview remains literal text', async ({ page }) => {
+  const hostile = `<img src=x onerror="window.codeScanningXss=true"> & '"`;
+  await mount(page, { query: `provider_id=${encodeURIComponent(hostile)}`, intercept: async (route, url) => {
+    if (url.pathname !== '/api/agent-providers/administration') return false;
+    await route.fulfill({ json: { schema: schemas.agent, organization_id: 'org', workspace_id: 'ws', runtime_ownership: '', can_manage: true, items: [{ ...agent, id: hostile }] } });
+    return true;
+  } });
+  await page.locator('[name=lifecycle]').selectOption('disabled');
+  await review(page);
+  await expect(page.locator('[data-binding-impact]')).toContainText(hostile);
+  await expect(page.locator('[data-binding-impact] img')).toHaveCount(0);
+  expect(await page.evaluate(() => window.codeScanningXss)).toBeUndefined();
+});

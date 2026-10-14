@@ -73,8 +73,8 @@ class EntitlementAdministration:
         try:
             self.require_control(state, actor)
             can_manage, reason = True, None
-        except AuthorizationError as exc:
-            can_manage, reason = False, str(exc)
+        except AuthorizationError:
+            can_manage, reason = False, "Entitlement management requires the configured controller or workspace administrator authority and elevated assurance."
         now = time.time()
         capabilities = [item for item in state.capabilities if self.service._same_scope(item, actor)]
         quotas = [item for item in state.quotas if self.service._same_scope(item, actor)]
