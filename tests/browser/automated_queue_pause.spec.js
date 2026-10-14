@@ -3,8 +3,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const app = fs.readFileSync(path.join(__dirname, '../../static/app.js'), 'utf8');
 const queueUi = fs.readFileSync(path.join(__dirname, '../../static/queue_admission_status.js'), 'utf8');
-const functions = app.slice(app.indexOf('function setWaiting('), app.indexOf('function queuedDepth('))
-  + app.slice(app.indexOf('function updateWaitingFromState('), app.indexOf('async function refreshQueueStatus('));
+// Extract these top-level declarations without depending on a neighboring
+// feature's location: queue refresh now belongs to the runner UI module.
+const functions = ['setWaiting', 'updateWaitingFromState'].map(name => {
+  const match = app.match(new RegExp('^function ' + name + '\\([\\s\\S]*?^}', 'm'));
+  if (!match) throw new Error(`Missing status function: ${name}`);
+  return match[0];
+}).join('\n');
 
 test('conversation status shows paused automation while preserving active and approval status', async ({page}) => {
   await page.setContent('<div id="codex-status"><span id="codex-status-text"></span></div><p id="queue-admission-status" role="status" hidden></p>');

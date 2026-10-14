@@ -71,7 +71,7 @@ test('the thread list omits rows explicitly belonging to another Project', async
   await expect(page.locator('#threads')).not.toContainText('Home thread');
 });
 
-async function mockChatApi(page, { degradeFirstThreadRead = false, simulateReply = false, queued = false } = {}) {
+async function mockChatApi(page, { degradeFirstThreadRead = false, simulateReply = false, queued = false, runners = {}, retainedTurns = {}, threadStatuses = {}, activities = {} } = {}) {
   const fs = require('fs');
   const path = require('path');
   const html = fs.readFileSync(path.join(__dirname, '../../static/index.html'), 'utf8')
@@ -91,7 +91,11 @@ async function mockChatApi(page, { degradeFirstThreadRead = false, simulateReply
     ],
     alpha: [{ id: 'alpha-thread', name: 'Alpha thread', projectId: 'alpha', cwd: '/workspace/alpha' }],
   };
-  const threadTurns = {};
+  for (const rows of Object.values(threads)) for (const thread of rows) {
+    if (runners[thread.id]) thread.runner = runners[thread.id];
+    if (threadStatuses[thread.id]) thread.status = {type:threadStatuses[thread.id]};
+  }
+  const threadTurns = {...retainedTurns};
   const reads = [];
   let replyCompleted = false;
   await page.route('**/api/**', async (route) => {
@@ -143,6 +147,13 @@ async function mockChatApi(page, { degradeFirstThreadRead = false, simulateReply
       await route.fulfill({ json: { queued, queuedId: queued ? 'queued-care' : null, queueDepth: queued ? 1 : 0, turn: { id: `turn-${threadId}` } } });
       return;
     }
+    const runnerMatch = path.match(/^\/api\/threads\/([^/]+)\/runner$/);
+    if (runnerMatch) {
+      const id = decodeURIComponent(runnerMatch[1]);
+      await route.fulfill({json:{id,runner:runners[id] || null,activity:activities[id],
+        status:{type:activities[id]?.state === 'active' ? 'active' : 'idle'}}});
+      return;
+    }
     const threadMatch = path.match(/^\/api\/threads\/([^/]+)$/);
     if (threadMatch) {
       const threadId = decodeURIComponent(threadMatch[1]);
@@ -190,12 +201,13 @@ async function mockChatApi(page, { degradeFirstThreadRead = false, simulateReply
 test('CLI reply completed while inactive is restored from canonical Thread history', async ({ page }) => {
   const { threadTurns } = await mockChatApi(page);
   await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
+  await expect(page.locator('#messages')).toContainText('Loaded home-thread');
   await page.locator('#prompt').fill('Keep this prompt visible.');
   await page.locator('#prompt').press('Enter');
   await expect.poll(() => threadTurns['home-thread']?.length || 0).toBe(1);
   await expect(page.locator('#messages')).toContainText('Keep this prompt visible.');
 
-  await page.getByText('Background thread', { exact: true }).click({ force: true });
+  await page.locator('#threads .item-main', {hasText:'Background thread'}).click();
   await expect(page.locator('#thread-title')).toHaveText('Background thread');
 
   threadTurns['home-thread'][0].status = 'completed';
@@ -205,7 +217,7 @@ test('CLI reply completed while inactive is restored from canonical Thread histo
     text: 'The reply finished while this Thread was inactive.',
   });
 
-  await page.getByText('Home thread', { exact: true }).click({ force: true });
+  await page.locator('#threads .item-main', {hasText:'Home thread'}).click();
   await expect(page.locator('#thread-title')).toHaveText('Home thread');
   await expect(page.locator('#messages')).toContainText('Keep this prompt visible.');
   await expect(page.locator('#messages')).toContainText(
@@ -610,4 +622,137 @@ test('UX preview guidance opens settings and selected provenance reaches Thread 
   expect(admitted.message).toBe('Build a recovery view');
   await expect(page.locator('#ux-picker-brief')).toHaveValue('');
   await expect(page.locator('#thread-settings-menu')).not.toHaveAttribute('open');
+});
+
+test('cancelled predecessor history does not activate runner after reload or late reconnect events',async({page})=>{
+  const now=Date.now()/1000;
+  const cancelled={schemaVersion:'1.0',source:'assignment',assignmentId:'cancelled-assignment',
+    assignmentCreatedAt:now-100,updatedAt:now,observedAt:now,fence:1,
+    state:'cancelled',live:false,leaseValid:false,leaseExpiresAt:null};
+  const running={...cancelled,assignmentId:'running-assignment',assignmentCreatedAt:now-50,
+    state:'running',live:true,leaseValid:true,leaseExpiresAt:now+3600};
+  let socket;
+  await page.routeWebSocket('**/ws',ws=>{socket=ws;});
+  await mockChatApi(page,{runners:{'home-thread':cancelled,'background-thread':running},threadStatuses:{'home-thread':'idle','background-thread':'active'},retainedTurns:{
+    'home-thread':[{id:'retained-predecessor-turn',status:'inProgress',items:[{type:'userMessage',content:[{type:'inputText',text:'Retained original request'}]}]}],
+    'background-thread':[{id:'current-turn',status:'inProgress',items:[{type:'agentMessage',text:'Current genuine work'}]}]
+  }});
+  const fs=require('fs'),path=require('path');
+  expect(await (await page.request.get(baseURL+'/static/thread_runner_ui.js')).text())
+    .toBe(fs.readFileSync(path.join(__dirname,'../../static/thread_runner_ui.js'),'utf8'));
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
+  await expect(page.locator('#thread-title')).toHaveText('Home thread');
+  await expect(page.locator('#messages')).toContainText('Retained original request');
+  await expect(page.locator('#threads')).toContainText('Runner cancelled');
+  await expect(page.locator('#threads')).toContainText('Runner live');
+  await expect(page.locator('#codex-status-text')).toHaveText('Idle');
+  await expect.poll(()=>Boolean(socket)).toBe(true);
+  socket.send(JSON.stringify({type:'codex.event',message:{method:'turn/started',params:{threadId:'home-thread',turn:{id:'retained-predecessor-turn'}}}}));
+  await expect(page.locator('#codex-status-text')).toHaveText('Idle');
+  await page.reload();await expect(page.locator('#thread-title')).toHaveText('Home thread');
+  await expect(page.locator('#codex-status-text')).toHaveText('Idle');
+  await page.locator('#threads .item-main', {hasText:'Background thread'}).click();
+  await expect(page.locator('#thread-title')).toHaveText('Background thread');
+  await expect(page.locator('#codex-status-text')).toHaveText('Waiting for Codex');
+});
+
+test('unavailable rename reports error while preserving the Thread name',async({page})=>{
+  await mockChatApi(page);
+  await page.route('**/api/threads/home-thread/name?*',route=>route.fulfill({status:503,json:{detail:'runtime session unavailable'}}));
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
+  await expect(page.locator('#thread-title')).toHaveText('Home thread');
+  page.once('dialog',dialog=>dialog.accept('Changed name'));
+  await openSettings(page);await page.locator('#rename-thread').click();
+  await expect(page.locator('#messages')).toContainText('Rename failed');
+  await expect(page.locator('#messages')).toContainText('runtime session unavailable');
+  await expect(page.locator('#thread-title')).toHaveText('Home thread');
+});
+
+
+test('unknown detail clears cached busy state and preserves retained history',async({page})=>{
+  const now=Date.now()/1000;
+  const live={schemaVersion:'1.0',state:'running',live:true,leaseValid:true,
+    assignmentId:'current',assignmentCreatedAt:now-100,updatedAt:now,observedAt:now,
+    fence:2,leaseExpiresAt:now+3600};
+  const runners={'home-thread':live};
+  await mockChatApi(page,{runners,retainedTurns:{'home-thread':[{id:'retained',status:'inProgress',
+    items:[{type:'agentMessage',text:'Historical unknown business outcome'}]}]}});
+  await page.route('**/api/threads/home-thread?*',async route=>route.fulfill({json:{thread:{
+    id:'home-thread',name:'Home thread',projectId:'home',status:{type:'notLoaded'},
+    runner:{...live,state:'unknown',live:false,observedAt:now+1},
+    turns:[{id:'retained',status:'inProgress',items:[{type:'agentMessage',text:'Historical unknown business outcome'}]}]
+  }}}));
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
+  await expect(page.locator('#messages')).toContainText('Historical unknown business outcome');
+  await expect(page.locator('#messages')).toContainText('Runner status unknown');
+  await expect(page.locator('#threads')).toContainText('Unknown runner');
+  await expect(page.locator('#codex-status-text')).toHaveText('Idle');
+});
+
+test('current refresh restores waiting runner and renewed lease while old events cannot override new fence',async({page})=>{
+  const now=Date.now()/1000;
+  const waiting={schemaVersion:'1.0',state:'waiting',live:false,leaseValid:false,
+    assignmentId:'current',assignmentCreatedAt:now-100,updatedAt:now,observedAt:now,fence:1};
+  const runners={'home-thread':waiting};
+  let socket,runnerReads=0;
+  await page.routeWebSocket('**/ws',ws=>{socket=ws;});
+  await mockChatApi(page,{runners});
+  await page.route('**/api/threads/home-thread/runner?*',route=>{
+    runnerReads++;
+    return route.fulfill({json:{id:'home-thread',runner:runners['home-thread'],
+      status:{type:'active'},activity:{state:'active',turnId:'new-turn'}}});
+  });
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
+  await expect(page.locator('#threads')).toContainText('Waiting for worker');
+  runners['home-thread']={...waiting,state:'running',live:true,leaseValid:true,fence:2,
+    observedAt:now+1,updatedAt:now+1,leaseExpiresAt:now+3600};
+  await expect.poll(()=>Boolean(socket)).toBe(true);
+  const event=method=>JSON.stringify({type:'codex.event',message:{method,params:{threadId:'home-thread',turn:{id:'old-turn'}}}});
+  for(let n=0;n<10;n++)socket.send(event('turn/started'));
+  await expect(page.locator('#threads')).toContainText('Runner live',{timeout:10000});
+  await expect(page.locator('#codex-status-text')).toHaveText('Waiting for Codex');
+  expect(runnerReads).toBe(1);
+  socket.send(event('turn/completed'));
+  await expect(page.locator('#codex-status-text')).toHaveText('Waiting for Codex');
+  // The canonical current state, rather than the old turn event, wins again.
+  await expect.poll(()=>runnerReads,{timeout:10000}).toBe(2);
+  await expect(page.locator('#codex-status-text')).toHaveText('Waiting for Codex');
+});
+
+
+test('live renewed assignment stays idle after completion, next send is ordinary, old completion preserves new activity',async({page})=>{
+  const now=Date.now()/1000;
+  const live={schemaVersion:'1.0',state:'running',live:true,leaseValid:true,
+    assignmentId:'persistent',assignmentCreatedAt:now-100,updatedAt:now,observedAt:now,
+    fence:2,leaseExpiresAt:now+7200};
+  const runners={'home-thread':live};
+  const activities={'home-thread':{state:'idle',turnId:null}};
+  let socket,posted;
+  await page.routeWebSocket('**/ws',ws=>{socket=ws;});
+  const mock=await mockChatApi(page,{runners,activities,threadStatuses:{'home-thread':'idle'},retainedTurns:{
+    'home-thread':[{id:'completed-turn',status:'completed',items:[{type:'agentMessage',text:'Completed response'}]}]}});
+  await page.route('**/api/threads/home-thread/turns?*',route=>{
+    posted=JSON.parse(route.request().postData());
+    mock.threads.home.find(t=>t.id==='home-thread').status={type:'active'};
+    activities['home-thread']={state:'active',turnId:'new-turn'};
+    return route.fulfill({json:{queued:false,turn:{id:'new-turn'}}});
+  });
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
+  await expect(page.locator('#thread-meta')).toContainText('Runner live');
+  await expect(page.locator('#messages')).toContainText('Completed response');
+  await expect(page.locator('#codex-status-text')).toHaveText('Idle');
+  await page.locator('#prompt').fill('Ordinary next request');
+  await page.locator('#prompt').press('Enter');
+  await expect.poll(()=>posted?.message).toBe('Ordinary next request');
+  await expect(page.locator('#messages .role').last()).toHaveText('You');
+  await expect(page.locator('#codex-status-text')).toHaveText('Waiting for Codex');
+  await expect.poll(()=>Boolean(socket)).toBe(true);
+  socket.send(JSON.stringify({type:'codex.event',message:{method:'turn/completed',params:{threadId:'home-thread',turn:{id:'completed-turn'}}}}));
+  await page.waitForTimeout(5500);
+  await expect(page.locator('#codex-status-text')).toHaveText('Waiting for Codex');
+  activities['home-thread']={state:'idle',turnId:null};
+  mock.threads.home.find(t=>t.id==='home-thread').status={type:'idle'};
+  socket.send(JSON.stringify({type:'codex.event',message:{method:'turn/completed',params:{threadId:'home-thread',turn:{id:'new-turn'}}}}));
+  await expect(page.locator('#codex-status-text')).toHaveText('Idle',{timeout:10000});
+  await expect(page.locator('#thread-meta')).toContainText('Runner live');
 });
