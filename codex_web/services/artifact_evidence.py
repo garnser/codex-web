@@ -14,6 +14,7 @@ from codex_web.artifact_content import (
     ArtifactContentState,
 )
 from codex_web.artifact_evidence import (
+    EvidenceType,
     Artifact,
     ArtifactCreate,
     ArtifactDigest,
@@ -1172,6 +1173,7 @@ class ArtifactEvidenceService:
             # Product outcome feedback measures acceptance; it cannot act as
             # technical verification, even under a permissive review requirement.
             and item.source != "human-outcome/1.0"
+            and item.evidence_type != EvidenceType.USER_OUTCOME
         ]
         outcomes: list[EvidenceRequirementOutcome] = []
         for requirement in requirements:

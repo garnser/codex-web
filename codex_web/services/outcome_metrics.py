@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections import defaultdict
 import hashlib
 import json
+import math
 import time
 
 from codex_web.agent_runtime_usage import RuntimeTerminalOutcome
@@ -79,7 +80,7 @@ class OutcomeMetricService:
                         outcome_request_sha256=request_digest)
         return self.evidence.create_evidence(EvidenceCreate(
             project_id=project_id, execution_id=usage.execution_id, work_item_ref=usage.work_item_ref,
-            artifact_ids=artifacts, evidence_type=EvidenceType.REVIEW, source=SOURCE,
+            artifact_ids=artifacts, evidence_type=EvidenceType.USER_OUTCOME, source=SOURCE,
             external_id=payload.idempotency_key,
             result=EvidenceResult.INFO,
             summary="Optional human outcome observation; not a completion or approval gate.",
@@ -176,7 +177,13 @@ class OutcomeMetricService:
                       metadata.get("template_artifact_id"), metadata.get("template_revision"))
             def measured(field):
                 values = [getattr(row, field) for row in attempts]
-                return sum(values) if all(value is not None for value in values) else None
+                try:
+                    if any(value is None or not math.isfinite(value) for value in values):
+                        return None
+                    value = sum(values)
+                    return value if math.isfinite(value) else None
+                except (TypeError, OverflowError):
+                    return None
             source_ids = {eid for row in attempts for eid in row.evidence_ids}
             source_problem = any(eid not in evidence_by_id or evidence_by_id[eid].lifecycle != EvidenceLifecycle.VALID
                 or (evidence_by_id[eid].retention_expires_at is not None
@@ -201,7 +208,13 @@ class OutcomeMetricService:
             accepted = sum(row["outcome"] == "accepted" for row in rows)
             known_reviews = [row for row in rows if row["feedback_evidence_id"]]
             def total(field):
-                return sum(row[field] for row in rows) if all(row[field] is not None for row in rows) else None
+                if any(row[field] is None for row in rows):
+                    return None
+                try:
+                    value = sum(row[field] for row in rows)
+                    return value if math.isfinite(value) else None
+                except OverflowError:
+                    return None
             def ratio(field):
                 value = total(field)
                 return value / accepted if accepted and value is not None else None

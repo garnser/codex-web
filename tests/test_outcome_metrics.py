@@ -80,6 +80,9 @@ class OutcomeMetricTests(unittest.TestCase):
         gate = self.evidence.evaluate(usage.work_item_ref, (EvidenceRequirement(
             id="review", evidence_type=EvidenceType.REVIEW, accepted_results=(EvidenceResult.INFO,)),), actor=self.actor)
         self.assertFalse(gate.satisfied)
+        gate = self.evidence.evaluate(usage.work_item_ref, (EvidenceRequirement(
+            id="outcome", evidence_type=EvidenceType.USER_OUTCOME, accepted_results=(EvidenceResult.INFO,)),), actor=self.actor)
+        self.assertFalse(gate.satisfied)
 
     def test_feedback_retry_returns_same_evidence_and_conflicting_key_fails(self):
         usage = self.usage()
@@ -366,3 +369,30 @@ class OutcomeMetricTests(unittest.TestCase):
         self.assertEqual(self.evidence.get_evidence(second[0]["projection_evidence_id"], actor=other).producer_identity_id,
                          other.identity_id)
         self.assertEqual(self.service.publish(report, actor=other), second)
+
+    def test_evidence_migration_preserves_records_and_old_reader_refuses_new_kind(self):
+        from codex_web.compatibility import ContractSpec, ContractCompatibilityError
+        from codex_web.artifact_evidence import EvidenceCreate
+        store = self.evidence.store
+        old = self.evidence.create_evidence(EvidenceCreate(evidence_type="review", result="pass"), actor=self.actor)
+        raw = store.load().model_dump(mode="json")
+        raw["schema_version"] = "1.2"
+        self.sqlite.put(store.namespace, raw)
+        migrated = store.load()
+        self.assertEqual(migrated.schema_version, "1.3")
+        self.assertEqual(migrated.evidence[0].model_dump(mode="json"), old.model_dump(mode="json"))
+        feedback = self.feedback(self.usage())
+        self.assertEqual(feedback.evidence_type, EvidenceType.USER_OUTCOME)
+        self.assertEqual(self.sqlite.get(store.namespace)["schema_version"], "1.3")
+        old_reader = ContractSpec("artifact-evidence-state", "1.2", ("1.0", "1.1", "1.2"))
+        with self.assertRaises(ContractCompatibilityError):
+            old_reader.require("1.3")
+
+    def test_nonfinite_provider_measurements_are_missing_and_never_published_as_infinity(self):
+        self.feedback(self.usage(cost_usd=float("inf"), runtime_duration_seconds=float("inf")))
+        report = self.evaluate()
+        values = report["cohorts"][0]["values"]
+        self.assertIsNone(values["cost_usd_per_accepted_outcome"])
+        self.assertIsNone(values["runtime_seconds_per_accepted_outcome"])
+        self.assertEqual(report["status"], "partial")
+        self.assertEqual(len(self.service.publish(report, actor=self.actor)), 6)

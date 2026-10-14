@@ -7,7 +7,7 @@ Inspection, joins, calculation and publication invoke zero model calls.
 
 ## Observation and authority
 
-An optional observation is `EvidenceType.REVIEW` with source `human-outcome/1.0`
+An optional human review observation is `EvidenceType.USER_OUTCOME` with source `human-outcome/1.0`
 and informational result. Its producer is the authenticated human, not a caller
 supplied identity. Service principals cannot report human acceptance. It records
 an exact runtime usage ID, outcome, workload category, optional exact template
@@ -105,8 +105,18 @@ is anchored to enrollment-window end so republishing an old cohort does not make
 it current. Unknown numeric measurements are never published as zero.
 
 Evaluation refuses over 5,000 usage records or 10,000 relevant reviews rather than
-silently truncating denominators. No new persisted schema or migration is required;
-the new observations use existing Evidence metadata and Metric state contracts.
+silently truncating denominators. Evidence state advances to `1.3` for the distinct
+non-gating outcome type. The `1.2` migration preserves existing records exactly;
+older supported versions migrate through that step. Older readers refuse `1.3`.
+Technical gates exclude the outcome type regardless of source or accepted result.
+Metric state retains its existing contract.
+
+Upgrade all Evidence readers and writers through the canonical qualified upgrade,
+drain, backup and restore-verification flow before enabling this feature. The first
+Evidence write under the new code persists `1.3`; source-only rollback to an older
+reader is then unavailable. Recovery requires a supported new reader or an
+explicitly qualified restoration of the pre-transition snapshot. Avoid mixed
+writers and preserve all original evidence, queues, claims and uncertain outcomes.
 
 ## Surfaces
 

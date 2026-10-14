@@ -21,6 +21,13 @@ Supersession keeps both identities: the previous artifact becomes `superseded` a
 
 ## Evidence
 
+Optional product acceptance observations use the distinct `user_outcome` Evidence
+type. They retain human producer, scope and revision provenance but are excluded
+from technical Evidence gates. Artifact/Evidence state `1.3` preserves `1.2`
+records through deterministic migration and makes older readers refuse the new
+state. [Outcome metrics](outcome-metrics.md) documents the qualification and
+rollback boundary before enabling outcome writes.
+
 Evidence is an observation or result about artifacts/work:
 
 - test result;
