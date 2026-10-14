@@ -19,6 +19,9 @@ from unittest.mock import patch
 from unittest.mock import AsyncMock, MagicMock
 from types import SimpleNamespace
 from fastapi import HTTPException
+from codex_web.notification_provenance import ProviderNotificationPin,verified_notification_ids
+from codex_web.compatibility import CanonicalEventEnvelope
+from codex_web.storage.canonical_events import CanonicalEventStore
 
 
 class NotificationBatchPlanTests(unittest.TestCase):
@@ -431,3 +434,59 @@ class NotificationBatchPlanTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             asyncio.run(coordinator.submit_native(admission,runtime=runtime,project=project,actor=actor,current=lambda:True))
         self.assertEqual([method for method,_ in sessions.session.requests].count('turn/start'),1)
+
+    def pinned(self,item,event_id='provider-event'):
+        store=CanonicalEventStore(self.service.store.store)
+        event=CanonicalEventEnvelope(event_id=event_id,event_type='task_source.event',occurred_at=1,
+            source='gitlab:fixture',tenant_id='local',workspace_id='default',
+            payload={'project_id':'project-a','provider_event_type':'issue.updated'})
+        store.record_if_new(event,idempotency_key=event_id)
+        pin=ProviderNotificationPin.from_event(event,source_origin='gitlab',provider_event_kind='issue',
+            work_item_ref=item.work_item_ref,message=item.message)
+        return item.model_copy(update={'provider_notification_pin':pin}),store
+
+    def test_provider_pin_reopens_against_exact_canonical_event_without_inference(self):
+        pinned,store=self.pinned(self.items[0])
+        reopened=CanonicalEventStore(SQLiteStateStore(Path(self.temp.name)/'state.sqlite'))
+        restored=QueuedTurn.model_validate_json(pinned.model_dump_json())
+        self.assertEqual(verified_notification_ids([restored,self.items[1]],event_lookup=reopened.event,
+            organization_id='local',workspace_id='default'),frozenset({pinned.id}))
+        self.assertEqual(verified_notification_ids([restored],event_lookup=lambda event:None,
+            organization_id='local',workspace_id='default'),frozenset())
+
+    def test_provider_pin_rejects_changed_content_event_scope_handoff_and_note(self):
+        pinned,store=self.pinned(self.items[0])
+        event=store.event(pinned.provider_notification_pin.event_id)
+        for candidate,lookup in ((pinned.model_copy(update={'message':'Changed'}),store.event),
+                                (pinned.model_copy(update={'handoff_requested_at':123}),store.event),
+                                (pinned,lambda event_id:event.model_copy(update={'workspace_id':'foreign'})),
+                                (pinned,lambda event_id:event.model_copy(update={'payload':{**event.payload,'provider_event_type':'note.created'}}))):
+            self.assertEqual(verified_notification_ids([candidate],event_lookup=lookup,
+                organization_id='local',workspace_id='default'),frozenset())
+        self.assertEqual(verified_notification_ids([pinned],event_lookup=store.event,
+            organization_id='foreign',workspace_id='default'),frozenset())
+
+    def test_distinct_event_pins_do_not_change_compatible_execution_scope(self):
+        first,store=self.pinned(self.items[0],'event-one')
+        second,_=self.pinned(self.items[1],'event-two')
+        attempts={}
+        for item in (first,second):
+            attempts[item.id]=self.attempts[item.id].model_copy(update={'queued_turn_snapshot':item.model_dump(mode='json')})
+        plan=self.select([first,second],attempts_by_original_id=attempts)
+        self.assertIsNotNone(plan)
+        self.assertEqual(json.loads(plan.original_snapshots_json[1])['provider_notification_pin']['event_id'],'event-two')
+
+    def test_pinned_originals_are_not_consumed_by_legacy_compaction(self):
+        from codex_web.services.work_item_wakeups import WorkItemWakeupQueuePolicy
+        items=[]
+        for index,item in enumerate(self.items[:2]):
+            item=item.model_copy(update={'reply_target':None,'work_item_ref':'group/project#1',
+                'message':'Owned-work wakeup for group/project#1. Exact next action: '+('x'*800)})
+            pinned,_=self.pinned(item,'compaction-event-'+str(index))
+            items.append(pinned)
+        before=[item.model_dump(mode='json') for item in items]
+        policy=WorkItemWakeupQueuePolicy(SimpleNamespace(_truncate_text=lambda value,limit:value[:limit],
+            _work_item_state=lambda ref:SimpleNamespace(current_stage='closed',closed_at=1)))
+        kept,changed=policy.coalesce(items)
+        self.assertFalse(changed)
+        self.assertEqual([item.model_dump(mode='json') for item in kept],before)

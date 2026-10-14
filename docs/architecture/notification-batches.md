@@ -29,6 +29,20 @@ The attested provider source is caller-supplied data, not a code-owned provider
 catalog. Existing direct-human `web`/`slack` intake protocols are forbidden as
 notification origins even if a caller incorrectly includes their IDs.
 
+New internally dispatched GitLab state notifications may carry a typed
+`ProviderNotificationPin`: exact canonical event ID/checksum/source, tenant and
+Project, provider event kind, Work Item reference and generated-message checksum.
+Notes and items with handoffs are excluded from pin creation. The queue serializer
+omits absent pins, preserving ordinary shapes. Event-specific pins stay individual
+provenance and do not change execution-scope compatibility.
+
+The verifier reloads the exact canonical event and checks its kind, checksum,
+scope and message binding. Missing/changed/foreign events or handoff/notes cannot
+qualify an original. An old source label or message never gains a pin by inference.
+Pinned requests are excluded from legacy destructive wakeup/notification
+compaction and pin identity participates in queue deduplication. Automatic drain
+selection and its authority/lease integration remain draft work.
+
 Eligible originals have queued, unstarted retained attempts in the same tenant
 and Project, exact matching immutable request snapshots, and pinned actor/Agent
 Profile/execution profile. Explicit retries, native uncertainty/start receipts,

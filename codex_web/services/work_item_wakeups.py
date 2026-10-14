@@ -102,7 +102,7 @@ class WorkItemWakeupQueuePolicy:
         candidates = [
             (index, queued, self.entries(queued.message))
             for index, queued in enumerate(compacted)
-            if queued.reply_target is None
+            if queued.reply_target is None and queued.provider_notification_pin is None
         ]
         candidates = [candidate for candidate in candidates if candidate[2]]
         if len(candidates) >= 2:
@@ -126,7 +126,8 @@ class WorkItemWakeupQueuePolicy:
         # snapshots wastes queue capacity and may reintroduce stale routing.
         latest_gitlab_index: dict[tuple[str, str], int] = {}
         for index, queued in enumerate(compacted):
-            if queued.source == "gitlab" and queued.work_item_ref and queued.reply_target is None:
+            if (queued.source == "gitlab" and queued.work_item_ref and queued.reply_target is None
+                    and queued.provider_notification_pin is None):
                 key = (queued.thread_id, queued.work_item_ref)
                 previous = latest_gitlab_index.get(key)
                 # Front requeue and recovery can reorder the list. Admission
@@ -143,6 +144,7 @@ class WorkItemWakeupQueuePolicy:
                     queued.source == "gitlab"
                     and queued.work_item_ref
                     and queued.reply_target is None
+                    and queued.provider_notification_pin is None
                     and latest_gitlab_index[(queued.thread_id, queued.work_item_ref)] != index
                 )
             ]
@@ -157,6 +159,7 @@ class WorkItemWakeupQueuePolicy:
                 queued.source == "gitlab"
                 and queued.work_item_ref
                 and queued.reply_target is None
+                and queued.provider_notification_pin is None
                 and self._work_item_is_terminal(queued.work_item_ref)
             )
         ]

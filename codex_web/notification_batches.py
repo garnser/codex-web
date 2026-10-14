@@ -17,7 +17,7 @@ HEADER = (
     "Reconcile each original against canonical state and retain a separate outcome for each ID. "
     "Batch admission or native completion is not per-item success, handoff ACK or issue closure.\n"
 )
-_MEMBER_FIELDS = frozenset({"id", "execution_id", "work_item_ref", "message", "created_at", "attempts"})
+_MEMBER_FIELDS = frozenset({"id", "execution_id", "work_item_ref", "message", "created_at", "attempts", "provider_notification_pin"})
 
 
 def _json(value) -> str:

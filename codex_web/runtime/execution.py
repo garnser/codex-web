@@ -781,6 +781,7 @@ class TurnExecutionService:
         agent_profile_revision: int | None = None,
         agent_profile_actor_id: str | None = None,
         memory_context_binding: UxBriefTurnBinding | None = None,
+        provider_notification_pin=None,
     ) -> QueuedTurn:
         h = self.host
         selected: dict[str, QueuedTurn] = {}
@@ -801,6 +802,7 @@ class TurnExecutionService:
                     and existing.agent_profile_revision == agent_profile_revision
                     and existing.agent_profile_actor_id == agent_profile_actor_id
                     and existing.memory_context_binding == memory_context_binding
+                    and existing.provider_notification_pin == provider_notification_pin
                     and existing.reply_target == reply_target
                     and existing.sandbox == sandbox
                     and existing.approval_policy == approval_policy
@@ -812,7 +814,7 @@ class TurnExecutionService:
 
             incoming_entries = (
                 h._work_item_wakeup_entries(message)
-                if reply_target is None and memory_context_binding is None
+                if reply_target is None and memory_context_binding is None and provider_notification_pin is None
                 else []
             )
             if incoming_entries:
@@ -821,6 +823,7 @@ class TurnExecutionService:
                     for existing in items
                     if existing.reply_target is None
                     and existing.memory_context_binding is None
+                    and existing.provider_notification_pin is None
                     and h._work_item_wakeup_entries(existing.message)
                 ]
                 if wakeup_items:
@@ -883,6 +886,7 @@ class TurnExecutionService:
                 agent_profile_revision=agent_profile_revision,
                 agent_profile_actor_id=agent_profile_actor_id,
                 **({"memory_context_binding": memory_context_binding} if memory_context_binding is not None else {}),
+                **({"provider_notification_pin":provider_notification_pin} if provider_notification_pin is not None else {}),
                 source=source,
                 reply_target=reply_target,
                 created_at=time.time(),

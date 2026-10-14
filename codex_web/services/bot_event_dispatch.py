@@ -190,6 +190,7 @@ class BotEventDispatchService:
         writable_repository_resource_ids: tuple[str, ...] = (),
         read_only_repository_resource_ids: tuple[str, ...] = (),
         require_idle: bool = False,
+        provider_notification_pin=None,
     ) -> dict[str, Any]:
         project = self.projects.get(binding.project_id)
         settings = self.settings.get(binding.thread_id)
@@ -272,6 +273,7 @@ class BotEventDispatchService:
                 read_only_repository_resource_ids=read_only_repository_resource_ids,
                 reply_target=reply_target,
                 handoff_requested_at=handoff_requested_at,
+                provider_notification_pin=provider_notification_pin,
                 **profile_kwargs,
             )
             if duplicate:
@@ -317,6 +319,7 @@ class BotEventDispatchService:
                 **profile_kwargs,
                 source=source,
                 reply_target=reply_target,
+                **({"provider_notification_pin":provider_notification_pin} if provider_notification_pin is not None else {}),
             )
             binding.updated_at = time.time()
             await asyncio.to_thread(self.bindings.upsert, binding)

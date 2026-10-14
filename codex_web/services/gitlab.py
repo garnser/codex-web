@@ -1258,6 +1258,14 @@ class GitLabService:
                     self.operations.dispatch_scoped_event is not None
                     and repository_resource_id is not None
                 ):
+                    notification_kwargs = {}
+                    if (canonical_delivery is not None and kind in {"issue","merge_request","pipeline"}
+                            and getattr(projected_state,"handoff",None) is None
+                            and canonical_delivery.event.tenant_id and canonical_delivery.event.workspace_id):
+                        from codex_web.notification_provenance import ProviderNotificationPin
+                        notification_kwargs["provider_notification_pin"] = ProviderNotificationPin.from_event(
+                            canonical_delivery.event,source_origin="gitlab",provider_event_kind=kind,
+                            work_item_ref=projected_state.ref,message=prompt)
                     result = await self.operations.dispatch_scoped_event(
                         binding,
                         prompt,
@@ -1267,6 +1275,7 @@ class GitLabService:
                         writable_repository_resource_ids=(
                             repository_resource_id,
                         ),
+                        **notification_kwargs,
                     )
                 else:
                     result = await self.operations.dispatch_event(

@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
 
 from codex_web.ux_briefs import UxBriefSelection, UxBriefTurnBinding
+from codex_web.notification_provenance import ProviderNotificationPin
 
 from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.definitions import DefinitionReference
@@ -649,12 +650,15 @@ class QueuedTurn(BaseModel):
     created_at: float
 
     memory_context_binding: UxBriefTurnBinding | None = None
+    provider_notification_pin: ProviderNotificationPin | None = None
 
     @model_serializer(mode="wrap")
     def serialize_context(self, handler):
         result = handler(self)
         if self.memory_context_binding is None:
             result.pop("memory_context_binding", None)
+        if self.provider_notification_pin is None:
+            result.pop("provider_notification_pin", None)
         return result
 
 
