@@ -484,6 +484,14 @@ class ControlPlaneBrokerService:
             result["optional_query_parameters"] = ["repository_resource_id"]
         if item.id == "repository.read.artifact-download":
             result["optional_query_parameters"].append("member_path")
+        if item.id == "repository.read.delivery-evidence":
+            result["supported_action_ids"] = sorted(_DELIVERY_EVIDENCE_REPOSITORY_ACTION_IDS)
+            result["inspection"] = {
+                "read_only": True,
+                "superseded_execution_receipts": True,
+                "requires_matching_requester_and_repository_scope": True,
+                "provider_outcome_requires_authoritative_evidence": True,
+            }
         if any(item.id == operation_id for operation_id, _ in _REPOSITORY_ACTIONS.values()):
             result["request_body"] = {
                 "type": "object",
@@ -1509,7 +1517,8 @@ class ControlPlaneBrokerService:
         return {
             "intent": select(original, ("id", "action_id", "status", "attempt",
                 "organization_id", "workspace_id", "project_id", "resource_ids",
-                "work_item_ref", "execution_id", "last_receipt_id", "last_verification_id")),
+                "work_item_ref", "execution_id", "execution_started_at", "completed_at",
+                "last_receipt_id", "last_verification_id")),
             "parameters": select((original.get("request") or {}).get("parameters") or {},
                 ("execution_workspace_id", "branch", "head_revision", "expected_remote_revision",
                  "expected_remote_absent", "work_item_issue_number", "existing_change_request_number")),

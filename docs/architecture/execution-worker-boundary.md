@@ -459,11 +459,18 @@ reads provider state and never replays the merge. This boundary does not expose
 a tenant-wide ActionIntent administration surface.
 
 `GET /api/action-intents/{intent_id}/delivery-evidence` is a separate
-`repository.read`/READ operation for inspecting branch-publish and merge
+`repository.read`/READ operation for inspecting branch-publish, pull-request upsert and merge
 receipts, including from a superseded execution. Existing assignment, worker,
 fence, requester, tenant/workspace, Project, admitted repository and Role checks
 remain mandatory. It exposes only selected intent scope/destination metadata
 and the latest eight receipt/verification metadata rows, with omission counts.
+Canonical execution-start and completion timestamps are included with status
+and attempt count. Missing timestamps or receipts alone never prove an unknown
+provider outcome. The operation catalog advertises supported Action IDs from
+the dispatch allowlist and marks this inspection read-only. For an upsert use
+`/api/action-intents/{intent_id}/delivery-evidence?repository_resource_id={repository_id}`;
+the raw `/api/action-intents/{intent_id}` administration path remains denied to
+assignment-bound callers.
 Arbitrary request/provider/inbox bodies and credential references are excluded.
 It performs no reconciliation, retry or provider action. Unset historical Work
 Item attribution remains unset; receipt inspection does not grant publication,

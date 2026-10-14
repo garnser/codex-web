@@ -893,6 +893,11 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("repository.read.artifacts", operation_ids)
         self.assertIn("repository.read.artifact-download", operation_ids)
         artifact_download = next(item for item in payload["operations"] if item["id"] == "repository.read.artifact-download")
+        evidence = next(item for item in payload["operations"] if item["id"] == "repository.read.delivery-evidence")
+        self.assertEqual(evidence['supported_action_ids'], [
+            'code-host.branch.publish', 'code-host.pull-request.merge', 'code-host.pull-request.upsert'])
+        self.assertTrue(evidence['inspection']['read_only'])
+        self.assertTrue(evidence['inspection']['superseded_execution_receipts'])
         self.assertIn("member_path", artifact_download["optional_query_parameters"])
         self.assertIn("repository_resource_id", artifact_download["optional_query_parameters"])
         for operation in payload["operations"]:
@@ -2516,6 +2521,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             resource_ids=("repository-a",), requested_by=assignment.created_by)
         actions = _ActionIntents(intent)
         history = {"intent": {"id":intent.id, "status":"succeeded", "work_item_ref":None,
+            "execution_started_at":100, "completed_at":110,
             "execution_id":"superseded", "request":{"parameters":{"head_revision":"head"},
                                                        "credential_ref":"private-credential"}},
             "receipts":[{"id":"receipt", "provider_external_id":"head", "outcome":"completed",
@@ -2532,6 +2538,8 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(operation.authority_level, AuthorityLevel.READ)
         self.assertEqual(payload["intent"]["execution_id"], "superseded")
+        self.assertEqual(payload['intent']['execution_started_at'], 100)
+        self.assertEqual(payload['intent']['completed_at'], 110)
         self.assertIsNone(payload["intent"]["work_item_ref"])
         self.assertTrue(payload["verifications"][0]["verified"])
         self.assertNotIn("private-", json.dumps(payload))
@@ -2544,7 +2552,24 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             raw_target=f"/api/action-intents/{intent.id}/delivery-evidence", body=b"")
         self.assertEqual(status, 200)
         self.assertTrue(upsert_payload["verifications"][0]["verified"])
+        self.assertEqual(upsert_payload['intent']['execution_started_at'], 100)
+        self.assertEqual(upsert_payload['intent']['completed_at'], 110)
         self.assertNotIn("private-", json.dumps(upsert_payload))
+        original_receipts, original_verifications = history['receipts'], history['verifications']
+        history['intent'].update(status='failed', attempt=0, execution_started_at=None, completed_at=120)
+        history['receipts'] = []
+        history['verifications'] = []
+        status, refused_payload, _, _, _ = await service.dispatch(
+            assignment=assignment, worker_actor=self.worker_actor, method='GET',
+            raw_target=f'/api/action-intents/{intent.id}/delivery-evidence', body=b'')
+        self.assertEqual(status, 200)
+        self.assertEqual(refused_payload['intent']['status'], 'failed')
+        self.assertEqual(refused_payload['intent']['attempt'], 0)
+        self.assertIsNone(refused_payload['intent']['execution_started_at'])
+        self.assertEqual(refused_payload['intent']['completed_at'], 120)
+        self.assertEqual(refused_payload['receipts'], [])
+        self.assertNotIn('never_started', refused_payload)
+        history['receipts'], history['verifications'] = original_receipts, original_verifications
         with self.assertRaisesRegex(ControlPlaneBrokerDeniedError, "outside the assignment delivery scope"):
             await service.dispatch(
                 assignment=assignment, worker_actor=self.worker_actor, method="POST",
