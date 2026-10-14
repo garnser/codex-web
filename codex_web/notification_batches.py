@@ -90,8 +90,9 @@ class NotificationBatchAdmission(BaseModel):
     id: str = Field(pattern=r"^notification-admission-[0-9a-f]{64}$")
     plan: NotificationBatchPlan
     claim_id: str = Field(min_length=1)
-    phase: Literal["prepared", "native_outcome_unknown", "native_input_started", "released"] = "prepared"
+    phase: Literal["prepared", "native_outcome_unknown", "native_input_started", "prestart_refused", "released"] = "prepared"
     native_receipt: QueuedNativeStartReceipt | None = None
+    prestart_refusal_code: Literal["upgrade_maintenance", "upgrade_maintenance_active", "upgrade_turn_scope_unknown"] | None = None
     queue_order: tuple[str, ...] = Field(default=(), max_length=8192)
     claimed_at: float = Field(allow_inf_nan=False)
 
@@ -108,6 +109,10 @@ class NotificationBatchAdmission(BaseModel):
             raise ValueError("notification admission original queue order is invalid")
         if (self.phase == "native_input_started") != (self.native_receipt is not None):
             raise ValueError("notification native receipt/phase mismatch")
+        if self.phase == "prestart_refused" and self.prestart_refusal_code is None:
+            raise ValueError("notification pre-start refusal requires controller proof")
+        if self.prestart_refusal_code is not None and self.phase not in {"prestart_refused", "released"}:
+            raise ValueError("notification refusal/phase mismatch")
         if self.native_receipt and (self.native_receipt.admission_claim_id != self.claim_id
                 or self.native_receipt.requested_execution_id != self.id
                 or self.native_receipt.thread_id != self.plan.members[0].thread_id):

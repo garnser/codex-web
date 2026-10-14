@@ -12,13 +12,14 @@ class NotificationBatchCoordinator:
         if not current():
             return False
         observed = self.preflight.get_notification_batch(admission.id)
-        if observed != admission or observed.phase != "prepared":
+        if observed != admission or observed.phase not in {"prepared","prestart_refused"}:
             return False
         for attempt_id, queued, original in zip(admission.attempt_ids, admission.plan.members,
                                                 admission.plan.original_snapshots_json, strict=True):
             member = self.preflight.get(attempt_id)
             if (member is None or member.notification_batch_id != admission.id
-                    or member.queued_admission_claim_id != admission.claim_id or member.status != "admitting"):
+                    or member.queued_admission_claim_id != admission.claim_id
+                    or member.status != ("reconciliation_required" if admission.phase == "prestart_refused" else "admitting")):
                 return False
             checked = member.model_copy(update={"status":"queued", "notification_batch_id":None})
             if _eligible(queued,checked,organization_id=admission.plan.organization_id,
@@ -45,7 +46,7 @@ class NotificationBatchCoordinator:
 
     def recover_prepared(self, batch_id, *, claim_id, current, priority_ids=frozenset()):
         admission = self.preflight.get_notification_batch(batch_id)
-        if (admission is None or admission.claim_id != claim_id or admission.phase != "prepared"
+        if (admission is None or admission.claim_id != claim_id or admission.phase not in {"prepared","prestart_refused"}
                 or not admission.queue_order):
             raise ValueError("notification batch cannot use prepared recovery")
         self.queue.restore_many_exact(admission.plan.members[0].thread_id, admission.plan.members,
@@ -58,7 +59,7 @@ class NotificationBatchCoordinator:
         return self.preflight.transition_notification_batch(batch_id,claim_id=claim_id,phase="released")
 
     async def submit_native(self, admission, *, runtime, project, actor, current):
-        if not self._guard(admission,current):
+        if admission.phase != "prepared" or not self._guard(admission,current):
             raise ValueError("notification batch authority/ownership changed")
         member=admission.plan.members[0]
         if (project.id != member.project_id or project.organization_id != admission.plan.organization_id

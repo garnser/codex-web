@@ -178,12 +178,14 @@ class ExecutionPreflightStore:
             current = NotificationBatchAdmission.model_validate(values[batch_key])
             if current != observed or current.claim_id != claim_id:
                 raise ValueError("notification batch claim changed")
-            if phase not in {"native_outcome_unknown", "released"} or current.phase != "prepared":
+            if (phase not in {"native_outcome_unknown", "released"}
+                    or current.phase not in ({"prepared","prestart_refused"} if phase == "released" else {"prepared"})):
                 raise ValueError("notification batch needs authoritative native reconciliation")
             changes = {}
             for key, queued, original in zip(keys, current.plan.members, current.plan.original_snapshots_json, strict=True):
                 member = ExecutionPreflightAttempt.model_validate(values[key])
-                if (member.notification_batch_id != batch_id or member.status != "admitting"
+                expected_status = "reconciliation_required" if current.phase == "prestart_refused" else "admitting"
+                if (member.notification_batch_id != batch_id or member.status != expected_status
                         or member.queued_admission_claim_id != claim_id or member.queued_start_receipt is not None):
                     raise ValueError("notification batch member was fenced or changed")
                 checked = member.model_copy(update={"status":"queued", "notification_batch_id":None})
@@ -248,6 +250,31 @@ class ExecutionPreflightStore:
                 or observed.plan.members[0].thread_id != thread_id or observed.native_input() != message):
             raise ValueError("notification native submission does not match retained admission")
         return self.transition_notification_batch(batch_id,claim_id=claim_id,phase="native_outcome_unknown")
+
+    def record_notification_prestart_refusal(self, batch_id, *, claim_id, code):
+        """Internal controller witness only: called before worker/native routing."""
+        from codex_web.notification_batches import NotificationBatchAdmission
+        batch_key = "b/" + batch_id
+        observed = self.get_notification_batch(batch_id)
+        if observed is None:
+            raise KeyError(batch_id)
+        keys = tuple(self._attempt_key(value) for value in observed.attempt_ids)
+        result = None
+        def refuse(values):
+            nonlocal result
+            current=NotificationBatchAdmission.model_validate(values[batch_key])
+            if current != observed or current.claim_id != claim_id or current.phase != "native_outcome_unknown":
+                raise ValueError("notification refusal cannot replace a known or changed native outcome")
+            for key in keys:
+                member=ExecutionPreflightAttempt.model_validate(values[key])
+                if (member.notification_batch_id != batch_id or member.queued_admission_claim_id != claim_id
+                        or member.status != "reconciliation_required" or member.queued_start_receipt is not None):
+                    raise ValueError("notification refusal member claim changed")
+            result=NotificationBatchAdmission.model_validate({**current.model_dump(mode="python"),
+                "phase":"prestart_refused", "prestart_refusal_code":code})
+            return {batch_key:result.model_dump(mode="json")}
+        self.store.record_mutate(self.NAMESPACE,(*keys,batch_key),refuse)
+        return result
 
     def retain_queued(self, attempt: ExecutionPreflightAttempt) -> ExecutionPreflightAttempt:
         """Commit the full request before queue removal; retries preserve its state."""

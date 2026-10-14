@@ -18,6 +18,7 @@ from codex_web.services.notification_batches import NotificationBatchCoordinator
 from unittest.mock import patch
 from unittest.mock import AsyncMock, MagicMock
 from types import SimpleNamespace
+from fastapi import HTTPException
 
 
 class NotificationBatchPlanTests(unittest.TestCase):
@@ -367,7 +368,7 @@ class NotificationBatchPlanTests(unittest.TestCase):
                 requested_execution_id=admission.id,thread_id='thread-a',message='Truncated original body')
         self.assertEqual(self.service.store.get_notification_batch(admission.id).phase,'prepared')
 
-    def test_native_runtime_records_one_actual_fixture_receipt_and_refuses_second_start(self):
+    def native_runtime_fixture(self):
         from tests.test_turn_execution import TurnExecutionStartTests
         from codex_web.agent_profiles import AgentProfileExecutionBinding
         from codex_web.execution_workers import ExecutionRuntimeBinding
@@ -383,10 +384,50 @@ class NotificationBatchPlanTests(unittest.TestCase):
         sessions.session.validate_current=MagicMock(return_value=assignment)
         actor=SimpleNamespace(identity_id='actor-a',organization_id='local',workspace_id='default')
         project=Project(id='project-a',name='Fixture Project',path='/workspace/project',sandbox='workspace-write',approval_policy='on-request')
+        return coordinator,admission,sessions,runtime,actor,project
+
+    def test_native_runtime_records_one_actual_fixture_receipt_and_refuses_second_start(self):
+        coordinator,admission,sessions,runtime,actor,project=self.native_runtime_fixture()
         result=asyncio.run(coordinator.submit_native(admission,runtime=runtime,project=project,actor=actor,current=lambda:True))
         recorded=self.service.store.get_notification_batch(admission.id)
         self.assertEqual(recorded.native_receipt.provider_native_turn_id,result['turn']['id'])
         self.assertEqual([method for method,_ in sessions.session.requests].count('turn/start'),1)
+        with self.assertRaises(ValueError):
+            asyncio.run(coordinator.submit_native(admission,runtime=runtime,project=project,actor=actor,current=lambda:True))
+        self.assertEqual([method for method,_ in sessions.session.requests].count('turn/start'),1)
+
+    def test_controller_refusal_before_worker_routing_is_recoverable(self):
+        coordinator,admission,sessions,runtime,actor,project=self.native_runtime_fixture()
+        runtime.upgrade_turn_admission_guard=object()
+        runtime._require_upgrade_turn_admission=AsyncMock(side_effect=[('local','default'),
+            HTTPException(status_code=409,detail={'code':'upgrade_maintenance_active'})])
+        with self.assertRaises(HTTPException):
+            asyncio.run(coordinator.submit_native(admission,runtime=runtime,project=project,actor=actor,current=lambda:True))
+        refused=self.service.store.get_notification_batch(admission.id)
+        self.assertEqual(refused.phase,'prestart_refused')
+        self.assertEqual(refused.prestart_refusal_code,'upgrade_maintenance_active')
+        self.assertEqual(sessions.session.requests,[])
+        coordinator.recover_prepared(admission.id,claim_id=admission.claim_id,current=lambda:True)
+        self.assertEqual([item.id for item in coordinator.queue.get('thread-a')],[item.id for item in self.items])
+        self.assertEqual(self.service.store.get_notification_batch(admission.id).prestart_refusal_code,'upgrade_maintenance_active')
+
+    def test_untyped_guard_error_remains_unknown_and_not_recoverable(self):
+        coordinator,admission,sessions,runtime,actor,project=self.native_runtime_fixture()
+        runtime.upgrade_turn_admission_guard=object()
+        runtime._require_upgrade_turn_admission=AsyncMock(side_effect=[('local','default'),RuntimeError('Unknown failure')])
+        with self.assertRaises(RuntimeError):
+            asyncio.run(coordinator.submit_native(admission,runtime=runtime,project=project,actor=actor,current=lambda:True))
+        self.assertEqual(self.service.store.get_notification_batch(admission.id).phase,'native_outcome_unknown')
+        with self.assertRaises(ValueError):
+            coordinator.recover_prepared(admission.id,claim_id=admission.claim_id,current=lambda:True)
+
+    def test_receipt_write_failure_does_not_repeat_native_start(self):
+        coordinator,admission,sessions,runtime,actor,project=self.native_runtime_fixture()
+        with patch.object(self.service.store,'record_notification_native_start',side_effect=RuntimeError('Receipt store failure')):
+            with self.assertRaises(Exception):
+                asyncio.run(coordinator.submit_native(admission,runtime=runtime,project=project,actor=actor,current=lambda:True))
+        self.assertEqual([method for method,_ in sessions.session.requests].count('turn/start'),1)
+        self.assertEqual(self.service.store.get_notification_batch(admission.id).phase,'native_outcome_unknown')
         with self.assertRaises(ValueError):
             asyncio.run(coordinator.submit_native(admission,runtime=runtime,project=project,actor=actor,current=lambda:True))
         self.assertEqual([method for method,_ in sessions.session.requests].count('turn/start'),1)

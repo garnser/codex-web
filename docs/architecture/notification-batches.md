@@ -95,6 +95,14 @@ receive no fabricated individual start receipts. Duplicate identical receipt
 capture is idempotent, while changed or foreign receipts refuse mutation.
 Recorded native input delivery is not per-item completion or handoff acceptance.
 
+An affirmative typed upgrade-guard refusal before worker/session routing is
+recorded as `prestart_refused`, bound to the same admission and all member claims.
+It permits exact queue restoration and claim release while preserving the refusal
+history. Only the internal before-worker guard supplies this witness; timeouts,
+generic errors, absent receipts and later provider failures cannot classify a
+batch as not started. Failed receipt persistence leaves native uncertainty held
+and cannot trigger another submission.
+
 Ordinary preflight serialization omits null batch membership, retaining its old
 shape. Claimed members carry `notification_batch_id`; old extra-forbid preflight
 readers reject that field rather than silently dropping ownership. The admission

@@ -1992,11 +1992,21 @@ class TurnExecutionService:
                 requested_execution_id=execution_id, thread_id=thread_id, message=message)
         if self.upgrade_turn_admission_guard is not None:
             current_bootstrap = self._bootstrap_binding_for_thread(thread_id)
-            await self._require_upgrade_turn_admission(
-                thread_id, project,
-                current_bootstrap.assignment_id if current_bootstrap is not None else None,
-                allow_bootstrap_recovery=True,
-            )
+            try:
+                await self._require_upgrade_turn_admission(
+                    thread_id, project,
+                    current_bootstrap.assignment_id if current_bootstrap is not None else None,
+                    allow_bootstrap_recovery=True,
+                )
+            except HTTPException as exc:
+                # This control-plane guard precedes worker/session routing. Its
+                # typed refusal is affirmative evidence, unlike absent receipts.
+                code=exc.detail.get("code") if isinstance(exc.detail,dict) else None
+                if notification_batch_admission_id and code in {
+                        "upgrade_maintenance", "upgrade_maintenance_active", "upgrade_turn_scope_unknown"}:
+                    await asyncio.to_thread(self.queued_preflight.store.record_notification_prestart_refusal,
+                        notification_batch_admission_id,claim_id=queued_admission_claim_id,code=code)
+                raise
         binding_service, default_session_manager = self._require_worker_routing()
         settings = h._thread_run_settings(thread_id)
         effective_sandbox = sandbox or settings.sandbox or project.sandbox
