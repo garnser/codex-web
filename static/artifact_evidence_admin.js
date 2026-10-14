@@ -136,6 +136,12 @@
     return `<button type="button" class="ghost-button" data-artifact-evidence-invalidate="${kind}" data-record-id="${escapeHtml(item.id)}">Invalidate</button>`;
   }
 
+  function researchLinks(item) {
+    const project = item.project_id || document.body?.dataset.projectId || document.body?.dataset.activeProject;
+    const route = project ? `${BASE}/projects/${encodeURIComponent(project)}/memory` : `${BASE}/`;
+    return (item.knowledge_ids || []).map(id => `<a href="${route}?knowledge_id=${encodeURIComponent(id)}">${escapeHtml(id)}</a>`).join(', ') || 'none';
+  }
+
   function renderArtifacts() {
     const host = document.getElementById("artifact-list");
     if (!host) return;
@@ -148,6 +154,7 @@
         <small>Work: ${escapeHtml(item.work_item_ref || "none")} · execution: ${escapeHtml(item.execution_id || "none")} · execution workspace: ${escapeHtml(item.execution_workspace_id || "none")} · project: ${escapeHtml(item.project_id || "none")}</small>
         <small>Resources: ${listText(item.resource_ids)} · provider: ${escapeHtml(item.provider || "none")} · source: ${escapeHtml(item.source || "none")} · external ID: ${escapeHtml(item.external_id || "none")} ${sourceLink}</small>
         <small>Revision: ${escapeHtml(item.revision || "none")} · digest: ${escapeHtml(digestText(item.digest))}</small>
+        <small>Research origin: ${escapeHtml(item.research_origin || 'unknown')} · Knowledge sources: ${researchLinks(item)} · origin metadata is not verification</small>
         <small>Supersedes: ${escapeHtml(item.supersedes_id || "none")} · superseded by: ${escapeHtml(item.superseded_by_id || "none")} · retention: ${timeText(item.retention_expires_at)}</small>
         ${item.invalidation_reason ? `<small>Invalidated: ${timeText(item.invalidated_at)} · ${escapeHtml(item.invalidation_reason)}</small>` : ""}
         ${governanceHtml(governanceFor(item.id))}
@@ -168,6 +175,7 @@
         <small>Work: ${escapeHtml(item.work_item_ref || "none")} · execution: ${escapeHtml(item.execution_id || "none")} · execution workspace: ${escapeHtml(item.execution_workspace_id || "none")} · project: ${escapeHtml(item.project_id || "none")}</small>
         <small>Artifacts: ${listText(item.artifact_ids)} · provider: ${escapeHtml(item.provider || "none")} · source: ${escapeHtml(item.source || "none")} · external ID: ${escapeHtml(item.external_id || "none")} ${sourceLink}</small>
         <small>Summary: ${escapeHtml(item.summary || "none")} · digest: ${escapeHtml(digestText(item.digest))}</small>
+        <small>Research origin: ${escapeHtml(item.research_origin || 'unknown')} · Knowledge sources: ${researchLinks(item)} · origin metadata is not verification</small>
         <small>Retention: ${timeText(item.retention_expires_at)} · governance ID: ${escapeHtml(item.governance_record_id || "none")}</small>
         ${item.invalidation_reason ? `<small>Invalidated: ${timeText(item.invalidated_at)} · ${escapeHtml(item.invalidation_reason)}</small>` : ""}
         ${governanceHtml(governanceFor(item.id))}
@@ -327,5 +335,6 @@
     if (panel?.open) refresh().catch(console.error);
   }
 
-  window.addEventListener("DOMContentLoaded", bind);
+  if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", bind, { once: true });
+  else bind();
 })();

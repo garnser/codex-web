@@ -40,6 +40,10 @@ from codex_web.services.data_governance import DataGovernanceService
 from codex_web.services.identity import AuthorizationError, TenantIsolationError
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
+from codex_web.services.research_evidence import (
+    OBSERVED_RESEARCH_METHOD, ResearchSourceError, research_sources,
+    research_origin, observed_verifications,
+)
 
 
 class ArtifactEvidenceError(RuntimeError):
@@ -72,6 +76,7 @@ class ArtifactEvidenceService:
         governance: DataGovernanceService | None = None,
         content: ArtifactContentService | None = None,
         content_backend_resolver: Callable[[AuthenticationActor, str | None], str] | None = None,
+        organizational_memory: Any | None = None,
     ) -> None:
         self.store = store
         self.resources = resources
@@ -79,6 +84,13 @@ class ArtifactEvidenceService:
         self.governance = governance
         self.content = content
         self.content_backend_resolver = content_backend_resolver
+        self.organizational_memory = organizational_memory
+
+    def _research_sources(self, ids, *, actor, project_id):
+        try:
+            return research_sources(self.organizational_memory, ids, actor=actor, project_id=project_id)
+        except ResearchSourceError as error:
+            raise ArtifactEvidenceConflictError(str(error)) from error
 
     @staticmethod
     def _admin(actor: AuthenticationActor) -> bool:
@@ -510,6 +522,7 @@ class ArtifactEvidenceService:
         return next(item for item in updated.artifacts if item.id == artifact.id)
 
     def create_artifact(self, payload: ArtifactCreate, *, actor: AuthenticationActor) -> Artifact:
+        sources = self._research_sources(payload.knowledge_ids, actor=actor, project_id=payload.project_id)
         self._validate_resources(payload.resource_ids, actor)
         self._validate_work_item_ref(payload.work_item_ref, actor)
         state = self.store.load()
@@ -529,6 +542,8 @@ class ArtifactEvidenceService:
             execution_workspace_id=payload.execution_workspace_id,
             resource_ids=payload.resource_ids,
             artifact_type=payload.artifact_type,
+            knowledge_ids=tuple(dict.fromkeys(payload.knowledge_ids)),
+            research_origin=research_origin(sources),
             name=payload.name,
             provider=payload.provider,
             source=payload.source,
@@ -558,7 +573,7 @@ class ArtifactEvidenceService:
                     retention_expires_at=payload.retention_expires_at,
                     retention_action=payload.retention_action,
                     residency_tags=payload.residency_tags,
-                    source_record_ids=source_record_ids,
+                    source_record_ids=(*source_record_ids, *(source.governance_record_id for source in sources)),
                     deny_model_context=payload.deny_model_context,
                     reason="artifact_created",
                 ),
@@ -598,6 +613,7 @@ class ArtifactEvidenceService:
         return artifact
 
     def create_evidence(self, payload: EvidenceCreate, *, actor: AuthenticationActor) -> Evidence:
+        sources = self._research_sources(payload.knowledge_ids, actor=actor, project_id=payload.project_id)
         self._validate_resources(payload.resource_ids, actor)
         self._validate_work_item_ref(payload.work_item_ref, actor)
         state = self.store.load()
@@ -625,6 +641,8 @@ class ArtifactEvidenceService:
             execution_workspace_id=payload.execution_workspace_id,
             resource_ids=payload.resource_ids,
             evidence_type=payload.evidence_type,
+            knowledge_ids=tuple(dict.fromkeys(payload.knowledge_ids)),
+            research_origin=research_origin(sources),
             artifact_ids=payload.artifact_ids,
             provider=payload.provider,
             source=payload.source,
@@ -654,7 +672,7 @@ class ArtifactEvidenceService:
                     retention_expires_at=payload.retention_expires_at,
                     retention_action=payload.retention_action,
                     residency_tags=payload.residency_tags,
-                    source_record_ids=source_record_ids,
+                    source_record_ids=(*source_record_ids, *(source.governance_record_id for source in sources)),
                     deny_model_context=payload.deny_model_context,
                     reason="evidence_created",
                 ),
@@ -680,6 +698,8 @@ class ArtifactEvidenceService:
         *,
         actor: AuthenticationActor,
     ) -> Verification:
+        if payload.method == OBSERVED_RESEARCH_METHOD and actor.principal_kind != PrincipalKind.HUMAN:
+            raise AuthorizationError("observed-user research verification requires a human actor")
         self._validate_work_item_ref(payload.work_item_ref, actor)
         state = self.store.load()
         artifacts = [self._artifact(state, artifact_id, actor) for artifact_id in payload.artifact_ids]
@@ -1148,6 +1168,20 @@ class ArtifactEvidenceService:
                     if not qualifying:
                         continue
                     verification_ids.update(value.id for value in qualifying)
+                if requirement.observed_research:
+                    def intact(source):
+                        try:
+                            if source.content is not None:
+                                self._verify_content_pointer(source)
+                        except ArtifactContentError:
+                            return False
+                        return True
+                    observed = observed_verifications(item, memory=self.organizational_memory,
+                        state=state, actor=actor, verify_content=intact, now=current_time,
+                        max_age_seconds=requirement.max_age_seconds)
+                    if not observed:
+                        continue
+                    verification_ids.update(observed)
                 matches.append(item)
             satisfied = len(matches) >= requirement.min_count
             outcomes.append(
@@ -1158,6 +1192,7 @@ class ArtifactEvidenceService:
                     verification_ids=tuple(sorted(verification_ids)),
                     reason=None if satisfied else (
                         f"requires {requirement.min_count} valid {requirement.evidence_type.value} evidence record(s)"
+                        + (" with current observed sources and independent human observed-user-research verification" if requirement.observed_research else "")
                     ),
                 )
             )

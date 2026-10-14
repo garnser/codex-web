@@ -76,6 +76,36 @@ Canonical Work Item execution state owns `evidence_requirements`. The execution 
 
 Execution contract schema **1.4** therefore carries proof requirements alongside expected outputs. Agents do not infer gate requirements from prose.
 
+### Observed research eligibility
+
+Artifact/Evidence state `1.2` adds canonical `knowledge_ids` and a derived
+`research_origin` snapshot, using Memory's origin vocabulary. Existing state
+`1.0`/`1.1` migrates through the existing registry to unknown origin and no
+research links. Creation resolves exact current Knowledge records through
+Memory authority and freshness checks, enforces the same Project or company
+scope, and inherits their governance references. Callers cannot supply an
+Artifact/Evidence origin label directly. The inspector displays origin and
+source IDs as descriptive metadata, not verification.
+
+An optional `EvidenceRequirement.observed_research` requires current observed
+source proof in addition to its ordinary evidence constraints. It resolves
+source-level distinctions from mixed Knowledge, rejects synthetic-only,
+unknown, stale or unavailable sources, and requires valid passing source
+Evidence with active digest-bound Artifacts. Source retention, content
+integrity and configured freshness limits also apply. The source Evidence
+must have a verified independent canonical Verification with method
+`observed-user-research`. That method can be recorded only by a human actor;
+independence is still computed against the proof producers. Ordinary review
+methods and descriptive reviewed/origin labels cannot satisfy this gate.
+Evaluation reports exact source verification IDs and a denial reason when
+observed proof is absent. Mixed reports retain mixed origin even when eligible
+observed-source proof exists for their observed material.
+
+Only contracts with this opt-in requirement use execution schema `1.5`.
+Ordinary engineering contracts remain `1.4` and omit the research flag when
+false. Schema `1.4` refuses a true observed-research requirement. No model call
+or research database participates in eligibility calculation.
+
 ## Gate evaluation
 
 `ArtifactEvidenceService.evaluate()` evaluates requirements deterministically against:

@@ -150,6 +150,20 @@ class ExecutionContractSchemaTests(unittest.TestCase):
         self.assertEqual(contract.schema_version, "1.4")
         self.assertEqual(len(contract.required_evidence), 1)
         self.assertEqual(contract.required_evidence[0].id, "ci-pass")
+        self.assertNotIn("observed_research", contract.compact_public()["required_evidence"][0])
+
+    def test_observed_research_uses_explicit_contract_version(self):
+        contract = execution_contract_for_work_item(
+            self._state(execution=WorkItemExecutionLifecycle(evidence_requirements=[
+                EvidenceRequirement(id="research", evidence_type=EvidenceType.REVIEW, observed_research=True),
+            ])), ROLE_CONTRACTS["quinn"],
+        )
+        self.assertEqual(contract.schema_version, "1.5")
+        self.assertTrue(contract.compact_public()["required_evidence"][0]["observed_research"])
+        payload = contract.model_dump(mode="json")
+        payload["schema_version"] = "1.4"
+        with self.assertRaises(ValueError):
+            type(contract).model_validate(payload)
 
     def test_pending_handoff_makes_recipient_the_contract_agent(self) -> None:
         handoff = WorkItemHandoff(

@@ -55,6 +55,13 @@ from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
 from codex_web.storage.data_governance import DataGovernanceStore
 from codex_web.storage.identity_state import IdentityStateStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.organizational_memory import KnowledgeCreate, KnowledgeInvalidate, KnowledgeProvenance
+from codex_web.services.organizational_memory import OrganizationalMemoryService
+from codex_web.services.authority_roles import install_authority_roles
+from codex_web.services.definitions import DefinitionRegistryService
+from codex_web.storage.definition_registry import DefinitionRegistryStore
+from codex_web.storage.organizational_memory import OrganizationalMemoryStore
+from codex_web.services.identity import AuthorizationError
 
 
 ROLE_CONTRACTS = ExecutionRoleCatalogDefinition.model_validate(
@@ -143,6 +150,128 @@ class ArtifactEvidenceTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def _research(self, origin="human_observed", reviewed=False):
+        if self.service.organizational_memory is None:
+            state = self.artifact_store.store
+            authority = install_authority_roles(DefinitionRegistryService(DefinitionRegistryStore(state)))
+            self.memory = OrganizationalMemoryService(OrganizationalMemoryStore(state), self.governance, authority)
+            self.service.organizational_memory = self.memory
+        artifact = self._artifact(artifact_type=ArtifactType.REPORT, project_id="home")
+        proof = self.service.create_evidence(EvidenceCreate(
+            project_id="home", work_item_ref=self.work_item.ref, evidence_type="runtime_result",
+            result="pass", artifact_ids=(artifact.id,), summary="Fixture research source",
+        ), actor=self.producer)
+        source = self.memory.create(KnowledgeCreate(
+            logical_key="research/"+proof.id, object_type="other", project_id="home",
+            title="Research fixture", summary="Research fixture", content="Fixture content",
+            provenance=KnowledgeProvenance(source_kind="evidence", source_ref=proof.id,
+                origin=origin, review_status="reviewed" if reviewed else "unreviewed",
+                evidence_ids=(proof.id,), source_governance_record_ids=(proof.governance_record_id,)),
+        ), actor=self.producer)
+        return source, proof
+
+    def _research_candidate(self, *sources):
+        return self.service.create_evidence(EvidenceCreate(
+            project_id="home", work_item_ref=self.work_item.ref, evidence_type="review", result="pass",
+            knowledge_ids=tuple(source.id for source in sources), summary="Fixture research report",
+        ), actor=self.producer)
+
+    def _observed_gate(self):
+        return self.service.evaluate(self.work_item.ref, (EvidenceRequirement(
+            id="real-user-validation", evidence_type="review", observed_research=True,
+        ),), actor=self.producer)
+
+    def test_observed_label_and_review_metadata_cannot_satisfy_research_gate(self):
+        source, proof = self._research(reviewed=True)
+        candidate = self._research_candidate(source)
+        self.assertEqual(candidate.research_origin.value, "human_observed")
+        self.assertFalse(self._observed_gate().satisfied)
+        self.service.create_verification(VerificationCreate(
+            evidence_ids=(proof.id,), method="ordinary-review", result="verified",
+        ), actor=self.verifier)
+        self.assertFalse(self._observed_gate().satisfied)
+
+    def test_independent_human_observed_source_proof_satisfies_gate(self):
+        source, proof = self._research()
+        candidate = self._research_candidate(source)
+        verification = self.service.create_verification(VerificationCreate(
+            evidence_ids=(proof.id,), method="observed-user-research", result="verified",
+        ), actor=self.verifier)
+        gate = self._observed_gate()
+        self.assertTrue(gate.satisfied)
+        self.assertEqual(gate.outcomes[0].matching_evidence_ids, (candidate.id,))
+        self.assertIn(verification.id, gate.outcomes[0].verification_ids)
+        self.memory.invalidate(source.id, KnowledgeInvalidate(reason="Source withdrawn"), actor=self.producer)
+        self.assertFalse(self._observed_gate().satisfied)
+
+    def test_synthetic_only_source_remains_ineligible_after_human_review(self):
+        source, proof = self._research("ai_inference", reviewed=True)
+        candidate = self._research_candidate(source)
+        self.service.create_verification(VerificationCreate(
+            evidence_ids=(proof.id,), method="observed-user-research", result="verified",
+        ), actor=self.verifier)
+        self.assertEqual(candidate.research_origin.value, "ai_inference")
+        self.assertFalse(self._observed_gate().satisfied)
+
+    def test_observed_research_requires_human_verifier_and_independence(self):
+        source, proof = self._research()
+        self._research_candidate(source)
+        request = VerificationCreate(evidence_ids=(proof.id,), method="observed-user-research", result="verified")
+        with self.assertRaises(AuthorizationError):
+            self.service.create_verification(request, actor=self.verifier.model_copy(update={"principal_kind": PrincipalKind.SERVICE}))
+        verification = self.service.create_verification(request, actor=self.producer)
+        self.assertFalse(verification.independent)
+        self.assertFalse(self._observed_gate().satisfied)
+
+    def test_mixed_research_keeps_synthetic_origin_and_uses_observed_source_proof(self):
+        observed, proof = self._research()
+        synthetic, _ = self._research("ai_inference")
+        candidate = self._research_candidate(observed, synthetic)
+        self.service.create_verification(VerificationCreate(
+            evidence_ids=(proof.id,), method="observed-user-research", result="verified",
+        ), actor=self.verifier)
+        self.assertEqual(candidate.research_origin.value, "mixed")
+        self.assertTrue(self._observed_gate().satisfied)
+
+    def test_research_gate_refuses_invalidated_observation_artifact(self):
+        source, proof = self._research()
+        self._research_candidate(source)
+        self.service.create_verification(VerificationCreate(
+            evidence_ids=(proof.id,), method="observed-user-research", result="verified",
+        ), actor=self.verifier)
+        self.assertTrue(self._observed_gate().satisfied)
+        self.service.invalidate_artifact(proof.artifact_ids[0], "Observation withdrawn", actor=self.producer)
+        self.assertFalse(self._observed_gate().satisfied)
+
+    def test_legacy_evidence_defaults_unknown_origin_and_engineering_gate_unchanged(self):
+        artifact = self._artifact()
+        proof = self.service.create_evidence(EvidenceCreate(
+            work_item_ref=self.work_item.ref, evidence_type="test_result", result="pass",
+            artifact_ids=(artifact.id,),
+        ), actor=self.producer)
+        raw = self.artifact_store.store.get(self.artifact_store.namespace)
+        raw["schema_version"] = "1.1"
+        for record in (*raw["artifacts"], *raw["evidence"]):
+            record.pop("research_origin"); record.pop("knowledge_ids")
+        self.artifact_store.store.put(self.artifact_store.namespace, raw)
+        restored = self.service.get_evidence(proof.id, actor=self.producer)
+        self.assertEqual(restored.research_origin.value, "unknown")
+        self.assertEqual(self.artifact_store.load().schema_version, "1.2")
+        self.assertTrue(self.service.evaluate(self.work_item.ref, (
+            EvidenceRequirement(id="engineering", evidence_type="test_result"),
+        ), actor=self.producer).satisfied)
+
+    def test_research_source_project_mismatch_and_forged_origin_are_rejected(self):
+        source, _ = self._research()
+        with self.assertRaises(ArtifactEvidenceConflictError):
+            self.service.create_evidence(EvidenceCreate(
+                project_id="other-project", evidence_type="review", result="pass", knowledge_ids=(source.id,),
+            ), actor=self.producer)
+        with self.assertRaises(ValueError):
+            EvidenceCreate(evidence_type="review", result="pass", research_origin="human_observed")
+
+
 
     def _artifact(self, **overrides):
         payload = {
