@@ -89,8 +89,9 @@ checks.
 
 The [offline rubric scoring library](evaluation-rubrics.md) supplies revision-pinned
 criterion arithmetic and baseline comparisons as a separate prerequisite. It
-does not authenticate human annotations or replace replay assertions and does
-not yet persist results into evaluation runs.
+does not replace replay assertions. The [manual quality report integration](human-evaluation-quality.md)
+records authenticated human annotations as separate informational Evidence;
+deterministic run state and safety gates remain unchanged.
 
 ## Regression comparison
 

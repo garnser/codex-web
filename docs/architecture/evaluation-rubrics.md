@@ -30,7 +30,7 @@ references/content revisions are preserved. Incomplete deltas remain null.
 ## Boundaries and remaining integration
 
 There is no model invocation, provider action, live replay, new store, schema
-migration, annotation endpoint or automatic change to `EvaluationTrace` or its
+migration or automatic change to `EvaluationTrace` or its
 deterministic assertions. Engine results are calculations, not qualification
 Evidence or authority grants. Existing policy/no-LLM assertions remain separate.
 
@@ -42,11 +42,13 @@ data governance before using them. Findings must be sanitized; this API is not
 a secret or raw prompt transport. Synthetic arithmetic tests are explicitly
 fixtures, not human-labelled research or calibrated quality assessments.
 
+The [manual semantic evaluation integration](human-evaluation-quality.md) adds
+authenticated annotation intake, canonical Evidence and the result inspector
+without changing deterministic evaluation state or automatic policy.
+
 The independently deliverable scoring prerequisite is tracked in
-[#1410](https://github.com/garnser/codex-web/issues/1410). Authenticated human
-annotation intake, genuinely human-labelled defect-investigation,
-evidence-synthesis and UI-critique fixtures, calibration, stored evaluation
-integration and a result inspector exposing rubric pins, criterion findings,
-baseline deltas and annotations remain tracked by
+[#1410](https://github.com/garnser/codex-web/issues/1410). Genuinely human-labelled
+defect-investigation, evidence-synthesis and UI-critique fixtures, calibration
+and reviewed workload thresholds remain tracked by
 [#1372](https://github.com/garnser/codex-web/issues/1372). No model judge or
 automatic routing/autonomy change is enabled by this prerequisite.

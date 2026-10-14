@@ -95,6 +95,7 @@ If architecture changes materially while implementing an issue, update the relev
 - [Orchestration inspector](orchestration-inspector.md) — read-only event/cycle timeline and canonical operator controls with zero reasoning on refresh.
 - [Autonomous evaluation and deterministic replay](autonomy-evaluation-replay.md) — immutable scenario fixtures, exact definition/runtime/model pins, offline replay, deterministic regression comparison, failure injection, and qualification Evidence.
 - [Deterministic offline rubric scoring](evaluation-rubrics.md) — versioned rubric data, bounded criterion arithmetic, exact pins, incomplete results and comparison boundaries.
+- [Manual semantic evaluation reports](human-evaluation-quality.md) — authenticated human annotations, exact replay/output pins, separate semantic and safety results and named baseline comparisons.
 - [Authoritative task-source contract](task-source-contract.md) — provider-neutral identity, events, capabilities, mapping, reconciliation, project authority, and conformance boundaries for external task systems.
 - [TaskSource writeback coordination](task-source-writeback.md) — keyed coalescing, provider-efficient combined projection, revision-aware feedback suppression, bounded retry, and writeback observability.
 - [GitLab task-source adapter](gitlab-task-source-adapter.md) — GitLab issue identity, discovery/read/event normalization, label-based canonical mapping, and declared write capabilities.

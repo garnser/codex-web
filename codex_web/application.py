@@ -320,6 +320,8 @@ from codex_web.services.decision_work import DecisionWorkService
 from codex_web.services.entitlements import EntitlementService
 from codex_web.services.evaluations import EvaluationService
 from codex_web.services.evaluation_rubrics import install_evaluation_rubric_schema
+from codex_web.services.evaluation_quality import EvaluationQualityService
+from codex_web.api.evaluation_quality import build_evaluation_quality_router
 from codex_web.services.extensions import ExtensionService
 from codex_web.services.extension_runtime import ExtensionRuntimeRegistry
 from codex_web.services.execution_preflight import ExecutionPreflightService
@@ -1587,6 +1589,12 @@ model_gateway_service.evaluation_run_resolver = evaluation_service.get_run
 app.state.evaluation_store = evaluation_store
 app.state.evaluation_service = evaluation_service
 app.include_router(build_evaluations_router(evaluation_service))
+evaluation_quality_service = EvaluationQualityService(
+    evaluations=evaluation_service, definitions=definition_registry_service,
+    evidence=artifact_evidence_service, identity=identity_service, projects=project_service,
+)
+app.state.evaluation_quality_service = evaluation_quality_service
+app.include_router(build_evaluation_quality_router(evaluation_quality_service))
 
 agent_runtime_usage_store = AgentRuntimeUsageStore(state_store)
 

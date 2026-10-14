@@ -1,0 +1,19 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Synthetic evaluation quality fixture</title><body>
+<div id="host"><button data-evaluation-quality="run-a">Review A</button><button data-evaluation-quality="run-b">Review B</button></div>
+<script>
+window.requests=[];window.deny=false;window.empty=false;window.hold=false;window.release=[];
+const reference={definition_id:'fixture.rubric',kind:'evaluation-rubric',revision:1,record_id:'rubric-1',checksum:'a'.repeat(64),definition_schema_version:'1.0'};
+const fixture={title:'Synthetic rubric',workload:'fixture-review',minimum_score:.7,criteria:[{id:'support',description:'Fixture support',minimum:0,maximum:4,weight:1,minimum_normalized_score:null}]};
+const result={workload:'fixture-review',criteria:[{criterion_id:'support',normalized_score:0,minimum_normalized_score:null,passed:null,finding:'<img src=x onerror="window.unsafe=true">'}],score:0,minimum_score:.7,complete:true,passed:false,provenance:{rubric:reference,annotation_ref:'fixture-baseline'}};
+const report={evidence_id:'evidence-quality',reviewed_by:'fixture-human',status:'semantic_fail',pin:{artifact_id:'artifact-a',artifact_revision:'v1',artifact_sha256:'b'.repeat(64),run_sha256:'c'.repeat(64)},result};
+window.fetch=async(path,options={})=>{
+window.requests.push({path:String(path),method:options.method||'GET',body:options.body?JSON.parse(options.body):null});
+const run=String(path).includes('run-b')?'run-b':'run-a';
+if(window.hold&&run==='run-a')await new Promise(resolve=>window.release.push(resolve));
+if(options.method==='POST')return new Response(JSON.stringify(window.deny?{detail:'MFA required'}:{item:{id:'evidence-quality'}}),{status:window.deny?403:200});
+if(String(path).endsWith('/options'))return new Response(JSON.stringify({run_id:run,project_id:'project-'+run,artifacts:window.empty?[]:[{id:'artifact-a',name:'Synthetic output',revision:'v1',sha256:'b'.repeat(64)}],rubrics:[{reference,lifecycle:'draft',payload:fixture}]}));
+return new Response(JSON.stringify({run_id:run,project_id:'project-'+run,deterministic_passed:true,status:'reviewed',reports:[report],invalidated:[],limitations:'Synthetic fixture only; no human calibration claim.',comparison:String(path).includes('baseline_evidence_id=')?{baseline:{provenance:{annotation_ref:'fixture-baseline'}},score_delta:.5,criterion_deltas:{support:.5}}:null}));
+};
+</script><script type="module">import {installEvaluationQuality} from '/static/evaluation_quality_ui.js';installEvaluationQuality(document.getElementById('host'));</script>
+</body></html>
