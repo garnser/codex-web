@@ -77,6 +77,8 @@ from codex_web.services.care_composer import CareComposerService
 from codex_web.api.model_gateway import build_model_gateway_router
 from codex_web.api.orchestration import build_orchestration_router
 from codex_web.api.organizational_memory import build_organizational_memory_router
+from codex_web.services.ux_briefs import UxBriefService
+from codex_web.services.ux_brief_turns import UxBriefTurnService
 from codex_web.api.identity import build_identity_router, install_identity_middleware
 from codex_web.api.projects import build_projects_router
 from codex_web.api.project_ui_state import build_project_ui_state_router
@@ -1095,8 +1097,11 @@ organizational_memory_service = OrganizationalMemoryService(
 )
 app.state.organizational_memory_store = organizational_memory_store
 app.state.organizational_memory_service = organizational_memory_service
+ux_brief_service = UxBriefService(organizational_memory_service)
+app.state.ux_brief_service = ux_brief_service
 app.include_router(
-    build_organizational_memory_router(organizational_memory_service)
+    build_organizational_memory_router(organizational_memory_service,
+        brief_service=ux_brief_service, projects=project_service)
 )
 
 approval_request_store = ApprovalRequestStore(state_store)
@@ -3476,6 +3481,8 @@ scheduling_retirement_service = QueuedSchedulingRetirementService(
 )
 app.state.scheduling_retirement_service = scheduling_retirement_service
 
+ux_brief_turn_service = UxBriefTurnService(ux_brief_service, identity_service)
+turn_execution_service.memory_context_service = ux_brief_turn_service
 turn_service = TurnService(
     projects=project_runtime_service,
     settings=thread_execution_settings_service,
@@ -3490,6 +3497,7 @@ turn_service = TurnService(
     preflight=execution_preflight_service,
     scheduling_retirement=scheduling_retirement_service,
     agent_profiles=agent_profile_service,
+    memory_context=ux_brief_turn_service,
 )
 turn_execution_service.upgrade_turn_admission_guard = (
     upgrade_service.worker_assignment_allowed

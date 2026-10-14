@@ -25,6 +25,14 @@ def _origin_metadata_v11(payload: dict[str, Any]) -> dict[str, Any]:
 ORGANIZATIONAL_MEMORY_MIGRATIONS.register("1.0", "1.1", _origin_metadata_v11)
 
 
+def _typed_briefs_v12(payload: dict[str, Any]) -> dict[str, Any]:
+    # Existing content, source attribution and lifecycle remain unchanged.
+    return {**payload, "schema_version": "1.2"}
+
+
+ORGANIZATIONAL_MEMORY_MIGRATIONS.register("1.1", "1.2", _typed_briefs_v12)
+
+
 class KnowledgeNotFoundError(KeyError):
     pass
 
