@@ -106,3 +106,12 @@ export function install({
     if (threadId) updateThread(threadId, { reasoning_effort: byId("thread-reasoning-setting").value }).catch(console.error);
   });
 }
+
+export function turnPayload(message,projectId,options,settings,thread,repositories,executionProfileId){
+  return {message,project_id:projectId,sandbox:settings.sandbox,
+    approval_policy:settings.approvalPolicy,model:options.model,reasoning_effort:options.reasoningEffort,
+    repository_resource_id:thread.repository_resource_id||settings.repositoryResourceId||null,
+    ...repositories,
+    read_only_repository_resource_ids:thread.read_only_repository_resource_ids||settings.readOnlyRepositoryResourceIds||[],
+    execution_profile_id:executionProfileId};
+}

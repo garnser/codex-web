@@ -21,6 +21,8 @@ import*as tsui from"./thread_settings_ui.js";
 import*as tskills from"./thread_skills_ui.js";
 import{createHeaderUsageController}from"./usage_refresh.js";
 import{renderUsageResources}from"./usage_resources.js";
+import{installCareComposer,careScope}from"./care_composer.js";
+let careComposer=null;
 
 const state={
   projects: [],
@@ -222,7 +224,7 @@ function currentRunSettings() {
 
 function repositoryTargetArgs(threadId=state.threadId){return{project:activeProject(),resources:state.projectResources||[],settings:currentRunSettings(),threadSettings:threadId?threadRunSettings(threadId):{}}}
 function repositoryTargetState(threadId=state.threadId){return rtui.targetState(repositoryTargetArgs(threadId))}
-function renderRepositoryTargetStatus(){rtui.renderStatus(repositoryTargetArgs())}
+function renderRepositoryTargetStatus(){rtui.renderStatus(repositoryTargetArgs());careComposer?.sync()}
 function renderRepositoryTargets(){rtui.renderControls({...repositoryTargetArgs(),escapeHtml})}
 
 function threadRunSettings(threadId=state.threadId){return state.threadSettings?.[threadId]||{}}
@@ -1333,11 +1335,15 @@ function blockRepositoryTarget(target) {
 }
 
 async function sendPrompt() {
-  const prompt = $("prompt").value.trim();
+  const careTicket=careComposer?.prepare();
+  if(careTicket?.blocked)return;
+  const prompt = careTicket?.message||$("prompt").value.trim();
   if (!prompt) return;
   persistRunSettings();
   if (blockRepositoryTarget(repositoryTargetState())) return;
-  if (!state.threadId && !(await newThread())) return;
+  let createdThreadId=null;
+  if (!state.threadId && !(createdThreadId=await newThread())) return;
+  if(!careComposer?.valid(careTicket,createdThreadId))return;
   const current = captureThreadView(state);
   const threadId = state.threadId;
   if (blockRepositoryTarget(repositoryTargetState(threadId))) return;
@@ -1355,18 +1361,7 @@ async function sendPrompt() {
   const threadOptions = selectedThreadTurnOptions(threadId);
   const runSettings = currentRunSettings();
   const selectedThreadSettings = threadRunSettings(threadId);
-  const turnPayload = {
-    message: prompt,
-    project_id: state.projectId,
-    sandbox: runSettings.sandbox,
-    approval_policy: runSettings.approvalPolicy,
-    model: threadOptions.model,
-    reasoning_effort: threadOptions.reasoningEffort,
-    repository_resource_id: selectedThreadSettings.repository_resource_id || runSettings.repositoryResourceId || null,
-    ...rtui.scope(),
-    read_only_repository_resource_ids: selectedThreadSettings.read_only_repository_resource_ids || runSettings.readOnlyRepositoryResourceIds || [],
-    execution_profile_id:selectedThreadSettings.execution_profile_id||runSettings.profileId||ep.defaultId(),
-  };
+  const turnPayload=tsui.turnPayload(prompt,state.projectId,threadOptions,runSettings,selectedThreadSettings,rtui.scope(),selectedThreadSettings.execution_profile_id||runSettings.profileId||ep.defaultId());
   try {
     let targetThreadId = threadId;
     let response;
@@ -1402,7 +1397,9 @@ async function sendPrompt() {
         addMessage("Provider unavailable", response.error, "tool", new Date());
       }
     }
+    careComposer?.accepted(careTicket);
   } catch (error) {
+    careComposer?.rejected(careTicket);
     if (willQueue) {
       setThreadQueueDepth(threadId, Math.max(0, queuedDepth(threadId) - 1));
     } else {
@@ -2230,6 +2227,8 @@ const selectProject=createProjectNavigator(state,{refresh,applyRunSettings,onThr
 $("refresh").addEventListener("click", () => refresh({ reloadProjects: true }));
 $("new-thread").addEventListener("click", newThread);
 $("send").addEventListener("click", sendPrompt);
+careComposer=installCareComposer({prompt:$("prompt"),request:api,onResize:resizePromptInput,
+  getScope:()=>careScope(state,currentRunSettings(),rtui.scope())});
 $("theme-toggle").addEventListener("click", () => {
   applyTheme(currentTheme() === "dark" ? "light" : "dark");
 });
