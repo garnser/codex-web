@@ -1,5 +1,45 @@
 # Runtime supervision
 
+## Thread runner inspection
+
+Thread list/detail responses may include the additive `runner` projection
+(`schemaVersion: "1.0"`) of the current bootstrap assignment. This read-only
+projection decodes one tenant-filtered binding snapshot per list page, then
+uses page-bounded indexed assignment/worker/current-turn reads and the current
+fenced lease; it neither starts a session nor changes a turn, queue, assignment or
+business outcome. Cancelled/failed/lost assignments and missing, expired or
+mismatched leases cannot prove live custody. Missing or inaccessible evidence is
+explicitly unknown, with cross-scope identity redacted.
+
+Runner custody is separate from transcript state. Retained `inProgress` turns,
+including synthetic bootstrap turns, keep their IDs/content/status for evidence
+and reconciliation; they do not independently prove an active runner. Browser
+list/detail indicators consume the same projection. Snapshots compare assignment
+identity, creation/update time and lease fence; late activity events cannot
+reactivate custody already observed as inactive.
+`GET /api/threads/{thread_id}/runner` uses the same authenticated Thread/Project
+scope dependency and reads custody and the existing exact current-turn marker
+without provider/session startup. Its additive `activity` projection identifies
+the current turn only when marker assignment and fence match. Live persistent
+custody alone never sets Thread status or busy state: native idle/completed
+Threads stay idle, while historical turns retain their original IDs/status.
+Late unversioned events trigger refresh instead of replacing current activity. Assignment
+execution/workspace/Project identity, lease fence/worker/expiry/deadline and trusted
+worker lifecycle must match before reporting live. Queued work remains the
+separate canonical durable queue projection; unavailable evidence stays unknown.
+
+For Threads with a runner projection, unversioned provider activity only triggers
+a coalesced canonical read (one pending request per Thread, five-second delay, ten-second read timeout).
+The visible selected Thread also refreshes every 30 seconds, including waiting
+and unknown states, so server lease renewal and new fences can permit genuine current-turn activity.
+Renewal alone leaves an idle Thread idle.
+Hidden tabs skip that timer; there are no model calls or admission/replay effects.
+Failed refreshes clear busy indicators, expose uncertainty and retain ordering
+watermarks. Unknown detail hydrates activity before the unloaded early return,
+preserving the transcript and its unfinished turn IDs/status.
+Browser caches are display state only; server admission remains authoritative.
+Runtime naming failures retain the canonical name and display scoped feedback.
+
 ## Handoff delivery and acknowledgement deadlines
 
 New structured handoffs persist `delivery.status=awaiting_dispatch`. Their

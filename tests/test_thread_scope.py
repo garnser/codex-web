@@ -50,7 +50,7 @@ class ThreadScopeTests(unittest.IsolatedAsyncioTestCase):
                 runtime_id='codex', runtime_type='app-server', provider_native_session_id='thread-' + project.id))
         self.scope = ThreadScopeService(self.project_service, self.sessions, self.index)
         self.delegate = SimpleNamespace(**{name: AsyncMock(return_value={'ok': True}) for name in
-            ['list', 'read', 'rename', 'archive', 'unarchive', 'create', 'interrupt', 'update_primary',
+            ['list', 'read', 'runner', 'rename', 'archive', 'unarchive', 'create', 'interrupt', 'update_primary',
              'update_primary_channel', 'start', 'resume', 'replace', 'steer_latest', 'steer', 'retry_preflight', 'compact']})
         for name in ['update_settings', 'get_settings', 'queue', 'preflight_attempts', 'status']:
             setattr(self.delegate, name, Mock(return_value={'ok': True}))
@@ -73,7 +73,7 @@ class ThreadScopeTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.client.close)
 
     def test_foreign_thread_scopes_are_denied_before_any_runtime_or_queue_side_effect(self):
-        routes = [('GET', ''), ('POST', '/name'), ('POST', '/settings'), ('GET', '/settings'),
+        routes = [('GET', ''), ('GET', '/runner'), ('POST', '/name'), ('POST', '/settings'), ('GET', '/settings'),
                   ('POST', '/primary'), ('POST', '/primary-channel'), ('POST', '/archive'),
                   ('POST', '/unarchive'), ('POST', '/resume'), ('POST', '/replace'), ('POST', '/turns'),
                   ('GET', '/queue'), ('POST', '/queue/steer'), ('POST', '/queue/queued-id/steer'),
@@ -173,3 +173,11 @@ class ThreadScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.original_admission.preview.call_args.kwargs['project'].id,'a')
         self.assertEqual(self.client.post(path,json=payload).status_code,200)
         self.assertEqual(self.original_admission.admit.await_args.kwargs['actor'].identity_id,self.actor.identity_id)
+
+    def test_runner_route_uses_canonical_scope_without_runtime_start(self):
+        self.delegate.runner = AsyncMock(return_value={'id':'thread-a', 'runner':{'state':'cancelled','live':False}})
+        response = self.client.get('/api/threads/thread-a/runner?project_id=a')
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()['runner']['live'])
+        self.delegate.runner.assert_awaited_once_with('thread-a')
+        self.delegate.start.assert_not_called()

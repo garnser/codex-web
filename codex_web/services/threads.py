@@ -556,6 +556,67 @@ class ThreadService:
             return self.active_turn_getter(thread_id)
         return (fallback or {}).get(thread_id)
 
+    def _runner_projection(self, thread_id: str, bindings=None) -> dict[str, Any] | None:
+        """Read current worker custody, separately from retained turn history.
+
+        One binding snapshot per list request, indexed assignment/worker reads.
+        This projection never resumes a session, changes an
+        assignment, or classifies the business outcome of an unfinished turn.
+        """
+        if not (self.bootstrap_bindings and self.binding_service and self.control_actor):
+            return None
+        observed_at = time.time()
+        unknown = {"schemaVersion": "1.0", "state": "unknown", "live": False,
+                   "observedAt": observed_at, "source": "assignment"}
+        try:
+            binding = (self.bootstrap_bindings.get_by_thread(thread_id, self.control_actor)
+                       if bindings is None else bindings.get(thread_id))
+            if binding is None:
+                return None
+            assignment = self.binding_service.workers.store.assignment(binding.assignment_id)
+        except ThreadBootstrapBindingNotFoundError:
+            return None
+        except Exception:
+            return {**unknown, "reason": "assignment_lookup_unavailable"}
+        if assignment is None:
+            return {**unknown, "reason": "assignment_missing"}
+        indexed = self._index().get(thread_id)
+        if (indexed is None
+                or assignment.organization_id != self.control_actor.organization_id
+                or assignment.workspace_id != self.control_actor.workspace_id
+                or assignment.execution_id != binding.execution_id
+                or assignment.id != binding.assignment_id
+                or assignment.execution_workspace_id != binding.execution_workspace_id
+                or assignment.project_id != indexed.project_id):
+            return {**unknown, "reason": "assignment_scope_mismatch"}
+        lease = assignment.lease
+        lease_valid = bool(lease and lease.expires_at > observed_at
+                           and lease.fence == assignment.fence
+                           and lease.worker_id == assignment.assigned_worker_id)
+        status = str(assignment.status)
+        if status in {"running", "claimed"} and lease_valid:
+            try:
+                worker = self.binding_service.workers.store.worker(assignment.assigned_worker_id)
+                lease_valid = bool(worker
+                    and worker.organization_id == assignment.organization_id
+                    and worker.workspace_id == assignment.workspace_id
+                    and str(worker.lifecycle) in {"active", "draining"}
+                    and (assignment.deadline_at is None or assignment.deadline_at > observed_at))
+            except Exception:
+                lease_valid = False
+        state = {"cancelled": "cancelled", "succeeded": "idle", "failed": "failed",
+                 "lost": "unknown", "pending": "waiting", "claimed": "waiting"}.get(status, "unknown")
+        if status == "running":
+            state = "running" if lease_valid else "unknown"
+        elif status == "claimed" and not lease_valid:
+            state = "unknown"
+        return {**unknown, "state": state, "live": status == "running" and lease_valid,
+                "assignmentId": assignment.id, "assignmentStatus": status,
+                "assignmentCreatedAt": assignment.created_at, "updatedAt": assignment.updated_at,
+                "fence": assignment.fence, "leaseValid": lease_valid,
+                "leaseExpiresAt": lease.expires_at if lease else None,
+                "reason": assignment.failure_code}
+
     async def list(
         self,
         project_id: str | None = None,
@@ -778,6 +839,16 @@ class ThreadService:
             and self.active_turn_loader is not None
             else {}
         )
+        # The binding store is a namespace document, not an indexed point store.
+        # Decode once for this page; assignment/worker reads remain page-bounded.
+        runner_bindings = {}
+        runner_lookup_failed = False
+        if indexed_page and self.bootstrap_bindings and self.binding_service and self.control_actor:
+            try:
+                runner_bindings = {item.thread_id: item for item in await asyncio.to_thread(
+                    self.bootstrap_bindings.list, self.control_actor)}
+            except Exception:
+                runner_lookup_failed = True
         rows: list[dict[str, Any]] = []
         for indexed in indexed_page:
             runtime_item = runtime_rows.get(indexed.id)
@@ -829,6 +900,15 @@ class ThreadService:
                 "needsRefresh": runtime_item is None,
                 "staleIndex": runtime_item is None,
             }
+            runner = ({"schemaVersion": "1.0", "state": "unknown", "live": False,
+                       "observedAt": time.time(), "source": "assignment",
+                       "reason": "assignment_lookup_unavailable"} if runner_lookup_failed
+                      else await asyncio.to_thread(self._runner_projection, indexed.id, runner_bindings))
+            if runner is not None:
+                row["runner"] = runner
+                row["activity"] = await asyncio.to_thread(self._runner_activity, indexed.id, runner)
+                if not runner["live"]:
+                    row["status"] = {"type": "notLoaded" if runner["state"] == "unknown" else "idle"}
             rows.append(row)
             await asyncio.to_thread(
                 self._adopt_legacy_thread,
@@ -1353,6 +1433,52 @@ class ThreadService:
         return {"thread": canonical_thread}
 
     async def read(
+        self,
+        thread_id: str,
+        message_limit: int | None = None,
+        turn_limit: int | None = None,
+    ) -> dict[str, Any]:
+        response = await self._read(thread_id, message_limit, turn_limit)
+        runner = await asyncio.to_thread(self._runner_projection, thread_id)
+        if runner is None or not isinstance(response.get("thread"), dict):
+            return response
+        activity = await asyncio.to_thread(self._runner_activity, thread_id, runner)
+        thread = {**response["thread"], "runner": runner, "activity": activity}
+        if not runner["live"]:
+            thread["status"] = {"type": "notLoaded" if runner["state"] == "unknown" else "idle"}
+        return {**response, "thread": thread}
+
+    async def runner(self, thread_id: str) -> dict[str, Any]:
+        """Inspect custody without touching the provider or starting a session."""
+        projection = await asyncio.to_thread(self._runner_projection, thread_id)
+        activity = await asyncio.to_thread(self._runner_activity, thread_id, projection)
+        return {"id": thread_id, "runner": projection, "activity": activity,
+                "status": {"type": {"active": "active", "idle": "idle"}.get(activity["state"], "notLoaded")}}
+
+    def _runner_activity(self, thread_id: str, runner: dict[str, Any] | None) -> dict[str, Any]:
+        """Current exact-turn marker, never the retained transcript or lease alone.
+
+        Persistent bootstrap custody can be live for many idle conversations.
+        Missing/stale marker evidence cannot manufacture a turn or its outcome.
+        """
+        unknown = {"state": "unknown", "turnId": None, "source": "current_turn"}
+        if runner is None or not runner["live"]:
+            return unknown
+        if self.active_turn_getter is None:
+            return unknown
+        try:
+            active = self.active_turn_getter(thread_id)
+        except Exception:
+            return unknown
+        if active is None:
+            return {**unknown, "state": "idle"}
+        if (active.assignment_id != runner["assignmentId"]
+                or active.fence != runner["fence"]
+                or not active.turn_id):
+            return unknown
+        return {**unknown, "state": "active", "turnId": active.turn_id}
+
+    async def _read(
         self,
         thread_id: str,
         message_limit: int | None = None,

@@ -1,5 +1,6 @@
 import{applyQueueAdmissionStatus,renderQueueAdmissionStatus}from"./queue_admission_status.js";
 import{captureThreadView,renameSelectedThread,archiveSelectedThread}from"./thread_view_actions.js";
+import {applyRunner, runnerFor, runnerLabel, allowsRuntimeActivity, createThreadRunnerUI} from './thread_runner_ui.js';
 import{showBotEditor}from"./bot_page_editor.js";
 import{saveBotIntegration}from"./bot_integration_save.js";
 import{integrationEditors}from"./integration_editor_state.js";
@@ -164,7 +165,10 @@ const api=createLoggedApi(logEvent,()=>state.projectId);
 const pfUi=createPfUi({api,addMessage,loadThread:id=>loadThread(id,{force:true}),scheduleRefresh,logEvent,captureView:()=>captureThreadView(state)});
 const threadRoute=createThreadRoute({state,api,clearSelection:clearSelectedThread,loadThread,addMessage});
 
-const uiEvents=createProjectUiEventReconciler({state,api,renderThreads,reconcileWorkspace:refresh,logEvent,getSearch:()=>$("thread-search")?.value||""});
+const uiEvents=createProjectUiEventReconciler({state,api,renderThreads:()=>{
+  hydrateThreadListActivity(state.threads?.data || state.threads?.threads || state.threads || []);
+  renderThreads();
+},reconcileWorkspace:refresh,logEvent,getSearch:()=>$("thread-search")?.value||""});
 
 function threadHistoryController() {
   return window.codexThreadHistory || null;
@@ -515,7 +519,10 @@ function renderThreads() {
       :"";
     const waiting=isThreadBusy(thread.id);
     const depth=queuedDepth(thread.id);
-    const threadStatus=(waiting
+    const runnerText = runnerLabel(thread.id) || (thread.status?.type === 'notLoaded' ? 'Runner unloaded' : '');
+    const threadStatus=(runnerText
+      ? `<span class="thread-state" title="Current canonical worker custody; retained turns are history">${escapeHtml(runnerText)}</span>`
+      : waiting
       ?`<span class="thread-state waiting"><span class="thread-state-dot"></span>Waiting for Codex</span>`
       :"")+(depth>0?`<span class="thread-state queued" title="Tasks retained in the durable queue; execution remains sequential">Queued ${depth}</span>`:"");
 
@@ -744,42 +751,11 @@ function updateWaitingFromState() {
   }
 }
 
-async function refreshQueueStatus(threadId = state.threadId) {
-  if (!threadId) return;
-  try {
-    const status = await api(`/api/threads/${threadId}/queue`);
-    applyQueueAdmissionStatus(state,status);
-    setThreadQueueDepth(threadId, status.queueDepth || 0);
-    if (status.active) markThreadBusy(threadId);
-    return status;
-  } catch (error) {
-    logEvent("queue.error", { message: error.message });
-  }
-}
 
-function hydrateThreadActivity(thread) {
-  if (!thread?.id) return;
-  clearThreadBusy(thread.id);
-  if (thread.status?.type === "active") {
-    markThreadBusy(thread.id);
-  }
-  (thread.turns || []).forEach((turn) => {
-    if (turn?.status === "inProgress") markThreadBusy(thread.id, turn.id);
-  });
-  updateWaitingFromState();
-}
-
-function hydrateThreadListActivity(threads) {
-  (threads || []).forEach((thread) => {
-    if (!thread?.id || !thread.status?.type) return;
-    if (thread.status.type === "active") {
-      markThreadBusy(thread.id);
-    } else if (thread.status.type === "idle" || thread.status.type === "systemError" || thread.status.type === "notLoaded") {
-      clearThreadBusy(thread.id);
-    }
-  });
-  updateWaitingFromState();
-}
+const {refreshRunner,updateRunnerMeta,hydrateThreadActivity,hydrateThreadListActivity,updateThreadActivityFromEvent,refreshQueueStatus}=createThreadRunnerUI({
+  state,api,patchThread:(...args)=>uiEvents.patchThread(...args),markThreadBusy,clearThreadBusy,
+  scheduleRenderThreads,updateWaitingFromState,renderThreads,logEvent,getMeta:()=>$("thread-meta"),applyQueueAdmissionStatus,setThreadQueueDepth,
+});
 
 function clearMessages() {
   $("messages").innerHTML = "";
@@ -964,6 +940,7 @@ function renderThread(thread) {
   const boundRepository = threadRunSettings(thread.id)?.repository_resource_id || "";
   const repositoryMeta = boundRepository ? ` · repository ${boundRepository}` : "";
   $("thread-meta").textContent = `${thread.id} · ${thread.cwd || ""}${repositoryMeta}`;
+  updateRunnerMeta(thread.id);
   const turns = thread.turns || [];
   turns.forEach((turn) => {
     (turn.items || []).forEach((item) => renderItem(item, turn));
@@ -976,7 +953,9 @@ function renderNewThreadShell(thread) {
   $("thread-title").textContent = thread.name || "Untitled thread";
   const repositoryId = currentRunSettings().repositoryResourceId;
   const repositoryMeta = repositoryId ? ` · repository ${repositoryId}` : "";
+  applyRunner(thread);
   $("thread-meta").textContent = `${thread.id} · ${thread.cwd || activeProject()?.path || ""}${repositoryMeta}`;
+  updateRunnerMeta(thread.id);
   renderRepositoryTargetStatus();
 }
 
@@ -1250,11 +1229,14 @@ async function loadThread(threadId, { historyMode = "none", force = false } = {}
     addMessage("Thread unavailable", "This Thread belongs to a different Project.", "tool", new Date());
     return;
   }
+  hydrateThreadActivity(thread);
   if (data?.timedOut || thread.readTimedOut || thread.status?.type === "notLoaded") {
     renderThread(thread);
     addMessage(
-      "Conversation loading",
-      data?.error || "This conversation is still loading. It will refresh when the current response completes, or you can select the thread again to retry.",
+      thread.runner?.state === 'unknown' ? 'Runner status unknown' : "Conversation loading",
+      thread.runner?.state === 'unknown'
+        ? 'Current worker custody could not be verified. Retained conversation history is preserved. Refresh the Thread to retry.'
+        : data?.error || "This conversation is still loading. It will refresh when the current response completes, or you can select the thread again to retry.",
       "tool",
       new Date(),
     );
@@ -1402,6 +1384,10 @@ async function sendPrompt() {
         addMessage("Provider unavailable", response.error, "tool", new Date());
       }
     }
+    if (!response.queued && response.turn?.id) {
+      clearThreadBusy(targetThreadId);
+      markThreadBusy(targetThreadId, response.turn.id);
+    }
     careComposer?.accepted(careTicket);
     ux?.accepted(ut);
   } catch (error) {
@@ -1438,7 +1424,10 @@ async function steerQueuedMessage(message) {
 }
 
 function renameThread() {
-  return renameSelectedThread({state,api,title:$("thread-title"),patchThread:uiEvents.patchThread});
+  const current = captureThreadView(state);
+  return renameSelectedThread({state,api,title:$("thread-title"),patchThread:uiEvents.patchThread}).catch(error => {
+    if (current()) addMessage('Thread management', `Rename failed: ${error.message}. The displayed name is unchanged. Refresh to verify name and runner status before retrying.`, 'tool', new Date());
+  });
 }
 
 function handleEvent(event) {
@@ -1466,7 +1455,8 @@ function handleEvent(event) {
   if (event.type === "queue.status") {
     applyQueueAdmissionStatus(state,event);
     setThreadQueueDepth(event.threadId, event.queueDepth || 0);
-    if (event.active) markThreadBusy(event.threadId);
+    if (runnerFor(event.threadId)) refreshRunner(event.threadId);
+    else if (event.active) markThreadBusy(event.threadId);
     return;
   }
   if (event.type === "queue.error") {
@@ -1506,7 +1496,8 @@ function handleEvent(event) {
   if (event.type !== "codex.event") return;
   const message = event.message;
   const threadId = eventThreadId(message);
-  const summary=uiEvents.handleCodexSummary(message,event);
+  const activityEvent = ['turn/started','item/started','turn/completed','turn/failed','thread/status/changed'].includes(message.method);
+  const summary = runnerFor(threadId) && activityEvent ? {} : uiEvents.handleCodexSummary(message,event);
   if(summary.name&&threadId===state.threadId)$("thread-title").textContent=summary.name;
   updateThreadActivityFromEvent(message);
   if (message.method === "thread/tokenUsage/updated") {
@@ -1526,10 +1517,10 @@ function handleEvent(event) {
   if (message.method === "item/agentMessage/delta") {
     appendAgentDelta(message.params?.delta || "");
   } else if (message.method === "turn/started") {
-    setWaiting(true, "Waiting for Codex");
+    if (!runnerFor(threadId)) setWaiting(true, "Waiting for Codex");
   } else if (message.method === "item/started") {
     const item = message.params?.item;
-    setWaiting(true, "Waiting for Codex");
+    if (!runnerFor(threadId)) setWaiting(true, "Waiting for Codex");
     if (item?.type === "commandExecution") addCommandMessage("Command started", item.command || "", "", false, itemTimestamp(item));
   } else if (message.method === "item/completed") {
     const item = message.params?.item;
@@ -1565,28 +1556,6 @@ function eventThreadId(message) {
   return message?.params?.threadId || message?.params?.turn?.threadId || null;
 }
 
-function eventTurnId(message) {
-  return message?.params?.turnId || message?.params?.turn?.id || null;
-}
-
-function updateThreadActivityFromEvent(message) {
-  const threadId = eventThreadId(message);
-  if (!threadId) return;
-  const method = message.method;
-  const turnId = eventTurnId(message);
-  if (method === "turn/started" || method === "item/started") {
-    markThreadBusy(threadId, turnId);
-  } else if (method === "turn/completed" || method === "turn/failed") {
-    clearThreadBusy(threadId, turnId);
-  } else if (method === "thread/status/changed") {
-    const statusType = message.params?.status?.type;
-    if (statusType === "active") {
-      markThreadBusy(threadId);
-    } else if (statusType === "idle" || statusType === "systemError" || statusType === "notLoaded") {
-      clearThreadBusy(threadId);
-    }
-  }
-}
 
 function isActiveThreadEvent(message) {
   const threadId = eventThreadId(message);

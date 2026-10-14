@@ -84,6 +84,10 @@ def build_threads_router(service: ThreadService, scope: ThreadScopeService) -> A
             turn_limit=turn_limit,
         )
 
+    @router.get("/api/threads/{thread_id}/runner")
+    async def read_runner(thread_id: str) -> dict[str, Any]:
+        return await service.runner(thread_id)
+
     @router.post("/api/threads/{thread_id}/name")
     async def rename_thread(thread_id: str, payload: ThreadRename) -> dict[str, Any]:
         return await service.rename(thread_id, payload.name)
