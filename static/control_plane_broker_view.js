@@ -23,9 +23,11 @@ export function brokerDeclarationHtml(item, projectId) {
   const pinned = context.agent_profile || item.agent_profile;
   const current = admin?.current_agent_profile;
   const observation = admin?.configuration_observation;
+  const evidence = (capability.operations || []).find(op => op.id === 'repository.read.delivery-evidence');
   return `<small><strong>Brokered control plane:</strong> ${capability.enabled ? 'configured' : 'disabled'} · Project ${esc(item.project_id)} · execution profile ${link('execution_profile', item.execution_profile_id, projectId)}</small>
     <small>Credential material exposed: ${capability.credential_exposed === false ? 'no' : capability.credential_exposed === true ? 'unexpected exposure reported' : 'not reported'}.</small>
     <small>Declared operation allowlist: ${esc((capability.operations || []).map(op => op.id).join(', ') || 'none')}. Each request requires current canonical authority and a live fenced lease.</small>
+    ${evidence ? `<small>Delivery evidence: read-only · supported actions ${esc((evidence.supported_action_ids || []).join(', ') || 'not reported')} · scoped path ${esc(evidence.path_template)}. Historical receipts require matching requester and repository scope; missing receipts or timestamps alone do not prove provider outcome.</small>` : ''}
     ${pinned ? `<small>Pinned Agent Profile: ${link('agent_profile', pinned.profile_id, projectId)}@r${esc(pinned.profile_revision)} · record ${esc(pinned.profile_record_id)} · Agent Role ${esc(pinned.role_id || 'none')}</small>` : '<small>Pinned Agent Profile: unavailable.</small>'}
     ${admin ? `<small>Declared administrative repository targets: ${(admin.repository_ids || []).map(id => link('resource', id, projectId)).join(', ') || 'none'}. These declarations grant no Git workspace access.</small>
       <small>Pinned execution definition: ${definition(admin.definition, projectId)} · current published definition: ${definition(admin.current_definition, projectId)} · ${admin.definition_is_current === true ? 'matches pin' : admin.definition_is_current === false ? 'changed / stale pin' : 'unavailable'}</small>
