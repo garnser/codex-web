@@ -67,3 +67,9 @@ drill-down, labeled as such in the explorer. This preserves company KPI
 inspection without treating an absent Project as a request for global data.
 Opening the normal Metrics launcher or switching Project exits this mode and
 restores Project-scoped reads. API tenant and mutation authority remain unchanged.
+
+The [human outcome calculation contract](outcome-metrics.md) extends canonical
+Metrics with acceptance, correction and explicitly measured human effort. It
+joins runtime usage and review Evidence deterministically, preserves unresolved
+outcomes and measurement omissions, and keeps the separate UX collector
+content-free. Outcome Metrics retain the joined Evidence read authority.

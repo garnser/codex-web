@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from typing import Any, Callable, Iterable, Iterator
 
@@ -614,11 +616,16 @@ class ArtifactEvidenceService:
         self.store.update(apply)
         return artifact
 
-    def create_evidence(self, payload: EvidenceCreate, *, actor: AuthenticationActor) -> Evidence:
+    def create_evidence(self, payload: EvidenceCreate, *, actor: AuthenticationActor,
+                        idempotency_key: str | None = None,
+                        source_evidence_ids: tuple[str, ...] = ()) -> Evidence:
         sources = self._research_sources(payload.knowledge_ids, actor=actor, project_id=payload.project_id)
         self._validate_resources(payload.resource_ids, actor)
         self._validate_work_item_ref(payload.work_item_ref, actor)
         state = self.store.load()
+        source_evidence = [self._evidence(state, evidence_id, actor) for evidence_id in source_evidence_ids]
+        if any(item.project_id != payload.project_id for item in source_evidence):
+            raise ArtifactEvidenceConflictError("derived Evidence sources must match its Project")
         artifacts = [self._artifact(state, artifact_id, actor) for artifact_id in payload.artifact_ids]
         inactive = [item.id for item in artifacts if item.lifecycle != ArtifactLifecycle.ACTIVE]
         if inactive:
@@ -658,6 +665,27 @@ class ArtifactEvidenceService:
             retention_expires_at=payload.retention_expires_at,
             metadata=payload.metadata,
         )
+        if idempotency_key is not None:
+            key = "\0".join((actor.organization_id, actor.workspace_id,
+                actor.identity_id, payload.source or "", idempotency_key))
+            evidence.id = "evidence-" + hashlib.sha256(key.encode()).hexdigest()
+            evidence.metadata = {**evidence.metadata, "idempotency_payload_sha256":
+                hashlib.sha256(json.dumps({"payload":payload.model_dump(mode="json"),
+                    "source_evidence_ids":sorted(set(source_evidence_ids))}, sort_keys=True).encode()).hexdigest()}
+
+        def existing_or_conflict(current):
+            if idempotency_key is None:
+                return None
+            previous = next((item for item in current.evidence if item.id == evidence.id), None)
+            if previous is None:
+                return None
+            if previous.metadata.get("idempotency_payload_sha256") != evidence.metadata["idempotency_payload_sha256"]:
+                raise ArtifactEvidenceConflictError("evidence idempotency key has different content")
+            return previous
+
+        previous = existing_or_conflict(state)
+        if previous is not None:
+            return previous
         if self.governance is not None:
             source_record_ids = tuple(
                 item.governance_record_id
@@ -675,7 +703,8 @@ class ArtifactEvidenceService:
                     retention_expires_at=payload.retention_expires_at,
                     retention_action=payload.retention_action,
                     residency_tags=payload.residency_tags,
-                    source_record_ids=(*source_record_ids, *(source.governance_record_id for source in sources)),
+                    source_record_ids=(*source_record_ids, *(source.governance_record_id for source in sources),
+                        *(item.governance_record_id for item in source_evidence if item.governance_record_id)),
                     deny_model_context=payload.deny_model_context,
                     reason="evidence_created",
                 ),
@@ -688,12 +717,18 @@ class ArtifactEvidenceService:
                 }
             )
 
+        returned = []
         def apply(current: ArtifactEvidenceState) -> ArtifactEvidenceState:
+            previous = existing_or_conflict(current)
+            if previous is not None:
+                returned.append(previous)
+                return current
             current.evidence.append(evidence)
+            returned.append(evidence)
             return current
 
         self.store.update(apply)
-        return evidence
+        return returned[0]
 
     def create_verification(
         self,
@@ -1134,6 +1169,9 @@ class ArtifactEvidenceService:
             if self._same_scope(item, actor)
             and item.work_item_ref == work_item_ref
             and item.lifecycle == EvidenceLifecycle.VALID
+            # Product outcome feedback measures acceptance; it cannot act as
+            # technical verification, even under a permissive review requirement.
+            and item.source != "human-outcome/1.0"
         ]
         outcomes: list[EvidenceRequirementOutcome] = []
         for requirement in requirements:

@@ -41,3 +41,12 @@
   .metric-grid{grid-template-columns:1fr 1fr}
 }
 @media(max-width:480px){.metric-grid{grid-template-columns:1fr}}
+
+.outcome-metrics { padding: 1rem; overflow-wrap: anywhere; }
+.outcome-metrics summary { cursor: pointer; font-weight: 600; }
+.outcome-window, .outcome-feedback { display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; }
+.outcome-feedback[hidden] { display: none; }
+.outcome-metrics label { display: grid; gap: .25rem; max-width: 100%; }
+.outcome-metrics table { width: 100%; text-align: left; }
+.outcome-metrics th, .outcome-metrics td { padding: .35rem; border-bottom: 1px solid var(--border, #555); }
+.outcome-feedback h3, .outcome-target { width: 100%; }
