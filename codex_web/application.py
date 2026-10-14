@@ -319,6 +319,7 @@ from codex_web.services.decision_deliberation import DecisionDeliberationService
 from codex_web.services.decision_work import DecisionWorkService
 from codex_web.services.entitlements import EntitlementService
 from codex_web.services.evaluations import EvaluationService
+from codex_web.services.evaluation_rubrics import install_evaluation_rubric_schema
 from codex_web.services.extensions import ExtensionService
 from codex_web.services.extension_runtime import ExtensionRuntimeRegistry
 from codex_web.services.execution_preflight import ExecutionPreflightService
@@ -1576,6 +1577,7 @@ app.state.artifact_evidence_store = artifact_evidence_store
 app.state.artifact_evidence_service = artifact_evidence_service
 
 evaluation_store = EvaluationStore(state_store)
+install_evaluation_rubric_schema(definition_registry_service)
 evaluation_service = EvaluationService(
     evaluation_store,
     definition_registry_service,
