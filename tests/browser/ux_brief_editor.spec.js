@@ -67,3 +67,14 @@ test('mobile keyboard source pinning remains usable without overflow',async({pag
   await expect(page.locator('#ux-brief-pins')).toContainText(pin.sha256);
   expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
+
+test('Memory explorer keeps the record pane in the remaining grid space',async({page})=>{
+  await page.goto('http://127.0.0.1:18766/static/ux_brief_editor.js');
+  await page.evaluate(async()=>{
+    document.body.innerHTML='<link rel="stylesheet" href="/static/memory_ui.css"><div style="width:900px;height:700px"><div class="memory-shell"><header class="memory-header">Memory</header><div class="memory-toolbar">Search</div><div class="memory-index">Index status</div><div class="memory-layout"><aside>Records</aside><main>Selected record</main></div></div></div>';
+    const {installUxBriefEditor}=await import('/static/ux_brief_editor.js');
+    installUxBriefEditor({host:document.querySelector('.memory-shell'),getProjectId:()=> 'project-a'});
+  });
+  await page.locator('#ux-brief-editor').waitFor();
+  await expect.poll(async()=>page.locator('.memory-layout').evaluate(node=>node.getBoundingClientRect().height)).toBeGreaterThan(300);
+});

@@ -1,6 +1,6 @@
 .memory-dialog{width:min(1280px,97vw);height:min(880px,94vh);padding:0;border:1px solid var(--line,#313744);border-radius:14px;background:var(--surface,#171a21);color:var(--text,#f4f6fa)}
 .memory-dialog::backdrop{background:rgba(0,0,0,.58)}
-.memory-shell{height:100%;display:grid;grid-template-rows:auto auto auto 1fr;min-height:0}
+.memory-shell{height:100%;display:grid;grid-template-rows:auto auto auto auto minmax(0,1fr);min-height:0}
 .memory-header{display:flex;justify-content:space-between;gap:16px;padding:18px 20px 12px;border-bottom:1px solid var(--line,#313744)}
 .memory-header h2,.memory-card h3,.memory-card h4{margin:0}.memory-header p,.memory-card p{margin:5px 0 0;color:var(--muted,#9aa4b5)}
 .memory-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 20px;border-bottom:1px solid var(--line,#313744)}
