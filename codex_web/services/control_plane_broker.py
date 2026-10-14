@@ -549,6 +549,10 @@ class ControlPlaneBrokerService:
             "execution_id": assignment.execution_id,
             "execution_workspace_id": assignment.execution_workspace_id,
             "execution_profile_id": assignment.execution_profile_id,
+            "execution_profile_definition": (
+                assignment.execution_profile_definition.model_dump(mode="json")
+                if assignment.execution_profile_definition is not None else None
+            ),
             "agent_profile": (
                 {
                     "profile_id": profile.profile_id,
