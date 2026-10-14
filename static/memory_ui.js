@@ -177,7 +177,7 @@ function renderRecords() {
     <button type="button" class="memory-row ${item.id === state.selectedKnowledgeId ? 'selected' : ''}" data-memory-id="${esc(item.id)}">
       <strong>${esc(item.title)}</strong>
       <span>${esc(item.object_type)} · v${esc(item.version)} · ${esc(item.project_id || 'company')}</span>
-      <small>${badge(item.freshness)} ${badge(item.lifecycle)} · ${esc(item.provenance?.source_kind || 'unknown')}</small>
+      <small>${badge(item.freshness)} ${badge(item.lifecycle)} · ${esc(item.provenance?.source_kind || 'unknown')} · origin ${esc(item.provenance?.origin || 'unknown')} · ${esc(item.provenance?.review_status || 'unreviewed')}</small>
     </button>`).join('');
   host.querySelectorAll('.memory-row').forEach((row) => row.addEventListener('click', () => selectKnowledge(row.dataset.memoryId)));
 }
@@ -241,6 +241,8 @@ function renderKnowledgeDetail() {
       <div><span>Governance record</span><strong>${esc(item.governance_record_id)}</strong></div>
       <div><span>Source</span><strong>${esc(provenance.source_kind)} · ${esc(provenance.source_ref)}</strong></div>
       <div><span>Source revision</span><strong>${esc(provenance.source_revision || '—')}</strong></div>
+      <div><span>Research origin / review</span><strong>${esc(provenance.origin || 'unknown')} · ${esc(provenance.review_status || 'unreviewed')} (metadata, not verification)</strong></div>
+      <div><span>Derived source origins</span><strong>${(provenance.origin_sources || []).map(source => `<button type="button" class="ghost-button" data-memory-source="${esc(source.knowledge_id)}">${esc(source.knowledge_id)}@v${esc(source.version)}: ${esc(source.origin)}</button>`).join(' · ') || 'No derived sources'}</strong></div>
       <div><span>Author / observed</span><strong>${esc(provenance.authored_by || '—')} · ${esc(fmtTime(provenance.observed_at))}</strong></div>
       <div><span>Review after</span><strong>${esc(fmtTime(item.review_after))}</strong></div>
       <div><span>Valid until</span><strong>${esc(fmtTime(item.valid_until))}</strong></div>
@@ -263,6 +265,9 @@ function renderKnowledgeDetail() {
         <article><strong>${esc(rel.relationship_type)}</strong><span>${esc(rel.source_knowledge_id)} → ${esc(rel.target_knowledge_id)}</span><small>${esc(rel.note || '')}</small></article>
       `).join('') || '<p class="memory-muted">No relationships.</p>'}</div>
     </section>`;
+  host.querySelectorAll('[data-memory-source]').forEach(button => {
+    button.addEventListener('click', () => selectKnowledge(button.dataset.memorySource));
+  });
 }
 
 async function selectRetrieval(id) {
@@ -308,6 +313,7 @@ function renderRetrieval(run, liveItems = []) {
         return `<article>
           <strong>[memory:${esc(id)}@v${esc(item.version || '?')}] · score ${esc(scores[id] ?? '—')}</strong>
           <span>${esc(item.title || id)} · ${esc(freshness[id] || item.freshness || 'unknown')}</span>
+          <small>Origin ${esc(item.provenance?.origin || 'unknown')} · ${esc(item.provenance?.review_status || 'unreviewed')} (metadata, not verification)</small>
           <small>${esc((item.reasons || []).join(' · ') || 'Selection reasons are preserved on live retrieval results; historical run stores score/freshness and canonical IDs.')}</small>
         </article>`;
       }).join('') || '<p class="memory-muted">No knowledge selected.</p>'}</div>

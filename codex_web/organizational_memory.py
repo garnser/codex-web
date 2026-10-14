@@ -18,8 +18,8 @@ from codex_web.data_governance import (
 
 ORGANIZATIONAL_MEMORY_CONTRACT = ContractSpec(
     "organizational-memory-state",
-    "1.0",
-    ("1.0",),
+    "1.1",
+    ("1.0", "1.1"),
 )
 
 MAX_MEMORY_RELATIONSHIPS = 100
@@ -99,6 +99,26 @@ class KnowledgeCanonicalRef(BaseModel):
     relation: str = Field(default="references", min_length=1, max_length=100)
 
 
+class KnowledgeOrigin(StrEnum):
+    HUMAN_OBSERVED = "human_observed"
+    SECONDARY_RESEARCH = "secondary_research"
+    AI_INFERENCE = "ai_inference"
+    MIXED = "mixed"
+    UNKNOWN = "unknown"
+
+
+class KnowledgeOriginSource(BaseModel):
+    """Exact canonical source attribution; a label is not verification."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    knowledge_id: str
+    version: int = Field(ge=1)
+    origin: KnowledgeOrigin
+    source_ref: str
+    source_revision: str | None = None
+
+
 class KnowledgeProvenance(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
@@ -111,6 +131,11 @@ class KnowledgeProvenance(BaseModel):
     observed_at: float = Field(default_factory=time.time)
     evidence_ids: tuple[str, ...] = ()
     source_governance_record_ids: tuple[str, ...] = ()
+    origin: KnowledgeOrigin = KnowledgeOrigin.UNKNOWN
+    review_status: str = Field(default="unreviewed", pattern=r"^(unreviewed|reviewed)$")
+    # Resolved by the service from canonical derivation links, never trusted
+    # as caller-provided independent or observed-source proof.
+    origin_sources: tuple[KnowledgeOriginSource, ...] = Field(default=(), max_length=100)
 
     @model_validator(mode="after")
     def normalize(self) -> "KnowledgeProvenance":
