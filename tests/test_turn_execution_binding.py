@@ -750,9 +750,71 @@ class TurnExecutionBindingTests(unittest.TestCase):
         self.assertEqual(assignment.sandbox, "danger-full-access")
         self.assertIsNotNone(inspection.lease)
         self.assertEqual(inspection.lease.mode, LeaseMode.WRITE)
-        self.assertTrue(assignment.network.enabled)
-        self.assertIn(WorkerCapability.NETWORK, assignment.required_capabilities)
+        self.assertFalse(assignment.network.enabled)
+        self.assertNotIn(WorkerCapability.NETWORK, assignment.required_capabilities)
         self.assertEqual(assignment.execution_workspace_id, binding.workspace_id)
+
+    def _assert_network_ownership(self, expected, *, resolved=None, legacy=False):
+        from unittest.mock import patch
+        from codex_web.execution_workspaces import ExecutionWorkspaceRelease
+        self._publish_secret()
+        if legacy:
+            self.service.execution_profiles = None
+        for sandbox in ("read-only", "workspace-write", "danger-full-access"):
+            with self.subTest(sandbox=sandbox):
+                context = (patch.object(self.execution_profiles, "resolve", return_value=resolved)
+                    if resolved is not None else __import__('contextlib').nullcontext())
+                binding = None
+                with context:
+                    if sandbox == "read-only":
+                        # Existing repository-write targeting requests a writable
+                        # member even for a read-only inner mode. That independent
+                        # canonical scope refusal must remain, so inspect the real
+                        # submitted request without bypassing its validator.
+                        with patch.object(self.workers, "create_assignment", wraps=self.workers.create_assignment) as create:
+                            with self.assertRaisesRegex(TurnExecutionBindingError,
+                                    "assignment writable repository lacks a write workspace member"):
+                                self._prepare(execution_id="network-" + sandbox, sandbox=sandbox)
+                        assignment = create.call_args.args[0]
+                    else:
+                        binding = self._prepare(execution_id="network-" + sandbox, sandbox=sandbox)
+                        assignment = self.workers.assignment_for_execution(binding.execution_id, actor=self.actor)
+                enabled = expected(sandbox)
+                self.assertEqual(assignment.network.enabled, enabled)
+                self.assertEqual(WorkerCapability.NETWORK in assignment.required_capabilities, enabled)
+                self.assertEqual(assignment.sandbox, sandbox)
+                if legacy:
+                    self.assertIsNone(assignment.execution_profile_definition)
+                    self.assertIsNone(assignment.execution_profile_id)
+                else:
+                    ref = resolved[1] if resolved is not None else self.execution_profiles.resolve(None)[1]
+                    self.assertEqual(assignment.execution_profile_definition, ref)
+                    self.assertEqual(assignment.execution_profile_id, "repository-write")
+                if binding is not None:
+                    self.workspaces.release(binding.workspace_id, ExecutionWorkspaceRelease(), actor=self.actor)
+
+    def test_exact_published_profile_disables_network_independently_of_inner_mode(self):
+        self._assert_network_ownership(lambda sandbox: False)
+
+    def test_resolved_network_true_preserves_capability_for_every_inner_mode(self):
+        profile, ref = self.execution_profiles.resolve("repository-write")
+        # Schema 1.0/1.1 reject true; this synthetic resolver result tests the
+        # builder's ownership contract, not publication or native enforcement.
+        # A future governed network profile must not lose its capability merely
+        # because Codex uses a restricted inner command sandbox.
+        self._assert_network_ownership(lambda sandbox: True,
+            resolved=(profile.model_copy(update={"network_enabled": True}), ref))
+
+    def test_current_profile_schema_cannot_publish_network_or_host_expansion(self):
+        from pydantic import ValidationError
+        from codex_web.execution_profiles import ExecutionProfileContract
+        profile, _ = self.execution_profiles.resolve("repository-write")
+        for field in ("network_enabled", "host_mutation"):
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                ExecutionProfileContract.model_validate({**profile.model_dump(), field: True})
+
+    def test_unprofiled_legacy_network_still_follows_inner_full_access(self):
+        self._assert_network_ownership(lambda sandbox: sandbox == "danger-full-access", legacy=True)
 
     def test_prepares_long_lived_thread_bootstrap_without_fake_thread_or_work_item(self) -> None:
         self._publish_secret()

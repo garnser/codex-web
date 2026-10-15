@@ -237,6 +237,7 @@ class NotificationResultTests(unittest.TestCase):
         from codex_web.models import IndexedThread
         from codex_web.services.projects import ProjectService
         from codex_web.services.thread_scope import ThreadScopeService
+        from codex_web.storage.agent_sessions import AgentSessionStore
         from codex_web.storage.thread_index import ThreadIndexRepository
         from pathlib import Path
 
@@ -244,7 +245,7 @@ class NotificationResultTests(unittest.TestCase):
         index = ThreadIndexRepository(self.fixture.state, Path(self.fixture.temp.name) / "result-index.json")
         index.upsert(IndexedThread(id="thread-a", name="Fixture", project_id=self.fixture.project.id))
         scope = ThreadScopeService(ProjectService(SimpleNamespace(load=lambda: [self.fixture.project])),
-            SimpleNamespace(store=SimpleNamespace(list=lambda: [])), index)
+            SimpleNamespace(store=AgentSessionStore(index.store)), index)
         app = FastAPI()
         @app.middleware("http")
         async def identity(request, call_next):

@@ -55,6 +55,31 @@ control-plane event loop. Calls retain sequential ordering, propagated request
 context and actors, and the canonical service transaction and authority guards;
 claimed execution still uses the asynchronous ActionIntent executor.
 
+## Repository action admission conflicts
+
+The assignment-bound repository broker translates `ActionIntentConflictError`
+only from its canonical `ActionIntentService.create` call into HTTP **409** with
+`error.code: repository_action_admission_conflict`, a fixed sanitized actionable
+message, and the existing response/header correlation ID. The canonical broker
+audit records **DENY / 409**, the same operation and correlation, and the safe
+message. Underlying exception text and request parameters are not copied into
+that response or audit. The existing broker inspector displays the denial,
+status, reason and correlation and links to ActionIntent receipt inspection.
+
+This intentionally replaces the former generic HTTP 500 / ERROR for known
+CREATE conflicts. The error envelope, request contract, stored schemas and
+Definitions do not change. All admission authority and provenance checks remain
+in the canonical service. A conflict can concern an existing intent that already
+executed or is uncertain, including a competing idempotent insert; it makes no
+global claim that no intent exists or no provider execution occurred. The
+response grants no automatic retry, correction or replay. Inspect authorized
+intent evidence before deciding on a separately authorized action.
+
+Claim, execution, provider lost-response and transport failures are outside this
+translation. They retain their existing handling, receipts, verification and
+uncertain-outcome/reconciliation requirements. Exact idempotent requests retain
+their existing behavior. No model call, new authority or parallel state is added.
+
 ## Outbox lifecycle
 
 The primary states are:

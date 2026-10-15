@@ -9,6 +9,27 @@ EXECUTION_PROFILE_CATALOG_KIND = "execution-profile-catalog"
 EXECUTION_PROFILE_CATALOG_ID = "execution.profiles.default"
 EXECUTION_PROFILE_CATALOG_SCHEMA_VERSION = "1.0"
 ADMINISTRATIVE_EXECUTION_PROFILE_SCHEMA_VERSION = "1.1"
+COORDINATION_EXECUTION_PROFILE_SCHEMA_VERSION = "1.2"
+
+
+class CoordinationChildProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    profile_id: str = Field(min_length=1, max_length=128)
+    revision: int = Field(ge=1)
+
+
+class ProjectCoordinationEnvelope(BaseModel):
+    """Opt-in declaration; neither this data nor repository access grants authority."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    repository_resource_id: str = Field(pattern=r"^resource-[A-Za-z0-9-]+$", max_length=128)
+    child_profiles: tuple[CoordinationChildProfile, ...] = Field(min_length=1, max_length=2)
+    max_delivery_threads: int = Field(default=2, ge=1, le=2)
+
+    @model_validator(mode="after")
+    def distinct_children(self):
+        if len({v.profile_id for v in self.child_profiles}) != len(self.child_profiles):
+            raise ValueError("coordination child profiles must be distinct")
+        return self
 
 ExecutionWorkspaceMode = Literal["repository", "scratch"]
 ExecutionRepositoryAccess = Literal["mutable", "read-only", "none"]
@@ -34,6 +55,7 @@ class ExecutionProfileContract(BaseModel):
     required_worker_capabilities: tuple[ExecutionWorkerCapabilityName, ...]
     control_plane_operations: tuple[str, ...] = ()
     administrative_repository_ids: tuple[str, ...] = Field(default=(), max_length=32)
+    project_coordination: ProjectCoordinationEnvelope | None = None
     network_enabled: Literal[False] = False
     host_mutation: Literal[False] = False
 
@@ -50,6 +72,11 @@ class ExecutionProfileContract(BaseModel):
         object.__setattr__(self, "required_worker_capabilities", capabilities)
         object.__setattr__(self, "control_plane_operations", operations)
         administrative = self.administrative_repository_ids
+        if self.project_coordination and (self.id != "project-governor" or administrative):
+            raise ValueError("project coordination requires the project-governor engine profile")
+        if self.id == "project-governor" and (not self.project_coordination or self.workspace_mode != "repository"
+                or self.repository_access != "mutable" or not operations):
+            raise ValueError("project-governor requires an explicit coordination envelope and operation allowlist")
         if administrative:
             if self.id != "orchestration-admin":
                 raise ValueError("administrative targets require the orchestration-admin engine profile")
@@ -85,6 +112,8 @@ class ExecutionProfileContract(BaseModel):
         result = handler(self)
         if not self.administrative_repository_ids:
             result.pop("administrative_repository_ids", None)
+        if self.project_coordination is None:
+            result.pop("project_coordination", None)
         return result
 
     def public(self) -> dict[str, Any]:
@@ -99,6 +128,8 @@ class ExecutionProfileContract(BaseModel):
             "administrativeRepositoryIds": list(self.administrative_repository_ids),
             "networkEnabled": self.network_enabled,
             "hostMutation": self.host_mutation,
+            **({"projectCoordination": self.project_coordination.model_dump(mode="json")}
+               if self.project_coordination else {}),
         }
 
 
@@ -133,8 +164,17 @@ def validate_execution_profile_catalog(payload: dict[str, Any]) -> dict[str, Any
     catalog = ExecutionProfileCatalogDefinition.model_validate(payload)
     if any(profile.administrative_repository_ids for profile in catalog.profiles):
         raise ValueError("administrative targets require execution-profile-catalog schema 1.1")
+    if any(profile.project_coordination for profile in catalog.profiles):
+        raise ValueError("project coordination requires execution-profile-catalog schema 1.2")
     return catalog.model_dump(mode="json")
 
 
 def validate_administrative_execution_profile_catalog(payload: dict[str, Any]) -> dict[str, Any]:
+    catalog = ExecutionProfileCatalogDefinition.model_validate(payload)
+    if any(profile.project_coordination for profile in catalog.profiles):
+        raise ValueError("project coordination requires execution-profile-catalog schema 1.2")
+    return catalog.model_dump(mode="json")
+
+
+def validate_coordination_execution_profile_catalog(payload: dict[str, Any]) -> dict[str, Any]:
     return ExecutionProfileCatalogDefinition.model_validate(payload).model_dump(mode="json")

@@ -319,6 +319,7 @@ class ThreadRecoveryReplacementTests(unittest.IsolatedAsyncioTestCase):
             model=None,
             reasoning_effort=None,
             repository_resource_id=None,
+            writable_repository_resource_ids=(),
             read_only_repository_resource_ids=(),
             execution_profile_id=None,
         )

@@ -893,6 +893,7 @@ class ExecutionWorkerService:
         payload: ExecutionAssignmentCreate,
         *,
         actor: AuthenticationActor,
+        assignment_admission=None,
     ) -> ExecutionAssignment:
         if self.maintenance_admission is not None:
             with self.maintenance_admission(
@@ -903,14 +904,15 @@ class ExecutionWorkerService:
                     raise WorkerConflictError(
                         "execution assignments are drained during upgrade maintenance"
                     )
-                return self._create_assignment(payload, actor=actor)
-        return self._create_assignment(payload, actor=actor)
+                return self._create_assignment(payload, actor=actor, assignment_admission=assignment_admission)
+        return self._create_assignment(payload, actor=actor, assignment_admission=assignment_admission)
 
     def _create_assignment(
         self,
         payload: ExecutionAssignmentCreate,
         *,
         actor: AuthenticationActor,
+        assignment_admission=None,
     ) -> ExecutionAssignment:
         self._require_admin(actor)
         if (
@@ -1045,6 +1047,8 @@ class ExecutionWorkerService:
                 created_by=actor.identity_id,
                 **payload.model_dump(),
             )
+            if assignment_admission is not None:
+                assignment_admission(state, assignment)
             state.assignments.append(assignment)
             self._event(
                 state,
@@ -1094,7 +1098,10 @@ class ExecutionWorkerService:
             created.append(assignment)
             return state
 
-        self.store.update(apply)
+        if assignment_admission is None:
+            self.store.update(apply)
+        else:
+            self.store.update_admission(apply)
         result = created[0]
         self._notify_assignment(result, "assignment_created")
         return result
@@ -1284,7 +1291,8 @@ class ExecutionWorkerService:
     def record_runtime_observation(
         self, worker_id: str, assignment_id: str, *, observed_fence: int,
         failure_code: str, timings: dict[str, float], evidence_id: str | None,
-        actor: AuthenticationActor,
+        actor: AuthenticationActor, phase: str | None = None, cleanup_state: str | None = None,
+        validation_custody_state: str | None = None, cleanup_seconds: float | None = None,
     ) -> None:
         """Append an old process observation without changing lease authority.
 
@@ -1300,6 +1308,15 @@ class ExecutionWorkerService:
             raise WorkerConflictError("unsupported runtime observation")
         if set(timings) - allowed or any(not isinstance(v, (int, float)) or not 0 <= v < 86400 for v in timings.values()):
             raise WorkerConflictError("invalid runtime timing")
+        if (phase not in {None, "process", "validation", "renewal", "lease", "request"}
+                or cleanup_state not in {None, "pending", "stopped", "unavailable"}
+                or validation_custody_state not in {None, "registered", "captured", "unavailable"}
+                or (cleanup_seconds is not None and
+                    (type(cleanup_seconds) not in {int, float} or not 0 <= cleanup_seconds < 86400))):
+            raise WorkerConflictError("invalid runtime observation metadata")
+        observation = {key: value for key, value in {"phase": phase, "cleanup_state": cleanup_state,
+            "validation_custody_state": validation_custody_state, "cleanup_seconds": cleanup_seconds}.items()
+            if value is not None}
         def apply(state):
             worker = self._worker(state, worker_id, actor)
             assignment = self._assignment(state, assignment_id, actor)
@@ -1314,7 +1331,7 @@ class ExecutionWorkerService:
                 details={"observed_fence": observed_fence, "current_fence": assignment.fence,
                          "current_status": assignment.status.value, "failure_code": failure_code,
                          "evidence_id": evidence_id, "evidence_state": "recorded" if evidence_id else "unavailable",
-                         "completion_asserted": False, **timings})
+                         "completion_asserted": False, **timings, **observation})
             return state
         self.store.update(apply)
 

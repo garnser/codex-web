@@ -899,6 +899,7 @@ class TurnExecutionBindingService:
         execution_profile_id: str | None = None,
         agent_profile: AgentProfileExecutionBinding | None = None,
         skill_refs: tuple[DefinitionReference, ...] = (),
+        assignment_admission=None,
     ) -> TurnExecutionBinding:
         normalized_execution_id = str(execution_id or "").strip()
         if not normalized_execution_id:
@@ -1143,7 +1144,15 @@ class TurnExecutionBindingService:
                 WorkerCapability.COMMAND_EXECUTION,
             )
         )
-        network = NetworkPolicy(enabled=sandbox == "danger-full-access")
+        # The inner Codex sandbox does not grant outer worker networking.
+        # Preserve the exact resolved Definition's independent network policy.
+        network = NetworkPolicy(
+            enabled=(
+                execution_profile.network_enabled
+                if execution_profile is not None
+                else sandbox == "danger-full-access"
+            )
+        )
         if network.enabled:
             required_capabilities = tuple(
                 dict.fromkeys((*required_capabilities, WorkerCapability.NETWORK))
@@ -1428,6 +1437,7 @@ class TurnExecutionBindingService:
                         },
                     ),
                     actor=self.control_actor,
+                    **({"assignment_admission": assignment_admission} if assignment_admission is not None else {}),
                 )
             except Exception:
                 # Preparation has reserved a workspace but has no assignment to
@@ -1558,6 +1568,7 @@ class TurnExecutionBindingService:
         routing_repository_id: str | None = None,
         execution_profile_id: str | None = None,
         agent_profile: AgentProfileExecutionBinding | None = None,
+        assignment_admission=None,
     ) -> TurnExecutionBinding:
         subject = self._bootstrap_subject(bootstrap_id)
         if (
@@ -1591,4 +1602,5 @@ class TurnExecutionBindingService:
             routing_repository_id=routing_repository_id,
             execution_profile_id=execution_profile_id,
             agent_profile=agent_profile,
+            assignment_admission=assignment_admission,
         )

@@ -385,6 +385,31 @@ class ExecutionWorkerStore:
             self.store.record_update(self.assignment_namespace, assignment_id, apply, default=None)
             return result[0]
 
+    def update_admission(self, updater):
+        """Reserve pending assignments and evaluate capacity in one transaction.
+
+        Unlike the compatibility bulk update, this path never reads inventory
+        before acquiring the shared store writer lock. Pending assignments are
+        the in-flight reservations; existing fenced lifecycle mutations release
+        them by making the assignment terminal. No parallel reservation store.
+        """
+        self._ensure_records()
+        names = (self.worker_namespace, self.assignment_namespace, self.event_namespace)
+        result = []
+        def apply(documents):
+            state = ExecutionWorkerState(
+                workers=list(documents[names[0]].values()),
+                assignments=list(documents[names[1]].values()),
+                events=list(documents[names[2]].values()))
+            state = updater(state)
+            state.events = state.events[-self.max_retained_events:]
+            result.append(state)
+            return {names[0]: {v.id: v.model_dump(mode="json") for v in state.workers},
+                    names[1]: {v.id: v.model_dump(mode="json") for v in state.assignments},
+                    names[2]: {v.id: v.model_dump(mode="json") for v in state.events}}
+        self.store.update_many({name: {} for name in names}, apply)
+        return result[0]
+
     def update(
         self,
         updater: Callable[[ExecutionWorkerState], ExecutionWorkerState],

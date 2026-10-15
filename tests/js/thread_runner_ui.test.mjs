@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {applyRunner, runnerFor, allowsRuntimeActivity, runnerLabel} from '../../static/thread_runner_ui.js';
+import {applyRunner, runnerFor, allowsRuntimeActivity, runnerLabel, runnerFailureText} from '../../static/thread_runner_ui.js';
 
 const live = (id, created=10, fence=2, observed=20) => ({schemaVersion:'1.0',state:'running',live:true,
   assignmentId:id,assignmentCreatedAt:created,fence,updatedAt:observed,observedAt:observed,
@@ -63,4 +63,17 @@ test('failed refresh is explicit unknown and retains assignment ordering waterma
   assert.equal(allowsRuntimeActivity('failed-refresh'),false);
   applyRunner({id:'failed-refresh',runner:live('current',200,3,now+2)});
   assert.equal(allowsRuntimeActivity('failed-refresh'),true);
+});
+
+test('same-fence failure explains phase cleanup and unknown outcome without changing custody',()=>{
+  const runner={...live('failed-observation'),live:false,state:'stopped',diagnosticState:'unavailable',
+    failureObservation:{assignment_id:'failed-observation',fence:2,code:'execution_timeout',phase:'validation',
+      cleanup_state:'stopped',timings:{validation_wait_seconds:0.125}}};
+  applyRunner({id:'failure-detail',runner});
+  assert.match(runnerFailureText(runner),/phase validation/);
+  assert.match(runnerFailureText(runner),/validation_wait_seconds: 0.125s/);
+  assert.match(runnerFailureText(runner),/unfinished work outcome unknown/);
+  assert.match(runnerFailureText(runner),/reconcile provider receipts before recovery/);
+  assert.equal(allowsRuntimeActivity('failure-detail'),false);
+  assert.equal(runnerFailureText({...runner,fence:3}),'');
 });

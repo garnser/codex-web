@@ -226,6 +226,13 @@ constrain CPU time, address space, processes and individual file size. The
 parent worker monitors total workspace
 disk usage and wall time and kills the complete process group on breach.
 
+Trusted read-only mounts may also expose individual regular files, such as the
+managed-validation runner, without exposing their containing directories. File
+mounts create only the destination's parent directories; directory mounts create
+the destination directory. Both remain read-only in every sandbox mode, require
+absolute destinations outside the execution workspace, and reject special-file
+sources. This does not add writable mounts or expand assignment authority.
+
 Linux charges `RLIMIT_NPROC` to the host UID rather than the Bubblewrap PID
 namespace. The worker snapshots existing tasks for its real UID before launch
 and adds the assignment's requested process headroom to that baseline, capped
@@ -252,6 +259,10 @@ host root, control-plane database/state, unrelated tenant workspaces, operator
 home, and secret/key directories remain absent. The local worker also keeps its
 private network namespace; selecting `danger-full-access` does not implicitly
 grant the canonical `network` capability or unrestricted repository egress.
+
+For the exact profile, lease, scope and disabled-network/host requirements for
+native no-match preparation in each inner mode, see
+[procedure admission](procedure-discovery.md#native-runtime-coverage-and-explicit-limitation).
 
 ### Orchestration-only scratch execution
 
@@ -794,6 +805,34 @@ sessions. A session intentionally does not complete the canonical assignment on
 its own; later production transport orchestration owns the semantic completion
 point and must submit artifacts/evidence through the existing worker boundary.
 
+Supervision work deadlines and main-loop observation deadlines are distinct.
+If an asyncio observation timeout fires after the serial executor has already
+completed, the supervisor may consume only that same actual terminal future:
+the operation must have succeeded, passed its cooperative storage budget, and
+recorded completion before its original monotonic deadline. It does not rerun
+validation, submit a replacement probe, increase a timeout, or infer success
+from timing diagnostics. The last validated lease and assignment deadline must
+still be live when the result is observed. Before accepting either a late
+validation result or a late renewal result, one bounded, read-only authority
+gate in the same serial executor re-resolves the original session's current
+worker, assignment, credential authority, lease, deadline and fence. A stale
+renewal result is not installed before this gate passes. The gate does not
+repeat the resource scan, heartbeat or completed renewal; its budget is bounded
+by the live lease/deadline and the existing ten-second maximum. Failure, timeout
+or delayed observation of this gate fails closed without another reconciliation
+attempt. The normal renewal phase also checks current authority before any
+heartbeat or renewal. Old work completion alone cannot authorize continued
+execution after revocation. This is reconciliation of bounded supervision work,
+not replay or reconciliation of native/provider outcomes.
+
+A still-running, cancelled, failed or over-budget future continues to fail
+closed and stops the owned process through existing cleanup. Its cooperative
+budget is cancelled and its executor custody remains until the actual thread
+exits; cancelling an asyncio waiter does not assert thread termination. No
+persisted contract, grant, profile, Definition or pause state changes. Existing
+runner phase/timing/cleanup projections remain the operator inspection surface.
+The event-loop stall cause remains a separate diagnostic question.
+
 ### Current migration boundary
 
 This backend is the concrete execution primitive for local worker command
@@ -1226,3 +1265,227 @@ and clean-filter configuration. Harmless host marker reproduction establishes th
 trigger; isolated inspection preserves clean/dirty/head observations while leaving
 host markers absent. The mandatory qualification refuses unsupported isolation
 rather than treating a skipped fixture or capability escalation as successful.
+
+### Opt-in Project governor coordination
+
+The `project-governor` engine profile composes existing canonical Thread,
+ExecutionAssignment, Organizational Memory, ApprovalRequest, Attention and broker
+audit services. It is a separate repository workspace profile; installing its
+engine does not add control rights to `repository-write` or to a named Agent
+Profile. Its mutable activation data belongs in a Project-scoped
+`execution-profile-catalog` Definition, schema `1.2`. The payload carries one
+explicit repository Resource, one or two exact child Agent Profile revisions,
+a delivery-thread ceiling of at most two and an explicit operation allowlist.
+The default seed does not contain or activate this profile.
+
+The assignment-bound `/api/project-coordination` protocol supports typed Thread
+list/detail/create/message, assignment list/detail, project Memory list/detail/
+checkpoint, elevation feedback and ActionIntent receipt inspection. Every call
+requires explicit `project_id` and `repository_resource_id` query fields. Other,
+blank or repeated scope fields fail closed. Canonical tenant/workspace/Project
+and repository scope are filtered before visible totals, pagination or cursors.
+Lists return at most 50 rows (20 by default) and opaque snapshot cursors; changed
+visible state requires a fresh read. Inventory scans fail closed above 5,000
+rows, and existing broker byte/rate/concurrency bounds still apply.
+
+Every call independently requires `project.coordinate` and the operation's
+canonical authority capability (`thread.read/create/message`, `execution.read`,
+`memory.read/write` or `project.elevation.read`). The original requester must
+still exist with current membership, and the executing worker remains a distinct
+service identity. Profile declarations are never grants. Dispatch and side-effect
+boundaries re-resolve current assignment/worker identity, deadline, lease/fence,
+workspace ownership/lease, singular Resource, exact current Project Definition
+and any pinned Agent Profile. Mutations refuse draining workers. Reads can
+inspect a still-live draining assignment. Canonical ThreadBinding, rather than
+provider DTO `projectId`, determines each Thread's execution/workspace scope.
+
+Mutations first persist a canonical ActionIntent through a separately enabled,
+credential-free, exact Project/Resource `project-coordination/canonical`
+ActionProvider binding. An internal admission key is separate from provider
+idempotency. Concurrent duplicate admissions share the original intent; changed
+payloads conflict. Native thread creation/input is not advertised as safely
+replayable, and attempts are bounded to one. Accepted, failed or uncertain input
+cannot be replayed by repeating the admission key. An operator must inspect
+canonical receipts/reconciliation evidence. Maintenance, authority, approval,
+profile invocation, runtime routing, quota and worker isolation gates remain in
+the existing services. Children cannot inherit governor/admin profiles; their
+exact Agent Profile revisions, invocation rights, concurrency budgets and
+singular repository envelope are checked before bootstrap.
+
+Message receipts prove durable queue admission only: `native_start_verified`
+remains false. Creating a Thread proves neither active work nor task completion.
+Monitoring reuses `ThreadService._runner_activity`: activity requires live custody,
+matching marker assignment/fence and a native turn ID. Stopped, lost, expired or
+unavailable custody and stale markers remain unknown. Queue depth and retained
+execution/turn IDs remain separate evidence; an idle live runner stays idle. The
+operator view shows custody, lease/process state, diagnostics and blockers beside
+activity rather than turning a retained marker into current work. These adapters add no polling,
+model call, business action, new controller or state store. Existing governed
+Memory versions retain assignment/Definition provenance, governance and origin
+labels; global/unscoped Memory never enters the projection. Elevation feedback
+only reads scoped ApprovalRequests, Attention and correlated broker denials.
+It exposes an authorized next action and cannot approve or grant access.
+
+The existing worker broker inspector provides lazy operator views of Threads,
+project checkpoints and elevation evidence. Operator inspection independently
+checks admin/step-up and read authority, then uses the same assignment/requester
+gates. Memory rows must independently pass canonical read authority, required
+operational Roles, source readability and data-governance checks for both the
+origin requester and actual inspecting operator. The intersection is filtered
+before counts/cursors; passing a coarse capability check never substitutes the
+requester for the content reader. Grant/revoke takes effect on the next read. It displays declared versus observed authority, pinned/current Definition,
+child envelope, blockers and queued-versus-native evidence. Loading/empty/denied/
+stale results and Project changes invalidate stale content. It adds no UI-only
+authority or activation control. This is the UI adaptation for issue #1473;
+shared workspace tracking remains #125/#127, with #1357 related inspection work.
+
+Schema `1.0` and `1.1` validators reject coordination payloads; readers of those
+schemas retain their historical behavior. Schema `1.2` is opt-in and cannot be
+published at a global/workspace slot for governor execution. There is no state
+migration or automatic Definition upgrade; exact older assignments retain their
+pins, and a superseding governor Definition revokes dispatch from the old pin.
+Before activation an operator must qualify the new engine and publish reviewed
+Project-scoped definitions, Role grants, child profiles and provider binding.
+Mixed writers that cannot understand `1.2` are unsupported for that slot. To
+roll back, first drain/cancel new governor admissions and reconcile uncertain
+intents, then retire the opt-in definition/binding with the canonical lifecycle
+and upgrade compatibility gates. Never reinterpret `1.2` as an older schema or
+promise binary rollback while incompatible live definitions remain enabled.
+
+
+Governor child admission uses the canonical assignment insertion transaction,
+not a per-service lock. The internal admission guard is engine-owned and is not
+accepted in HTTP bodies or Definitions. `ExecutionWorkerStore.update_admission`
+reads worker/assignment/event namespaces under one `StateStore.update_many`
+writer transaction. It rechecks the originating lease, deadline, worker and
+exact fence/scope/pin, verifies the child execution binding, and atomically counts
+and inserts the new pending assignment. Pending/claimed/running assignments are
+the in-flight reservations. The delivery ceiling applies to non-governor
+assignments in the exact tenant/Project/repository envelope; child profile
+concurrency counts that profile across its tenant/workspace, including other
+Projects/resources. Distinct origin assignments and idempotency keys cannot
+race through the count on independently composed services sharing this store.
+
+No reservation controller, new state schema or separate store is introduced.
+Existing canonical bootstrap cancellation and worker terminal transitions free
+capacity; their expected fence prevents old cleanup from cancelling a successor.
+Failed preparation releases only its workspace lease and preserves files. Lost
+origin custody does not implicitly free a child's pending/claimed reservation.
+An uncertain start remains retained for explicit fenced lifecycle cleanup; a
+new governor must not infer that the earlier input or process never existed.
+The assignment/requester and exact current Definition/authority guards still
+run before/after awaits and before native startup. Engines lacking transactional
+admission fail closed for this feature. All concurrent writers of activated
+governor admissions must run the corrected engine; rolling back to an engine
+with only a local creation lock while governors are active is unsupported.
+
+The 5,000-row inspection scan budget is a global inventory availability bound,
+not a statement that only 5,000 authorized rows exist. Foreign inventory may
+exhaust that budget and cause a typed denial, but never enters a successful
+count, cursor or response. Atomic admission also fails closed above 5,000
+assignment records in its transaction. These bounds intentionally favor a
+bounded refusal over unbounded scans; scoped indexes/large-inventory service
+qualification are required before enabling this feature above those bounds.
+SQLite sharing one canonical database is exercised locally. Other StateStore
+backends must provide the declared `update_many` transaction and pass their
+shared-writer qualification; a process-local lock is insufficient.
+
+
+Repository bindings compose by capability, before uniqueness is enforced. For a
+mutation the installed, tenant-resolved ActionProvider must declare the exact
+code-host action with execution capability. For a fact read the installed
+CodeHostRegistry adapter must declare the operation's protocol capability, and
+the tenant-resolved ActionProvider supplies its configured endpoint and credential
+reference. The temporary read binding carries only that adapter's capabilities.
+Coordination-only, unavailable, disabled and foreign bindings cannot compete for
+repository delivery. Multiple eligible providers still fail closed; callers
+cannot select a provider. Resource provenance, requester and worker authority,
+procedure admission, ActionIntent idempotency and credential-use checks remain
+independent downstream boundaries. A usable opt-in catalog must explicitly declare
+repository facts, delivery evidence and reconciliation as well as publication,
+merge and scoped coordination; declarations supply no grants.
+
+The reviewed activation draft and its native-call budget of 20 remain unapplied
+review data. This slice does not enforce an inner native model-call counter and
+does not qualify that budget as enforced. Current profile pins, rollout authority
+and independent installation/CI qualification remain prerequisites to activation.
+
+### User-bound Project delegation while general automation is paused
+
+Project coordination messages retain the server-assigned `project-coordination`
+agent origin through `TurnService`, the durable queue, preflight and native
+admission. They never acquire `web`/human origin or coalesce into a human wakeup.
+The typed message accepts an optional `goal_binding_id`; it accepts neither a
+source override nor a caller-supplied admission callback/proof. Without a binding,
+ordinary automation pause gates continue to hold the message.
+
+An operator can explicitly bind the governor's canonical session to an existing
+user-owned Goal through the existing Goal execution-binding API (admin plus MFA,
+or its existing scoped service authority). Runtime-objective attach is an
+existing alternative when supported; provider objective text is not authority.
+No new Goal, controller, Definition kind, authority grant or pause flag is added.
+A binding alone supplies no repository or operation authority.
+
+For this delegation the Goal must be active at the exact bound revision, owned
+by the current human requester, and explicitly cover the whole current Project.
+The binding must be created and execution-owned by that requester, be requested,
+active or idle, and identify the exact canonical governor session/thread,
+assignment and workspace/provider/runtime. A foreign live continuation lease,
+paused/terminal/unknown binding, missing project scope, or Work-Graph-root-limited
+binding fails closed. Narrow-root delegation requires separate explicit Work Item
+admission support; it is not inferred from task prose. General Goal continuation
+retains its existing global/exclusive-scope gates and cannot borrow this path.
+
+The canonical coordination ActionIntent constructs the internal
+`ProjectCoordinationDispatch` schema `1.0` references (binding ID, origin assignment
+and fence). Unknown proof schema versions fail validation.
+An optional queue field preserves these references and original agent provenance
+across persistence/restart. Existing serializers omit it for all legacy requests;
+no existing original snapshot is rewritten and no store/index migration occurs.
+Its presence is not an authorization decision: queue selection, the owned drain,
+native admission and existing post-await/pre-input checks re-resolve the current
+Goal/binding, origin lease/fence/current Project Definition, requester authority,
+canonical target child scope and exact invokable profile. Revocation retains the
+original for inspection instead of relabeling, dropping or replaying input.
+Queue APIs expose the references and agent source, and waiting counts use the
+same deterministic admission check; existing operator queue/preflight and Goal
+binding surfaces remain the inspection path. No UI-only authorization is added.
+
+This is explicitly delegated own-Project execution, not a global autonomy resume.
+Other automated/business origins remain paused. The existing two-delivery and
+profile-concurrency bounds still apply; a message receipt proves queue admission,
+not native start. Token/output/model-call defaults remain declared unless their
+particular enforcement path is separately qualified, including the native-call
+budget of 20. No polling, new model reasoning or additional model-call path is
+introduced by these deterministic checks.
+
+Compatibility is one-way for activated delegation behavior: older engines lack
+this admission proof and must not consume/rewrite delegated queues. The durable
+agent source remains nonhuman, so losing an optional proof cannot grant human
+admission. Drain/reconcile delegated requests before rollback; byte-compatible
+legacy payloads do not qualify mixed writers or rollback of new activated state.
+Independent review, exact-head CI, qualified installation and explicit binding
+activation remain separate gates before claiming two useful installed children.
+
+Delegated native input additionally requires the guarded Codex capture transport.
+The server-created live admission validator is composed with the existing child
+assignment/session, reservation and correlation guards and runs synchronously
+inside the native writer lock, after session/capture preparation and lock awaits,
+immediately before `stdin.write`. An adapter without this guarded capture path
+refuses delegated input before send; it cannot silently use response-only input.
+
+An authoritative pre-write refusal preserves the viable child session/assignment.
+The capture retires only its exact still-unstarted reservation, retains its
+correlation as a bounded preflight blocker-history witness, and keeps the claim
+and immutable original for queue-order restoration. This is affirmative local
+non-send evidence, never an inference from timeout or missing response. Cleanup
+removes only provisional active/history entries with no native progress. A later
+legitimate binding reauthorization can admit the same canonical child once.
+Positive reader evidence/receipts and post-send uncertainty are checked first
+and never cleared or reset by this path. Existing capture correlation checks
+remain independent of the live delegation validator.
+
+Queue status preserves the actual human-readable delegation blocker with global
+pause both on and off. Mixed queues retain both that blocker and the unrelated
+automation pause reason; enabling general automation is not a remedy for revoked
+Goal authorization. Existing queue-notice rendering consumes the same message.

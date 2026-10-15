@@ -62,6 +62,12 @@ This explicit reconciliation is also the bounded repair path for implementation 
 
 These capability/lifecycle gates are deterministic. Later authority/RBAC milestones can add actor permission checks around the same canonical actions without changing their state model.
 
+A successful retry response confirms acceptance of the canonical retry update,
+not queue retention or native startup. The Work Item UI reports "Retry accepted";
+the existing queue/preflight inspectors supply retained-request and actual-start
+evidence. Asynchronous dispatch may still be rejected as stale or fail after
+the retry response.
+
 ## UI implementation
 
 `static/work_items_ui.js` creates a modal operator surface from the existing application shell. `codex_web.api.ui` loads the versioned module in the served index without modifying the legacy application bundle. The module calls only canonical APIs and uses no local persistence.

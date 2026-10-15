@@ -33,6 +33,47 @@ export function runnerLabel(threadId) {
   return label + (validation ? ` · ${validation}` : '');
 }
 
+// Safe, same-fence process observations do not establish business outcomes.
+export function runnerFailureText(runner) {
+  const failure = runner?.failureObservation;
+  if (!failure || failure.assignment_id !== runner.assignmentId || failure.fence !== runner.fence) return '';
+  const timings = Object.entries(failure.timings || {})
+    .filter(([, value]) => typeof value === 'number' && Number.isFinite(value))
+    .map(([phase, seconds]) => `${phase}: ${seconds.toFixed(3)}s`).join(', ');
+  return `${failure.code} · phase ${failure.phase} · cleanup ${failure.cleanup_state}`
+    + (timings ? ` · ${timings}` : '')
+    + ` · diagnostic ${runner.diagnosticState} · unfinished work outcome unknown. Inspect assignment and evidence; reconcile provider receipts before recovery.`;
+}
+
+export function appendRunnerFailure(container, runner, projectId) {
+  if (runner?.failureObservation?.project_id !== projectId) return;
+  const text = runnerFailureText(runner);
+  if (!text) return;
+  const detail = document.createElement('span');
+  detail.dataset.runnerFailure = '';
+  detail.textContent = ` · ${text} `;
+  container.append(detail);
+  // Resolve shared navigation only in a browser; retain the observed Project
+  // across the asynchronous module load and never borrow a newly selected one.
+  if (!projectId) return;
+  import('./reference_navigation.js').then(({referencePath, projectPath}) => {
+    if (!detail.isConnected) return;
+    for (const [kind, id] of [['assignment', runner.assignmentId], ['evidence', runner.failureObservation.evidence_id]]) {
+      const path = referencePath(kind, id, {projectId});
+      if (!path) continue;
+      const link = document.createElement('a');
+      link.href = path;
+      link.dataset.managedReference = '';
+      link.textContent = `View ${kind}`;
+      detail.append(link, ' ');
+    }
+    const receipts = document.createElement('a');
+    receipts.href = projectPath('autonomy', {}, projectId);
+    receipts.textContent = 'Inspect provider receipts';
+    detail.append(receipts);
+  }).catch(() => {}); // Metadata stays visible if navigation is unavailable.
+}
+
 // At most one pending read per Thread. Event bursts coalesce; the selected
 // Thread also refreshes every 30 seconds to observe transitions during a read.
 export function createRunnerRefresh({read, apply, onError = () => {}, delay = 5000, timeout = 10000}) {
@@ -78,12 +119,14 @@ export function createThreadRunnerUI({state, api, patchThread, markThreadBusy, c
   function updateRunnerMeta(threadId) {
     const meta = getMeta();
     meta.querySelector('[data-runner-state]')?.remove();
+    meta.querySelector('[data-runner-failure]')?.remove();
     const label = runnerLabel(threadId);
     if (label) {
       const badge = document.createElement('span');
       badge.dataset.runnerState = '';
       badge.textContent = ' · ' + label;
       meta.append(badge);
+      appendRunnerFailure(meta, runnerFor(threadId), state.projectId);
     }
   }
 

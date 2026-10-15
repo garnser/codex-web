@@ -1,0 +1,24 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Supervised runner failure</title><link rel="stylesheet" href="/static/styles.css"><style>body{font:16px system-ui;margin:1rem;overflow-wrap:anywhere}a{display:inline-block;padding:.5rem}</style>
+<body data-project-id="home"><main><h1>Supervised runner failure</h1><button id="observe">Observe current custody</button>
+<button id="foreign">Select other Project</button><p id="thread-meta" role="status" aria-live="polite"></p><p id="error" role="alert"></p>
+<p id="history"></p></main>
+<script type="module">
+import {createThreadRunnerUI,allowsRuntimeActivity} from '/static/thread_runner_ui.js';
+const state={threadId:'failure-thread',projectId:'home'};
+const meta=document.querySelector('#thread-meta');
+const ui=createThreadRunnerUI({state,api:async path=>(await fetch(path)).json(),patchThread(){},markThreadBusy(){},
+  clearThreadBusy(){},scheduleRenderThreads(){},updateWaitingFromState(){},renderThreads(){},logEvent(){},
+  getMeta:()=>meta,applyQueueAdmissionStatus(){},setThreadQueueDepth(){}});
+async function observe(){
+  const response=await fetch(`/api/threads/failure-thread/runner?project_id=${encodeURIComponent(state.projectId)}`);
+  if(!response.ok){meta.replaceChildren();document.querySelector('#error').textContent='Current Project custody unavailable';return;}
+  const row=await response.json();ui.hydrateThreadActivity(row);ui.updateRunnerMeta(row.id);
+  meta.dataset.active=String(allowsRuntimeActivity(row.id));
+}
+document.querySelector('#observe').onclick=observe;
+document.querySelector('#foreign').onclick=()=>{state.projectId='other';meta.replaceChildren();return observe();};
+const history=await (await fetch('/fixture/history')).json();
+document.querySelector('#history').textContent=(history.turns||[]).map(turn=>`Retained turn ${turn.id}: ${turn.status} · historical transcript, current outcome unverified`).join(' ');
+await observe();
+</script></body></html>

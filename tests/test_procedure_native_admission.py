@@ -115,11 +115,38 @@ class ProductionNativeProcedureAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.workspace = self.workspaces.acquire(ExecutionWorkspaceAcquire(subject=self.assignment.subject,
             execution_id='native-execution', project_id=self.project.id, resource_ids=(self.repo.id,),
             repository_resource_id=self.repo.id), actor=self.actor)
-        pending = self.workers.create_assignment(ExecutionAssignmentCreate(subject=self.assignment.subject,
-            execution_id='native-execution', project_id=self.project.id, resource_ids=(self.repo.id,),
-            execution_workspace_id=self.workspace.id, execution_contract_version='1.0',
-            execution_profile_id=profile.id, execution_profile_definition=ref,
-            required_capabilities=profile.required_worker_capabilities, runtime_binding=self.assignment.runtime_binding), actor=self.actor)
+        if getattr(self, 'full_access', False):
+            from codex_web.services.turn_execution_binding import TurnExecutionBindingService
+            from codex_web.services.configuration import ConfigurationService
+            from codex_web.storage.configuration_registry import ConfigurationRegistryStore
+            from codex_web.services.codex_worker_configuration import install_codex_worker_configuration, CODEX_WORKER_ACCESS_TOKEN_CONFIG
+            from tests.test_turn_execution_binding import TurnExecutionBindingTests, _Projects
+            from codex_web.agent_profiles import AgentProfileExecutionBinding
+            self.configuration = ConfigurationService(ConfigurationRegistryStore(self.sqlite))
+            install_codex_worker_configuration(self.configuration)
+            TurnExecutionBindingTests._publish_secret(self, scope_id=self.project.id)
+            self.resources.bind_project(project=self.project, resource_id=self.repo.id, actor=self.actor)
+            service = TurnExecutionBindingService(self.configuration, _Projects(self.project), self.resources,
+                self.workspaces, self.workers, control_actor=self.actor, execution_profiles=self.profiles,
+                runtime_binding=self.assignment.runtime_binding,
+                runtime_credential_configs={(self.adapter.provider_id, self.adapter.runtime_id): CODEX_WORKER_ACCESS_TOKEN_CONFIG})
+            # Provision through the real assignment builder, not preselected gate booleans.
+            self.workspaces.release(self.workspace.id, __import__('codex_web.execution_workspaces', fromlist=['ExecutionWorkspaceRelease']).ExecutionWorkspaceRelease(), actor=self.actor)
+            binding = service._prepare_subject(subject=self.assignment.subject, thread_id=None,
+                execution_id='full-access-execution', project_id=self.project.id, sandbox='danger-full-access',
+                approval_policy='on-request', execution_contract_version='1.0', session_seconds=3600,
+                max_session_seconds=3600, limits=None, explicit_repository_id=self.repo.id,
+                agent_profile=AgentProfileExecutionBinding(profile_id='codex-web-vp-engineering',
+                    profile_revision=10, profile_record_id='vp-revision-10'),
+                execution_profile_id='repository-write')
+            pending = self.workers.assignment_for_execution(binding.execution_id, actor=self.actor)
+            self.workspace = self.workspaces.get(binding.workspace_id, self.actor)
+        else:
+            pending = self.workers.create_assignment(ExecutionAssignmentCreate(subject=self.assignment.subject,
+                execution_id='native-execution', project_id=self.project.id, resource_ids=(self.repo.id,),
+                execution_workspace_id=self.workspace.id, execution_contract_version='1.0',
+                execution_profile_id=profile.id, execution_profile_definition=ref,
+                required_capabilities=profile.required_worker_capabilities, runtime_binding=self.assignment.runtime_binding), actor=self.actor)
         claimed = self.workers.claim(self.procedure_worker.id, AssignmentClaimRequest(lease_seconds=3600),
             actor=self.procedure_worker_actor, assignment_id=pending.id)
         self.native_assignment = self.workers.start(self.procedure_worker.id, pending.id,
@@ -176,3 +203,90 @@ class ProductionNativeProcedureAdmissionTests(unittest.IsolatedAsyncioTestCase):
                 assignment_id=self.native_assignment.id, sandbox='workspace-write', source='recovery')
         self.assertEqual(caught.exception.detail['code'], 'procedure_unsupported_enforcement')
         self.assertEqual(caught.exception.detail['procedure_discovery']['policy_source'], 'canonical:execution-profile-pin-changed')
+
+
+class FullAccessNativePreparationTests(unittest.IsolatedAsyncioTestCase):
+    full_access = True
+    asyncSetUp = ProductionNativeProcedureAdmissionTests.asyncSetUp
+    asyncTearDown = ProductionNativeProcedureAdmissionTests.asyncTearDown
+
+    async def start(self):
+        from codex_web.services.procedure_discovery import install_native_procedure_admission
+        _, binding, sessions, runtime = turn_fixtures.TurnExecutionStartTests._service(self)
+        binding.prepare = binding.prepare_bootstrap = lambda **kw: SimpleNamespace(
+            assignment_id=self.native_assignment.id, workspace_id=self.workspace.id,
+            execution_id=self.native_assignment.execution_id)
+        sessions.session.validate_current = lambda: self.native_assignment
+        sessions.session.workspace_path = __import__('pathlib').Path(self.workspace.path)
+        install_native_procedure_admission(runtime, SimpleNamespace(), self.discovery, self.workers,
+            self.history, self.actor, self.profiles)
+        await runtime.start_thread_turn_now('full-access-thread', project=self.project, message='Improve tests',
+            sandbox='danger-full-access', approval_policy='on-request', source='executive',
+            execution_id=self.native_assignment.execution_id, actor=self.actor)
+        return sessions
+
+    async def test_named_full_access_assignment_reaches_shared_native_start(self):
+        from codex_web.execution_workers import WorkerCapability
+        assignment = self.native_assignment
+        self.assertEqual(assignment.sandbox, 'danger-full-access')
+        self.assertFalse(assignment.network.enabled)
+        self.assertNotIn(WorkerCapability.NETWORK, assignment.required_capabilities)
+        self.assertEqual(assignment.agent_profile.profile_id, 'codex-web-vp-engineering')
+        self.assertEqual(assignment.agent_profile.profile_revision, 10)
+        self.assertEqual(assignment.execution_profile_definition, self.profiles.resolve('repository-write')[1])
+        sessions = await self.start()
+        self.assertTrue(any(method == 'turn/start' for method, _ in sessions.session.requests))
+        saved = self.workers.assignment_for_execution(assignment.execution_id, actor=self.actor)
+        self.assertTrue(saved.procedure_discoveries[-1].admitted)
+
+    async def test_full_access_refuses_unsupported_envelopes_and_expired_assignment(self):
+        from unittest.mock import patch
+        a = self.native_assignment
+        for changes in ({'network': a.network.model_copy(update={'enabled': True})},
+                        {'lease': a.lease.model_copy(update={'expires_at': 1})},
+                        {'execution_profile_definition': a.execution_profile_definition.model_copy(update={'revision': 999})},
+                        {'resource_ids': (*a.resource_ids, self.target.id)}):
+            with self.subTest(changes=changes), patch.object(self.workers, 'assignment_for_execution',
+                    return_value=a.model_copy(update=changes)):
+                with self.assertRaises(ExecutionPrestartRefusal):
+                    await self.start()
+        profile, ref = self.profiles.resolve('repository-write')
+        for field in ('network_enabled', 'host_mutation'):
+            with self.subTest(field=field), patch.object(self.profiles, 'resolve',
+                    return_value=(profile.model_copy(update={field: True}), ref)):
+                with self.assertRaises(ExecutionPrestartRefusal):
+                    await self.start()
+
+    async def test_full_access_requires_workspace_lease_and_mutable_repository_scope(self):
+        from unittest.mock import patch
+        lease = self.workspaces.store.lease(self.workspace.lease_id)
+        for bad in (lease.model_copy(update={'expires_at': 1}), lease.model_copy(update={'resource_modes': {}})):
+            with self.subTest(lease=bad), patch.object(self.workspaces.store, 'lease', return_value=bad):
+                with self.assertRaises(ExecutionPrestartRefusal):
+                    await self.start()
+        profile, ref = self.profiles.resolve('repository-write')
+        with patch.object(self.profiles, 'resolve', return_value=(profile.model_copy(update={'repository_access': 'read-only'}), ref)):
+            with self.assertRaises(ExecutionPrestartRefusal):
+                await self.start()
+
+    async def test_full_access_matching_required_procedure_still_refuses(self):
+        from codex_web.skills import SkillCreate, SkillPublish
+        from codex_web.resources import ResourceUpdate, ResourceOperationalContext
+        # Publish a real required procedure selecting the repository target.
+        content = __import__('copy').deepcopy(self.content)
+        content['resource_selectors'][0]['resource_types'] = ['repository']
+        content['service_versions'] = []
+        content['required_provider_capabilities'] = []
+        diagnostic = content['steps'][0]
+        diagnostic.pop('action')
+        diagnostic['worker'] = {'capability': 'network', 'artifact_reference': 'artifact-http-validation',
+            'artifact_checksum': 'a' * 64, 'resource_selector': 'service'}
+        diagnostic['permissions'][0]['capability'] = 'repository.read'
+        content['steps'] = [diagnostic]
+        self.resources.update(self.repo.id, ResourceUpdate(operational_context=ResourceOperationalContext(environment='staging')), actor=self.actor)
+        skill = self.skills.create(SkillCreate(skill_id='repository-required', name='Required procedure',
+            instructions='Use canonical actions', operational_procedure=content), actor=self.actor)
+        self.skills.publish(skill['skillId'], skill['recordId'], SkillPublish(), actor=self.actor)
+        with self.assertRaises(ExecutionPrestartRefusal) as caught:
+            await self.start()
+        self.assertEqual(caught.exception.detail['code'], 'procedure_unsupported_enforcement')

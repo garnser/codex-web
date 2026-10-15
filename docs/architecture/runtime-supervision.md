@@ -124,6 +124,26 @@ not a fabricated managed-content receipt. Independent validation/release gates
 remain required. External unknown outcomes remain reconciliation only; no tool-log
 parsing infers a passed test or replays an external action.
 
+An additive `failureObservation` accompanies the exact same-instance runner
+assignment/worker/fence. It retains the fixed failure code/phase, measured waits,
+cleanup and process exit observations, original requester/tenant/Project/resource
+and profile/Definition references, and source-validation custody availability.
+It contains no lease tokens, raw exceptions, commands, environment or credentials.
+The same metadata is emitted through existing scoped structured logging immediately
+after process cleanup and after the bounded diagnostic attempt, including when
+submission or persistence is unavailable. Logger failure cannot prevent cleanup
+or the canonical diagnostic attempt. Logs are observations, never receipts or a
+replacement authority. A process-wide crash may lose local status; journal and
+retained canonical Evidence/Artifacts remain the recovery surfaces where available.
+
+The runner route rechecks its authorized exact Project after asynchronous reads.
+The existing Thread metadata UI displays failure phase/code, timing, cleanup,
+diagnostic availability and a reconciliation next action, with scoped assignment,
+Evidence (only if recorded) and provider-receipt inspection links. Unfinished work
+has an unknown outcome from this observation; independently verified provider
+receipts retain their canonical outcomes. There is no restart/replay action or
+inference from an observation timeout. Historical `inProgress` content is retained.
+
 Unavailable storage cannot be advertised as recorded Evidence. The local process
 projection reports diagnostic state `unavailable` and outstanding executor work;
 canonical expiry/recovery remains authoritative after process loss. Running
@@ -507,8 +527,110 @@ and other post-start bookkeeping. It includes the requested execution, actual
 assignment execution and native session/turn/runtime IDs. A bookkeeping failure
 preserves actual active-turn ownership and cannot rewrite that receipt as an
 unstarted failure. Only that receipt permits removing a redundant restored queue
-copy. A request with no receipt remains uncertain; absence and timeout are not
+copy. Without a receipt or exactly captured positive evidence, a request remains uncertain; absence and timeout are not
 proof of an unstarted request.
+
+### Exactly attributed positive native responses
+
+Assignment-bound Codex queued originals retain `queued_start_correlation` before
+the native `turn/start` RPC is written. Version `1.0` pins the immutable original
+snapshot hash, actor/profile revision and requested repository scope,
+tenant/Project, resolved actor, assignment execution/resources, worker and
+send-time fence, native session, process generation and unique RPC ID. These are
+metadata in the existing preflight record, not another mailbox or a grant. The
+session supplies the validated assignment; task text and caller-supplied provider
+logs cannot supply attribution.
+
+Preparation is awaited storage work. After it finishes, the native write lock
+checks the process generation and synchronously reuses the session's canonical
+current worker/identity/delegation/assignment/lease guard. It compares the
+send-time assignment/profile/resource binding and exact retained admission claim
+again immediately before writing, with no intervening await. Changed authority,
+fence, profile, claim or scheduling disposition prevents the write. Correlation
+alone remains unknown even if this guard or a partial transport write fails;
+exceptions and missing activity do not establish nonstart.
+
+Only the trusted RPC reader captures the matching positive response under that
+generation and request ID. It validates the result/turn shape, nonempty bounded
+turn ID and every supplied session/thread identifier. Error, malformed,
+mismatched and unassociated responses do not establish starts. Stored
+`queued_start_evidence` version `1.0` contains only allowlisted native IDs,
+generation/request attribution and observation time. No raw result, input,
+credential, lease token or secret material is copied into evidence. A plain
+`turn/started` notification, ordinary session read, equal message or close
+timestamp supplies no original-request association and remains unknown.
+
+Positive evidence commits before receipt projection. Each step atomically checks
+the exact original and correlation; repeated/concurrent observations are
+idempotent and conflicting receipts fail closed. The existing administrator/MFA
+`reconcile-prestart` inspector action can finish a crash-interrupted positive
+receipt projection from stored evidence. It accepts no proof or scope in its
+body and makes no provider call. Its historical name also continues to support
+the separately proven controller-refusal path. The inspector shows unknown
+correlation, captured evidence pending projection, or the reconciled receipt
+with tenant/actor/resource/assignment/fence/native provenance. Confirmed starts
+offer no replay. Stored positive evidence cannot initiate unknown scheduling
+retirement or be converted to an unstarted refusal.
+
+Correlation alone does not block existing terminal-task scheduling retirement.
+The retirement-preparation CAS and positive-evidence CAS order the two facts in
+the same preflight record. If positive evidence commits first, initial
+eligibility, the post-provider-await check and atomic preparation all refuse
+unknown retirement, preserving the queue. If retirement prepares first, its
+immutable `native_outcome=unknown` records knowledge at that preparation time;
+a later exact positive is retained and may project the actual native receipt
+even after scheduling removal. The inspector shows both historical retirement
+provenance and the current positive native outcome. Capture and receipt
+reconciliation never reinsert/remove queue entries, resume/cancel execution or
+perform a provider action. An already prepared retirement may finish its exact
+queue removal under the existing authority/source/scope checks even when a late
+positive has arrived; it does not assert current nonstart. The original remains
+durable throughout. A retirement prepared before native reservation still blocks
+that reservation and the final send guard, so it cannot admit a new native start.
+
+Historical attribution uses the fence and authority observed at send. It does
+not require the old lease to remain live, renew a lease, resume a worker or grant
+current execution authority. Historical originals lacking exact correlation,
+foreign/stale/ambiguous observations and changed snapshots remain unknown. The
+existing notification-batch receipt path is separate; this individual-original
+capture path does not infer batch outcomes or establish parent #1314 acceptance.
+
+#### Capture window and compatibility
+
+The runtime retains at most 128 response observation slots, each for 120 seconds
+from preparation. Slots use opaque unique RPC IDs and a process generation;
+retirement clears them, expiration removes them on the next request/response,
+and capacity exhaustion prevents another captured send. These are code-owned
+protocol safety bounds, not mutable operational definitions. They never extend
+a process lifetime. Global native timeout restart and assignment-session timeout
+retirement remain unchanged: assignment Codex runtimes disable self-restart and
+their wrapper retires timed-out start RPCs. A response can be captured only while
+its generation is still being read, or while persistence of an already-read
+exact response is in progress. Retired-generation responses cannot resolve later
+waiters even if an RPC ID is reused. There is no post-retirement polling or
+additional native start.
+
+A crash before the positive-evidence commit may lose a response even if the
+provider started. Correlation alone cannot resolve that outcome; the original
+remains unknown. After that commit, an independent process can finish receipt
+projection from reopened canonical storage without a live transport. This is a
+bounded recovery guarantee, not universal positive recovery or negative-start
+proof. Storage failure never authorizes replay. Existing evidence
+retention/encryption/backup governance applies in the preflight namespace.
+
+Absent fields serialize away, preserving legacy record/API shapes. New readers
+accept legacy records; unknown nested schema versions fail visibly. The first
+nonempty correlation write is the state-changing compatibility boundary: older
+strict preflight readers reject the record. Deployments must declare that reader
+restriction through the existing Release/Upgrade compatibility contract, drain
+admission and preserve a qualified pre-transition recovery artifact. Source-only
+rollback after that boundary is unsupported. Removing correlation/evidence or
+restoring an older snapshot must never discard later requests/outcomes. Exact
+candidate/main CI, security and recovery-artifact qualification are delivery
+evidence; controlled regressions do not establish live-original or deployment
+acceptance for #1314.
+
+### Interrupted queue recovery
 
 Interrupted explicit queue recovery is distinct from native admission: its
 `retrying` state cannot pass the native-start gate. A stale recovery token may be
@@ -532,6 +654,49 @@ identity, including profile revision, actor, repository scope, reply destination
 and handoff nonce. Equal message text alone cannot suppress a new handoff.
 Retained-request matching excludes only the newly generated queue/execution IDs,
 creation timestamp and retry count; the original snapshot remains unchanged.
+Queued snapshot identity has bounded additive compatibility for
+`canonical_ingress_id` and `ingress_execution_profile_definition`: absence and
+explicit JSON null are equivalent only for these two optional fields. Non-null
+values, unknown fields and all other request/authority inputs remain exact.
+Retention and verified replacement-route restoration compare this lossless
+projection without parsing away unknown identity data; retained snapshots are
+never rewritten. New identity keys fill only these two absent fields with
+explicit null, matching the current released (e025/514) serializer/raw-hash reader.
+A fresh new-writer hold therefore remains discoverable after rollback, including
+both the original key and the exact verified replacement key; no prior-writer
+aliases are required. Lookup probes at most four
+exact historical hash prefixes (absent/either-null/both-null) in the same existing
+index, then checks both the immutable original identity and its verified
+replacement projection. The original route remains a retained hold alias after
+replacement: enqueueing the same uncertain original through either route must
+return its existing preflight refusal, never create another original. Only the
+stored replacement Thread and its original-linked reply Thread may be projected;
+unrelated route aliases and changed scope, ingress or unknown identity data do
+not match, even if an index row points at that retained record. These aliases
+suppress duplicates; neither authorizes native admission or resolves an unknown
+outcome.
+It does not scan the collection, create another index authority or migrate live
+records. Historical lookup variants remove only these nullable fields from the
+full-null base, preserving every non-null value and unknown key. Old absent,
+either-null and explicit-null indexes remain discoverable in either query shape.
+Existing pagination within each exact prefix remains unchanged. This bounded
+mixed-writer/read and rollback compatibility applies to queue hold discovery;
+it does not relax the separate native-correlation or upgrade/drain restrictions
+below, authorize old readers to admit unknown originals, or prove runtime recovery.
+Fresh-row regressions independently reproduce the released raw-hash lookup and
+exercise actual enqueue refusal through both readers/routes without a second
+native start or retained-snapshot rewrite.
+
+This compatibility does not alter native admission, retry, reconciliation,
+started/unknown holds, receipt generation or public typed state. Snapshot hashes
+and full-original comparisons for native correlation, notification membership,
+scheduling retirement and concurrent operator/bootstrap checks remain exact:
+those bind immutable stored evidence rather than a newly serialized queue model.
+The existing queue/preflight inspectors continue to expose canonical state and
+recovery actions; no UI adaptation, new definition or model call is required.
+This source compatibility alone proves no live-original recovery or installed
+release acceptance for #1314.
+
 A native start response without an actual turn ID produces an unknown-outcome
 event and retained reconciliation state, never a successful-start receipt.
 

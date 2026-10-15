@@ -450,6 +450,48 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         await session.start()
         return session
 
+    async def test_managed_validation_launch_passes_real_mount_policy(self) -> None:
+        from codex_web.local_execution_backend import BubblewrapExecutionBackend
+        from codex_web.runtime import managed_validation_runner
+
+        # Keep native process I/O fake, but cross the real custody -> session ->
+        # backend policy boundary that used to reject the runner's file mount.
+        self.local_worker.artifact_evidence = SimpleNamespace(
+            content=object(),
+            create_artifact=Mock(return_value=SimpleNamespace(id="validation-slot")),
+            list_artifacts=lambda actor: [],
+        )
+        builder = BubblewrapExecutionBackend(
+            executable="/usr/bin/bwrap",
+            probe_runner=lambda *args, **kwargs: SimpleNamespace(returncode=0, stderr=""),
+        )
+        original_spawn = self.backend.spawn_interactive
+        commands = []
+
+        def checked_spawn(assignment, **kwargs):
+            commands.append(builder.build_command(
+                assignment, argv=kwargs["argv"],
+                workspace_path=kwargs["workspace_path"],
+                trusted_readonly_mounts=kwargs["trusted_readonly_mounts"],
+                trusted_writable_mounts=kwargs["trusted_writable_mounts"],
+            ))
+            return original_spawn(assignment, **kwargs)
+
+        with patch.object(self.backend, "spawn_interactive", side_effect=checked_spawn):
+            session = await self._session(self._create_assignment())
+        try:
+            self.assertTrue(session.status().ready)
+            self.assertEqual(session.status().validation_custody_state, "registered")
+            self.local_worker.artifact_evidence.create_artifact.assert_called_once()
+            self.assertEqual(len(commands), 1)
+            source = str(Path(managed_validation_runner.__file__).resolve())
+            destination = "/opt/codex-managed-validation.py"
+            triples = [commands[0][i:i + 3] for i in range(len(commands[0]) - 2)]
+            self.assertIn(["--ro-bind", source, destination], triples)
+            self.assertNotIn(["--bind", source, destination], triples)
+        finally:
+            await session.stop()
+
     async def test_codex_session_mounts_coordinated_writable_repository_set(self) -> None:
         secondary = Path(self.temp.name) / "secondary-writable"
         secondary.mkdir()

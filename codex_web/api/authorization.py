@@ -296,7 +296,7 @@ EXACT_POLICIES: dict[tuple[str, str], ApiAuthorizationPolicy] = {
     ('POST', '/api/threads/{thread_id}/preflight-attempts/{attempt_id}/reconcile-prestart'): ApiAuthorizationPolicy(
         capability='execution.retry', level=AuthorityLevel.EXECUTE, access=ApiAccessMode.ADMIN,
         required_assurance=AuthenticationAssurance.MFA,
-        description='Reconcile a retained authoritative pre-start refusal with administrator authority and MFA.'),
+        description='Reconcile a retained controller refusal or exactly captured positive native start with administrator authority and MFA.'),
     (
         "POST",
         "/api/threads/{thread_id}/preflight-attempts/{attempt_id}/retry",

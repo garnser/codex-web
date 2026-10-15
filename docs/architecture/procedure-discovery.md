@@ -122,6 +122,32 @@ without the isolated assignment boundary also refuse. This limitation is explici
 this change does not claim safe operational writes through arbitrary native tools.
 Protected provider mutations use the separately enforced ActionIntent boundary.
 
+
+The supported inner modes are `read-only`, `workspace-write` and
+`danger-full-access`. The last disables Codex's inner command sandbox; the outer
+[isolated worker boundary](execution-worker-boundary.md#local-isolated-execution-backend)
+continues to enforce filesystem mounts, resource limits and network isolation.
+All writable inner modes require mutable repository access, matching writable
+repository scope and write leases. Scratch preparation remains resource-free.
+The named Agent Profile and actual inner sandbox value are preserved.
+
+Assignment networking is owned by the exact resolved execution profile,
+independently of the inner mode. Current profile schemas require disabled network
+and host mutation; no broader profile is made publishable here. If a future
+resolved contract permits networking, assignment construction preserves its network
+capability even with a restricted inner mode. Backend enforcement and native
+admission remain independent gates: native preparation still refuses any enabled
+assignment/profile networking or host mutation. Legacy unprofiled assignment
+construction retains its sandbox-derived network setting, but cannot obtain this
+profile-pinned native preparation admission.
+
+UI impact: existing assignment inspection renders the actual sandbox separately
+from effective network policy, scope, leases and exact profile provenance. The
+execution-profile inspector exposes host-mutation constraints; procedure inspection
+retains blockers. These canonical surfaces explain the independent constraints;
+no new UI state, mutable definition, schema migration or model call is introduced.
+Production compatibility requires separate runtime qualification.
+
 ## Inspection, evolution and operations
 
 `POST /api/skills/procedure-applicability` is an authenticated, side-effect-free

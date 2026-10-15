@@ -107,7 +107,7 @@ class ExecutionPreflightService:
                     or value.workspace_id != incoming.workspace_id
                     or value.project_id != incoming.project_id
                     or value.queued_turn_snapshot is None
-                    or expected != incoming.queued_turn_snapshot
+                    or not self.store.queued_snapshots_equal(expected, incoming.queued_turn_snapshot)
                     or (value.replacement_thread_id or value.thread_id)
                        not in {prior_target, target}
                     or value.status in {"admitting", "retrying"}):
@@ -160,6 +160,17 @@ class ExecutionPreflightService:
     ) -> ExecutionPreflightAttempt:
         """Only the native runtime response may supply this internal receipt."""
         def update(current):
+            if current.queued_start_correlation is not None:
+                # The reader owns exact response attribution. Never downgrade
+                # its result or bypass missing/malformed positive evidence.
+                from codex_web.services.queued_native_start import validate_attribution
+                validate_attribution(self, current, current.queued_start_correlation)
+                recorded = current.queued_start_receipt
+                if (recorded is None or current.queued_start_evidence is None
+                        or recorded.model_dump(exclude={'observed_at'})
+                        != receipt.model_dump(exclude={'observed_at'})):
+                    raise ValueError('exact native response evidence is unavailable or conflicting')
+                return current
             if current.status == 'started' and current.queued_start_receipt == receipt:
                 return current
             if (current.queued_turn_snapshot is None
@@ -189,9 +200,10 @@ class ExecutionPreflightService:
                 return current
             if claim_id is not None and current.queued_admission_claim_id != claim_id:
                 return current
+            disposition = 'reconciliation_required' if current.queued_start_correlation is not None else status
             return current.model_copy(update={
-                'status':status, 'updated_at':now,
-                'started_at':now if status == 'started' else None,
+                'status':disposition, 'updated_at':now,
+                'started_at':now if disposition == 'started' else None,
                 'blockers':self._blockers(detail) if detail else (),
                 'last_error':str((detail or {}).get('message') or '') or None,
             })
@@ -200,6 +212,7 @@ class ExecutionPreflightService:
     @staticmethod
     def recorded_profile_refusal(attempt: ExecutionPreflightAttempt) -> bool:
         if (attempt.queued_turn_snapshot is None or attempt.queued_start_receipt is not None
+                or attempt.queued_start_correlation is not None
                 or attempt.started_at is not None or not attempt.agent_profile_id
                 or attempt.agent_profile_revision is None):
             return False
@@ -228,6 +241,7 @@ class ExecutionPreflightService:
         # Queue absence, timeouts and stale active markers are not evidence.
         snapshot = attempt.queued_turn_snapshot
         if (snapshot is None or attempt.queued_start_receipt is not None
+                or attempt.queued_start_correlation is not None
                 or attempt.started_at is not None
                 or snapshot.get('thread_id') != attempt.thread_id):
             return False
@@ -248,6 +262,21 @@ class ExecutionPreflightService:
         initial = self.get(attempt_id, actor=actor)
         self._authorize(initial, actor, require_admin=True)
         self._require_individual_recovery(initial)
+        if initial.queued_start_evidence is not None:
+            if actor.principal_kind == PrincipalKind.HUMAN:
+                try:
+                    IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+                except RuntimeError as exc:
+                    raise HTTPException(status_code=403, detail=str(exc)) from exc
+            # Existing authorized inspector action can finish a crash-interrupted
+            # receipt projection; it accepts no caller-selected proof or scope.
+            from codex_web.services.queued_native_start import reconcile_captured_start
+            try:
+                return reconcile_captured_start(self, attempt_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail={
+                    'code':'native_start_evidence_conflict',
+                    'message':'Stored native start attribution no longer matches the original.'}) from exc
         def update(current):
             # The recorded controller refusal occurs before native turn/start.
             # Absence, timeout, active markers and expired claims prove nothing.
@@ -310,6 +339,7 @@ class ExecutionPreflightService:
                 current.status != "reconciliation_required"
                 or current.queued_turn_snapshot != expected_snapshot
                 or current.queued_start_receipt is not None
+                or current.queued_start_evidence is not None
                 or current.started_at is not None
             ):
                 raise HTTPException(status_code=409, detail={
@@ -851,13 +881,15 @@ class ExecutionPreflightService:
             f'/api/threads/{attempt.replacement_thread_id or attempt.thread_id}/preflight-attempts/'
             f'{attempt.id}/bootstrap-recovery')
         payload['can_reconcile_prestart'] = (self.can_retry(actor)
-            and attempt.scheduling_retirement is None
-            and ((attempt.status == 'reconciliation_required' and self.recorded_prestart_refusal(attempt))
-                 or (attempt.status == 'queued' and self.recorded_maintenance_refusal(attempt))))
+            and ((attempt.status == 'reconciliation_required' and attempt.queued_start_evidence is not None)
+                 or (attempt.scheduling_retirement is None and (
+                     (attempt.status == 'reconciliation_required' and self.recorded_prestart_refusal(attempt))
+                     or (attempt.status == 'queued' and self.recorded_maintenance_refusal(attempt))))))
         payload['can_retire_scheduling'] = (self.can_retry(actor)
             and attempt.scheduling_retirement is None
             and attempt.status == 'reconciliation_required'
             and attempt.queued_start_receipt is None
+            and attempt.queued_start_evidence is None
             and attempt.started_at is None
             and bool((attempt.queued_turn_snapshot or {}).get('work_item_ref')))
         payload['reconcile_prestart_href'] = (

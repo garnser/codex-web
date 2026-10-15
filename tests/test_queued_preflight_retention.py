@@ -35,6 +35,10 @@ class QueuedAdmissionDrainTests(unittest.IsolatedAsyncioTestCase):
             original = service.retain_queued(first, organization_id="local", workspace_id="default")
             _, claim = service.claim_queued_admission(original.id)
             service.begin_queued_start(original.id, claim_id=claim)
+            # Persist the historical pre-ingress schema without rewriting authority.
+            service.store.update(original.id, lambda current: current.model_copy(update={
+                "queued_turn_snapshot":{k:v for k,v in current.queued_turn_snapshot.items()
+                    if k not in {"canonical_ingress_id", "ingress_execution_profile_definition"}}}))
             before = service.store.get(original.id).model_dump(mode="json")
             host.queues.clear()
             moved = first.model_copy(update={"thread_id":"new"})

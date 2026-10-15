@@ -2,6 +2,7 @@
   const BASE = window.location.pathname.startsWith('/codex') ? '/codex' : '';
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const { brokerAuditHtml, brokerDeclarationHtml } = await import(`${BASE}/static/control_plane_broker_view.js`);
+  const { coordinationResultsHtml } = await import(`${BASE}/static/project_coordination_view.js`);
   const { currentProjectId } = await import(`${BASE}/static/project_view_scope.js`);
   let generation = 0;
   const pending = new Set();
@@ -41,8 +42,33 @@
     host.before(panel);
     const record = {fingerprint, panel, controller:null};
     panels.set(item.id, record);
-    const button = panel.querySelector('button');
-    const status = panel.querySelector('[role="status"]');
+    const button = panel.querySelector('[data-broker-audit]');
+    const status = panel.querySelector('[data-broker-status]');
+    panel.querySelectorAll('[data-coordination-view]').forEach(control => control.addEventListener('click', async () => {
+      record.controller?.abort();
+      const controller = new AbortController();
+      pending.add(controller); record.controller = controller;
+      const view = control.dataset.coordinationView;
+      const owned = () => generation === viewGeneration && projectId === currentProjectId()
+        && panels.get(item.id) === record && record.controller === controller && panel.isConnected;
+      const feedback = panel.querySelector('[data-coordination-status]');
+      const results = panel.querySelector('[data-coordination-results]');
+      results.replaceChildren(); feedback.textContent = 'Loading current project coordination…';
+      control.disabled = true; results.setAttribute('aria-busy','true');
+      try {
+        const resource = item.brokered_control_plane.assignment_context.project_coordination.declaration.repository_resource_id;
+        const query = new URLSearchParams({assignment_id:item.id, project_id:projectId, repository_resource_id:resource, view, limit:'20'});
+        const response = await apiRequest(`/api/control-plane-broker/coordination?${query}`, {signal:controller.signal});
+        if (!owned()) return;
+        if (response.coordination_scope?.project_id !== projectId || response.coordination_scope?.repository_resource_id !== resource) throw new Error('Stale or mismatched coordination scope');
+        results.innerHTML = coordinationResultsHtml(view, response.items || [], projectId);
+        feedback.textContent = response.items?.length ? `Current canonical ${view}: ${response.items.length} shown${response.next_cursor ? '; more records available through the scoped API' : ''}. No activity is inferred from an idle worker.` : `No current project ${view} records. Missing evidence is unknown, not success.`;
+      } catch (error) {
+        if (owned()) { results.replaceChildren(); feedback.textContent = `${[401,403].includes(error.status) ? 'Coordination access denied' : error.status === 409 ? 'Coordination snapshot is stale' : 'Coordination unavailable'}: ${error.message}. Next: refresh scope or request authorized operator review; no automatic elevation.`; }
+      } finally {
+        pending.delete(controller); control.disabled = false; results.removeAttribute('aria-busy');
+      }
+    }));
     button.addEventListener('click', async () => {
       const controller = new AbortController();
       pending.add(controller);

@@ -499,6 +499,51 @@ class ExecutionPreflightBlockerSnapshot(BaseModel):
     attempt_number: int = Field(ge=1)
 
 
+class QueuedNativeStartCorrelation(BaseModel):
+    """Metadata pinned before one assignment-bound native RPC is sent."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["1.0"] = "1.0"
+    snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    admission_claim_id: str = Field(min_length=1)
+    requested_execution_id: str = Field(min_length=1)
+    organization_id: str
+    workspace_id: str
+    project_id: str
+    actor_identity_id: str = Field(min_length=1)
+    agent_profile_actor_id: str | None = None
+    agent_profile_id: str | None = None
+    agent_profile_revision: int | None = Field(default=None, ge=1)
+    execution_profile_id: str | None = None
+    repository_resource_id: str | None = None
+    writable_repository_resource_ids: tuple[str, ...] = ()
+    read_only_repository_resource_ids: tuple[str, ...] = ()
+    assignment_resource_ids: tuple[str, ...]
+    assignment_id: str = Field(min_length=1)
+    execution_id: str = Field(min_length=1)
+    worker_id: str = Field(min_length=1)
+    fence: int = Field(ge=1)
+    thread_id: str = Field(min_length=1)
+    provider_native_session_id: str = Field(min_length=1, max_length=256)
+    provider_id: Literal["openai"] = "openai"
+    runtime_id: Literal["codex"] = "codex"
+    runtime_generation: str = Field(min_length=1, max_length=128)
+    rpc_request_id: str = Field(min_length=1, max_length=128)
+    prepared_at: float
+
+
+class QueuedNativeStartEvidence(BaseModel):
+    """Allowlisted positive JSON-RPC result fields, never caller supplied proof."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["1.0"] = "1.0"
+    runtime_generation: str = Field(min_length=1, max_length=128)
+    rpc_request_id: str = Field(min_length=1, max_length=128)
+    provider_native_session_id: str = Field(min_length=1, max_length=256)
+    provider_native_turn_id: str = Field(min_length=1, max_length=256)
+    observed_at: float
+
+
 class QueuedNativeStartReceipt(BaseModel):
     """Actual provider start response, recorded before later bookkeeping."""
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -622,6 +667,8 @@ class ExecutionPreflightAttempt(BaseModel):
     queued_admission_claim_id: str | None = None
     operator_admission: QueuedOperatorAdmission | None = None
     queued_start_receipt: QueuedNativeStartReceipt | None = None
+    queued_start_correlation: QueuedNativeStartCorrelation | None = None
+    queued_start_evidence: QueuedNativeStartEvidence | None = None
     notification_batch_id: str | None = None
     scheduling_retirement: QueuedSchedulingRetirement | None = None
     bootstrap_recovery: QueuedBootstrapRecovery | None = None
@@ -652,6 +699,9 @@ class ExecutionPreflightAttempt(BaseModel):
     @model_serializer(mode="wrap")
     def serialize_recovery_fields(self, handler):
         result = handler(self)
+        for name in ('queued_start_correlation', 'queued_start_evidence'):
+            if getattr(self, name) is None:
+                result.pop(name, None)
         if self.operator_admission is None:
             result.pop("operator_admission", None)
         if self.bootstrap_recovery is None:
@@ -698,6 +748,15 @@ class ActiveThreadTurn(BaseModel):
         return result
 
 
+class ProjectCoordinationDispatch(BaseModel):
+    """Server-produced references, revalidated at admission; never human origin."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["1.0"] = "1.0"
+    goal_binding_id: str = Field(min_length=1, max_length=200)
+    assignment_id: str = Field(min_length=1, max_length=200)
+    fence: int = Field(ge=1)
+
+
 class QueuedTurn(BaseModel):
     canonical_ingress_id: str | None = None
     ingress_execution_profile_definition: DefinitionReference | None = None
@@ -726,6 +785,7 @@ class QueuedTurn(BaseModel):
 
     memory_context_binding: UxBriefTurnBinding | None = None
     provider_notification_pin: ProviderNotificationPin | None = None
+    project_coordination_dispatch: ProjectCoordinationDispatch | None = None
 
     @model_serializer(mode="wrap")
     def serialize_context(self, handler):
@@ -734,6 +794,8 @@ class QueuedTurn(BaseModel):
             result.pop("memory_context_binding", None)
         if self.provider_notification_pin is None:
             result.pop("provider_notification_pin", None)
+        if self.project_coordination_dispatch is None:
+            result.pop("project_coordination_dispatch", None)
         return result
 
 

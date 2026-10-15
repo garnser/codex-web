@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
+
+import httpx
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -16,6 +20,7 @@ from codex_web.api.threads import build_threads_router
 from codex_web.api.turns import build_turns_router
 from codex_web.identity import AuthenticationActor, AuthenticationAssurance, PrincipalKind
 from codex_web.models import IndexedThread, Project
+from codex_web.services.context import ContextCompactionService
 from codex_web.services.agent_runtime import AgentRuntimeRegistry, AgentSessionService
 from codex_web.services.project_runtime import ProjectRuntimeService
 from codex_web.services.projects import ProjectService
@@ -69,6 +74,7 @@ class ThreadScopeTests(unittest.IsolatedAsyncioTestCase):
         app.include_router(build_turns_router(self.delegate, self.scope, operator_admission=self.original_admission))
         app.include_router(build_context_router(self.delegate, self.scope))
         app.include_router(build_project_ui_state_router(self.delegate, self.scope))
+        self.app = app
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
 
@@ -181,3 +187,173 @@ class ThreadScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(response.json()['runner']['live'])
         self.delegate.runner.assert_awaited_once_with('thread-a')
         self.delegate.start.assert_not_called()
+
+    def test_exact_scope_uses_global_index_and_never_loads_unrelated_history(self):
+        database = self.sessions.store.store
+        # Populate data-heavy canonical history once, outside the measured read.
+        self.sessions.store.update(lambda state: state.model_copy(update={'sessions': [*state.sessions, *[
+            AgentSession(id=f'unrelated-{i}', organization_id='org-other', workspace_id='ws-other',
+                project_id='foreign', provider_id='other', runtime_id='other', runtime_type='test',
+                provider_native_session_id=f'unrelated-native-{i}') for i in range(2000)]]}))
+        # Unrelated invalid persisted history must not even be decoded.
+        database.record_apply(self.sessions.store.records_namespace,
+            upserts={'sessions:unrelated-invalid': {'untrusted': 'history'}})
+        with patch.object(database, 'record_items', side_effect=AssertionError('history scan')), \
+             patch.object(self.sessions.store, 'list', side_effect=AssertionError('session scan')), \
+             patch.object(database, 'record_page', wraps=database.record_page) as page:
+            self.assertEqual(self.client.get('/api/threads/thread-a?project_id=a').status_code, 200)
+        self.assertEqual(page.call_count, 1)
+        self.assertEqual(page.call_args.kwargs, {'key_prefix': 'native:thread-a:', 'limit': 100})
+
+    def test_global_owner_dedup_preserves_rebinds_across_runtimes_and_rejects_foreign_owners(self):
+        for owner, provider, runtime in [('a', 'openai', 'codex'), ('a', 'other', 'other'),
+                                         ('b', 'openai', 'codex'), ('foreign', 'other', 'codex')]:
+            with self.subTest(owner=owner, provider=provider, runtime=runtime):
+                project = next(p for p in self.projects if p.id == owner)
+                item = AgentSession(organization_id=project.organization_id, workspace_id=project.workspace_id,
+                    project_id=owner, provider_id=provider, runtime_id=runtime, runtime_type='test',
+                    provider_native_session_id='thread-a')
+                self.sessions.store.upsert(item)
+                self.assertEqual(self.client.get('/api/threads/thread-a?project_id=a').status_code, 200 if owner == 'a' else 404)
+                # Remove through the canonical transactional update, not an alias-only repair.
+                self.sessions.store.update(lambda state: state.model_copy(update={
+                    'sessions': [s for s in state.sessions if s.id != item.id]}))
+
+    def test_missing_corrupt_and_truncated_aliases_never_authorize_legacy_fallback(self):
+        store = self.sessions.store
+        database = store.store
+        item = store.find_unique_by_native_id('thread-a', provider_id='openai', runtime_id='codex')
+        key = store._native_key(item)
+        original = database.record_get(store.records_namespace, key)
+        for alias in [{'session_id': 'missing-target'}, {'session_id': item.id, 'unexpected': True},
+                      {'session_id': []}, {'session_id': ''}]:
+            database.record_apply(store.records_namespace, upserts={key: alias})
+            self.assertEqual(self.client.get('/api/threads/thread-a?project_id=a').status_code, 404)
+        database.record_apply(store.records_namespace, upserts={key: original})
+        other = store.find_unique_by_native_id('thread-b', provider_id='openai', runtime_id='codex')
+        database.record_apply(store.records_namespace, upserts={key: {'session_id': other.id}})
+        self.assertEqual(self.client.get('/api/threads/thread-a?project_id=a').status_code, 404)
+        database.record_apply(store.records_namespace, upserts={key: original})
+        with patch.object(database, 'record_page', return_value=({}, 'truncated')):
+            self.assertEqual(self.client.get('/api/threads/thread-a?project_id=a').status_code, 404)
+        self.delegate.read.assert_not_called()
+
+    async def test_real_context_and_scope_storage_do_not_block_event_loop_and_recheck_scope(self):
+        entered, release = threading.Event(), threading.Event()
+        database = self.sessions.store.store
+        original = database.record_page
+        phases = []
+        # Both scope lookup and context status use real canonical SQLite reads;
+        # controlled stalls are below the composed service, never on the loop.
+        def slow_page(*args, **kwargs):
+            phases.append('scope')
+            entered.set()
+            if not release.wait(2): raise TimeoutError('controlled scope timeout')
+            return original(*args, **kwargs)
+        def queue_depth(thread):
+            phases.append('context')
+            entered.set()
+            if not release.wait(2): raise TimeoutError('controlled context timeout')
+            database.record_get(self.sessions.store.records_namespace, 'meta')
+            return 0
+        context = ContextCompactionService(request_for_thread=AsyncMock(), pending_approvals=lambda: {},
+            approval_thread_id=lambda r: r.get('threadId'), queue_depth=queue_depth,
+            thread_is_active=lambda _: False, raise_if_thread_replaced=lambda _: None, publish_event=AsyncMock())
+        app = FastAPI()
+        @app.middleware('http')
+        async def identity(request, call_next):
+            request.state.identity_actor = self.actor
+            return await call_next(request)
+        app.include_router(build_context_router(context, self.scope))
+        for blocked_phase in ['scope', 'context']:
+            phases.clear(); entered.clear(); release.clear()
+            with patch.object(database, 'record_items', side_effect=AssertionError('history scan')), \
+                 patch.object(database, 'record_page', side_effect=slow_page if blocked_phase == 'scope' else original):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://fixture') as client:
+                    task = asyncio.create_task(client.get('/api/threads/thread-a/context?project_id=a'))
+                    ticks = 0
+                    try:
+                        async with asyncio.timeout(1):
+                            while not entered.is_set(): await asyncio.sleep(.002)
+                        for _ in range(10):
+                            await asyncio.sleep(.005)
+                            ticks += 1
+                        self.assertFalse(task.done())
+                        self.assertEqual(ticks, 10, 'request-loop heartbeat stalled')
+                        if blocked_phase == 'context':
+                            item = self.sessions.store.find_unique_by_native_id('thread-a', provider_id='openai', runtime_id='codex')
+                            self.sessions.store.upsert(item.model_copy(update={'project_id': 'b'}))
+                    finally:
+                        release.set()
+                    response = await asyncio.wait_for(task, 2)
+                    self.assertEqual(response.status_code, 200 if blocked_phase == 'scope' else 404, response.text)
+            self.assertIn(blocked_phase, phases)
+
+    def test_later_foreign_owner_after_same_owner_aliases_is_not_hidden_by_first_two(self):
+        for index, owner in enumerate(['a', 'a', 'foreign']):
+            project = next(p for p in self.projects if p.id == owner)
+            self.sessions.store.upsert(AgentSession(id=f'rebound-{index}', organization_id=project.organization_id,
+                workspace_id=project.workspace_id, project_id=owner, provider_id=f'runtime-{index}',
+                runtime_id=f'runtime-{index}', runtime_type='test', provider_native_session_id='rebound-native'))
+            if index == 1:
+                self.assertEqual(self.client.get('/api/threads/rebound-native?project_id=a').status_code, 200)
+                self.assertEqual(self.scope.project_id_for_thread('rebound-native'), 'a')
+                self.delegate.read.reset_mock()
+        self.index.upsert(IndexedThread(id='rebound-native', name='legacy poison', project_id='a', cwd='/shared'))
+        self.assertEqual(self.client.get('/api/threads/rebound-native?project_id=a').status_code, 404)
+        self.assertIsNone(self.scope.project_id_for_thread('rebound-native'))
+        self.delegate.read.assert_not_called()
+
+    def test_same_owner_alias_budget_exhaustion_is_unknown_without_fallback(self):
+        store = self.sessions.store
+        store.update(lambda state: state.model_copy(update={'sessions': [*state.sessions, *[
+            AgentSession(id=f'retained-{i}', organization_id='org-a', workspace_id='ws-a', project_id='a',
+                provider_id='provider', runtime_id=f'runtime-{i}', runtime_type='test',
+                provider_native_session_id='many-retained') for i in range(100)]]}))
+        self.index.upsert(IndexedThread(id='many-retained', name='legacy', project_id='a', cwd='/shared'))
+        self.assertEqual(self.client.get('/api/threads/many-retained?project_id=a').status_code, 200)
+        store.upsert(AgentSession(id='retained-100', organization_id='org-a', workspace_id='ws-a', project_id='a',
+            provider_id='provider', runtime_id='runtime-100', runtime_type='test', provider_native_session_id='many-retained'))
+        self.assertEqual(self.client.get('/api/threads/many-retained?project_id=a').status_code, 404)
+        self.assertIsNone(self.scope.project_id_for_thread('many-retained'))
+
+    async def test_supported_canonical_create_adopt_and_resume_keep_same_owner_scope(self):
+        from codex_web.agent_runtime import AgentRuntimeResult, AgentRuntimeSessionRequest
+        from tests.test_agent_runtime import _Runtime
+        runtime = _Runtime()
+        runtime.native_id = 'continuation-native'
+        self.sessions.registry.register(runtime)
+        request = AgentRuntimeSessionRequest(project_id='a', execution_id='original-execution', assignment_id='original-assignment')
+        first = await self.sessions.create(provider_id=runtime.provider_id, runtime_id=runtime.runtime_id,
+            request=request, actor=self.actor)
+        continuation = await self.sessions.create(provider_id=runtime.provider_id, runtime_id=runtime.runtime_id,
+            request=request.model_copy(update={'execution_id':'continuation-execution','assignment_id':'continuation-assignment'}), actor=self.actor)
+        self.assertNotEqual(first.id, continuation.id)
+        from codex_web.services.thread_bootstrap_bindings import ThreadBootstrapBindingService
+        from codex_web.storage.thread_bootstrap_bindings import ThreadBootstrapBindingStore
+        bindings = ThreadBootstrapBindingService(ThreadBootstrapBindingStore(self.sessions.store.store))
+        bindings.bind(bootstrap_id='original-bootstrap', thread_id=runtime.native_id,
+            execution_id=first.execution_id, assignment_id=first.assignment_id,
+            execution_workspace_id='original-workspace', actor=self.actor)
+        rebound = bindings.rebind(bootstrap_id='continuation-bootstrap', thread_id=runtime.native_id,
+            execution_id=continuation.execution_id, assignment_id=continuation.assignment_id,
+            execution_workspace_id='continuation-workspace', actor=self.actor)
+        self.assertEqual(rebound.thread_id, first.provider_native_session_id)
+        self.assertEqual(bindings.get_by_thread(runtime.native_id, self.actor).assignment_id, continuation.assignment_id)
+        adopted = self.sessions.adopt(provider_id=runtime.provider_id, runtime_id=runtime.runtime_id,
+            runtime_type=runtime.runtime_type, provider_native_session_id=runtime.native_id, request=request,
+            actor=self.actor, capability_snapshot=runtime.capabilities)
+        self.assertIn(adopted.id, {first.id, continuation.id})
+        runtime.resume_session = AsyncMock(return_value=AgentRuntimeResult(provider_native_session_id=runtime.native_id))
+        resumed = await self.sessions.resume(continuation.id, request=request, actor=self.actor)
+        self.assertEqual(resumed.id, continuation.id)
+        self.assertEqual(self.client.get('/api/threads/continuation-native?project_id=a').status_code, 200)
+        other = _Runtime(); other.runtime_id = 'runtime-other'; other.native_id = runtime.native_id
+        self.sessions.registry.register(other)
+        await self.sessions.create(provider_id=other.provider_id, runtime_id=other.runtime_id, request=request, actor=self.actor)
+        self.assertEqual(self.client.get('/api/threads/continuation-native?project_id=a').status_code, 200)
+        self.assertEqual(self.scope.project_id_for_thread(runtime.native_id), 'a')
+        await self.sessions.create(provider_id=other.provider_id, runtime_id=other.runtime_id,
+            request=request.model_copy(update={'project_id':'b'}), actor=self.actor)
+        self.assertEqual(self.client.get('/api/threads/continuation-native?project_id=a').status_code, 404)
+        self.assertIsNone(self.scope.project_id_for_thread(runtime.native_id))

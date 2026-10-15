@@ -270,6 +270,7 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertNotIn("fetch(", source)
         self.assertIn("control_plane_broker_view.js", source)
         self.assertLessEqual((STATIC / "control_plane_broker_view.js").stat().st_size, 6_000)
+        self.assertLessEqual((STATIC / "project_coordination_view.js").stat().st_size, 6_000)
         self.assertIn("credential_exposed", view)
         self.assertNotIn("lease_token", source)
         self.assertNotIn("capability_token", source)
