@@ -805,6 +805,27 @@ sessions. A session intentionally does not complete the canonical assignment on
 its own; later production transport orchestration owns the semantic completion
 point and must submit artifacts/evidence through the existing worker boundary.
 
+Supervision work deadlines and main-loop observation deadlines are distinct.
+If an asyncio observation timeout fires after the serial executor has already
+completed, the supervisor may consume only that same actual terminal future:
+the operation must have succeeded, passed its cooperative storage budget, and
+recorded completion before its original monotonic deadline. It does not rerun
+validation, submit a replacement probe, increase a timeout, or infer success
+from timing diagnostics. The last validated lease and assignment deadline must
+still be live when the result is observed. The normal next renewal phase
+re-resolves current worker, assignment, credential authority and fence before
+using or renewing the same lease; an old validation snapshot cannot authorize
+a heartbeat or renewal after revocation. This is reconciliation of bounded
+supervision work, not replay or reconciliation of native/provider outcomes.
+
+A still-running, cancelled, failed or over-budget future continues to fail
+closed and stops the owned process through existing cleanup. Its cooperative
+budget is cancelled and its executor custody remains until the actual thread
+exits; cancelling an asyncio waiter does not assert thread termination. No
+persisted contract, grant, profile, Definition or pause state changes. Existing
+runner phase/timing/cleanup projections remain the operator inspection surface.
+The event-loop stall cause remains a separate diagnostic question.
+
 ### Current migration boundary
 
 This backend is the concrete execution primitive for local worker command
