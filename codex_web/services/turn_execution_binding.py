@@ -1143,7 +1143,15 @@ class TurnExecutionBindingService:
                 WorkerCapability.COMMAND_EXECUTION,
             )
         )
-        network = NetworkPolicy(enabled=sandbox == "danger-full-access")
+        # The inner Codex sandbox does not grant outer worker networking.
+        # Preserve the exact resolved Definition's independent network policy.
+        network = NetworkPolicy(
+            enabled=(
+                execution_profile.network_enabled
+                if execution_profile is not None
+                else sandbox == "danger-full-access"
+            )
+        )
         if network.enabled:
             required_capabilities = tuple(
                 dict.fromkeys((*required_capabilities, WorkerCapability.NETWORK))

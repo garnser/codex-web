@@ -260,6 +260,10 @@ home, and secret/key directories remain absent. The local worker also keeps its
 private network namespace; selecting `danger-full-access` does not implicitly
 grant the canonical `network` capability or unrestricted repository egress.
 
+For the exact profile, lease, scope and disabled-network/host requirements for
+native no-match preparation in each inner mode, see
+[procedure admission](procedure-discovery.md#native-runtime-coverage-and-explicit-limitation).
+
 ### Orchestration-only scratch execution
 
 Coordination work does not need a fake repository checkout. The canonical
