@@ -242,6 +242,7 @@ class IncidentPostmortemCreate(BaseModel):
     corrective_goal_ids: tuple[str, ...] = ()
     evidence_ids: tuple[str, ...] = ()
     publish_to_memory: bool = True
+    procedure_assignment_ids: tuple[str, ...] = Field(default=(), max_length=16)
 
 
 class IncidentPostmortem(BaseModel):

@@ -48,3 +48,4 @@ For local/container deployment details see [DOCKER.md](../../DOCKER.md).
 - [Operational procedure Skills](skill-procedures.md) — author, import, scan, review and version bounded declarative procedures.
 
 - [Procedure execution and recovery](procedure-execution.md) — pinned checkpoints, approval waits, uncertainty and verified provider rollback.
+- [Keep procedures current](procedure-outcomes.md) — inspect verified outcomes, reconcile inactive drafts and explicitly scan, review and publish changes.

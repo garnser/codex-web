@@ -1953,6 +1953,9 @@ class OrganizationalMemoryService:
         target_id = governed_record.object_id
         plan = research_governance_plan(self.governance, governed_record) if cascade else ()
         dependent_proof = [row for row in plan if row.object_type in {"artifact", "evidence"}]
+        dependent_skills = [row for row in plan if row.object_type == "procedure_skill"]
+        if dependent_skills and getattr(self, "procedure_outcomes", None) is None:
+            raise KnowledgeValidationError("derived Skill governance adapter is unavailable")
         if dependent_proof and self.artifact_evidence is None:
             raise KnowledgeValidationError("derived Artifact/Evidence governance adapter is unavailable")
         state = self.store.load()
@@ -2015,6 +2018,9 @@ class OrganizationalMemoryService:
                             "origin": KnowledgeOrigin.UNKNOWN,
                             "origin_sources": (),
                             "review_status": "unreviewed",
+                            **({"source_ref":"[removed by governance]", "source_revision":None,
+                                "source_url":None, "evidence_ids":(), "authored_by":None,
+                                "authored_at":None} if item.logical_key.startswith("procedure-outcome/") else {}),
                         }),
                         "lifecycle": lifecycle,
                         "invalid_reason": f"governance:{action.value}",
@@ -2056,6 +2062,8 @@ class OrganizationalMemoryService:
             self._index_delete(knowledge_id)
         for dependent in dependent_proof:
             self.artifact_evidence.apply_governance_action(dependent, action, cascade=False)
+        for dependent in dependent_skills:
+            self.procedure_outcomes.erase(dependent, action)
         return (
             f"memory:{target_id}:{action.value}:"
             + ",".join(sorted(affected))

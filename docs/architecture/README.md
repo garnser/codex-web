@@ -161,3 +161,4 @@ The target architecture is:
   explicit unsupported native-tool enforcement.
 
 - [Durable procedure execution](procedure-execution.md) — assignment checkpoints, isolated diagnostics, ActionIntent effects and originating-receipt rollback, Evidence and bounded governed judgment.
+- [Verified procedure outcome drafts](procedure-outcomes.md) — atomic governed derivation, exact source attribution, review conflicts, erasure and explicit publication.

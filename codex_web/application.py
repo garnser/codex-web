@@ -2130,6 +2130,14 @@ incident_service = IncidentService(
 )
 app.state.incident_store = incident_store
 app.state.incident_service = incident_service
+from codex_web.services.procedure_outcomes import ProcedureOutcomeService
+from codex_web.api.procedure_outcomes import build_procedure_outcomes_router
+procedure_outcome_service = ProcedureOutcomeService(procedure_execution_service,
+    organizational_memory_service, incidents=incident_service)
+procedure_execution_service.outcome_drafts = procedure_outcome_service
+incident_service.procedure_outcomes = procedure_outcome_service
+app.state.procedure_outcome_service = procedure_outcome_service
+app.include_router(build_procedure_outcomes_router(procedure_outcome_service))
 app.include_router(build_incidents_router(incident_service))
 
 agent_session_trace_service = AgentSessionTraceService(
