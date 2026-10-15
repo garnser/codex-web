@@ -14,6 +14,11 @@ from tests import test_agent_session_custody as custody
 
 @unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'), 'isolated PostgreSQL test DSN required')
 class PostgresSessionCustodyTests(custody.SessionCustodyTests):
+    # The composed real-database broker performs many transactional reads.
+    # Bound the test observer independently of the short SQLite fixture default;
+    # production request, lease and assignment deadlines remain unchanged.
+    broker_response_timeout = 10
+
     def state_store_factory(self, path):
         import psycopg
         from psycopg import sql
