@@ -15,6 +15,7 @@ from codex_web.artifact_evidence import (
 from codex_web.autonomy_audit import AuditIntegrityStatus, AutonomyAuditState
 from codex_web.storage.autonomy_audit import AutonomyAuditStore
 from codex_web.canonical_events import CanonicalEventType
+from codex_web.canonical_json import canonical_json_bytes
 from codex_web.crypto import (
     CryptoKeyState,
     EncryptedEnvelope,
@@ -215,11 +216,7 @@ class RecoveryService:
 
     @staticmethod
     def _canonical_bytes(value: Any) -> bytes:
-        return json.dumps(
-            value,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        return canonical_json_bytes(value)
 
     def _snapshot_documents(self) -> dict[str, Any]:
         documents = self.state_store.documents()

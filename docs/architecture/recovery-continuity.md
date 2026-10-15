@@ -37,6 +37,15 @@ Recovery policy, owner scope and policy-change history are included in the
 snapshot. Recovery's backup/verification manifest collections are excluded to
 prevent recursive backup growth.
 
+Snapshot and envelope serialization retain compact, sorted-key ASCII JSON bytes.
+Container traversal uses incremental encoding so an offloaded operation can
+yield interpreter time between chunks. StateStore checksums retain their exact
+namespace/NUL/document-digest/NUL framing and hash encoded chunks without another
+complete document buffer. Encryption still receives the complete canonical
+plaintext; key context, backup format and persisted checksums are unchanged.
+This is an encoding implementation change, not a new recovery schema or a
+different integrity algorithm.
+
 Transport/broker queues are not backed up as business truth. After restore they
 are reconstructed from canonical state/outbox semantics.
 
