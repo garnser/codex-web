@@ -142,6 +142,7 @@ class ThreadRecoveryService:
             model=settings.model,
             reasoning_effort=settings.reasoning_effort,
             repository_resource_id=settings.repository_resource_id,
+            writable_repository_resource_ids=settings.writable_repository_resource_ids,
             read_only_repository_resource_ids=(
                 settings.read_only_repository_resource_ids
             ),
