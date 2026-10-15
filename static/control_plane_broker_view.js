@@ -40,4 +40,3 @@ export function brokerDeclarationHtml(item, projectId) {
     ${coordinationDeclarationHtml(context.project_coordination, projectId)}
     <button type="button" class="ghost-button" data-broker-audit>Load broker audit for ${esc(item.id)}</button><div role="status" aria-live="polite" data-broker-status>Broker audit has not been loaded.</div><div data-broker-events></div>`
 }
-

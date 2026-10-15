@@ -893,6 +893,7 @@ class ExecutionWorkerService:
         payload: ExecutionAssignmentCreate,
         *,
         actor: AuthenticationActor,
+        assignment_admission=None,
     ) -> ExecutionAssignment:
         if self.maintenance_admission is not None:
             with self.maintenance_admission(
@@ -903,14 +904,15 @@ class ExecutionWorkerService:
                     raise WorkerConflictError(
                         "execution assignments are drained during upgrade maintenance"
                     )
-                return self._create_assignment(payload, actor=actor)
-        return self._create_assignment(payload, actor=actor)
+                return self._create_assignment(payload, actor=actor, assignment_admission=assignment_admission)
+        return self._create_assignment(payload, actor=actor, assignment_admission=assignment_admission)
 
     def _create_assignment(
         self,
         payload: ExecutionAssignmentCreate,
         *,
         actor: AuthenticationActor,
+        assignment_admission=None,
     ) -> ExecutionAssignment:
         self._require_admin(actor)
         if (
@@ -1045,6 +1047,8 @@ class ExecutionWorkerService:
                 created_by=actor.identity_id,
                 **payload.model_dump(),
             )
+            if assignment_admission is not None:
+                assignment_admission(state, assignment)
             state.assignments.append(assignment)
             self._event(
                 state,
@@ -1094,7 +1098,10 @@ class ExecutionWorkerService:
             created.append(assignment)
             return state
 
-        self.store.update(apply)
+        if assignment_admission is None:
+            self.store.update(apply)
+        else:
+            self.store.update_admission(apply)
         result = created[0]
         self._notify_assignment(result, "assignment_created")
         return result

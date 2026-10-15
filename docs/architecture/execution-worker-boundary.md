@@ -1286,8 +1286,12 @@ singular repository envelope are checked before bootstrap.
 
 Message receipts prove durable queue admission only: `native_start_verified`
 remains false. Creating a Thread proves neither active work nor task completion.
-Monitoring reports canonical active execution, queue depth, runner custody and
-blocker separately; an idle runner stays idle. These adapters add no polling,
+Monitoring reuses `ThreadService._runner_activity`: activity requires live custody,
+matching marker assignment/fence and a native turn ID. Stopped, lost, expired or
+unavailable custody and stale markers remain unknown. Queue depth and retained
+execution/turn IDs remain separate evidence; an idle live runner stays idle. The
+operator view shows custody, lease/process state, diagnostics and blockers beside
+activity rather than turning a retained marker into current work. These adapters add no polling,
 model call, business action, new controller or state store. Existing governed
 Memory versions retain assignment/Definition provenance, governance and origin
 labels; global/unscoped Memory never enters the projection. Elevation feedback
@@ -1297,7 +1301,11 @@ It exposes an authorized next action and cannot approve or grant access.
 The existing worker broker inspector provides lazy operator views of Threads,
 project checkpoints and elevation evidence. Operator inspection independently
 checks admin/step-up and read authority, then uses the same assignment/requester
-gates. It displays declared versus observed authority, pinned/current Definition,
+gates. Memory rows must independently pass canonical read authority, required
+operational Roles, source readability and data-governance checks for both the
+origin requester and actual inspecting operator. The intersection is filtered
+before counts/cursors; passing a coarse capability check never substitutes the
+requester for the content reader. Grant/revoke takes effect on the next read. It displays declared versus observed authority, pinned/current Definition,
 child envelope, blockers and queued-versus-native evidence. Loading/empty/denied/
 stale results and Project changes invalidate stale content. It adds no UI-only
 authority or activation control. This is the UI adaptation for issue #1473;
@@ -1315,3 +1323,61 @@ roll back, first drain/cancel new governor admissions and reconcile uncertain
 intents, then retire the opt-in definition/binding with the canonical lifecycle
 and upgrade compatibility gates. Never reinterpret `1.2` as an older schema or
 promise binary rollback while incompatible live definitions remain enabled.
+
+
+Governor child admission uses the canonical assignment insertion transaction,
+not a per-service lock. The internal admission guard is engine-owned and is not
+accepted in HTTP bodies or Definitions. `ExecutionWorkerStore.update_admission`
+reads worker/assignment/event namespaces under one `StateStore.update_many`
+writer transaction. It rechecks the originating lease, deadline, worker and
+exact fence/scope/pin, verifies the child execution binding, and atomically counts
+and inserts the new pending assignment. Pending/claimed/running assignments are
+the in-flight reservations. The delivery ceiling applies to non-governor
+assignments in the exact tenant/Project/repository envelope; child profile
+concurrency counts that profile across its tenant/workspace, including other
+Projects/resources. Distinct origin assignments and idempotency keys cannot
+race through the count on independently composed services sharing this store.
+
+No reservation controller, new state schema or separate store is introduced.
+Existing canonical bootstrap cancellation and worker terminal transitions free
+capacity; their expected fence prevents old cleanup from cancelling a successor.
+Failed preparation releases only its workspace lease and preserves files. Lost
+origin custody does not implicitly free a child's pending/claimed reservation.
+An uncertain start remains retained for explicit fenced lifecycle cleanup; a
+new governor must not infer that the earlier input or process never existed.
+The assignment/requester and exact current Definition/authority guards still
+run before/after awaits and before native startup. Engines lacking transactional
+admission fail closed for this feature. All concurrent writers of activated
+governor admissions must run the corrected engine; rolling back to an engine
+with only a local creation lock while governors are active is unsupported.
+
+The 5,000-row inspection scan budget is a global inventory availability bound,
+not a statement that only 5,000 authorized rows exist. Foreign inventory may
+exhaust that budget and cause a typed denial, but never enters a successful
+count, cursor or response. Atomic admission also fails closed above 5,000
+assignment records in its transaction. These bounds intentionally favor a
+bounded refusal over unbounded scans; scoped indexes/large-inventory service
+qualification are required before enabling this feature above those bounds.
+SQLite sharing one canonical database is exercised locally. Other StateStore
+backends must provide the declared `update_many` transaction and pass their
+shared-writer qualification; a process-local lock is insufficient.
+
+
+Repository bindings compose by capability, before uniqueness is enforced. For a
+mutation the installed, tenant-resolved ActionProvider must declare the exact
+code-host action with execution capability. For a fact read the installed
+CodeHostRegistry adapter must declare the operation's protocol capability, and
+the tenant-resolved ActionProvider supplies its configured endpoint and credential
+reference. The temporary read binding carries only that adapter's capabilities.
+Coordination-only, unavailable, disabled and foreign bindings cannot compete for
+repository delivery. Multiple eligible providers still fail closed; callers
+cannot select a provider. Resource provenance, requester and worker authority,
+procedure admission, ActionIntent idempotency and credential-use checks remain
+independent downstream boundaries. A usable opt-in catalog must explicitly declare
+repository facts, delivery evidence and reconciliation as well as publication,
+merge and scoped coordination; declarations supply no grants.
+
+The reviewed activation draft and its native-call budget of 20 remain unapplied
+review data. This slice does not enforce an inner native model-call counter and
+does not qualify that budget as enforced. Current profile pins, rollout authority
+and independent installation/CI qualification remain prerequisites to activation.

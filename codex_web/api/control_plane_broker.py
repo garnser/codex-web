@@ -103,7 +103,7 @@ def build_control_plane_broker_router(
                     "reasons": decision.reasons})
         query = {"project_id": [project_id], "repository_resource_id": [repository_resource_id],
                  "limit": [str(limit)], **({"cursor": [cursor]} if cursor else {})}
-        result = await coordinator.dispatch(assignment, operation, None, query, {}, None, None)
+        result = await coordinator.dispatch(assignment, operation, None, query, {}, None, None, content_reader=actor)
         return {**result, "operator_inspection": {"actor": actor.identity_id,
             "assignment_requester": assignment.created_by, "read_only": True}}
 

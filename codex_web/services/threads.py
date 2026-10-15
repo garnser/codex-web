@@ -994,6 +994,7 @@ class ThreadService:
         bootstrap_token: str | None = None,
         before_provider_start: Callable[[], None] | None = None,
         admission_guard: Callable[[], None] | None = None,
+        assignment_admission=None,
     ) -> dict[str, Any]:
         # Internal recovery correlation; the public create request cannot set it.
         if bootstrap_token is not None:
@@ -1135,6 +1136,7 @@ class ThreadService:
                 read_only_repository_ids=read_only_repository_resource_ids,
                 execution_profile_id=effective_execution_profile_id,
                 agent_profile=agent_profile_binding,
+                **({'assignment_admission': assignment_admission} if assignment_admission is not None else {}),
                 **({'writable_repository_ids':writable_repository_resource_ids}
                    if writable_repository_resource_ids else {}),
             )

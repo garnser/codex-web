@@ -1,7 +1,6 @@
 """Typed, opt-in adapters over canonical project services; no controller or store."""
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import time
@@ -21,6 +20,8 @@ from codex_web.data_governance import ContextFilterRequest, DataClassification
 from codex_web.definitions import DefinitionScope
 from codex_web.identity import TenantScope
 from codex_web.models import TurnCreate
+from codex_web.services.organizational_memory import KnowledgeAuthorizationError
+from codex_web.storage.organizational_memory import KnowledgeNotFoundError
 from codex_web.organizational_memory import (
     KnowledgeCreate, KnowledgeIngestBatch, KnowledgeProvenance,
 )
@@ -97,9 +98,6 @@ class ProjectCoordinationService:
         self.broker, self.threads, self.turns, self.scope = broker, threads, turns, scope
         self.bindings, self.workers, self.memory = bindings, workers, memory
         self.approvals, self.attention = approvals, attention
-        # Serializes local bootstrap admission through the existing canonical
-        # quota/profile gates. It is not persisted state or a distributed lease.
-        self._creation_lock = asyncio.Lock()
 
     def authorize(self, assignment, operation, actor):
         now = self.broker._clock()
@@ -180,6 +178,42 @@ class ProjectCoordinationService:
                 or lease.released_at is not None or lease.expires_at <= self.broker._clock()):
             denied("execution workspace scope or lease is stale")
         return current, actor, envelope
+
+    def admit_child(self, state, candidate, origin, envelope, child):
+        """Pure guard inside canonical assignment insertion's writer transaction."""
+        now = self.broker._clock()
+        current = next((v for v in state.assignments if v.id == origin.id), None)
+        keys = ("execution_id", "created_by", "organization_id", "workspace_id", "project_id",
+                "assigned_worker_id", "fence", "execution_workspace_id", "execution_profile_definition",
+                "repository_scope", "resource_ids", "agent_profile")
+        if (current is None or any(getattr(current, k) != getattr(origin, k) for k in keys)
+                or current.status not in {"claimed", "running"} or not current.lease
+                or current.lease.fence != current.fence or current.lease.worker_id != current.assigned_worker_id
+                or current.lease.expires_at <= now or not current.deadline_at or current.deadline_at <= now):
+            denied("origin assignment reservation fence or lease changed")
+        worker = next((v for v in state.workers if v.id == current.assigned_worker_id), None)
+        if (worker is None or worker.lifecycle != "active"
+                or (worker.organization_id, worker.workspace_id) != (origin.organization_id, origin.workspace_id)):
+            denied("origin worker cannot admit a pending reservation")
+        pinned = candidate.agent_profile
+        if (candidate.created_by != origin.created_by or not pinned or (pinned.profile_id, pinned.profile_revision, pinned.profile_record_id) !=
+                (child.profile_id, child.revision, child.record_id)
+                or (candidate.organization_id, candidate.workspace_id, candidate.project_id, candidate.resource_ids) !=
+                   (origin.organization_id, origin.workspace_id, origin.project_id, (envelope.repository_resource_id,))
+                or candidate.execution_profile_id != child.execution_profile_id):
+            denied("child assignment does not match the authorized reservation envelope")
+        if len(state.assignments) > 5000:
+            denied("atomic admission inventory exceeds bounded capacity")
+        active = [v for v in state.assignments if v.status in {"pending", "claimed", "running"}
+            and (v.organization_id, v.workspace_id) == (origin.organization_id, origin.workspace_id)]
+        delivery = [v for v in active if v.project_id == origin.project_id
+            and set(v.resource_ids) == {envelope.repository_resource_id}
+            and v.execution_profile_id != "project-governor"]
+        if len(delivery) >= envelope.max_delivery_threads:
+            denied("delivery-thread reservation bound reached")
+        if sum(v.agent_profile is not None and v.agent_profile.profile_id == child.profile_id
+               for v in active) >= child.budgets.max_concurrency:
+            denied("child Agent Profile concurrency reservation bound reached")
 
     def target(self, thread_id, assignment, actor, envelope):
         self.scope.for_thread(thread_id, actor, assignment.project_id)
@@ -263,7 +297,11 @@ class ProjectCoordinationService:
     def thread_row(self, binding, target):
         # Existing runner projection separates live custody from active work.
         runner = self.threads._runner_projection(binding.thread_id)
-        active = self.threads.active_turn_getter(binding.thread_id) if self.threads.active_turn_getter else None
+        activity = self.threads._runner_activity(binding.thread_id, runner)
+        try:
+            retained = self.threads.active_turn_getter(binding.thread_id) if self.threads.active_turn_getter else None
+        except Exception:
+            retained = None
         depth = self.turns.queue_policy.depth(binding.thread_id)
         return {"thread_id": binding.thread_id, "assignment_id": target.id,
             "project_id": target.project_id, "resource_ids": list(target.resource_ids),
@@ -271,10 +309,12 @@ class ProjectCoordinationService:
             "execution_id": target.execution_id, "execution_workspace_id": target.execution_workspace_id,
             "definition": target.execution_profile_definition.model_dump(mode="json") if target.execution_profile_definition else None,
             "agent_profile": {"profile_id": target.agent_profile.profile_id, "revision": target.agent_profile.profile_revision} if target.agent_profile else None,
-            "runner": runner, "active_execution_id": getattr(active, "execution_id", None),
+            "runner": runner, "active_execution_id": getattr(retained, "execution_id", None) if activity["state"] == "active" else None,
+            "retained_execution_id": getattr(retained, "execution_id", None),
+            "retained_turn_id": getattr(retained, "turn_id", None), "current_turn": activity,
             "queue_depth": depth, "work_item_ref": target.work_item_ref,
             "blocker": target.failure_code,
-            "activity": "active" if active else "queued" if depth else "idle" if runner and runner.get("live") else "unknown"}
+            "activity": activity["state"]}
 
     def memory_view(self, item, actor, project):
         if item.project_id != project:
@@ -290,14 +330,17 @@ class ProjectCoordinationService:
             "content": item.content, "freshness": str(self.memory.freshness(item)),
             "governance_record_id": item.governance_record_id, "provenance": item.provenance.model_dump(mode="json")}
 
-    async def dispatch(self, assignment, operation, target_ref, query, payload, validator, worker_actor):
+    async def dispatch(self, assignment, operation, target_ref, query, payload, validator, worker_actor, *, content_reader=None):
         if set(query) - {"project_id", "repository_resource_id", "limit", "cursor"} or any(len(v) != 1 for v in query.values()):
             denied("unsupported or repeated coordination query fields")
         current, actor, envelope = self.guard(assignment, operation)
         if (query.get("project_id") != [current.project_id]
                 or query.get("repository_resource_id") != [envelope.repository_resource_id]):
             denied("explicit own Project and repository Resource query scope required")
-        identity = [current.id, current.fence, actor.identity_id, current.project_id, envelope.repository_resource_id, operation.id]
+        reader = content_reader or actor
+        if (reader.organization_id, reader.workspace_id) != (actor.organization_id, actor.workspace_id):
+            denied("content reader is outside the origin tenant")
+        identity = [current.id, current.fence, actor.identity_id, reader.identity_id, current.project_id, envelope.repository_resource_id, operation.id]
         if operation.method == "GET" and payload:
             denied("coordination reads accept no body")
         if operation.id in MUTATIONS:
@@ -323,14 +366,18 @@ class ProjectCoordinationService:
             visible = []
             for item in rows:
                 try:
-                    value = self.memory_view(item, actor, current.project_id)
-                except HTTPException:
+                    self.memory_view(item, actor, current.project_id)
+                    visible_item = self.memory.get(item.id, actor=reader)
+                    value = self.memory_view(visible_item, reader, current.project_id)
+                except (HTTPException, KnowledgeAuthorizationError, KnowledgeNotFoundError):
                     continue
                 visible.append({k: v for k, v in value.items() if k != "content"})
             result = self.page(sorted(visible, key=lambda v: v["id"]), query, identity)
         elif operation.id == "project.memory.read":
             item = self.memory.get(target_ref, actor=actor)
-            result = {"item": self.memory_view(item, actor, current.project_id)}
+            self.memory_view(item, actor, current.project_id)
+            item = self.memory.get(item.id, actor=reader)
+            result = {"item": self.memory_view(item, reader, current.project_id)}
         elif operation.id == "project.action.read":
             result = self.action_view(target_ref, current, actor)
         else:
@@ -471,36 +518,30 @@ class ProjectCoordinationActionProvider:
         guard = lambda: self.service.guard(current, op)
         data = request.parameters["input"]
         if op.id == "project.thread.create":
-            async with self.service._creation_lock:
-                guard()
-                allowed = {(v.profile_id, v.revision) for v in envelope.child_profiles}
-                if set(data) != {"profile_id", "profile_revision"} or (data.get("profile_id"), data.get("profile_revision")) not in allowed:
-                    denied("child Agent Profile is outside the explicit revision envelope")
-                profiles = self.service.broker.execution_profiles
-                if profiles.agent_profiles is None:
-                    denied("child Agent Profile resolution unavailable")
-                child, _ = profiles.agent_profiles.resolve_for_execution(data["profile_id"],
-                    revision=data["profile_revision"], actor=actor, project_id=current.project_id)
-                child_execution, _ = profiles.resolve(child.execution_profile_id,
-                    organization_id=current.organization_id, workspace_id=current.workspace_id, project_id=current.project_id)
-                if child_execution.project_coordination or child_execution.administrative_repository_ids:
-                    denied("children cannot inherit governor or administrative control authority")
-                rows = self.service.assignments(current, envelope)
-                active = [v for v in rows if v.id != current.id and v.status in {"pending", "claimed", "running"}]
-                if len(active) >= envelope.max_delivery_threads:
-                    denied("delivery-thread bound reached; inspect existing work, do not create more")
-                if sum(v.agent_profile is not None and v.agent_profile.profile_id == child.profile_id for v in active) >= child.budgets.max_concurrency:
-                    denied("child Agent Profile concurrency budget reached")
-                result = await self.service.threads.create(project_id=current.project_id, actor=actor,
-                    repository_resource_id=envelope.repository_resource_id,
-                    writable_repository_resource_ids=(envelope.repository_resource_id,),
-                    execution_profile_id=child.execution_profile_id,
-                    agent_profile_id=child.profile_id, agent_profile_revision=child.revision,
-                    admission_guard=guard)
-                thread_id = result.get("thread", result).get("id")
-                guard()
-                self.service.target(thread_id, current, actor, envelope)
-                output = {"thread_id": thread_id, "status": "created", "input_delivered": False}
+            guard()
+            allowed = {(v.profile_id, v.revision) for v in envelope.child_profiles}
+            if set(data) != {"profile_id", "profile_revision"} or (data.get("profile_id"), data.get("profile_revision")) not in allowed:
+                denied("child Agent Profile is outside the explicit revision envelope")
+            profiles = self.service.broker.execution_profiles
+            if profiles.agent_profiles is None:
+                denied("child Agent Profile resolution unavailable")
+            child, _ = profiles.agent_profiles.resolve_for_execution(data["profile_id"],
+                revision=data["profile_revision"], actor=actor, project_id=current.project_id)
+            child_execution, _ = profiles.resolve(child.execution_profile_id,
+                organization_id=current.organization_id, workspace_id=current.workspace_id, project_id=current.project_id)
+            if child_execution.project_coordination or child_execution.administrative_repository_ids:
+                denied("children cannot inherit governor or administrative control authority")
+            result = await self.service.threads.create(project_id=current.project_id, actor=actor,
+                repository_resource_id=envelope.repository_resource_id,
+                writable_repository_resource_ids=(envelope.repository_resource_id,),
+                execution_profile_id=child.execution_profile_id,
+                agent_profile_id=child.profile_id, agent_profile_revision=child.revision,
+                admission_guard=guard, assignment_admission=lambda state, candidate:
+                    self.service.admit_child(state, candidate, current, envelope, child))
+            thread_id = result.get("thread", result).get("id")
+            guard()
+            self.service.target(thread_id, current, actor, envelope)
+            output = {"thread_id": thread_id, "status": "created", "input_delivered": False}
         elif op.id == "project.thread.message":
             if set(data) != {"message"}:
                 denied("invalid message input")

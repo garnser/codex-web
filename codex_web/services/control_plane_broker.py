@@ -32,6 +32,7 @@ from codex_web.action_intents import (
     ActionIntentStatus,
 )
 from codex_web.action_providers import ActionRequest
+from codex_web.services.action_providers import ActionProviderNotFoundError
 from codex_web.authority import (
     AuthorityDecisionOutcome,
     AuthorityEvaluationRequest,
@@ -1122,24 +1123,47 @@ class ControlPlaneBrokerService:
         actor: AuthenticationActor,
         project_id: str | None,
         repository_id: str,
+        action_id: str | None = None,
+        code_host_registry=None,
+        capability: CodeHostCapability | None = None,
     ):
-        """Resolve the unique provider binding for an assignment repository.
+        """Resolve the unique eligible provider binding for an assignment repository.
 
         Repository resources carry their provider boundary through the binding;
         the assignment broker must not assume that every repository is hosted
         by GitHub.  Ambiguous bindings remain a hard failure so a worker cannot
         choose a credential/provider implicitly.
         """
-        bindings = [
-            item
-            for item in action_registry.list_bindings(actor)
-            if item.enabled
-            and repository_id in item.resource_ids
-            and item.project_id in {None, project_id}
-        ]
+        bindings = []
+        for item in action_registry.list_bindings(actor):
+            if (not item.enabled or repository_id not in item.resource_ids
+                    or item.project_id not in {None, project_id}):
+                continue
+            try:
+                provider = action_registry.provider(
+                    item.provider_type, item.provider_instance, actor=actor,
+                )
+            except ActionProviderNotFoundError:
+                continue
+            if action_id is not None:
+                if not any(definition.action_id == action_id and definition.capabilities.execute
+                           for definition in provider.actions()):
+                    continue
+            elif capability is not None and code_host_registry is not None:
+                try:
+                    host = code_host_registry.provider(item.provider_type)
+                except CodeHostError:
+                    continue
+                if capability not in host.capabilities():
+                    continue
+                if not str(getattr(provider, "api_base", "")).strip():
+                    continue
+            else:
+                raise ControlPlaneBrokerDeniedError("repository provider capability is required")
+            bindings.append(item)
         if len(bindings) != 1:
             raise ControlPlaneBrokerDeniedError(
-                "repository operation requires exactly one enabled provider binding"
+                "repository operation requires exactly one eligible enabled provider binding"
             )
         return bindings[0]
 
@@ -1223,6 +1247,7 @@ class ControlPlaneBrokerService:
             actor=requester_actor,
             project_id=assignment.project_id,
             repository_id=repository_id,
+            action_id=action_id,
         )
         request = ActionRequest(
             action_id=action_id,
@@ -1333,12 +1358,31 @@ class ControlPlaneBrokerService:
         repository_id = self._operation_repository_id(
             assignment, operation_id, query or {},
         )
+        # Protocol operation-to-capability mapping, never a mutable provider catalog.
+        capability = {
+            "repository.read.metadata": CodeHostCapability.REPOSITORY_READ,
+            "repository.read.refs": CodeHostCapability.REFS_READ,
+            "repository.read.commit": CodeHostCapability.COMMITS_READ,
+            "repository.read.pull-request": CodeHostCapability.PULL_REQUEST_READ,
+            "repository.read.pull-requests": CodeHostCapability.PULL_REQUEST_READ,
+            "repository.read.reviews": CodeHostCapability.REVIEW_READ,
+            "repository.read.checks": CodeHostCapability.CHECKS_READ,
+            "repository.read.job-logs": CodeHostCapability.JOB_LOGS_READ,
+            "repository.read.artifacts": CodeHostCapability.ARTIFACTS_READ,
+            "repository.read.artifact-download": CodeHostCapability.ARTIFACTS_READ,
+            "repository.read.releases": CodeHostCapability.RELEASE_READ,
+            "repository.read.compare": CodeHostCapability.COMPARE_READ,
+        }.get(operation_id)
+        if capability is None:
+            raise ControlPlaneBrokerDeniedError("unsupported repository fact capability")
         action_registry = self.action_intents.execution.registry
         action_binding = self._repository_action_binding(
             action_registry=action_registry,
             actor=actor,
             project_id=assignment.project_id,
             repository_id=repository_id,
+            code_host_registry=self.code_hosts.registry,
+            capability=capability,
         )
         action_provider = action_registry.provider(
             action_binding.provider_type,
@@ -1348,7 +1392,7 @@ class ControlPlaneBrokerService:
         api_base = str(getattr(action_provider, "api_base", "")).strip()
         if not api_base:
             raise ControlPlaneBrokerDeniedError(
-                "GitHub provider does not expose its configured API base"
+                "code-host action provider does not expose its configured API base"
             )
         binding_id = f"control-plane-read:{action_binding.id}"
         self.code_hosts.registry.register_binding(
@@ -1360,7 +1404,7 @@ class ControlPlaneBrokerService:
                 provider_instance=action_binding.provider_instance,
                 base_url=api_base,
                 credential_ref=action_binding.credential_ref,
-                capabilities=tuple(CodeHostCapability),
+                capabilities=tuple(self.code_hosts.registry.provider(action_binding.provider_type).capabilities()),
             )
         )
         return binding_id, repository_id
