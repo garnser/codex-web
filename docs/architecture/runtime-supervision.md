@@ -634,6 +634,49 @@ identity, including profile revision, actor, repository scope, reply destination
 and handoff nonce. Equal message text alone cannot suppress a new handoff.
 Retained-request matching excludes only the newly generated queue/execution IDs,
 creation timestamp and retry count; the original snapshot remains unchanged.
+Queued snapshot identity has bounded additive compatibility for
+`canonical_ingress_id` and `ingress_execution_profile_definition`: absence and
+explicit JSON null are equivalent only for these two optional fields. Non-null
+values, unknown fields and all other request/authority inputs remain exact.
+Retention and verified replacement-route restoration compare this lossless
+projection without parsing away unknown identity data; retained snapshots are
+never rewritten. New identity keys fill only these two absent fields with
+explicit null, matching the current released (e025/514) serializer/raw-hash reader.
+A fresh new-writer hold therefore remains discoverable after rollback, including
+both the original key and the exact verified replacement key; no prior-writer
+aliases are required. Lookup probes at most four
+exact historical hash prefixes (absent/either-null/both-null) in the same existing
+index, then checks both the immutable original identity and its verified
+replacement projection. The original route remains a retained hold alias after
+replacement: enqueueing the same uncertain original through either route must
+return its existing preflight refusal, never create another original. Only the
+stored replacement Thread and its original-linked reply Thread may be projected;
+unrelated route aliases and changed scope, ingress or unknown identity data do
+not match, even if an index row points at that retained record. These aliases
+suppress duplicates; neither authorizes native admission or resolves an unknown
+outcome.
+It does not scan the collection, create another index authority or migrate live
+records. Historical lookup variants remove only these nullable fields from the
+full-null base, preserving every non-null value and unknown key. Old absent,
+either-null and explicit-null indexes remain discoverable in either query shape.
+Existing pagination within each exact prefix remains unchanged. This bounded
+mixed-writer/read and rollback compatibility applies to queue hold discovery;
+it does not relax the separate native-correlation or upgrade/drain restrictions
+below, authorize old readers to admit unknown originals, or prove runtime recovery.
+Fresh-row regressions independently reproduce the released raw-hash lookup and
+exercise actual enqueue refusal through both readers/routes without a second
+native start or retained-snapshot rewrite.
+
+This compatibility does not alter native admission, retry, reconciliation,
+started/unknown holds, receipt generation or public typed state. Snapshot hashes
+and full-original comparisons for native correlation, notification membership,
+scheduling retirement and concurrent operator/bootstrap checks remain exact:
+those bind immutable stored evidence rather than a newly serialized queue model.
+The existing queue/preflight inspectors continue to expose canonical state and
+recovery actions; no UI adaptation, new definition or model call is required.
+This source compatibility alone proves no live-original recovery or installed
+release acceptance for #1314.
+
 A native start response without an actual turn ID produces an unknown-outcome
 event and retained reconciliation state, never a successful-start receipt.
 

@@ -42,28 +42,82 @@ class ExecutionPreflightStore:
     def _attempt_key(attempt_id: str) -> str:
         return f"a/{attempt_id}"
 
-    @staticmethod
-    def queued_identity(snapshot: dict[str, Any]) -> dict[str, Any]:
-        return {key:value for key,value in snapshot.items()
-            if key not in {'id','execution_id','created_at','attempts'}}
+    # Code-owned additive schema compatibility, never a general null filter.
+    OPTIONAL_INGRESS_FIELDS = ("canonical_ingress_id", "ingress_execution_profile_definition")
 
     @classmethod
-    def _queued_identity_key(cls, snapshot: dict[str, Any]) -> str:
-        digest = hashlib.sha256(json.dumps(cls.queued_identity(snapshot), sort_keys=True,
+    def normalized_queued_snapshot(cls, snapshot: dict[str, Any]) -> dict[str, Any]:
+        """Preserve every unknown/non-null field without a lossy model parse."""
+        # Write the released serializer's full-null shape so a fresh hold is
+        # still discoverable by its raw-hash reader after rollback. Never rewrite
+        # the retained evidence, discard unknown keys or coerce non-null values.
+        return {**dict.fromkeys(cls.OPTIONAL_INGRESS_FIELDS), **snapshot}
+
+    @classmethod
+    def queued_snapshots_equal(cls, left: dict[str, Any] | None,
+                               right: dict[str, Any] | None) -> bool:
+        if left is None or right is None:
+            return left is right
+        return cls.normalized_queued_snapshot(left) == cls.normalized_queued_snapshot(right)
+
+    @classmethod
+    def queued_identity(cls, snapshot: dict[str, Any]) -> dict[str, Any]:
+        return {key:value for key,value in cls.normalized_queued_snapshot(snapshot).items()
+            if key not in {'id','execution_id','created_at','attempts'}}
+
+    @staticmethod
+    def _raw_queued_identity_key(snapshot: dict[str, Any]) -> str:
+        identity = {key:value for key,value in snapshot.items()
+            if key not in {'id','execution_id','created_at','attempts'}}
+        digest = hashlib.sha256(json.dumps(identity, sort_keys=True,
             separators=(',', ':')).encode()).hexdigest()
         return f"q/{snapshot['thread_id']}/{digest}/"
 
+    @classmethod
+    def _queued_identity_key(cls, snapshot: dict[str, Any]) -> str:
+        return cls._raw_queued_identity_key(cls.normalized_queued_snapshot(snapshot))
+
+    @classmethod
+    def _queued_identity_keys(cls, snapshot: dict[str, Any]) -> tuple[str, ...]:
+        # At most four exact prefixes in the existing index. Older writers used
+        # raw hashes for absent, either-null and both-null ingress fields.
+        variants = [cls.normalized_queued_snapshot(snapshot)]
+        for field in cls.OPTIONAL_INGRESS_FIELDS:
+            if snapshot.get(field) is None:
+                variants += [{key:value for key,value in variant.items() if key != field}
+                    for variant in variants]
+        return tuple(cls._raw_queued_identity_key(value) for value in variants)
+
     def matching_queued(self, snapshot: dict[str, Any]) -> ExecutionPreflightAttempt | None:
-        cursor = None
-        while True:
-            rows, cursor = self.store.record_page(self.NAMESPACE,
-                key_prefix=self._queued_identity_key(snapshot), after=cursor, limit=200)
-            for row in rows.values():
-                attempt = self.get(row['attemptId'])
-                if attempt is not None and attempt.status != 'started':
-                    return attempt
-            if cursor is None:
-                return None
+        identity = self.queued_identity(snapshot)
+        for prefix in self._queued_identity_keys(snapshot):
+            cursor = None
+            while True:
+                rows, cursor = self.store.record_page(self.NAMESPACE,
+                    key_prefix=prefix, after=cursor, limit=200)
+                for row in rows.values():
+                    attempt = self.get(row['attemptId'])
+                    if attempt is None or attempt.status == 'started':
+                        continue
+                    expected = dict(attempt.queued_turn_snapshot or {})
+                    # Routing adds a hold alias; it does not retire the immutable
+                    # original-route hold on an uncertain native outcome.
+                    if self.queued_identity(expected) == identity:
+                        return attempt
+                    if attempt.replacement_thread_id:
+                        original = expected.get('thread_id')
+                        expected['thread_id'] = attempt.replacement_thread_id
+                        reply = expected.get('reply_target')
+                        if reply and reply.get('thread_id') == original:
+                            expected['reply_target'] = dict(reply, thread_id=attempt.replacement_thread_id)
+                    # Indexes locate candidates, never authorize arbitrary route
+                    # aliases. Only the exact retained replacement projection
+                    # can match in addition to the immutable original above.
+                    if self.queued_identity(expected) == identity:
+                        return attempt
+                if cursor is None:
+                    break
+        return None
 
     @classmethod
     def _thread_key(cls, attempt: ExecutionPreflightAttempt) -> str:
@@ -428,7 +482,7 @@ class ExecutionPreflightStore:
                     current.organization_id != attempt.organization_id
                     or current.workspace_id != attempt.workspace_id
                     or current.project_id != attempt.project_id
-                    or expected != attempt.queued_turn_snapshot
+                    or not self.queued_snapshots_equal(expected, attempt.queued_turn_snapshot)
                 ):
                     raise ValueError("retained queued request identity changed")
                 return raw
