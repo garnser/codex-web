@@ -32,6 +32,11 @@ const skill = {
 };
 
 test.beforeEach(async ({ page }) => {
+  // These legacy tests author ordinary Skills. Structured playbook behavior is
+  // qualified separately against real canonical routers in skill_playbooks.
+  await page.route('**/api/skills/procedure-schema', route => route.fulfill({
+    json: { schema: { type: 'object', properties: {} } },
+  }));
   await page.route('**/api/skill-security/policy', route => route.fulfill({ json: { policy: { scan_imported_on_ingest: true, require_scan_before_publish: true, require_scan_before_assignment: true, max_risk_score: 49, blocked_severities: ['high', 'critical'], blocked_categories: [], allow_audited_override: false, semantic_for_untrusted_sources: false, scan_locally_authored: false, fail_closed_on_scanner_error: true, provider_id: 'nvidia-skillspector' } } }));
   await page.route('**/api/skill-sources', route => route.fulfill({ json: { items: [
     { source_id: 'engineering', name: 'Engineering catalog', trust: 'approved' },

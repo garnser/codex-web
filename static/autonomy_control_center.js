@@ -1,5 +1,10 @@
 import { confirmAction } from './action_confirmation.js';
 import { renderLocalInstallation } from './local_installation_inspector.js';
+import { request } from './api_client.js';
+import { captureProjectView } from './project_view_scope.js';
+import { referenceLink } from './reference_navigation.js';
+import { focusReference } from './reference_links.js';
+import { installProcedureRun, procedureRunsDirty, disposeProcedureRuns } from './procedure_run_ui.js';
 const accEsc = (value) => String(value ?? "")
   .replaceAll("&", "&amp;")
   .replaceAll("<", "&lt;")
@@ -73,6 +78,8 @@ function accSetStatus(card, text, error) {
 }
 
 function accRender(card, data) {
+  if (procedureRunsDirty(card)) { accSetStatus(card, 'Refresh deferred: save or discard unsaved playbook inputs first.', false); return; }
+  disposeProcedureRuns(card);
   const control = data.autonomy?.control || {};
   const effective = data.autonomy?.effective_policy || {};
   const recovery = data.recovery || {};
@@ -133,12 +140,37 @@ function accRender(card, data) {
       accLink("/api/attention/" + encodeURIComponent(item.id), "Open " + item.id));
   }).join("") : accEmpty("No active canonical Attention items.");
 
-  const incidents = data.incidents?.active || [];
+  const incidents = data.referenced_incident ? [data.referenced_incident, ...(data.incidents?.active || []).filter(item => item.id !== data.referenced_incident.id)] : data.incidents?.active || [];
   card.querySelector("[data-acc-incidents]").innerHTML = incidents.length ? incidents.slice(0, 20).map(function (item) {
     return accRow(item.severity + " · " + item.title + " · " + item.status,
       "Commander " + (item.commander_identity_id || "unassigned") + " · resources " + ((item.affected_resource_ids || []).join(", ") || "none"),
-      accLink("/api/incidents/" + encodeURIComponent(item.id), "Open " + item.id));
+      accLink("/api/incidents/" + encodeURIComponent(item.id), "Open " + item.id))
+      + `<details data-reference-kind="incident" data-reference-id="${accEsc(item.id)}"><summary>Playbook trace and verified-outcome review</summary><button type="button" data-incident-playbook="${accEsc(item.id)}">Inspect linked canonical runs</button><section data-incident-playbook-result></section></details>`;
   }).join("") : accEmpty("No active incidents.");
+  if (data.referenced_incident_error) card.querySelector('[data-acc-incidents]').insertAdjacentHTML('afterbegin', `<p role="status">Requested Incident unavailable: ${accEsc(data.referenced_incident_error)}. No substitute Incident is selected.</p>`);
+  card.querySelectorAll('[data-incident-playbook]').forEach(button => button.addEventListener('click', async () => {
+    const scope = captureProjectView(), host = button.nextElementSibling;
+    const current = () => scope.current() && host.isConnected;
+    button.disabled = true; host.textContent = 'Loading canonical Incident and assignment links…';
+    try {
+      const [response, assignments] = await Promise.all([
+        request(`/api/incidents/${encodeURIComponent(button.dataset.incidentPlaybook)}`),
+        request('/api/execution-workers/assignments'),
+      ]);
+      if (!current()) return;
+      const incident = response.item;
+      host.innerHTML = `<p>Incident ${accEsc(incident.status)} · ${referenceLink('attention', incident.attention_item_id, {projectId:incident.project_id})} · Evidence ${(incident.evidence_ids || []).map(id => referenceLink('evidence', id, {projectId:incident.project_id})).join(', ') || 'none'} · Knowledge ${(incident.runbook_knowledge_ids || []).map(id => referenceLink('knowledge', id, {projectId:incident.project_id})).join(', ') || 'none'}</p><p>Actions ${(incident.action_intent_ids || []).map(id => referenceLink('action_intent', id, {projectId:incident.project_id})).join(', ') || 'none'}</p>`;
+      const linked = (assignments.items || []).filter(item => item.project_id === incident.project_id
+        && (item.subject?.kind === 'incident' && item.subject.ref === incident.id
+          || Object.values(item.procedure_checkpoint?.steps || {}).some(step => incident.action_intent_ids.includes(step.action_intent_id))));
+      if (!linked.length) host.insertAdjacentHTML('beforeend', '<p>No visible assignment has an exact Incident or ActionIntent link. Inspect canonical action history; shared Resource scope alone is not run attribution.</p>');
+      for (const item of linked.slice(0,16)) {
+        const section = document.createElement('section'); host.append(section); installProcedureRun(section, item, {incidentId:incident.id});
+      }
+      if (linked.length > 16) host.insertAdjacentHTML('beforeend', '<p>Showing the first sixteen linked runs. Open Workers for the full authorized assignment list.</p>');
+    } catch (error) { if (current()) host.textContent = `Incident playbook inspection unavailable: ${error.message}`; }
+    finally { button.disabled = false; }
+  }));
 
   const latest = data.releases?.latest;
   card.querySelector("[data-acc-releases]").innerHTML = latest ? accRow(
@@ -327,6 +359,7 @@ function accRender(card, data) {
   card.querySelector("[data-acc-verify-audit]")?.addEventListener("click", function () {
     accMutate(card, "/api/autonomy/audit/verify?publish_evidence=true", { method: "POST" }, "Verifying audit integrity…");
   });
+  focusReference(card);
 }
 
 function accStage(title, detail) {
@@ -377,14 +410,24 @@ async function accExplain(card) {
 }
 
 async function accLoad(card) {
+  const scope = captureProjectView();
   accSetStatus(card, "Loading canonical production-autonomy state…", false);
   try {
     const data = await accRequest("/api/autonomy/control-center");
+    if (!scope.current() || !card.isConnected) return;
+    const reference = new URLSearchParams(location.search);
+    const incidentId = reference.get('consumer_type') === 'incident' ? reference.get('consumer_id') : null;
+    if (incidentId) {
+      try { data.referenced_incident = (await request(`/api/incidents/${encodeURIComponent(incidentId)}`)).item; }
+      catch (error) { data.referenced_incident_error = error.message; }
+      if (!scope.current() || !card.isConnected) return;
+    }
     accRender(card, data);
     card.dataset.loaded = "true";
     accSetStatus(card, "Canonical state loaded · " + (data.blockers || []).length + " blocker(s) · " +
       (data.orchestration?.cycle_count || 0) + " recent cycle(s) · refresh performs no model/provider work.", false);
   } catch (error) {
+    if (!scope.current() || !card.isConnected) return;
     accSetStatus(card, "Control Center unavailable: " + error.message, true);
   }
 }

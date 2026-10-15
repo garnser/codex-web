@@ -127,10 +127,20 @@ Protected provider mutations use the separately enforced ActionIntent boundary.
 `POST /api/skills/procedure-applicability` is an authenticated, side-effect-free
 preview over the same resolver, canonical provider contract, Resource facts and
 current authority. It neither creates an intent nor authorizes mutation.
+Optional `task` supplies a bounded preview filter. Optional `expected_environment`
+only detects disagreement with resolved Resource facts and adds
+`procedure_preview_environment_conflict`; it cannot overwrite context. The response
+includes resolved `input_context` and the existing canonical authority snapshot
+with reasons and exact Definition references. These are additive read-only fields;
+selection/admission engines and persisted discovery contracts are unchanged.
 ActionIntent history exposes every result; its existing browser inspector shows
 scope, exact pins/checksums, sources, candidates and blockers. Assignment inspection
-exposes the same typed evidence. Rich Skill authoring/applicability/trace UX and
-Resource fact editing remain linked to [the operator UI delivery](https://github.com/garnser/codex-web/issues/1428).
+exposes the same typed evidence. The existing Skill editor, Resource editor and
+assignment/ActionIntent/Incident inspectors consume these canonical services.
+Authoring controls derive from the code-owned procedure schema and create inactive
+Skill revisions. Scope visit fences include tenant/identity changes and reject
+late responses even after an A→B→A Project visit. No browser-owned procedure/run
+state or extra model call is introduced.
 
 ActionIntent document schema 1.2 migrates to 1.3 with empty discovery history;
 worker-state 1.9 migrates to 1.10 with empty assignment evidence. Old exact Skill

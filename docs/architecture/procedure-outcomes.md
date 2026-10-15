@@ -94,7 +94,9 @@ publication occurs. An older engine cannot provide these source gates and must
 not be used to publish/reuse outcome-derived records. Drain before downgrade and
 restore a compatible verified snapshot if rollback is required.
 
-The richer draft review/diff, source links and publication UI is explicitly
-tracked by [#1428](https://github.com/garnser/codex-web/issues/1428). Existing
-Skill/Definition, Memory, assignment, Incident, Evidence and Attention inspectors
-remain canonical inspection surfaces. See the [operator guide](../operations/procedure-outcomes.md).
+Assignment, ActionIntent and Incident inspectors expose outcome extraction,
+evidence/diff review and explicit inactive-draft conversion. Exact draft links open
+the existing Skill/Definition validation, scanning and publication controls;
+Memory, Evidence and Attention remain canonical source inspection surfaces.
+Independent editor groups acknowledge only values submitted by that operation;
+inspection calls never acknowledge edits. See the [operator guide](../operations/procedure-outcomes.md).

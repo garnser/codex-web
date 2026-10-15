@@ -2,6 +2,23 @@ import { expect, test } from "@playwright/test";
 
 const fixture = "http://127.0.0.1:18766/tests/browser/attention_ui_fixture.html";
 
+test('playbook Attention link reads and focuses the exact item beyond the normal page', async ({page}) => {
+  const fs = require('node:fs'), path = require('node:path');
+  await page.route('**/projects/project-a/attention?**', route => route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(__dirname,'attention_ui_fixture.html'),'utf8')}));
+  const calls = [];
+  await page.route('**/api/**', route => {
+    const url = new URL(route.request().url()); calls.push(url.pathname + url.search);
+    if (url.pathname === '/api/attention/attention-99') return route.fulfill({json:{attention_item:{...item(99),project_id:'project-a',status:'resolved'}}});
+    return route.fulfill({json:{attention_items:[],total:0}});
+  });
+  await page.goto('http://127.0.0.1:18766/projects/project-a/attention?consumer_type=attention&consumer_id=attention-99');
+  await page.getByRole('button',{name:/Inbox/}).click();
+  const exact = page.locator('[data-attention-id="attention-99"]');
+  await expect(exact).toBeVisible(); await expect(exact).toBeFocused();
+  expect(calls).toContain('/api/attention/attention-99?project_id=project-a');
+  await expect(page.locator('[data-attention-list] [data-attention-id]')).toHaveCount(1);
+});
+
 async function switchAttentionProject(page, projectId) {
   await page.evaluate(id => {
     document.body.dataset.activeProject = id;

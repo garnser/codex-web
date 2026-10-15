@@ -143,6 +143,7 @@ test('successful resource save releases navigation and pristine filters do not p
   await expect(page.locator('[data-product-workspace-title]')).toHaveText('Definitions / Contracts');
   expect(dialogs).toEqual([]);
   expect(state.writes).toHaveLength(1);
+  expect(state.writes[0].operational_context).toBeNull();
 });
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 720 }, { width: 390, height: 844 }]) {

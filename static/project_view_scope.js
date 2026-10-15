@@ -1,15 +1,11 @@
+import { initialProjectId, observeIdentityScope } from './view_scope_context.js';
 import { request } from './api_client.js';
 
-// UI response fence only. APIs independently authorize actor and target scope.
+// UI fence; canonical APIs authorize scope.
 let generation = 0;
-function initialProjectId() {
-  const route = location.pathname.match(/\/projects\/([^/]+)(?:\/|$)/);
-  if (route) { try { return decodeURIComponent(route[1]); } catch { return ''; } }
-  return document.body?.dataset.projectId || document.body?.dataset.activeProject
-    || new URLSearchParams(location.search).get('project') || '';
-}
 let projectId = initialProjectId();
 export function currentProjectId() { return projectId; }
+observeIdentityScope(() => { generation += 1; });
 window.addEventListener('codex:project-changed', event => {
   const next = String(event.detail?.projectId || '').trim();
   if (next !== projectId) { generation += 1; projectId = next; }

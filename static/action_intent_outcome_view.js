@@ -1,11 +1,11 @@
 import { esc as escapeHtml } from './reference_links.js';
-function timeText(value) {
+export function timeText(value) {
   if (!value) return "none";
   const date = new Date(Number(value) * 1000);
   return Number.isNaN(date.valueOf()) ? "unknown" : date.toLocaleString();
 }
 
-function listText(values) {
+export function listText(values) {
   return values?.length ? values.map(escapeHtml).join(", ") : "none";
 }
 

@@ -3,6 +3,10 @@
   const { referenceLink } = await import(`${BASE}/static/reference_navigation.js`);
   const { referenceAttributes, focusReference, workspaceIsVisible } = await import(`${BASE}/static/reference_links.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { installProcedureRun, procedureRunsDirty, disposeProcedureRuns } = await import(`${BASE}/static/procedure_run_ui.js`);
+  const { captureProjectView } = await import(`${BASE}/static/project_view_scope.js`);
+  const { workerDetailsHtml, timeText } = await import(`${BASE}/static/execution_worker_presenters.js`);
+  let refreshGeneration = 0;
   let workers = [];
   let assignments = [];
   let events = [];
@@ -13,11 +17,6 @@
       .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
   }
 
-  function timeText(value) {
-    if (!value) return "none";
-    const date = new Date(Number(value) * 1000);
-    return Number.isNaN(date.valueOf()) ? "unknown" : date.toLocaleString();
-  }
 
   function bytes(value) {
     const size = Number(value || 0);
@@ -123,24 +122,8 @@
   function renderWorkers() {
     const host = document.getElementById("execution-worker-list");
     if (!host) return;
-    const visible = visibleWorkers();
-    host.innerHTML = visible.map((worker) => {
-      const active = activeAssignmentCount(worker.id);
-      const trustWarning = worker.lifecycle === "active"
-        ? "Eligible for assignment subject to capability/concurrency checks."
-        : worker.lifecycle === "draining"
-          ? "No new work should be assigned; existing fenced leases may continue."
-          : "Not trusted for execution.";
-      return `<details class="comm-entry" ${referenceAttributes("worker", worker.id)}>
-        <summary><strong>${escapeHtml(worker.pool)} · ${escapeHtml(worker.id)} · ${escapeHtml(worker.lifecycle)}</strong></summary>
-        <small>Service identity: ${escapeHtml(worker.service_identity_id)} · version: ${escapeHtml(worker.version)} · registered by: ${escapeHtml(worker.registered_by)}</small>
-        <small>Capabilities: ${listText(worker.capabilities)} · max concurrency: ${escapeHtml(worker.max_concurrency)} · active leased assignments: ${active}</small>
-        <small>Registered: ${timeText(worker.registered_at)} · last heartbeat: ${timeText(worker.last_heartbeat_at)} · revoked: ${timeText(worker.revoked_at)}</small>
-        ${worker.quarantine_reason ? `<small>Quarantine reason: ${escapeHtml(worker.quarantine_reason)}</small>` : ""}
-        <small>${escapeHtml(trustWarning)}</small>
-        <div data-execution-worker-management-host="${escapeHtml(worker.id)}"></div>
-      </details>`;
-    }).join("") || '<div class="comm-entry"><strong>No workers match the current filters.</strong></div>';
+    host.innerHTML = visibleWorkers().map(worker => workerDetailsHtml(worker, activeAssignmentCount(worker.id))).join("")
+      || '<div class="comm-entry"><strong>No workers match the current filters.</strong></div>';
   }
 
   function leaseHtml(item) {
@@ -152,6 +135,8 @@
   function renderAssignments() {
     const host = document.getElementById("execution-assignment-list");
     if (!host) return;
+    if (procedureRunsDirty(host)) return false;
+    disposeProcedureRuns(host);
     const visible = visibleAssignments();
     host.innerHTML = visible.map((item) => {
       const worker = workers.find((candidate) => candidate.id === item.assigned_worker_id);
@@ -171,8 +156,14 @@
         ${item.failure_code || item.failure_message ? `<small>Failure: ${escapeHtml(item.failure_code || "unknown")} · ${escapeHtml(item.failure_message || "no detail")}</small>` : ""}
         <small>Artifacts: ${listText(item.artifact_ids)} · evidence: ${listText(item.evidence_ids)} · expected artifacts: ${listText(item.expected_artifact_types)} · expected evidence: ${listText(item.expected_evidence_types)}</small>
         <div data-execution-assignment-management-host="${escapeHtml(item.id)}"></div>
+        <section data-assignment-procedure-host="${escapeHtml(item.id)}"></section>
       </details>`;
     }).join("") || '<div class="comm-entry"><strong>No assignments match the current filters.</strong></div>';
+    for (const item of visible) {
+      const panel = [...host.querySelectorAll('[data-assignment-procedure-host]')].find(node => node.dataset.assignmentProcedureHost === item.id);
+      installProcedureRun(panel, item);
+    }
+    return true;
   }
 
   function renderEvents() {
@@ -187,7 +178,7 @@
 
   function renderAll() {
     renderWorkers();
-    renderAssignments();
+    const assignmentsRendered = renderAssignments();
     renderEvents();
     focusReference(document.getElementById("execution-worker-list"));
     focusReference(document.getElementById("execution-assignment-list"));
@@ -197,12 +188,14 @@
     const cancelled = assignments.filter((item) => item.status === "cancelled").length;
     const lost = assignments.filter((item) => ["lost", "failed"].includes(item.status)).length;
     setStatus(`${workers.length} worker(s), ${active} active, ${unhealthy} unavailable · ${assignments.length} assignment(s), ${running} leased/running, ${lost} lost/failed, ${cancelled} cancelled. Worker control-plane state is distinct from execution lease authority.`);
+    if (assignmentsRendered === false) setStatus('Assignment display refresh deferred: playbook inputs have unsaved changes. Save or use the corresponding Discard inputs control, then refresh.');
     window.dispatchEvent(new CustomEvent("codex:execution-worker-state-rendered", {
       detail: { workers, assignments, events },
     }));
   }
 
   async function refresh() {
+    const view = captureProjectView(), visit = ++refreshGeneration;
     setStatus("Loading canonical execution-worker state...");
     try {
       const [workerResponse, assignmentResponse, eventResponse] = await Promise.all([
@@ -210,11 +203,13 @@
         apiRequest("/api/execution-workers/assignments"),
         apiRequest("/api/execution-workers/events"),
       ]);
+      if (!view.current() || visit !== refreshGeneration) return;
       workers = workerResponse.items || [];
       assignments = assignmentResponse.items || [];
       events = eventResponse.items || [];
       renderAll();
     } catch (error) {
+      if (!view.current() || visit !== refreshGeneration) return;
       workers = [];
       assignments = [];
       events = [];
@@ -230,6 +225,15 @@
     document.getElementById("execution-worker-search")?.addEventListener("input", renderAll);
     document.getElementById("execution-worker-lifecycle-filter")?.addEventListener("change", renderAll);
     document.getElementById("execution-assignment-status-filter")?.addEventListener("change", renderAll);
+    const clearScope = () => {
+      refreshGeneration += 1; workers = []; assignments = []; events = [];
+      const list = document.getElementById('execution-assignment-list');
+      if (list) { disposeProcedureRuns(list); list.textContent = 'Scope changed. Refresh canonical assignments.'; }
+      document.getElementById('execution-worker-list')?.replaceChildren();
+      document.getElementById('execution-worker-events')?.replaceChildren();
+    };
+    window.addEventListener('codex:project-changed', clearScope);
+    window.addEventListener('codex:identity-scope-changed', clearScope);
     panel?.addEventListener("toggle", () => {
       if (panel.open) refresh().catch(console.error);
     });

@@ -45,10 +45,43 @@ rollback paths must not be described as covered. Use a supported canonical
 ActionIntent operation for protected mutations. This source change does not
 supply a native operational tool runner.
 
-The current ActionIntent inspector displays canonical discovery evidence. Rich
-procedure authoring, contextual applicability views and Resource fact editing are
-tracked in [#1428](https://github.com/garnser/codex-web/issues/1428). This change
-adds no procedure executor, learning loop, extra model polling or deployment.
+In **Skills**, open a revision and choose **Edit as new draft**. Enable
+**Structured operational playbook** to author metadata, selectors, freshness,
+capability requirements and ordered steps using the canonical procedure schema.
+Adding/removing/reordering steps changes only the draft form. The server validates
+references, recovery ordering, bounds and compatibility when saving. Schema loading
+and failures preserve entered edits; retry schema loading before saving. Unsaved
+edits use the shared navigation guard and never enter browser storage.
+
+Review the effective Definition scope, owner, source, exact record/checksum,
+revision history and canonical diff. Validate the exact revision and run its
+security scan. Publication explicitly supersedes the eligible prior revision;
+existing runs retain their pins. Rollback creates a new revision through current
+gates. If a scan or publication gate refuses rollback after creating an inactive
+revision, follow the retained revision link and review it instead of repeating
+the rollback. Generic **Definitions** inspection provides the same lifecycle and
+independent publication-approval controls.
+
+**Playbook applicability preview** accepts a task trigger, registered provider
+binding and operation, Resource IDs, optional expected environment and execution
+ID. The task is a preview filter, not permission. Environment is always read
+from canonical Resource facts; disagreement produces a conflict, never a simulated
+grant. **Resources → Edit canonical resource** owns environment, operational tags
+and service versions. Review matched/rejected/conflicting candidates, the exact
+selected revision, policy reasons and capability sources. Missing facts/capabilities
+remain unknown and blocked. Instructions cannot supply current facts or authority.
+
+**Workers / Execution** exposes discovery and durable checkpoints on each
+assignment. **Advance one step / resume** invokes the canonical interpreter once;
+it can wait for an exact approval, lease, persisted retry time or reconciliation.
+Inspect **Attention** and exact **ActionIntent** links for blockers. A lost response
+is an unknown outcome, not a failed change: retain the originating intent and
+receipt, reconcile before retry, and verify declared recovery before claiming
+restoration. **ActionIntent** timelines and **Incident** traces expose linked
+canonical runs. Diagnostic deviations require evidence and current policy; they
+cannot bypass mandatory verification. Start, deviation and outcome-draft inputs
+have independent unsaved-edit ownership so one operation cannot acknowledge
+another form's unsubmitted edits. Inspection never marks edits saved.
 
 Capability requirements use the assigned worker's registered capabilities and the
 exact pinned runtime registration intersected with its actual adapter capabilities

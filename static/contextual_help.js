@@ -3,6 +3,7 @@ const helpDocsBase =
   || "https://github.com/garnser/codex-web/blob/main/docs";
 
 const helpTopics = [
+  { pattern: /playbook|skills/i, path: 'operations/procedure-admission.md', label: 'Playbook authoring, policy and run history help' },
   { pattern: /legacy project migration/i, path: "operations/legacy-project-migration.md", label: "Legacy migration help" },
   { pattern: /repository|execution profile|execution preflight|project setup/i, path: "operations/multi-repository-projects.md", label: "Multi-repository execution help" },
   { pattern: /definition|contract/i, path: "administration/definition-registry.md", label: "Definitions help" },

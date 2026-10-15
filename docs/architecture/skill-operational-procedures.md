@@ -129,8 +129,12 @@ not a structured procedure editor. `GET /api/skills/procedure-schema` exposes th
 code-owned JSON schema to authenticated readers. Existing updates preserve the
 extension unless explicitly replaced or cleared.
 
-Structured authoring, applicability previews, step traces, denied/blocked/expired
-states and contextual help are explicitly tracked by [the linked UI issue](https://github.com/garnser/codex-web/issues/1428).
+The Skill editor derives structured authoring controls from the canonical schema.
+History/diff, scope/provenance, validation, exact-revision scanning and lifecycle
+operations use the existing Skill/Definition APIs. Applicability previews and
+assignment/ActionIntent/Incident traces consume their canonical services; a
+browser form never becomes a procedure, policy or run authority. See the
+[operator guide](../operations/procedure-admission.md).
 Discovery/admission, runtime execution and outcome-derived draft work remain separate
 contracts; this schema does not implement those downstream delivery slices.
 
