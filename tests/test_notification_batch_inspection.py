@@ -257,6 +257,7 @@ class NotificationBatchInspectionTests(unittest.TestCase):
         from codex_web.api.turns import build_turns_router
         from codex_web.services.projects import ProjectService
         from codex_web.services.thread_scope import ThreadScopeService
+        from codex_web.storage.agent_sessions import AgentSessionStore
         from codex_web.storage.thread_index import ThreadIndexRepository
 
         index = ThreadIndexRepository(self.state, Path(self.temp.name) / "threads.json")
@@ -265,7 +266,7 @@ class NotificationBatchInspectionTests(unittest.TestCase):
         )
         scope = ThreadScopeService(
             ProjectService(SimpleNamespace(load=lambda: [self.project])),
-            SimpleNamespace(store=SimpleNamespace(list=lambda: [])),
+            SimpleNamespace(store=AgentSessionStore(index.store)),
             index,
         )
         app = FastAPI()

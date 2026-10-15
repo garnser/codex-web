@@ -1,6 +1,6 @@
 import{applyQueueAdmissionStatus,renderQueueAdmissionStatus}from"./queue_admission_status.js";
 import{captureThreadView,renameSelectedThread,archiveSelectedThread}from"./thread_view_actions.js";
-import {applyRunner, runnerFor, runnerLabel, allowsRuntimeActivity, createThreadRunnerUI} from './thread_runner_ui.js';
+import {applyRunner, runnerFor, runnerBadgeHtml, allowsRuntimeActivity, createThreadRunnerUI} from './thread_runner_ui.js';
 import{showBotEditor}from"./bot_page_editor.js";
 import{saveBotIntegration}from"./bot_integration_save.js";
 import{integrationEditors}from"./integration_editor_state.js";
@@ -519,12 +519,7 @@ function renderThreads() {
       :"";
     const waiting=isThreadBusy(thread.id);
     const depth=queuedDepth(thread.id);
-    const runnerText = runnerLabel(thread.id) || (thread.status?.type === 'notLoaded' ? 'Runner unloaded' : '');
-    const threadStatus=(runnerText
-      ? `<span class="thread-state" title="Current canonical worker custody; retained turns are history">${escapeHtml(runnerText)}</span>`
-      : waiting
-      ?`<span class="thread-state waiting"><span class="thread-state-dot"></span>Waiting for Codex</span>`
-      :"")+(depth>0?`<span class="thread-state queued" title="Tasks retained in the durable queue; execution remains sequential">Queued ${depth}</span>`:"");
+    const threadStatus=runnerBadgeHtml(thread.id,{waiting,queued:depth});
 
     let actionMarkup="";
     if(expanded){
@@ -619,6 +614,7 @@ function renderThreads() {
     });
     container.appendChild(item);
   });
+  if(state.threadId)updateRunnerMeta(state.threadId);
   observeRender("threads",startedAt,{
     rows:threads.length,
     nodes:container.childElementCount,

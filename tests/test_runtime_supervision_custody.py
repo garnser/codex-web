@@ -52,6 +52,13 @@ class SupervisionCustodyTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         for session in self.sessions:
             await session.stop()
+            # Bounded stop does not pretend cooperative executor work has ended.
+            # Keep fixture SQLite alive until every tracked operation exits.
+            pending = list(session._executor_work)
+            if pending:
+                await asyncio.wait_for(asyncio.gather(*[asyncio.wrap_future(work) for work in pending],
+                    return_exceptions=True), 2)
+            self.assertFalse(session._executor_work, "fixture storage still has an owned executor")
         await fixture.AssignmentBoundCodexSessionTests.asyncTearDown(self)
 
     async def session(self, **overrides):

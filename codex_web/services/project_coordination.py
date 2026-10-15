@@ -19,7 +19,7 @@ from codex_web.control_plane_broker import ControlPlaneBrokerOperation
 from codex_web.data_governance import ContextFilterRequest, DataClassification
 from codex_web.definitions import DefinitionScope
 from codex_web.identity import TenantScope
-from codex_web.models import TurnCreate
+from codex_web.models import TurnCreate, ProjectCoordinationDispatch
 from codex_web.services.organizational_memory import KnowledgeAuthorizationError
 from codex_web.storage.organizational_memory import KnowledgeNotFoundError
 from codex_web.organizational_memory import (
@@ -62,6 +62,7 @@ class MessageThread(BaseModel):
     model_config = ConfigDict(extra="forbid")
     message: str = Field(min_length=1, max_length=16000)
     idempotency_key: str = Field(min_length=1, max_length=128)
+    goal_binding_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class MemoryCheckpoint(BaseModel):
@@ -94,10 +95,90 @@ def resolve_operation(method, path):
 
 class ProjectCoordinationService:
     def __init__(self, broker, *, threads, turns, scope, bindings, workers, memory,
-                 approvals, attention):
+                 approvals, attention, goal_bindings=None):
         self.broker, self.threads, self.turns, self.scope = broker, threads, turns, scope
         self.bindings, self.workers, self.memory = bindings, workers, memory
         self.approvals, self.attention = approvals, attention
+        self.goal_bindings = goal_bindings
+
+    def validate_delegation(self, proof, *, thread_id, project_id):
+        """Re-use an operator-created Goal binding, never Goal/provider prose.
+
+        General autonomous Goal continuation still uses its exclusive-scope and
+        global-pause gates. This is only a live governor's explicitly delegated
+        own-Project child input, not a new Goal continuation controller.
+        """
+        if self.goal_bindings is None:
+            denied("canonical Goal execution bindings unavailable")
+        origin = self.workers.store.assignment(proof.assignment_id)
+        if origin is None or origin.fence != proof.fence:
+            denied("delegating governor assignment or fence changed")
+        current, actor, envelope = self.guard(origin, OPERATION_MAP["project.thread.message"])
+        binding = self.goal_bindings.get(proof.goal_binding_id, scope=actor.tenant)
+        goal = self.goal_bindings.goals.get(binding.goal_id, scope=actor.tenant)
+        roots = [v for v in goal.work_graph_bindings if v.project_id == current.project_id]
+        if binding.status not in {"requested", "active", "idle"}:
+            denied(f"Goal execution binding is {binding.status}; inspect its explicit authorization")
+        if goal.status != "active":
+            denied(f"Canonical Goal is {goal.status}; project delegation requires an active Goal")
+        if goal.revision != binding.goal_revision:
+            denied("Canonical Goal revision changed; inspect the exact execution binding")
+        if (actor.principal_kind != "human"
+                or goal.owner_identity_id != actor.identity_id
+                or binding.created_by != actor.identity_id
+                or binding.execution_owner_id != actor.identity_id
+                or binding.project_id != current.project_id or project_id != current.project_id
+                or len(roots) != 1 or roots[0].root_work_item_refs or binding.work_item_refs):
+            denied("current user-owned whole-Project Goal execution binding required")
+        if (binding.lease_owner_id is not None and binding.lease_expires_at is not None
+                and binding.lease_expires_at > self.broker._clock()
+                and binding.lease_owner_id != current.id):
+            denied("another canonical Goal continuation owns this binding")
+        native = self.bindings.get_by_thread(binding.thread_id, actor)
+        session = self.scope.sessions.get(binding.agent_session_id, actor)
+        if (native.assignment_id != current.id or native.execution_id != current.execution_id
+                or native.execution_workspace_id != current.execution_workspace_id
+                or session.provider_native_session_id != binding.thread_id
+                or session.project_id != current.project_id
+                or session.provider_id != binding.provider_id or session.runtime_id != binding.runtime_id
+                or session.assignment_id != current.id or session.execution_id != current.execution_id
+                or session.execution_workspace_id != current.execution_workspace_id
+                or session.status in {"failed", "closed"}):
+            denied("Goal binding must identify this exact canonical governor session")
+        _, target = self.target(thread_id, current, actor, envelope)
+        if (target.status not in {"claimed", "running"}
+                or target.created_by != actor.identity_id or target.agent_profile is None
+                or (target.agent_profile.profile_id, target.agent_profile.profile_revision)
+                    not in {(v.profile_id, v.revision) for v in envelope.child_profiles}):
+            denied("delegation target is outside the current child profile envelope")
+        # Re-resolve child invocation rights and its exact configuration now, not
+        # only when its bootstrap was originally created.
+        child, _ = self.broker.execution_profiles.agent_profiles.resolve_for_execution(
+            target.agent_profile.profile_id, revision=target.agent_profile.profile_revision,
+            actor=actor, project_id=current.project_id)
+        if child.record_id != target.agent_profile.profile_record_id:
+            denied("delegation child profile pin changed")
+        return target
+
+    def validate_queued_delegation(self, queued):
+        proof = queued.project_coordination_dispatch
+        if queued.source != "project-coordination" or proof is None:
+            denied("agent-origin delegation proof required")
+        try:
+            target = self.validate_delegation(proof, thread_id=queued.thread_id,
+                project_id=queued.project_id)
+        except (LookupError, ValueError, RuntimeError):
+            denied("canonical delegation is no longer available")
+        if (queued.agent_profile_actor_id != target.created_by
+                or queued.agent_profile_id != target.agent_profile.profile_id
+                or queued.agent_profile_revision != target.agent_profile.profile_revision
+                or queued.execution_profile_id != target.execution_profile_id
+                or not target.repository_scope
+                or not target.repository_scope.writable_repository_ids
+                or queued.repository_resource_id != target.repository_scope.writable_repository_ids[0]
+                or queued.writable_repository_resource_ids != target.repository_scope.writable_repository_ids
+                or queued.read_only_repository_resource_ids != target.repository_scope.read_only_repository_ids):
+            denied("queued delegation no longer matches canonical child scope")
 
     def authorize(self, assignment, operation, actor):
         now = self.broker._clock()
@@ -416,6 +497,13 @@ class ProjectCoordinationService:
             denied("one explicitly enabled own-Project coordination ActionProvider binding required")
         if op.id == "project.thread.message":
             self.target(target, assignment, actor, envelope)
+            if payload.goal_binding_id is not None:
+                try:
+                    self.validate_delegation(ProjectCoordinationDispatch(
+                        goal_binding_id=payload.goal_binding_id, assignment_id=assignment.id,
+                        fence=assignment.fence), thread_id=target, project_id=assignment.project_id)
+                except (LookupError, ValueError, RuntimeError):
+                    denied("canonical Goal delegation unavailable before input admission")
         request = ActionRequest(action_id=op.id, organization_id=assignment.organization_id,
             workspace_id=assignment.workspace_id, project_id=assignment.project_id,
             resource_ids=(envelope.repository_resource_id,), requested_by=actor.identity_id,
@@ -543,19 +631,25 @@ class ProjectCoordinationActionProvider:
             self.service.target(thread_id, current, actor, envelope)
             output = {"thread_id": thread_id, "status": "created", "input_delivered": False}
         elif op.id == "project.thread.message":
-            if set(data) != {"message"}:
+            if set(data) not in ({"message"}, {"message", "goal_binding_id"}):
                 denied("invalid message input")
             thread_id = request.parameters["target_ref"]
             _, target = self.service.target(thread_id, current, actor, envelope)
             if target.agent_profile is None or (target.agent_profile.profile_id, target.agent_profile.profile_revision) not in {(v.profile_id, v.revision) for v in envelope.child_profiles}:
                 denied("message target is outside child profile envelope")
             profile = target.agent_profile
+            proof = None
+            if data.get("goal_binding_id") is not None:
+                proof = ProjectCoordinationDispatch(goal_binding_id=data["goal_binding_id"],
+                    assignment_id=current.id, fence=current.fence)
+                self.service.validate_delegation(proof, thread_id=thread_id, project_id=current.project_id)
             result = await self.service.turns.start(thread_id, TurnCreate(message=data["message"],
                 project_id=current.project_id, repository_resource_id=envelope.repository_resource_id,
                 writable_repository_resource_ids=(envelope.repository_resource_id,),
                 execution_profile_id=target.execution_profile_id, agent_profile_id=profile.profile_id,
                 agent_profile_revision=profile.profile_revision, defer_start=True),
-                actor=actor, admission_guard=guard,
+                actor=actor, admission_guard=guard, source="project-coordination",
+                project_coordination_dispatch=proof,
                 execution_id=f"coordination-input:{request.correlation_id}")
             guard()
             output = {"thread_id": thread_id, "queued_id": result.get("queuedId"),

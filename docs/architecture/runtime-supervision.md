@@ -38,6 +38,16 @@ Failed refreshes clear busy indicators, expose uncertainty and retain ordering
 watermarks. Unknown detail hydrates activity before the unloaded early return,
 preserving the transcript and its unfinished turn IDs/status.
 Browser caches are display state only; server admission remains authoritative.
+Sidebar and selected-thread header share the same status presentation. Solid
+accent styling and a filled glyph indicate active work only with a fresh live
+process/lease projection and the canonical exact current-turn activity marker.
+Live idle custody has an outlined idle glyph; waiting/queued/recovering and
+stopped/lost/failed/unknown retain distinct text/glyphs. Existing theme tokens
+provide contrast in light/dark and selected/unselected rows. Color never replaces
+the label, diagnostic uncertainty, or provenance. After the earlier of lease
+expiry and 60 seconds since observation (two existing refresh intervals), local
+presentation drops active styling without initiating a read, turn, or replay.
+This display freshness limit grants no authority or lease extension.
 Lost assignments are explicitly `lost`; a pending assignment with a previous
 fence is `recovering`. Neither establishes activity. A same-instance process
 handle for the exact assignment/worker/fence can establish that its process has
@@ -123,6 +133,26 @@ leaves the registered report/source in the retained workspace for scoped recover
 not a fabricated managed-content receipt. Independent validation/release gates
 remain required. External unknown outcomes remain reconciliation only; no tool-log
 parsing infers a passed test or replays an external action.
+
+An additive `failureObservation` accompanies the exact same-instance runner
+assignment/worker/fence. It retains the fixed failure code/phase, measured waits,
+cleanup and process exit observations, original requester/tenant/Project/resource
+and profile/Definition references, and source-validation custody availability.
+It contains no lease tokens, raw exceptions, commands, environment or credentials.
+The same metadata is emitted through existing scoped structured logging immediately
+after process cleanup and after the bounded diagnostic attempt, including when
+submission or persistence is unavailable. Logger failure cannot prevent cleanup
+or the canonical diagnostic attempt. Logs are observations, never receipts or a
+replacement authority. A process-wide crash may lose local status; journal and
+retained canonical Evidence/Artifacts remain the recovery surfaces where available.
+
+The runner route rechecks its authorized exact Project after asynchronous reads.
+The existing Thread metadata UI displays failure phase/code, timing, cleanup,
+diagnostic availability and a reconciliation next action, with scoped assignment,
+Evidence (only if recorded) and provider-receipt inspection links. Unfinished work
+has an unknown outcome from this observation; independently verified provider
+receipts retain their canonical outcomes. There is no restart/replay action or
+inference from an observation timeout. Historical `inProgress` content is retained.
 
 Unavailable storage cannot be advertised as recorded Evidence. The local process
 projection reports diagnostic state `unavailable` and outstanding executor work;

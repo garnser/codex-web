@@ -364,6 +364,10 @@ class CodexAgentRuntimeAdapter:
         if request.sandbox_policy is not None:
             params["sandboxPolicy"] = request.sandbox_policy
         capture_request = getattr(self.transport, 'request_with_start_capture', None)
+        if (start_capture is not None and getattr(start_capture, 'require_send_guard', False)
+                and not callable(capture_request)):
+            from codex_web.services.queued_native_start import NativeStartAdmissionRefused
+            raise NativeStartAdmissionRefused("Delegated input requires a native write guard transport")
         if start_capture is not None and callable(capture_request):
             response = await capture_request('turn/start', params, start_capture)
         else:

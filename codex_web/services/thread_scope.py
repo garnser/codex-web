@@ -36,11 +36,12 @@ class ThreadScopeService:
 
     def project_id_for_thread(self, thread_id: str) -> str | None:
         """Resolve one canonical Project owner without widening actor scope."""
-        owners = self.ownership_snapshot().get(thread_id, set())
-        if owners:
-            if len(owners) != 1:
-                return None
-            return next(iter(owners))[2]
+        try:
+            owner = self.sessions.store.native_owner(thread_id)
+        except (ValueError, RuntimeError):
+            return None
+        if owner is not None:
+            return owner[2]
         row = self.index.get(thread_id)
         if row is None:
             return None
@@ -58,8 +59,11 @@ class ThreadScopeService:
                    ownership: dict[str, set[tuple[str, str, str]]] | None = None) -> Project:
         # Match globally before checking actor scope: a foreign session must not
         # fall through into a legacy index row, and ambiguous native IDs fail closed.
-        snapshot = self.ownership_snapshot() if ownership is None else ownership
-        owners = snapshot.get(thread_id, set())
+        try:
+            current = self.sessions.store.native_owner(thread_id) if ownership is None else None
+        except (ValueError, RuntimeError) as exc:
+            raise self.unavailable() from exc
+        owners = ({current} if current is not None else set()) if ownership is None else ownership.get(thread_id, set())
         if owners:
             if len(owners) != 1:
                 raise self.unavailable()

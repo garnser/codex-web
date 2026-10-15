@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 
 from codex_web.api.identity import request_actor
 from codex_web.api.thread_scope import thread_scope_dependency
@@ -85,8 +86,10 @@ def build_threads_router(service: ThreadService, scope: ThreadScopeService) -> A
         )
 
     @router.get("/api/threads/{thread_id}/runner")
-    async def read_runner(thread_id: str) -> dict[str, Any]:
-        return await service.runner(thread_id)
+    async def read_runner(thread_id: str, request: Request) -> dict[str, Any]:
+        result = await service.runner(thread_id)
+        await run_in_threadpool(scope.for_thread, thread_id, request_actor(request), request.state.thread_project.id)
+        return result
 
     @router.post("/api/threads/{thread_id}/name")
     async def rename_thread(thread_id: str, payload: ThreadRename) -> dict[str, Any]:

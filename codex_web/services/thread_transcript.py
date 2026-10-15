@@ -53,6 +53,9 @@ class ThreadTranscriptService:
     def fail_pending(self, thread_id: str, turn_id: str) -> None:
         self.reconcile_terminal(thread_id, turn_id, "failed", "runtime_start_failed")
 
+    def discard_unstarted(self, thread_id: str, turn_id: str) -> None:
+        self.history.discard_unstarted(thread_id, turn_id)
+
     def reconcile_terminal(self, thread_id: str, turn_id: str, outcome: str,
                            reason_code: str, *, completed_at: float | None = None) -> None:
         now = self.clock() if completed_at is None else completed_at

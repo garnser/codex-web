@@ -182,12 +182,13 @@ class NotificationProcessingTests(unittest.TestCase):
         from codex_web.models import IndexedThread
         from codex_web.services.projects import ProjectService
         from codex_web.services.thread_scope import ThreadScopeService
+        from codex_web.storage.agent_sessions import AgentSessionStore
         from codex_web.storage.thread_index import ThreadIndexRepository
         self.proof()
         index = ThreadIndexRepository(self.f.state, Path(self.f.temp.name)/"threads.json")
         index.upsert(IndexedThread(id="thread-a",name="Fixture",project_id=self.f.project.id))
         scope = ThreadScopeService(ProjectService(SimpleNamespace(load=lambda:[self.f.project])),
-            SimpleNamespace(store=SimpleNamespace(list=lambda:[])), index)
+            SimpleNamespace(store=AgentSessionStore(index.store)), index)
         app = FastAPI()
         @app.middleware("http")
         async def identity(request, call_next):

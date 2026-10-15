@@ -1,0 +1,39 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Runner status contrast fixture</title>
+<link rel="stylesheet" href="/static/design_tokens.css"><link rel="stylesheet" href="/static/styles.css">
+<style>body{display:block;padding:16px;background:var(--surface);color:var(--text)}main{max-width:700px;margin:auto}#states{display:grid;gap:6px}.item{padding:8px;margin:0}.thread-meta-line{display:flex;flex-wrap:wrap;gap:6px}button{margin:4px}#thread-meta{padding:8px;margin:8px 0}</style>
+<main><h1>Runner status contrast</h1><nav id="select" aria-label="Select fixture thread"></nav><div id="thread-meta"></div><div id="states"></div></main>
+<script type="module">
+const query=new URLSearchParams(location.search);
+document.documentElement.dataset.theme=query.get('theme') || 'light';
+const before=query.has('before');
+const ui=await import((before?'/baseline':'')+'/static/thread_runner_ui.js');
+const now=Date.now()/1000;
+const states=['active','idle','waiting','queued','recovering','stopped','lost','failed','unknown','expired','stale','retained'];
+const state={projectId:'fixture',threadId:'active',threads:[],queuedDepthByThread:new Map([['queued',2]]),activeTurnsByThread:new Map()};
+const baselineBadge=id=>`<span class="thread-state">${ui.runnerLabel(id)}</span>`;
+const badge=id=>before?baselineBadge(id):ui.runnerBadgeHtml(id,{queued:state.queuedDepthByThread.get(id)||0});
+function renderThreads(){
+  document.querySelector('#states').innerHTML=states.map(id=>[false,true].map(selected=>`<div class="item ${selected?'active':''}" data-case="${id}" data-selected="${selected}"><strong>${id} · ${selected?'selected':'unselected'}</strong><div class="thread-meta-line">${badge(id)}</div></div>`).join('')).join('');
+}
+const control=ui.createThreadRunnerUI({state,api:async()=>{throw Error('No backend in static fixture');},
+  patchThread:()=>{},markThreadBusy:()=>{},clearThreadBusy:()=>{},scheduleRenderThreads:()=>{},
+  updateWaitingFromState:()=>{},renderThreads,logEvent:()=>{},getMeta:()=>document.querySelector('#thread-meta'),
+  applyQueueAdmissionStatus:()=>{},setThreadQueueDepth:()=>{}});
+for(const id of states){
+  const live=['active','idle','queued','expired','stale','retained'].includes(id);
+  const runner={schemaVersion:'1.0',assignmentId:id,fence:2,assignmentCreatedAt:now-10,updatedAt:now,
+    observedAt:id==='stale'?now-61:now,state:live?'running':id,live,processRunning:live,
+    leaseValid:live,leaseExpiresAt:id==='expired'?now-1:now+3600};
+  const activity={source:'current_turn',state:id==='active'?'active':'idle',turnId:id==='active'?'exact-current-turn':null};
+  if(id==='retained') activity.state='unknown';
+  const thread={id,runner,activity,turns:[{id:'retained-turn',status:'inProgress'}]};
+  state.threads.push(thread);ui.applyRunner(thread);
+  const button=document.createElement('button');button.textContent=id;
+  button.addEventListener('click',()=>{state.threadId=id;control.updateRunnerMeta(id);});
+  document.querySelector('#select').append(button);
+}
+renderThreads();control.updateRunnerMeta('active');
+window.runnerContrast={state,control,ui,renderThreads};
+document.body.dataset.ready='true';
+</script></html>

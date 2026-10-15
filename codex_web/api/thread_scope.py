@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import Request
+from starlette.concurrency import run_in_threadpool
 
 from codex_web.api.identity import request_actor
 from codex_web.services.thread_scope import ThreadScopeService
@@ -21,10 +22,12 @@ def thread_scope_dependency(service: ThreadScopeService):
                 if requested is not None and requested != body_project:
                     raise service.unavailable()
                 requested = body_project
+        actor = request_actor(request)  # Keep identity ordering after the body await.
         thread_id = request.path_params.get("thread_id")
         if not thread_id and request.url.path.endswith("/api/turns/interrupt"):
             thread_id = request.query_params.get("thread_id")
-        project = (service.for_thread(thread_id, actor, requested) if thread_id
-                   else service.project(requested, actor))
+        project = await run_in_threadpool(
+            service.for_thread, thread_id, actor, requested,
+        ) if thread_id else await run_in_threadpool(service.project, requested, actor)
         request.state.thread_project = project
     return authorize

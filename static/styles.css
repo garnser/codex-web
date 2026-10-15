@@ -590,6 +590,40 @@ section {
   color: var(--accent);
 }
 
+/* Text/glyphs preserve meaning without color; solid active work contrasts with
+   outlined idle/custody states in both themes and selected/unselected rows. */
+.thread-state.runner-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 2px 7px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.thread-state.runner-active {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.thread-state.runner-waiting,
+.thread-state.runner-queued,
+.thread-state.runner-recovering { color: var(--amber); }
+.thread-state.runner-lost,
+.thread-state.runner-failed { color: var(--danger); }
+.thread-state.runner-recovering { border-style: dashed; }
+#thread-meta:has([data-runner-indicator]) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+[data-runner-indicator] { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+
 .thread-state-dot {
   width: 6px;
   height: 6px;
@@ -788,6 +822,11 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+#thread-meta:has([data-runner-failure]) {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .controls {
