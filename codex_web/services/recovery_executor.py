@@ -33,7 +33,9 @@ class RecoveryExecutor:
             except asyncio.CancelledError:
                 cancelled = True
             except Exception:
-                break
+                if future.done():
+                    break
+                raise
         # Retrieve a terminal exception even when the observing task was
         # cancelled. Neither a cancelled wrapper nor a lost observer stops work.
         error = future.exception()
@@ -65,7 +67,12 @@ class RecoveryExecutor:
                 try:
                     return await self._settle(self._future)
                 finally:
-                    self._key = None
+                    if self._future.done():
+                        # A failed serialization can retain the complete
+                        # snapshot in its traceback. Terminal custody need not
+                        # keep that future alive until the next scheduled run.
+                        self._key = None
+                        self._future = None
         finally:
             self._waiting -= 1
 
