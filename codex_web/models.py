@@ -751,7 +751,9 @@ class ActiveThreadTurn(BaseModel):
 class ProjectCoordinationDispatch(BaseModel):
     """Server-produced references, revalidated at admission; never human origin."""
     model_config = ConfigDict(extra="forbid", frozen=True)
-    schema_version: Literal["1.0"] = "1.0"
+    # Legacy proofs remain readable in retained queues, but confer no authority.
+    schema_version: Literal["1.0", "1.1"] = "1.0"
+    delegation_revision: int | None = Field(default=None, ge=1)
     goal_binding_id: str = Field(min_length=1, max_length=200)
     assignment_id: str = Field(min_length=1, max_length=200)
     fence: int = Field(ge=1)

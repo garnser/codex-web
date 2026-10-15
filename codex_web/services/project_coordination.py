@@ -111,11 +111,15 @@ class ProjectCoordinationService:
         """
         if self.goal_bindings is None:
             denied("canonical Goal execution bindings unavailable")
+        if proof.schema_version != "1.1" or proof.delegation_revision is None:
+            denied("legacy delegation proof requires explicit reconciliation; no authorization generation")
         origin = self.workers.store.assignment(proof.assignment_id)
         if origin is None or origin.fence != proof.fence:
             denied("delegating governor assignment or fence changed")
         current, actor, envelope = self.guard(origin, OPERATION_MAP["project.thread.message"])
         binding = self.goal_bindings.get(proof.goal_binding_id, scope=actor.tenant)
+        if proof.delegation_revision != binding.delegation_revision:
+            denied("delegation authorization generation changed; original input remains held")
         goal = self.goal_bindings.goals.get(binding.goal_id, scope=actor.tenant)
         roots = [v for v in goal.work_graph_bindings if v.project_id == current.project_id]
         if (binding.execution_mode != GoalExecutionMode.PROJECT_DELEGATION
@@ -498,13 +502,19 @@ class ProjectCoordinationService:
             and v.resource_ids == (envelope.repository_resource_id,) and v.credential_ref is None]
         if len(bindings) != 1:
             denied("one explicitly enabled own-Project coordination ActionProvider binding required")
+        dispatch = None
         if op.id == "project.thread.message":
             self.target(target, assignment, actor, envelope)
             if payload.goal_binding_id is not None:
                 try:
-                    self.validate_delegation(ProjectCoordinationDispatch(
+                    if self.goal_bindings is None:
+                        denied("canonical Goal execution bindings unavailable")
+                    binding = self.goal_bindings.get(payload.goal_binding_id, scope=actor.tenant)
+                    dispatch = ProjectCoordinationDispatch(schema_version="1.1",
+                        delegation_revision=binding.delegation_revision,
                         goal_binding_id=payload.goal_binding_id, assignment_id=assignment.id,
-                        fence=assignment.fence), thread_id=target, project_id=assignment.project_id)
+                        fence=assignment.fence)
+                    self.validate_delegation(dispatch, thread_id=target, project_id=assignment.project_id)
                 except (LookupError, ValueError, RuntimeError):
                     denied("canonical Goal delegation unavailable before input admission")
         request = ActionRequest(action_id=op.id, organization_id=assignment.organization_id,
@@ -514,7 +524,9 @@ class ProjectCoordinationService:
                 "worker_id": assignment.assigned_worker_id, "execution_id": assignment.execution_id,
                 "execution_workspace_id": assignment.execution_workspace_id,
                 "definition_record_id": assignment.execution_profile_definition.record_id,
-                "target_ref": target, "input": payload.model_dump(exclude={"idempotency_key"})})
+                "target_ref": target, "input": payload.model_dump(exclude={"idempotency_key"}),
+                **({"project_coordination_dispatch": dispatch.model_dump(mode="json")}
+                   if dispatch is not None else {})})
         self.guard(assignment, op)
         from codex_web.services.action_intents import ActionIntentConflictError
         try:
@@ -564,7 +576,7 @@ class ProjectCoordinationService:
 
 class ProjectCoordinationActionProvider:
     """Canonical local actions: persistent intent precedes any possibly uncertain effect."""
-    contract_version = "1.2"
+    contract_version = "1.3"
     provider_type, provider_instance = "project-coordination", "canonical"
 
     def __init__(self, service):
@@ -578,7 +590,7 @@ class ProjectCoordinationActionProvider:
 
     def context(self, request, binding):
         params = request.parameters
-        if set(params) != {"assignment_id", "fence", "worker_id", "execution_id", "execution_workspace_id", "definition_record_id", "target_ref", "input"}:
+        if set(params) - {"project_coordination_dispatch"} != {"assignment_id", "fence", "worker_id", "execution_id", "execution_workspace_id", "definition_record_id", "target_ref", "input"}:
             denied("invalid canonical coordination action parameters")
         snapshot = self.service.workers.store.assignment(params["assignment_id"])
         if (snapshot is None or snapshot.fence != params["fence"]
@@ -643,9 +655,20 @@ class ProjectCoordinationActionProvider:
             profile = target.agent_profile
             proof = None
             if data.get("goal_binding_id") is not None:
-                proof = ProjectCoordinationDispatch(goal_binding_id=data["goal_binding_id"],
-                    assignment_id=current.id, fence=current.fence)
-                self.service.validate_delegation(proof, thread_id=thread_id, project_id=current.project_id)
+                raw = request.parameters.get("project_coordination_dispatch")
+                if raw is None:
+                    denied("legacy coordination intent has no pinned delegation generation")
+                proof = ProjectCoordinationDispatch.model_validate(raw)
+                if (proof.goal_binding_id != data["goal_binding_id"]
+                        or proof.assignment_id != current.id or proof.fence != current.fence):
+                    denied("coordination intent delegation origin changed")
+                origin_guard = guard
+                def guard():
+                    origin_guard()
+                    self.service.validate_delegation(proof, thread_id=thread_id, project_id=current.project_id)
+                guard()
+            elif request.parameters.get("project_coordination_dispatch") is not None:
+                denied("unexpected delegation proof on unbound input")
             result = await self.service.turns.start(thread_id, TurnCreate(message=data["message"],
                 project_id=current.project_id, repository_resource_id=envelope.repository_resource_id,
                 writable_repository_resource_ids=(envelope.repository_resource_id,),

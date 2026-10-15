@@ -2,6 +2,10 @@
 import time
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
+from fastapi import HTTPException
+from codex_web.storage.turn_queue import TurnQueueRepository
+from codex_web.services.project_coordination import ProjectCoordinationActionProvider
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -220,3 +224,92 @@ class ProjectDelegationRecoveryTests(unittest.IsolatedAsyncioTestCase):
             a,b=pool.submit(authorize),pool.submit(stop)
             a.result(timeout=15);b.result(timeout=15)
         self.assertEqual(self.goal_bindings.get(current.id,scope=self.actor.tenant).delegation_authorization,'revoked')
+
+
+    async def test_revoked_generation_stays_held_after_reauthorize_and_queue_reopen(self):
+        child, _ = await self.create()
+        old, _ = await self.message(child, key='generation-A')
+        self.goal_bindings.operator_stop(self.goal_binding.id, scope=self.actor.tenant,
+            actor_id=self.actor.identity_id, cancelled=False, reason='revoke A')
+        await self.execution.drain_thread_queue(child)
+        self.execution._start_thread_turn_now_admitted.assert_not_awaited()
+        self.assertEqual(self.host._thread_queue(child), [old])
+        current = self.authorize()
+        repo = TurnQueueRepository(self.f.sqlite)
+        repo.put(child, [old])
+        reopened = TurnQueueRepository(self.f.sqlite).get(child)[0]
+        self.assertEqual(reopened, old)
+        with self.assertRaises(HTTPException):
+            self.coordination.validate_queued_delegation(reopened)
+        await self.execution.drain_thread_queue(child)
+        self.execution._start_thread_turn_now_admitted.assert_not_awaited()
+        new, _ = await self.message(child, key='generation-B')
+        self.assertEqual(new.project_coordination_dispatch.delegation_revision, current.delegation_revision)
+        self.assertNotEqual(new.project_coordination_dispatch.delegation_revision,
+            old.project_coordination_dispatch.delegation_revision)
+        await self.execution.drain_thread_queue(child)
+        self.execution._start_thread_turn_now_admitted.assert_awaited_once()
+        self.assertEqual(self.host._thread_queue(child), [old])
+        self.assertEqual(self.execution._start_thread_turn_now_admitted.call_args.kwargs['execution_id'], new.execution_id)
+
+    async def test_legacy_queue_proof_is_retained_but_never_upgraded_to_new_grant(self):
+        child, _ = await self.create()
+        queued, _ = await self.message(child)
+        raw = queued.model_dump(mode='json')
+        raw['project_coordination_dispatch'].pop('delegation_revision')
+        raw['project_coordination_dispatch']['schema_version'] = '1.0'
+        # Actual old persisted shape, not a new proof with a fabricated revision.
+        repo = TurnQueueRepository(self.f.sqlite)
+        self.f.sqlite.record_apply(repo.namespace, upserts={child: [raw]})
+        legacy = TurnQueueRepository(self.f.sqlite).get(child)[0]
+        self.assertIsNone(legacy.project_coordination_dispatch.delegation_revision)
+        self.authorize()
+        await self.execution.drain_thread_queue(child)
+        self.execution._start_thread_turn_now_admitted.assert_not_awaited()
+        self.assertEqual(self.host._thread_queue(child), [legacy])
+
+    async def test_final_prestart_revoke_and_reauthorize_cannot_resurrect_selected_input(self):
+        from concurrent.futures import ThreadPoolExecutor
+        child, _ = await self.create()
+        original, _ = await self.message(child)
+        real = self.execution.start_thread_turn_now
+        def advance_authority():
+            self.goal_bindings.operator_stop(self.goal_binding.id, scope=self.actor.tenant,
+                actor_id=self.actor.identity_id, cancelled=False, reason='concurrent prestart revoke')
+            return self.authorize()
+        async def race_then_enter(*args, **kwargs):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                current = pool.submit(advance_authority).result(timeout=10)
+            self.assertGreater(current.delegation_revision,
+                original.project_coordination_dispatch.delegation_revision)
+            return await real(*args, **kwargs)
+        self.execution.start_thread_turn_now = race_then_enter
+        await self.execution.drain_thread_queue(child)
+        self.execution._start_thread_turn_now_admitted.assert_not_awaited()
+        self.assertEqual(self.host._thread_queue(child), [original])
+
+    async def test_durable_intent_cannot_refresh_proof_during_execution(self):
+        child, _ = await self.create()
+        real = ProjectCoordinationActionProvider.execute
+        captured = []
+        async def advance_before_execution(provider, request, **kwargs):
+            captured.append(request.parameters['project_coordination_dispatch'])
+            self.goal_bindings.operator_stop(self.goal_binding.id, scope=self.actor.tenant,
+                actor_id=self.actor.identity_id, cancelled=False, reason='after intent persistence')
+            current = self.authorize()
+            self.assertLess(captured[-1]['delegation_revision'], current.delegation_revision)
+            # An old accepted intent without generation must not mint new authority either.
+            params = dict(request.parameters)
+            params.pop('project_coordination_dispatch')
+            with self.assertRaises(HTTPException):
+                await real(provider, request.model_copy(update={'parameters': params}), **kwargs)
+            return await real(provider, request, **kwargs)
+        with patch.object(ProjectCoordinationActionProvider, 'execute', advance_before_execution):
+            status, _, result = await self.call('POST', f'/threads/{child}/messages', {
+                'message':'old durable intent', 'idempotency_key':'intent-generation-A',
+                'goal_binding_id':self.goal_binding.id})
+        self.assertEqual(status, 200, result)
+        self.assertNotEqual(result['intent']['status'], 'succeeded')
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(self.host._thread_queue(child), [])
+        await self.message(child, key='intent-generation-B')

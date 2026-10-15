@@ -164,7 +164,7 @@ class ProjectDelegatedDispatchTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_model_cannot_supply_source_or_server_proof(self):
         child, _ = await self.create()
-        for field in ('source', 'project_coordination_dispatch', 'actor', 'operator_admission_validator'):
+        for field in ('source', 'project_coordination_dispatch', 'delegation_revision', 'actor', 'operator_admission_validator'):
             status, _, result = await self.call('POST', f'/threads/{child}/messages', {
                 'message': 'do not acquire human privileges', 'idempotency_key': field, field: 'web'})
             self.assertEqual(status, 422, result)

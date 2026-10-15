@@ -1,4 +1,3 @@
-"""Frozen pre-1499 models (public 5f3); compatibility refusal fixture only."""
 from __future__ import annotations
 
 import time

@@ -216,6 +216,20 @@ atomically and advance its authorization revision.
 Admission still checks the current Goal/revision/owner, Project roots, invoking
 actor, native Session/bootstrap/assignment/fence, lease, tenant/resources, child
 profile and invocation rights; queued proof is checked again before native input.
+Project coordination ActionProvider contract 1.3 carries the server-produced proof
+outside client input. Existing unbound actions retain their parameter shape; old
+bound intents without a pin refuse rather than being upgraded on execution.
+Project coordination dispatch proof version 1.1 pins `delegation_revision` at
+server-side intent creation. The immutable intent carries that same proof into
+the queue; provider execution never remints it from current authority. Admission,
+queue drain and the final pre-start validator require the exact current revision.
+Revocation followed by reauthorization cannot revive earlier input. Newly admitted
+input can use the new revision while held originals remain retained for explicit
+reconciliation. Legacy proof version 1.0 stays readable in queues but has no
+generation and always remains held; legacy durable intents missing the pin also
+refuse execution. There is no migration that grants them fresh authority. Old
+readers reject 1.1 proofs rather than silently discarding the generation; drain
+old writers before persisting new proofs, and preserve queues during restore.
 This explicit operator contract cannot admit unrelated paused business work or
 weaken automatic-continuation gates. Operator UI displays both dimensions and
 uses the same authenticated API with stale-control preconditions.
