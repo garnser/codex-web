@@ -242,6 +242,8 @@ class ProjectDelegationRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.host._thread_queue_record = reopened_repo.get
         self.host._update_thread_queue_record = reopened_repo.update
         self.host._put_thread_queue_record = reopened_repo.put
+        self.turn_service.queue_policy.queue = reopened_repo.get
+        self.turn_service.queue_policy.depth = lambda thread: len(reopened_repo.get(thread))
         reopened = reopened_repo.get(child)[0]
         self.assertEqual(reopened, old)
         with self.assertRaises(HTTPException):
@@ -271,6 +273,8 @@ class ProjectDelegationRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.host._thread_queue_record = reopened_repo.get
         self.host._update_thread_queue_record = reopened_repo.update
         self.host._put_thread_queue_record = reopened_repo.put
+        self.turn_service.queue_policy.queue = reopened_repo.get
+        self.turn_service.queue_policy.depth = lambda thread: len(reopened_repo.get(thread))
         legacy = reopened_repo.get(child)[0]
         self.assertIsNone(legacy.project_coordination_dispatch.delegation_revision)
         self.authorize()

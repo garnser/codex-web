@@ -253,11 +253,19 @@ if(notice.hidden || !notice.textContent.includes('Project delegation blocked:'))
         self.assertEqual(mixed['automationWaiting'], 2)
         self.assertIn('Project delegation blocked:', mixed['automationWaitReason']['message'])
         self.assertIn('Automated work is waiting', mixed['automationWaitReason']['message'])
-        self.goal_bindings.resume_operator_pause(self.goal_binding.id, scope=self.actor.tenant,
-            actor_id=self.actor.identity_id, reason='Explicit reauthorization')
-        ordinary = self.turn_service.queue(child)
-        self.assertEqual(ordinary['automationWaiting'], 1)
-        self.assertEqual(ordinary['automationWaitReason']['code'], 'autonomy_paused')
+        current = self.goal_bindings.get(self.goal_binding.id, scope=self.actor.tenant)
+        self.goal_bindings.authorize_project_delegation(current.id, actor=self.actor,
+            expected_updated_at=current.updated_at,
+            expected_delegation_revision=current.delegation_revision,
+            reason='Explicitly authorize new Project input')
+        held = self.turn_service.queue(child)
+        self.assertEqual(held['automationWaiting'], 2)
+        self.assertEqual(held['automationWaitReason']['code'], 'project_delegation_blocked')
+        self.assertIn('authorization generation changed', held['automationWaitReason']['message'])
+        await self.message(child, key='fresh-status-generation')
+        fresh = self.turn_service.queue(child)
+        self.assertEqual(fresh['automationWaiting'], 2)
+        self.assertEqual(len(self.host._thread_queue(child)), 3)
 
     async def test_delegated_transport_without_write_guard_fails_closed(self):
         child = await self.child()

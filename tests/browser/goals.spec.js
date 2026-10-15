@@ -642,6 +642,14 @@ test('Project delegation authorization uses reviewed scope and stale-control pre
   await expect(page.locator('.goal-execution-binding')).toContainText('Project delegation: revoked');
   page.on('dialog', dialog => dialog.accept('Reviewed explicit Project delegation'));
   await page.locator('.goal-project-delegation-authorize').click();
+  const copy = await resolveAction(page, false);
+  expect(copy).toContain('goal-binding-a');
+  expect(copy).toContain('project-a');
+  expect(copy).toContain('No application continuation is started');
+  expect(copy).toContain('Previously held input is not revived');
+  expect(copy).toContain('Pause Project delegation');
+  expect(posts.filter(item => item.action === 'authorize-project-delegation')).toHaveLength(0);
+  await page.locator('.goal-project-delegation-authorize').click();
   await resolveAction(page);
   await expect.poll(() => posts.filter(item => item.action === 'authorize-project-delegation').length).toBe(1);
   expect(posts.find(item => item.action === 'authorize-project-delegation').body).toMatchObject({
@@ -649,4 +657,11 @@ test('Project delegation authorization uses reviewed scope and stale-control pre
     reason: 'Reviewed explicit Project delegation',
   });
   await expect(page.locator('.goal-runtime-resume')).toHaveCount(0);
+  await page.locator('.goal-project-delegation-authorize').click();
+  await expect(page.locator('[data-action-confirmation]')).toBeVisible();
+  await expect(page.locator('[data-action-apply]')).toBeDisabled();
+  await page.route(/\/api\/goals.*project_id=project-b/, route => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ items: [], count: 0 }) }));
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId: 'project-b' } })));
+  await expect(page.locator('[data-action-confirmation]')).toHaveCount(0);
+  expect(posts.filter(item => item.action === 'authorize-project-delegation')).toHaveLength(1);
 });
