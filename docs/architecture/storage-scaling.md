@@ -509,3 +509,31 @@ it and its canonical assignment is absent or terminal without a lease. A live
 or pending claim and provider authority denials remain failures. The response
 and event distinguish canonical archival from pending provider archival. These
 projections do not release workspaces or alter worker authority.
+
+### Exact Thread ownership reads
+
+Single-Thread scope resolution uses the existing canonical AgentSession native-ID
+alias range, across every provider/runtime and tenant. It reads at most 100 aliases
+and one bounded batch of their exact primary records, preserving the existing
+owner-dedup semantics for retained/rebound sessions even across runtimes. Every
+alias must validate and agree on one owner; a later foreign owner is ambiguous.
+The 100-alias inspection budget matches the existing native-index page size;
+a continuation cursor remains unknown even if all inspected aliases agree.
+It never loads unrelated sessions/events. A continuation cursor, malformed alias,
+missing target, or primary/key mismatch fails closed before legacy fallback.
+Writers maintain primary records and native aliases in the existing transaction;
+this change adds no index, cache, store, schema or repair writer. As with other
+canonical indexes, arbitrary out-of-band deletion of every alias is not detectable
+without a full integrity scan; ordinary APIs cannot perform that partial write.
+A complete empty range permits the existing real legacy ThreadIndex fallback,
+which still requires a tenant-scoped explicit Project or an unambiguous path.
+The existing one-time legacy collection migration is unchanged.
+
+FastAPI Thread scope and context status move synchronous canonical storage reads
+into awaited worker-thread boundaries with inherited ContextVars, preserving
+identity-before-scope ordering and the current exact Project. Context and runner
+responses revalidate that Project after storage awaits. These are read scheduling
+boundaries; canonical admission, authority, lease/fence and supervision budgets
+remain unchanged. Context eligibility remains an observation, not an admission.
+Collection-list inspection remains a distinct snapshot operation; the exact lookup
+does not make a full list an indexed point read.

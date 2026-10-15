@@ -290,6 +290,43 @@ class AgentSessionStore:
                 break
         return matches
 
+    def native_owner(self, native_id: str) -> tuple[str, str, str] | None:
+        """Resolve the complete bounded global alias range, never session history.
+
+        Ownership is distinct from execution identity: retained/rebound sessions
+        can share a native ID and owner across runtimes. Every alias must agree
+        on that owner. A cursor means unknown, even if the inspected aliases
+        agree, and must never authorize legacy fallback. The 100-alias inspection
+        budget matches the existing index page size; it is not an admission limit.
+        """
+        self._ensure_records()
+        rows, cursor = self.store.record_page(
+            self.records_namespace, key_prefix=self._native_prefix(native_id), limit=100,
+        )
+        if cursor is not None or len(rows) > 100:
+            raise AgentSessionConflictError("incomplete native session ownership")
+        targets = {}
+        for key, alias in rows.items():
+            if (not isinstance(alias, dict) or set(alias) != {"session_id"}
+                    or not isinstance(alias["session_id"], str) or not alias["session_id"]):
+                raise AgentSessionConflictError("invalid native session alias")
+            targets[key] = alias["session_id"]
+        primaries = self.store.record_get_many(self.records_namespace,
+            tuple(self._session_key(id) for id in targets.values())) if targets else {}
+        owners = set()
+        for key, session_id in targets.items():
+            raw = primaries.get(self._session_key(session_id))
+            if raw is None:
+                raise AgentSessionConflictError("missing native session target")
+            item = AgentSession.model_validate(raw)
+            if (item.id != session_id or item.provider_native_session_id != native_id
+                    or self._native_key(item) != key):
+                raise AgentSessionConflictError("mismatched native session alias")
+            owners.add((item.organization_id, item.workspace_id, item.project_id))
+        if len(owners) > 1:
+            raise AgentSessionConflictError("ambiguous native session ownership")
+        return next(iter(owners)) if owners else None
+
     def find_by_native_id(
         self,
         provider_native_session_id: str,

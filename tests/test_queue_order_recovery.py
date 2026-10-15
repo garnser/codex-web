@@ -164,11 +164,12 @@ class QueueOrderRecoveryTests(unittest.IsolatedAsyncioTestCase):
         from codex_web.models import IndexedThread
         from codex_web.services.projects import ProjectService
         from codex_web.services.thread_scope import ThreadScopeService
+        from codex_web.storage.agent_sessions import AgentSessionStore
         from codex_web.storage.thread_index import ThreadIndexRepository
         index=ThreadIndexRepository(self.state,Path(self.temp.name)/'threads.json')
         index.upsert(IndexedThread(id='thread-fixture',name='Fixture',project_id=self.project.id))
         projects=ProjectService(SimpleNamespace(load=lambda:[self.project]))
-        sessions=SimpleNamespace(store=SimpleNamespace(list=lambda:[]))
+        sessions=SimpleNamespace(store=AgentSessionStore(index.store))
         scope=ThreadScopeService(projects,sessions,index)
         app=FastAPI()
         self.request_actor=self.actor
