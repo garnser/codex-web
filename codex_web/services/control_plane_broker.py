@@ -61,7 +61,7 @@ from codex_web.models import (
     WorkItemProgressUpdate,
 )
 from codex_web.services.authority_roles import AuthorityRoleService
-from codex_web.services.action_intents import ActionIntentService
+from codex_web.services.action_intents import ActionIntentConflictError, ActionIntentService
 from codex_web.services.agent_profiles import AgentProfileError
 from codex_web.services.definitions import DefinitionCompatibilityError, DefinitionConflictError
 from codex_web.services.code_host_action_contract import (
@@ -100,9 +100,13 @@ class ControlPlaneBrokerDeniedError(ControlPlaneBrokerError):
 
 
 class ControlPlaneBrokerRequestError(ControlPlaneBrokerDeniedError):
-    def __init__(self, message: str, *, status_code: int = 400) -> None:
+    def __init__(
+        self, message: str, *, status_code: int = 400,
+        code: str = "control_plane_broker_denied",
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.code = code
 
 
 class ControlPlaneBrokerAuthorityDeniedError(ControlPlaneBrokerDeniedError):
@@ -1200,34 +1204,46 @@ class ControlPlaneBrokerService:
             CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
         }
         deadline = {"timeout_seconds": 120.0} if extended_deadline else {}
-        intent = await asyncio.to_thread(
-            self.action_intents.create,
-            ActionIntentCreate(
-                binding_id=binding.id,
-                request=request,
-                work_item_ref=intent_work_item_ref,
-                execution_id=assignment.execution_id,
-                **deadline,
-                policy_decision=ActionDecisionSnapshot(
-                    decision_id=f"assignment-policy-{uuid.uuid4().hex}",
-                    outcome=ActionDecisionOutcome.ALLOW,
-                    source="policy:assignment-control-plane",
-                    reason=(
-                        "canonical assignment execution profile and repository "
-                        "scope permit this allowlisted broker operation"
+        try:
+            intent = await asyncio.to_thread(
+                self.action_intents.create,
+                ActionIntentCreate(
+                    binding_id=binding.id,
+                    request=request,
+                    work_item_ref=intent_work_item_ref,
+                    execution_id=assignment.execution_id,
+                    **deadline,
+                    policy_decision=ActionDecisionSnapshot(
+                        decision_id=f"assignment-policy-{uuid.uuid4().hex}",
+                        outcome=ActionDecisionOutcome.ALLOW,
+                        source="policy:assignment-control-plane",
+                        reason=(
+                            "canonical assignment execution profile and repository "
+                            "scope permit this allowlisted broker operation"
+                        ),
+                        capabilities=(operation.capability,),
+                        reasons=(
+                            f"execution profile {assignment.execution_profile_id} "
+                            f"permits {operation.id}",
+                            f"repository {repository_id} is the singular writable target",
+                        ),
+                        evaluated_at=time.time(),
                     ),
-                    capabilities=(operation.capability,),
-                    reasons=(
-                        f"execution profile {assignment.execution_profile_id} "
-                        f"permits {operation.id}",
-                        f"repository {repository_id} is the singular writable target",
-                    ),
-                    evaluated_at=time.time(),
                 ),
-            ),
-            actor=requester_actor,
-            assignment_id=assignment.id,
-        )
+                actor=requester_actor,
+                assignment_id=assignment.id,
+            )
+        except ActionIntentConflictError as exc:
+            # Only CREATE conflicts are admission refusals. A same-key intent
+            # may already have executed or be uncertain; do not imply replay
+            # permission or translate failures from later claim/execution stages.
+            raise ControlPlaneBrokerRequestError(
+                "Repository action admission conflicts with origin, scope or idempotency. "
+                "Inspect authorized intent and delivery evidence; an existing intent "
+                "may have executed or be uncertain. Do not automatically retry or replay.",
+                status_code=409,
+                code="repository_action_admission_conflict",
+            ) from exc
         return await self._claim_and_execute_repository_intent(
             intent.id, assignment=assignment, worker_actor=worker_actor,
             requester_actor=requester_actor, extended_deadline=extended_deadline,
