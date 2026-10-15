@@ -242,6 +242,7 @@ class PostgresAutonomyAppendTests(AutonomyAppendContract, unittest.TestCase):
             with psycopg.connect(dsn) as connection:
                 connection.execute(sql.SQL('DROP SCHEMA {} CASCADE').format(sql.Identifier(schema)))
         self.addCleanup(cleanup)
-        pool = ConnectionPool(dsn, min_size=1, max_size=4, kwargs={'options': f'-c search_path={schema}'})
+        pool = ConnectionPool(dsn, min_size=1, max_size=getattr(self, 'postgres_pool_max_size', 4),
+            timeout=getattr(self, 'postgres_pool_timeout', 30), kwargs={'options': f'-c search_path={schema}'})
         self.addCleanup(pool.close)
         self.backend = PostgresStateStore(dsn, connection_pool=pool)
