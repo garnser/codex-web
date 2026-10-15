@@ -41,7 +41,7 @@ def work_item_progress_evidence(state: WorkItemState) -> dict[str, Any]:
     return state.model_dump(
         exclude={
             "updated_at", "last_meaningful_update_at", "last_owner_activity_at",
-            "last_gitlab_event_at",
+            "last_gitlab_event_at", "source_projection",
         }
     )
 
@@ -66,6 +66,7 @@ class WorkItemRuntimeDependencies:
         WorkItemState | None,
     ] | None = None
     save_state: Callable[[WorkItemState], None] | None = None
+    update_state: Callable[[str, Callable], WorkItemState | None] | None = None
     get_states: Callable[[tuple[str, ...]], Mapping[str, WorkItemState]] | None = None
 
     def project_tenant(self, project_id: str) -> tuple[str, str]:
@@ -158,6 +159,7 @@ class WorkItemRuntimeDependencies:
                 "_get_work_item_state_by_source_identity",
                 None,
             ),
+            update_state=getattr(host, "_update_work_item_state_record", None),
             save_state=getattr(
                 host,
                 "_put_work_item_state_record",

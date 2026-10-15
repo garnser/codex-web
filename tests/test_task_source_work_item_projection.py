@@ -7,6 +7,7 @@ from pathlib import Path
 
 from codex_web.models import (
     TaskSourceIdentity,
+    GitHubTaskSourceSettings,
     WorkItemArtifactRelation,
     WorkItemHandoff,
     WorkItemState,
@@ -298,11 +299,12 @@ class TaskSourceWorkItemProjectionTests(unittest.TestCase):
             ),
             title="Reopened issue",
             source_state="open",
-            owners=("james",),
+            owners=("provider-james",),
         )
 
         state = self.projector.upsert(
-            GitHubTaskSource("https://api.github.com", "token", client=_Client()),
+            GitHubTaskSource("https://api.github.com", "token", client=_Client(),
+                settings=GitHubTaskSourceSettings(assignee_mapping={"james": "provider-james"})),
             reopened,
             project_id="home",
         )

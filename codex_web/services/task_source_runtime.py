@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import time
+import httpx
+from weakref import WeakValueDictionary
+
+from codex_web.services.task_source_projection import (
+    TaskSourceProjectionError, TaskSourceProjectionStorageError, desired_revision, ensure_projection,
+)
 from collections.abc import Callable
 from typing import Any
 
 from codex_web.compatibility import ContractCompatibilityError, TASK_SOURCE_CONTRACT
 from codex_web.identity import TenantScope
-from codex_web.models import TaskSourceConfiguration, WorkItemState
+from codex_web.models import TaskSourceConfiguration, WorkItemState, WorkItemEvent
 from codex_web.services.work_item_dependencies import WorkItemRuntimeDependencies
 from codex_web.services.task_sources import (
     TaskSource,
@@ -211,6 +217,7 @@ class TaskSourceWritebackService:
         *,
         dependencies: WorkItemRuntimeDependencies | None = None,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
+        append_event: Callable[[WorkItemEvent], None] | None = None,
     ) -> None:
         if dependencies is None:
             if host is None:
@@ -219,12 +226,14 @@ class TaskSourceWritebackService:
                 )
             dependencies = WorkItemRuntimeDependencies.from_host(host)
         self.dependencies = dependencies
+        self.append_event = append_event or getattr(host, "_append_work_item_event", None)
         self.registry = registry
         self.event_sink = event_sink or (
             getattr(host, "_append_bot_event", None)
             if host is not None
             else None
         ) or (lambda _event: None)
+        self._projection_locks = WeakValueDictionary()
         self._desired: dict[tuple[str, ...], WorkItemState] = {}
         self._desired_at: dict[tuple[str, ...], float] = {}
         self._generation: dict[tuple[str, ...], int] = {}
@@ -289,6 +298,15 @@ class TaskSourceWritebackService:
         state: WorkItemState,
         snapshot: TaskSourceSnapshot,
     ) -> WorkItemState:
+        updater = getattr(self.dependencies, "update_state", None)
+        if updater is not None and state.source_projection is not None:
+            def merge(current):
+                self._check_current(state, current)
+                current = current.model_copy(deep=True)
+                current.source_identity = snapshot.identity
+                current.labels = list(snapshot.labels)
+                return current
+            return updater(state.ref, merge)
         # Provider feedback must never restore an older scheduled owner/stage.
         # Merge provider metadata into the latest canonical row.
         current = (
@@ -301,6 +319,9 @@ class TaskSourceWritebackService:
             if current is not None
             else state.model_copy(deep=True)
         )
+        if state.source_projection is not None:
+            self._guard_projection(state)
+            target.source_projection = state.source_projection
         target.source_identity = snapshot.identity
         target.labels = list(snapshot.labels)
         target.updated_at = max(target.updated_at, time.time())
@@ -318,18 +339,58 @@ class TaskSourceWritebackService:
         self.dependencies.save_states(states)
         return target
 
+    @staticmethod
+    def _snapshot_state(state, snapshot):
+        result = state.model_copy(deep=True)
+        result.source_identity = snapshot.identity
+        result.labels = list(snapshot.labels)
+        return result
+
     async def _sync_once(
         self,
         state: WorkItemState,
         *,
         key: tuple[str, ...] | None = None,
         generation: int | None = None,
+        authorization_guard=None,
     ) -> WorkItemState:
         source = self.registry.resolve(state, required=False)
         identity = getattr(state, "source_identity", None)
         if source is None or identity is None:
             self._stats["skipped"] += 1
             return state
+
+        if getattr(source, "supports_guarded_projection", False):
+            projection = state.source_projection
+            assert projection is not None
+            projection.mapping_revision = source.mapping_revision
+            projection.concurrency_guarantee = "read_verify_no_state_cas"
+            projection.desired_assignee = source.mapped_assignee(state.current_owner)
+            def guard():
+                self._guard_projection(state)
+                if authorization_guard is not None:
+                    try:
+                        authorization_guard()
+                    except Exception as exc:
+                        raise TaskSourceProjectionError("projection_authority_changed", conflict=True) from exc
+                latest_source = self.registry.resolve(self._latest(state), required=True)
+                if getattr(latest_source, "mapping_revision", None) != source.mapping_revision:
+                    raise TaskSourceProjectionError("provider_configuration_changed", conflict=True)
+            def observe(snapshot, baseline):
+                projection.observed_revision = snapshot.identity.revision
+                projection.observed_state = snapshot.source_state
+                projection.protected_source_state = baseline
+                self._persist_projection(state)
+            result = await source.write_guarded_projection(
+                identity, owner=state.current_owner, stage=state.current_stage,
+                guard=guard,
+                expected_revision=projection.target.revision,
+                protected_state=projection.protected_source_state, observe=observe,
+            )
+            self._guard_projection(state)
+            projection.observed_revision = result.snapshot.identity.revision
+            self._stats["providerWrites"] += int(result.mutated)
+            return self._snapshot_state(state, result.snapshot)
 
         desired = self._desired_fingerprint(state)
         if (
@@ -390,7 +451,7 @@ class TaskSourceWritebackService:
                     *desired[:3],
                     result.snapshot.identity.revision,
                 )
-            return self._save_snapshot(state, result.snapshot)
+            return self._snapshot_state(state, result.snapshot)
 
         snapshot: TaskSourceSnapshot | None = None
         if source.capabilities.supports(TaskSourceCapability.OWNER_WRITE):
@@ -422,17 +483,156 @@ class TaskSourceWritebackService:
                 *desired[:3],
                 snapshot.identity.revision,
             )
-        return self._save_snapshot(state, snapshot)
+        return self._snapshot_state(state, snapshot)
 
-    async def sync(self, state: WorkItemState) -> WorkItemState:
-        """Synchronously project one canonical state update.
+    def _latest(self, state: WorkItemState) -> WorkItemState:
+        try:
+            current = (self.dependencies.get_state(state.ref)
+                       if self.dependencies.get_state else self.dependencies.load_states().get(state.ref))
+        except Exception as exc:
+            raise TaskSourceProjectionStorageError("projection_state_read_failed") from exc
+        if current is None:
+            raise TaskSourceProjectionError("canonical_item_missing", conflict=True)
+        if (current.organization_id, current.workspace_id, current.project_id) != (
+                state.organization_id, state.workspace_id, state.project_id):
+            raise TaskSourceProjectionError("canonical_scope_changed", conflict=True)
+        return current.model_copy(deep=True)
 
-        Direct API flows still await provider synchronization, but provider
-        adapters that support combined projection use one read plus at most one
-        mutation and skip unchanged desired state.
-        """
+    def _guard_projection(self, state: WorkItemState) -> None:
+        self._check_current(state, self._latest(state))
+
+    @staticmethod
+    def _check_current(state, current):
+        if current is None or desired_revision(current) != desired_revision(state):
+            raise TaskSourceProjectionError("canonical_revision_changed", conflict=True)
+
+    def _persist_projection(self, state: WorkItemState) -> WorkItemState:
+        try:
+            return self._persist_projection_record(state)
+        except TaskSourceProjectionError:
+            raise
+        except Exception as exc:
+            # Propagate storage failures across the provider partial-success boundary.
+            raise TaskSourceProjectionStorageError("projection_evidence_storage_failed") from exc
+
+    def _persist_projection_record(self, state: WorkItemState) -> WorkItemState:
+        def merge(current):
+            self._check_current(state, current)
+            current = current.model_copy(deep=True)
+            current.source_projection = state.source_projection.model_copy(deep=True)
+            return current
+        updater = getattr(self.dependencies, "update_state", None)
+        if updater is not None:
+            return updater(state.ref, merge)
+        current = merge(self._latest(state))
+        if self.dependencies.save_state:
+            self.dependencies.save_state(current)
+        else:
+            states = self.dependencies.load_states()
+            states[current.ref] = current
+            self.dependencies.save_states(states)
+        return current
+
+    def _record_projection_evidence(self, state):
+        if self.append_event is None:
+            return
+        projection = state.source_projection
+        try:
+            self.append_event(WorkItemEvent(
+                ref=state.ref, event_type="task_source_projection_" + projection.status,
+                created_at=time.time(), actor=projection.actor, source="task-source-writeback",
+                reason=projection.reason,
+                payload={"desired_revision": projection.desired_revision,
+                    "target": projection.target.external_id,
+                    "source_type": projection.target.source_type,
+                    "source_instance": projection.target.source_instance,
+                    "organization_id": state.organization_id, "workspace_id": state.workspace_id,
+                    "project_id": state.project_id, "desired_owner": projection.desired_owner,
+                    "desired_stage": projection.desired_stage, "desired_assignee": projection.desired_assignee,
+                    "target_revision": projection.target.revision,
+                    "observed_revision": projection.observed_revision,
+                    "mapping_revision": projection.mapping_revision,
+                    "attempt": projection.attempts, "http_status": projection.http_status,
+                    "retry_scope": projection.retry_scope},
+            ))
+        except Exception as exc:
+            raise TaskSourceProjectionStorageError("projection_audit_storage_failed") from exc
+
+    async def _project(self, state, *, key=None, generation=None, actor=None, authorization_guard=None):
+        state = ensure_projection(state.model_copy(deep=True))
+        if state.source_identity is None:
+            return state
+        self._guard_projection(state)
+        projection = state.source_projection
+        projection.status = "pending"
+        projection.reason = None
+        projection.http_status = None
+        projection.desired_assignee = None
+        projection.mapping_revision = None
+        projection.attempts += 1
+        projection.actor = actor
+        projection.attempted_at = time.time()
+        self._persist_projection(state)
+        self._record_projection_evidence(state)
+        try:
+            source = self.registry.resolve(state, required=True)
+            if source is None:
+                raise TaskSourceProjectionError("task_source_unavailable")
+            result = await self._sync_once(state, key=key, generation=generation, authorization_guard=authorization_guard)
+            self._guard_projection(state)
+        except (TaskSourceProjectionError, TaskSourceResolutionError, RuntimeError, httpx.HTTPError, OSError) as exc:
+            projection.status = "conflict" if isinstance(exc, TaskSourceProjectionError) and exc.conflict else "failed"
+            projection.http_status = (getattr(exc, "status_code", None)
+                                      or getattr(getattr(exc, "response", None), "status_code", None))
+            if isinstance(exc, TaskSourceProjectionError):
+                projection.reason = exc.reason
+            elif isinstance(exc, httpx.TimeoutException):
+                projection.reason = "provider_timeout_outcome_unknown"
+            elif projection.http_status:
+                projection.reason = "provider_http_rejected"
+            else:
+                projection.reason = "provider_unavailable_or_denied"
+            # Never retain provider text, URLs, response bodies or credential errors.
+            self._record_projection_evidence(state)
+            self._persist_projection(state)
+            if isinstance(exc, TaskSourceProjectionError):
+                raise
+            failure = TaskSourceProjectionError(projection.reason)
+            failure.status_code = projection.http_status
+            if projection.http_status == 429:
+                failure.retry_after_seconds = self._retry_delay(exc, 1)
+            raise failure from exc
+        self._save_snapshot(state, TaskSourceSnapshot(identity=result.source_identity, labels=tuple(result.labels)))
+        projection.status = "succeeded"
+        projection.reason = None
+        projection.http_status = None
+        projection.observed_revision = result.source_identity.revision
+        committed = self._persist_projection(state)
+        self._record_projection_evidence(state)
+        return committed
+
+    async def sync(self, state: WorkItemState, *, actor=None, authorization_guard=None) -> WorkItemState:
+        """Return committed canonical state with durable, truthful projection evidence."""
         key = self._key(state)
-        return await self._sync_once(state, key=key)
+        if key is None:
+            return state
+        lock = self._projection_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            try:
+                self._guard_projection(state)
+                return await self._project(self._latest(state), key=key, actor=actor, authorization_guard=authorization_guard)
+            except TaskSourceProjectionError:
+                # Only the provider projection failed; the domain mutation is committed.
+                # Storage/programming failures are intentionally not turned into success.
+                return self._latest(state)
+
+    async def retry_projection(self, state, *, expected_revision, actor, authorization_guard=None):
+        current = self._latest(state)
+        projection = current.source_projection
+        if (projection is None or projection.desired_revision != expected_revision
+                or desired_revision(current) != expected_revision):
+            raise TaskSourceProjectionError("canonical_revision_changed", conflict=True)
+        return await self.sync(current, actor=actor, authorization_guard=authorization_guard)
 
     def schedule(self, state: WorkItemState) -> WorkItemState:
         """Coalesce asynchronous writeback by authoritative source identity."""
@@ -465,6 +665,9 @@ class TaskSourceWritebackService:
 
     @staticmethod
     def _retry_delay(exc: Exception, retry: int) -> float:
+        retry_after = getattr(exc, "retry_after_seconds", None)
+        if retry_after is not None and retry_after > 0:
+            return min(60.0, retry_after)
         response = getattr(exc, "response", None)
         if (
             response is not None
@@ -488,24 +691,30 @@ class TaskSourceWritebackService:
                 generation = self._generation[key]
                 desired = self._copy_state(self._desired[key])
                 try:
-                    await self._sync_once(
-                        desired,
-                        key=key,
-                        generation=generation,
-                    )
+                    lock = self._projection_locks.setdefault(key, asyncio.Lock())
+                    async with lock:
+                        self._guard_projection(desired)
+                        await self._project(
+                            self._latest(desired), key=key, generation=generation,
+                        )
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    if self._generation.get(key) != generation:
+                        continue
                     retry += 1
                     self._stats["failed"] += 1
-                    self._last_error[key] = str(exc)[:500]
-                    if retry > self.MAX_RETRIES:
+                    self._last_error[key] = "provider_projection_failed"
+                    if (not isinstance(exc, TaskSourceProjectionError)
+                            or retry > self.MAX_RETRIES
+                            or (isinstance(exc, TaskSourceProjectionError) and not exc.retryable)
+                            or getattr(exc, "status_code", 0) in {400, 401, 403, 404, 409, 422}):
                         self.event_sink(
                             {
                                 "type": "task_source_writeback_failed",
                                 "ref": desired.ref,
                                 "attempts": retry,
-                                "error": str(exc)[:500],
+                                "error": "provider_projection_failed",
                             }
                         )
                         return

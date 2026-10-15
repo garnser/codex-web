@@ -70,6 +70,51 @@ class WorkItemArtifactRelation(BaseModel):
     state: Literal["opened", "closed", "merged"]
 
 
+class GitHubTaskSourceSettings(BaseModel):
+    """Project-scoped account projection configuration, never role authority."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+    kind: Literal["github"] = "github"
+    schema_version: Literal["1.0"] = "1.0"
+    assignee_mapping: dict[str, str] = Field(default_factory=dict, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_mapping(self) -> "GitHubTaskSourceSettings":
+        import re
+        for role, login in self.assignee_mapping.items():
+            if not role.strip() or role != role.strip() or len(role) > 200:
+                raise ValueError("assignee mapping requires exact non-empty role identifiers")
+            if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", login) or "--" in login:
+                raise ValueError("assignee mapping requires valid GitHub login syntax")
+        if len({v.casefold() for v in self.assignee_mapping.values()}) != len(self.assignee_mapping):
+            raise ValueError("GitHub accounts must map unambiguously to one operational role")
+        return self
+
+
+class TaskSourceProjectionState(BaseModel):
+    """Durable bounded evidence for one desired provider projection (v1.0)."""
+
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal["1.0"] = "1.0"
+    desired_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    target: TaskSourceIdentity
+    desired_owner: str | None = None
+    desired_assignee: str | None = Field(default=None, max_length=39)
+    desired_stage: WorkItemStage
+    status: Literal["pending", "failed", "conflict", "succeeded"] = "pending"
+    reason: str | None = Field(default=None, max_length=200)
+    http_status: int | None = Field(default=None, ge=100, le=599)
+    attempts: int = Field(default=0, ge=0)
+    actor: str | None = None
+    attempted_at: float | None = None
+    observed_revision: str | None = None
+    observed_state: str | None = None
+    protected_source_state: str | None = None
+    concurrency_guarantee: Literal["read_verify_no_state_cas"] | None = None
+    mapping_revision: str | None = None
+    retry_scope: Literal["provider_projection_only"] = "provider_projection_only"
+
+
 class JiraTaskSourceSettings(BaseModel):
     """Typed non-secret Jira adapter settings."""
 
@@ -119,7 +164,7 @@ class ServiceNowTaskSourceSettings(BaseModel):
 
 
 TaskSourceProviderSettings: TypeAlias = Annotated[
-    JiraTaskSourceSettings | ServiceNowTaskSourceSettings,
+    JiraTaskSourceSettings | ServiceNowTaskSourceSettings | GitHubTaskSourceSettings,
     Field(discriminator="kind"),
 ]
 
@@ -161,9 +206,12 @@ class TaskSourceConfiguration(BaseModel):
                 raise ValueError(
                     "task-source provider_settings kind must match source_type"
                 )
+        elif source_type == "github":
+            if self.provider_settings is not None and self.provider_settings.kind != "github":
+                raise ValueError("task-source provider_settings kind must match source_type")
         elif self.provider_settings is not None:
             raise ValueError(
-                "typed provider_settings are only supported for built-in jira/servicenow task sources"
+                "typed provider_settings are only supported for built-in jira/servicenow/github task sources"
             )
         return self
 
@@ -330,6 +378,7 @@ class WorkItemState(BaseModel):
     resource_ids: list[str] = Field(default_factory=list)
     project_path: str | None = None
     source_identity: TaskSourceIdentity | None = None
+    source_projection: TaskSourceProjectionState | None = None
     title: str | None = None
     url: str | None = None
     kind: str | None = None

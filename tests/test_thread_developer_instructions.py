@@ -381,7 +381,7 @@ class ThreadDeveloperInstructionsTests(unittest.TestCase):
         structured_progress.assert_called_once_with(state.ref, payload)
         publish.assert_awaited_once()
         schedule_dispatch.assert_called_once_with(state, source="work-item-progress", actor=payload.actor)
-        self.assertEqual(result, {"ok": True, "item": public_state})
+        self.assertEqual(result, {"ok": True, "canonical_committed": True, "item": public_state})
 
     def test_update_work_item_progress_schedules_native_recovery_on_routing_drift(self) -> None:
         state = WorkItemState(

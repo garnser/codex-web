@@ -1,4 +1,4 @@
-import { requestedReference, rememberReference } from './reference_navigation.js';
+import { requestedReference, rememberReference, projectPath } from './reference_navigation.js';
 import { installWorkItemCommands } from "./object_commands.js";
 import { createWorkItemViewScope, workItemLoadError } from "./work_item_view_scope.js";
 import { createRunTimelineUi } from "./work_item_runs_ui.js";
@@ -388,6 +388,29 @@ function renderDetail(payload) {
       </div>
     </section>
     ${workItemSummaryHtml({ item, diagnostics, esc })}
+    ${item.source_projection ? `<section class="work-detail-card work-provider-projection" aria-label="Provider projection">
+      <h4>Canonical progress committed · provider projection ${esc(item.source_projection.status)}</h4>
+      <div class="work-kv">${keyValueRows({
+        reason: item.source_projection.reason,
+        provider_http_status: item.source_projection.http_status,
+        desired_role: item.source_projection.desired_owner,
+        desired_github_assignee: item.source_projection.desired_assignee,
+        target: item.source_projection.target?.external_id,
+        source: item.source_projection.target?.source_instance,
+        desired_revision: item.source_projection.desired_revision,
+        target_revision: item.source_projection.target?.revision,
+        observed_revision: item.source_projection.observed_revision,
+        observed_state: item.source_projection.observed_state,
+        protected_source_state: item.source_projection.protected_source_state,
+        concurrency: item.source_projection.concurrency_guarantee,
+        assignee_mapping_revision: item.source_projection.mapping_revision,
+        attempts: item.source_projection.attempts,
+        actor: item.source_projection.actor,
+      })}</div>
+      ${item.source_projection.status === 'conflict' ? `<p>Inspect canonical and observed provider state before retrying. For an intentional GitHub close/reopen, use the existing governed issue-state action in <a href="${esc(projectPath('autonomy', { consumer_type: 'work_item', consumer_id: item.ref }, state.projectId) || '#')}">ActionIntents &amp; Side Effects</a>, then retry this projection to verify. Automatic issue-state changes cannot be made with an atomic provider revision check.</p>` : ''}
+      <p>Retry scope: provider projection only. Progress, handoffs and execution are already recorded.</p>
+      <button type="button" class="ghost-button work-projection-retry" ${actions.projection_retry?.allowed ? '' : 'disabled'}>Retry provider projection</button>
+    </section>` : ''}
     <section class="work-detail-card work-run-timeline">
       ${runUi.runTimelineHtml()}
     </section>
@@ -490,6 +513,21 @@ function renderDetail(payload) {
     </section>`;
   detail.querySelector('.work-item-retry')?.addEventListener('click', () => runItemAction('retry'));
   detail.querySelector('.work-item-reconcile')?.addEventListener('click', () => runItemAction('reconcile'));
+  detail.querySelector('.work-projection-retry')?.addEventListener('click', async event => {
+    const isCurrent = captureScope();
+    event.target.disabled = true;
+    setStatus('Retrying provider projection only…');
+    try {
+      const result = await request(scopedPath(`/api/work-items/${pathRef(item.ref)}/projection-retry`), {
+        method: 'POST', body: JSON.stringify({ expected_revision: item.source_projection.desired_revision }),
+      });
+      if (!isCurrent()) return;
+      renderDetail(result);
+      setStatus(`Canonical progress committed · provider projection ${result.item.source_projection.status}`);
+    } catch (error) {
+      if (isCurrent()) { setStatus(error.message || 'Provider projection retry failed', true); event.target.disabled = false; }
+    }
+  });
   runUi.wireRunTimeline();
 }
 async function runItemAction(action) {

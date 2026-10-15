@@ -6,6 +6,7 @@ from typing import Any
 from codex_web.identity import AuthenticationActor, TenantScope
 from codex_web.models import (
     JiraTaskSourceSettings,
+    GitHubTaskSourceSettings,
     ServiceNowTaskSourceSettings,
     TaskSourceConfiguration,
     WorkItemState,
@@ -189,6 +190,22 @@ class SecretBoundTaskSource:
                 delivery_pending=delivery_pending,
             ),
         )
+
+    @property
+    def supports_guarded_projection(self):
+        return bool(getattr(self._projection_source, "supports_guarded_projection", False))
+
+    @property
+    def mapping_revision(self):
+        return getattr(self._projection_source, "mapping_revision", None)
+
+    def mapped_assignee(self, owner):
+        return self._projection_source.mapped_assignee(owner)
+
+    async def write_guarded_projection(self, identity, **kwargs):
+        self.capabilities.require(TaskSourceCapability.OWNER_WRITE)
+        self.capabilities.require(TaskSourceCapability.STATE_WRITE)
+        return await self._use("write_projection", lambda source: source.write_guarded_projection(identity, **kwargs))
 
     async def write_owner(self, identity, owner: str | None) -> TaskSourceSnapshot:
         self.capabilities.require(TaskSourceCapability.OWNER_WRITE)
@@ -375,8 +392,8 @@ class BuiltInTaskSourceRuntime:
     def _github(self, configuration: TaskSourceConfiguration, *, actor: AuthenticationActor) -> SecretBoundTaskSource:
         self._validate_secret(configuration, actor)
         def builder(secret: str) -> TaskSource:
-            return GitHubTaskSource(configuration.source_instance, secret, client=self.github_client)
-        projection = GitHubTaskSource(configuration.source_instance, "__credential_not_loaded__", client=self.github_client)
+            return GitHubTaskSource(configuration.source_instance, secret, client=self.github_client, settings=configuration.provider_settings if isinstance(configuration.provider_settings, GitHubTaskSourceSettings) else None)
+        projection = GitHubTaskSource(configuration.source_instance, "__credential_not_loaded__", client=self.github_client, settings=configuration.provider_settings if isinstance(configuration.provider_settings, GitHubTaskSourceSettings) else None)
         return SecretBoundTaskSource(source_type="github", source_instance=configuration.source_instance,
             credential_secret_id=configuration.credential_secret_id or "", actor=actor,
             secret_broker=self.secrets, builder=builder, projection_source=projection)
@@ -448,6 +465,13 @@ class BuiltInTaskSourceRuntime:
             raise TaskSourceResolutionError(
                 "Work-item source instance does not match project authoritative source"
             )
+        if identity.source_type.casefold() == "github":
+            try:
+                repository, _ = GitHubTaskSource._split(identity.external_id)
+            except ValueError as exc:
+                raise TaskSourceResolutionError("Invalid GitHub source identity") from exc
+            if repository.casefold() != configuration.scope.casefold():
+                raise TaskSourceResolutionError("GitHub item is outside Project task-source repository")
         return self.source_for_configuration(configuration, scope=scope)
 
     def install(self) -> "BuiltInTaskSourceRuntime":

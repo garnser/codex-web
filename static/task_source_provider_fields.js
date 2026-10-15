@@ -7,6 +7,14 @@ export function renderProviderDetails(root, schema, sourceType, settings = {}) {
     host = document.createElement('details'); host.dataset.sourceProviderDetails = '';
     root.querySelector('.work-source-provider-fields').appendChild(host);
   }
+  let mapping = root.querySelector('[data-github-assignee-mapping]');
+  if (!mapping) {
+    mapping = document.createElement('label'); mapping.dataset.githubAssigneeMapping = '';
+    mapping.innerHTML = 'GitHub role → account mapping (one role=login per line)<textarea data-github-mapping rows="4"></textarea><small>Only explicit mappings project owners. Missing mappings are visible failures; manual assignees are preserved. This configuration does not grant role authority.</small>';
+    root.querySelector('.work-source-provider-fields').appendChild(mapping);
+  }
+  mapping.hidden = sourceType.toLowerCase() !== 'github';
+  mapping.querySelector('textarea').value = Object.entries(settings.assignee_mapping || {}).map(([role, login]) => `${role}=${login}`).join('\n');
   host.hidden = sourceType.toLowerCase() !== 'servicenow';
   const fields = Object.entries(schema?.$defs?.ServiceNowFieldSettings?.properties || {}).filter(([, value]) => value.type === 'string').slice(0, 20);
   const states = (schema?.$defs?.ServiceNowTaskSourceSettings?.properties?.canonical_state_values?.propertyNames?.enum || []).filter(value => !['implementation_active', 'closed'].includes(value)).slice(0, 20);
@@ -33,4 +41,14 @@ export function captureProviderDetails(root, previous = {}) {
     if (value) canonical_state_values[stage] = value; else delete canonical_state_values[stage];
   });
   return { ...(Object.keys(fields).length ? { fields } : {}), canonical_state_values };
+}
+
+export function captureGitHubMapping(root) {
+  const mapping = {};
+  for (const line of (root.querySelector('[data-github-mapping]')?.value || '').split('\n').filter(value => value.trim())) {
+    const pair = line.split('=');
+    if (pair.length !== 2 || !pair[0].trim() || !pair[1].trim() || Object.hasOwn(mapping, pair[0].trim())) throw new Error('Use one unique role=login mapping per line.');
+    mapping[pair[0].trim()] = pair[1].trim();
+  }
+  return { kind: 'github', schema_version: '1.0', assignee_mapping: mapping };
 }

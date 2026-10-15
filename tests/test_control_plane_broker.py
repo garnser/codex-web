@@ -1487,6 +1487,32 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 502)
         self.assertEqual(payload["error"]["code"], "broker_response_too_large")
 
+    async def test_projection_retry_uses_real_service_and_rechecks_live_assignment_fence(self):
+        from tests.test_github_progress_projection import GitHubProgressProjectionTests
+        from codex_web.models import WorkItemProgressUpdate
+        from codex_web.services.work_item_operator import WorkItemOperatorService
+        fixture = GitHubProgressProjectionTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        state = fixture.repo.get(fixture.state.ref)
+        state.project_id = "project-a"
+        fixture.repo.put(state.ref, state)
+        state = fixture.machine._structured_progress(state.ref,
+            WorkItemProgressUpdate(next_action="qualified next action"))
+        self.service.work_items = fixture.service
+        self.service.operator = WorkItemOperatorService(fixture.service)
+        fixture.hook = lambda: setattr(self, "current_assignment",
+            self.current_assignment.model_copy(update={"fence": 2}))
+        status, _, response = await self._request("POST",
+            "/api/work-items/" + quote(state.ref, safe="") + "/projection-retry",
+            payload={"expected_revision": state.source_projection.desired_revision})
+        self.assertEqual(status, 200, response)
+        self.assertEqual(response["item"]["source_projection"]["status"], "conflict")
+        self.assertEqual(response["item"]["source_projection"]["reason"], "projection_authority_changed")
+        self.assertFalse(any(method != "GET" for method, _, _ in fixture.calls))
+        self.assertEqual(fixture.repo.get(state.ref).current_owner, "vp-engineering")
+        self.assertEqual(self.service.audit.load().events[-1].operation_id, "work_item.projection_retry")
+
     async def test_owner_steer_uses_bounded_preconditions_and_exact_authority(self) -> None:
         encoded = quote(self.ref, safe="")
         status, _, payload = await self._request(

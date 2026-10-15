@@ -43,7 +43,9 @@ class GitHubClient:
         async with httpx.AsyncClient(transport=self.transport, timeout=self.timeout) as client:
             response = await client.request(method.upper(), url, headers=headers, params=params, json=json_body)
         if response.status_code >= 400:
-            raise RuntimeError(f"GitHub API returned HTTP {response.status_code} for {path}")
+            error = RuntimeError(f"GitHub API returned HTTP {response.status_code}")
+            error.status_code = response.status_code
+            raise error
         try:
             return response.json()
         except ValueError as exc:

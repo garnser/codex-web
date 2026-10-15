@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.models import TaskSourceConfiguration, WorkItemAckCreate, WorkItemHandoffCreate, WorkItemProgressUpdate
 from codex_web.services.identity import IdentityError, IdentityService, identity_http_error
@@ -29,6 +29,11 @@ class WorkItemCommentCreate(BaseModel):
 class WorkItemOperatorAction(BaseModel):
     actor: str | None = None
     reason: str | None = None
+
+
+class WorkItemProjectionRetry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 def build_work_items_router(
@@ -350,6 +355,20 @@ def build_work_items_router(
     ) -> dict[str, Any]:
         require_item_scope(ref, request)
         return await operator.retry(ref, actor=payload.actor, reason=payload.reason)
+
+    @router.post("/api/work-items/{ref:path}/projection-retry")
+    async def retry_projection(ref: str, payload: WorkItemProjectionRetry, request: Request):
+        from codex_web.services.task_source_projection import TaskSourceProjectionError
+        require_item_scope(ref, request)
+        state = service.state_machine._work_item_state(ref)
+        try:
+            await service.task_source_writeback.retry_projection(
+                state, expected_revision=payload.expected_revision,
+                actor=request.state.identity_actor.identity_id,
+            )
+        except TaskSourceProjectionError as exc:
+            raise HTTPException(status_code=409, detail={"code": exc.reason}) from exc
+        return {"ok": True, **operator.detail(ref)}
 
     @router.post("/api/work-items/{ref:path}/reconcile")
     async def reconcile_work_item(

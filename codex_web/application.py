@@ -2361,6 +2361,7 @@ work_item_dependencies = WorkItemRuntimeDependencies(
     get_states=runtime_state.work_item_states.get_many,
     get_state_by_source_identity=_get_work_item_state_by_source_identity,
     save_state=_put_work_item_state_record,
+    update_state=_update_work_item_state_record,
 )
 gitlab_work_item_dependencies = GitLabWorkItemDependencies(
     api_base_url=os.environ.get(

@@ -310,6 +310,12 @@ EXACT_POLICIES: dict[tuple[str, str], ApiAuthorizationPolicy] = {
         access=ApiAccessMode.AUTHORITY,
         description="Retry canonical work only with explicit operational authority.",
     ),
+    ("POST", "/api/work-items/{ref:path}/projection-retry"): ApiAuthorizationPolicy(
+        capability="work-item.operate",
+        level=AuthorityLevel.EXECUTE,
+        access=ApiAccessMode.AUTHORITY,
+        description="Retry only the committed Work Item's provider projection.",
+    ),
     ("POST", "/api/work-items/{ref:path}/reconcile"): ApiAuthorizationPolicy(
         capability="work-item.operate",
         level=AuthorityLevel.EXECUTE,

@@ -178,6 +178,11 @@ class TaskSourceWorkItemProjector:
         state: WorkItemState,
         states: dict[str, WorkItemState] | None,
     ) -> None:
+        # Reconciliation supersedes an existing outbound desired revision,
+        # without creating outbound work for read-only source discovery.
+        if state.source_projection is not None:
+            from codex_web.services.task_source_projection import ensure_projection
+            ensure_projection(state)
         if self.dependencies.save_state is not None:
             self._metric("keyed_saves")
             self.dependencies.save_state(state)
