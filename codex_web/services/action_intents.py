@@ -63,6 +63,7 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID,
     CODE_HOST_JOB_RERUN_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
     CodeHostActionContract,
 )
 from codex_web.services.code_host_continuation import (
@@ -2254,7 +2255,7 @@ class ActionIntentService:
         if (
             latest_result is None
             and not payload.retry_if_idempotent
-            and intent.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID
+            and intent.action_id in {CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID, CODE_HOST_PULL_REQUEST_READY_ACTION_ID}
             and intent.status
             in {
                 ActionIntentStatus.UNCERTAIN,
@@ -2321,7 +2322,9 @@ class ActionIntentService:
                 actor=actor,
             )
             plan = preparation.provider_plan
-            if plan.get("operation") != "pull-request-merge":
+            expected_operation = ('pull-request-ready' if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID
+                                  else 'pull-request-merge')
+            if plan.get("operation") != expected_operation:
                 raise ValueError("provider returned an unexpected merge plan")
             repository = str(plan.get("repository") or "").strip()
             number = int(plan.get("pull_request_number") or 0)

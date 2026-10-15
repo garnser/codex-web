@@ -65,3 +65,39 @@ test('old merge records and omitted pins display missing facts without invented 
   await expect(row).toContainText('Requested merge head: not recorded');
   await expect(row).toContainText('An omitted pin has no mutation-time head guarantee');
 });
+
+for (const status of ['uncertain', 'succeeded']) test(`readiness inspector preserves ${status} without approval or merge claims`, async ({page}) => {
+  const calls = [];
+  const verified = status === 'succeeded';
+  await page.setViewportSize({width:390,height:844});
+  await page.route('**/merge-intent-fixture', route => route.fulfill({contentType:'text/html',body:fixture}));
+  await page.route('**/api/**', route => {
+    calls.push(route.request().method());
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith('/history')) return route.fulfill({json:{
+      receipts:[{outcome:verified?'completed':'unknown',attempt:1,
+        result:verified?{action_id:'code-host.pull-request.ready',status:'succeeded',
+          output:{head_sha:A,base_ref:'<img src=x onerror=alert(1)>',secret:'never-render-this'}}:null}],
+      verifications:[{verified,provider_verification:{verified,evidence:[{
+        evidence_type:'code-host-pull-request-ready',metadata:{expected_head_sha:A,
+          observed_head_sha:verified?A:B,ready_for_review:verified}}]}}],
+    }});
+    return route.fulfill({json:{items:[{id:'ready-1',action_id:'code-host.pull-request.ready',
+      provider_type:'github',provider_instance:'github.com',status,project_id:'project-a',
+      request:{parameters:{pull_request_number:17,expected_head_sha:A,secret:'never-render-this'}},
+      retry_policy:{max_attempts:1},attempt:1}]}});
+  });
+  await page.goto('http://127.0.0.1:18766/merge-intent-fixture');
+  const row = page.locator('[data-action-intent-row="ready-1"]');
+  await row.locator('summary').focus();
+  await page.keyboard.press('Enter');
+  await expect(row).toContainText(`Review target PR 17 · expected head: ${A}`);
+  await expect(row).toContainText('Independent approval and merge gates still apply');
+  await row.getByRole('button',{name:'Load side-effect timeline'}).click();
+  await expect(row).toContainText(`Readiness verification: expected head ${A} · observed head ${verified?A:B}`);
+  await expect(row).toContainText(`provider ready: ${verified?'yes':'no'}`);
+  await expect(row.locator('img')).toHaveCount(0);
+  await expect(row).not.toContainText('never-render-this');
+  expect(calls.every(method=>method==='GET')).toBeTruthy();
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});

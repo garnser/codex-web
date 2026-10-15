@@ -902,7 +902,8 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         artifact_download = next(item for item in payload["operations"] if item["id"] == "repository.read.artifact-download")
         evidence = next(item for item in payload["operations"] if item["id"] == "repository.read.delivery-evidence")
         self.assertEqual(evidence['supported_action_ids'], [
-            'code-host.branch.publish', 'code-host.pull-request.merge', 'code-host.pull-request.upsert'])
+            'code-host.branch.publish', 'code-host.pull-request.merge', 'code-host.pull-request.ready',
+            'code-host.pull-request.upsert'])
         self.assertTrue(evidence['inspection']['read_only'])
         self.assertTrue(evidence['inspection']['superseded_execution_receipts'])
         self.assertIn("member_path", artifact_download["optional_query_parameters"])

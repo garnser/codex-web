@@ -32,7 +32,7 @@ from codex_web.action_intents import (
     ActionIntentStatus,
 )
 from codex_web.action_providers import ActionRequest
-from codex_web.services.action_providers import ActionProviderNotFoundError
+from codex_web.services.action_providers import ActionProviderNotFoundError, provider_operation_admission
 from codex_web.authority import (
     AuthorityDecisionOutcome,
     AuthorityEvaluationRequest,
@@ -72,6 +72,7 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_ISSUE_UPDATE_ACTION_ID,
     CODE_HOST_JOB_RERUN_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
     CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
 )
 from codex_web.services.code_hosts import CodeHostService
@@ -341,6 +342,13 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
         authority_level=AuthorityLevel.EXECUTE,
     ),
     ControlPlaneBrokerOperation(
+        id="repository.pull-request.ready",
+        method="POST",
+        path_template="/api/repository-actions/pull-request/ready",
+        capability="repository.pull-request.ready",
+        authority_level=AuthorityLevel.EXECUTE,
+    ),
+    ControlPlaneBrokerOperation(
         id="repository.check.rerun",
         method="POST",
         path_template="/api/repository-actions/check/rerun",
@@ -397,6 +405,9 @@ _MUTATION_SUFFIXES = {
 _SAFE_TRACE_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _REPOSITORY_ACTION_PAYLOAD_FIELDS = ("parameters", "idempotency_key")
 _REPOSITORY_ACTIONS = {
+    "/api/repository-actions/pull-request/ready": (
+        "repository.pull-request.ready", CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
+    ),
     "/api/repository-actions/issue/create": (
         "repository.issue.create",
         CODE_HOST_ISSUE_CREATE_ACTION_ID,
@@ -428,6 +439,7 @@ _REPOSITORY_ACTIONS = {
 }
 _RECONCILABLE_REPOSITORY_ACTION_IDS = frozenset(
     {
+        CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
         CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
         CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
     }
@@ -544,6 +556,14 @@ class ControlPlaneBrokerService:
                         "existing ref: expected_remote_revision=observed SHA"
                     ),
                 }
+        if item.id == 'repository.pull-request.ready':
+            result['request_body']['parameters'] = {
+                'type': 'object', 'required': ['pull_request_number', 'expected_head_sha'],
+                'additionalProperties': False,
+                'properties': {'pull_request_number': {'type': 'integer', 'minimum': 1},
+                    'expected_head_sha': {'type': 'string', 'pattern': '^[0-9a-fA-F]{40}$'}},
+            }
+            result['requires_explicit_definition_declaration'] = True
         if item.id == "repository.workspace.publication-recovery":
             result["handoff_request_body"] = PublicationRecoveryHandoffRequest.model_json_schema()
             result["request_body"] = {
@@ -1529,6 +1549,16 @@ class ControlPlaneBrokerService:
             return {"item": item.model_dump(mode="json")}
         raise ControlPlaneBrokerDeniedError("unsupported repository read operation")
 
+    def _require_readiness_declaration(self, assignment):
+        if self.execution_profiles is None or assignment.execution_profile_definition is None:
+            raise ControlPlaneBrokerDeniedError('Readiness requires an explicitly published execution declaration')
+        profile, reference = self.execution_profiles.resolve(assignment.execution_profile_id,
+            organization_id=assignment.organization_id, workspace_id=assignment.workspace_id,
+            project_id=assignment.project_id)
+        if (reference != assignment.execution_profile_definition
+                or 'repository.pull-request.ready' not in profile.control_plane_operations):
+            raise ControlPlaneBrokerDeniedError('Readiness is not declared by the current assignment definition')
+
     def _authorize(
         self,
         assignment: ExecutionAssignment,
@@ -1541,6 +1571,8 @@ class ControlPlaneBrokerService:
             raise ControlPlaneBrokerDeniedError(
                 "assignment execution profile does not permit control-plane broker access"
             )
+        if operation.id == 'repository.pull-request.ready':
+            self._require_readiness_declaration(assignment)
         if not assignment.project_id:
             raise ControlPlaneBrokerDeniedError(
                 "control-plane broker requires an assignment project"
@@ -1652,6 +1684,8 @@ class ControlPlaneBrokerService:
         )
         if (
             intent.action_id not in _DELIVERY_EVIDENCE_REPOSITORY_ACTION_IDS
+            or (intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID
+                and intent.execution_id != assignment.execution_id)
             or intent.organization_id != assignment.organization_id
             or intent.workspace_id != assignment.workspace_id
             or intent.project_id != assignment.project_id
@@ -1989,16 +2023,25 @@ class ControlPlaneBrokerService:
                 raise ControlPlaneBrokerRequestError(str(exc), status_code=409) from exc
             result = {"item": recovered.model_dump(mode="json")}
         elif operation.id.startswith("repository."):
-            result = await self._execute_repository_action(
-                assignment=assignment,
-                worker_actor=actor,
-                requester_actor=requester_actor,
-                operation=operation,
-                payload=payload,
-                repository_id=self._operation_repository_id(
-                    assignment, operation.id, resolved.query, actor=requester_actor
-                ),
-            )
+            async def current_admission():
+                if assignment_validator is None:
+                    raise ControlPlaneBrokerDeniedError('Live assignment validator is unavailable')
+                current = await asyncio.to_thread(assignment_validator)
+                fields = ('organization_id', 'workspace_id', 'project_id', 'execution_id',
+                    'execution_profile_id', 'execution_profile_definition', 'agent_profile',
+                    'execution_workspace_id', 'repository_scope', 'repository_target', 'resource_ids')
+                if (any(getattr(current, name) != getattr(assignment, name) for name in fields)
+                        or current.status not in {'running', 'claimed'}
+                        or (current.deadline_at is not None and current.deadline_at <= self._clock())):
+                    raise ControlPlaneBrokerDeniedError('Assignment scope or deadline changed during provider read')
+                await asyncio.to_thread(self._dispatch_scope, current, worker_actor, resolved)
+            with provider_operation_admission(current_admission):
+                result = await self._execute_repository_action(
+                    assignment=assignment, worker_actor=actor, requester_actor=requester_actor,
+                    operation=operation, payload=payload,
+                    repository_id=self._operation_repository_id(
+                        assignment, operation.id, resolved.query, actor=requester_actor),
+                )
         elif operation.id == "action_intent.reconcile":
             if self.action_intents is None:
                 raise ControlPlaneBrokerDeniedError(
@@ -2017,6 +2060,8 @@ class ControlPlaneBrokerService:
             )
             if (
                 intent.action_id not in _RECONCILABLE_REPOSITORY_ACTION_IDS
+                or (intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID
+                    and intent.execution_id != assignment.execution_id)
                 or intent.organization_id != assignment.organization_id
                 or intent.workspace_id != assignment.workspace_id
                 or intent.project_id != assignment.project_id

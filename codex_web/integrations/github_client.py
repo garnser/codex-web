@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from typing import Any
 from urllib.parse import quote
 
@@ -59,7 +61,7 @@ class GitHubClient:
 
     async def request_bytes(
         self, method: str, api_base: str, path: str, *, token: str,
-        max_bytes: int, json_body: dict[str, Any] | None = None,
+        max_bytes: int, json_body: dict[str, Any] | None = None, follow_redirects: bool = True,
     ) -> tuple[bytes, bool, str]:
         if max_bytes < 1 or max_bytes > 512 * 1024:
             raise ValueError("GitHub response byte limit must be between 1 and 524288")
@@ -70,7 +72,7 @@ class GitHubClient:
             "X-GitHub-Api-Version": "2022-11-28",
         }
         async with httpx.AsyncClient(
-            transport=self.transport, timeout=self.timeout, follow_redirects=True
+            transport=self.transport, timeout=self.timeout, follow_redirects=follow_redirects
         ) as client:
             async with client.stream(
                 method.upper(), url, headers=headers, json=json_body
@@ -121,6 +123,30 @@ class GitHubClient:
             )
             setattr(error, "status_code", response.status_code)
             raise error
+
+    async def mark_pull_request_ready(self, api_base: str, node_id: str, *, token: str, marker: str) -> dict[str, Any]:
+        # Enterprise Server exposes GraphQL at /api/graphql, rather than below
+        # the REST /api/v3 prefix. No caller-supplied query or endpoint is accepted.
+        graphql_base = api_base[:-len('/v3')] if api_base.endswith('/api/v3') else api_base
+        query = '''mutation Ready($input: MarkPullRequestReadyForReviewInput!) {
+          markPullRequestReadyForReview(input: $input) {
+            clientMutationId
+            pullRequest { id number isDraft headRefOid baseRefName repository { nameWithOwner } }
+          }
+        }'''
+        body, truncated, _ = await self.request_bytes('POST', graphql_base, 'graphql',
+            token=token, max_bytes=65536, follow_redirects=False,
+            json_body={'query': query, 'variables': {'input': {
+                'pullRequestId': node_id, 'clientMutationId': marker}}})
+        if truncated:
+            raise RuntimeError('GitHub readiness response exceeds the bounded response limit')
+        value = json.loads(body)
+        if not isinstance(value, dict) or value.get('errors'):
+            raise RuntimeError('GitHub readiness outcome requires reconciliation')
+        result = (value.get('data') or {}).get('markPullRequestReadyForReview')
+        if not isinstance(result, dict) or result.get('clientMutationId') != marker:
+            raise RuntimeError('GitHub readiness response did not confirm the request marker')
+        return result.get('pullRequest') or {}
 
     async def actions_job(self, api_base: str, repo: str, job_id: int, *, token: str) -> dict[str, Any]:
         result = await self.request_json(

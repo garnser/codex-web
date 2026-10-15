@@ -37,12 +37,14 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,  # noqa: F401 - compatibility export
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE,
+    CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_READY_EVIDENCE,
     CodeHostActionContract,
     result_resource_output,
 )
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.resources import ResourceCatalogService
-from codex_web.services.action_providers import ActionRequirementError
+from codex_web.services.action_providers import ActionRequirementError, revalidate_provider_mutation
 
 
 GITHUB_ACTION_PROVIDER_TYPE = "github"
@@ -104,6 +106,24 @@ class GitHubActionProvider:
 
     def actions(self):
         return self.contract.actions()
+
+    def _ready_target(self, item, request, repository, number, head_sha):
+        if self.contract.locator(request) != repository:
+            raise ActionRequirementError('Canonical repository changed during readiness inspection')
+        if not isinstance(item, dict):
+            raise ActionRequirementError('GitHub readiness target must be an object')
+        base = item.get('base') if isinstance(item.get('base'), dict) else {}
+        head = item.get('head') if isinstance(item.get('head'), dict) else {}
+        repo = base.get('repo') if isinstance(base.get('repo'), dict) else {}
+        if (type(item.get('number')) is not int or item['number'] != number
+                or str(repo.get('full_name') or '').casefold() != repository.casefold()
+                or not isinstance(base.get('ref'), str) or not base['ref']
+                or self._evidence_sha(head.get('sha')) != head_sha
+                or item.get('state') != 'open' or item.get('merged') is not False
+                or type(item.get('draft')) is not bool
+                or not isinstance(item.get('node_id'), str) or not 1 <= len(item['node_id']) <= 512):
+            raise ActionRequirementError('GitHub readiness target is incomplete, changed or outside exact scope')
+        return item
 
     @staticmethod
     def _owned_body(body: str, marker: str) -> str:
@@ -259,6 +279,10 @@ class GitHubActionProvider:
                 "expected_remote_absent": attested.expected_remote_revision == "",
                 "workspace_attested": attested.workspace_path.is_dir(),
             }
+        if request.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            payload = self.contract.pull_request_ready(request)
+            return {'operation': 'pull-request-ready', 'repository': repository,
+                    'pull_request_number': payload['number'], 'expected_head_sha': payload['expected_head_sha']}
         if request.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
             payload = self.contract.pull_request_merge(request)
             return {
@@ -519,6 +543,41 @@ class GitHubActionProvider:
                 }
             )
             summary = "GitHub branch matches the committed execution workspace head."
+        elif request.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            payload = self.contract.pull_request_ready(request)
+            number, head_sha = payload['number'], payload['expected_head_sha']
+            try:
+                current = self._ready_target(await self.client.pull_request(
+                    self.api_base, repository, number, token=credential), request, repository, number, head_sha)
+                await revalidate_provider_mutation()
+            except Exception as exc:
+                raise ActionRequirementError('GitHub readiness preflight or current admission is unavailable') from exc
+            already_ready = current['draft'] is False
+            marker = self.contract.marker(request)
+            if not already_ready:
+                confirmed = await self.client.mark_pull_request_ready(self.api_base, current['node_id'],
+                    token=credential, marker=marker)
+                if (confirmed.get('id') != current['node_id'] or confirmed.get('number') != number
+                        or confirmed.get('isDraft') is not False or confirmed.get('headRefOid') != head_sha
+                        or confirmed.get('baseRefName') != current['base']['ref']
+                        or str((confirmed.get('repository') or {}).get('nameWithOwner') or '').casefold() != repository.casefold()):
+                    raise RuntimeError('GitHub readiness mutation requires exact-target reconciliation')
+            # A readiness mutation has no atomic expected-head input on GitHub.
+            # Any changed scope/head/authority after the possible write is unknown,
+            # never a known pre-start refusal or permission to retry.
+            try:
+                observed = self._ready_target(await self.client.pull_request(
+                    self.api_base, repository, number, token=credential), request, repository, number, head_sha)
+                await revalidate_provider_mutation()
+                if observed['draft'] is not False or observed['base']['ref'] != current['base']['ref']:
+                    raise ValueError('Readiness target changed')
+            except Exception as exc:
+                raise RuntimeError('GitHub readiness outcome requires reconciliation') from exc
+            output.update(pull_request_number=number, head_sha=head_sha, base_ref=current['base']['ref'],
+                          already_ready=already_ready, request_marker=marker)
+            external_id, url = str(number), str(current.get('html_url') or '') or None
+            evidence_type = CODE_HOST_PULL_REQUEST_READY_EVIDENCE
+            summary = 'Exact-head pull request is ready for review; no approval or merge is established.'
         elif request.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
             payload = self.contract.pull_request_merge(request)
             number = payload["number"]
@@ -727,6 +786,19 @@ class GitHubActionProvider:
             verified = str(commit.get("sha") or "") == str(
                 result.output["head_revision"]
             )
+        elif result.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            item = await self.client.pull_request(self.api_base, repository,
+                int(result.output['pull_request_number']), token=credential)
+            base = item.get('base') or {}
+            merge_evidence = {'expected_head_sha': self._evidence_sha(result.output.get('head_sha')),
+                'observed_head_sha': self._evidence_sha((item.get('head') or {}).get('sha')),
+                'ready_for_review': item.get('draft') is False}
+            verified = (len(self._evidence_sha(result.output.get('head_sha'))) == 40
+                and item.get('number') == int(result.output['pull_request_number'])
+                and item.get('draft') is False and item.get('state') == 'open' and item.get('merged') is False
+                and self._evidence_sha((item.get('head') or {}).get('sha')) == result.output.get('head_sha')
+                and str((base.get('repo') or {}).get('full_name') or '').casefold() == repository.casefold()
+                and (not result.output.get('base_ref') or base.get('ref') == result.output['base_ref']))
         elif result.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
             item = await self.client.pull_request(
                 self.api_base,
