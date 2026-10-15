@@ -14,6 +14,22 @@ CONVERSATION_CHANNEL_MIGRATIONS = MigrationRegistry("conversation-channel")
 CONVERSATION_CHANNEL_MIGRATIONS.register(
     "1.0", "2.0", lambda payload: {**payload, "schema_version": "2.0"},
 )
+def _migrate_protected_retention(payload):
+    # Old pending inputs have no captured authority. Never infer permission to
+    # replay them under the new reader's current connection/profile settings.
+    receipts = {}
+    for key, raw in (payload.get("receipts") or {}).items():
+        row = dict(raw)
+        if row.get("retained_event") is not None:
+            row["connection_id"] = row["retained_event"].get("connection_id")
+            row["project_id"] = row["retained_event"].get("project_id")
+            if row.get("outcome") in {"pending", "routing"}:
+                row["outcome"] = "requires_reconciliation"
+                row["reason"] = "legacy retention has no exact authority/protection snapshot; governed migration required"
+        receipts[key] = row
+    return {**payload, "schema_version": "3.0", "receipts": receipts}
+
+CONVERSATION_CHANNEL_MIGRATIONS.register("2.0", "3.0", _migrate_protected_retention)
 
 
 class ConversationChannelStore:

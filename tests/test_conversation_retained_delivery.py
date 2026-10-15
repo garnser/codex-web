@@ -71,7 +71,7 @@ class ConversationRetainedDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.pending()), 1)
 
     async def test_storage_failure_prevents_successful_retention(self):
-        with patch.object(self.store, "update", side_effect=OSError("storage unavailable")):
+        with patch.object(self.store.store, "update_many", side_effect=OSError("storage unavailable")):
             with self.assertRaisesRegex(OSError, "storage unavailable"):
                 await self.retain()
         self.assertEqual(self.pending(), ())
@@ -105,7 +105,7 @@ class ConversationRetainedDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.store.store.put(self.store.namespace, {
             "schema_version": "1.0", "messages": {}, "receipts": {},
         })
-        self.assertEqual(self.store.load().schema_version, "2.0")
+        self.assertEqual(self.store.load().schema_version, "3.0")
 
     async def test_public_receipts_expose_pending_provenance_without_message_body(self):
         receipt = (await self.retain())[0]

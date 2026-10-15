@@ -7,6 +7,7 @@ from typing import Any, Callable
 from fastapi import HTTPException
 
 from codex_web.identity import AuthenticationActor, TenantScope
+from codex_web.secrets import SecretStatus
 from codex_web.models import BotConnection, BotConnectionCreate
 from codex_web.secrets import SecretCreate, SecretRotate
 from codex_web.services.identity import IdentityService
@@ -153,12 +154,29 @@ class BotConnectionService:
     def runtime_actor(self, project_id: str) -> AuthenticationActor:
         if self.identity_service is None:
             raise RuntimeError("identity service unavailable for credential resolution")
-        return self.identity_service.bootstrap_service_actor(
-            identity_id=RUNTIME_IDENTITY_ID,
-            name="Bot Provider Runtime",
-            scope=self._project_scope(project_id),
-            service_scopes=("secret:use",),
-        )
+        actor = self.identity_service.actor_for_identity(RUNTIME_IDENTITY_ID,
+            scope=self._project_scope(project_id))
+        return actor.model_copy(update={"service_scopes": ("secret:use",)})
+
+    def ingress_snapshot(self, event, actor):
+        connection = self.get(event.connection_id)
+        if connection.provider != event.message.conversation.provider_type or connection.project_id != event.project_id:
+            raise RuntimeError("canonical connection/provider/Project mismatch")
+        current_actor = self.runtime_actor(connection.project_id)
+        if actor.identity_id != current_actor.identity_id or actor.tenant != current_actor.tenant:
+            raise RuntimeError("canonical ingress actor/tenant mismatch")
+        references = {}
+        for field in ("bot_token_secret_id", "slack_app_token_secret_id"):
+            reference_id = getattr(connection, field)
+            if not reference_id or self.secret_broker is None:
+                raise RuntimeError("canonical Slack credential references required")
+            reference = self.secret_broker.metadata(reference_id, actor=current_actor, require_use=True)
+            if reference.status() != SecretStatus.ACTIVE:
+                raise RuntimeError("canonical Slack credential is unavailable")
+            references[field] = reference.model_dump(mode="json", exclude={"backend_type", "backend_locator"})
+        return {"connection_id": connection.id, "project": self._project(connection.project_id).model_dump(mode="json"),
+            "connection_updated_at": connection.updated_at, "credential_references": references,
+            "actor": {"id": current_actor.identity_id, "roles": list(current_actor.roles), "teams": list(current_actor.team_ids)}}
 
     def _store_credential(
         self,
@@ -172,6 +190,10 @@ class BotConnectionService:
     ) -> str:
         if self.secret_broker is None:
             raise RuntimeError("secret broker unavailable")
+        # Initial identity creation belongs to explicit connection configuration,
+        # never to ingress/recovery (which must respect revoked membership).
+        self.identity_service.bootstrap_service_actor(identity_id=RUNTIME_IDENTITY_ID,
+            name="Bot Provider Runtime", scope=self._project_scope(project_id), service_scopes=("secret:use",))
         runtime_actor = self.runtime_actor(project_id)
         if existing_secret_id:
             self.secret_broker.rotate(

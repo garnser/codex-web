@@ -12,8 +12,9 @@ class KeyUsageService:
 
     def __init__(self, store):
         self.recovery = RecoveryStore(store)
+        self.store = store
 
-    def snapshot(self, key, actor, *, version=None, recovery=None):
+    def snapshot(self, key, actor, *, version=None, recovery=None, conversations=None):
         state = recovery if recovery is not None else self.recovery.load()
         rows = []
         scanned = 0
@@ -52,10 +53,20 @@ class KeyUsageService:
                 if entry.key_id == key.id:
                     add('backup', backup.id, 'Restore key-manifest requirement',
                         entry.versions, 'restore_requirement')
+        from codex_web.storage.conversation_channels import ConversationChannelStore
+        conversation_state = conversations if conversations is not None else ConversationChannelStore(self.store).load()
+        for receipt in conversation_state.receipts.values():
+            charge()
+            if (receipt.organization_id, receipt.workspace_id) != (actor.organization_id, actor.workspace_id):
+                continue
+            envelope = receipt.protected_input
+            if envelope is not None and envelope.key_id == key.id:
+                add('conversation_ingress', receipt.canonical_event_id, 'Protected retained conversation input',
+                    (envelope.key_version,), 'encrypted_content')
         return {'schema_version': '1.0', 'available': True, 'key_id': key.id,
                 'version': version, 'count': len(rows), 'blocking_count': len(rows),
                 'items': rows[:self.MAX_DISPLAY], 'truncated': len(rows) > self.MAX_DISPLAY,
-                'coverage': ['recovery_policy', 'backup_envelopes', 'backup_key_manifests'],
+                'coverage': ['recovery_policy', 'backup_envelopes', 'backup_key_manifests', 'conversation_ingress'],
                 'limitations': [
                     'The frozen backup key manifest is a restore requirement, not proof that every key encrypted snapshot content.',
                     'External copies and unregistered encrypted domains cannot be enumerated here.',

@@ -67,8 +67,22 @@ scope.
 Every normalized inbound event is committed first as
 `conversation_channel.event`.
 
-The provider delivery ID is the canonical event idempotency key. A repeated
-delivery therefore dispatches once.
+The canonical ingress idempotency key combines authenticated tenant/workspace,
+provider instance, connection, Project, conversation and provider delivery ID.
+Connection and Project come from canonical authenticated ingress; provider
+payload claims never select them. Message/thread/sender identity, complete
+substantive original input and captured authority must remain compatible on a
+duplicate. Validation occurs inside the existing event/receipt transaction
+before transport ACK. A changed input or provenance gets no ACK and cannot
+replace the original retained input.
+
+Only top-level Socket Mode `envelope_id`, `retry_attempt`, `retry_reason` and
+`accepts_response_payload` are transport retry variation for input compatibility.
+They remain in the first protected original payload when supplied, but are
+excluded from its substantive digest. Nested message fields with those names
+remain substantive. Transport tokens/credential response URLs are excluded
+before retention. A retry preserves the first receipt and encrypted input;
+current settings never reauthorize or rewrite its historical authority.
 
 Providers can retry the same provider message under a different delivery ID.
 ConversationChannel maintains tenant-scoped external-message position and rejects
@@ -209,9 +223,12 @@ routing provenance. It does not create shadow integration state.
 ## Durable Socket Mode ingress and state compatibility
 
 Conversation **event/provider contract 1.0 remains unchanged**. Persisted
-conversation projection state uses **2.0** and reads 1.0 through an additive
+conversation projection state uses **3.0** and reads 1.0/2.0 through additive
 migration. Existing messages and receipts retain their identity and outcome;
 legacy completed receipts acquire default metadata without becoming replayable.
+Legacy pending/claimed receipts without exact protection/authority snapshots
+become reconciliation-required. Legacy delivery identities are checked before
+new retention so the new key format cannot manufacture evidence of non-start.
 
 The existing receipt retains normalized input before Socket Mode ACK, with the
 original ingest identity and connection/project scope. A transaction-assigned
@@ -219,14 +236,17 @@ sequence preserves local retained arrival order independently of provider or
 wall-clock timestamps. A PENDING receipt is claimed atomically before routing;
 restart recovery selects only never-started PENDING inputs. Claimed or uncertain
 outcomes preserve input for reconciliation instead of creating a second attempt.
-Completed successful receipts release the retained input, while pending and
-uncertain receipts are protected from the completed-history cap. This uses the
+Protected originals and identity digests remain available under canonical data
+governance; pending and uncertain receipts are protected from history pruning.
+The plaintext compatibility path for non-composed service consumers retains no
+new Socket Mode authority. Production composition uses Project-scoped canonical
+integration-payload keys and confidential governance records. This uses the
 existing scoped canonical conversation store; no second inbox or task catalog
 is introduced. Normalized conversation content follows its existing data policy;
 interaction response URLs and transport tokens are excluded.
 
-Deployments must fully drain old writers before the state transition. Once 2.0
-state is committed, old 1.0 writers are incompatible; automatic rollback to an
+Deployments must fully drain old writers before the state transition. Once 3.0
+state is committed, old 1.0/2.0 writers are incompatible; automatic rollback to an
 older writer is unavailable without a separately qualified state restoration.
 The upgrade plan must declare this state migration and its compatibility boundary.
 Receipt APIs/UI show retention and provenance metadata without the stored body.
@@ -259,3 +279,96 @@ of native activity/approval/uncertainty and automated admission pause. These UI
 fields are projections and do not alter permission or admission. The fixed intake
 protocol rule adds no mutable operational catalog, persisted priority schema,
 Definition kind, model call, provider mutation or second scheduler.
+
+### Retained routing compatibility
+
+First messages still use the canonical binding lifecycle. The protected ingress
+snapshot includes the original auto-binding defaults; a failure after starting
+that lifecycle retains a reconciliation claim rather than retrying an uncertain
+native bootstrap. Existing bound messages require their captured binding scope.
+Missing capture produces a typed reconciliation reason.
+
+Retained active-thread steer interrupts the existing turn once, then atomically
+admits the original input at the front of the existing canonical queue and uses
+the normal queue/preflight/worker execution boundary. It never uses the raw
+resume/start compatibility branch. Captured actor, AgentProfile revision,
+repository read/write selection and execution-profile Definition reference travel
+with the queued turn. An empty captured selection cannot inherit a broader
+thread selection. A changed effective Definition or mismatched assignment fails
+closed before native input. Unknown interrupt or start retains reconciliation
+and cannot automatically enqueue/start again after restart.
+
+The details command admits `conversation.details.reply` through the existing
+ActionIntent engine and `conversation-channel/slack` ActionProvider adapter.
+Registration does not grant use: the operator must configure an enabled exact
+Project/connection credential-reference binding and canonical `conversation.reply`
+authority through existing provider/authority surfaces. Missing binding is shown
+as `details_project_connection_action_binding_required` reconciliation. No grants
+or provider bindings are installed automatically. Sends have one attempt and no
+provider idempotency guarantee; unknown sends remain ActionIntent reconciliation.
+Channel inspection links the admitted ActionIntent and distinguishes its admission
+from actual delivery. Ordinary messages continue to queue while active.
+
+QueuedTurn adds nullable `ingress_execution_profile_definition` for retained
+routing; older ordinary queue entries remain readable. An old retained receipt
+without the required protected authority cannot be promoted into routing. Drain
+and compatibility rules above apply before downgrading to a reader that does not
+enforce these ingress fields.
+
+### Bounds and storage cost
+
+Protected input is limited to 2 MiB per original (no truncation); protected
+ciphertext is capped at 64 MiB across canonical receipts. New originals exceeding
+capacity receive no ACK. Equivalent committed retries preserve the first
+ciphertext/governance reference without registering another governed record.
+Concurrent candidates may encrypt locally, but only the winning event/receipt
+transaction registers governance metadata. Failed transactions leave no orphan
+record. Governed deletion releases retained bytes while preserving the identity
+tombstone and non-replay outcome.
+
+Restart selection decrypts at most 100 originals per shard across at most 32
+shards, before passing them through the existing bounded worker admission.
+Admission mutates only the target thread queue row and the canonical conversation
+document atomically via `record_mutate_many`; unrelated queue rows are neither
+decoded nor rewritten. The conversation state remains one document, and canonical
+event/governance metadata transactions retain their existing document costs.
+These changes bound queue-row access, payload size and protected retrieval; they
+do not claim to bound reads or rewrite cost of the entire ingress history.
+
+External-message positions also bind connection and Project, so two authenticated
+accounts sharing provider instance/message IDs cannot suppress one another's
+retained originals. Existing positions without this evidence remain historical;
+a new scoped event matching such a position requires reconciliation rather than
+inferring non-start or replaying its native work.
+
+Encryption retains the existing canonical key-use audit boundary. A candidate
+that loses a concurrent admission race (or later fails storage) may therefore
+leave an encryption-attempt audit event, but cannot leave a governed retained-input
+record. Committed equivalent retries return before encryption and append neither
+key-use audits nor governance records. This avoids retry write amplification for
+proven retained duplicates without suppressing cryptographic operation evidence.
+
+Repository capture invokes the existing canonical Resource Catalog selector for
+both explicit thread settings and Project defaults (including coordinated
+selection), using the authenticated original actor. An unused unavailable default
+does not disable an existing binding's valid scratch scope. An unbound request
+without a valid default retains a typed repository-selection reconciliation
+reason rather than starting an uncertain bootstrap.
+
+Receipt `source_authority_digest` distinguishes authenticated connection/account,
+actor and Project provenance from the full immutable `authority_digest` routing
+snapshot. Duplicate ACK compatibility validates input/source identity and the
+receipt's original digests against the immutable canonical event. Creating a
+binding or remembering thread settings cannot itself turn an equivalent retry
+into a conflicting new original; duplicates reuse the original receipt and
+protection without decryption/audit writes. This ACK is retention proof only:
+pending routing still revalidates the full captured scope against current state
+and reconciles drift without replay. Older protected draft receipts without the
+source digest keep strict full-snapshot compatibility; no source pin is inferred.
+
+Socket Mode pins the canonical source/credential-reference versions before
+opening the authenticated transport and rechecks them before each frame is
+retained or acknowledged. Rotating a credential in place cannot make an old
+socket inherit a new account's canonical provenance. Source drift closes the
+old socket through the existing bounded authentication/reconnect lifecycle;
+it produces neither ACK nor routing under the changed source.

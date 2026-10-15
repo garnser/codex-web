@@ -32,6 +32,9 @@ class _Telemetry:
 
 
 class _Connections:
+    def ingress_snapshot(self,event,actor):
+        return {"project_id":event.project_id}
+
     def load_connections(self):
         return []
 

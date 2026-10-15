@@ -152,7 +152,7 @@ class SlackConversationChannel(_ReadUnsupported):
         ts = str(event.get("ts") or event.get("event_ts") or "").strip()
         if not channel or not ts:
             return None
-        text = str(event.get("text") or "").strip()
+        text = str(event.get("text") or "")
         thread = str(event.get("thread_ts") or ts).strip()
         occurred = 0.0
         ordering_timestamp = (

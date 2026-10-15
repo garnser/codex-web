@@ -51,6 +51,7 @@ def build_conversation_channels_router(
         return {
             "items": [service.public_receipt(item) for item in rows],
             "count": len(rows),
+            "canonical_state_counts": service.status(actor=actor),
         }
 
     return router

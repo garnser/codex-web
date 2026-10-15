@@ -597,6 +597,12 @@ class PostgresStateStore:
                     self._lock_many(cursor, tuple(selected))
                     current = {}
                     for namespace, keys in selected.items():
+                        if None in keys:
+                            if keys != (None,) or self._record_collection_exists_in_cursor(cursor, namespace):
+                                raise ValueError("document selector must name a single non-record namespace")
+                            cursor.execute("SELECT payload FROM codex_state_documents WHERE namespace = %s FOR UPDATE", (namespace,))
+                            current[namespace] = {None: self._decode(cursor.fetchone())}
+                            continue
                         self._ensure_record_collection_in_cursor(cursor, namespace)
                         current[namespace] = {}
                         for key in dict.fromkeys(keys):
@@ -609,6 +615,16 @@ class PostgresStateStore:
                     for namespace, delta in changes.items():
                         if not isinstance(delta, dict):
                             raise TypeError("collection delta must be a mapping")
+                        if selected[namespace] == (None,):
+                            if set(delta) != {None}:
+                                raise ValueError("document delta must contain exactly its None row")
+                            if delta[None] is None:
+                                cursor.execute("DELETE FROM codex_state_documents WHERE namespace = %s", (namespace,))
+                            else:
+                                self._upsert(cursor, namespace, delta[None])
+                            continue
+                        if None in delta:
+                            raise ValueError("record delta cannot use a document selector")
                         changed, deleted_revision = False, 0.0
                         for key, payload in delta.items():
                             storage_key = state_record_storage_key(namespace, str(key))

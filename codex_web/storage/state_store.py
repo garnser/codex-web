@@ -134,9 +134,15 @@ class StateStore(Protocol):
     ) -> Any: ...
     def record_mutate_many(
         self,
-        selected: dict[str, tuple[str, ...]],
-        updater: Callable[[dict[str, dict[str, Any | None]]], dict[str, dict[str, Any | None]]],
-    ) -> dict[str, dict[str, Any | None]]: ...
+        selected: dict[str, tuple[str | None, ...]],
+        updater: Callable[[dict[str, dict[str | None, Any]]], dict[str, dict[str | None, Any]]],
+    ) -> dict[str, dict[str | None, Any]]:
+        """Mutate selected rows; sole selector None denotes an existing document.
+
+        Document selection preserves its storage shape and never migrates it to
+        keyed records. A document delta must contain exactly the None row.
+        """
+        ...
 
     def record_mutate(
         self,

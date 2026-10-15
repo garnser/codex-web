@@ -389,12 +389,14 @@ class ConversationChannelServiceTests(unittest.IsolatedAsyncioTestCase):
             "slack-1",
             edit_new,
             actor=self.actor_a,
+            connection_id="slack-1",
         )
         older = await self.service.ingest_raw(
             "slack",
             "slack-1",
             edit_old,
             actor=self.actor_a,
+            connection_id="slack-1",
         )
         deleted = await self.service.ingest_raw(
             "slack",
@@ -414,6 +416,7 @@ class ConversationChannelServiceTests(unittest.IsolatedAsyncioTestCase):
                 },
             },
             actor=self.actor_a,
+            connection_id="slack-1",
         )
 
         self.assertEqual(newer[0].outcome, ConversationProjectionOutcome.UPDATED)

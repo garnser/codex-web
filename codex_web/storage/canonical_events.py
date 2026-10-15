@@ -389,6 +389,9 @@ class CanonicalEventStore:
         *,
         idempotency_key: str,
         enqueue_transport: bool = False,
+        duplicate_validator=None,
+        related_defaults=None,
+        related_mutation=None,
     ) -> tuple[Any, CanonicalEventEnvelope, bool]:
         """Atomically mutate one canonical document and append event/outbox.
 
@@ -401,6 +404,9 @@ class CanonicalEventStore:
             raise ValueError("canonical event idempotency key must not be empty")
         if namespace in {self.namespace, self.records_namespace}:
             raise ValueError("guarded namespace must differ from canonical events")
+        related_defaults = dict(related_defaults or {})
+        if set(related_defaults) & {namespace, self.namespace, self.records_namespace}:
+            raise ValueError("related canonical documents must be distinct")
         self._ensure_records()
         result: dict[str, Any] = {}
         record_key = self._idempotency_record_key(key)
@@ -408,6 +414,7 @@ class CanonicalEventStore:
         sequence = time.time_ns()
 
         def apply(documents: dict[str, Any]) -> dict[str, Any]:
+            related = {name: documents[name] for name in related_defaults}
             records = dict(documents[self.records_namespace])
             existing_raw = records.get(record_key)
             alias_raw = records.get(alias_key)
@@ -417,6 +424,8 @@ class CanonicalEventStore:
                     raise CanonicalEventConflictError(
                         "idempotency key was reused for a different canonical event"
                     )
+                if duplicate_validator is not None:
+                    duplicate_validator(documents[namespace], existing)
                 if alias_raw is None:
                     records[alias_key] = {"record_key": record_key}
                 if enqueue_transport and outbox is None:
@@ -433,6 +442,7 @@ class CanonicalEventStore:
                 result["event"] = existing
                 result["inserted"] = False
                 return {
+                    **related,
                     self.records_namespace: records,
                     namespace: documents[namespace],
                 }
@@ -440,6 +450,10 @@ class CanonicalEventStore:
                 raise CanonicalEventConflictError(
                     "canonical event id already exists under a different idempotency key"
                 )
+            if related_mutation is not None:
+                related = related_mutation(related)
+                if set(related) != set(related_defaults):
+                    raise ValueError("related mutation must preserve selected canonical documents")
             updated_domain = updater(documents[namespace])
             meta = dict(records.get(self._meta_key) or {})
             order_key = self._order_key(sequence, event.event_id)
@@ -465,12 +479,14 @@ class CanonicalEventStore:
             result["event"] = event
             result["inserted"] = True
             return {
+                **related,
                 self.records_namespace: records,
                 namespace: updated_domain,
             }
 
         self.store.update_many(
             {
+                **related_defaults,
                 self.records_namespace: {},
                 namespace: default,
             },
