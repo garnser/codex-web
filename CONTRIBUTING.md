@@ -52,6 +52,17 @@ inapplicable; main pushes always run full validation. See the
 [CI validation policy](docs/architecture/ci-validation.md) for selection,
 test ownership and diagnostic evidence.
 
+Run the broad Python suite with `python scripts/ci/run_unit_tests.py`. The runner
+checks the `data` path in its own repository before discovery and runs from that
+repository, even when invoked by absolute path from another directory. It refuses
+existing and dangling data symlinks; it never detaches or changes them for you.
+Preserve the original link separately and use a fresh isolated local data directory
+and SQLite database before application imports or tests. Restore the link only
+after every owned test/server process ends. Direct `unittest` invocations do not
+use this runner's guard, so focused tests need the same isolation prepared first.
+Preserve failed data/log snapshots separately instead of reusing a dirty database
+for final qualification. Never run tests against a shared runtime data directory.
+
 Use GitHub issues for bugs, feature requests, and independently deliverable
 follow-up work. Security-sensitive reports should not be posted publicly; follow
 the [Security Policy](SECURITY.md) to report them privately.

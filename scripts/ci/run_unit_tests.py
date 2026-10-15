@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -22,9 +23,13 @@ def selected_tests(suite):
 
 
 if __name__ == "__main__":
-    if Path("data").is_symlink():
+    root = Path(__file__).resolve().parents[2]
+    if (root / "data").is_symlink():
         raise SystemExit("Refusing to run tests through a data symlink; use a runner-local data directory.")
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    # Application storage is rooted beside this runner's repository, not in the
+    # caller's cwd. Bind discovery and relative fixture paths to the same root.
+    os.chdir(root)
+    sys.path.insert(0, str(root))
     discovered = unittest.defaultTestLoader.discover("tests", pattern="test_*.py")
     suite = unittest.TestSuite(selected_tests(discovered))
     if not suite.countTestCases():

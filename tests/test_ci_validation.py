@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -145,15 +146,94 @@ class RequiredGateTests(unittest.TestCase):
 
 
 class UnitOwnershipTests(unittest.TestCase):
-    def test_runner_rejects_shared_data_symlink_before_importing_application(self):
+    @staticmethod
+    def copy_runner(root):
         runner = Path(__file__).resolve().parents[1] / "scripts/ci/run_unit_tests.py"
+        destination = root / "scripts/ci/run_unit_tests.py"
+        destination.parent.mkdir(parents=True)
+        shutil.copyfile(runner, destination)
+        return destination
+
+    def test_runner_rejects_shared_data_symlink_before_importing_application(self):
+        for existing in [False, True]:
+            for foreign_cwd in [False, True]:
+                with self.subTest(existing=existing, foreign_cwd=foreign_cwd), tempfile.TemporaryDirectory() as directory:
+                    base = Path(directory)
+                    root, caller = base / "repository", base / "caller"
+                    runner = self.copy_runner(root)
+                    caller.mkdir()
+                    shared = base / "shared-data"
+                    if existing:
+                        shared.mkdir()
+                        (shared / "protected").write_text("unchanged")
+                    (root / "data").symlink_to(shared, target_is_directory=True)
+                    for location in [root, caller]:
+                        (location / "tests").mkdir()
+                        (location / "tests/test_probe.py").write_text(
+                            "from pathlib import Path\n"
+                            "Path('imported-probe').write_text('unsafe import')\n"
+                        )
+                    result = subprocess.run(
+                        [sys.executable, str(runner)], cwd=caller if foreign_cwd else root,
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("runner-local data directory", result.stderr)
+                    self.assertFalse((root / "imported-probe").exists())
+                    self.assertFalse((caller / "imported-probe").exists())
+                    self.assertEqual(shared.exists(), existing)
+                    if existing:
+                        self.assertEqual([p.name for p in shared.iterdir()], ["protected"])
+                        self.assertEqual((shared / "protected").read_text(), "unchanged")
+
+    def test_runner_discovers_own_tests_and_relative_paths_from_any_cwd(self):
+        for foreign_cwd in [False, True]:
+            with self.subTest(foreign_cwd=foreign_cwd), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                root, caller = base / "repository", base / "caller"
+                runner = self.copy_runner(root)
+                (root / "data").mkdir()
+                (root / "tests").mkdir()
+                (caller / "tests").mkdir(parents=True)
+                (caller / "tests/test_foreign.py").write_text("raise RuntimeError('foreign tests imported')\n")
+                (root / "tests/test_local.py").write_text(
+                    "import unittest\nfrom pathlib import Path\n"
+                    "class Local(unittest.TestCase):\n"
+                    " def test_relative_storage(self):\n"
+                    "  self.assertTrue(Path('scripts/ci/run_unit_tests.py').is_file())\n"
+                    "  Path('data/local-observation').write_text('local')\n"
+                )
+                # This intentionally failing case is owned by its dedicated job.
+                (root / "tests/test_gitlab_sync_scaling.py").write_text(
+                    "import unittest\nclass Dedicated(unittest.TestCase):\n"
+                    " def test_not_in_broad_suite(self):\n"
+                    "  self.fail('dedicated module executed')\n"
+                )
+                result = subprocess.run(
+                    [sys.executable, str(runner)], cwd=caller if foreign_cwd else root,
+                    capture_output=True, text=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("Selected 1 unit tests", result.stdout)
+                self.assertEqual((root / "data/local-observation").read_text(), "local")
+                self.assertFalse((caller / "data").exists())
+
+    def test_runner_keeps_discovery_failures_from_its_own_repository(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "data").symlink_to(root / "shared-live-data", target_is_directory=True)
-            result = subprocess.run([sys.executable, str(runner)], cwd=root, capture_output=True, text=True)
+            base = Path(directory)
+            root, caller = base / "repository", base / "caller"
+            runner = self.copy_runner(root)
+            (root / "data").mkdir()
+            (root / "tests").mkdir()
+            caller.mkdir()
+            (root / "tests/test_broken.py").write_text("raise RuntimeError('local discovery failure')\n")
+            result = subprocess.run(
+                [sys.executable, str(runner)], cwd=caller,
+                capture_output=True, text=True, timeout=10,
+            )
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("runner-local data directory", result.stderr)
-            self.assertFalse((root / "shared-live-data").exists())
+            self.assertIn("local discovery failure", result.stderr)
+            self.assertIn("Selected 1 unit tests", result.stdout)
 
     def test_nested_suites_keep_ordinary_tests_and_discovery_failures(self):
         regular = unittest.FunctionTestCase(lambda: None)
