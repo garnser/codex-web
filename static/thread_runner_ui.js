@@ -1,5 +1,6 @@
 // Read-only cache of the canonical assignment projection; never an authority
 // check or a replacement for Thread/turn admission and fencing on the server.
+import {esc} from './definition_typed_editor_shared.js';
 const runners = new Map();
 export function applyRunner(thread) {
   const next = thread?.runner;
@@ -11,7 +12,7 @@ export function applyRunner(thread) {
       || (next.assignmentId === current.assignmentId && (next.updatedAt || 0) < (current.updatedAt || 0)))) return;
   // Retain ordering watermarks across an unavailable read. Unknown evidence
   // must not let a late snapshot of an older assignment regain custody.
-  runners.set(thread.id, {...current, ...next});
+  runners.set(thread.id, {...current, ...next, currentActivity: thread.activity});
   return true;
 }
 export function runnerFor(threadId) { return runners.get(threadId); }
@@ -31,6 +32,40 @@ export function runnerLabel(threadId) {
   const validation = {captured:'validation report captured · outcome unverified', registered:'validation custody registered',
     unavailable:'validation evidence unavailable'}[runner.validationCustodyState];
   return label + (validation ? ` · ${validation}` : '');
+}
+
+// Presentation freshness only. Reuse the canonical projection; neither a live
+// process nor retained turn history establishes current work. Two existing
+// 30-second refresh intervals bound how long a missing observation can glow.
+function freshUntil(runner) {
+  return Math.min(runner.leaseExpiresAt || 0, (runner.observedAt || 0) + 60);
+}
+export function runnerPresentation(threadId, now = Date.now() / 1000) {
+  const runner = runnerFor(threadId);
+  if (!runner) return {state:'unknown', glyph:'?', label:'Unknown runner'};
+  let state = runner.state;
+  let label = runnerLabel(threadId);
+  if (runner.live) {
+    if (!runner.leaseValid || !Number.isFinite(freshUntil(runner)) || freshUntil(runner) <= now
+        || runner.processRunning !== true || runner.state !== 'running') {
+      return {state:'unknown', glyph:'?', label:label + ' · current custody unavailable'};
+    }
+    const activity = runner.currentActivity;
+    state = activity?.source === 'current_turn' && activity.state === 'active' && activity.turnId
+      ? 'active' : activity?.source === 'current_turn' && activity.state === 'idle' ? 'idle' : 'unknown';
+    label += state === 'active' ? ' · active work' : state === 'idle' ? ' · idle' : ' · current activity unknown';
+  }
+  const glyph = {active:'●', idle:'○', waiting:'◷', recovering:'↻', stopped:'■',
+    cancelled:'■', unloaded:'□', lost:'!', failed:'×', unknown:'?'};
+  return {state: Object.hasOwn(glyph, state) ? state : 'unknown', glyph:glyph[state] || '?', label};
+}
+
+export function runnerBadgeHtml(threadId, {waiting = false, queued = 0} = {}) {
+  const item = runnerPresentation(threadId);
+  if (!runnerFor(threadId) && waiting) Object.assign(item, {state:'waiting', glyph:'◷', label:'Waiting for Codex · custody unavailable'});
+  const badge = (state, glyph, label) => `<span class="thread-state runner-status runner-${state}" data-runner-state="${state}" title="Current canonical custody and activity; retained turns are history"><span aria-hidden="true">${glyph}</span>${esc(label)}</span>`;
+  return badge(item.state, item.glyph, item.label)
+    + (queued > 0 ? badge('queued', '≡', `Queued ${queued}`) : '');
 }
 
 // Safe, same-fence process observations do not establish business outcomes.
@@ -100,6 +135,19 @@ export function createRunnerRefresh({read, apply, onError = () => {}, delay = 50
 
 export function createThreadRunnerUI({state, api, patchThread, markThreadBusy, clearThreadBusy,
   scheduleRenderThreads, updateWaitingFromState, renderThreads, logEvent, getMeta, applyQueueAdmissionStatus, setThreadQueueDepth}) {
+  let expiryTimer;
+  function scheduleExpiry() {
+    clearTimeout(expiryTimer);
+    const now = Date.now() / 1000;
+    const rows = state.threads?.data || state.threads?.threads || state.threads || [];
+    const ids = new Set([state.threadId, ...rows.map(row => row.id)]);
+    const expiry = Math.min(...[...ids].map(id => runnerFor(id)).filter(runner => runner?.live)
+      .map(freshUntil).filter(time => time > now));
+    if (Number.isFinite(expiry)) expiryTimer = setTimeout(() => {
+      renderThreads();
+      if (state.threadId) updateRunnerMeta(state.threadId);
+    }, Math.ceil((expiry - now) * 1000) + 1);
+  }
   // Events only trigger a read; their unversioned activity cannot establish custody.
   const refreshRunner = createRunnerRefresh({
     read: (threadId, options) => api(`/api/threads/${encodeURIComponent(threadId)}/runner`, options),
@@ -118,16 +166,17 @@ export function createThreadRunnerUI({state, api, patchThread, markThreadBusy, c
 
   function updateRunnerMeta(threadId) {
     const meta = getMeta();
-    meta.querySelector('[data-runner-state]')?.remove();
+    meta.querySelector('[data-runner-indicator]')?.remove();
     meta.querySelector('[data-runner-failure]')?.remove();
-    const label = runnerLabel(threadId);
-    if (label) {
+    if (threadId) {
       const badge = document.createElement('span');
-      badge.dataset.runnerState = '';
-      badge.textContent = ' · ' + label;
+      badge.dataset.runnerIndicator = '';
+      badge.innerHTML = runnerBadgeHtml(threadId, {waiting:!!state.activeTurnsByThread?.get(threadId)?.size,
+        queued:state.queuedDepthByThread?.get(threadId) || 0});
       meta.append(badge);
       appendRunnerFailure(meta, runnerFor(threadId), state.projectId);
     }
+    scheduleExpiry();
   }
 
   function hydrateThreadActivity(thread) {
@@ -158,6 +207,7 @@ export function createThreadRunnerUI({state, api, patchThread, markThreadBusy, c
       }
     });
     updateWaitingFromState();
+    scheduleExpiry();
   }
 
   function updateThreadActivityFromEvent(message) {

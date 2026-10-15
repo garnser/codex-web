@@ -38,6 +38,16 @@ Failed refreshes clear busy indicators, expose uncertainty and retain ordering
 watermarks. Unknown detail hydrates activity before the unloaded early return,
 preserving the transcript and its unfinished turn IDs/status.
 Browser caches are display state only; server admission remains authoritative.
+Sidebar and selected-thread header share the same status presentation. Solid
+accent styling and a filled glyph indicate active work only with a fresh live
+process/lease projection and the canonical exact current-turn activity marker.
+Live idle custody has an outlined idle glyph; waiting/queued/recovering and
+stopped/lost/failed/unknown retain distinct text/glyphs. Existing theme tokens
+provide contrast in light/dark and selected/unselected rows. Color never replaces
+the label, diagnostic uncertainty, or provenance. After the earlier of lease
+expiry and 60 seconds since observation (two existing refresh intervals), local
+presentation drops active styling without initiating a read, turn, or replay.
+This display freshness limit grants no authority or lease extension.
 Lost assignments are explicitly `lost`; a pending assignment with a previous
 fence is `recovering`. Neither establishes activity. A same-instance process
 handle for the exact assignment/worker/fence can establish that its process has

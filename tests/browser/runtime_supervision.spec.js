@@ -16,3 +16,52 @@ test('lost recovering stopped and actual activity remain distinct with unavailab
   await expect(page.locator('#observation')).toContainText('<img src=x onerror=alert(1)>');
   expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
+
+for(const theme of ['light','dark']) test(`runner indicators retain visible contrast and shared truthful states (${theme})`,async({page},testInfo)=>{
+  await page.setViewportSize({width:390,height:844});
+  await page.goto(`${base}/tests/browser/runner_status_contrast_fixture.html?theme=${theme}`);
+  await expect(page.locator('body')).toHaveAttribute('data-ready','true');
+  const expected={active:'active',idle:'idle',waiting:'waiting',queued:'idle',recovering:'recovering',
+    stopped:'stopped',lost:'lost',failed:'failed',unknown:'unknown',expired:'unknown',stale:'unknown',retained:'unknown'};
+  for(const [id,status] of Object.entries(expected)){
+    const rows=page.locator(`[data-case="${id}"]`);
+    await expect(rows.filter({has:page.locator(`[data-runner-state="${status}"]`)})).toHaveCount(2);
+    await page.getByRole('button',{name:id,exact:true}).click();
+    await expect(page.locator('#thread-meta [data-runner-state]').first()).toHaveAttribute('data-runner-state',status);
+    expect(await page.locator('#thread-meta [data-runner-state]').first().textContent())
+      .toBe(await rows.first().locator('[data-runner-state]').first().textContent());
+  }
+  await expect(page.locator('[data-case="queued"] [data-runner-state="queued"]')).toHaveCount(2);
+  const colors=await page.locator('.runner-status').evaluateAll(nodes=>{
+    const rgb=s=>s.match(/[\d.]+/g).slice(0,3).map(Number);
+    const luminance=c=>rgb(c).map(v=>{v/=255;return v<=.04045?v/12.92:((v+.055)/1.055)**2.4;}).reduce((n,v,i)=>n+v*[.2126,.7152,.0722][i],0);
+    const contrast=(a,b)=>{const x=luminance(a),y=luminance(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05);};
+    const background=node=>{
+      let c=[0,0,0,0];
+      for(let parent=node;parent && c[3]<1;parent=parent.parentElement){
+        const b=getComputedStyle(parent).backgroundColor.match(/[\d.]+/g).map(Number);b[3]??=1;
+        const alpha=c[3]+b[3]*(1-c[3]);
+        c=[...c.slice(0,3).map((v,i)=>alpha?(v*c[3]+b[i]*b[3]*(1-c[3]))/alpha:0),alpha];
+      }
+      return `rgb(${c.slice(0,3).join(',')})`;
+    };
+    return nodes.map(node=>{const s=getComputedStyle(node);return {text:node.textContent,color:s.color,background:s.backgroundColor,
+      border:s.borderTopColor,textContrast:contrast(s.color,s.backgroundColor),indicatorContrast:contrast(s.borderTopColor,s.backgroundColor),
+      activeFillContrast:contrast(s.backgroundColor,background(node.parentElement)),
+      active:s.color!==s.backgroundColor && node.dataset.runnerState==='active'};});
+  });
+  for(const color of colors){expect(color.textContrast,color.text).toBeGreaterThanOrEqual(4.5);
+    if(!color.active)expect(color.indicatorContrast,color.text).toBeGreaterThanOrEqual(3);
+    else expect(color.activeFillContrast,color.text).toBeGreaterThanOrEqual(3);}
+  await testInfo.attach('computed-contrast',{body:JSON.stringify(colors,null,2),contentType:'application/json'});
+  await page.getByRole('button',{name:'active',exact:true}).click();
+  await page.screenshot({path:testInfo.outputPath(`runner-status-${theme}.png`),fullPage:true});
+  // A local expiry invalidates both surfaces without waiting for a network read.
+  await page.evaluate(()=>{const {ui,state,control,renderThreads}=window.runnerContrast;
+    const now=Date.now()/1000;ui.applyRunner({id:'active',runner:{...ui.runnerFor('active'),observedAt:now,leaseExpiresAt:now+.15},
+      activity:{source:'current_turn',state:'active',turnId:'exact-current-turn'}});
+    state.threadId='active';renderThreads();control.updateRunnerMeta('active');});
+  await expect(page.locator('[data-case="active"] .runner-active')).toHaveCount(0);
+  await expect(page.locator('#thread-meta .runner-active')).toHaveCount(0);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
