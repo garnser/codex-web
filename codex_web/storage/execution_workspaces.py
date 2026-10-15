@@ -17,8 +17,8 @@ from codex_web.identity import TenantScope
 
 EXECUTION_WORKSPACE_STATE_CONTRACT = ContractSpec(
     "execution-workspace-state",
-    "1.7",
-    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7"),
+    "1.8",
+    ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8"),
 )
 EXECUTION_WORKSPACE_STATE_MIGRATIONS = MigrationRegistry("execution-workspace-state")
 EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
@@ -188,6 +188,10 @@ EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
 
 EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
     "1.6", "1.7", lambda payload: {**payload, "schema_version": "1.7"},
+)
+
+EXECUTION_WORKSPACE_STATE_MIGRATIONS.register(
+    "1.7", "1.8", lambda payload: {**payload, "schema_version": "1.8"},
 )
 
 

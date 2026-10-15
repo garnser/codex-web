@@ -1489,3 +1489,14 @@ Queue status preserves the actual human-readable delegation blocker with global
 pause both on and off. Mixed queues retain both that blocker and the unrelated
 automation pause reason; enabling general automation is not a remedy for revoked
 Goal authorization. Existing queue-notice rendering consumes the same message.
+
+### Skill scanner operation contract
+
+`skill-scan/1.0` is an explicit fixed-command operation on the existing local
+worker, using `skill_scan` execution subjects and resource-free canonical scratch
+workspaces. It accepts no caller argv, network policy or credentials. Exact
+profile/configuration/Skill revisions and canonical Artifact/Evidence attribution
+remain control-plane owned. See [Skill security](skill-security.md) for bounds,
+readiness, native CLI compatibility and the worker-state 1.12 / workspace-state
+1.8 migration. Older binaries cannot read new subjects; mixed writers and
+binary-only rollback after new writes are unsupported.

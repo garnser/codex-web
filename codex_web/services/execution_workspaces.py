@@ -78,6 +78,7 @@ class ExecutionWorkspaceService:
         work_item_host: Any | None = None,
         quota: WorkspaceQuota | None = None,
     ) -> None:
+        self.skill_scan_admission = None
         self.store = store
         self.backend = backend
         self.resources = resources
@@ -1068,7 +1069,15 @@ class ExecutionWorkspaceService:
             recovered.append(workspace)
         return recovered
 
-    def acquire(
+    def acquire(self, request: ExecutionWorkspaceAcquire, *, actor: AuthenticationActor) -> ExecutionWorkspace:
+        if request.subject.kind == "skill_scan":
+            if self.skill_scan_admission is None:
+                raise ExecutionWorkspaceConflictError("Skill scanner Upgrade admission unavailable")
+            with self.skill_scan_admission(actor):
+                return self._acquire(request, actor=actor)
+        return self._acquire(request, actor=actor)
+
+    def _acquire(
         self,
         request: ExecutionWorkspaceAcquire,
         *,

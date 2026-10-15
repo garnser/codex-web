@@ -187,7 +187,9 @@ from codex_web.services.agent_teams import AgentTeamService
 from codex_web.services.agent_team_execution import AgentTeamExecutionService
 from codex_web.services.skills import SkillService
 from codex_web.services.skill_catalog import SkillCatalogService
-from codex_web.services.skill_scanners import SkillScannerRegistry, SkillSpectorCliProvider
+from codex_web.services.skill_scanners import SkillScannerRegistry
+from codex_web.services.skill_scan_transport import WorkerSkillSpectorProvider
+from codex_web.services.skill_scanner_configuration import install_skill_scanner_configuration
 from codex_web.services.skill_security import SkillSecurityService
 from codex_web.services.agent_providers import AgentProviderService
 from codex_web.agent_providers import AgentProviderHealth, AgentProviderUpsert
@@ -809,10 +811,7 @@ bootstrap_care_examples(definition_registry_service)
 app.state.skill_service = skill_service
 skill_scanner_registry = SkillScannerRegistry()
 
-def _skillspector_worker_required(*_args, **_kwargs):
-    raise RuntimeError("SkillSpector CLI execution requires an isolated worker transport")
-
-skill_scanner_registry.register(SkillSpectorCliProvider(run=_skillspector_worker_required))
+install_skill_scanner_configuration(configuration_service)
 skill_security_store = SkillSecurityStore(state_store)
 skill_security_service = SkillSecurityService(
     skill_security_store,
@@ -826,6 +825,7 @@ app.state.skill_security_service = skill_security_service
 app.include_router(build_skill_security_router(skill_security_service, skill_service))
 skill_source_store = SkillSourceStore(state_store)
 skill_catalog_service = SkillCatalogService(skill_source_store, skill_service)
+skill_security_service.source_store = skill_source_store
 app.state.skill_source_store = skill_source_store
 app.state.skill_catalog_service = skill_catalog_service
 app.include_router(build_skill_catalog_router(skill_catalog_service))
@@ -1326,6 +1326,7 @@ local_execution_worker = execution_worker_service.ensure_local_worker(
         "1.0",
         "thread-turn/1.0",
         "thread-bootstrap/1.0",
+        "skill-scan/1.0",
     ),
     actor=identity_service.local_trusted_actor(),
     max_concurrency=runtime_policy.local_worker_max_concurrency(),
@@ -1927,6 +1928,11 @@ local_execution_worker_runtime = LocalExecutionWorkerRuntime(
     ),
 )
 app.state.local_execution_worker_runtime = local_execution_worker_runtime
+skill_scanner_registry.register(WorkerSkillSpectorProvider(
+    runtime=local_execution_worker_runtime, configuration=configuration_service,
+    profiles=execution_profile_definition_service, artifacts=artifact_evidence_service,
+))
+
 
 def _codex_model_egress_endpoints():
     providers = model_gateway_service.list_providers(
@@ -2246,6 +2252,11 @@ upgrade_service = UpgradeService(
         os.environ.get("CODEX_WEB_GIT_REVISION", "unknown"),
     ),
 )
+upgrade_service.install_skill_scan_contract()
+execution_workspace_service.skill_scan_admission = upgrade_service.skill_scan_admission
+execution_worker_service.skill_scan_admission = upgrade_service.skill_scan_admission
+skill_security_service.write_admission = upgrade_service.skill_scan_admission
+skill_scanner_registry.get('nvidia-skillspector').write_admission = upgrade_service.skill_scan_admission
 action_intent_service.maintenance_guard = (
     upgrade_service.action_execution_allowed
 )

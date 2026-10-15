@@ -55,6 +55,8 @@ class SkillCatalogService:
     ) -> None:
         self.store = store
         self.skills = skills
+        if self.skills.security is not None:
+            self.skills.security.source_store = store
         self.clock = clock
 
     @staticmethod

@@ -37,6 +37,7 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/api/skills/procedure-schema', route => route.fulfill({
     json: { schema: { type: 'object', properties: {} } },
   }));
+  await page.route('**/api/skill-security/providers', route => route.fulfill({ json: { items: [{ providerId: 'nvidia-skillspector', readiness: { ready: true, scannerVersion: '2.12.0', blockers: [] }, modeReadiness: { semantic: { ready: false, blockers: [{ message: 'Semantic transport requires governed credentials.' }] } } }] } }));
   await page.route('**/api/skill-security/policy', route => route.fulfill({ json: { policy: { scan_imported_on_ingest: true, require_scan_before_publish: true, require_scan_before_assignment: true, max_risk_score: 49, blocked_severities: ['high', 'critical'], blocked_categories: [], allow_audited_override: false, semantic_for_untrusted_sources: false, scan_locally_authored: false, fail_closed_on_scanner_error: true, provider_id: 'nvidia-skillspector' } } }));
   await page.route('**/api/skill-sources', route => route.fulfill({ json: { items: [
     { source_id: 'engineering', name: 'Engineering catalog', trust: 'approved' },
@@ -358,4 +359,35 @@ test('source refresh preserves selections made while the catalog request is pend
   await page.locator('[data-source-discover]').click();
   await expect(page.locator('[data-ui-discovery-result]')).toContainText('1 ui-skills discovered');
   expect(discoveries).toHaveLength(1);
+});
+
+test('scanner transport errors remain distinct from critical findings and show exact attribution', async ({ page }, testInfo) => {
+  const broken = { ...skill, security: { status: 'scan_error', currentRevision: true, assignmentDecision: { allowed: false, reason: 'security_scan_error' }, scan: { ...skill.security.scan, status: 'scan_error', risk_score: 100, severity: 'critical', findings: [], record_id: 'skill-record-2', checksum: skill.checksum, error: 'Isolated scanner transport unavailable.' } } };
+  await page.route('**/api/skills/release-check', route => route.fulfill({ json: { item: broken } }));
+  await page.route('**/api/skill-security/providers', route => route.fulfill({ json: { items: [{ providerId: 'nvidia-skillspector', readiness: { ready: false, blockers: [{ message: 'Install the configured scanner runtime.' }] }, modeReadiness: { semantic: { ready: false, blockers: [{ message: 'Semantic transport requires governed credentials.' }] } } }] } }));
+  await page.reload();
+  await expect(page.locator('[data-skill-scanner-readiness]')).toContainText('Install the configured scanner runtime.');
+  await page.getByRole('button', { name: /Release Check/ }).click();
+  const detail = page.locator('[data-skill-detail]');
+  await expect(detail).toContainText('Not evaluated — scanner execution error');
+  await expect(detail).toContainText('No security finding was established');
+  await expect(detail).toContainText('skill-record-2');
+  await expect(detail).not.toContainText('critical');
+  await expect(page.getByRole('button', { name: 'Scan now', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Semantic scan', exact: true })).toBeDisabled();
+  await page.screenshot({ path: testInfo.outputPath('scanner-unavailable.png'), fullPage: true });
+});
+
+
+test('required semantic assurance and upgrade admission blockers stay visible', async ({ page }) => {
+  const blocked = { ...skill, security: { ...skill.security, requiredMode: 'semantic', assignmentDecision: { allowed: false, reason: 'semantic_scan_required' } } };
+  await page.route('**/api/skills/release-check', route => route.fulfill({ json: { item: blocked } }));
+  await page.route('**/api/skill-security/providers', route => route.fulfill({ json: { items: [{ providerId: 'nvidia-skillspector', readiness: { ready: false, blockers: [{ code: 'scanner_upgrade_required', message: 'Complete the verified irreversible skill-scan-contract/1.0 Upgrade step.' }] }, modeReadiness: { semantic: { ready: false, blockers: [{ message: 'Semantic transport unavailable.' }] } } }] } }));
+  await page.reload();
+  await expect(page.locator('[data-skill-scanner-readiness]')).toContainText('verified irreversible');
+  await page.getByRole('button', { name: /Release Check/ }).click();
+  await expect(page.locator('[data-skill-detail]')).toContainText('Required scan mode: semantic');
+  await expect(page.locator('[data-skill-detail]')).toContainText('semantic_scan_required');
+  await expect(page.getByRole('button', { name: 'Scan now', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Semantic scan', exact: true })).toBeDisabled();
 });

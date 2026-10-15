@@ -885,6 +885,8 @@ class BubblewrapExecutionBackend:
         )
         env = self.minimal_environment(extra=environment)
         with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+            if poll_hook is not None:
+                poll_hook()  # Revalidate after mount/command preparation, before spawn.
             process = self._popen(
                 command,
                 cwd=str(workspace),

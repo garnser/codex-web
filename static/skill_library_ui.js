@@ -12,6 +12,7 @@ const state = {
   profiles: [],
   sources: [],
   securityPolicy: null,
+  scannerProviders: [],
   selected: null,
   revisions: [],
   usage: [],
@@ -150,6 +151,7 @@ function cardMarkup() {
           </section>
         </div>
       </details>
+      <section class="skill-import"><h3>Scanner readiness</h3><div data-skill-scanner-readiness role="status">Loading scanner readiness…</div><button class="ghost-button" type="button" data-scanner-refresh>Refresh scanner readiness</button></section>
       <details class="skill-import" data-skill-security-policy>
         <summary>Skill security policy</summary>
         <div class="skill-import-grid"><section>
@@ -396,7 +398,9 @@ function renderDetail(root) {
   const status = lifecycleLabel(item);
   const usage = usageRows();
   const security = item.security || { status: "not_scanned", scan: null, assignmentDecision: { allowed: true, reason: "unavailable" } };
-  const findings = security.scan?.findings || [];
+  const scanError = security.scan?.status === "scan_error" || security.status === "scan_error";
+  const findings = scanError ? [] : security.scan?.findings || [];
+  const scanner = state.scannerProviders.find(provider => provider.providerId === (security.scan?.provider_id || state.securityPolicy?.provider_id || "nvidia-skillspector"));
   host.innerHTML = `
     <header class="skill-detail-header">
       <div>
@@ -436,9 +440,12 @@ function renderDetail(root) {
       <section class="skill-wide"><h4>Assets & security classification</h4>${assetRows(item)}</section>
       <section class="skill-wide"><h4>Skill security</h4>
         <p><span class="skill-status ${statusClass(security.status)}">${esc(security.status)}</span> · revision ${security.currentRevision ? "current" : "not currently scanned"} · assignment ${security.assignmentDecision?.allowed ? "allowed" : `blocked: ${esc(security.assignmentDecision?.reason)}`}</p>
-        ${security.scan ? `<dl class="skill-meta"><dt>Scanner</dt><dd>${esc(security.scan.provider_id)} ${esc(security.scan.scanner_version)}</dd><dt>Mode</dt><dd>${esc(security.scan.mode)}</dd><dt>Risk</dt><dd>${esc(security.scan.risk_score)} · ${esc(security.scan.severity)}</dd><dt>Scanned</dt><dd>${new Date(security.scan.scanned_at * 1000).toLocaleString()}</dd><dt>Report artifact</dt><dd>${esc(security.scan.report_artifact_id || "—")}</dd></dl>` : "<p>No scan exists for this exact revision.</p>"}
+        ${security.scan ? `<dl class="skill-meta"><dt>Scanner</dt><dd>${esc(security.scan.provider_id)} ${esc(security.scan.scanner_version)}</dd><dt>Mode</dt><dd>${esc(security.scan.mode)}</dd><dt>Risk</dt><dd>${scanError ? "Not evaluated — scanner execution error" : `${esc(security.scan.risk_score ?? "Not evaluated")} · ${esc(security.scan.severity ?? "unknown")}`}</dd><dt>Scanned</dt><dd>${new Date(security.scan.scanned_at * 1000).toLocaleString()}</dd><dt>Report revision</dt><dd>${esc(security.scan.record_id || item.recordId)} · checksum ${esc(security.scan.checksum || item.checksum)}</dd><dt>Worker assignment</dt><dd>${esc(security.scan.execution_attribution?.assignment_id || "No worker attribution recorded")}</dd><dt>Evidence</dt><dd>${esc(security.scan.execution_attribution?.evidence_id || "—")}</dd><dt>Report artifact</dt><dd>${security.scan.report_artifact_id ? referenceLink("artifact", security.scan.report_artifact_id) : "—"}</dd></dl>` : "<p>No scan exists for this exact revision.</p>"}
+        ${scanError ? `<p role="status">Scanner unavailable or failed: ${esc(security.scan?.error || "Inspect scanner readiness and worker assignments.")} No security finding was established. Publication and assignment policy still applies.</p>` : ""}
         ${findings.length ? `<div class="skill-provenance-results">${findings.map((finding)=>`<article class="skill-run"><header><strong>${esc(finding.rule_id)}</strong><span class="skill-status ${statusClass(["high","critical"].includes(finding.severity)?"quarantined":"warning")}">${esc(finding.severity)}</span></header><p>${esc(finding.message)}</p><small>${esc(finding.category)}${finding.path ? ` · ${esc(finding.path)}${finding.line ? `:${esc(finding.line)}` : ""}` : ""}</small></article>`).join("")}</div>` : ""}
-        <div class="skill-actions"><button class="ghost-button" type="button" data-skill-scan="static">Scan now</button><button class="ghost-button" type="button" data-skill-scan="semantic">Semantic scan</button></div>
+        <p>${esc(scanner?.readiness?.blockers?.map(item => item.message).join(" ") || "")}</p><p>${esc(scanner?.modeReadiness?.semantic?.blockers?.map(item => item.message).join(" ") || "")}</p>
+        <p>Required scan mode: ${esc(security.requiredMode || "static")}${security.requiredMode === "semantic" ? ". Static evidence cannot satisfy the current policy." : ""}</p>
+        <div class="skill-actions"><button class="ghost-button" type="button" data-skill-scan="static" ${scanner?.readiness?.ready === false || security.requiredMode === "semantic" ? "disabled" : ""}>Scan now</button><button class="ghost-button" type="button" data-skill-scan="semantic" ${scanner?.modeReadiness?.semantic?.ready === false ? "disabled" : ""}>Semantic scan</button></div>
       </section>
       <section><h4>Routing requirements</h4>
         <p><strong>Provider:</strong> ${esc((item.skill?.required_provider_capabilities || []).join(", ") || "none")}</p>
@@ -833,6 +840,23 @@ function bindSources(root) {
   });
 }
 
+async function loadScannerReadiness(root) {
+  const view = skillView(root);
+  const target = query(root, '[data-skill-scanner-readiness]');
+  target.textContent = 'Checking isolated scanner readiness…';
+  try {
+    const response = await request('/api/skill-security/providers');
+    if (!view.current()) return;
+    state.scannerProviders = response.items || [];
+    target.innerHTML = state.scannerProviders.length ? state.scannerProviders.map(provider =>
+      `<p><strong>${esc(provider.providerId)}</strong> · ${provider.readiness?.ready ? 'Ready' : 'Unavailable'} · ${esc(provider.readiness?.scannerVersion || 'version unavailable')}<br>${esc((provider.readiness?.blockers || []).map(item => item.message).join(' '))}</p>`).join('') : 'No scanner provider is registered for this scope.';
+  } catch (error) {
+    if (!view.current()) return;
+    state.scannerProviders = [];
+    target.textContent = `Scanner readiness unavailable: ${errorText(error)}`;
+  }
+}
+
 async function loadSecurityPolicy(root) {
   const view = captureProjectView();
   const controls = [...query(root, '[data-skill-security-policy]').querySelectorAll('input,button')];
@@ -907,10 +931,14 @@ async function install() {
   bindImport(root);
   bindSources(root);
   bindSecurityPolicy(root);
+  query(root, "[data-scanner-refresh]").addEventListener("click", async () => {
+    await loadScannerReadiness(root);
+    if (state.selected && !skillEditorOpen()) renderDetail(root);
+  });
   installProcedurePreview(root);
   const clearScope = () => {
     state.selected = null; state.revisions = []; state.usage = []; state.items = [];
-    state.profiles = []; state.sources = []; state.securityPolicy = null;
+    state.profiles = []; state.sources = []; state.securityPolicy = null; state.scannerProviders = [];
     query(root, '[data-skill-source]').innerHTML = '<option value="">All sources</option>';
     query(root, '[data-sync-source]').innerHTML = '<option value="">Select source…</option>';
     query(root, '[data-source-health]').textContent = 'Loading current scope…';
@@ -918,12 +946,12 @@ async function install() {
       field.value = ''; field.checked = false;
     });
     query(root, '[data-skill-detail]').innerHTML = '<p>Select a Skill in the current scope.</p>';
-    Promise.all([loadProfiles(), loadSources(root), loadSecurityPolicy(root), loadSkills(root)]);
+    Promise.all([loadProfiles(), loadSources(root), loadSecurityPolicy(root), loadScannerReadiness(root), loadSkills(root)]);
   };
   window.addEventListener('codex:project-changed', clearScope);
   window.addEventListener('codex:identity-scope-changed', clearScope);
   const initialView = skillView(root);
-  await Promise.all([loadProfiles(), loadSources(root), loadSecurityPolicy(root), loadSkills(root)]);
+  await Promise.all([loadProfiles(), loadSources(root), loadSecurityPolicy(root), loadScannerReadiness(root), loadSkills(root)]);
   if (!initialView.current()) return;
   const params = new URLSearchParams(location.search);
   const selected = params.get("skill_id");

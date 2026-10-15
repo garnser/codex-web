@@ -263,6 +263,108 @@ class UpgradeTests(unittest.IsolatedAsyncioTestCase):
             actor=self.actor,
         )
 
+    async def scanner_contract_plan(self):
+        from codex_web.services.upgrades import SKILL_SCAN_CONTRACT_HANDLER
+        self.actor = self.actor.model_copy(update={"assurance":AuthenticationAssurance.LOCAL_TRUSTED})
+        self.service.service_instance_id = "test-instance"
+        self.releases.release.build.source_revision = "b" * 40
+        self.service.install_skill_scan_contract()
+        plan = self.service.create(UpgradePlanCreate(release_id="release-target",
+            current_app_version="1.0.0", target_app_version="1.1.0",
+            compatibility=self.profile(deployment_mode=UpgradeDeploymentMode.LOCAL),
+            observed_control_plane_versions=("1.1.0",), require_drain=True,
+            steps=(UpgradeStepCreate(id="scanner-contract", phase="contract", kind="state_schema",
+                handler_id=SKILL_SCAN_CONTRACT_HANDLER, description="Enable incompatible scanner records",
+                irreversible=True, reversible=False, requires_backup=True, requires_drain=True),)), actor=self.actor)
+        plan = self.service.start_service_drain(plan.id, actor=self.actor, service_instance_id="test-instance",
+            source_revision="a" * 40, target_revision="b" * 40)
+        plan = self.service.capture_pre_upgrade_backup(plan.id, actor=self.actor)
+        plan = self.service.preflight(plan.id, actor=self.actor)
+        self.assertTrue(plan.preflight.satisfied, plan.preflight.blockers)
+        return await self.service.request_step_approval(plan.id, "scanner-contract", actor=self.actor)
+
+    async def test_scanner_contract_upgrade_enforces_backup_and_disables_real_rollback(self):
+        from unittest.mock import Mock
+        prior = self.create_plan()
+        plan = await self.scanner_contract_plan()
+        self.assertTrue(plan.rollback_available)
+        with self.assertRaisesRegex(UpgradeConflictError, 'drained'):
+            with self.service.skill_scan_admission(self.actor): pass
+        self.recovery.verify_restore = Mock(return_value=SimpleNamespace(status='fail', id='bad-backup'))
+        failed = await self.service.execute_step(plan.id, "scanner-contract", UpgradeStepExecute(idempotency_key='same-attempt'), actor=self.actor)
+        self.assertEqual(failed.steps[0].status, UpgradeStepStatus.FAILED)
+        self.assertTrue(failed.rollback_available)
+        self.recovery.verify_restore.return_value = SimpleNamespace(status='pass', id='verified-snapshot')
+        passed = await self.service.execute_step(plan.id, "scanner-contract", UpgradeStepExecute(idempotency_key='same-attempt'), actor=self.actor)
+        self.recovery.verify_restore.assert_called_with('backup-1', actor=self.actor)
+        self.assertEqual(passed.steps[0].status, UpgradeStepStatus.SUCCEEDED)
+        self.assertFalse(self.service.get(plan.id, actor=self.actor).rollback_available)
+        self.assertFalse(self.service.get(prior.id, actor=self.actor).rollback_available)
+        with self.assertRaisesRegex(UpgradeConflictError, 'rollback'):
+            self.service.mark_rolled_back(plan.id, actor=self.actor, reason='binary only')
+        completed = self.service.verify_post_upgrade(plan.id, actor=self.actor)
+        self.assertFalse(completed.maintenance_mode)
+        with self.service.skill_scan_admission(self.actor):
+            self.assertEqual(self.service.admission.active_count(), 1)
+        newer = self.create_plan()
+        self.assertFalse(newer.rollback_available)
+
+    async def test_scanner_contract_uses_real_encrypted_backup_and_matching_isolated_restore(self):
+        from unittest.mock import patch
+        from codex_web.crypto import KeyPurpose, ManagedKeyCreate
+        from codex_web.key_backends import LocalFileKeyBackend
+        from codex_web.services.crypto_keys import CryptoKeyService
+        from codex_web.services.recovery import LocalBackupDestination, RecoveryService
+        from codex_web.storage.crypto_keys import CryptoKeyStore
+        from codex_web.storage.recovery import RecoveryStore
+        from codex_web.recovery import RecoveryPolicy
+        root = Path(self.temp.name)
+        crypto = CryptoKeyService(CryptoKeyStore(self.state), {'local':LocalFileKeyBackend(root/'keys')})
+        key = crypto.create_key(ManagedKeyCreate(purpose=KeyPurpose.BACKUP, backend_type='local'), actor=self.actor)
+        destination = LocalBackupDestination(root/'backups')
+        recovery = RecoveryService(RecoveryStore(self.state), state_store=self.state, crypto=crypto,
+            evidence=self.evidence, destinations=(destination,), clock=lambda:1000.0)
+        recovery.configure(RecoveryPolicy(deployment_mode='local', backup_key_id=key.id,
+            destination_id='local', require_audit_integrity=False), actor=self.actor)
+        initial = recovery.create_backup(actor=self.actor)
+        self.assertEqual(recovery.verify_restore(initial.id, actor=self.actor).status, 'pass')
+        self.recovery = self.service.recovery = recovery
+        plan = await self.scanner_contract_plan()
+        manifest = recovery.store.load().backups[plan.pre_upgrade_backup_id]
+        encrypted = destination.get(manifest.destination_ref)
+        # Corrupt the actual encrypted object, rather than stubbing a health flag.
+        destination._path(manifest.destination_ref).write_bytes(encrypted + b'corrupt')
+        failed = await self.service.execute_step(plan.id, 'scanner-contract', UpgradeStepExecute(idempotency_key='real-backup'), actor=self.actor)
+        self.assertEqual(failed.steps[0].status, UpgradeStepStatus.FAILED)
+        self.assertTrue(failed.rollback_available)
+        destination._path(manifest.destination_ref).write_bytes(encrypted)
+        passed = await self.service.execute_step(plan.id, 'scanner-contract', UpgradeStepExecute(idempotency_key='real-backup'), actor=self.actor)
+        self.assertEqual(passed.steps[0].status, UpgradeStepStatus.SUCCEEDED)
+        self.assertFalse(passed.rollback_available)
+        target = SQLiteStateStore(root/'matching-restored.sqlite3')
+        self.assertEqual(recovery.restore_into_isolated(manifest.id, target, actor=self.actor).status, 'pass')
+        restored = UpgradeStore(target).get(plan.id)
+        self.assertFalse(restored.irreversible_boundary_crossed)
+        self.assertEqual(restored.steps[0].status, UpgradeStepStatus.PENDING)
+        with patch.object(self.service, 'store', UpgradeStore(target)):
+            with self.assertRaises(UpgradeConflictError):
+                with self.service.skill_scan_admission(self.actor): pass
+
+    async def test_scanner_contract_rejects_old_active_workers_and_mixed_writers(self):
+        from unittest.mock import Mock
+        plan = await self.scanner_contract_plan()
+        self.recovery.verify_restore = Mock(return_value=SimpleNamespace(status='pass', id='verified-snapshot'))
+        self.workers._workers.append(SimpleNamespace(lifecycle=WorkerLifecycle.ACTIVE, supported_execution_contract_versions=('1.0',)))
+        failed = await self.service.execute_step(plan.id, 'scanner-contract', UpgradeStepExecute(idempotency_key='old-worker'), actor=self.actor)
+        self.assertEqual(failed.steps[0].status, UpgradeStepStatus.FAILED)
+        self.recovery.verify_restore.assert_not_called()
+        self.workers._workers.clear()
+        self.service._update(plan.id, self.actor, lambda p:p.model_copy(update={'observed_control_plane_versions':('1.0.0','1.1.0')}))
+        failed = await self.service.execute_step(plan.id, 'scanner-contract', UpgradeStepExecute(idempotency_key='mixed-writer'), actor=self.actor)
+        self.assertEqual(failed.steps[0].status, UpgradeStepStatus.FAILED)
+        self.assertFalse(failed.irreversible_boundary_crossed)
+        self.recovery.verify_restore.assert_not_called()
+
     async def test_unexecuted_cancellation_preserves_other_holds_and_truthful_evidence(self):
         self.actor = self.actor.model_copy(update={"assurance":AuthenticationAssurance.LOCAL_TRUSTED})
         self.service.service_instance_id = "current-instance"
