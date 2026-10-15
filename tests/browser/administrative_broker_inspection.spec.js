@@ -300,3 +300,29 @@ test('visible ActionIntent workspace reloads canonical scope after a Project cha
   await expect(page.locator('[data-action-intent-row="intent-b"]')).toBeVisible();
   await expect(page.locator('[data-action-intent-row="intent-a"]')).toHaveCount(0);
 });
+
+test('repository CREATE conflict displays canonical 409 denial and safe guidance without inferring provider outcome',async({page})=>{
+  const message='Repository action admission conflicts with origin, scope or idempotency. Inspect authorized intent and delivery evidence; an existing intent may have executed or be uncertain. Do not automatically retry or replay.';
+  const correlation='repository-admission-conflict';
+  const entry={...audit[0],operation_id:'repository.pull-request.upsert',target_ref:null,
+    decision:'deny',response_status:409,denial_reason:message,correlation_id:correlation};
+  let mutationCalls=0;
+  await page.route('**/api/repository-actions/**',route=>{
+    mutationCalls+=1;return route.fulfill({status:409,json:{error:{
+      code:'repository_action_admission_conflict',message,correlation_id:correlation}}});
+  });
+  await page.route('**/api/control-plane-broker/audit?*',route=>route.fulfill({json:{items:[entry]}}));
+  await mountBroker(page);await emit(page,assignment());
+  const panel=page.getByRole('region',{name:'Broker scope and outcomes'});
+  await panel.getByRole('button').click();
+  await expect(panel.locator('[data-broker-events] summary')).toHaveText('repository.pull-request.upsert · deny · HTTP 409');
+  await panel.locator('[data-broker-events] summary').click();
+  await expect(panel).toContainText(message);
+  await expect(panel).toContainText(`correlation ${correlation}`);
+  await expect(panel).toContainText('A broker admission is distinct from a provider result');
+  await expect(panel.getByRole('link',{name:'Inspect related ActionIntents and provider receipts'})).toBeVisible();
+  await expect(panel).not.toContainText('never executed');
+  expect(mutationCalls).toBe(0);
+  await page.setViewportSize({width:375,height:812});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+});
