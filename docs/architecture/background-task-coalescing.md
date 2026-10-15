@@ -71,6 +71,11 @@ revision no longer matches, the stale dispatch is discarded.
 Existing watchdog dispatch keys remain the durable/idempotent side-effect guard.
 The in-process coordinator does not replace those keys.
 
+Explicit operator retries capture their retry attempt before asynchronous thread
+replacement, independently of mutable state aliases. Post-replacement validation
+rejects a superseded attempt before consuming its watchdog key or dispatching
+with its actor. The newer scheduled attempt retains its own dispatch opportunity.
+
 ## Delayed continuity checks
 
 The existing delayed handoff/actionable-owner continuity checks remain

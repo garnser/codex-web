@@ -541,7 +541,7 @@ async function runItemAction(action) {
     });
     if (!isCurrent()) return;
     renderDetail(payload);
-    setStatus(action === 'retry' ? 'Retry dispatched' : 'Reconciled with authoritative source');
+    setStatus(action === 'retry' ? 'Retry accepted' : 'Reconciled with authoritative source');
     await loadItems({ reset: true });
   } catch (error) {
     if (!isCurrent()) return;

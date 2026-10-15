@@ -203,6 +203,30 @@ test('work-item operator distinguishes canonical and external state with executi
   expect(posts[0].body.actor).toBe('operator');
 });
 
+test('retry success without dispatch evidence confirms acceptance only', async ({ page }) => {
+  const posts = [];
+  await mockOperatorApis(page, posts);
+  await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html`);
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
+  await expect(page.locator('.work-items-status')).toHaveText('Up to date');
+  await page.evaluate(() => {
+    window.retryStatuses = [];
+    const status = document.querySelector('.work-items-status');
+    new MutationObserver(records => {
+      for (const record of records) {
+        for (const node of record.addedNodes) window.retryStatuses.push(node.textContent);
+      }
+    }).observe(status, { childList: true });
+  });
+  // The successful fixture response contains canonical retry state, but no
+  // retained request, dispatch result or native-start receipt.
+  await page.locator('.work-item-retry').click();
+  await expect.poll(() => posts.length).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.retryStatuses.includes('Retry accepted'))).toBe(true);
+  const statuses = await page.evaluate(() => window.retryStatuses);
+  expect(statuses.some(text => /dispatched|retained|started/i.test(text))).toBe(false);
+});
+
 test('source configuration writes the canonical project task-source endpoint', async ({ page }) => {
   const posts = [];
   await mockOperatorApis(page, posts);

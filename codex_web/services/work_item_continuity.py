@@ -647,6 +647,12 @@ class WorkItemContinuityService:
         if not binding:
             return {"status": "binding_unavailable", "dispatched": False}
         explicit_retry = source == 'operator-retry'
+        # Capture scalars before replacement can yield: canonical state may be
+        # mutated in place while this invocation is suspended.
+        expected_retry_attempt = (
+            state.execution.retry.attempt if explicit_retry else None
+        )
+        expected_stage = state.current_stage
         if self.thread_is_active(binding.thread_id) and not explicit_retry:
             return {
                 "status": "already_active",
@@ -679,7 +685,11 @@ class WorkItemContinuityService:
                     and latest.handoff.status == "pending"
                 )
                 or latest_owner != owner
-                or latest.current_stage != state.current_stage
+                or latest.current_stage != expected_stage
+                or (
+                    explicit_retry
+                    and latest.execution.retry.attempt != expected_retry_attempt
+                )
             ):
                 return {"status": "stale_state", "dispatched": False}
             state = latest
@@ -688,7 +698,7 @@ class WorkItemContinuityService:
             f"{owner}:{state.current_stage}"
         )
         if explicit_retry:
-            dispatch_key += f':operator-retry:{state.execution.retry.attempt}'
+            dispatch_key += f':operator-retry:{expected_retry_attempt}'
         if not self.watchdog_dispatch_allowed(dispatch_key):
             return {
                 "status": "duplicate",
