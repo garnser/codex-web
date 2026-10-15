@@ -237,7 +237,12 @@ class ProjectDelegationRecoveryTests(unittest.IsolatedAsyncioTestCase):
         current = self.authorize()
         repo = TurnQueueRepository(self.f.sqlite, self.f.sqlite.path.parent / 'queues.json')
         repo.put(child, [old])
-        reopened = TurnQueueRepository(self.f.sqlite, self.f.sqlite.path.parent / 'queues.json').get(child)[0]
+        reopened_repo = TurnQueueRepository(self.f.sqlite, self.f.sqlite.path.parent / 'queues.json')
+        self.host._thread_queue = reopened_repo.get
+        self.host._thread_queue_record = reopened_repo.get
+        self.host._update_thread_queue_record = reopened_repo.update
+        self.host._put_thread_queue_record = reopened_repo.put
+        reopened = reopened_repo.get(child)[0]
         self.assertEqual(reopened, old)
         with self.assertRaises(HTTPException):
             self.coordination.validate_queued_delegation(reopened)
@@ -261,7 +266,12 @@ class ProjectDelegationRecoveryTests(unittest.IsolatedAsyncioTestCase):
         # Actual old persisted shape, not a new proof with a fabricated revision.
         repo = TurnQueueRepository(self.f.sqlite, self.f.sqlite.path.parent / 'queues.json')
         self.f.sqlite.record_apply(repo.namespace, upserts={child: [raw]})
-        legacy = TurnQueueRepository(self.f.sqlite, self.f.sqlite.path.parent / 'queues.json').get(child)[0]
+        reopened_repo = TurnQueueRepository(self.f.sqlite, self.f.sqlite.path.parent / 'queues.json')
+        self.host._thread_queue = reopened_repo.get
+        self.host._thread_queue_record = reopened_repo.get
+        self.host._update_thread_queue_record = reopened_repo.update
+        self.host._put_thread_queue_record = reopened_repo.put
+        legacy = reopened_repo.get(child)[0]
         self.assertIsNone(legacy.project_coordination_dispatch.delegation_revision)
         self.authorize()
         await self.execution.drain_thread_queue(child)
@@ -272,6 +282,7 @@ class ProjectDelegationRecoveryTests(unittest.IsolatedAsyncioTestCase):
         from concurrent.futures import ThreadPoolExecutor
         child, _ = await self.create()
         original, _ = await self.message(child)
+        original = original.model_copy(deep=True)
         real = self.execution.start_thread_turn_now
         def advance_authority():
             self.goal_bindings.operator_stop(self.goal_binding.id, scope=self.actor.tenant,

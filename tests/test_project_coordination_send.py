@@ -135,7 +135,7 @@ class ProjectSendBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.host._thread_queue_depth('business'), 1)
         self.assertEqual(self.completed, [])
 
-    async def test_revoke_during_capture_preparation_preserves_child_then_reauthorization_sends_once(self):
+    async def test_revoke_during_capture_preserves_old_input_and_only_new_generation_sends(self):
         child = await self.child()
         original, _ = await self.message(child)
         self.execution.enqueue_turn(thread_id=child, project_id='home', message='held later business', source='business')
@@ -158,13 +158,20 @@ class ProjectSendBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 release.set()
                 await task
         self.assert_refused(child, original, order)
-        self.goal_bindings.resume_operator_pause(self.goal_binding.id, scope=self.actor.tenant,
-            actor_id=self.actor.identity_id, reason='Legitimate explicit reauthorization')
+        current = self.goal_bindings.get(self.goal_binding.id, scope=self.actor.tenant)
+        self.goal_bindings.authorize_project_delegation(current.id, actor=self.actor,
+            expected_updated_at=current.updated_at,
+            expected_delegation_revision=current.delegation_revision,
+            reason='Explicitly authorize a new generation, never revive old input')
+        await self.execution.drain_thread_queue(child)
+        self.assert_refused(child, original, order)
+        new, _ = await self.message(child, key='new-generation-after-capture-revoke')
         await self.execution.drain_thread_queue(child)
         self.assertEqual(len(self.starts(child)), 1)
-        self.assertEqual(self.retained(original).status, 'started')
+        self.assertEqual(self.retained(new).status, 'started')
+        self.assertNotEqual(self.retained(original).status, 'started')
         self.assertEqual(self.completed, [])
-        self.assertEqual([v.source for v in self.host._thread_queue(child)], ['business'])
+        self.assertEqual([v.id for v in self.host._thread_queue(child)], order)
         history = self.execution.transcript.read(child)['turns']
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0]['status'], 'inProgress')
@@ -223,7 +230,7 @@ class ProjectSendBoundaryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status['automationWaiting'], 1)
             self.assertEqual(status['automationWaitReason']['code'], 'project_delegation_blocked')
             self.assertIn('Project delegation blocked:', status['automationWaitReason']['message'])
-            self.assertIn('binding is blocked', status['automationWaitReason']['message'])
+            self.assertIn('authorization generation changed', status['automationWaitReason']['message'])
             self.assertNotIn('enabled and resumed', status['automationWaitReason']['message'])
             # Render this actual canonical response through the existing UI
             # module; no browser, application server or new UI policy.
