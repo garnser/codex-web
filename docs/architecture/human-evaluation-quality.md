@@ -56,8 +56,13 @@ scopes, and canonical tenant/Project access.
   tenant/Project/scenario versions refuse comparison. Both Evidence IDs and run
   pins accompany the deltas. Incomplete deltas remain null.
 
-Source scans allow at most 100 trace Evidence records and 100 output Artifacts;
-larger inputs refuse inspection/scoring. The report view shows at most the newest
+Source scans allow at most 100 trace Evidence records. Output options permit
+100 cumulative Artifact lookup attempts across all trace Evidence and refuse
+before attempt 101, counting duplicates, unavailable records and records rejected
+by Project, lifecycle, retention or revision/digest filtering. Refusal returns an
+error without partial options. Annotation/scoring resolves one selected Artifact
+and checks its linkage against the same 100-record trace Evidence bound.
+The report view shows at most the newest
 100 annotations with an explicit truncation flag. An explicit Evidence selection
 allows comparison without guessing a candidate from a truncated/multiple-review
 list. Rubric options are bounded to 100 scoped revisions. Criteria/ratings and
