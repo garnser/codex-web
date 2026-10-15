@@ -188,7 +188,8 @@ jobs:
             tests.test_slack_socket_lifecycle \
             tests.test_stale_active_turn_recovery \
             tests.test_runtime_health_hot_path \
-            tests.test_event_journal_lifecycle
+            tests.test_event_journal_lifecycle \
+            tests.test_queued_native_start
 
       - name: Qualify candidate through tracked Compose and nginx
         if: steps.release.outputs.build == 'true'

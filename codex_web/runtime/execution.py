@@ -3186,9 +3186,19 @@ class TurnExecutionService:
                     raise ValueError('notification batch controls changed before native input')
                 if operator_admission_validator is not None:
                     await asyncio.to_thread(operator_admission_validator)
+                start_options = {}
+                if (queued_admission_attempt_id and queued_admission_claim_id
+                        and self.queued_preflight is not None
+                        and isinstance(runtime_adapter, CodexAgentRuntimeAdapter)):
+                    from codex_web.services.queued_native_start import QueuedNativeStartCapture
+                    start_options['start_capture'] = QueuedNativeStartCapture(
+                        self.queued_preflight, queued_admission_attempt_id,
+                        queued_admission_claim_id, requested_execution_id, thread_id,
+                        actor.identity_id if actor is not None else agent_profile_actor_id)
                 runtime_turn_result = await runtime_adapter.start_turn(
                     native_session_id,
                     runtime_turn_request,
+                    **start_options,
                 )
                 actual_native_turn_id = runtime_turn_result.provider_native_turn_id or (
                     (runtime_turn_result.payload.get('turn') or {}).get('id')
@@ -3322,6 +3332,22 @@ class TurnExecutionService:
                             },
                         )
             except Exception as exc:
+                if (not queued_native_start_confirmed and queued_admission_attempt_id
+                        and self.queued_preflight is not None):
+                    # The reader may have committed positive evidence before
+                    # the caller lost its response. Attribute that historical
+                    # fact without renewing/resuming a possibly retired worker.
+                    captured = await asyncio.to_thread(
+                        self.queued_preflight.store.get, queued_admission_attempt_id)
+                    correlation = captured.queued_start_correlation if captured else None
+                    evidence = captured.queued_start_evidence if captured else None
+                    if (correlation is not None and evidence is not None
+                            and correlation.admission_claim_id == queued_admission_claim_id
+                            and correlation.requested_execution_id == requested_execution_id
+                            and correlation.execution_id == canonical_execution_id
+                            and correlation.thread_id == thread_id):
+                        queued_native_start_confirmed = True
+                        actual_native_turn_id = evidence.provider_native_turn_id
                 if queued_native_start_confirmed:
                     # The provider accepted the turn. Bookkeeping failure cannot
                     # cancel its ownership or authorize replay of the original.

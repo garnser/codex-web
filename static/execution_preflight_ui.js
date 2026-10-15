@@ -100,13 +100,21 @@ export function createExecutionPreflightUi({
           `Preflight attempt ${Number(attempt?.attempt_number || 1)} · ${status}`,
           batchMember ? `Shared notification admission: ${attempt.notification_batch_id}. Individual recovery is unavailable; inspect the batch receipt and retained originals.`
             : status === 'reconciliation_required'
-            ? 'Native start outcome is unknown. Reconcile the original execution before retrying.'
+            ? (attempt.queued_start_evidence
+              ? 'Authoritative native response captured; finish receipt reconciliation without resending.'
+              : 'Native start outcome is unknown. Reconcile the original execution before retrying.')
             : status === 'queued' ? 'Original request retained for admission; no start is confirmed.'
               : status === 'admitting' ? 'Pre-start admission reserved. Retry fences this reservation before native startup.' : '',
           schedulingRetired
-            ? 'Queue scheduling was retired after terminal WorkItem verification. The earlier native start outcome remains unknown and cannot be retried.'
+            ? (attempt.queued_start_receipt
+              ? 'Queue scheduling remains retired. A later exact native start was confirmed; no execution was resumed and no replay is permitted.'
+              : attempt.queued_start_evidence
+                ? 'Queue scheduling remains retired. A later authoritative positive response is captured; receipt reconciliation cannot requeue or resume execution.'
+                : 'Queue scheduling was retired after terminal WorkItem verification. The earlier native start outcome remains unknown and cannot be retried.')
             : schedulingRetirementPrepared
-              ? 'Scheduling retirement was prepared and admission is fenced, but exact queue removal is not confirmed. Reconciliation is required.'
+              ? (attempt.queued_start_receipt || attempt.queued_start_evidence
+                ? 'Scheduling retirement was prepared while the native outcome was unknown. A later positive native response is retained; exact queue removal is not confirmed.'
+                : 'Scheduling retirement was prepared and admission is fenced, but exact queue removal is not confirmed. Reconciliation is required.')
               : '',
           correlation ? `Correlation: ${correlation}` : "",
           attempt.queued_start_receipt
@@ -115,6 +123,20 @@ export function createExecutionPreflightUi({
             ? `Native runtime: ${attempt.queued_start_receipt.provider_id}/${attempt.queued_start_receipt.runtime_id}` : '',
           attempt.queued_start_receipt
             ? `Requested execution: ${attempt.queued_start_receipt.requested_execution_id}; admitted execution: ${attempt.queued_start_receipt.execution_id}` : '',
+          attempt.queued_start_correlation
+            ? `Native correlation v${attempt.queued_start_correlation.schema_version}: ${attempt.queued_start_correlation.runtime_generation} / ${attempt.queued_start_correlation.rpc_request_id}` : '',
+          attempt.queued_start_correlation
+            ? `Attribution: ${attempt.queued_start_correlation.organization_id}/${attempt.queued_start_correlation.workspace_id} · Project ${attempt.queued_start_correlation.project_id} · actor ${attempt.queued_start_correlation.actor_identity_id}` : '',
+          attempt.queued_start_correlation
+            ? `Assignment: ${attempt.queued_start_correlation.assignment_id} · worker ${attempt.queued_start_correlation.worker_id} · send fence ${attempt.queued_start_correlation.fence}` : '',
+          attempt.queued_start_correlation
+            ? `Native session: ${attempt.queued_start_correlation.provider_native_session_id} · original SHA256 ${attempt.queued_start_correlation.snapshot_sha256}` : '',
+          attempt.queued_start_correlation
+            ? `Resources at send: ${attempt.queued_start_correlation.assignment_resource_ids.join(', ')}` : '',
+          attempt.queued_start_correlation
+            ? (attempt.queued_start_receipt ? 'Exact positive evidence reconciled; no replay is permitted.'
+              : attempt.queued_start_evidence ? 'Authoritative positive response captured; receipt projection pending. This grants no execution authority.'
+                : 'Pre-send attribution retained; native outcome remains unknown without an exact positive response.') : '',
           attempt.replacement_thread_id
             ? `Original thread: ${attempt.thread_id}; current thread: ${attempt.replacement_thread_id}`
             : "",
@@ -134,9 +156,11 @@ export function createExecutionPreflightUi({
           batchMember ? "Batch original retained · outcome unresolved"
             : schedulingRetired ? (attempt.queued_start_receipt
             ? "Scheduling retired · native start confirmed"
+            : attempt.queued_start_evidence ? "Scheduling retired · native receipt pending"
             : "Scheduling retired · native outcome unknown")
             : schedulingRetirementPrepared ? "Scheduling retirement requires reconciliation"
-            : status === "started" ? "Preflight resolved" : ['queued','admitting'].includes(status)
+            : status === "started" ? "Preflight resolved"
+            : attempt.queued_start_evidence ? "Native start receipt pending" : ['queued','admitting'].includes(status)
             ? "Admission retained" : status === 'reconciliation_required' ? "Reconciliation required" : "Execution blocked",
           lines.join("\n"),
           "tool",
@@ -173,7 +197,7 @@ Claim: ${attempt.operator_admission.claim_id}`;
         const actionHref = retire ? attempt.retire_scheduling_href
           : reconcile ? attempt.reconcile_prestart_href : attempt.retry_href;
         const actionLabel = retire ? 'Retire terminal scheduling'
-          : reconcile ? 'Reconcile unstarted refusal' : 'Retry';
+          : reconcile ? (attempt.queued_start_evidence ? 'Reconcile captured native start' : 'Reconcile unstarted refusal') : 'Retry';
         const retry = document.createElement("button");
         retry.type = "button";
         retry.textContent = status === "retrying"

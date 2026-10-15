@@ -92,6 +92,20 @@
       if (disposition === 'started') attempts[0].queued_start_receipt = {
         provider_native_turn_id:'actual-native-turn', provider_id:'openai', runtime_id:'codex',
         requested_execution_id:'original-request-execution', execution_id:'actual-bootstrap-execution'};
+      if (new URLSearchParams(location.search).has('nativeCorrelation')) {
+        attempts[0].queued_start_correlation = {
+          schema_version:'1.0', runtime_generation:'generation-original', rpc_request_id:'rpc-original',
+          organization_id:'org-original', workspace_id:'workspace-original', project_id:'project-original',
+          actor_identity_id:'original-actor', assignment_id:'original-assignment', worker_id:'original-worker',
+          fence:7, provider_native_session_id:'original-session', snapshot_sha256:'a'.repeat(64),
+          assignment_resource_ids:['repo-app', 'repo-docs']
+        };
+        if (new URLSearchParams(location.search).has('positiveEvidence')) {
+          attempts[0].queued_start_evidence = {provider_native_turn_id:'actual-native-turn'};
+          attempts[0].can_reconcile_prestart = disposition !== 'started';
+          attempts[0].reconcile_prestart_href = '/api/threads/thread-1/preflight-attempts/preflight-thread-turn-1/reconcile-prestart';
+        }
+      }
     }
 
     const batches = [];

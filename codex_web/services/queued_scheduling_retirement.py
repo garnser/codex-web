@@ -179,10 +179,12 @@ class QueuedSchedulingRetirementService:
         if thread_id != (attempt.replacement_thread_id or attempt.thread_id):
             raise HTTPException(status_code=404, detail="preflight attempt not found")
         if (
-            attempt.status != "reconciliation_required"
-            or attempt.queued_turn_snapshot is None
-            or attempt.queued_start_receipt is not None
-            or attempt.started_at is not None
+            attempt.queued_turn_snapshot is None
+            or (attempt.scheduling_retirement is None and (
+                attempt.status != "reconciliation_required"
+                or attempt.queued_start_receipt is not None
+                or attempt.queued_start_evidence is not None
+                or attempt.started_at is not None))
         ):
             raise self._conflict(
                 "scheduling_retirement_unavailable",
@@ -241,10 +243,12 @@ class QueuedSchedulingRetirementService:
         initial_snapshot = attempt.queued_turn_snapshot
         attempt = self.preflight.get(attempt_id, actor=actor)
         if (
-            attempt.status != "reconciliation_required"
-            or attempt.queued_turn_snapshot != initial_snapshot
-            or attempt.queued_start_receipt is not None
-            or attempt.started_at is not None
+            attempt.queued_turn_snapshot != initial_snapshot
+            or (attempt.scheduling_retirement is None and (
+                attempt.status != "reconciliation_required"
+                or attempt.queued_start_receipt is not None
+                or attempt.queued_start_evidence is not None
+                or attempt.started_at is not None))
         ):
             raise self._conflict(
                 "scheduling_retirement_conflict",
@@ -369,6 +373,10 @@ class QueuedSchedulingRetirementService:
                 "threadId": attempt.replacement_thread_id or attempt.thread_id,
                 "originalThreadId": attempt.thread_id,
                 "nativeOutcome": evidence.native_outcome,
+                "nativeOutcomeAsOf": evidence.prepared_at,
+                "nativeOutcomeAtAudit": (
+                    "started" if attempt.queued_start_receipt is not None
+                    else "positive_captured" if attempt.queued_start_evidence is not None else "unknown"),
                 "sourceState": evidence.source_state,
                 "sourceExternalId": evidence.source_identity.external_id,
                 "queueSnapshotSha256": evidence.queued_snapshot_sha256,
