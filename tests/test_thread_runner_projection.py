@@ -20,6 +20,27 @@ from codex_web.storage.thread_index import ThreadIndexRepository
 
 
 class ThreadRunnerProjectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_known_stopped_process_overrides_live_lease_without_mutation(self):
+        current = self.assignments['successor']
+        before = dict(vars(current))
+        local = SimpleNamespace(fence=current.fence, worker_id=current.assigned_worker_id,
+            running=False, diagnostic_state='unavailable', pending_executor_work=1)
+        self.service.session_manager = SimpleNamespace(get=lambda _:SimpleNamespace(status=lambda:local))
+        projection = self.service._runner_projection('successor')
+        self.assertEqual(projection['state'], 'stopped')
+        self.assertFalse(projection['live'])
+        self.assertTrue(projection['leaseValid'])
+        self.assertEqual(projection['diagnosticState'], 'unavailable')
+        self.assertEqual(vars(current), before)
+        local.fence -= 1
+        self.assertTrue(self.service._runner_projection('successor')['live'], 'old process cannot mask a successor')
+
+    async def test_lost_and_canonical_retry_are_distinct_from_unknown(self):
+        self.assignments['successor'].status = 'lost'
+        self.assignments['successor'].lease = None
+        self.assertEqual(self.service._runner_projection('successor')['state'], 'lost')
+        self.assignments['successor'].status = 'pending'
+        self.assertEqual(self.service._runner_projection('successor')['state'], 'recovering')
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = SQLiteStateStore(Path(self.tmp.name) / 'state.db')
@@ -116,7 +137,7 @@ class ThreadRunnerProjectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_waiting_renewal_rebind_and_unavailable_worker_are_current_reads(self):
         assignment = self.assignments['successor']
         assignment.status = 'pending'
-        self.assertEqual((await self.service.runner('successor'))['runner']['state'], 'waiting')
+        self.assertEqual((await self.service.runner('successor'))['runner']['state'], 'recovering')
         assignment.status = 'running'
         self.assertTrue((await self.service.runner('successor'))['runner']['live'])
         assignment.lease.expires_at = 0

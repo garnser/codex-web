@@ -1,0 +1,13 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Runtime supervision states</title><style>body{font:16px system-ui;max-width:700px;margin:1rem;overflow-wrap:anywhere}p{padding:1rem;background:#eee}</style>
+<main aria-label="Runtime custody"><h1>Runtime custody</h1><div id="states" role="status" aria-live="polite"></div><p id="observation"></p></main>
+<script type="module">
+import {applyRunner,runnerLabel,allowsRuntimeActivity} from '/static/thread_runner_ui.js';
+import {workerEventsHtml} from '/static/execution_worker_presenters.js';
+for(const state of ['lost','recovering','stopped','running']) {
+  applyRunner({id:state,runner:{schemaVersion:'1.0',state,assignmentId:state,fence:2,observedAt:10,updatedAt:10,
+    live:state==='running',leaseValid:state==='running',leaseExpiresAt:Date.now()/1000+60,diagnosticState:'unavailable',validationCustodyState:state==='stopped'?'captured':'unavailable'}});
+  const p=document.createElement('p'); p.id=state;p.textContent=runnerLabel(state);p.dataset.active=String(allowsRuntimeActivity(state));document.querySelector('#states').append(p);
+}
+document.querySelector('#observation').innerHTML=workerEventsHtml([{event_type:'agent_runtime_supervision_failed',details:{failure_code:'execution_timeout',observed_fence:1,current_fence:2,current_status:'running',evidence_state:'unavailable',fixture:'<img src=x onerror=alert(1)>'}}]);
+</script></html>

@@ -59,6 +59,9 @@ class AssignmentBoundAgentSessionStatus:
     ready: bool
     last_error: str | None
     credential_expires_at: float | None
+    diagnostic_state: str = "none"
+    pending_executor_work: int = 0
+    validation_custody_state: str = "unavailable"
 
     @property
     def delegation_expires_at(self) -> float | None:
@@ -76,6 +79,9 @@ class AssignmentBoundAgentSessionStatus:
             "last_error": self.last_error,
             "credential_expires_at": self.credential_expires_at,
             "delegation_expires_at": self.credential_expires_at,
+            "diagnostic_state": self.diagnostic_state,
+            "pending_executor_work": self.pending_executor_work,
+            "validation_custody_state": self.validation_custody_state,
         }
 
 

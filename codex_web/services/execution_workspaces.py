@@ -1843,6 +1843,51 @@ class ExecutionWorkspaceService:
         self.store.update(apply)
         return released
 
+    def release_failed_assignment(self, workspace_id, assignment, *, actor):
+        """Release only the original failed claim, atomically with its fence.
+
+        A diagnostic reporter cannot release resources owned by a later retry.
+        Files are always retained; ordinary explicit discard remains separate.
+        """
+        from codex_web.execution_workers import ExecutionAssignment, AssignmentStatus
+        from codex_web.storage.execution_workers import ExecutionWorkerStore
+        workspace = self.get(workspace_id, actor)
+        self._authorized(workspace, actor)
+        store = self.store
+        store._ensure_records()
+        assignment_namespace = ExecutionWorkerStore.assignment_namespace
+        result = []
+        def mutate(rows):
+            current_assignment = ExecutionAssignment.model_validate(rows[assignment_namespace][assignment.id])
+            current = ExecutionWorkspace.model_validate(rows[store.workspace_namespace][workspace_id])
+            self._authorized(current, actor)
+            if (current_assignment.status != AssignmentStatus.FAILED or current_assignment.lease is not None
+                    or current.status not in {ExecutionWorkspaceStatus.ACTIVE, ExecutionWorkspaceStatus.RELEASED}
+                    or current.lease_id != workspace.lease_id
+                    or current_assignment.fence != assignment.fence
+                    or current_assignment.assigned_worker_id != assignment.assigned_worker_id
+                    or current_assignment.execution_workspace_id != workspace_id
+                    or (current_assignment.organization_id, current_assignment.workspace_id, current_assignment.project_id,
+                        current_assignment.execution_id) != (current.organization_id, current.workspace_id,
+                        current.project_id, current.execution_id)):
+                raise ExecutionWorkspaceConflictError("failed assignment no longer owns this workspace release")
+            lease = ExecutionWorkspaceLease.model_validate(rows[store.lease_namespace][workspace.lease_id])
+            if lease.execution_workspace_id != workspace_id or lease.execution_id != current.execution_id:
+                raise ExecutionWorkspaceConflictError("workspace lease changed")
+            now = time.time()
+            released = current.model_copy(update={"status": ExecutionWorkspaceStatus.RELEASED, "updated_at": now})
+            event = ExecutionWorkspaceEvent(workspace_id=workspace_id, event_type="workspace_released",
+                actor_identity_id=actor.identity_id, details={"discard":False, "preserve_files":True,
+                    "assignment_id":assignment.id, "fence":assignment.fence})
+            result.append(released)
+            return {store.workspace_namespace:{workspace_id:released.model_dump(mode="json")},
+                store.lease_namespace:{lease.id:lease.model_copy(update={"released_at":now,
+                    "release_reason":"original assignment failed"}).model_dump(mode="json")},
+                store.event_namespace:{f"{event.occurred_at}:{workspace_id}:failed-release":event.model_dump(mode="json")}}
+        store.store.record_mutate_many({assignment_namespace:(assignment.id,), store.workspace_namespace:(workspace_id,),
+            store.lease_namespace:(workspace.lease_id,), store.event_namespace:()}, mutate)
+        return result[0]
+
     def release(
         self,
         workspace_id: str,

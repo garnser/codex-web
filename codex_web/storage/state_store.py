@@ -4,6 +4,8 @@ import hashlib
 import json
 import threading
 import time
+import contextvars
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 from urllib.parse import quote, unquote
@@ -12,6 +14,49 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 _RECORD_STORAGE_ROOT = "__codex_records__/"
+
+
+class StorageOperationBudget:
+    """Cooperative deadline for existing store/validation work, not a lease.
+
+    Cancelling an asyncio waiter cannot stop a running Python thread. The same
+    budget follows that thread and refuses later writes after retirement.
+    """
+    def __init__(self, seconds: float):
+        self.deadline = time.monotonic() + seconds
+        self.cancelled = threading.Event()
+
+    def remaining(self):
+        remaining = self.deadline - time.monotonic()
+        if self.cancelled.is_set() or remaining <= 0:
+            raise TimeoutError("storage operation deadline exceeded")
+        return remaining
+
+
+storage_operation_budget = contextvars.ContextVar("storage_operation_budget", default=None)
+
+
+def check_operation_budget():
+    budget = storage_operation_budget.get()
+    if budget is not None:
+        budget.remaining()
+
+
+@contextmanager
+def operation_lock(lock):
+    budget = storage_operation_budget.get()
+    if budget is None:
+        with lock:
+            yield
+        return
+    while not lock.acquire(timeout=min(.05, budget.remaining())):
+        pass
+    try:
+        check_operation_budget()
+        yield
+        check_operation_budget()
+    finally:
+        lock.release()
 
 
 class OperationTimingMetrics:

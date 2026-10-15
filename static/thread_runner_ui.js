@@ -23,8 +23,14 @@ export function runnerLabel(threadId) {
   const runner = runners.get(threadId);
   if (!runner) return '';
   if (runner.live && !allowsRuntimeActivity(threadId)) return 'Unknown runner · lease expired';
-  return {running: 'Runner live', waiting: 'Waiting for worker', cancelled: 'Runner cancelled',
-    idle: 'Runner idle', failed: 'Runner failed', unloaded: 'Runner unloaded', unknown: 'Unknown runner'}[runner.state] || 'Unknown runner';
+  const label = {running: 'Runner live', waiting: 'Waiting for worker', cancelled: 'Runner cancelled',
+    idle: 'Runner idle', failed: 'Runner failed', lost: 'Runner lost · recovery required',
+    recovering: 'Runner recovering · waiting for worker',
+    stopped: runner.diagnosticState === 'unavailable' ? 'Runner stopped · diagnostic evidence unavailable' : 'Runner stopped · recovery required',
+    unloaded: 'Runner unloaded', unknown: 'Unknown runner'}[runner.state] || 'Unknown runner';
+  const validation = {captured:'validation report captured · outcome unverified', registered:'validation custody registered',
+    unavailable:'validation evidence unavailable'}[runner.validationCustodyState];
+  return label + (validation ? ` · ${validation}` : '');
 }
 
 // At most one pending read per Thread. Event bursts coalesce; the selected

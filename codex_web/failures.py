@@ -716,8 +716,11 @@ def worker_failure_reason(
         "process_exit",
         "nonzero_exit",
         "non_zero_exit",
+        "agent_runtime_process_exited",
     }:
         return FailureReason.PROCESS_FAILURE
+    if normalized == "agent_runtime_rpc_timeout":
+        return FailureReason.EXECUTION_TIMEOUT
     return FailureReason.UNCLASSIFIED
 
 

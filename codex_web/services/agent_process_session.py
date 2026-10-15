@@ -8,10 +8,16 @@ import subprocess
 import threading
 import time
 import weakref
+import contextvars
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from codex_web.execution_workspaces import ExecutionWorkspaceRelease
+from codex_web.storage.state_store import StorageOperationBudget, storage_operation_budget, check_operation_budget, operation_lock
+from codex_web.services.managed_validation_custody import ManagedValidationCustody
+from codex_web.runtime import managed_validation_runner
+from codex_web.artifact_evidence import EvidenceCreate, EvidenceResult, EvidenceType
 from codex_web.execution_workers import (
     AssignmentCancelRequest,
     AssignmentCompleteRequest,
@@ -44,6 +50,7 @@ from codex_web.services.agent_model_egress import (
     AgentRuntimeModelEgressEndpoint,
     AssignmentBoundAgentModelEgressBroker,
 )
+from codex_web.services.codex_auth_delegation import CodexAuthDelegationStaleError
 from codex_web.services.local_execution_worker import (
     LocalExecutionWorkerRuntime,
 )
@@ -116,6 +123,8 @@ def _with_execution_python_environment(
             "PYTHONNOUSERSITE=",
             "PIP_DISABLE_PIP_VERSION_CHECK=",
             "PIP_REQUIRE_VIRTUALENV=",
+            "CODEX_WEB_MANAGED_VALIDATION_DIR=",
+            "CODEX_WEB_MANAGED_VALIDATION_RUNNER=",
         )
         entries = [
             item
@@ -131,6 +140,9 @@ def _with_execution_python_environment(
                 'PIP_REQUIRE_VIRTUALENV="1"',
             )
         )
+        for name in ("CODEX_WEB_MANAGED_VALIDATION_DIR", "CODEX_WEB_MANAGED_VALIDATION_RUNNER"):
+            if environment.get(name):
+                entries.append(f"{name}={json.dumps(environment[name])}")
         updated[index] = prefix + ",".join(entries) + "}"
         break
     return tuple(updated)
@@ -220,14 +232,30 @@ class AssignmentBoundAgentProcessSession:
         self.egress_broker: AssignmentBoundAgentModelEgressBroker | None = None
         self.control_plane_broker: AssignmentBoundControlPlaneBroker | None = None
         self._start_lock = asyncio.Lock()
+        self._stop_task = None
         self._stopping = False
+        # One serial supervision lane per admitted session. Browser projections
+        # and repository tools must not exhaust the executor needed to renew it.
+        # This is process lifecycle infrastructure, never admission authority.
+        self._supervision_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-supervision")
+        self._diagnostic_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-diagnostic")
+        self._bound_assignment: ExecutionAssignment | None = None
+        self._executor_work = set()
+        self.diagnostic_state = "none"
+        self._failure_observation = {}
+        self._retirement_lock = asyncio.Lock()
+        self._retired = False
+        self._owned_process = None
+        self._process_cleanup_done = False
+        self.managed_validation = None
+        self._supervision_timings: dict[str, float] = {}
 
     @property
     def worker_id(self) -> str:
         return self.local_worker.worker.id
 
     def status(self) -> AssignmentBoundAgentSessionStatus:
-        proc = self.runtime.proc if self.runtime is not None else None
+        proc = (self.runtime.proc if self.runtime is not None else None) or self._owned_process
         running = bool(proc is not None and proc.poll() is None)
         ready = bool(running and self.runtime is not None and self.runtime.ready.is_set())
         return AssignmentBoundAgentSessionStatus(
@@ -237,6 +265,9 @@ class AssignmentBoundAgentProcessSession:
             running=running,
             ready=ready,
             last_error=self.last_error,
+            diagnostic_state=self.diagnostic_state,
+            pending_executor_work=len(self._executor_work),
+            validation_custody_state=self.managed_validation.state if self.managed_validation else "unavailable",
             credential_expires_at=(
                 self.delegation.expires_at if self.delegation is not None else None
             ),
@@ -364,6 +395,9 @@ class AssignmentBoundAgentProcessSession:
         def launch(launch_input: AssignmentRuntimeLaunchInput):
             command = launch_input.command
             environment = dict(launch_input.environment)
+            if self.managed_validation and self.managed_validation.registration:
+                environment["CODEX_WEB_MANAGED_VALIDATION_DIR"] = str(self.managed_validation.directory)
+                environment["CODEX_WEB_MANAGED_VALIDATION_RUNNER"] = "/opt/codex-managed-validation.py"
             python_environment_resolver = getattr(
                 self.local_worker,
                 "python_environment",
@@ -404,6 +438,8 @@ class AssignmentBoundAgentProcessSession:
             trusted_mounts = _merge_trusted_mounts(
                 trusted_mounts,
                 tuple(getattr(launch_input, "trusted_mounts", ()) or ()),
+                ((Path(managed_validation_runner.__file__), Path('/opt/codex-managed-validation.py')),)
+                    if self.managed_validation and self.managed_validation.registration else (),
             )
             if python_environment is not None:
                 trusted_mounts = _merge_trusted_mounts(
@@ -617,6 +653,8 @@ class AssignmentBoundAgentProcessSession:
 
     async def start(self) -> "AssignmentBoundAgentProcessSession":
         async with self._start_lock:
+            if self._stop_task is not None:
+                raise AssignmentBoundAgentProcessSessionStaleError("stopped process session cannot restart")
             current = self.status()
             if current.running and current.ready:
                 return self
@@ -638,6 +676,13 @@ class AssignmentBoundAgentProcessSession:
             control_broker = None
             try:
                 self.fence = lease.fence
+                self._bound_assignment = assignment
+                evidence = self.local_worker.artifact_evidence
+                if evidence is not None and evidence.content is not None:
+                    await asyncio.to_thread(self.local_worker.python_environment, assignment)
+                    self.managed_validation = ManagedValidationCustody(evidence, assignment, workspace_path,
+                        self.local_worker.worker_actor)
+                    await asyncio.to_thread(self.managed_validation.prepare)
                 broker = await self._start_egress_broker()
                 self.egress_broker = broker
                 control_broker = await self._start_control_plane_broker(
@@ -652,6 +697,7 @@ class AssignmentBoundAgentProcessSession:
                     control_broker,
                 )
                 self.delegation = delegation
+                self._owned_process = process
                 self.workspace_path = workspace_path
                 self.git_metadata_path = self.local_worker.backend.discover_git_metadata(
                     workspace_path
@@ -719,7 +765,7 @@ class AssignmentBoundAgentProcessSession:
                 "assignment-bound agent runtime session exceeded wall_seconds"
             )
         now_monotonic = self._monotonic()
-        with self._disk_validation_lock:
+        with operation_lock(self._disk_validation_lock):
             if (
                 self.last_disk_validation_monotonic is None
                 or now_monotonic - self.last_disk_validation_monotonic
@@ -760,6 +806,7 @@ class AssignmentBoundAgentProcessSession:
                 )
 
     def validate_current(self) -> ExecutionAssignment:
+        identity_started = time.monotonic()
         if self.delegation is None or self.fence is None:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session has no active delegation"
@@ -787,7 +834,12 @@ class AssignmentBoundAgentProcessSession:
             assignment,
             actor=self.local_worker.worker_actor,
         )
-        self._validate_resource_bounds(assignment)
+        self._supervision_timings["identity_seconds"] = round(time.monotonic() - identity_started, 6)
+        resource_started = time.monotonic()
+        try:
+            self._validate_resource_bounds(assignment)
+        finally:
+            self._supervision_timings["resource_seconds"] = round(time.monotonic() - resource_started, 6)
         return assignment
 
     def _heartbeat_and_renew(self, assignment: ExecutionAssignment) -> ExecutionAssignment:
@@ -823,28 +875,117 @@ class AssignmentBoundAgentProcessSession:
             )
         return assignment
 
+    async def _supervise(self, phase, function, *args, seconds):
+        budget = StorageOperationBudget(seconds)
+        context = contextvars.copy_context()
+        context.run(storage_operation_budget.set, budget)
+        submitted = time.monotonic()
+        self._supervision_phase = phase
+        def run():
+            def invoke():
+                check_operation_budget()
+                started = time.monotonic()
+                self._supervision_timings[f"{phase}_queue_seconds"] = round(started - submitted, 6)
+                try:
+                    result = function(*args)
+                    check_operation_budget()
+                    return result
+                finally:
+                    self._supervision_timings[f"{phase}_seconds"] = round(time.monotonic() - started, 6)
+            return context.run(invoke)
+        future = self._supervision_executor.submit(run)
+        self._executor_work.add(future)
+        future.add_done_callback(self._executor_work.discard)
+        try:
+            return await asyncio.wait_for(asyncio.wrap_future(future), seconds)
+        finally:
+            self._supervision_timings[f"{phase}_wait_seconds"] = round(time.monotonic() - submitted, 6)
+            budget.cancelled.set()
+            future.cancel()
+
+    def _lease_budget(self):
+        assignment = self._bound_assignment
+        lease = assignment.lease if assignment else None
+        now = self._clock()
+        expires = min(lease.expires_at, assignment.deadline_at or lease.expires_at) if lease else now
+        if expires <= now:
+            raise TimeoutError("last validated lease or assignment deadline expired")
+        return min(10.0, expires - now)
+
+    async def _retire_failed_runtime(self, code, message):
+        async with self._retirement_lock:
+            if self._retired:
+                return
+            self._retired = True
+            await self._retire_failed_runtime_once(code, message)
+
+    async def _retire_failed_runtime_once(self, code, message):
+        # Kill the owned process group before any storage call. Metadata-only
+        # diagnostics use a separate bounded attempt; unavailable storage cannot
+        # keep the sandbox alive or acquire newer credentials/fencing authority.
+        process = (self.runtime.proc if self.runtime else None) or self._owned_process
+        self._failure_observation = {"observed_at": time.time(), "process_pid": process.pid if process else None,
+            "process_exit_code": process.poll() if process else None,
+            "phase": getattr(self, "_supervision_phase", "process"),
+            "limit_kind": next((name for name in ('disk_bytes','memory_bytes','wall_seconds')
+                                if f'exceeded {name}' in (self.last_error or '')), None),
+            "observed_disk_bytes": self.last_disk_bytes,
+            "lease_expires_at": self._bound_assignment.lease.expires_at if self._bound_assignment and self._bound_assignment.lease else None}
+        try:
+            await self._stop_runtime_from_watchdog()
+            self._failure_observation['cleanup_state'] = 'stopped' if process is None or process.poll() is not None else 'unavailable'
+        except Exception:
+            self._failure_observation['cleanup_state'] = 'unavailable'
+        budget = StorageOperationBudget(1.0)
+        context = contextvars.copy_context()
+        context.run(storage_operation_budget.set, budget)
+        self.diagnostic_state = "pending"
+        future = self._diagnostic_executor.submit(context.run,
+            lambda: self._record_runtime_failure(failure_code=code,
+                failure_message=message, release_reason=message))
+        self._executor_work.add(future)
+        future.add_done_callback(self._executor_work.discard)
+        try:
+            await asyncio.wait_for(asyncio.wrap_future(future), 1.0)
+        except Exception:
+            if self.diagnostic_state != "recorded":
+                self.diagnostic_state = "unavailable"
+        finally:
+            if self.diagnostic_state == "pending":
+                self.diagnostic_state = "unavailable"
+            budget.cancelled.set()
+            future.cancel()
+            self._diagnostic_executor.shutdown(wait=False, cancel_futures=True)
+
     async def _watchdog(self) -> None:
         while not self._stopping:
-            await self._sleep(self.watchdog_interval_seconds)
+            try:
+                delay = min(self.watchdog_interval_seconds, self._lease_budget())
+            except TimeoutError:
+                await self._retire_failed_runtime("execution_timeout", "last validated lease or deadline expired")
+                return
+            await self._sleep(delay)
             if self._stopping:
                 return
             runtime = self.runtime
-            process = runtime.proc if runtime is not None else None
+            process = (runtime.proc if runtime is not None else None) or self._owned_process
             if process is None or process.poll() is not None:
-                self.last_error = self.last_error or "agent runtime process exited"
-                await asyncio.to_thread(self._record_unexpected_process_exit)
+                self.last_error = "agent runtime process exited"
+                await self._retire_failed_runtime("agent_runtime_process_exited", self.last_error)
                 return
             try:
-                assignment = await asyncio.to_thread(self.validate_current)
-                await asyncio.to_thread(
-                    self._heartbeat_and_renew,
-                    assignment,
-                )
+                assignment = await self._supervise("validation", self.validate_current, seconds=self._lease_budget())
+                self._bound_assignment = await self._supervise("renewal",
+                    self._heartbeat_and_renew, assignment, seconds=self._lease_budget())
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self.last_error = str(exc)
-                await self._stop_runtime_from_watchdog()
+                self.last_error = (str(exc) if isinstance(exc, (AssignmentBoundAgentSessionStaleError, CodexAuthDelegationStaleError))
+                                   else "runtime supervision unavailable")
+                code = "execution_timeout" if isinstance(exc, TimeoutError) else "agent_runtime_validation_failed"
+                if "exceeded " in self.last_error and isinstance(exc, AssignmentBoundAgentProcessSessionStaleError):
+                    code = "resource_limit"
+                await self._retire_failed_runtime(code, "assignment-bound runtime supervision failed")
                 return
 
     def _record_runtime_failure(
@@ -854,10 +995,52 @@ class AssignmentBoundAgentProcessSession:
         failure_message: str,
         release_reason: str,
     ) -> None:
-        try:
-            assignment = self._current_assignment()
-        except Exception:
+        # Never borrow the latest claimant's token/fence to report an old
+        # session's failure. Observations survive loss; completion still requires
+        # the exact original lease and canonical worker validation.
+        assignment = self._bound_assignment
+        if assignment is None:
             return
+        check_operation_budget()
+        if self.managed_validation:
+            try:
+                self.managed_validation.capture()
+            except Exception:
+                self.managed_validation.state = 'unavailable'
+        evidence_ids = []
+        metadata = {"observed_fence": self.fence,
+                    "failure_code": failure_code,
+                    **self._failure_observation,
+                    **dict(self._supervision_timings)}
+        evidence_service = self.local_worker.artifact_evidence
+        if evidence_service is not None:
+            try:
+                check_operation_budget()
+                evidence = evidence_service.create_evidence(EvidenceCreate(
+                    project_id=assignment.project_id, work_item_ref=assignment.work_item_ref,
+                    execution_id=assignment.execution_id, execution_workspace_id=assignment.execution_workspace_id,
+                    resource_ids=assignment.resource_ids, evidence_type=EvidenceType.RUNTIME_RESULT,
+                    provider="local-execution-worker", source="agent-runtime-supervision",
+                    result=EvidenceResult.FAIL, summary=failure_message,
+                    deny_model_context=True,
+                    metadata={"assignment_id": assignment.id, "worker_id": self.worker_id, **metadata}),
+                    actor=self.local_worker.worker_actor)
+                evidence_ids.append(evidence.id)
+                self.diagnostic_state = "recorded"
+            except Exception:
+                pass
+        try:
+            check_operation_budget()
+            self.local_worker.worker_service.record_runtime_observation(
+                self.worker_id, assignment.id, observed_fence=self.fence,
+                failure_code=failure_code, timings=dict(self._supervision_timings),
+                evidence_id=evidence_ids[0] if evidence_ids else None,
+                actor=self.local_worker.worker_actor)
+        except Exception:
+            pass
+        check_operation_budget()
+        if self._failure_observation.get('cleanup_state') == 'unavailable':
+            return  # No assertion of retirement while an owned process may live.
         lease = assignment.lease
         if (
             lease is None
@@ -866,6 +1049,7 @@ class AssignmentBoundAgentProcessSession:
         ):
             return
         try:
+            check_operation_budget()
             self.local_worker.worker_service.complete(
                 self.worker_id,
                 assignment.id,
@@ -875,6 +1059,7 @@ class AssignmentBoundAgentProcessSession:
                     succeeded=False,
                     failure_code=failure_code,
                     failure_message=failure_message,
+                    evidence_ids=tuple(evidence_ids),
                 ),
                 actor=self.local_worker.worker_actor,
             )
@@ -882,15 +1067,10 @@ class AssignmentBoundAgentProcessSession:
             return
         if assignment.execution_workspace_id:
             with contextlib.suppress(Exception):
-                self.local_worker.workspace_service.release(
-                    assignment.execution_workspace_id,
-                    ExecutionWorkspaceRelease(
-                        discard=False,
-                        reason=release_reason,
-                    ),
-                    actor=self.local_worker.control_actor,
-                    preserve_files=True,
-                )
+                check_operation_budget()
+                self.local_worker.workspace_service.release_failed_assignment(
+                    assignment.execution_workspace_id, assignment,
+                    actor=self.local_worker.control_actor)
 
     def _record_unexpected_process_exit(self) -> None:
         self._record_runtime_failure(
@@ -901,9 +1081,18 @@ class AssignmentBoundAgentProcessSession:
 
     async def _stop_runtime_from_watchdog(self) -> None:
         self._stopping = True
+        self._supervision_executor.shutdown(wait=False, cancel_futures=True)
         try:
+            process = (self.runtime.proc if self.runtime else None) or self._owned_process
+            if process is not None and not self._process_cleanup_done:
+                # killpg is independent of Python executors and store locks.
+                self.local_worker.backend.terminate_process(process)
+                deadline = time.monotonic() + .5
+                while process.poll() is None and time.monotonic() < deadline:
+                    await asyncio.sleep(.01)
+                self._process_cleanup_done = process.poll() is not None
             if self.runtime is not None:
-                await self.runtime.stop()
+                await asyncio.wait_for(self.runtime.stop(), 1.0)
         finally:
             self._stopping = False
 
@@ -926,12 +1115,7 @@ class AssignmentBoundAgentProcessSession:
                 and method not in {"thread/read", "turn/interrupt"}
             ):
                 self.last_error = f"agent runtime RPC timed out: {method}"
-                await asyncio.to_thread(
-                    self._record_runtime_failure,
-                    failure_code="agent_runtime_rpc_timeout",
-                    failure_message=self.last_error,
-                    release_reason="agent runtime RPC timed out",
-                )
+                await self._retire_failed_runtime("agent_runtime_rpc_timeout", self.last_error)
                 await self.stop()
             raise
 
@@ -956,28 +1140,58 @@ class AssignmentBoundAgentProcessSession:
         await self.runtime.respond_to_server_request(request_id, result)
 
     async def stop(self) -> None:
-        self._stopping = True
-        task = self.watchdog_task
-        self.watchdog_task = None
-        if (
-            task is not None
-            and task is not asyncio.current_task()
-            and not task.done()
-        ):
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        if self.runtime is not None:
-            await self.runtime.stop()
-        broker = self.egress_broker
-        self.egress_broker = None
-        if broker is not None:
-            await broker.stop()
-        control_broker = self.control_plane_broker
-        self.control_plane_broker = None
-        if control_broker is not None:
-            await control_broker.stop()
-        self._stopping = False
+        # One owned cleanup task survives a cancelled caller and is shared by
+        # direct, manager and teardown callers. Never resubmit to shut executors.
+        if self._stop_task is None:
+            self._stop_task = asyncio.create_task(self._stop_once())
+        await asyncio.shield(self._stop_task)
+
+    async def _stop_once(self) -> None:
+        async with self._start_lock:
+            self._stopping = True
+            errors = []
+            task = self.watchdog_task
+            self.watchdog_task = None
+            if task is not None and task is not asyncio.current_task() and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            try:
+                await self._stop_runtime_from_watchdog()
+            except Exception as exc:
+                errors.append(exc)
+            if self.managed_validation and not self._retired:
+                budget = StorageOperationBudget(1.0)
+                context = contextvars.copy_context()
+                context.run(storage_operation_budget.set, budget)
+                future = None
+                try:
+                    future = self._diagnostic_executor.submit(context.run, self.managed_validation.capture)
+                    self._executor_work.add(future)
+                    future.add_done_callback(self._executor_work.discard)
+                    await asyncio.wait_for(asyncio.wrap_future(future),1.0)
+                except Exception:
+                    self.managed_validation.state = 'unavailable'
+                finally:
+                    budget.cancelled.set()
+                    if future is not None:
+                        future.cancel()
+            # Attempt every owned broker even if process cleanup/another broker
+            # fails. A failed cleanup is retained, never reported as successful.
+            for name in ('egress_broker','control_plane_broker'):
+                broker = getattr(self,name)
+                setattr(self,name,None)
+                if broker is not None:
+                    try:
+                        await broker.stop()
+                    except Exception as exc:
+                        errors.append(exc)
+            self._supervision_executor.shutdown(wait=False, cancel_futures=True)
+            self._diagnostic_executor.shutdown(wait=False, cancel_futures=True)
+            self._stopping = False
+            if errors:
+                self.last_error = 'runtime cleanup unavailable'
+                raise RuntimeError(self.last_error) from errors[0]
 
 
 class AssignmentBoundAgentProcessSessionManager:

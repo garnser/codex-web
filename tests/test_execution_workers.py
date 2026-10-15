@@ -176,13 +176,13 @@ class ExecutionWorkerServiceTests(unittest.TestCase):
     def test_renew_rechecks_expiry_inside_keyed_transaction(self) -> None:
         assignment = self._assignment()
         claimed = self.service.claim(self.worker.id, AssignmentClaimRequest(), actor=self.worker_actor)
-        update = self.service.store.store.record_update
+        update = self.service.store.store.record_mutate_many
 
         def delayed_update(*args, **kwargs):
             with patch("codex_web.services.execution_workers.time.time", return_value=claimed.lease.expires_at + 1):
                 return update(*args, **kwargs)
 
-        with patch.object(self.service.store.store, "record_update", side_effect=delayed_update):
+        with patch.object(self.service.store.store, "record_mutate_many", side_effect=delayed_update):
             with self.assertRaises(WorkerLeaseError):
                 self.service.renew(self.worker.id, assignment.id,
                     AssignmentRenewRequest(lease_token=claimed.lease.lease_token, fence=claimed.fence), actor=self.worker_actor)
