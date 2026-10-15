@@ -37,6 +37,11 @@ class RuntimeBindingControlRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=4000)
 
 
+class ProjectDelegationControlRequest(RuntimeBindingControlRequest):
+    expected_updated_at: float = Field(gt=0)
+    expected_delegation_revision: int = Field(ge=0)
+
+
 class RuntimeObjectiveAttachRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -418,6 +423,31 @@ def build_goal_execution_bindings_router(
                 scope=actor.tenant,
                 actor_id=actor.identity_id,
             )
+            return {"item": item.model_dump(mode="json")}
+        except (AuthorizationError, GoalExecutionBindingError, ValueError) as exc:
+            raise _error(exc) from exc
+
+    @router.post("/{goal_id}/execution-bindings/{binding_id}/authorize-project-delegation")
+    async def authorize_project_delegation(goal_id: str, binding_id: str,
+            payload: ProjectDelegationControlRequest, request: Request,
+            project_id: str | None = Query(default=None, min_length=1)) -> dict[str, Any]:
+        try:
+            actor = mutation_actor(request)
+            if actor.principal_kind != PrincipalKind.HUMAN:
+                raise AuthorizationError("human operator required for Project delegation")
+            require_project_goal(goal_id, project_id, actor)
+            existing = service.get(binding_id, scope=actor.tenant)
+            if existing.goal_id != goal_id:
+                raise GoalExecutionBindingNotFoundError("goal execution binding not found")
+            session = agent_sessions.get(existing.agent_session_id, actor)
+            if (session.project_id != existing.project_id
+                    or session.provider_native_session_id != existing.thread_id
+                    or session.provider_id != existing.provider_id or session.runtime_id != existing.runtime_id
+                    or session.status != "ready"):
+                raise GoalExecutionBindingConflictError("binding requires its current canonical Session")
+            item = service.authorize_project_delegation(binding_id, actor=actor,
+                expected_updated_at=payload.expected_updated_at,
+                expected_delegation_revision=payload.expected_delegation_revision, reason=payload.reason)
             return {"item": item.model_dump(mode="json")}
         except (AuthorizationError, GoalExecutionBindingError, ValueError) as exc:
             raise _error(exc) from exc

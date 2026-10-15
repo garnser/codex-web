@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from codex_web.agent_runtime import AgentSessionStatus
 from codex_web.goal_execution_bindings import (
     GoalExecutionBindingStatus,
+    GoalExecutionMode,
     GoalExecutionBindingUpdate,
 )
 from codex_web.identity import (
@@ -51,6 +52,8 @@ class GoalContinuationRecoveryService:
 
     @classmethod
     def _eligible(cls, binding, *, now: float) -> bool:
+        if getattr(binding, "execution_mode", GoalExecutionMode.APPLICATION) != GoalExecutionMode.APPLICATION:
+            return False
         if binding.status in cls._TERMINAL:
             return False
         if (

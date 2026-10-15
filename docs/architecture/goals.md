@@ -191,3 +191,42 @@ projects these canonical contracts for operators without introducing client-side
 shadow state.
 
 Any reasoning added there must follow the Token Efficiency Ruleset: deterministic-first gating, minimum sufficient context, bounded calls/depth, structured output, and Goal-attributed token/cost accounting.
+
+## Explicit Project delegation and continuation ownership
+
+Goal execution binding state version 1.1 separates `execution_mode` from the
+historical continuation `status`. `application_continuation` retains the existing
+global autonomy, exclusive scope, kill, budget and business gates.
+`project_delegation` admits no application continuation claim, recovery dispatch,
+terminal-event dispatch or late lease/policy mutation. It adds no continuation
+engine and does not control the native Goal lifecycle.
+
+A scoped administrator with MFA may explicitly authorize human-owned whole-Project
+child delegation using the existing binding's dedicated authorization operation.
+The operator must own the active, unchanged Goal and binding, name its current
+ready native Session, and supply the current binding timestamp and monotonically
+increasing delegation revision. An active application lease, running/terminal/
+unknown binding, foreign owner or stale control refuses. This operation records
+`binding_project_delegation_authorized`; it preserves status, stop reason and all
+prior events, including a previous `global_autonomy_paused` block. Generic PATCH
+cannot supply mode or authorization fields or cosmetically resume delegation's
+continuation status. Pause/cancel and generic stop mutations revoke delegation
+atomically and advance its authorization revision.
+
+Admission still checks the current Goal/revision/owner, Project roots, invoking
+actor, native Session/bootstrap/assignment/fence, lease, tenant/resources, child
+profile and invocation rights; queued proof is checked again before native input.
+This explicit operator contract cannot admit unrelated paused business work or
+weaken automatic-continuation gates. Operator UI displays both dimensions and
+uses the same authenticated API with stale-control preconditions.
+
+Legacy 1.0 documents decode as application continuation with no delegation grant;
+no block reason text manufactures authority. Their events/status are retained.
+The next canonical write persists 1.1 and the typed fields. Frozen pre-1.1 readers
+reject those fields (`extra=forbid`); unknown versions also refuse. After that
+persisted boundary, an older binary is not an authorized writer and source-only
+rollback does not restore compatibility. Upgrade/restore qualification must
+preserve current records and drain old writers. Existing blocked legacy bindings
+need a fresh audited operator authorization, never an automated status patch.
+Delivery and remaining installed acceptance are tracked by #1499, with shared
+operator UI scope #125/#127; native Goal lifecycle control remains #1500.

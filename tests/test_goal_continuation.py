@@ -50,7 +50,7 @@ class _Bindings:
         )
         return self.binding
 
-    def update(self, binding_id, payload, *, scope, actor_id):
+    def update(self, binding_id, payload, *, scope, actor_id, application_only=False):
         self.updated.append((binding_id, payload, actor_id))
         return self.binding
 

@@ -9,6 +9,7 @@ from urllib.parse import unquote
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from codex_web.goal_execution_bindings import GoalExecutionMode, ProjectDelegationAuthorization
 from codex_web.action_intents import ActionDecisionSnapshot, ActionIntentCreate, ActionIntentRetryPolicy
 from codex_web.action_providers import (
     ActionCapability, ActionDefinition, ActionEvidence, ActionRequest, ActionResult,
@@ -117,7 +118,9 @@ class ProjectCoordinationService:
         binding = self.goal_bindings.get(proof.goal_binding_id, scope=actor.tenant)
         goal = self.goal_bindings.goals.get(binding.goal_id, scope=actor.tenant)
         roots = [v for v in goal.work_graph_bindings if v.project_id == current.project_id]
-        if binding.status not in {"requested", "active", "idle"}:
+        if (binding.execution_mode != GoalExecutionMode.PROJECT_DELEGATION
+                or binding.delegation_authorization != ProjectDelegationAuthorization.AUTHORIZED
+                or binding.status not in {"requested", "active", "idle", "blocked"}):
             denied(f"Goal execution binding is {binding.status}; inspect its explicit authorization")
         if goal.status != "active":
             denied(f"Canonical Goal is {goal.status}; project delegation requires an active Goal")

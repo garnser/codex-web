@@ -4,6 +4,8 @@ import time
 
 from codex_web.goal_execution_bindings import (
     GoalExecutionBinding,
+    GoalExecutionMode,
+    ProjectDelegationAuthorization,
     GoalExecutionBindingCreate,
     GoalExecutionBindingReconcile,
     GoalExecutionBindingEvent,
@@ -11,7 +13,7 @@ from codex_web.goal_execution_bindings import (
     GoalExecutionBindingStatus,
     GoalExecutionBindingUpdate,
 )
-from codex_web.identity import TenantScope
+from codex_web.identity import TenantScope, PrincipalKind
 from codex_web.observability import current_correlation
 from codex_web.services.goals import GoalNotFoundError, GoalService
 from codex_web.storage.goal_execution_bindings import GoalExecutionBindingStore
@@ -211,6 +213,7 @@ class GoalExecutionBindingService:
         *,
         scope: TenantScope,
         actor_id: str,
+        application_only: bool = False,
     ) -> GoalExecutionBinding:
         audit = self._audit_context()
         result: GoalExecutionBinding | None = None
@@ -218,6 +221,12 @@ class GoalExecutionBindingService:
         def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
             nonlocal result
             current = self._binding(state, binding_id, scope)
+            if application_only and current.execution_mode != GoalExecutionMode.APPLICATION:
+                result = current
+                return state
+            if current.execution_mode == GoalExecutionMode.PROJECT_DELEGATION and payload.status in {
+                    GoalExecutionBindingStatus.REQUESTED, GoalExecutionBindingStatus.ACTIVE, GoalExecutionBindingStatus.IDLE}:
+                raise GoalExecutionBindingConflictError("delegation cannot rewrite continuation status")
             changes = payload.model_dump(
                 mode="python",
                 exclude={"reason"},
@@ -227,6 +236,11 @@ class GoalExecutionBindingService:
                 raise GoalExecutionBindingConflictError(
                     "execution binding update contains no changes"
                 )
+            if payload.status in {GoalExecutionBindingStatus.BLOCKED, GoalExecutionBindingStatus.FAILED,
+                    GoalExecutionBindingStatus.UNKNOWN, GoalExecutionBindingStatus.CANCELLED,
+                    GoalExecutionBindingStatus.COMPLETED}:
+                changes["delegation_authorization"] = ProjectDelegationAuthorization.REVOKED
+                changes["delegation_revision"] = current.delegation_revision + 1
             result = current.model_copy(
                 update={
                     **changes,
@@ -298,6 +312,8 @@ class GoalExecutionBindingService:
             result = current.model_copy(
                 update={
                     "status": status,
+                    "delegation_authorization": ProjectDelegationAuthorization.REVOKED,
+                    "delegation_revision": current.delegation_revision + 1,
                     "lease_owner_id": None,
                     "lease_expires_at": None,
                     "heartbeat_at": now,
@@ -336,6 +352,55 @@ class GoalExecutionBindingService:
         assert result is not None
         return result
 
+    def authorize_project_delegation(self, binding_id, *, actor, expected_updated_at, expected_delegation_revision, reason):
+        """Explicit operator authorization, never a continuation resume/status repair.
+
+        The API requires admin+MFA. Canonical ownership and CAS are checked here;
+        every actual child admission still checks live Goal/session/worker scope.
+        """
+        if actor.principal_kind != PrincipalKind.HUMAN:
+            raise GoalExecutionBindingConflictError("human operator required for Project delegation")
+        if not reason.strip():
+            raise ValueError("delegation authorization reason required")
+        audit = self._audit_context()
+        result = None
+        def apply(state):
+            nonlocal result
+            current = self._binding(state, binding_id, actor.tenant)
+            goal = self.goals.get(current.goal_id, scope=actor.tenant)
+            roots = [r for r in goal.work_graph_bindings if r.project_id == current.project_id]
+            if (current.updated_at != expected_updated_at
+                    or current.delegation_revision != expected_delegation_revision or goal.status != "active"
+                    or current.goal_revision != goal.revision
+                    or current.created_by != actor.identity_id
+                    or current.execution_owner_id != actor.identity_id
+                    or goal.owner_identity_id != actor.identity_id
+                    or len(roots) != 1 or roots[0].root_work_item_refs or current.work_item_refs
+                    or not current.thread_id):
+                raise GoalExecutionBindingConflictError("changed or foreign whole-Project delegation authorization")
+            if current.status in {GoalExecutionBindingStatus.COMPLETED, GoalExecutionBindingStatus.CANCELLED,
+                    GoalExecutionBindingStatus.FAILED, GoalExecutionBindingStatus.UNKNOWN, GoalExecutionBindingStatus.ACTIVE}:
+                raise GoalExecutionBindingConflictError("active/terminal/unknown binding cannot authorize delegation")
+            now = time.time()
+            if current.lease_owner_id is not None and current.lease_expires_at is not None and current.lease_expires_at > now:
+                raise GoalExecutionBindingConflictError("active continuation lease prevents delegation transfer")
+            result = current.model_copy(update={
+                "execution_mode": GoalExecutionMode.PROJECT_DELEGATION,
+                "delegation_authorization": ProjectDelegationAuthorization.AUTHORIZED,
+                "delegation_revision": current.delegation_revision + 1,
+                "updated_by": actor.identity_id, "updated_at": now, "change_reason": reason,
+                "updated_correlation_id": audit["correlation_id"],
+                "updated_causation_id": audit["causation_id"],
+            })
+            state.bindings = [result if b.id == current.id else b for b in state.bindings]
+            state.events.append(GoalExecutionBindingEvent(binding_id=current.id, goal_id=goal.id,
+                event_type="binding_project_delegation_authorized", actor_id=actor.identity_id,
+                reason=reason, occurred_at=now, correlation_id=audit["correlation_id"],
+                causation_id=audit["causation_id"]))
+            return state
+        self.store.update(apply)
+        return result
+
     def resume_operator_pause(
         self,
         binding_id: str,
@@ -351,6 +416,8 @@ class GoalExecutionBindingService:
         def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
             nonlocal result
             current = self._binding(state, binding_id, scope)
+            if current.execution_mode != GoalExecutionMode.APPLICATION:
+                raise GoalExecutionBindingConflictError("Project delegation cannot resume application continuation")
             if (
                 current.status != GoalExecutionBindingStatus.BLOCKED
                 or not (current.stop_reason or "").startswith("operator paused:")
@@ -470,6 +537,8 @@ class GoalExecutionBindingService:
         def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
             nonlocal result
             current = self._binding(state, binding_id, scope)
+            if current.execution_mode != GoalExecutionMode.APPLICATION:
+                raise GoalExecutionBindingConflictError("Project delegation cannot claim application continuation")
             if current.status.value in {
                 "completed",
                 "cancelled",
@@ -541,6 +610,9 @@ class GoalExecutionBindingService:
         def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
             nonlocal result
             current = self._binding(state, binding_id, scope)
+            if current.execution_mode != GoalExecutionMode.APPLICATION:
+                result = current
+                return state
             if current.lease_owner_id != owner_id:
                 raise GoalExecutionBindingConflictError(
                     "continuation lease is owned by another worker"
@@ -592,6 +664,9 @@ class GoalExecutionBindingService:
         def apply(state: GoalExecutionBindingState) -> GoalExecutionBindingState:
             nonlocal result
             current = self._binding(state, binding_id, scope)
+            if current.execution_mode != GoalExecutionMode.APPLICATION:
+                result = current
+                return state
             if current.lease_owner_id != owner_id:
                 raise GoalExecutionBindingConflictError(
                     "continuation lease is owned by another worker"

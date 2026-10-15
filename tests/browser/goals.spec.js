@@ -620,3 +620,33 @@ test('runtime cancellation identifies its binding and does not claim provider wo
   await resolveAction(page);
   await expect.poll(() => posts.filter(item => item.action === 'runtime-cancel').length).toBe(1);
 });
+
+test('Project delegation authorization uses reviewed scope and stale-control preconditions', async ({ page }) => {
+  const posts = [];
+  await mockGoalApis(page, posts);
+  await page.route('**/api/goals/goal-a/execution-bindings?*', async route => {
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ items: [{
+      id: 'goal-binding-a', goal_id: 'goal-a', goal_revision: 4, project_id: 'project-a',
+      work_item_refs: [], status: 'blocked', stop_reason: 'global_autonomy_paused',
+      execution_mode: 'project_delegation', delegation_authorization: 'revoked',
+      delegation_revision: 7, updated_at: 1890000100,
+      agent_session_id: 'agent-session-7', execution_owner_id: 'release-validator',
+    }] }) });
+  });
+  await page.route('**/authorize-project-delegation?*', async route => {
+    posts.push({ action: 'authorize-project-delegation', body: route.request().postDataJSON() });
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({}) });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/goals_fixture.html');
+  await page.locator('#goals-button').click();
+  await expect(page.locator('.goal-execution-binding')).toContainText('Project delegation: revoked');
+  page.on('dialog', dialog => dialog.accept('Reviewed explicit Project delegation'));
+  await page.locator('.goal-project-delegation-authorize').click();
+  await resolveAction(page);
+  await expect.poll(() => posts.filter(item => item.action === 'authorize-project-delegation').length).toBe(1);
+  expect(posts.find(item => item.action === 'authorize-project-delegation').body).toMatchObject({
+    expected_updated_at: 1890000100, expected_delegation_revision: 7,
+    reason: 'Reviewed explicit Project delegation',
+  });
+  await expect(page.locator('.goal-runtime-resume')).toHaveCount(0);
+});
