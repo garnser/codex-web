@@ -6,7 +6,7 @@ test('native result reconciliation captures unverified evidence without replay',
   await expect.poll(()=>page.evaluate(()=>Boolean(window.__ready))).toBe(true);
   await page.getByRole('button',{name:'Inspect batch originals'}).first().click();
   await expect(page.locator('pre').first()).toContainText('Candidate evidence requiring review: fixture-unreviewed-proposal');
-  await expect(page.getByRole('link',{name:'Inspect evidence fixture-unreviewed-proposal'})).toHaveAttribute('href','/api/evidence/fixture-unreviewed-proposal');
+  await expect(page.getByRole('link',{name:'View evidence: Inspect evidence fixture-unreviewed-proposal'})).toHaveAttribute('href','/projects/project-a/operations?consumer_type=evidence&consumer_id=fixture-unreviewed-proposal');
   await page.getByRole('button',{name:'Capture completed native proposals'}).click();
   await expect(page.getByText('Independent review is still required; no native turn was started.',{exact:false})).toBeVisible();
   expect(await page.evaluate(()=>window.__captureBody)).toEqual({expected_native_turn_id:'shared-native-turn'});

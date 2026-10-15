@@ -79,6 +79,8 @@ class NotificationBatchInspection:
             "result_contract_version": batch.plan.result_contract_version,
             "can_capture_results": self._can_review_recovery(actor)
             and batch.plan.result_contract_version is not None and batch.native_receipt is not None,
+            "can_review_processing": self._can_review_recovery(actor) and batch.native_receipt is not None,
+            "processing_count": len(batch.processing),
             "phase": batch.phase,
             "thread_id": member.thread_id,
             "project_id": member.project_id,
@@ -181,6 +183,8 @@ class NotificationBatchInspection:
                         for key in ("id", "thread_id", "reply_target")
                     },
                     "attempt_id": attempt_id,
+                    "processing_receipt": next((row.model_dump(mode="json") for row in batch.processing
+                        if row.original_id == json.loads(raw)["id"]), None),
                     "retained_status": retained.status if retained else "missing",
                     "current_batch_id": retained.notification_batch_id
                     if retained

@@ -298,7 +298,7 @@ This additive inspection uses existing Evidence metadata and changes no persiste
 batch schema. Older readers continue to show unresolved outcomes; rollback loses
 only this projection, not proof or originals. The proof writing/review process
 uses existing canonical API authorization and data-governance invalidation.
-Automated proof production, processing/follow-up integration, deployment and real
+Automated proof production, deployment and real
 Orchestrator useful-throughput qualification remain separate parent acceptance
 requirements; this read-only view cannot fulfill them by itself.
 
@@ -365,8 +365,8 @@ Plan1.2 is strict-reader incompatible; the existing full-writer drain, verified
 backup and post-write rollback restrictions apply. The new native index is
 additive and is not silently backfilled during inspection. Evidence/Verification
 retain their existing persistence and data-governance contracts. Captured proposals
-do not qualify independently verified processing/follow-up, human-facing reply
-presentation, production rollout or real Orchestrator throughput acceptance.
+alone do not qualify processing/follow-up, production rollout or real Orchestrator
+throughput acceptance. Explicit reviewed processing is described below.
 
 ## Guarded operator queue restoration
 
@@ -404,3 +404,86 @@ support both; older strict readers reject1.1. Existing full-writer drain, verifi
 backup and rollback limitations still apply before production writes. This control
 does not complete per-original native outcome reconciliation or live throughput
 qualification required by #1307.
+
+## Reviewed per-original processing and reply presentation
+
+The explicit `/processing` GET and POST under an admission's existing thread URL
+reuse thread/Project/tenant authorization, administrator MFA and live Role
+`api.threads.write` authority. GET previews current eligibility. POST accepts only
+one original ID and the exact reviewed processing SHA256; a caller cannot supply
+an outcome, native receipt, replacement destination, owner, definition or message.
+This is bounded request-driven application work with zero model calls. Admission
+configuration can remain disabled and autonomy paused.
+
+A processed notification means the application recorded its independently reviewed
+reconciliation, or linked its reviewed remaining work to that original's existing
+canonical Work Item with an actionable owner and next action. This receipt does
+not establish recipient ACK, execution of the follow-up, business acceptance,
+issue closure, native start or provider delivery. A pending handoff stays pending;
+linking never dispatches or acknowledges it. Follow-up links cannot select another
+Work Item or broaden the original repository or reply scope. Missing actionable
+ownership/action blocks processing until the existing Work Item controls resolve
+it. Refused or unknown external follow-up actions retain their canonical
+ActionIntent reconciliation requirements; this operation does not retry them.
+
+The cross-record StateStore transaction locks the admission, exact member attempt,
+canonical Artifact/Evidence document and original Work Item together. It checks
+the unchanged original, claim, aggregate native receipt, tenant/Project, retained
+attempt scope, current independent proof and exact profile/execution Definition
+pins. Current actor/profile access, resource bindings, published Definitions and
+Role authority are reloaded. Proof, original, follow-up or current controls changing
+after preview refuse the commit. The original admission control snapshot remains
+immutable; processing records the separate current controls and authority decision.
+
+Legacy plan1.0 lacks original execution/authority Definition attribution. Existing
+per-original outcome proof and today's catalogs cannot reconstruct those pins.
+Such admissions remain readable, with original snapshots and evidence intact,
+but expose `original_control_definition_evidence_unavailable` and refuse processing.
+This path does not synthesize historical controls or accept reviewer prose as
+an original attestation. There is no automatic backfill.
+
+At most one schema1.0 processing receipt per original lives inside its existing
+admission descriptor. Descriptor schema1.2 requires that original's immutable
+snapshot digest and preserves all native/member provenance. No additional outcome
+ledger, queue or scheduler exists. One atomic commit adds only that receipt;
+competing originals preserve each other and queue appends/duplicates/order are
+untouched. Attempts retain their batch claim and `reconciliation_required` replay
+protection. Original records and requested execution IDs are never deleted or
+converted to fabricated per-original native starts. Failure before commit changes
+nothing; a lost response after commit is reconciled by GET. An identical request
+returns the original receipt without repeating effects; a different request for an
+already processed original requires reconciliation.
+
+Read-only review revalidates current eligibility separately from the historical
+receipt. Invalidation, expiry, conflicting review, revoked authority, changed
+claims or changed follow-up ownership/action make the receipt historical and
+require reconciliation; they never erase it or automatically replay the input.
+
+The existing queue/batch inspector links to processing review and displays proof,
+current blockers, follow-up Work Item/owner/action, retained reply destination,
+prepared reply preview, historical receipt and explicit external `not_sent` state
+with no provider receipt. Preview text is deterministic; arbitrary native output
+is not copied into a new message. UI refresh is read-only, scope-fenced, keyboard
+accessible and wraps on narrow screens. Denied/unavailable features, stale proof
+and unknown mutation responses remain visible; the UI never retries automatically.
+Panels retain their creation-time Project/identity/thread/batch ownership and
+check it before reads or mutations and after each awaited request. Preview
+generations also fence retained buttons from replaced reviews. A new click-time
+capture cannot authorize an older panel; cross-context cached history cannot
+create fresh actions. Evidence, Verification and Work Item links use the shared
+human-facing reference navigation and exact canonical object focus.
+No send control is introduced. A future authorized send must use the canonical
+ActionProvider/ActionIntent, authority and credential boundaries with durable
+receipt/reconciliation; a processing receipt must never stand in for that evidence.
+
+New readers accept descriptor1.0/1.1 unchanged and omit absent processing fields.
+Older strict readers reject1.2. Before the first processing write, all writers and
+native admission must drain under the existing qualified-upgrade procedure with
+verified backup. After a1.2 write, source-only rollback to older readers is unsafe;
+use qualified restore plus native/outcome reconciliation. No destructive migration
+or background rewrite is introduced. Artifact/Evidence, Work Item and queue schemas
+remain unchanged. The protocol and hard guards are code-owned; operational
+definitions/configuration/policy remain in their existing registries. Source
+delivery is tracked by [#1453](https://github.com/garnser/codex-web/issues/1453);
+qualified deployment, actual original-queue throughput and oldest-actionable-age
+acceptance remain with [#1307](https://github.com/garnser/codex-web/issues/1307).

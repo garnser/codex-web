@@ -3,6 +3,25 @@
 These runbooks assume canonical UI/API state is available. Prefer the owning
 domain state and Evidence over model prose or copied provider screenshots.
 
+## Review retained notification processing
+
+In the thread's notification admission card, open **Review original processing
+and replies**. This requires administrator MFA and current canonical authority.
+Compare the exact original, proof IDs, follow-up Work Item owner/action and retained
+reply destination. An informational native proposal needs independent canonical
+review before it can qualify. Missing original Definition attribution on legacy
+admissions is a blocker; today's controls cannot supply historical pins.
+
+**Process reviewed original** records only that reviewed notification disposition
+and links existing actionable follow-up. A reply preview remains unsent. Recipient
+ACK, execution, business acceptance and provider delivery are separate facts.
+There is no send or native replay action in this surface. If processing returns
+an error or its response is lost, reload review and inspect the historical receipt
+before any next action. Stale/expired/conflicting proof requires reconciliation,
+never a blind retry. Original bodies, member claims and the shared native receipt
+remain retained. See the [notification batch contract](../architecture/notification-batches.md)
+for schema compatibility and the required drain/backup/rollback boundary.
+
 ## Startup and shutdown
 
 ### Startup

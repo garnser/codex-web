@@ -12,7 +12,7 @@ const targets = {
   configuration: ['configuration'], configuration_key: ['configuration', 'configuration_key'], definition_family: ['definitions', 'definition_id'], worker: ['workers'], assignment: ['workers'],
   resource: ['resources'], extension: ['integrations'], action_provider: ['integrations'],
   action_intent: ['autonomy'], incident: ['operations'], attention: ['attention'],
-  approval: ['autonomy', 'approval'], evidence: ['operations'], artifact: ['operations'], knowledge: ['memory', 'knowledge_id'],
+  approval: ['autonomy', 'approval'], evidence: ['operations'], verification: ['operations'], artifact: ['operations'], knowledge: ['memory', 'knowledge_id'],
   recovery_policy: ['operations'], backup: ['operations'],
 };
 

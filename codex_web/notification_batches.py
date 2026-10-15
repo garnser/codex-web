@@ -9,6 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
 from codex_web.notification_batch_controls import NotificationBatchControlSnapshot
+from codex_web.notification_processing import NotificationProcessingReceipt
 
 from codex_web.models import (
     ExecutionPreflightAttempt,
@@ -221,7 +222,7 @@ class NotificationBatchRecovery(BaseModel):
 class NotificationBatchAdmission(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["1.0", "1.1"] = "1.0"
+    schema_version: Literal["1.0", "1.1", "1.2"] = "1.0"
     id: str = Field(pattern=r"^notification-admission-[0-9a-f]{64}$")
     plan: NotificationBatchPlan
     claim_id: str = Field(min_length=1)
@@ -244,12 +245,15 @@ class NotificationBatchAdmission(BaseModel):
     queue_order: tuple[str, ...] = Field(default=(), max_length=8192)
     claimed_at: float = Field(allow_inf_nan=False)
     recovery: NotificationBatchRecovery | None = None
+    processing: tuple[NotificationProcessingReceipt, ...] = Field(default=(), max_length=16)
 
     @model_serializer(mode="wrap")
     def serialize_recovery(self, handler):
         result = handler(self)
         if self.recovery is None:
             result.pop("recovery", None)
+        if not self.processing:
+            result.pop("processing", None)
         return result
 
     def recovery_source_digest(self):
@@ -268,8 +272,17 @@ class NotificationBatchAdmission(BaseModel):
 
     @model_validator(mode="after")
     def validate_identity(self):
-        if (self.schema_version == "1.1") != (self.recovery is not None):
+        if (self.schema_version == "1.1") != (self.recovery is not None) and self.schema_version != "1.2":
             raise ValueError("notification recovery/version mismatch")
+        if bool(self.processing) != (self.schema_version == "1.2"):
+            raise ValueError("notification processing/version mismatch")
+        if self.processing:
+            originals = {json.loads(raw)["id"]: hashlib.sha256(raw.encode()).hexdigest()
+                for raw in self.plan.original_snapshots_json}
+            if (self.phase != "native_input_started" or self.recovery is not None
+                or len({row.original_id for row in self.processing}) != len(self.processing)
+                or any(originals.get(row.original_id) != row.original_snapshot_sha256 for row in self.processing)):
+                raise ValueError("notification processing original binding mismatch")
         if self.id != self.identity(self.plan.id, self.claim_id):
             raise ValueError("notification admission identity changed")
         if self.queue_order and (

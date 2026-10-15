@@ -3563,6 +3563,7 @@ app.state.execution_preflight_service = execution_preflight_service
 turn_execution_service.queued_preflight = execution_preflight_service
 from codex_web.services.notification_outcomes import NotificationOutcomeInspection
 from codex_web.services.notification_results import NotificationResultCapture
+from codex_web.services.notification_processing import NotificationProcessingService
 
 def _notification_result_actor(batch):
     return identity_service.bootstrap_service_actor(
@@ -3602,6 +3603,9 @@ turn_execution_service.notification_batch_handler = NotificationBatchDrain(
     event_lookup=canonical_event_store.event,policy_for=notification_batch_controls.policy_for,
     control_for=notification_batch_controls.resolve)
 app.state.notification_batch_controls = notification_batch_controls
+notification_processing = NotificationProcessingService(preflight=execution_preflight_store,
+    outcomes=notification_batch_inspection.outcomes, controls=notification_batch_controls,
+    work_items=runtime_state.work_item_states)
 notification_batch_recovery = NotificationBatchRecoveryService(preflight=execution_preflight_store,
     queues=turn_queue_repository,ownership=replicated_ownership_service,authority=authority_role_service,
     projects=project_service,resources=resource_catalog_service,
@@ -4929,7 +4933,8 @@ EXTRACTED_ROUTE_COUNTS = {
     "turns": _include_domain_router(
         build_turns_router(turn_service, thread_scope_service, queue_order_recovery_service, queued_bootstrap_recovery_service,
             notification_batches=notification_batch_inspection,batch_recovery=notification_batch_recovery,
-            batch_results=notification_result_capture, operator_admission=queued_operator_admission_service)
+            batch_results=notification_result_capture, operator_admission=queued_operator_admission_service,
+            batch_processing=notification_processing)
     ),
     "context": _include_domain_router(
         build_context_router(context_service, thread_scope_service)
