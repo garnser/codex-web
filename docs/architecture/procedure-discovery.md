@@ -149,3 +149,26 @@ consume the new fields/state versions: stop workers and restore a compatible
 snapshot before downgrading. Never run mixed writers or imply rollback of newly
 persisted contracts. No deployment, existing-input replay, host access, credential
 expansion or automatic procedure publication follows from source installation.
+
+
+Native preparation admission distinguishes the inner Codex sandbox mode from the
+outer canonical worker constraints. `danger-full-access` remains the actual inner
+mode: Codex's inner command sandbox is disabled. It can retain no-match local
+preparation only under the same exact published execution-profile pin, live
+assignment fence and workspace lease, registered capability evidence, repository
+or resource-free scratch scope, disabled network and disabled host mutation as
+other supported preparation modes. All writable inner modes require mutable
+repository access and matching writable repository leases/scope. Assignment
+network policy comes from the resolved execution profile independently of the
+inner mode. No named Agent Profile or grant is rewritten. Matching mandatory
+procedures, unknown facts, changed pins, expired leases and broader unsupported
+network/host envelopes still refuse; direct provider/RPC paths remain unsupported.
+
+UI impact: existing assignment inspection renders the actual sandbox and network
+policy separately, alongside scope, leases and exact definition provenance. The
+profile inspector remains the source for host-mutation constraints; procedure
+inspection retains admission blockers. Read these together: a full-access inner
+mode does not represent host or network authority. No new UI state, model call,
+mutable definition, persisted schema or migration is introduced. Procedure operator
+UI follow-up remains tracked by #1428; production compatibility requires separate
+runtime qualification after exact-source review.

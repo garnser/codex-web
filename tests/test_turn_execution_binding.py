@@ -750,8 +750,8 @@ class TurnExecutionBindingTests(unittest.TestCase):
         self.assertEqual(assignment.sandbox, "danger-full-access")
         self.assertIsNotNone(inspection.lease)
         self.assertEqual(inspection.lease.mode, LeaseMode.WRITE)
-        self.assertTrue(assignment.network.enabled)
-        self.assertIn(WorkerCapability.NETWORK, assignment.required_capabilities)
+        self.assertFalse(assignment.network.enabled)
+        self.assertNotIn(WorkerCapability.NETWORK, assignment.required_capabilities)
         self.assertEqual(assignment.execution_workspace_id, binding.workspace_id)
 
     def test_prepares_long_lived_thread_bootstrap_without_fake_thread_or_work_item(self) -> None:

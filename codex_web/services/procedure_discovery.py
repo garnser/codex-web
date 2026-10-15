@@ -418,7 +418,7 @@ class NativeProcedureAdmissionService:
             observed = time.time()
             if ((assignment.organization_id, assignment.workspace_id, assignment.project_id) !=
                     (actor.organization_id, actor.workspace_id, project.id)
-                or assignment.sandbox != sandbox or sandbox not in {"read-only", "workspace-write"}
+                or assignment.sandbox != sandbox or sandbox not in {"read-only", "workspace-write", "danger-full-access"}
                 or assignment.network.enabled or profile.network_enabled or profile.host_mutation
                 or assignment.status not in {"claimed", "running"} or assignment.lease is None
                 or assignment.lease.expires_at <= observed or assignment.lease.fence != assignment.fence
@@ -441,7 +441,7 @@ class NativeProcedureAdmissionService:
             if profile.workspace_mode == "repository":
                 if workspace.kind != "git_worktree" or not targets or profile.repository_access == "none":
                     return "native_tools", source
-                if sandbox == "workspace-write" and (profile.repository_access != "mutable"
+                if sandbox != "read-only" and (profile.repository_access != "mutable"
                     or not workspace.writable_repository_ids
                     or set(workspace.writable_repository_ids) - set(assignment.resource_ids)
                     or any(lease.resource_modes.get(r) != "write" for r in workspace.writable_repository_ids)
