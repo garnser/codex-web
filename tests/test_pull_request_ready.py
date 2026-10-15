@@ -619,6 +619,12 @@ class PullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
                 clock = patch('codex_web.secrets.time', SimpleNamespace(time=lambda: credential_deadline + 1))
                 clock.start()
                 self.addCleanup(clock.stop)
+            elif change=='security':
+                from codex_web.security import SecurityDecisionOutcome
+                self.intents.store.update(lambda state: state.model_copy(update={'intents': [
+                    item.model_copy(update={'security_decision': item.security_decision.model_copy(
+                        update={'outcome': SecurityDecisionOutcome.DENY})}) if item.id == intent_id else item
+                    for item in state.intents]}), intent_ids=(intent_id,))
             elif change=='intent':
                 def altered(state):
                     state.intents=[item.model_copy(update={'attempt':item.attempt+1}) if item.id==intent_id else item
@@ -792,6 +798,12 @@ class PullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_lost_terminal_write_checks_credential_expiry_without_revision_change(self):
         await self.evidence_settlement('credential-expiry',lost=True,boundary='terminal')
+
+    async def test_verification_write_preserves_current_security_denial(self):
+        await self.evidence_settlement('security',boundary='verification')
+
+    async def test_lost_terminal_write_preserves_current_security_denial(self):
+        await self.evidence_settlement('security',lost=True,boundary='terminal')
 
     async def test_security_admission_fences_absent_collections_without_creating_them(self):
         from codex_web.services.skill_security import SkillSecurityService

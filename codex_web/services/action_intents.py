@@ -1795,6 +1795,9 @@ class ActionIntentService:
                     or provider.contract.locator_for_resource(
                         self.execution.resources.get(request.resource_ids[0], worker_actor)) != origin.repository):
                 raise ActionRequirementError("Readiness provider target changed at settlement")
+            if (current.security_decision.outcome != SecurityDecisionOutcome.ALLOW
+                    or current.security_policy != binding.security_policy):
+                raise ActionRequirementError("Readiness current security observation denied settlement")
             if request.credential_ref and self.execution.secret_broker.metadata(
                     request.credential_ref, actor=worker_actor, require_use=True).status().value != "active":
                 raise ActionRequirementError("Readiness credential expired at settlement")
