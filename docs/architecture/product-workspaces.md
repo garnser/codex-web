@@ -140,6 +140,16 @@ explicit classification/retention contract before an editor opts into it. Other
 editors must integrate the shared contract explicitly; ordinary filters and
 transient search controls do not register a blocking guard.
 
+Skill authoring registers dirty ownership before its asynchronous procedure schema
+request. The shared `includeFields(container)` operation adds newly inserted schema
+controls to that baseline without marking earlier operator edits saved. Late schema
+responses are fenced to the originating identity/tenant and Project visit. Failed
+schema loads retain the guarded form and offer retry. Procedure start, deviation
+and outcome-draft options each own a separate shared editor; a successful mutation
+acknowledges only its submitted group's snapshot, captured before confirmation.
+Edits made during confirmation or a request remain dirty, and inspection does not
+acknowledge inputs.
+
 ## Form validation
 
 `form_validation.js` supplies inline errors, `aria-invalid` and description

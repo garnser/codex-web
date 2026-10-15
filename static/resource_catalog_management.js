@@ -4,6 +4,9 @@
   const { confirmResourceChange } = await import(`${BASE}/static/resource_lifecycle_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const { resourceEditor } = await import(`${BASE}/static/resource_editor_state.js`);
+  const { captureProjectView } = await import(`${BASE}/static/project_view_scope.js`);
+  const { operationalContextFields, readOperationalContext } = await import(`${BASE}/static/resource_operational_context.js`);
+  const { ownerOptions: resourceOwnerOptions, option } = await import(`${BASE}/static/resource_catalog_presenters.js`);
   let resources = [];
   let owners = [];
   let identityError = null;
@@ -65,21 +68,7 @@
       .sort((left, right) => left.label.localeCompare(right.label));
   }
 
-  function ownerOptions(selectedId = "") {
-    const options = ['<option value="">Unassigned owner</option>'];
-    owners.forEach((owner) => {
-      const selected = owner.id === selectedId ? " selected" : "";
-      options.push(`<option value="${escapeHtml(owner.id)}"${selected}>${escapeHtml(owner.label)} · ${escapeHtml(owner.kind)} · ${escapeHtml(owner.id)}</option>`);
-    });
-    if (selectedId && !owners.some((owner) => owner.id === selectedId)) {
-      options.push(`<option value="${escapeHtml(selectedId)}" selected>Current owner · ${escapeHtml(selectedId)}</option>`);
-    }
-    return options.join("");
-  }
-
-  function option(value, current, label = value) {
-    return `<option value="${escapeHtml(value)}"${value === current ? " selected" : ""}>${escapeHtml(label)}</option>`;
-  }
+  const ownerOptions = selected => resourceOwnerOptions(owners, selected);
 
   function renderEditor(item) {
     const host = Array.from(document.querySelectorAll("[data-resource-mutation-host]"))
@@ -110,6 +99,7 @@
           ${option("disabled", item.lifecycle, "Disabled")}
           ${option("deleted", item.lifecycle, "Deleted")}
         </select>
+        ${operationalContextFields(item)}
         <button type="button" class="ghost-button" data-resource-save>Save resource</button>
       </div>
     </details>`;
@@ -187,6 +177,7 @@
   }
 
   async function saveResource(button) {
+    const view = captureProjectView();
     const root = button.closest("[data-resource-editor]");
     const resourceId = root?.dataset.resourceId;
     if (!root || !resourceId) return;
@@ -204,6 +195,9 @@
       risk: root.querySelector("[data-resource-edit-risk]")?.value,
       lifecycle,
     };
+    try { payload.operational_context = readOperationalContext(root); }
+    catch (error) { setStatus(`${error.message} Edits are preserved.`); return; }
+
     const owner = root.querySelector("[data-resource-edit-owner]");
     if (owner && !owner.disabled) payload.owner_identity_id = owner.value || null;
     if (!await confirmResourceChange(resourceId, payload, originalLifecycle, root, button, setStatus)) return;
@@ -215,10 +209,12 @@
         method: "PATCH",
         body: JSON.stringify(payload),
       });
+      if (!view.current() || !root.isConnected) return;
       editor.markSaved(submitted);
       setStatus(`Updated ${resourceId}.`);
       refreshCatalog();
     } catch (error) {
+      if (!view.current() || !root.isConnected) return;
       setStatus(`Resource update failed: ${error.message}`);
     } finally { button.disabled = false; }
   }
@@ -274,6 +270,8 @@
       const button = event.target.closest?.("[data-resource-save]");
       if (button) saveResource(button).catch(console.error);
     });
+    // Catch catalog renders before module readiness.
+    if (document.querySelector('[data-resource-mutation-host]')) refreshCatalog();
   }
   if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", bind, { once: true });
   else bind();

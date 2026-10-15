@@ -97,6 +97,7 @@
         <strong>${escapeHtml(item.name)} · ${escapeHtml(item.resource_type)}</strong>
         <small>ID: ${escapeHtml(item.id)} · Lifecycle: ${escapeHtml(item.lifecycle)}</small>
         <small>Owner: ${escapeHtml(item.owner_identity_id || "unassigned")} · Risk: ${escapeHtml(item.risk)} · Sensitivity: ${escapeHtml(item.sensitivity)}</small>
+        <small>Current operational facts: environment ${escapeHtml(item.operational_context?.environment || 'unknown')} · tags ${escapeHtml((item.operational_context?.tags || []).join(', ') || 'unset')} · versions ${escapeHtml(JSON.stringify(item.operational_context?.service_versions || {}))}. Facts do not grant authority.</small>
         ${item.description ? `<small>${escapeHtml(item.description)}</small>` : ""}
         <small>Aliases: ${escapeHtml(aliasesText(item.aliases))}</small>
         <small>Provenance: ${escapeHtml(provenanceText(provenance))}${provenance?.external_url ? ` · URL: ${escapeHtml(provenance.external_url)}` : ""}</small>

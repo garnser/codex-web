@@ -1,14 +1,29 @@
 const { test, expect } = require('@playwright/test');
 
+for (const kind of ['artifact', 'evidence']) test(`${kind} playbook reference focuses the exact canonical inspection row`, async ({page}) => {
+  await page.route('**/playbook-reference?**', route => route.fulfill({contentType:'text/html',body:`<body data-project-id="project-a"><details id="developer-panel" open><button id="refresh-artifact-evidence">Refresh</button><div id="artifact-evidence-status"></div><div id="artifact-list"></div><div id="evidence-list"></div><div id="verification-list"></div></details><script src="/static/artifact_evidence_admin.js"></script></body>`}));
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/artifacts') return route.fulfill({json:{items:[{id:'artifact-exact',artifact_type:'input',name:'Pinned input',lifecycle:'active',project_id:'project-a'}]}});
+    if (path === '/api/evidence') return route.fulfill({json:{items:[{id:'evidence-exact',evidence_type:'verification',result:'pass',lifecycle:'valid',artifact_ids:['artifact-exact'],project_id:'project-a'}]}});
+    if (path === '/api/identity/me') return route.fulfill({json:{identity_id:'viewer',roles:['member']}});
+    return route.fulfill({json:{items:[]}});
+  });
+  await page.goto(`http://127.0.0.1:18766/playbook-reference?consumer_type=${kind}&consumer_id=${kind}-exact`);
+  const row = page.locator(`[data-reference-kind="${kind}"][data-reference-id="${kind}-exact"]`);
+  await expect(row).toHaveAttribute('open', ''); await expect(row).toBeFocused();
+  if (kind === 'evidence') await expect(row.getByRole('link',{name:'View artifact: artifact-exact'})).toHaveAttribute('href','/projects/project-a/operations?consumer_type=artifact&consumer_id=artifact-exact');
+});
+
 test('research evidence inspection shows origin, exact Memory source links and gate denial', async ({ page }) => {
   await page.route('**/research_fixture.html', route => route.fulfill({contentType:'text/html',body:`
-    <body data-project-id="project-a">
+    <body data-project-id="project-a"><details id="developer-panel" open>
       <button id="refresh-artifact-evidence">Refresh</button>
       <div id="artifact-evidence-status"></div>
       <div id="artifact-list"></div><div id="evidence-list"></div><div id="verification-list"></div>
       <input id="artifact-evidence-work-item" value="group/app#42">
       <button id="evaluate-evidence-gate">Evaluate</button><div id="evidence-gate-result"></div>
-      <script src="/static/artifact_evidence_admin.js"></script>
+      </details><script src="/static/artifact_evidence_admin.js"></script>
     </body>`}));
   await page.route('**/api/**', route => {
     const path=new URL(route.request().url()).pathname;

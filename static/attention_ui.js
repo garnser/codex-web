@@ -1,3 +1,5 @@
+import { captureProjectView } from './project_view_scope.js';
+
 const attentionEsc = (value) => String(value ?? "")
   .replaceAll("&", "&amp;")
   .replaceAll("<", "&lt;")
@@ -390,6 +392,7 @@ function installAttentionKeyboardNavigation(dialog) {
 }
 
 async function loadAttention(dialog, { append = false } = {}) {
+  const scope = captureProjectView();
   const projectId = activeAttentionProject();
   if (dialog._attentionProject !== projectId) clearAttentionProject(dialog);
   if (projectId === '') return;
@@ -398,7 +401,7 @@ async function loadAttention(dialog, { append = false } = {}) {
   dialog._attentionController = controller;
   const generation = dialog._attentionGeneration = (dialog._attentionGeneration || 0) + 1;
   const current = () => !controller.signal.aborted && generation === dialog._attentionGeneration
-    && projectId === activeAttentionProject();
+    && projectId === activeAttentionProject() && scope.current();
   const status = dialog.querySelector("[data-attention-status]");
   const list = dialog.querySelector("[data-attention-list]");
   const more = dialog.querySelector("[data-attention-more]");
@@ -419,9 +422,12 @@ async function loadAttention(dialog, { append = false } = {}) {
     if (append && dialog._attentionNextCursor != null) {
       params.set("cursor", String(dialog._attentionNextCursor));
     }
-    const payload = await attentionApi(`/api/attention?${params}`, { signal: controller.signal });
+    const reference = new URLSearchParams(location.search);
+    const focusId = reference.get('consumer_type') === 'attention' ? reference.get('consumer_id') : null;
+    const payload = focusId ? await attentionApi(attentionPath(`/api/attention/${encodeURIComponent(focusId)}`, projectId), {signal:controller.signal})
+      : await attentionApi(`/api/attention?${params}`, { signal: controller.signal });
     if (!current()) return;
-    const page = payload.attention_items || [];
+    const page = focusId ? (payload.attention_item ? [payload.attention_item] : []) : payload.attention_items || [];
     const existing = append ? (dialog._attentionItems || []) : [];
     const byId = new Map(existing.map((item) => [item.id, item]));
     page.forEach((item) => byId.set(item.id, item));
@@ -461,7 +467,7 @@ async function loadAttention(dialog, { append = false } = {}) {
       more.disabled = dialog._attentionNextCursor == null;
     }
     status.textContent = `${dialog._attentionItems.length} of ${dialog._attentionTotal} matching · deterministic refresh only`;
-    if (dialog._attentionFocusRequested) {
+    if (focusId || dialog._attentionFocusRequested) {
       dialog._attentionFocusRequested = false;
       list.querySelector("[data-attention-id]")?.focus();
     }
@@ -541,6 +547,11 @@ function installAttention() {
   installAttentionKeyboardNavigation(dialog);
   clearAttentionProject(dialog);
   window.addEventListener('codex:project-changed', () => {
+    clearAttentionProject(dialog);
+    void refreshAttentionBadge();
+    if (dialog.open) void loadAttention(dialog);
+  });
+  window.addEventListener('codex:identity-scope-changed', () => {
     clearAttentionProject(dialog);
     void refreshAttentionBadge();
     if (dialog.open) void loadAttention(dialog);

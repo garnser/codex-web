@@ -31,6 +31,17 @@ class ProcedurePreviewApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(data['authorizes_mutation'])
             self.assertEqual(data['discovery']['outcome'],'matched')
             self.assertEqual(data['discovery']['selected'][0]['record_id'],self.published['recordId'])
+            payload['task'] = 'operator.preview'
+            payload['expected_environment'] = 'production'
+            conflict = client.post('/api/skills/procedure-applicability', json=payload)
+            self.assertEqual(conflict.status_code, 200, conflict.text)
+            self.assertEqual(conflict.json()['input_context']['task'], 'operator.preview')
+            self.assertNotEqual(conflict.json()['input_context']['environment'], 'production')
+            self.assertIn('procedure_preview_environment_conflict', conflict.json()['discovery']['blockers'])
+            self.assertFalse(conflict.json()['authorizes_mutation'])
+            payload['task'] = 'invalid task with spaces'
+            self.assertEqual(client.post('/api/skills/procedure-applicability', json=payload).status_code, 422)
+            payload.pop('task')
             payload['request']['workspace_id'] = 'foreign'
             denied = client.post('/api/skills/procedure-applicability',json=payload)
             self.assertEqual(denied.status_code,403)

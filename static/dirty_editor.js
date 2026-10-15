@@ -16,6 +16,7 @@ function snapshot(root, ignore) {
 
 export function trackDirtyEditor(root, { label, onDiscard, ignore = '' } = {}) {
   let saved = snapshot(root, ignore);
+  let savedFields = fields(root, ignore);
   const notice = document.createElement('p');
   notice.dataset.dirtyEditorStatus = '';
   notice.setAttribute('role', 'status');
@@ -26,7 +27,23 @@ export function trackDirtyEditor(root, { label, onDiscard, ignore = '' } = {}) {
     historyState: history.state,
     dirty: () => root.isConnected && snapshot(root, ignore) !== saved,
     snapshot: () => snapshot(root, ignore),
-    markSaved(value = snapshot(root, ignore)) { saved = value; update(); },
+    markSaved(value = snapshot(root, ignore)) { saved = value; savedFields = fields(root, ignore); update(); },
+    // Async schema controls join the existing baseline without marking edits to
+    // already-owned controls saved. Call synchronously after inserting controls,
+    // before yielding to user events. Existing controls must retain identity.
+    includeFields(container) {
+      const currentFields = fields(root, ignore);
+      if (savedFields.some(field => !currentFields.includes(field))
+          || currentFields.some(field => !savedFields.includes(field) && !container.contains(field))) {
+        throw new Error('Dirty editor fields changed outside the inserted controls');
+      }
+      const savedValues = JSON.parse(saved);
+      const prior = new Map(savedFields.map((field, index) => [field, savedValues[index]]));
+      const currentValues = JSON.parse(snapshot(root, ignore));
+      saved = JSON.stringify(currentFields.map((field, index) => prior.has(field) ? prior.get(field) : currentValues[index]));
+      savedFields = currentFields;
+      update();
+    },
     discard() {
       const values = JSON.parse(saved);
       fields(root, ignore).forEach((field, index) => {
@@ -44,6 +61,7 @@ export function trackDirtyEditor(root, { label, onDiscard, ignore = '' } = {}) {
       root.removeEventListener('change', update);
       notice.remove();
       saved = '[]';
+      savedFields = [];
     },
   };
   function update() {

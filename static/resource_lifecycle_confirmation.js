@@ -3,13 +3,15 @@ import { request } from './api_client.js';
 import { captureProjectView } from './project_view_scope.js';
 
 export async function confirmResourceChange(resourceId, payload, originalLifecycle, root, button, report) {
+  const view = captureProjectView();
+  const current = () => view.current() && root.isConnected;
   const lifecycle = payload.lifecycle;
   if (lifecycle === originalLifecycle || !['disabled', 'deleted'].includes(lifecycle)) {
     return confirmAction({ action: 'Update resource', target: resourceId,
       consequence: `Lifecycle: ${lifecycle}; risk: ${payload.risk}; sensitivity: ${payload.sensitivity}.`,
-      recovery: 'Metadata can be edited again through the canonical resource editor.', current: () => root.isConnected, trigger: button });
+      impact: payload.operational_context ? `Current operational facts change to ${JSON.stringify(payload.operational_context)}. Existing applicability previews become stale; runs must pass canonical context checks.` : '',
+      recovery: 'Metadata can be edited again through the canonical resource editor.', current, trigger: button });
   }
-  const view = captureProjectView();
   try {
     const result = await request(`/api/resources/${encodeURIComponent(resourceId)}/relationships?direction=both`);
     if (!Array.isArray(result.items)) throw new Error('Relationship inventory unavailable');

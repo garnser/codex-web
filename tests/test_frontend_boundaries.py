@@ -375,6 +375,15 @@ class FrontendBoundaryTests(unittest.TestCase):
             "definition_typed_authority_editor.js": 13_000,
             "definition_typed_execution_editor.js": 6_000,
             "definition_typed_editor_shared.js": 4_000,
+            "view_scope_context.js": 2_000,
+            "resource_catalog_presenters.js": 2_000,
+            "resource_operational_context.js": 4_000,
+            "execution_worker_presenters.js": 3_000,
+            "artifact_evidence_presenters.js": 4_000,
+            "procedure_discovery_guidance.js": 3_000,
+            "skill_procedure_editor.js": 9_000,
+            "skill_procedure_ui.js": 8_000,
+            "procedure_run_ui.js": 16_000,
         }
         for name, limit in budgets.items():
             with self.subTest(name=name):

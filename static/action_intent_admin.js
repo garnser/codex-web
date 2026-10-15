@@ -6,7 +6,8 @@
   const { referenceAttributes, focusReference, workspaceIsVisible } = await import(`${BASE}/static/reference_links.js`);
   const { captureProjectView, currentProjectId } = await import(`${BASE}/static/project_view_scope.js`);
   const { procedureHistoryHtml } = await import(`${BASE}/static/procedure_discovery_view.js`);
-  const { decisionHtml, leaseHtml, failureHtml, recoveryHtml } = await import(`${BASE}/static/action_intent_outcome_view.js`);
+  const { installActionProcedureRuns, procedureRunsDirty, disposeProcedureRuns } = await import(`${BASE}/static/procedure_run_ui.js`);
+  const { decisionHtml, leaseHtml, failureHtml, recoveryHtml, timeText, listText } = await import(`${BASE}/static/action_intent_outcome_view.js`);
   let actor = null;
   let intents = [];
   let refreshGeneration = 0;
@@ -17,15 +18,6 @@
       .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
   }
 
-  function timeText(value) {
-    if (!value) return "none";
-    const date = new Date(Number(value) * 1000);
-    return Number.isNaN(date.valueOf()) ? "unknown" : date.toLocaleString();
-  }
-
-  function listText(values) {
-    return values?.length ? values.map(escapeHtml).join(", ") : "none";
-  }
 
   function setStatus(message) {
     const host = document.getElementById("action-intent-status");
@@ -190,6 +182,8 @@
     if (!id) return;
     const host = document.getElementById(`action-intent-history-${id}`);
     if (!host) return;
+    if (procedureRunsDirty(host)) { setStatus('History refresh deferred: save or discard unsaved playbook inputs first.'); return; }
+    disposeProcedureRuns(host);
     button.disabled = true;
     host.innerHTML = "<small>Loading canonical side-effect history...</small>";
     try {
@@ -202,6 +196,7 @@
         + receipts.map(receiptHtml).join("")
         + inbox.map(inboxHtml).join("")
         + verifications.map(verificationHtml).join("");
+      installActionProcedureRuns(host, history, id);
     } catch (error) {
       if (view.current() && host.isConnected) host.innerHTML = `<small>ActionIntent history unavailable: ${escapeHtml(error.message)}</small>`;
     } finally {

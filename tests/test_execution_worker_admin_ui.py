@@ -13,6 +13,10 @@ class ExecutionWorkerAdminUiTests(unittest.TestCase):
         javascript = (ROOT / "static" / "execution_worker_admin.js").read_text(
             encoding="utf-8"
         )
+        self.assertIn('/static/execution_worker_presenters.js', javascript)
+        javascript += (ROOT / "static" / "execution_worker_presenters.js").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn('id="execution-worker-list"', html)
         self.assertIn('id="execution-assignment-list"', html)

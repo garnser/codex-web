@@ -36,6 +36,17 @@ or create a new independently evidenced procedure with explicit review.
 
 Automatic conversion does not elevate authentication or authority. If it reports
 a review/authority need in Attention, use an authorized operator session for
-explicit conversion. Rich authoring, diff and source-link UI is tracked by
-[#1428](https://github.com/garnser/codex-web/issues/1428); the APIs and existing
-canonical inspectors provide the current operator path.
+explicit conversion. In the existing assignment, ActionIntent or Incident
+inspector, choose **Inspect verified outcome**. Follow source Definition,
+Resource, Incident, Evidence and Knowledge references, review the observed scope
+and limitations, and choose **Create inactive outcome draft**. An optional new
+Skill ID deliberately proposes a separate canonical draft. The returned diff and
+review needs remain visible; source drift and local revision conflicts preserve
+your inputs and require review.
+
+Follow the exact draft revision link to Skills. The draft is visibly inactive.
+Review and edit metadata/steps, validate and scan that exact revision, then
+explicitly publish through the existing Skill/Definition lifecycle. Conversion
+never publishes or replaces the completed execution's pin. Instructions describe
+reusable behavior; Resource facts describe current conditions; policy and
+approvals determine authority; checkpoints and receipts describe the actual run.

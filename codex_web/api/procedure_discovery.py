@@ -1,7 +1,9 @@
 """Read-only applicability inspection through canonical provider/Skill services."""
 import asyncio
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+from dataclasses import replace
+from codex_web.authority import AuthorityEnvironment
 from codex_web.action_providers import ActionRequest
 from codex_web.api.identity import request_actor
 from codex_web.services.action_providers import ActionProviderError
@@ -14,6 +16,8 @@ class ProcedurePreview(BaseModel):
     execution_id: str | None = None
     binding_id: str
     request: ActionRequest
+    task: str | None = Field(default=None, min_length=1, max_length=160, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+    expected_environment: AuthorityEnvironment | None = None
 
 
 def build_procedure_discovery_router(discovery, execution, intents, projects):
@@ -31,9 +35,19 @@ def build_procedure_discovery_router(discovery, execution, intents, projects):
                 authority = intents._canonical_authority_snapshot(definition=definition, request=effective, actor=actor)
                 context = intents._procedure_context(actor=actor, request=effective, definition=definition,
                     provider=provider, policy_source=authority.source, policy_allows=authority.outcome.value == "allow", execution_id=payload.execution_id)
-                return discovery.discover(context)
-            result, _ = await asyncio.to_thread(inspect)
-            return {"preview": True, "authorizes_mutation": False, "discovery": result.model_dump(mode="json")}
+                # Task is a preview filter, never authority. Expected environment
+                # detects stale operator inputs; it cannot replace Resource facts.
+                context = replace(context, task=payload.task)
+                if payload.expected_environment is not None and payload.expected_environment != context.environment:
+                    context = replace(context, resolution_blockers=(*context.resolution_blockers,
+                        "procedure_preview_environment_conflict"))
+                result, _ = discovery.discover(context)
+                return result, context.environment, authority
+            result, environment, authority = await asyncio.to_thread(inspect)
+            return {"preview": True, "authorizes_mutation": False, "discovery": result.model_dump(mode="json"),
+                    "input_context": {"task": payload.task, "environment": environment,
+                                      "expected_environment": payload.expected_environment},
+                    "authority": authority.model_dump(mode="json")}
         except (AuthorizationError, TenantIsolationError) as exc:
             raise HTTPException(status_code=403, detail={"code": "procedure_preview_denied"}) from exc
         except ProjectNotFoundError as exc:

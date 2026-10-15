@@ -13,6 +13,10 @@ class ArtifactEvidenceAdminUiTests(unittest.TestCase):
         javascript = (ROOT / "static" / "artifact_evidence_admin.js").read_text(
             encoding="utf-8"
         )
+        self.assertIn('/static/artifact_evidence_presenters.js', javascript)
+        javascript += (ROOT / "static" / "artifact_evidence_presenters.js").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn('id="artifact-list"', html)
         self.assertIn('id="evidence-list"', html)

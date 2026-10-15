@@ -2,6 +2,11 @@
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
   const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
+  const { referenceAttributes, focusReference } = await import(`${BASE}/static/reference_links.js`);
+  const { captureProjectView } = await import(`${BASE}/static/project_view_scope.js`);
+  const { referenceLink } = await import(`${BASE}/static/reference_navigation.js`);
+  const { timeText, listText, safeLink, governanceHtml, researchLinks } = await import(`${BASE}/static/artifact_evidence_presenters.js`);
+  let refreshGeneration = 0;
   let actor = null;
   let artifacts = [];
   let evidence = [];
@@ -14,26 +19,8 @@
       .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
   }
 
-  function timeText(value) {
-    if (!value) return "none";
-    const date = new Date(Number(value) * 1000);
-    return Number.isNaN(date.valueOf()) ? "unknown" : date.toLocaleString();
-  }
 
-  function listText(values) {
-    return values?.length ? values.map(escapeHtml).join(", ") : "none";
-  }
 
-  function safeLink(value) {
-    if (!value) return "";
-    try {
-      const url = new URL(value, window.location.origin);
-      if (!["http:", "https:"].includes(url.protocol)) return "";
-      return `<a href="${escapeHtml(url.href)}" target="_blank" rel="noopener noreferrer">open source</a>`;
-    } catch (_) {
-      return "";
-    }
-  }
 
   function setStatus(message) {
     const host = document.getElementById("artifact-evidence-status");
@@ -55,16 +42,6 @@
     return governance.find((item) => item.object_id === objectId) || null;
   }
 
-  function governanceHtml(record) {
-    if (!record) {
-      return "<small>Governance metadata: not linked/backfilled.</small>";
-    }
-    const hold = record.legal_hold_at
-      ? `legal hold since ${timeText(record.legal_hold_at)} by ${record.legal_hold_by || "unknown"}`
-      : "no legal hold";
-    return `<small>Governance: ${escapeHtml(record.classification)} · ${escapeHtml(record.lifecycle)} · retention ${escapeHtml(record.retention_action)} at ${timeText(record.retention_expires_at)} · ${escapeHtml(hold)}</small>
-      <small>Residency: ${listText(record.residency_tags)} · deny model context: ${record.deny_model_context ? "yes" : "no"} · governance ID: ${escapeHtml(record.id)}</small>`;
-  }
 
   function canMutateRecord(producerId) {
     if (!actor) return false;
@@ -136,17 +113,6 @@
     return `<button type="button" class="ghost-button" data-artifact-evidence-invalidate="${kind}" data-record-id="${escapeHtml(item.id)}">Invalidate</button>`;
   }
 
-  function researchLinks(item) {
-    const project = item.project_id || document.body?.dataset.projectId || document.body?.dataset.activeProject;
-    const route = project ? `${BASE}/projects/${encodeURIComponent(project)}/memory` : `${BASE}/`;
-    const snapshots = new Map((item.research_sources || []).map(source => [source.knowledge_id, source]));
-    const ids = [...new Set([...(item.knowledge_ids || []), ...snapshots.keys()])];
-    return ids.map(id => {
-      const source = snapshots.get(id);
-      const label = source ? `${id}@v${source.version}: ${source.origin}` : id;
-      return `<a href="${route}?knowledge_id=${encodeURIComponent(id)}">${escapeHtml(label)}</a>`;
-    }).join(', ') || 'none';
-  }
 
   function renderArtifacts() {
     const host = document.getElementById("artifact-list");
@@ -154,7 +120,7 @@
     const rows = artifacts.filter(artifactVisible);
     host.innerHTML = rows.map((item) => {
       const sourceLink = safeLink(item.external_url);
-      return `<details class="comm-entry">
+      return `<details class="comm-entry" ${referenceAttributes('artifact', item.id)}>
         <summary><strong>${escapeHtml(item.artifact_type)} · ${escapeHtml(item.name)} · ${escapeHtml(item.lifecycle)}</strong></summary>
         <small>ID: ${escapeHtml(item.id)} · producer: ${escapeHtml(item.producer_identity_id)} · produced: ${timeText(item.produced_at)}</small>
         <small>Work: ${escapeHtml(item.work_item_ref || "none")} · execution: ${escapeHtml(item.execution_id || "none")} · execution workspace: ${escapeHtml(item.execution_workspace_id || "none")} · project: ${escapeHtml(item.project_id || "none")}</small>
@@ -175,11 +141,11 @@
     const rows = evidence.filter(evidenceVisible);
     host.innerHTML = rows.map((item) => {
       const sourceLink = safeLink(item.deep_link);
-      return `<details class="comm-entry">
+      return `<details class="comm-entry" ${referenceAttributes('evidence', item.id)}>
         <summary><strong>${escapeHtml(item.evidence_type)} · ${escapeHtml(item.result)} · ${escapeHtml(item.lifecycle)}</strong></summary>
         <small>ID: ${escapeHtml(item.id)} · producer: ${escapeHtml(item.producer_identity_id)} · observed: ${timeText(item.observed_at)}</small>
         <small>Work: ${escapeHtml(item.work_item_ref || "none")} · execution: ${escapeHtml(item.execution_id || "none")} · execution workspace: ${escapeHtml(item.execution_workspace_id || "none")} · project: ${escapeHtml(item.project_id || "none")}</small>
-        <small>Artifacts: ${listText(item.artifact_ids)} · provider: ${escapeHtml(item.provider || "none")} · source: ${escapeHtml(item.source || "none")} · external ID: ${escapeHtml(item.external_id || "none")} ${sourceLink}</small>
+        <small>Artifacts: ${(item.artifact_ids || []).map(id => referenceLink('artifact', id, {projectId:item.project_id})).join(', ') || 'none'} · provider: ${escapeHtml(item.provider || "none")} · source: ${escapeHtml(item.source || "none")} · external ID: ${escapeHtml(item.external_id || "none")} ${sourceLink}</small>
         <small>Summary: ${escapeHtml(item.summary || "none")} · digest: ${escapeHtml(digestText(item.digest))}</small>
         <small>Research origin: ${escapeHtml(item.research_origin || 'unknown')} · Knowledge sources: ${researchLinks(item)} · origin metadata is not verification</small>
         <small>Retention: ${timeText(item.retention_expires_at)} · governance ID: ${escapeHtml(item.governance_record_id || "none")}</small>
@@ -208,10 +174,17 @@
     renderArtifacts();
     renderEvidence();
     renderVerifications();
+    focusReference(document.getElementById('artifact-list'));
+    focusReference(document.getElementById('evidence-list'));
     const activeArtifacts = artifacts.filter((item) => item.lifecycle === "active").length;
     const validEvidence = evidence.filter((item) => item.lifecycle === "valid").length;
     const independent = verifications.filter((item) => item.independent && item.result === "verified").length;
     setStatus(`${artifacts.length} artifact(s), ${activeArtifacts} active · ${evidence.length} evidence record(s), ${validEvidence} valid · ${verifications.length} verification(s), ${independent} independent verified. Artifact/evidence metadata is canonical; payload contents are not rendered here.`);
+    const query = new URLSearchParams(location.search), kind = query.get('consumer_type'), id = query.get('consumer_id');
+    if (['artifact','evidence'].includes(kind) && id) {
+      const host = document.getElementById(kind === 'artifact' ? 'artifact-list' : 'evidence-list');
+      if (![...host.querySelectorAll('[data-reference-id]')].some(row => row.dataset.referenceId === id)) setStatus('Requested canonical reference is unavailable or outside the current filters. Refresh or change filters; no substitute record was selected.');
+    }
   }
 
   function renderGate(requirements, evaluation) {
@@ -296,6 +269,7 @@
   }
 
   async function refresh() {
+    const scope = captureProjectView(), visit = ++refreshGeneration;
     setStatus("Loading canonical artifacts, evidence, verifications and governance metadata...");
     try {
       const [artifactResponse, evidenceResponse, verificationResponse, governanceResponse, me] = await Promise.all([
@@ -305,6 +279,7 @@
         apiRequest("/api/data-governance/records"),
         apiRequest("/api/identity/me"),
       ]);
+      if (!scope.current() || visit !== refreshGeneration) return;
       artifacts = artifactResponse.items || [];
       evidence = evidenceResponse.items || [];
       verifications = verificationResponse.items || [];
@@ -316,12 +291,20 @@
         detail: { artifacts, evidence, verifications, governance, actor },
       }));
     } catch (error) {
+      if (!scope.current() || visit !== refreshGeneration) return;
       setStatus(`Artifact/Evidence explorer unavailable: ${error.message}`);
     }
   }
 
   function bind() {
     const panel = document.getElementById("developer-panel");
+    const clearScope = () => {
+      refreshGeneration += 1; actor = null; artifacts = []; evidence = []; verifications = []; governance = [];
+      for (const id of ['artifact-list','evidence-list','verification-list']) document.getElementById(id)?.replaceChildren();
+      setStatus('Scope changed. Refresh canonical artifact and evidence references.');
+    };
+    window.addEventListener('codex:project-changed', clearScope);
+    window.addEventListener('codex:identity-scope-changed', clearScope);
     document.getElementById("refresh-artifact-evidence")?.addEventListener("click", refresh);
     document.getElementById("refresh-developer")?.addEventListener("click", refresh);
     document.getElementById("artifact-evidence-search")?.addEventListener("input", renderAll);

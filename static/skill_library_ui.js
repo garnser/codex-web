@@ -2,6 +2,10 @@ import { skillEditorOpen, leaveSkillEditor, skillView, trackSkillEditor, trackSk
 import { confirmSkillAction } from './skill_action_confirmation.js';
 import { referenceLink } from './reference_navigation.js';
 import { request } from "./api_client.js";
+import { installProcedureEditor } from './skill_procedure_editor.js';
+import { installProcedurePreview, procedureSummary } from './skill_procedure_ui.js';
+import { captureProjectView } from './project_view_scope.js';
+import { formValidation } from './form_validation.js';
 
 const state = {
   items: [],
@@ -31,6 +35,7 @@ function errorText(error) {
   if (typeof detail === "string") return detail;
   if (detail?.message) return detail.message;
   if (detail?.code) return detail.code;
+  if (Array.isArray(detail)) return detail.map(issue => `${issue.loc?.join('.') || 'Value'}: ${issue.msg}`).join('; ');
   return error?.message || "Request failed";
 }
 
@@ -43,7 +48,7 @@ function lifecycleLabel(item) {
 
 function statusClass(value) {
   if (["published", "active", "passed"].includes(value)) return "positive";
-  if (["draft", "superseded", "warning", "stale", "not_scanned"].includes(value)) return "warning";
+  if (["draft", "validated", "superseded", "warning", "stale", "not_scanned"].includes(value)) return "warning";
   if (["archived", "incompatible", "failed", "quarantined", "scan_error"].includes(value)) return "negative";
   return "neutral";
 }
@@ -176,6 +181,9 @@ function installCard() {
 }
 
 async function loadSkills(root) {
+  const view = skillView(root), sequence = (Number(root.dataset.skillLoad) || 0) + 1;
+  root.dataset.skillLoad = sequence;
+  const current = () => view.current() && Number(root.dataset.skillLoad) === sequence;
   state.loading = true;
   renderList(root);
   try {
@@ -203,27 +211,31 @@ async function loadSkills(root) {
     if (findingCategory) params.set("security_category", findingCategory);
     if (scanner) params.set("security_provider", scanner);
     const result = await request(`/api/skills?${params.toString()}`);
+    if (!current()) return;
     state.items = result?.items || [];
     if (state.selected && !skillEditorOpen()) {
       state.selected = state.items.find((item) => item.skillId === state.selected.skillId) || state.selected;
     }
   } catch (error) {
+    if (!current()) return;
     state.items = [];
     query(root, "[data-skill-list]").innerHTML = `<div class="skill-state negative">Unable to load Skills: ${esc(errorText(error))}</div>`;
     return;
   } finally {
-    state.loading = false;
+    if (current()) state.loading = false;
   }
   renderList(root);
 }
 
 async function loadSources(root) {
+  const view = skillView(root);
   const sourceFilter = query(root, "[data-skill-source]");
   const syncSource = query(root, "[data-sync-source]");
   try {
     const result = await request("/api/skill-sources");
+    if (!view.current()) return;
     state.sources = result?.items || [];
-  } catch { state.sources = []; }
+  } catch { if (!view.current()) return; state.sources = []; }
   // Preserve selections made while the catalog request was in flight.
   const selectedFilter = sourceFilter?.value || "";
   const selectedSyncSource = syncSource?.value || "";
@@ -237,10 +249,13 @@ async function loadSources(root) {
 }
 
 async function loadProfiles() {
+  const view = captureProjectView();
   try {
     const result = await request("/api/agent-profiles?include_archived=true");
+    if (!view.current()) return;
     state.profiles = result?.items || [];
   } catch {
+    if (!view.current()) return;
     state.profiles = [];
   }
 }
@@ -279,7 +294,11 @@ function renderList(root) {
 async function selectSkill(root, skillId, revision = null) {
   if (!leaveSkillEditor()) return;
   const view = skillView(root);
+  state.selected = null;
+  const detail = query(root, '[data-skill-detail]');
+  detail.innerHTML = '<p role="status">Loading selected canonical Skill…</p>';
   const suffix = revision ? `?revision=${encodeURIComponent(revision)}` : "";
+  try {
   const [skill, revisions, usage] = await Promise.all([
     request(`/api/skills/${encodeURIComponent(skillId)}${suffix}`),
     request(`/api/skills/${encodeURIComponent(skillId)}/revisions`),
@@ -296,6 +315,9 @@ async function selectSkill(root, skillId, revision = null) {
   state.usage = usage?.items || [];
   renderList(root);
   renderDetail(root);
+  } catch (error) {
+    if (view.current()) detail.textContent = `Referenced Skill unavailable: ${errorText(error)}`;
+  }
 }
 
 function assetRows(item) {
@@ -357,6 +379,7 @@ function editorMarkup(item) {
         <label>Provenance source type <input data-field="sourceType" value="${esc(skill.provenance?.source_type || "manual")}"></label>
         <label>Provenance source ref <input data-field="sourceRef" value="${esc(skill.provenance?.source_ref || "")}"></label>
         <label class="skill-wide">Change reason <input data-field="reason" placeholder="Required for revisions" ${isNew ? "" : "required"}></label>
+        <section class="skill-wide" data-procedure-editor></section>
       </div>
       <div class="skill-actions">
         <button class="primary-button" type="submit">${isNew ? "Create draft" : "Create new draft revision"}</button>
@@ -393,6 +416,7 @@ function renderDetail(root) {
     </div>
     <div class="skill-detail-grid">
       <section><h4>Instructions</h4><pre class="skill-instructions">${esc(item.skill?.instructions || "")}</pre></section>
+      ${procedureSummary(item, state.revisions)}
       <section><h4>Provenance</h4>
         <dl class="skill-meta">
           <dt>Owner</dt><dd>${esc(item.skill?.owner_identity_id || "—")}</dd>
@@ -400,6 +424,7 @@ function renderDetail(root) {
           <dt>Published by</dt><dd>${esc(item.publishedBy || "—")}</dd>
           <dt>Source</dt><dd>${esc(item.skill?.provenance?.source_type || "manual")} · ${esc(item.skill?.provenance?.source_ref || "—")}</dd>
           <dt>Source revision</dt><dd>${esc(item.skill?.provenance?.source_revision || "—")}</dd>
+          <dt>Source evidence</dt><dd>${(item.skill?.provenance?.evidence_ids || []).map(id => referenceLink('evidence', id)).join(', ') || 'none'}</dd>
           <dt>Upstream</dt><dd>${esc(item.skill?.provenance?.upstream_id || "—")}</dd>
           <dt>Upstream categories</dt><dd>${esc((item.skill?.provenance?.upstream_categories || []).join(", ") || "—")}</dd>
           <dt>Upstream location</dt><dd>${item.skill?.provenance?.upstream_location ? `<a href="${esc(item.skill.provenance.upstream_location)}" rel="noreferrer">${esc(item.skill.provenance.upstream_location)}</a>` : "—"}</dd>
@@ -423,9 +448,10 @@ function renderDetail(root) {
     </div>
     <div class="skill-actions">
       <button class="ghost-button" type="button" data-skill-edit>Edit as new draft</button>
-      ${item.definitionLifecycle === "draft" ? '<button class="primary-button" type="button" data-skill-publish>Publish revision</button>' : ""}
+      ${['draft', 'validated'].includes(item.definitionLifecycle) ? '<button class="primary-button" type="button" data-skill-publish>Publish revision</button>' : ""}
       ${item.skill?.lifecycle === "archived" ? '<button class="ghost-button" type="button" data-skill-restore>Restore</button>' : '<button class="ghost-button" type="button" data-skill-archive>Archive</button>'}
       <button class="ghost-button" type="button" data-skill-export>Export bundle</button>
+      <button class="ghost-button" type="button" data-skill-rollback>Rollback to this revision</button>
     </div>
     <section class="skill-attach">
       <h4>Attach exact revision to Agent Profile</h4>
@@ -487,12 +513,31 @@ function editorPayload(form, isNew) {
   return { ...base, reason: formValue(form, "reason").trim() };
 }
 
-function showEditor(root, item = null) {
+async function showEditor(root, item = null) {
   if (!leaveSkillEditor()) return;
   const host = query(root, "[data-skill-detail]");
   host.innerHTML = editorMarkup(item);
   const form = query(host, "[data-skill-editor]");
+  const validation = formValidation(form);
   const dirty = trackSkillEditor(form, () => { leaveSkillEditor(); item ? renderDetail(root) : (host.innerHTML='<div class="skill-empty">Select a Skill or create a new draft.</div>'); });
+  const schemaView = skillView(form);
+  let procedure;
+  let schemaLoading = false;
+  async function loadSchema() {
+    if (schemaLoading || !schemaView.current()) return;
+    schemaLoading = true;
+    const schemaHost = query(form, '[data-procedure-editor]');
+    try {
+      procedure = await installProcedureEditor(schemaHost, item?.skill?.operational_procedure, schemaView.current);
+      if (schemaView.current()) dirty.includeFields(schemaHost);
+    } catch (error) {
+      if (!schemaView.current()) return;
+      schemaHost.textContent = `Playbook schema unavailable: ${errorText(error)}. Your edits are preserved; retry schema loading before saving.`;
+      const retry = document.createElement('button');
+      retry.type = 'button'; retry.textContent = 'Retry playbook schema';
+      retry.addEventListener('click', loadSchema); schemaHost.append(retry);
+    } finally { schemaLoading = false; }
+  }
   query(form, "[data-editor-cancel]").addEventListener("click", () => {
     if (!leaveSkillEditor()) return;
     item ? renderDetail(root) : (host.innerHTML='<div class="skill-empty">Select a Skill or create a new draft.</div>');
@@ -502,9 +547,12 @@ function showEditor(root, item = null) {
     if (form.dataset.saving) return;
     const view = skillView(form), submitted = dirty.snapshot();
     const result = query(form, "[data-editor-result]");
+    validation.clear();
     try {
       const isNew = !item;
       const body = editorPayload(form, isNew);
+      if (!procedure) throw new Error(schemaLoading ? 'Canonical playbook schema is still loading. Your edits are preserved.' : 'Canonical playbook schema is unavailable. Retry schema loading; your edits are preserved.');
+      body.operational_procedure = procedure.read();
       form.dataset.saving = "true";
       const response = await request(isNew ? "/api/skills" : `/api/skills/${encodeURIComponent(item.skillId)}`, {
         method: isNew ? "POST" : "PATCH",
@@ -519,15 +567,27 @@ function showEditor(root, item = null) {
       if (!view.current() || dirty.dirty()) return;
       await selectSkill(root, saved.skillId, saved.revision);
     } catch (error) {
-      if (view.current()) { result.hidden = false; result.textContent = errorText(error); }
+      if (view.current()) {
+        result.hidden = false; result.textContent = errorText(error);
+        const fields = {};
+        form.querySelectorAll('[data-procedure-value]').forEach(field => {
+          fields[`operational_procedure.${field.closest('[data-procedure-path]').dataset.procedurePath}`] = field;
+        });
+        form.querySelectorAll('[data-field]').forEach(field => { fields[field.dataset.field] = field; });
+        validation.server(error, fields);
+      }
     } finally { delete form.dataset.saving; }
   });
+  await loadSchema();
 }
 
 async function mutation(root, path, body = { reason: "Skill library UI action" }, method = "POST") {
+  const view = skillView(root), selected = state.selected;
+  const current = () => view.current() && state.selected === selected;
   const result = query(root, "[data-skill-action-result]");
   try {
     const response = await request(path, { method, body: body == null ? undefined : JSON.stringify(body) });
+    if (!current()) return response;
     if (result) { result.hidden = false; result.textContent = "Saved."; }
     const saved = payload(response);
     await loadSkills(root);
@@ -536,8 +596,12 @@ async function mutation(root, path, body = { reason: "Skill library UI action" }
     }
     return response;
   } catch (error) {
-    if (result) { result.hidden = false; result.textContent = errorText(error); }
-    throw error;
+    if (current() && result) {
+      result.hidden = false;
+      const retained = error.detail?.definitionReference;
+      result.innerHTML = esc(errorText(error)) + (retained ? `<p>Canonical retained revision (inactive when publication was denied): ${referenceLink('skill', selected.skillId, {revision:retained.revision, label:`Review r${retained.revision}`})} · ${referenceLink('definition', retained.record_id)}. Inspect exact validation/security evidence before publication.</p><pre>${esc(JSON.stringify(error.detail.evidence || {}, null, 2))}</pre>` : '');
+    }
+    return null;
   }
 }
 
@@ -569,13 +633,36 @@ async function loadExecutionProvenance(root, profileId) {
 
 function bindDetail(root) {
   const item = state.selected;
+  const view = skillView(root), current = () => view.current() && state.selected === item;
+  for (const action of ['validate', 'diff']) {
+    query(root, `[data-procedure-${action}]`)?.addEventListener('click', async () => {
+      const result = query(root, '[data-procedure-review]');
+      try {
+        const left = query(root, '[data-procedure-diff-left]')?.value;
+        if (action === 'diff' && !left) { result.textContent = 'No other revision to compare.'; return; }
+        const response = await request(action === 'validate' ? `/api/definitions/${encodeURIComponent(item.recordId)}/validate`
+          : `/api/definitions/diff?${new URLSearchParams({left, right:item.recordId})}`,
+          action === 'validate' ? { method:'POST', body:'{}' } : {});
+        if (current()) result.textContent = JSON.stringify(response, null, 2);
+      } catch (error) { if (current()) result.textContent = errorText(error); }
+    });
+  }
+  query(root, '[data-skill-rollback]')?.addEventListener('click', async () => {
+    if (!await confirmSkillAction('Rollback', item, root, current)) return;
+    const published = state.revisions.filter(r => r.definitionLifecycle === 'published').sort((a,b) => b.revision-a.revision)[0];
+    await mutation(root, `/api/skills/${encodeURIComponent(item.skillId)}/rollback`, {
+      target_revision:item.revision, expected_active_revision:published?.revision ?? null,
+      reason:'Operator reviewed rollback to exact historical Skill revision',
+    });
+  });
   query(root, "[data-skill-revision]")?.addEventListener("change", (event) => selectSkill(root, item.skillId, Number(event.target.value)));
   query(root, "[data-skill-edit]")?.addEventListener("click", () => showEditor(root, item));
   query(root, "[data-skill-publish]")?.addEventListener("click", async () => {
     if (!await confirmSkillAction("Publish", item, root, () => state.selected === item)) return;
+    const active = state.revisions.find(revision => revision.definitionLifecycle === 'published');
     return mutation(root,
     `/api/skills/${encodeURIComponent(item.skillId)}/revisions/${encodeURIComponent(item.recordId)}/publish`,
-    { reason: "Publish reviewed Skill revision" }
+    { reason: "Publish reviewed Skill revision", expected_active_revision: active?.revision ?? null }
   ); });
   query(root, "[data-skill-archive]")?.addEventListener("click", async () => {
     if (!await confirmSkillAction("Archive", item, root, () => state.selected === item)) return;
@@ -747,8 +834,12 @@ function bindSources(root) {
 }
 
 async function loadSecurityPolicy(root) {
+  const view = captureProjectView();
+  const controls = [...query(root, '[data-skill-security-policy]').querySelectorAll('input,button')];
+  controls.forEach(control => { control.disabled = true; });
   try {
     const response = await request("/api/skill-security/policy");
+    if (!view.current()) return;
     const policy = response.policy || {};
     state.securityPolicy = policy;
     query(root, "[data-policy-ingest]").checked = Boolean(policy.scan_imported_on_ingest);
@@ -756,13 +847,21 @@ async function loadSecurityPolicy(root) {
     query(root, "[data-policy-assignment]").checked = Boolean(policy.require_scan_before_assignment);
     query(root, "[data-policy-score]").value = policy.max_risk_score ?? 49;
     query(root, "[data-policy-severities]").value = (policy.blocked_severities || []).join(", ");
-  } catch { state.securityPolicy = null; }
+    controls.forEach(control => { control.disabled = false; });
+  } catch (error) {
+    if (!view.current()) return;
+    state.securityPolicy = null;
+    const result = query(root, '[data-policy-result]'); result.hidden = false;
+    result.textContent = `Security policy unavailable: ${errorText(error)}. Reload the current scope before editing.`;
+  }
 }
 
 function bindSecurityPolicy(root) {
   query(root, "[data-policy-save]").addEventListener("click", async () => {
+    const view = captureProjectView();
     const result = query(root, "[data-policy-result]");
     try {
+      if (!state.securityPolicy) throw new Error('Load the current canonical security policy before editing.');
       const current = state.securityPolicy || {};
       await request("/api/skill-security/policy", { method: "PUT", body: JSON.stringify({
         ...current,
@@ -773,9 +872,10 @@ function bindSecurityPolicy(root) {
         blocked_severities: csv(query(root, "[data-policy-severities]").value),
         reason: query(root, "[data-policy-reason]").value.trim(),
       }) });
+      if (!view.current()) return;
       result.hidden = false; result.textContent = "Security policy revision published.";
       await Promise.all([loadSecurityPolicy(root), loadSkills(root)]);
-    } catch (error) { result.hidden = false; result.textContent = errorText(error); }
+    } catch (error) { if (view.current()) { result.hidden = false; result.textContent = errorText(error); } }
   });
 }
 
@@ -807,7 +907,24 @@ async function install() {
   bindImport(root);
   bindSources(root);
   bindSecurityPolicy(root);
+  installProcedurePreview(root);
+  const clearScope = () => {
+    state.selected = null; state.revisions = []; state.usage = []; state.items = [];
+    state.profiles = []; state.sources = []; state.securityPolicy = null;
+    query(root, '[data-skill-source]').innerHTML = '<option value="">All sources</option>';
+    query(root, '[data-sync-source]').innerHTML = '<option value="">Select source…</option>';
+    query(root, '[data-source-health]').textContent = 'Loading current scope…';
+    query(root, '[data-skill-security-policy]').querySelectorAll('input').forEach(field => {
+      field.value = ''; field.checked = false;
+    });
+    query(root, '[data-skill-detail]').innerHTML = '<p>Select a Skill in the current scope.</p>';
+    Promise.all([loadProfiles(), loadSources(root), loadSecurityPolicy(root), loadSkills(root)]);
+  };
+  window.addEventListener('codex:project-changed', clearScope);
+  window.addEventListener('codex:identity-scope-changed', clearScope);
+  const initialView = skillView(root);
   await Promise.all([loadProfiles(), loadSources(root), loadSecurityPolicy(root), loadSkills(root)]);
+  if (!initialView.current()) return;
   const params = new URLSearchParams(location.search);
   const selected = params.get("skill_id");
   if (selected) {

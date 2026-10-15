@@ -7,7 +7,7 @@ export async function confirmSkillAction(action, item, root, current, profileId 
   const valid = () => view.current() && root.isConnected && current();
   let impact = '';
   try {
-    if (['Archive', 'Publish'].includes(action)) {
+    if (['Archive', 'Publish', 'Rollback'].includes(action)) {
       const usage = await request(`/api/skills/${encodeURIComponent(item.skillId)}/usage?revision=${encodeURIComponent(item.revision)}`);
       if (!Array.isArray(usage.items)) throw new Error('Canonical usage unavailable');
       impact = `${usage.items.length} visible exact-revision pins: ${usage.items.slice(0, 100).map(pin => `${pin.object_id} r${pin.revision}`).join(', ')}. Other revisions and external consumers are outside this preview.`;
@@ -17,6 +17,7 @@ export async function confirmSkillAction(action, item, root, current, profileId 
       risk: action === 'Detach' ? 'bounded' : 'high', impact,
       consequence: action === 'Archive' ? 'The Skill becomes unavailable for new execution. Existing recorded provenance remains.'
         : action === 'Publish' ? 'The reviewed revision becomes published and eligible for canonical selection; existing exact pins remain attributed.'
+        : action === 'Rollback' ? 'Create a new revision from historical content through current validation, scan, source and publication gates. Existing executions keep their exact pins; rollback does not undo external effects.'
         : `${action} this exact Skill reference in the Agent Profile. Future executions use its resulting revision.`,
       recovery: action === 'Archive' ? 'Restore is available in the Skill lifecycle controls; it does not replay stopped work.'
         : 'A later authorized revision or reference change can restore selection; previous executions are not undone.',
