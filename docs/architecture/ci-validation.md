@@ -46,9 +46,17 @@ suite. Named cross-cutting checks may still overlap; removing those small repeat
 would add brittle case-level selection. Container and distributed executions are
 retained because their environments add distinct validation.
 
-The unit runner refuses a `data` symlink before importing the application. Local
-qualification must use an isolated runner-local directory. Hosted CI replaces the
-repository's dangling deployment symlink with such a directory during preparation.
+The unit runner resolves its repository root from its own file and refuses that
+repository's `data` symlink before discovery or application imports, whether the
+link exists or dangles. Discovery, import precedence and the process working
+directory then use that same root. Invoking the runner from another directory
+cannot substitute that directory's data check or test inventory. The runner does
+not mutate a data link or provision storage. Local qualification must prepare a
+fresh isolated runner-local directory and SQLite database; direct focused
+`unittest` commands require the same preparation because they bypass this runner.
+Hosted CI replaces the repository's dangling deployment symlink with such a
+directory during preparation. Restore a preserved local link only after all owned
+test/server processes end, retaining failed database/log snapshots separately.
 
 `playwright.ci.config.js` excludes five explicitly owned spec files from the
 functional shards. Titles never determine ownership. Each full run verifies that
