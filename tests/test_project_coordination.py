@@ -108,6 +108,8 @@ class ProjectCoordinationBrokerTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.f = binding_tests.TurnExecutionBindingTests()
+        if hasattr(self, 'state_store_factory'):
+            self.f.state_store_factory = self.state_store_factory
         self.f.setUp()
         self.addCleanup(self.f.tearDown)
         f = self.f

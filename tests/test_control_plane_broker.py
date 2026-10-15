@@ -816,9 +816,11 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         ).encode() + body
         writer.write(raw)
         await writer.drain()
-        response = await asyncio.wait_for(reader.read(), timeout=2)
-        writer.close()
-        await writer.wait_closed()
+        try:
+            response = await asyncio.wait_for(reader.read(), timeout=getattr(self, 'broker_response_timeout', 2))
+        finally:
+            writer.close()
+            await writer.wait_closed()
         head, raw_body = response.split(b"\r\n\r\n", 1)
         lines = head.decode().split("\r\n")
         status = int(lines[0].split(" ", 2)[1])

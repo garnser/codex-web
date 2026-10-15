@@ -148,7 +148,7 @@ class TurnExecutionBindingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
-        self.sqlite = SQLiteStateStore(root / "state.sqlite3")
+        self.sqlite = getattr(self, "state_store_factory", SQLiteStateStore)(root / "state.sqlite3")
         self.identity = IdentityService(IdentityStateStore(self.sqlite))
         self.identity.bootstrap_local()
         self.actor = self.identity.local_trusted_actor()

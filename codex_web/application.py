@@ -3343,6 +3343,12 @@ turn_execution_service = install_turn_execution_service(
     maintenance_admission=upgrade_service.native_turn_admission,
 )
 
+from codex_web.services.agent_session_custody import AgentSessionCustodyService
+turn_execution_service.session_custody = AgentSessionCustodyService(
+    agent_session_service, execution_worker_service, thread_bootstrap_binding_service,
+    execution_workspace_service, execution_profile_definition_service,
+)
+
 from codex_web.services.procedure_discovery import install_native_procedure_admission
 install_native_procedure_admission(turn_execution_service, agent_session_service,
     procedure_discovery_service, execution_worker_service, thread_history_repository,

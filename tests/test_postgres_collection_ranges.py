@@ -71,6 +71,23 @@ class CollectionRangeContract:
         self.assertEqual(self.backend.get('usage'), ['legacy'])
         self.assertEqual(self.backend.record_items('usage:neighbor'), {'b': 2})
 
+    def test_replacement_and_cross_collection_mutation_preserve_neighbors(self):
+        target = 'execution_workers.workers'
+        self.backend.record_replace(target, {'worker-original': {'fence': 1}, 'worker-stale': 0})
+        self.backend.record_replace(target + '.neighbor', {'foreign': 7})
+        self.backend.record_replace(target, {'worker-current': {'fence': 2}})
+        self.assertIsNone(self.backend.record_get(target, 'worker-stale'))
+        self.assertEqual(self.backend.record_get_many(target, ('worker-current', 'worker-stale')),
+                         {'worker-current': {'fence': 2}})
+        self.backend.update_many({target: {}}, lambda rows: {
+            target: {**rows[target], 'worker-appended': {'fence': 3}}})
+        self.assertEqual(self.backend.record_count(target), 2)
+        self.assertEqual(self.backend.record_items(target + '.neighbor'), {'foreign': 7})
+        self.assertEqual(self.backend.documents()[target], self.backend.record_items(target))
+        self.backend.delete(target)
+        self.assertNotIn(target, self.backend.documents())
+        self.assertEqual(self.backend.record_items(target + '.neighbor'), {'foreign': 7})
+
 
 class SQLiteCollectionRangeTests(CollectionRangeContract, unittest.TestCase):
     def setUp(self):
@@ -109,9 +126,19 @@ class SQLiteCollectionRangeTests(CollectionRangeContract, unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'), 'PostgreSQL test DSN required')
 class PostgresCollectionRangeTests(CollectionRangeContract, unittest.TestCase):
-    setUp = fixtures.PostgresAutonomyAppendTests.setUp
+    collation = 'C'
 
-    def test_real_collection_read_plan_uses_existing_namespace_index(self):
+    def setUp(self):
+        from psycopg import sql
+
+        fixtures.PostgresAutonomyAppendTests.setUp(self)
+        # Each fixture owns a fresh schema. Exercise the same store with both
+        # byte-ordered and locale-ordered primary keys, including existing tables.
+        with self.backend._connection() as connection:
+            connection.execute(sql.SQL('ALTER TABLE codex_state_documents ALTER COLUMN namespace '
+                'TYPE TEXT COLLATE {}').format(sql.Identifier(self.collation)))
+
+    def test_real_collection_read_plan_uses_namespace_range_index(self):
         self.backend.record_replace('unrelated', {str(i): i for i in range(8000)})
         self.backend.record_replace('usage', {'x': 1, 'y': 2})
         capture = Mock()
@@ -124,3 +151,121 @@ class PostgresCollectionRangeTests(CollectionRangeContract, unittest.TestCase):
             plan = connection.execute('EXPLAIN (FORMAT JSON) ' + query, params).fetchone()[0]
         import json
         self.assertIn('Index Cond', json.dumps(plan))
+
+    def test_legacy_revision_fallback_and_upgrade_preserve_encoded_rows(self):
+        self.backend.record_replace('worker/雪:%', {'worker-1': 1, 'worker-2': 2})
+        from codex_web.storage.state_store import state_record_marker
+        with self.backend._connection() as connection:
+            connection.execute('UPDATE codex_state_documents SET payload = %s WHERE namespace = %s',
+                ('{"schemaVersion":1}', state_record_marker('worker/雪:%')))
+        before = self.backend.namespace_revision('worker/雪:%')
+        self.assertIsNotNone(before)
+        self.backend.record_apply('worker/雪:%', upserts={'worker-3': 3})
+        self.assertGreater(self.backend.namespace_revision('worker/雪:%'), before)
+        self.assertEqual(self.backend.record_items('worker/雪:%'),
+                         {'worker-1': 1, 'worker-2': 2, 'worker-3': 3})
+
+
+@unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'), 'PostgreSQL test DSN required')
+class PostgresLocaleCollectionRangeTests(PostgresCollectionRangeTests):
+    # The distributed CI job uses Debian PostgreSQL's default libc locale.
+    # These regressions fail before the byte-collated range/index correction.
+    collation = 'en_US.utf8'
+
+
+@unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'), 'PostgreSQL test DSN required')
+class PostgresCallbackReadTests(unittest.TestCase):
+    postgres_pool_max_size = 1
+    postgres_pool_timeout = .25
+    setUp = fixtures.PostgresAutonomyAppendTests.setUp
+
+    def prepare(self):
+        self.backend.put('admission', {'allowed': True})
+        self.backend.record_replace('records', {'a': 1, 'b': 2})
+
+    def checked(self, value):
+        state = self.backend
+        self.assertEqual(state.get('admission'), {'allowed': True})
+        self.assertEqual(state.document_get('admission'), {'allowed': True})
+        self.assertEqual(state.get('records'), {'a': 1, 'b': 2})
+        self.assertEqual(state.record_get('records', 'a'), 1)
+        self.assertEqual(state.record_get_many('records', ('a', 'missing')), {'a': 1})
+        self.assertEqual(state.record_items('records'), {'a': 1, 'b': 2})
+        self.assertEqual(state.record_count('records'), 2)
+        self.assertEqual(state.record_page('records', limit=1), ({'a': 1}, 'a'))
+        self.assertTrue(state.record_collection_exists('records'))
+        self.assertEqual(state.record_collections_exist(('records', 'missing')),
+                         {'records': True, 'missing': False})
+        self.assertIsNotNone(state.namespace_revision('records'))
+        self.assertTrue(state.contains('admission'))
+        self.assertEqual(state.documents()['records'], {'a': 1, 'b': 2})
+        self.assertEqual(state.schema_version(), state.SCHEMA_VERSION)
+        self.assertTrue(state.status()['ok'])
+        return value
+
+    def test_all_mutation_callbacks_read_without_another_pool_checkout(self):
+        from unittest.mock import patch
+        self.prepare()
+        state = self.backend
+        operations = (
+            lambda: state.record_update('records', 'a', self.checked, default=None),
+            lambda: state.record_mutate('records', ('a',), self.checked),
+            lambda: state.record_mutate_many({'records': ('a',)}, self.checked),
+            lambda: state.update('admission', self.checked, default=None),
+            lambda: state.update('records', self.checked, default=None),
+            lambda: state.update_many({'admission': {}}, self.checked),
+        )
+        for index, operation in enumerate(operations):
+            with self.subTest(index=index), patch.object(state._pool, 'connection', wraps=state._pool.connection) as checkout:
+                operation()
+                self.assertEqual(checkout.call_count, 1)
+        state.put('legacy', {'a': 1})
+        def migrated(rows):
+            # Initialization belongs to the outer mutation. Reads must see its
+            # uncommitted marker/rows, not a different transaction's old view.
+            self.assertTrue(state.record_collection_exists('legacy'))
+            self.assertEqual(state.record_count('legacy'), 1)
+            self.assertEqual(state.record_page('legacy'), ({'a': 1}, None))
+            return rows
+        state.record_mutate_many({'legacy': ('a',)}, migrated)
+
+    def test_failed_callback_rolls_back_and_releases_reader_custody(self):
+        from unittest.mock import patch
+        self.prepare()
+        def fail(rows):
+            self.checked(rows)
+            rows['records']['a'] = 99
+            raise ValueError('denied admission')
+        with self.assertRaisesRegex(ValueError, 'denied admission'):
+            self.backend.record_mutate_many({'records': ('a',)}, fail)
+        with patch.object(self.backend._pool, 'connection', wraps=self.backend._pool.connection) as checkout:
+            self.assertEqual(self.backend.record_get('records', 'a'), 1)
+            self.assertEqual(checkout.call_count, 1)
+        self.backend.record_update('records', 'a', lambda value: value + 1, default=0)
+        self.assertEqual(self.backend.record_get('records', 'a'), 2)
+
+    def test_nested_mutation_is_refused_without_independent_side_effects(self):
+        self.prepare()
+        def mutate(rows):
+            self.backend.put('outside', {'unexpected': True})
+            return rows
+        with self.assertRaisesRegex(RuntimeError, 'nested mutation'):
+            self.backend.record_mutate_many({'records': ('a',)}, mutate)
+        self.assertFalse(self.backend.contains('outside'))
+        self.assertEqual(self.backend.record_get('records', 'a'), 1)
+
+    def test_another_thread_cannot_borrow_the_callback_connection(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from psycopg_pool import PoolTimeout
+        self.prepare()
+        def inspect(rows):
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                other = executor.submit(self.backend.get, 'admission')
+                # The only lease is owned here. A separate thread must use the
+                # bounded pool and time out, never share the live transaction.
+                with self.assertRaises(PoolTimeout):
+                    other.result(timeout=2)
+            self.assertEqual(self.backend.get('admission'), {'allowed': True})
+            return rows
+        self.backend.record_mutate_many({'records': ('a',)}, inspect)
+        self.assertEqual(self.backend.get('admission'), {'allowed': True})

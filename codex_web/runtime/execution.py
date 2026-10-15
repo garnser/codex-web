@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import hashlib
 import json
 import os
 import time
 import weakref
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Mapping
 
 from fastapi import HTTPException
@@ -151,6 +153,41 @@ class AutomatedAdmissionPaused(HTTPException):
 class TurnExecutionService:
     """Own turn execution, queue draining, activity and terminal recovery state."""
 
+    @staticmethod
+    async def _settle_custody_call(function, *args, work_owner=None):
+        # Retain the REAL concurrent Future, as the worker supervisor does.
+        # Cancelling a to_thread Task/wrapper is not actual thread completion.
+        # Production uses the session's existing serial executor/custody set;
+        # standalone callers own and join a bounded one-worker executor.
+        executor = getattr(work_owner, '_supervision_executor', None)
+        private_executor = executor is None
+        if private_executor:
+            executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='session-custody')
+        future = executor.submit(contextvars.copy_context().run, function, *args)
+        tracked = getattr(work_owner, '_executor_work', None)
+        if tracked is not None:
+            tracked.add(future)
+            future.add_done_callback(tracked.discard)
+        cancelled = False
+        try:
+            while not future.done():
+                try:
+                    # A cancelled async wrapper can be replaced; the exact
+                    # submitted work is never replaced, replayed or abandoned.
+                    await asyncio.shield(asyncio.wrap_future(future))
+                except asyncio.CancelledError:
+                    cancelled = True
+                except Exception:
+                    break  # Observe the real terminal exception below.
+            if cancelled:
+                if not future.cancelled():
+                    future.exception()
+                raise asyncio.CancelledError
+            return future.result()
+        finally:
+            if private_executor:
+                executor.shutdown(wait=True)
+
     def __init__(
         self,
         host: Any,
@@ -180,6 +217,7 @@ class TurnExecutionService:
         self.handoff_delivery_recorder: Callable[..., Any] | None = None
         self.queued_preflight = None
         self.procedure_admission = None
+        self.session_custody = None
         self.notification_batch_handler = None
         self.automated_admission_allowed: Callable[[], bool] | None = None
         self.project_coordination_admission = None
@@ -3052,6 +3090,7 @@ class TurnExecutionService:
                     )
             runtime_session_request = AgentRuntimeSessionRequest(
                 project_id=project.id,
+                resource_ids=tuple(getattr(assignment, "resource_ids", ())) if assignment is not None else (),
                 sandbox=effective_sandbox,
                 approval_policy=effective_approval_policy,
                 approval_reviewer=resume_params.get("approvalsReviewer"),
@@ -3078,10 +3117,19 @@ class TurnExecutionService:
             )
             if not initial_turn_pending:
                 try:
-                    await runtime_adapter.resume_session(
+                    custody_before = None
+                    if self.session_custody is not None and bootstrap is not None and not trusted_local_codex_session:
+                        custody_before = await self._settle_custody_call(self.session_custody.capture,
+                            thread_id, runtime_adapter, session, runtime_session_request, fence,
+                            work_owner=session)
+                    resumed = await runtime_adapter.resume_session(
                         native_session_id,
                         runtime_session_request,
                     )
+                    if custody_before is not None:
+                        await self._settle_custody_call(self.session_custody.complete,
+                            custody_before, thread_id, runtime_adapter, session,
+                            runtime_session_request, fence, resumed, work_owner=session)
                 except Exception as exc:
                     capacity_error = await self._capacity_error(runtime_binding, exc)
                     if capacity_error is not None:

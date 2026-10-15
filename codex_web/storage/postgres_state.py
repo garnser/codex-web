@@ -80,6 +80,7 @@ class PostgresStateStore:
         self._pool = connection_pool
         self._shared_pool = False
         self._closed = False
+        self._callback_reads = threading.local()
         if connect is None:
             try:
                 import psycopg  # type: ignore
@@ -120,6 +121,8 @@ class PostgresStateStore:
     @contextmanager
     def _connection(self) -> Iterator[Any]:
         check_operation_budget()
+        if getattr(self._callback_reads, "connection", None) is not None:
+            raise RuntimeError("nested mutation inside a canonical state callback is unsupported")
         if getattr(self, "_closed", False):
             raise RuntimeError("PostgreSQL state store is closed")
         if getattr(self, "_pool", None) is not None:
@@ -140,6 +143,33 @@ class PostgresStateStore:
                 check_operation_budget()
         finally:
             connection.close()
+
+    @contextmanager
+    def _read_connection(self) -> Iterator[Any]:
+        """A synchronous callback's reads belong to its owning transaction.
+
+        Thread-local custody prevents another thread from borrowing this live
+        connection. Only the outer operation commits, rolls back and returns it.
+        Ordinary reads still acquire and release their own bounded-pool lease.
+        """
+        check_operation_budget()
+        if getattr(self, "_closed", False):
+            raise RuntimeError("PostgreSQL state store is closed")
+        connection = getattr(self._callback_reads, "connection", None)
+        if connection is None:
+            with self._connection() as connection:
+                yield connection
+        else:
+            yield connection
+            check_operation_budget()
+
+    def _run_updater(self, connection, updater, current):
+        previous = getattr(self._callback_reads, "connection", None)
+        self._callback_reads.connection = connection
+        try:
+            return updater(current)
+        finally:
+            self._callback_reads.connection = previous
 
     @staticmethod
     def _operation_deadline(connection):
@@ -198,6 +228,11 @@ class PostgresStateStore:
                     )
                     """
                 )
+                # Record keys are encoded byte strings. Default locale ordering
+                # can exclude real keys from prefix ranges; retain a matching
+                # expression index without rewriting existing rows or the PK.
+                cursor.execute('CREATE INDEX IF NOT EXISTS codex_state_documents_namespace_c_idx '
+                               'ON codex_state_documents (namespace COLLATE "C")')
                 cursor.execute(
                     """
                     CREATE TABLE IF NOT EXISTS codex_state_metadata (
@@ -246,8 +281,8 @@ class PostgresStateStore:
             """
             SELECT namespace, payload
             FROM codex_state_documents
-            WHERE namespace >= %s AND namespace < %s
-            ORDER BY namespace
+            WHERE namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s
+            ORDER BY namespace COLLATE "C"
             """,
             (prefix, prefix + "\uffff"),
         )
@@ -271,12 +306,12 @@ class PostgresStateStore:
     ) -> None:
         prefix = state_record_prefix(namespace)
         cursor.execute(
-            "SELECT MAX(updated_at) FROM codex_state_documents WHERE namespace = %s OR (namespace >= %s AND namespace < %s)",
+            'SELECT MAX(updated_at) FROM codex_state_documents WHERE namespace = %s OR (namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s)',
             (namespace, prefix, prefix + "\uffff"),
         )
         previous = cursor.fetchone()[0]
         cursor.execute(
-            "DELETE FROM codex_state_documents WHERE namespace >= %s AND namespace < %s",
+            'DELETE FROM codex_state_documents WHERE namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s',
             (prefix, prefix + "\uffff"),
         )
         cursor.execute(
@@ -324,7 +359,7 @@ class PostgresStateStore:
         cls._replace_records_in_cursor(cursor, namespace, payload)
 
     def record_collection_exists(self, namespace: str) -> bool:
-        with self._connection() as connection:
+        with self._read_connection() as connection:
             with connection.cursor() as cursor:
                 return self._record_collection_exists_in_cursor(
                     cursor,
@@ -339,7 +374,7 @@ class PostgresStateStore:
         if not namespaces:
             return {}
         markers = tuple(state_record_marker(name) for name in namespaces)
-        with self._connection() as connection:
+        with self._read_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     "SELECT namespace FROM codex_state_documents WHERE namespace = ANY(%s)",
@@ -350,7 +385,7 @@ class PostgresStateStore:
         return {name: marker in present for name, marker in zip(namespaces, markers)}
 
     def record_get(self, namespace: str, key: str) -> Any | None:
-        with self._connection() as connection:
+        with self._read_connection() as connection:
             with connection.cursor() as cursor:
                 if self._record_collection_exists_in_cursor(
                     cursor,
@@ -376,7 +411,7 @@ class PostgresStateStore:
         keys = tuple(dict.fromkeys(str(key) for key in keys))
         if not keys:
             return {}
-        with self._connection() as connection:
+        with self._read_connection() as connection:
             with connection.cursor() as cursor:
                 if not self._record_collection_exists_in_cursor(cursor, namespace):
                     cursor.execute(
@@ -392,7 +427,7 @@ class PostgresStateStore:
                 return {storage_keys[row[0]]: self._decode((row[1],)) for row in cursor.fetchall()}
 
     def record_items(self, namespace: str) -> dict[str, Any]:
-        with self._connection() as connection:
+        with self._read_connection() as connection:
             with connection.cursor() as cursor:
                 if self._record_collection_exists_in_cursor(
                     cursor,
@@ -410,12 +445,14 @@ class PostgresStateStore:
                 return dict(payload) if isinstance(payload, dict) else {}
 
     def record_count(self, namespace: str) -> int:
-        with self._connection() as connection:
+        with self._read_connection() as connection:
             with connection.cursor() as cursor:
                 if not self._record_collection_exists_in_cursor(
                     cursor,
                     namespace,
                 ):
+                    if getattr(self._callback_reads, "connection", None) is not None:
+                        raise RuntimeError("callback record count requires an initialized collection")
                     self._lock(cursor, namespace)
                     self._ensure_record_collection_in_cursor(
                         cursor,
@@ -426,7 +463,7 @@ class PostgresStateStore:
                     """
                     SELECT COUNT(*)
                     FROM codex_state_documents
-                    WHERE namespace >= %s AND namespace < %s
+                    WHERE namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s
                     """,
                     (prefix, prefix + "\uffff"),
                 )
@@ -442,12 +479,14 @@ class PostgresStateStore:
         limit: int = 100,
     ) -> tuple[dict[str, Any], str | None]:
         page_size = max(1, min(int(limit), 1000))
-        with self._connection() as connection:
+        with self._read_connection() as connection:
             with connection.cursor() as cursor:
                 if not self._record_collection_exists_in_cursor(
                     cursor,
                     namespace,
                 ):
+                    if getattr(self._callback_reads, "connection", None) is not None:
+                        raise RuntimeError("callback record page requires an initialized collection")
                     self._lock(cursor, namespace)
                     self._ensure_record_collection_in_cursor(
                         cursor,
@@ -468,10 +507,10 @@ class PostgresStateStore:
                     """
                     SELECT namespace, payload
                     FROM codex_state_documents
-                    WHERE namespace >= %s
-                      AND namespace < %s
-                      AND namespace > %s
-                    ORDER BY namespace
+                    WHERE namespace COLLATE "C" >= %s
+                      AND namespace COLLATE "C" < %s
+                      AND namespace COLLATE "C" > %s
+                    ORDER BY namespace COLLATE "C"
                     LIMIT %s
                     """,
                     (lower, upper, after_storage, page_size + 1),
@@ -573,7 +612,7 @@ class PostgresStateStore:
                         (storage_key,),
                     )
                     current = self._decode(cursor.fetchone(), default)
-                    updated = updater(current)
+                    updated = self._run_updater(connection, updater, current)
                     deleted_revision = 0.0
                     if updated is None:
                         cursor.execute(
@@ -624,7 +663,7 @@ class PostgresStateStore:
                             cursor.execute("SELECT payload FROM codex_state_documents WHERE namespace = %s FOR UPDATE",
                                 (state_record_storage_key(namespace, str(key)),))
                             current[namespace][key] = self._decode(cursor.fetchone())
-                    changes = updater(current)
+                    changes = self._run_updater(connection, updater, current)
                     if not isinstance(changes, dict) or set(changes) - set(selected):
                         raise TypeError("record_mutate_many must return deltas for selected collections")
                     for namespace, delta in changes.items():
@@ -684,7 +723,7 @@ class PostgresStateStore:
                             (state_record_storage_key(namespace, key),),
                         )
                         current[key] = self._decode(cursor.fetchone())
-                    changes = updater(current)
+                    changes = self._run_updater(connection, updater, current)
                     if not isinstance(changes, dict):
                         raise TypeError("record_mutate updater must return a mapping")
                     changed = False
@@ -737,7 +776,7 @@ class PostgresStateStore:
             )
 
     def schema_version(self) -> int:
-        with self._connection() as connection:
+        with self._read_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     "SELECT value FROM codex_state_metadata WHERE key = %s",
@@ -747,7 +786,7 @@ class PostgresStateStore:
         return int(row[0]) if row else 0
 
     def status(self) -> dict[str, Any]:
-        with self._connection() as connection:
+        with self._read_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
@@ -790,7 +829,7 @@ class PostgresStateStore:
 
     def document_get(self, namespace: str) -> Any | None:
         """Read only the legacy document, without reconstructing keyed records."""
-        with self._connection() as connection:
+        with self._read_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     "SELECT payload FROM codex_state_documents WHERE namespace = %s",
@@ -800,7 +839,7 @@ class PostgresStateStore:
                 return self._decode(row) if row is not None else None
 
     def get(self, namespace: str) -> Any | None:
-        with self._connection() as connection:
+        with self._read_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     "SELECT payload FROM codex_state_documents WHERE namespace = %s",
@@ -835,7 +874,7 @@ class PostgresStateStore:
                 ):
                     prefix = state_record_prefix(namespace)
                     cursor.execute(
-                        "DELETE FROM codex_state_documents WHERE namespace >= %s AND namespace < %s",
+                        'DELETE FROM codex_state_documents WHERE namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s',
                         (prefix, prefix + "\uffff"),
                     )
                 self._upsert(cursor, namespace, payload)
@@ -858,7 +897,7 @@ class PostgresStateStore:
                         cursor,
                         namespace,
                     )
-                    updated = updater(current)
+                    updated = self._run_updater(connection, updater, current)
                     if not isinstance(updated, dict):
                         raise TypeError(
                             "record-backed namespace updates must return a mapping"
@@ -874,7 +913,7 @@ class PostgresStateStore:
                     (namespace,),
                 )
                 current = self._decode(cursor.fetchone(), default)
-                updated = updater(current)
+                updated = self._run_updater(connection, updater, current)
                 self._upsert(cursor, namespace, updated)
                 return updated
 
@@ -910,7 +949,7 @@ class PostgresStateStore:
                         cursor.fetchone(),
                         defaults[namespace],
                     )
-                updated = updater(current)
+                updated = self._run_updater(connection, updater, current)
                 if set(updated) != set(namespaces):
                     raise ValueError(
                         "update_many updater must return exactly the requested namespaces"
@@ -942,7 +981,7 @@ class PostgresStateStore:
         if not metadata.get("revisionTracked"):
             prefix = state_record_prefix(namespace)
             cursor.execute(
-                "SELECT MAX(updated_at) FROM codex_state_documents WHERE namespace >= %s AND namespace < %s",
+                'SELECT MAX(updated_at) FROM codex_state_documents WHERE namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s',
                 (prefix, prefix + "\uffff"),
             )
             latest = cursor.fetchone()[0]
@@ -955,7 +994,7 @@ class PostgresStateStore:
         )
 
     def namespace_revision(self, namespace: str) -> float | None:
-        with self._connection() as connection:
+        with self._read_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     "SELECT updated_at FROM codex_state_documents WHERE namespace = %s",
@@ -980,7 +1019,7 @@ class PostgresStateStore:
                     """
                     SELECT MAX(updated_at)
                     FROM codex_state_documents
-                    WHERE namespace >= %s AND namespace < %s
+                    WHERE namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s
                     """,
                     (prefix, prefix + "\uffff"),
                 )
@@ -992,7 +1031,7 @@ class PostgresStateStore:
                 )
 
     def contains(self, namespace: str) -> bool:
-        with self._connection() as connection:
+        with self._read_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     "SELECT 1 FROM codex_state_documents WHERE namespace = %s",
@@ -1017,16 +1056,16 @@ class PostgresStateStore:
                 direct_count = int(cursor.rowcount or 0)
                 prefix = state_record_prefix(namespace)
                 cursor.execute(
-                    "DELETE FROM codex_state_documents WHERE namespace >= %s AND namespace < %s",
+                    'DELETE FROM codex_state_documents WHERE namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s',
                     (prefix, prefix + "\uffff"),
                 )
                 return bool(direct_count or cursor.rowcount)
 
     def documents(self) -> dict[str, Any]:
-        with self._connection() as connection:
+        with self._read_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "SELECT namespace, payload FROM codex_state_documents ORDER BY namespace"
+                    'SELECT namespace, payload FROM codex_state_documents ORDER BY namespace COLLATE "C"'
                 )
                 rows = cursor.fetchall()
         documents: dict[str, Any] = {}
