@@ -75,6 +75,23 @@ reject mismatched provider identities. Discovery and task mutation/writeback
 remain issue-specific; MR READ does not grant issue mutation or bypass canonical
 actor, tenant, repository, or credential authorization.
 
+## Configured-source readiness and explicit synchronization
+
+Catalog readiness and explicit Project sync resolve the singular current binding
+through `TaskSourceRegistry.resolve_project(...)` using the canonical Project's
+organization/workspace scope. They do not synthesize a Work Item or provider item
+identity. Missing Projects, changed bindings, unavailable factories/credentials,
+and unsupported discovery fail through the existing availability/capability
+contracts. Registered factories retain their tenant, binding, credential-reference
+and compatibility checks; real-item resolution retains strict provider identity
+and repository validation.
+
+Explicit sync requires DISCOVERY and projects normalized snapshots through the
+shared Work Item projector. It performs no provider writes or work dispatch and
+does not change pause state. The existing Task Source controls display canonical
+readiness/capabilities and sync results/errors; no additional UI state or authority
+is introduced.
+
 ## Normalized facts
 
 `TaskSourceSnapshot` intentionally contains a small provider-neutral fact set:
