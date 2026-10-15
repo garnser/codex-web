@@ -45,7 +45,7 @@ class PostgresConnectionPoolTests(unittest.TestCase):
             )
         return store
 
-    def test_collection_queries_use_encoded_primary_key_ranges(self):
+    def test_collection_queries_use_encoded_byte_collation_ranges(self):
         namespace = "cache/\u96ea %?"
         record_prefix = f"{state_record_prefix(namespace)}k/"
 
@@ -59,7 +59,7 @@ class PostgresConnectionPoolTests(unittest.TestCase):
             {},
         )
         items_query, items_parameters = items_cursor.execute.call_args.args
-        self.assertIn("namespace >= %s AND namespace < %s", items_query)
+        self.assertIn('namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s', items_query)
         self.assertNotIn("LEFT(", items_query)
         self.assertEqual(
             items_parameters,
@@ -72,7 +72,7 @@ class PostgresConnectionPoolTests(unittest.TestCase):
         self.addCleanup(count_store.close)
         self.assertEqual(count_store.record_count(namespace), 3)
         count_query, count_parameters = count_cursor.execute.call_args_list[-1].args
-        self.assertIn("namespace >= %s AND namespace < %s", count_query)
+        self.assertIn('namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s', count_query)
         self.assertNotIn("LEFT(", count_query)
         self.assertEqual(
             count_parameters,
@@ -86,7 +86,7 @@ class PostgresConnectionPoolTests(unittest.TestCase):
         self.assertTrue(delete_store.delete(namespace))
         delete_query, delete_parameters = delete_cursor.execute.call_args_list[-1].args
         collection_prefix = state_record_prefix(namespace)
-        self.assertIn("namespace >= %s AND namespace < %s", delete_query)
+        self.assertIn('namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s', delete_query)
         self.assertNotIn("LEFT(", delete_query)
         self.assertEqual(
             delete_parameters,
@@ -102,14 +102,14 @@ class PostgresConnectionPoolTests(unittest.TestCase):
             call.args
             for call in put_cursor.execute.call_args_list
             if str(call.args[0]).startswith(
-                "DELETE FROM codex_state_documents WHERE namespace >="
+                'DELETE FROM codex_state_documents WHERE namespace COLLATE "C" >='
             )
         ]
         self.assertEqual(
             range_deletes,
             [
                 (
-                    "DELETE FROM codex_state_documents WHERE namespace >= %s AND namespace < %s",
+                    'DELETE FROM codex_state_documents WHERE namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s',
                     (collection_prefix, collection_prefix + "\uffff"),
                 )
             ],

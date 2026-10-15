@@ -198,6 +198,11 @@ class PostgresStateStore:
                     )
                     """
                 )
+                # Record keys are encoded byte strings. Default locale ordering
+                # can exclude real keys from prefix ranges; retain a matching
+                # expression index without rewriting existing rows or the PK.
+                cursor.execute('CREATE INDEX IF NOT EXISTS codex_state_documents_namespace_c_idx '
+                               'ON codex_state_documents (namespace COLLATE "C")')
                 cursor.execute(
                     """
                     CREATE TABLE IF NOT EXISTS codex_state_metadata (
@@ -246,8 +251,8 @@ class PostgresStateStore:
             """
             SELECT namespace, payload
             FROM codex_state_documents
-            WHERE namespace >= %s AND namespace < %s
-            ORDER BY namespace
+            WHERE namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s
+            ORDER BY namespace COLLATE "C"
             """,
             (prefix, prefix + "\uffff"),
         )
@@ -271,12 +276,12 @@ class PostgresStateStore:
     ) -> None:
         prefix = state_record_prefix(namespace)
         cursor.execute(
-            "SELECT MAX(updated_at) FROM codex_state_documents WHERE namespace = %s OR (namespace >= %s AND namespace < %s)",
+            'SELECT MAX(updated_at) FROM codex_state_documents WHERE namespace = %s OR (namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s)',
             (namespace, prefix, prefix + "\uffff"),
         )
         previous = cursor.fetchone()[0]
         cursor.execute(
-            "DELETE FROM codex_state_documents WHERE namespace >= %s AND namespace < %s",
+            'DELETE FROM codex_state_documents WHERE namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s',
             (prefix, prefix + "\uffff"),
         )
         cursor.execute(
@@ -426,7 +431,7 @@ class PostgresStateStore:
                     """
                     SELECT COUNT(*)
                     FROM codex_state_documents
-                    WHERE namespace >= %s AND namespace < %s
+                    WHERE namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s
                     """,
                     (prefix, prefix + "\uffff"),
                 )
@@ -468,10 +473,10 @@ class PostgresStateStore:
                     """
                     SELECT namespace, payload
                     FROM codex_state_documents
-                    WHERE namespace >= %s
-                      AND namespace < %s
-                      AND namespace > %s
-                    ORDER BY namespace
+                    WHERE namespace COLLATE "C" >= %s
+                      AND namespace COLLATE "C" < %s
+                      AND namespace COLLATE "C" > %s
+                    ORDER BY namespace COLLATE "C"
                     LIMIT %s
                     """,
                     (lower, upper, after_storage, page_size + 1),
@@ -835,7 +840,7 @@ class PostgresStateStore:
                 ):
                     prefix = state_record_prefix(namespace)
                     cursor.execute(
-                        "DELETE FROM codex_state_documents WHERE namespace >= %s AND namespace < %s",
+                        'DELETE FROM codex_state_documents WHERE namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s',
                         (prefix, prefix + "\uffff"),
                     )
                 self._upsert(cursor, namespace, payload)
@@ -942,7 +947,7 @@ class PostgresStateStore:
         if not metadata.get("revisionTracked"):
             prefix = state_record_prefix(namespace)
             cursor.execute(
-                "SELECT MAX(updated_at) FROM codex_state_documents WHERE namespace >= %s AND namespace < %s",
+                'SELECT MAX(updated_at) FROM codex_state_documents WHERE namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s',
                 (prefix, prefix + "\uffff"),
             )
             latest = cursor.fetchone()[0]
@@ -980,7 +985,7 @@ class PostgresStateStore:
                     """
                     SELECT MAX(updated_at)
                     FROM codex_state_documents
-                    WHERE namespace >= %s AND namespace < %s
+                    WHERE namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s
                     """,
                     (prefix, prefix + "\uffff"),
                 )
@@ -1017,7 +1022,7 @@ class PostgresStateStore:
                 direct_count = int(cursor.rowcount or 0)
                 prefix = state_record_prefix(namespace)
                 cursor.execute(
-                    "DELETE FROM codex_state_documents WHERE namespace >= %s AND namespace < %s",
+                    'DELETE FROM codex_state_documents WHERE namespace COLLATE "C" >= %s AND namespace COLLATE "C" < %s',
                     (prefix, prefix + "\uffff"),
                 )
                 return bool(direct_count or cursor.rowcount)
@@ -1026,7 +1031,7 @@ class PostgresStateStore:
         with self._connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "SELECT namespace, payload FROM codex_state_documents ORDER BY namespace"
+                    'SELECT namespace, payload FROM codex_state_documents ORDER BY namespace COLLATE "C"'
                 )
                 rows = cursor.fetchall()
         documents: dict[str, Any] = {}
