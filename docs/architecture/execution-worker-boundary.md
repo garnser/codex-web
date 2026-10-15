@@ -226,6 +226,13 @@ constrain CPU time, address space, processes and individual file size. The
 parent worker monitors total workspace
 disk usage and wall time and kills the complete process group on breach.
 
+Trusted read-only mounts may also expose individual regular files, such as the
+managed-validation runner, without exposing their containing directories. File
+mounts create only the destination's parent directories; directory mounts create
+the destination directory. Both remain read-only in every sandbox mode, require
+absolute destinations outside the execution workspace, and reject special-file
+sources. This does not add writable mounts or expand assignment authority.
+
 Linux charges `RLIMIT_NPROC` to the host UID rather than the Bubblewrap PID
 namespace. The worker snapshots existing tasks for its real UID before launch
 and adds the assignment's requested process headroom to that baseline, capped
