@@ -1438,3 +1438,26 @@ admission. Drain/reconcile delegated requests before rollback; byte-compatible
 legacy payloads do not qualify mixed writers or rollback of new activated state.
 Independent review, exact-head CI, qualified installation and explicit binding
 activation remain separate gates before claiming two useful installed children.
+
+Delegated native input additionally requires the guarded Codex capture transport.
+The server-created live admission validator is composed with the existing child
+assignment/session, reservation and correlation guards and runs synchronously
+inside the native writer lock, after session/capture preparation and lock awaits,
+immediately before `stdin.write`. An adapter without this guarded capture path
+refuses delegated input before send; it cannot silently use response-only input.
+
+An authoritative pre-write refusal preserves the viable child session/assignment.
+The capture retires only its exact still-unstarted reservation, retains its
+correlation as a bounded preflight blocker-history witness, and keeps the claim
+and immutable original for queue-order restoration. This is affirmative local
+non-send evidence, never an inference from timeout or missing response. Cleanup
+removes only provisional active/history entries with no native progress. A later
+legitimate binding reauthorization can admit the same canonical child once.
+Positive reader evidence/receipts and post-send uncertainty are checked first
+and never cleared or reset by this path. Existing capture correlation checks
+remain independent of the live delegation validator.
+
+Queue status preserves the actual human-readable delegation blocker with global
+pause both on and off. Mixed queues retain both that blocker and the unrelated
+automation pause reason; enabling general automation is not a remedy for revoked
+Goal authorization. Existing queue-notice rendering consumes the same message.

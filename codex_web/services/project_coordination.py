@@ -117,13 +117,17 @@ class ProjectCoordinationService:
         binding = self.goal_bindings.get(proof.goal_binding_id, scope=actor.tenant)
         goal = self.goal_bindings.goals.get(binding.goal_id, scope=actor.tenant)
         roots = [v for v in goal.work_graph_bindings if v.project_id == current.project_id]
+        if binding.status not in {"requested", "active", "idle"}:
+            denied(f"Goal execution binding is {binding.status}; inspect its explicit authorization")
+        if goal.status != "active":
+            denied(f"Canonical Goal is {goal.status}; project delegation requires an active Goal")
+        if goal.revision != binding.goal_revision:
+            denied("Canonical Goal revision changed; inspect the exact execution binding")
         if (actor.principal_kind != "human"
-                or goal.status != "active" or goal.revision != binding.goal_revision
                 or goal.owner_identity_id != actor.identity_id
                 or binding.created_by != actor.identity_id
                 or binding.execution_owner_id != actor.identity_id
                 or binding.project_id != current.project_id or project_id != current.project_id
-                or binding.status not in {"requested", "active", "idle"}
                 or len(roots) != 1 or roots[0].root_work_item_refs or binding.work_item_refs):
             denied("current user-owned whole-Project Goal execution binding required")
         if (binding.lease_owner_id is not None and binding.lease_expires_at is not None

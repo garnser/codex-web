@@ -6,7 +6,12 @@ from typing import Any
 
 from codex_web.models import (
     QueuedNativeStartCorrelation, QueuedNativeStartEvidence, QueuedNativeStartReceipt, QueuedTurn,
+    ExecutionPreflightBlocker, ExecutionPreflightBlockerSnapshot,
 )
+
+
+class NativeStartAdmissionRefused(RuntimeError):
+    """Server witness: an admission guard refused before the native write."""
 
 
 def validate_attribution(service, current, correlation):
@@ -77,6 +82,8 @@ class QueuedNativeStartCapture:
     worker_id: str | None = None
     fence: int | None = None
     send_validator: Any = None
+    admission_validator: Any = None
+    require_send_guard: bool = False
 
     def bind_assignment(self, assignment, *, worker_id, fence, validator):
         if (assignment.assigned_worker_id != worker_id or assignment.fence != fence
@@ -112,6 +119,32 @@ class QueuedNativeStartCapture:
                 raise ValueError('native start reservation changed before send')
             return current
         self.service.store.update(self.attempt_id, guard)
+        if self.admission_validator is not None:
+            try:
+                self.admission_validator()
+            except Exception as exc:
+                # This synchronous method runs before stdin.write under the
+                # native writer lock. Only this local witness can release the
+                # prepared correlation; an absent/failed RPC response cannot.
+                def refuse(current):
+                    validate_attribution(self.service, current, correlation)
+                    if (current.queued_start_correlation != correlation
+                            or current.status != 'reconciliation_required'
+                            or current.queued_start_receipt is not None
+                            or current.queued_start_evidence is not None
+                            or current.started_at is not None
+                            or current.scheduling_retirement is not None):
+                        raise ValueError('native refusal reservation changed')
+                    blocker = ExecutionPreflightBlocker(code='native_preinput_admission_refused',
+                        message='Live admission refused before native write',
+                        correlation=correlation.model_dump(mode='json'))
+                    history = ExecutionPreflightBlockerSnapshot(blockers=(blocker,),
+                        recorded_at=float(self.service.clock()), attempt_number=current.attempt_number)
+                    return current.model_copy(update={'status':'queued', 'queued_start_correlation':None,
+                        'blockers':(blocker,), 'blocker_history':(*current.blocker_history, history)[-self.service.MAX_HISTORY:],
+                        'updated_at':float(self.service.clock())})
+                self.service.store.update(self.attempt_id, refuse)
+                raise NativeStartAdmissionRefused("Live admission refused before native write") from exc
 
     def prepare(self, *, generation, rpc_request_id, native_session_id):
         """Commit before _send; a storage error forbids this native RPC."""

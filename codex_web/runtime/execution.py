@@ -742,9 +742,12 @@ class TurnExecutionService:
             except (HTTPException, ValueError, RuntimeError) as exc:
                 # A revoked delegation is a pre-input admission stop, not an
                 # unknown provider outcome or a reason to drop the original.
+                detail = exc.detail if isinstance(exc, HTTPException) else None
+                message = detail.get("message") if isinstance(detail, dict) else None
                 raise AutomatedAdmissionPaused(status_code=409, detail={
                     "code": "project_delegation_blocked", "retryable": False,
-                    "message": "Current canonical project delegation does not permit admission",
+                    "message": "Project delegation blocked: " + str(message or
+                        "current Goal binding or origin authority no longer permits admission")[:400],
                 }) from exc
         return validate
 
@@ -755,7 +758,9 @@ class TurnExecutionService:
                 validator()
                 return None
         except HTTPException as exc:
-            return {"code": "project_delegation_blocked", "detail": exc.detail}
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            return {"code": "project_delegation_blocked", "message": str(detail.get("message") or
+                "Project delegation blocked: its canonical admission service is unavailable")[:500]}
         return self.automation_wait_reason(queued.source)
 
     def resume_automated_queues(self) -> None:
@@ -774,14 +779,28 @@ class TurnExecutionService:
     def queue_admission_status(self, thread_id: str) -> dict[str, Any]:
         items = self.host._thread_queue(thread_id)
         reason = self.automation_wait_reason("queue-automation")
-        waiting = sum(self._queued_automation_wait_reason(item) is not None
-                      if item.project_coordination_dispatch is not None
-                      else bool(reason and not self._human_turn_source(item.source))
-                      for item in items)
+        waiting = 0
+        blockers = {}
+        for item in items:
+            blocker = (self._queued_automation_wait_reason(item)
+                       if item.project_coordination_dispatch is not None
+                       else reason if not self._human_turn_source(item.source) else None)
+            if blocker is not None:
+                waiting += 1
+                blockers.setdefault(blocker["code"], blocker)
+        actual_reason = None
+        if blockers:
+            # At most the delegation and ordinary automation reasons. Preserve
+            # both in mixed queues; unpausing cannot repair a revoked binding.
+            values = list(blockers.values())[:2]
+            actual_reason = dict(values[0])
+            if len(values) > 1:
+                actual_reason = {"code": "queue_admission_blocked", "message": " ".join(
+                    str(v.get("message", "Admission blocked"))[:500] for v in values)}
         priority_count = sum(TurnQueuePolicy.admission_priority(item.source) == "human_slack"
                              for item in items)
         return {"automationWaiting": waiting,
-                "automationWaitReason": (reason or {"code": "project_delegation_blocked"}) if waiting else None,
+                "automationWaitReason": actual_reason,
                 "humanSlackPriorityCount": priority_count,
                 "humanSlackPriorityReason": (
                     "Human Slack messages have priority when this thread is ready."
@@ -3207,6 +3226,7 @@ class TurnExecutionService:
             )
             history_started = False
             queued_native_start_confirmed = False
+            preinput_admission_refused = False
             self.record_user_message(thread_id, requested_execution_id, message)
             try:
                 if (
@@ -3224,16 +3244,31 @@ class TurnExecutionService:
                 if notification_batch_control_current is not None and not await asyncio.to_thread(notification_batch_control_current):
                     raise ValueError('notification batch controls changed before native input')
                 if operator_admission_validator is not None:
-                    await asyncio.to_thread(operator_admission_validator)
+                    try:
+                        await asyncio.to_thread(operator_admission_validator)
+                    except AutomatedAdmissionPaused:
+                        preinput_admission_refused = True
+                        raise
                 start_options = {}
-                if (queued_admission_attempt_id and queued_admission_claim_id
+                delegated = (TurnQueuePolicy.source_origin(source) == "project-coordination"
+                             and operator_admission_validator is not None)
+                capture_supported = (queued_admission_attempt_id and queued_admission_claim_id
                         and self.queued_preflight is not None
-                        and isinstance(runtime_adapter, CodexAgentRuntimeAdapter)):
+                        and isinstance(runtime_adapter, CodexAgentRuntimeAdapter))
+                if delegated and not capture_supported:
+                    preinput_admission_refused = True
+                    raise AutomatedAdmissionPaused(status_code=409, detail={
+                        "code": "project_delegation_transport_unsupported",
+                        "message": "Delegated input requires the canonical guarded native-start transport",
+                        "retryable": False})
+                if capture_supported:
                     from codex_web.services.queued_native_start import QueuedNativeStartCapture
                     start_options['start_capture'] = QueuedNativeStartCapture(
                         self.queued_preflight, queued_admission_attempt_id,
                         queued_admission_claim_id, requested_execution_id, thread_id,
-                        actor.identity_id if actor is not None else agent_profile_actor_id)
+                        actor.identity_id if actor is not None else agent_profile_actor_id,
+                        admission_validator=operator_admission_validator,
+                        require_send_guard=delegated)
                 runtime_turn_result = await runtime_adapter.start_turn(
                     native_session_id,
                     runtime_turn_request,
@@ -3394,6 +3429,25 @@ class TurnExecutionService:
                         'thread_id':thread_id, 'turn_id':actual_native_turn_id,
                         'attempt_id':queued_admission_attempt_id})
                     raise
+                from codex_web.services.queued_native_start import NativeStartAdmissionRefused
+                if preinput_admission_refused or isinstance(exc, NativeStartAdmissionRefused):
+                    # Only local pre-write witnesses reach this branch. Positive
+                    # reader evidence was checked first; post-send failures keep
+                    # their existing uncertainty/ownership behavior.
+                    self.clear_thread_active(thread_id)
+                    if self.transcript is not None:
+                        self.transcript.discard_unstarted(thread_id, requested_execution_id)
+                    if history_started and self.thread_history is not None:
+                        self.thread_history.discard_unstarted(thread_id, canonical_execution_id)
+                    if isinstance(exc, AutomatedAdmissionPaused):
+                        raise
+                    cause = exc.__cause__
+                    if isinstance(cause, AutomatedAdmissionPaused):
+                        raise AutomatedAdmissionPaused(status_code=cause.status_code, detail=cause.detail) from exc
+                    raise AutomatedAdmissionPaused(status_code=409, detail={
+                        "code": "project_delegation_preinput_refused",
+                        "message": "Delegated input was refused before the native write; inspect its binding and transport",
+                        "retryable": False}) from exc
                 self.fail_user_message(thread_id, requested_execution_id)
                 if history_started and self.thread_history is not None:
                     with contextlib.suppress(Exception):
