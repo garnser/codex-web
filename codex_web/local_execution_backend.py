@@ -659,9 +659,10 @@ class BubblewrapExecutionBackend:
         for source_raw, destination_raw in trusted_readonly_mounts:
             source = Path(source_raw).resolve(strict=True)
             destination = Path(destination_raw)
-            if not source.is_dir():
+            source_is_directory = source.is_dir()
+            if not source_is_directory and not source.is_file():
                 raise LocalExecutionPolicyError(
-                    "trusted readonly mount source must be an existing directory"
+                    "trusted readonly mount source must be an existing directory or regular file"
                 )
             if not destination.is_absolute():
                 raise LocalExecutionPolicyError(
@@ -671,7 +672,10 @@ class BubblewrapExecutionBackend:
                 raise LocalExecutionPolicyError(
                     "trusted readonly mount cannot replace or nest inside execution workspace"
                 )
-            command.extend(self._directory_creation_args(destination))
+            # Bubblewrap creates the file mountpoint itself; precreating it as
+            # a directory makes a regular-file bind fail at process startup.
+            mount_directory = destination if source_is_directory else destination.parent
+            command.extend(self._directory_creation_args(mount_directory))
             command.extend(("--ro-bind", str(source), str(destination)))
 
         metadata = (

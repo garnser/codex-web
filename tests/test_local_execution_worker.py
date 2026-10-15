@@ -636,6 +636,62 @@ class BubblewrapExecutionBackendTests(unittest.TestCase):
         self.assertNotIn(["--ro-bind", "/", "/"], mounts)
         self.assertIn("--unshare-net", command)
 
+    def test_managed_validation_runner_is_mounted_as_a_readonly_file(self) -> None:
+        from codex_web.runtime import managed_validation_runner
+
+        backend = BubblewrapExecutionBackend(
+            executable="/usr/bin/bwrap", probe_runner=_probe_success,
+        )
+        source = Path(managed_validation_runner.__file__).resolve()
+        destination = Path("/opt/codex-managed-validation.py")
+        self.assertTrue(source.is_file())
+        for sandbox in ("read-only", "workspace-write", "danger-full-access"):
+            with self.subTest(sandbox=sandbox), tempfile.TemporaryDirectory() as raw:
+                command = backend.build_command(
+                    _assignment(sandbox=sandbox), argv=("python", str(destination)),
+                    workspace_path=Path(raw),
+                    trusted_readonly_mounts=((source, destination),),
+                )
+                triples = [command[i:i + 3] for i in range(len(command) - 2)]
+                self.assertIn(["--ro-bind", str(source), str(destination)], triples)
+                self.assertNotIn(["--bind", str(source), str(destination)], triples)
+                pairs = [command[i:i + 2] for i in range(len(command) - 1)]
+                self.assertIn(["--dir", str(destination.parent)], pairs)
+                self.assertNotIn(["--dir", str(destination)], pairs)
+
+    def test_readonly_file_mount_preserves_destination_scope_checks(self) -> None:
+        backend = BubblewrapExecutionBackend(
+            executable="/usr/bin/bwrap", probe_runner=_probe_success,
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            source = root / "runner.py"
+            source.write_text("pass\n", encoding="utf-8")
+            for destination in (Path("relative.py"), workspace, workspace / "runner.py"):
+                with self.subTest(destination=destination), self.assertRaises(LocalExecutionPolicyError):
+                    backend.build_command(
+                        _assignment(), argv=("true",), workspace_path=workspace,
+                        trusted_readonly_mounts=((source, destination),),
+                    )
+
+    def test_readonly_special_file_mount_is_rejected(self) -> None:
+        backend = BubblewrapExecutionBackend(
+            executable="/usr/bin/bwrap", probe_runner=_probe_success,
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            fifo = root / "fifo"
+            os.mkfifo(fifo)
+            with self.assertRaises(LocalExecutionPolicyError):
+                backend.build_command(
+                    _assignment(), argv=("true",), workspace_path=workspace,
+                    trusted_readonly_mounts=((fifo, Path("/opt/runner.py")),),
+                )
+
     def test_explicit_secondary_writable_repository_is_bind_mounted(self) -> None:
         backend = BubblewrapExecutionBackend(
             executable="/usr/bin/bwrap",
