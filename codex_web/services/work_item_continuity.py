@@ -668,11 +668,19 @@ class WorkItemContinuityService:
                 "thread_id": binding.thread_id,
             }
         binding = await self.replace_nonperforming_thread(binding, source)
-        if self.revalidate_after_thread_replacement:
+        if self.revalidate_after_thread_replacement or explicit_retry:
             try:
                 latest = self.get_state(state.ref)
             except HTTPException:
                 return {"status": "work_item_unavailable", "dispatched": False}
+            # Retry identity is mandatory even on the historical adapter, whose
+            # optional owner/stage revalidation remains disabled.
+            if (
+                explicit_retry
+                and latest.execution.retry.attempt != expected_retry_attempt
+            ):
+                return {"status": "stale_state", "dispatched": False}
+        if self.revalidate_after_thread_replacement:
             latest_owner = self.coerce_owner(
                 actionable_owner_value(latest)
             )
@@ -686,10 +694,6 @@ class WorkItemContinuityService:
                 )
                 or latest_owner != owner
                 or latest.current_stage != expected_stage
-                or (
-                    explicit_retry
-                    and latest.execution.retry.attempt != expected_retry_attempt
-                )
             ):
                 return {"status": "stale_state", "dispatched": False}
             state = latest

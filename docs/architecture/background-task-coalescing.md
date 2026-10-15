@@ -75,6 +75,9 @@ Explicit operator retries capture their retry attempt before asynchronous thread
 replacement, independently of mutable state aliases. Post-replacement validation
 rejects a superseded attempt before consuming its watchdog key or dispatching
 with its actor. The newer scheduled attempt retains its own dispatch opportunity.
+Retry-attempt freshness is mandatory on the supported historical compatibility
+edge too; its optional owner/stage revalidation setting does not disable this
+identity check or change background/handoff validation behavior.
 
 ## Delayed continuity checks
 

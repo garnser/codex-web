@@ -351,8 +351,13 @@ class ContinuityCoalescingTests(unittest.IsolatedAsyncioTestCase):
         await service.stop()
 
     async def test_retry_superseded_during_replacement_keeps_new_actor_and_attempt(self) -> None:
-        for shared_mutable_state in (False, True):
-            with self.subTest(shared_mutable_state=shared_mutable_state):
+        for shared_mutable_state, revalidate in (
+            (False, True), (True, True), (False, False), (True, False),
+        ):
+            with self.subTest(
+                shared_mutable_state=shared_mutable_state,
+                revalidate_after_thread_replacement=revalidate,
+            ):
                 state = _state(ref="example/app!274")
                 state.resource_ids = ["original-repository"]
                 state.execution.retry.attempt = 1
@@ -377,6 +382,9 @@ class ContinuityCoalescingTests(unittest.IsolatedAsyncioTestCase):
                     states, replace=replace, dispatches=dispatches,
                     dispatch_scopes=scopes,
                 )
+                # The supported historical compatibility edge disables optional
+                # owner/stage revalidation, but must still fence retry identity.
+                service.revalidate_after_thread_replacement = revalidate
                 if shared_mutable_state:
                     service.get_state = lambda ref: states[ref]
                 service.append_event = events.append
