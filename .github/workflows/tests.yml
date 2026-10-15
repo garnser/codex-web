@@ -235,7 +235,7 @@ jobs:
     timeout-minutes: 10
     services:
       postgres:
-        image: ${{ needs.changes.outputs.full == 'true' && 'postgres:17-alpine' || '' }}
+        image: ${{ needs.changes.outputs.full == 'true' && 'postgres:17' || '' }}
         env:
           POSTGRES_USER: codex
           POSTGRES_PASSWORD: codex

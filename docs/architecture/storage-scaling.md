@@ -1,5 +1,16 @@
 # Storage scaling path
 
+PostgreSQL keyed-record ranges and cursors use explicit `C` collation so encoded
+storage keys keep byte ordering regardless of the database locale. Initialization
+adds the matching `codex_state_documents_namespace_c_idx` B-tree expression index
+to existing tables; record payloads, keys, primary-key uniqueness and schema
+versions are unchanged. Building that index can temporarily block writers and
+requires space for an additional namespace index. Deploy through the existing
+drained upgrade procedure. Older binaries can read the same schema, but retain
+the locale-dependent range bug; a downgrade is not a correctness rollback for
+non-C databases. Distributed CI exercises both C and en_US.utf8 table collations,
+including bounded index plans, replacement, deletion and revision compatibility.
+
 codex-web keeps SQLite as the default local durable store and exposes the same transactional document-store contract through an optional PostgreSQL backend for shared deployments. Local installation remains broker-free by default; shared delivery and coordination are explicit deployment choices rather than hidden requirements.
 
 A distributed deployment must preserve the same canonical-state guarantees. PostgreSQL, Redis, NATS, RabbitMQ, Kafka, or any other infrastructure component is never allowed to become an alternate source of business truth merely because it participates in storage, coordination, or event delivery.

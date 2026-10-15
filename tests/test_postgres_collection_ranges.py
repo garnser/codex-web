@@ -71,6 +71,23 @@ class CollectionRangeContract:
         self.assertEqual(self.backend.get('usage'), ['legacy'])
         self.assertEqual(self.backend.record_items('usage:neighbor'), {'b': 2})
 
+    def test_replacement_and_cross_collection_mutation_preserve_neighbors(self):
+        target = 'execution_workers.workers'
+        self.backend.record_replace(target, {'worker-original': {'fence': 1}, 'worker-stale': 0})
+        self.backend.record_replace(target + '.neighbor', {'foreign': 7})
+        self.backend.record_replace(target, {'worker-current': {'fence': 2}})
+        self.assertIsNone(self.backend.record_get(target, 'worker-stale'))
+        self.assertEqual(self.backend.record_get_many(target, ('worker-current', 'worker-stale')),
+                         {'worker-current': {'fence': 2}})
+        self.backend.update_many({target: {}}, lambda rows: {
+            target: {**rows[target], 'worker-appended': {'fence': 3}}})
+        self.assertEqual(self.backend.record_count(target), 2)
+        self.assertEqual(self.backend.record_items(target + '.neighbor'), {'foreign': 7})
+        self.assertEqual(self.backend.documents()[target], self.backend.record_items(target))
+        self.backend.delete(target)
+        self.assertNotIn(target, self.backend.documents())
+        self.assertEqual(self.backend.record_items(target + '.neighbor'), {'foreign': 7})
+
 
 class SQLiteCollectionRangeTests(CollectionRangeContract, unittest.TestCase):
     def setUp(self):
@@ -109,9 +126,19 @@ class SQLiteCollectionRangeTests(CollectionRangeContract, unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'), 'PostgreSQL test DSN required')
 class PostgresCollectionRangeTests(CollectionRangeContract, unittest.TestCase):
-    setUp = fixtures.PostgresAutonomyAppendTests.setUp
+    collation = 'C'
 
-    def test_real_collection_read_plan_uses_existing_namespace_index(self):
+    def setUp(self):
+        from psycopg import sql
+
+        fixtures.PostgresAutonomyAppendTests.setUp(self)
+        # Each fixture owns a fresh schema. Exercise the same store with both
+        # byte-ordered and locale-ordered primary keys, including existing tables.
+        with self.backend._connection() as connection:
+            connection.execute(sql.SQL('ALTER TABLE codex_state_documents ALTER COLUMN namespace '
+                'TYPE TEXT COLLATE {}').format(sql.Identifier(self.collation)))
+
+    def test_real_collection_read_plan_uses_namespace_range_index(self):
         self.backend.record_replace('unrelated', {str(i): i for i in range(8000)})
         self.backend.record_replace('usage', {'x': 1, 'y': 2})
         capture = Mock()
@@ -124,3 +151,23 @@ class PostgresCollectionRangeTests(CollectionRangeContract, unittest.TestCase):
             plan = connection.execute('EXPLAIN (FORMAT JSON) ' + query, params).fetchone()[0]
         import json
         self.assertIn('Index Cond', json.dumps(plan))
+
+    def test_legacy_revision_fallback_and_upgrade_preserve_encoded_rows(self):
+        self.backend.record_replace('worker/雪:%', {'worker-1': 1, 'worker-2': 2})
+        from codex_web.storage.state_store import state_record_marker
+        with self.backend._connection() as connection:
+            connection.execute('UPDATE codex_state_documents SET payload = %s WHERE namespace = %s',
+                ('{"schemaVersion":1}', state_record_marker('worker/雪:%')))
+        before = self.backend.namespace_revision('worker/雪:%')
+        self.assertIsNotNone(before)
+        self.backend.record_apply('worker/雪:%', upserts={'worker-3': 3})
+        self.assertGreater(self.backend.namespace_revision('worker/雪:%'), before)
+        self.assertEqual(self.backend.record_items('worker/雪:%'),
+                         {'worker-1': 1, 'worker-2': 2, 'worker-3': 3})
+
+
+@unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'), 'PostgreSQL test DSN required')
+class PostgresLocaleCollectionRangeTests(PostgresCollectionRangeTests):
+    # The distributed CI job uses Debian PostgreSQL's default libc locale.
+    # These regressions fail before the byte-collated range/index correction.
+    collation = 'en_US.utf8'
