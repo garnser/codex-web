@@ -182,6 +182,7 @@ class TurnExecutionService:
         self.procedure_admission = None
         self.notification_batch_handler = None
         self.automated_admission_allowed: Callable[[], bool] | None = None
+        self.project_coordination_admission = None
         try:
             self._event_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -729,6 +730,34 @@ class TurnExecutionService:
         if reason is not None:
             raise AutomatedAdmissionPaused(status_code=409, detail=reason)
 
+    def _project_dispatch_validator(self, queued):
+        if queued.project_coordination_dispatch is None:
+            return None
+        if (queued.source != "project-coordination"
+                or self.project_coordination_admission is None):
+            raise HTTPException(status_code=409, detail={"code": "project_delegation_unavailable"})
+        def validate():
+            try:
+                self.project_coordination_admission(queued)
+            except (HTTPException, ValueError, RuntimeError) as exc:
+                # A revoked delegation is a pre-input admission stop, not an
+                # unknown provider outcome or a reason to drop the original.
+                raise AutomatedAdmissionPaused(status_code=409, detail={
+                    "code": "project_delegation_blocked", "retryable": False,
+                    "message": "Current canonical project delegation does not permit admission",
+                }) from exc
+        return validate
+
+    def _queued_automation_wait_reason(self, queued):
+        try:
+            validator = self._project_dispatch_validator(queued)
+            if validator is not None:
+                validator()
+                return None
+        except HTTPException as exc:
+            return {"code": "project_delegation_blocked", "detail": exc.detail}
+        return self.automation_wait_reason(queued.source)
+
     def resume_automated_queues(self) -> None:
         # The canonical control-change request wakes existing queues. Admission
         # still rechecks both controls; a runtime disable marker cannot be overridden.
@@ -745,11 +774,14 @@ class TurnExecutionService:
     def queue_admission_status(self, thread_id: str) -> dict[str, Any]:
         items = self.host._thread_queue(thread_id)
         reason = self.automation_wait_reason("queue-automation")
-        waiting = sum(not self._human_turn_source(item.source) for item in items) if reason else 0
+        waiting = sum(self._queued_automation_wait_reason(item) is not None
+                      if item.project_coordination_dispatch is not None
+                      else bool(reason and not self._human_turn_source(item.source))
+                      for item in items)
         priority_count = sum(TurnQueuePolicy.admission_priority(item.source) == "human_slack"
                              for item in items)
         return {"automationWaiting": waiting,
-                "automationWaitReason": reason if waiting else None,
+                "automationWaitReason": (reason or {"code": "project_delegation_blocked"}) if waiting else None,
                 "humanSlackPriorityCount": priority_count,
                 "humanSlackPriorityReason": (
                     "Human Slack messages have priority when this thread is ready."
@@ -795,6 +827,7 @@ class TurnExecutionService:
         provider_notification_pin=None,
         canonical_ingress_id: str | None = None,
         ingress_execution_profile_definition=None,
+        project_coordination_dispatch=None,
         admit_first: bool = False,
     ) -> QueuedTurn:
         h = self.host
@@ -807,6 +840,7 @@ class TurnExecutionService:
                     and
                     existing.source == source
                     and existing.message == message
+                    and existing.project_coordination_dispatch == project_coordination_dispatch
                     and existing.project_id == project_id
                     and existing.work_item_ref == work_item_ref
                     and existing.handoff_requested_at == handoff_requested_at
@@ -830,7 +864,8 @@ class TurnExecutionService:
 
             incoming_entries = (
                 h._work_item_wakeup_entries(message)
-                if reply_target is None and memory_context_binding is None and provider_notification_pin is None
+                if (reply_target is None and memory_context_binding is None and provider_notification_pin is None
+                    and source != "project-coordination" and project_coordination_dispatch is None)
                 else []
             )
             if incoming_entries:
@@ -838,6 +873,8 @@ class TurnExecutionService:
                     existing
                     for existing in items
                     if existing.reply_target is None
+                    and existing.source != "project-coordination"
+                    and existing.project_coordination_dispatch is None
                     and existing.memory_context_binding is None
                     and existing.provider_notification_pin is None
                     and h._work_item_wakeup_entries(existing.message)
@@ -906,6 +943,8 @@ class TurnExecutionService:
                 **({"memory_context_binding": memory_context_binding} if memory_context_binding is not None else {}),
                 **({"provider_notification_pin":provider_notification_pin} if provider_notification_pin is not None else {}),
                 source=source,
+                **({"project_coordination_dispatch": project_coordination_dispatch}
+                   if project_coordination_dispatch is not None else {}),
                 reply_target=reply_target,
                 created_at=time.time(),
             )
@@ -3613,7 +3652,7 @@ class TurnExecutionService:
                 return
             queued = None
             for candidate in TurnQueuePolicy.admission_candidates(items):
-                if self.automation_wait_reason(candidate.source) is not None:
+                if self._queued_automation_wait_reason(candidate) is not None:
                     continue
                 try:
                     candidate_project = h._project(candidate.project_id)
@@ -3643,13 +3682,13 @@ class TurnExecutionService:
                     if handled:
                         await self.publish_queue_status(thread_id)
                         return
-                if self.automation_wait_reason(candidate.source) is not None:
+                if self._queued_automation_wait_reason(candidate) is not None:
                     continue
                 attempt, claim_id = await asyncio.to_thread(
                     self.queued_preflight.claim_queued_admission, attempt.id)
                 if claim_id is None:
                     continue
-                if self.automation_wait_reason(candidate.source) is not None:
+                if self._queued_automation_wait_reason(candidate) is not None:
                     await asyncio.to_thread(self.queued_preflight.queued_disposition,
                         attempt.id, status="queued", claim_id=claim_id)
                     continue
@@ -3665,11 +3704,13 @@ class TurnExecutionService:
                 return
         else:
             candidate = next((item for item in TurnQueuePolicy.admission_candidates(h._thread_queue(thread_id))
-                              if self.automation_wait_reason(item.source) is None), None)
+                              if self._queued_automation_wait_reason(item) is None), None)
             queued = self.pop_queued_turn(thread_id, candidate.id, order_snapshot=original_order) if candidate else None
         if not queued:
             await self.publish_queue_status(thread_id)
             return
+        if operator_admission_validator is None:
+            operator_admission_validator = self._project_dispatch_validator(queued)
         original_queued = queued.model_copy(deep=True)
         def restore_original_position(original=original_queued):
             def restore(items):

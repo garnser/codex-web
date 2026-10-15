@@ -748,6 +748,15 @@ class ActiveThreadTurn(BaseModel):
         return result
 
 
+class ProjectCoordinationDispatch(BaseModel):
+    """Server-produced references, revalidated at admission; never human origin."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["1.0"] = "1.0"
+    goal_binding_id: str = Field(min_length=1, max_length=200)
+    assignment_id: str = Field(min_length=1, max_length=200)
+    fence: int = Field(ge=1)
+
+
 class QueuedTurn(BaseModel):
     canonical_ingress_id: str | None = None
     ingress_execution_profile_definition: DefinitionReference | None = None
@@ -776,6 +785,7 @@ class QueuedTurn(BaseModel):
 
     memory_context_binding: UxBriefTurnBinding | None = None
     provider_notification_pin: ProviderNotificationPin | None = None
+    project_coordination_dispatch: ProjectCoordinationDispatch | None = None
 
     @model_serializer(mode="wrap")
     def serialize_context(self, handler):
@@ -784,6 +794,8 @@ class QueuedTurn(BaseModel):
             result.pop("memory_context_binding", None)
         if self.provider_notification_pin is None:
             result.pop("provider_notification_pin", None)
+        if self.project_coordination_dispatch is None:
+            result.pop("project_coordination_dispatch", None)
         return result
 
 

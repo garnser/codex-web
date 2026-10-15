@@ -3650,8 +3650,10 @@ from codex_web.services.project_coordination import ProjectCoordinationService, 
 project_coordination_service = ProjectCoordinationService(control_plane_broker_service,
     threads=thread_service, turns=turn_service, scope=thread_scope_service,
     bindings=thread_bootstrap_binding_service, workers=execution_worker_service,
-    memory=organizational_memory_service, approvals=approval_request_service, attention=attention_service)
+    memory=organizational_memory_service, approvals=approval_request_service, attention=attention_service,
+    goal_bindings=goal_execution_binding_service)
 control_plane_broker_service.project_coordination = project_coordination_service
+turn_execution_service.project_coordination_admission = project_coordination_service.validate_queued_delegation
 action_provider_registry.register(ProjectCoordinationActionProvider(project_coordination_service))
 app.state.project_coordination_service = project_coordination_service
 queue_order_recovery_service = QueueOrderRecoveryService(
