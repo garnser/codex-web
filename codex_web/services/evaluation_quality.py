@@ -178,14 +178,16 @@ class EvaluationQualityService:
         if len(run.trace.evidence_ids) > 100:
             raise ValueError("quality source Evidence scan exceeds the 100-record bound")
         artifacts = {}
+        artifact_attempts = 0
         for evidence_id in run.trace.evidence_ids:
             try:
                 item = self.evidence.get_evidence(evidence_id, actor=actor, state=state)
                 if item.project_id != scenario.project_id or not self._valid(item):
                     continue
                 for artifact_id in item.artifact_ids:
-                    if len(artifacts) >= 100:
+                    if artifact_attempts >= 100:
                         raise ValueError("quality output Artifact scan exceeds the 100-record bound")
+                    artifact_attempts += 1
                     artifact = self.evidence.get_artifact(artifact_id, actor=actor, state=state)
                     if artifact.project_id == scenario.project_id and self._valid(artifact) and artifact.revision and artifact.digest:
                         artifacts[artifact.id] = {"id": artifact.id, "name": artifact.name, "revision": artifact.revision, "sha256": artifact.digest.value}

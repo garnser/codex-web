@@ -162,6 +162,70 @@ class EvaluationQualityTests(unittest.IsolatedAsyncioTestCase):
             self.service.options(self.run.id, actor=self.actor)
         self.assertEqual(len([item for item in self.evidence.list_evidence(self.actor) if item.source == SOURCE]), 0)
 
+    def source_with_artifacts(self, count=100, **metadata):
+        artifacts = [self.evidence.create_artifact(ArtifactCreate(
+            project_id="project-a", artifact_type=ArtifactType.REPORT,
+            name=f"Budget fixture {index}", **metadata), actor=self.actor)
+            for index in range(count)]
+        source = self.evidence.create_evidence(EvidenceCreate(project_id="project-a",
+            artifact_ids=tuple(item.id for item in artifacts),
+            evidence_type=EvidenceType.RUNTIME_RESULT, result=EvidenceResult.INFO), actor=self.actor)
+        return source, artifacts
+
+    def trace_sources(self, *sources):
+        expanded = self.run.model_copy(update={"trace": self.run.trace.model_copy(
+            update={"evidence_ids": tuple(item.id for item in sources)})})
+        self.evaluations.get_run = lambda run_id, actor: expanded
+
+    def test_options_counts_rejected_artifact_lookups_before_filtering(self):
+        source, artifacts = self.source_with_artifacts(count=101)
+        self.trace_sources(source)
+        with patch.object(self.evidence, "get_artifact", wraps=self.evidence.get_artifact) as lookup:
+            with self.assertRaisesRegex(ValueError, "quality output Artifact scan"):
+                self.service.options(self.run.id, actor=self.actor)
+            self.assertEqual(lookup.call_count, 100)
+            self.assertNotIn(artifacts[100].id, [call.args[0] for call in lookup.call_args_list])
+
+    def test_options_budget_is_cumulative_across_sources_and_duplicates(self):
+        source, _ = self.source_with_artifacts(revision="v1", digest=sha256_digest(b"fixture"),
+                                               retention_expires_at=time.time() + 3600)
+        # A second canonical Evidence may reference the same Artifact again.
+        repeated = self.evidence.create_evidence(EvidenceCreate(project_id="project-a",
+            artifact_ids=(source.artifact_ids[0],), evidence_type=EvidenceType.RUNTIME_RESULT,
+            result=EvidenceResult.INFO), actor=self.actor)
+        self.trace_sources(source)
+        with patch.object(self.evidence, "get_artifact", wraps=self.evidence.get_artifact) as lookup:
+            self.assertEqual(len(self.service.options(self.run.id, actor=self.actor)["artifacts"]), 100)
+            self.assertEqual(lookup.call_count, 100)
+        # Expired outputs reject every result; duplicate attempts must still count.
+        self.trace_sources(source, repeated)
+        self.service.clock = lambda: float("inf")
+        with patch.object(self.evidence, "get_artifact", wraps=self.evidence.get_artifact) as lookup:
+            with self.assertRaisesRegex(ValueError, "quality output Artifact scan"):
+                self.service.options(self.run.id, actor=self.actor)
+            self.assertEqual(lookup.call_count, 100)
+
+    def test_options_counts_foreign_and_unavailable_artifacts(self):
+        source, _ = self.source_with_artifacts(count=99)
+        foreign = self.evidence.create_artifact(ArtifactCreate(project_id="foreign-project",
+            artifact_type=ArtifactType.REPORT, name="Foreign output"), actor=self.actor)
+        extra = self.evidence.create_evidence(EvidenceCreate(project_id="project-a",
+            artifact_ids=(foreign.id,), evidence_type=EvidenceType.RUNTIME_RESULT,
+            result=EvidenceResult.INFO), actor=self.actor)
+        self.trace_sources(source, extra, self.output)
+        original = self.evidence.get_artifact
+        for unavailable in (False, True):
+            def lookup(artifact_id, **kwargs):
+                if unavailable and artifact_id == foreign.id:
+                    raise RuntimeError("Fixture source unavailable")
+                return original(artifact_id, **kwargs)
+            with self.subTest(unavailable=unavailable), patch.object(
+                    self.evidence, "get_artifact", side_effect=lookup) as reads:
+                with self.assertRaisesRegex(ValueError, "quality output Artifact scan"):
+                    self.service.options(self.run.id, actor=self.actor)
+                self.assertEqual(reads.call_count, 100)
+                self.assertNotIn(self.artifact.id, [call.args[0] for call in reads.call_args_list])
+
     def test_canonical_reopen_keeps_human_annotation_and_history(self):
         item = self.service.annotate(self.run.id, self.payload(), actor=self.actor)
         self.service.evidence = ArtifactEvidenceService(ArtifactEvidenceStore(self.state))
@@ -252,3 +316,11 @@ class EvaluationQualityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.json()["reports"][0]["status"], "semantic_fail")
             self.assertEqual(client.post(endpoint, json={**self.payload().model_dump(mode="json"),
                 "rater_ref": "someone-else"}).status_code, 422)
+            source, _ = self.source_with_artifacts(count=101)
+            self.trace_sources(source)
+            with patch.object(self.evidence, "get_artifact", wraps=self.evidence.get_artifact) as lookup:
+                refused = client.get(endpoint + "/options")
+                self.assertEqual(refused.status_code, 400)
+                self.assertEqual(refused.json(), {"detail":
+                    "quality output Artifact scan exceeds the 100-record bound"})
+                self.assertEqual(lookup.call_count, 100)

@@ -101,3 +101,22 @@ test('mounted deployment uses its prefix for review requests and provenance link
   await expect(dialog.getByRole('link',{name:'Output Artifact'})).toHaveAttribute('href','/codex/api/artifacts/artifact-a');
   expect(await page.evaluate(()=>window.requests.every(item=>item.path.startsWith('/codex/api/')))).toBeTruthy();
 });
+
+
+test('Artifact lookup budget refusal replaces old options without a partial form', async ({page}) => {
+  const dialog = await open(page);
+  await expect(dialog.getByLabel('Criterion finding')).toBeVisible();
+  await dialog.getByRole('button', {name:'Close', exact:true}).click();
+  await page.evaluate(() => {
+    const original = window.fetch;
+    window.fetch = (path, options) => String(path).endsWith('/options')
+      ? Promise.resolve(new Response(JSON.stringify({detail:
+        'quality output Artifact scan exceeds the 100-record bound'}), {status:400}))
+      : original(path, options);
+  });
+  await page.getByRole('button', {name:'Review A', exact:true}).click();
+  await expect(dialog.getByRole('status')).toContainText('quality output Artifact scan exceeds the 100-record bound');
+  await expect(dialog.getByRole('button', {name:'Record manual annotation'})).toHaveCount(0);
+  await expect(dialog.getByLabel('Criterion finding')).toHaveCount(0);
+  expect(await page.evaluate(() => window.requests.filter(item => item.method === 'POST'))).toEqual([]);
+});

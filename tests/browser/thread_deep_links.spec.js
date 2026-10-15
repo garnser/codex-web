@@ -198,6 +198,31 @@ async function mockChatApi(page, { degradeFirstThreadRead = false, simulateReply
   return { reads, threadTurns, threads };
 }
 
+for(const theme of ['light','dark']) test(`runner badges agree between real sidebar and selected header (${theme})`,async({page})=>{
+  const now=Date.now()/1000;
+  const runner=id=>({schemaVersion:'1.0',assignmentId:id,fence:2,assignmentCreatedAt:now-5,
+    observedAt:now,updatedAt:now,state:'running',live:true,processRunning:true,leaseValid:true,leaseExpiresAt:now+3600});
+  const activities={'home-thread':{source:'current_turn',state:'active',turnId:'current-turn'},
+    'background-thread':{source:'current_turn',state:'idle',turnId:null}};
+  const mock=await mockChatApi(page,{runners:{'home-thread':runner('home'),'background-thread':runner('background')},
+    activities,threadStatuses:{'home-thread':'active','background-thread':'idle'},
+    retainedTurns:{'background-thread':[{id:'retained',status:'inProgress',items:[]}]}});
+  for(const thread of mock.threads.home)thread.activity=activities[thread.id];
+  await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
+  await page.evaluate(theme=>{document.documentElement.dataset.theme=theme;},theme);
+  await expect(page.locator('#thread-meta .runner-active')).toContainText('active work');
+  const home=page.locator('#threads .item',{hasText:'Home thread'});
+  await expect(home.locator('.runner-active')).toContainText('active work');
+  const idle=page.locator('#threads .item',{hasText:'Background thread'});
+  await expect(idle.locator('.runner-idle')).toContainText('idle');
+  await idle.locator('.item-main').click();
+  await expect(page.locator('#thread-meta .runner-idle')).toContainText('idle');
+  await expect(page.locator('#thread-meta .runner-active')).toHaveCount(0);
+  await expect(idle.locator('.runner-active')).toHaveCount(0);
+  expect(await home.locator('[data-runner-state]').first().evaluate(node=>getComputedStyle(node).backgroundColor))
+    .not.toBe(await idle.locator('[data-runner-state]').first().evaluate(node=>getComputedStyle(node).backgroundColor));
+});
+
 test('CLI reply completed while inactive is restored from canonical Thread history', async ({ page }) => {
   const { threadTurns } = await mockChatApi(page);
   await page.goto(baseURL+'/projects/home/chat?thread=home-thread');
