@@ -122,6 +122,32 @@ without the isolated assignment boundary also refuse. This limitation is explici
 this change does not claim safe operational writes through arbitrary native tools.
 Protected provider mutations use the separately enforced ActionIntent boundary.
 
+
+The supported inner modes are `read-only`, `workspace-write` and
+`danger-full-access`. The last disables Codex's inner command sandbox; the outer
+[isolated worker boundary](execution-worker-boundary.md#local-isolated-execution-backend)
+continues to enforce filesystem mounts, resource limits and network isolation.
+All writable inner modes require mutable repository access, matching writable
+repository scope and write leases. Scratch preparation remains resource-free.
+The named Agent Profile and actual inner sandbox value are preserved.
+
+Assignment networking is owned by the exact resolved execution profile,
+independently of the inner mode. Current profile schemas require disabled network
+and host mutation; no broader profile is made publishable here. If a future
+resolved contract permits networking, assignment construction preserves its network
+capability even with a restricted inner mode. Backend enforcement and native
+admission remain independent gates: native preparation still refuses any enabled
+assignment/profile networking or host mutation. Legacy unprofiled assignment
+construction retains its sandbox-derived network setting, but cannot obtain this
+profile-pinned native preparation admission.
+
+UI impact: existing assignment inspection renders the actual sandbox separately
+from effective network policy, scope, leases and exact profile provenance. The
+execution-profile inspector exposes host-mutation constraints; procedure inspection
+retains blockers. These canonical surfaces explain the independent constraints;
+no new UI state, mutable definition, schema migration or model call is introduced.
+Production compatibility requires separate runtime qualification.
+
 ## Inspection, evolution and operations
 
 `POST /api/skills/procedure-applicability` is an authenticated, side-effect-free
@@ -149,26 +175,3 @@ consume the new fields/state versions: stop workers and restore a compatible
 snapshot before downgrading. Never run mixed writers or imply rollback of newly
 persisted contracts. No deployment, existing-input replay, host access, credential
 expansion or automatic procedure publication follows from source installation.
-
-
-Native preparation admission distinguishes the inner Codex sandbox mode from the
-outer canonical worker constraints. `danger-full-access` remains the actual inner
-mode: Codex's inner command sandbox is disabled. It can retain no-match local
-preparation only under the same exact published execution-profile pin, live
-assignment fence and workspace lease, registered capability evidence, repository
-or resource-free scratch scope, disabled network and disabled host mutation as
-other supported preparation modes. All writable inner modes require mutable
-repository access and matching writable repository leases/scope. Assignment
-network policy comes from the resolved execution profile independently of the
-inner mode. No named Agent Profile or grant is rewritten. Matching mandatory
-procedures, unknown facts, changed pins, expired leases and broader unsupported
-network/host envelopes still refuse; direct provider/RPC paths remain unsupported.
-
-UI impact: existing assignment inspection renders the actual sandbox and network
-policy separately, alongside scope, leases and exact definition provenance. The
-profile inspector remains the source for host-mutation constraints; procedure
-inspection retains admission blockers. Read these together: a full-access inner
-mode does not represent host or network authority. No new UI state, model call,
-mutable definition, persisted schema or migration is introduced. Procedure operator
-UI follow-up remains tracked by #1428; production compatibility requires separate
-runtime qualification after exact-source review.
