@@ -809,8 +809,8 @@ class AssignmentBoundAgentProcessSession:
                     "assignment-bound agent runtime session exceeded memory_bytes"
                 )
 
-    def validate_current(self) -> ExecutionAssignment:
-        identity_started = time.monotonic()
+    def _validate_current_authority(self) -> ExecutionAssignment:
+        """Resolve current authority without repeating the resource scan."""
         if self.delegation is None or self.fence is None:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session has no active delegation"
@@ -820,6 +820,10 @@ class AssignmentBoundAgentProcessSession:
         if assignment.status != AssignmentStatus.RUNNING:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 f"assignment-bound agent runtime assignment is {assignment.status.value}"
+            )
+        if assignment.lease is None or assignment.lease.expires_at <= self._clock():
+            raise AssignmentBoundAgentProcessSessionStaleError(
+                "assignment-bound agent runtime lease expired"
             )
         if (
             assignment.deadline_at is not None
@@ -838,6 +842,11 @@ class AssignmentBoundAgentProcessSession:
             assignment,
             actor=self.local_worker.worker_actor,
         )
+        return assignment
+
+    def validate_current(self) -> ExecutionAssignment:
+        identity_started = time.monotonic()
+        assignment = self._validate_current_authority()
         self._supervision_timings["identity_seconds"] = round(time.monotonic() - identity_started, 6)
         resource_started = time.monotonic()
         try:
@@ -847,6 +856,10 @@ class AssignmentBoundAgentProcessSession:
         return assignment
 
     def _heartbeat_and_renew(self, assignment: ExecutionAssignment) -> ExecutionAssignment:
+        # A completed validation may only be *observed* after a delayed event
+        # loop resumes. Never renew from its old snapshot: this existing next
+        # phase resolves the same assignment's current authority/fence first.
+        assignment = self._validate_current_authority()
         now_monotonic = self._monotonic()
         if (
             self.last_heartbeat_monotonic is None
@@ -879,20 +892,23 @@ class AssignmentBoundAgentProcessSession:
             )
         return assignment
 
-    async def _supervise(self, phase, function, *args, seconds):
+    async def _supervise(self, phase, function, *args, seconds, reconcile_late=True):
         budget = StorageOperationBudget(seconds)
         context = contextvars.copy_context()
         context.run(storage_operation_budget.set, budget)
         submitted = time.monotonic()
         self._supervision_phase = phase
+        completed_at = None
         def run():
             def invoke():
+                nonlocal completed_at
                 check_operation_budget()
                 started = time.monotonic()
                 self._supervision_timings[f"{phase}_queue_seconds"] = round(started - submitted, 6)
                 try:
                     result = function(*args)
                     check_operation_budget()
+                    completed_at = time.monotonic()
                     return result
                 finally:
                     self._supervision_timings[f"{phase}_seconds"] = round(time.monotonic() - started, 6)
@@ -901,7 +917,41 @@ class AssignmentBoundAgentProcessSession:
         self._executor_work.add(future)
         future.add_done_callback(self._executor_work.discard)
         try:
-            return await asyncio.wait_for(asyncio.wrap_future(future), seconds)
+            result = await asyncio.wait_for(asyncio.wrap_future(future), seconds)
+            # Callback ordering may deliver a completed result before a delayed
+            # timeout callback. That is still late observation, including for
+            # the one-shot authority gate, which must not accept stale success.
+            if time.monotonic() >= budget.deadline:
+                raise TimeoutError("supervision result observed after its deadline")
+            return result
+        except TimeoutError:
+            if not reconcile_late:
+                # Authority reconciliation itself gets one bounded attempt,
+                # never a recursive sequence of late-success probes.
+                raise
+            # asyncio's wrapper and timeout callbacks both need the main loop.
+            # A stalled observer can time out after the actual worker has
+            # already completed successfully within its unchanged real budget.
+            # Only inspect this exact terminal future; never resubmit the work.
+            if not future.done() or future.cancelled():
+                raise
+            result = future.result()  # Preserve the actual worker exception.
+            if completed_at is None or completed_at >= budget.deadline:
+                raise
+            # Timely work is not a lease extension. The last validated lease
+            # and assignment deadline must still be live at observation.
+            self._lease_budget()
+            # The same successful work may have finished before authority was
+            # revoked while the observer loop remained blocked. Check current
+            # canonical authority for *both* validation and renewal results,
+            # off-loop in the existing serial executor. Do not repeat resource
+            # validation, heartbeat or renewal, or install the old result yet.
+            await self._supervise(
+                f"{phase}_authority", self._validate_current_authority,
+                seconds=self._lease_budget(), reconcile_late=False,
+            )
+            self._supervision_phase = phase
+            return result
         finally:
             self._supervision_timings[f"{phase}_wait_seconds"] = round(time.monotonic() - submitted, 6)
             budget.cancelled.set()
