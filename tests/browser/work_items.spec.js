@@ -1,5 +1,6 @@
 const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require('@playwright/test');
+const fixtureBaseUrl = process.env.CODEX_WEB_BROWSER_BASE_URL || 'http://127.0.0.1:18766';
 
 function projectPayload() {
   return [{
@@ -177,7 +178,7 @@ test('work-item operator distinguishes canonical and external state with executi
   page.on('pageerror', error => errors.push(error.message));
   const posts = [];
   await mockOperatorApis(page, posts);
-  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html`);
   await expect(page.locator('#work-items-button')).toHaveCount(0);
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
   await expect(page.locator('.work-items-status')).toHaveText('Up to date');
@@ -217,7 +218,7 @@ test('source configuration writes the canonical project task-source endpoint', a
     }
     await route.fallback();
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html`);
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
 
   const dialog = page.locator('#work-items-dialog');
@@ -250,7 +251,7 @@ test('source configuration sends typed Jira and ServiceNow settings without secr
     }
     await route.fallback();
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html`);
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
 
   const dialog = page.locator('#work-items-dialog');
@@ -304,7 +305,7 @@ test('source configuration sends typed Jira and ServiceNow settings without secr
 test('canonical summary keeps state, routing and related objects understandable from one surface', async ({ page }) => {
   const posts = [];
   await mockOperatorApis(page, posts);
-  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html`);
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
 
   const dialog = page.locator('#work-items-dialog');
@@ -356,7 +357,7 @@ for (const scenario of [
     const posts = [];
     const payload = operatorPayload(scenario.item, scenario.diagnostics);
     await mockOperatorApis(page, posts, payload);
-    await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+    await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html`);
     await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
     const dialog = page.locator('#work-items-dialog');
     for (const text of scenario.expected) {
@@ -392,7 +393,7 @@ for (const delayed of ['operator', 'retry', 'runs', 'return-to-project']) {
       if (path.endsWith('/runs')) return route.fulfill({ json: { active: [], items: [{ executionId: `${project}-run`, status: 'completed' }] } });
       return route.fulfill({ json: { item: { ref: `${project}#42`, project_id: project, title: `${project} detail ${revision}` }, actions: { retry: { allowed: true }, reconcile: { allowed: true } } } });
     });
-    await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html?project=project-a');
+    await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html?project=project-a`);
     await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
     const detail = page.locator('.work-item-detail');
     await expect(detail).toContainText('project-a detail');
@@ -447,7 +448,7 @@ test('command palette opens the requested loaded Work Item through canonical ope
     const ref = decodeURIComponent(new URL(route.request().url()).pathname).includes('#43') ? 'team/project-a#43' : 'team/project-a#42';
     return route.fulfill({ json: operatorPayload({ ref, title: ref.endsWith('43') ? 'Second Work Item' : 'First Work Item', project_id: 'project-a' }) });
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html?project=project-a');
+  await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html?project=project-a`);
   await page.evaluate(async () => {
     const sidebar = document.createElement('aside');
     sidebar.className = 'sidebar';
@@ -487,7 +488,7 @@ test('GitLab TaskSource preserves, replaces and unbinds canonical SecretReferenc
     projects[0].authoritative_task_source = source;
     return route.fulfill({ json: projects[0] });
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html`);
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
   const dialog = page.locator('#work-items-dialog');
   await expect(dialog.locator('.work-source-secret')).toBeVisible();
@@ -513,7 +514,7 @@ test('TaskSource editor rejects sibling adapter fallback and explains explicit P
   const projects = projectPayload(); projects[0].authoritative_task_source = null;
   await page.route('**/api/projects', route => route.fulfill({ json: projects }));
   await page.route('**/api/task-sources', route => route.fulfill({ json: { items: [{ project_id: 'other-project', source_type: 'gitlab', source_instance: 'https://foreign-instance.example', available: true }] } }));
-  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html`);
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
   await expect(page.locator('.work-source-instance')).toHaveValue('');
   await expect(page.locator('[data-source-provenance]')).toContainText('no explicit authoritative TaskSource');
@@ -527,7 +528,7 @@ test('dirty TaskSource supports cancellation, failed-save recovery and confirmed
     if (route.request().method() === 'DELETE') { deletes++; return route.fulfill({ json: {} }); }
     return route.fulfill({ status: 403, json: { detail: 'Project administration denied' } });
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html`);
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
   await page.locator('.work-source-scope').fill('retained-draft');
   page.once('dialog', dialog => dialog.dismiss());
@@ -552,7 +553,7 @@ for (const backToOriginal of [false, true]) {
     let release, requested = false;
     const pending = new Promise(resolve => { release = resolve; });
     await page.route('**/api/projects/project-a/task-source', async route => { requested = true; await pending; await route.fulfill({ json: projects[0] }); });
-    await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html?work_item_project=project-a');
+    await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html?work_item_project=project-a`);
     await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
     await page.locator('.work-source-scope').fill('old-save'); await page.locator('.work-source-save').click();
     await expect.poll(() => requested).toBe(true);
@@ -583,7 +584,7 @@ test('ServiceNow editor preserves all canonical mappings and edits schema-declar
   } } } }));
   let saved;
   await page.route('**/api/projects/project-a/task-source', route => { saved = route.request().postDataJSON(); projects[0].authoritative_task_source = saved; return route.fulfill({ json: projects[0] }); });
-  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html`);
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
   await page.locator('[data-source-provider-details] summary').click();
   await expect(page.getByLabel('Title field name', { exact: true })).toHaveValue('custom_title');
@@ -603,7 +604,7 @@ test('delivery thread is saved with its project source configuration', async ({ 
     supervision = route.request().postDataJSON();
     await route.fulfill({ json: projectPayload()[0] });
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html`);
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
   const dialog = page.locator('#work-items-dialog');
   await expect(dialog.locator('.work-source-scope')).toHaveValue('team/project-a');
@@ -626,7 +627,7 @@ test('committed progress shows projection failure and retries only its exact rev
     posts.push({ action: 'projection-retry', body: route.request().postDataJSON() });
     await route.fulfill({ json: { ...payload, item: { ...payload.item, source_projection: { ...projection, status: 'conflict', reason: 'provider_state_changed' } } } });
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html`);
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
   const card = page.getByRole('region', { name: 'Provider projection' });
   await expect(card).toContainText('Canonical progress committed · provider projection failed');
@@ -653,7 +654,7 @@ test('GitHub TaskSource edits explicit role mappings through canonical Project c
     saved = route.request().postDataJSON();
     await route.fulfill({ json: { ...project, authoritative_task_source: saved } });
   });
-  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html`);
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
   const mapping = page.locator('[data-github-mapping]');
   await expect(mapping).toBeVisible();
