@@ -469,9 +469,11 @@ jobs:
         if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Qualify packaged recovery validation protocol
         run: |
+          image_uid="$(docker run --rm --network none --entrypoint id codex-web:test -u)"
+          image_gid="$(docker run --rm --network none --entrypoint id codex-web:test -g)"
           docker run --rm --network none --read-only \
             --tmpfs /tmp:rw,nosuid,nodev,size=32m,mode=1777 \
-            --tmpfs /app/data:rw,nosuid,nodev,size=32m,mode=1777 \
+            --tmpfs "/app/data:rw,nosuid,nodev,size=32m,uid=${image_uid},gid=${image_gid},mode=0700" \
             --entrypoint python codex-web:test \
             -m unittest tests.test_delivery_validation \
             tests.test_isolated_git_metadata.IsolatedGitMetadataProtocolTests \
