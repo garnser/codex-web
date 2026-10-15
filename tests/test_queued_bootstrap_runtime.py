@@ -191,9 +191,10 @@ class QueuedBootstrapRuntimeTests(unittest.IsolatedAsyncioTestCase):
         from codex_web.api.turns import build_turns_router
         from codex_web.services.projects import ProjectService
         from codex_web.services.thread_scope import ThreadScopeService
+        from codex_web.storage.agent_sessions import AgentSessionStore
         from codex_web.identity import AuthenticationAssurance
         projects = ProjectService(SimpleNamespace(load=lambda:[self.project]))
-        scope = ThreadScopeService(projects, SimpleNamespace(store=SimpleNamespace(list=lambda:[])), self.index)
+        scope = ThreadScopeService(projects, SimpleNamespace(store=AgentSessionStore(self.index.store)), self.index)
         app = FastAPI()
         self.request_actor = self.admin
         @app.middleware('http')

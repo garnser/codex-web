@@ -62,6 +62,7 @@ class AssignmentBoundAgentSessionStatus:
     diagnostic_state: str = "none"
     pending_executor_work: int = 0
     validation_custody_state: str = "unavailable"
+    failure_observation: dict[str, Any] | None = None
 
     @property
     def delegation_expires_at(self) -> float | None:
@@ -69,7 +70,7 @@ class AssignmentBoundAgentSessionStatus:
 
         return self.credential_expires_at
 
-    def public(self) -> dict[str, str | int | float | bool | None]:
+    def public(self) -> dict[str, Any]:
         return {
             "assignment_id": self.assignment_id,
             "worker_id": self.worker_id,
@@ -82,6 +83,7 @@ class AssignmentBoundAgentSessionStatus:
             "diagnostic_state": self.diagnostic_state,
             "pending_executor_work": self.pending_executor_work,
             "validation_custody_state": self.validation_custody_state,
+            "failure_observation": self.failure_observation,
         }
 
 

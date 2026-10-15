@@ -310,6 +310,7 @@ class NotificationBatchRecoveryTests(unittest.TestCase):
         from codex_web.models import IndexedThread
         from codex_web.services.projects import ProjectService
         from codex_web.services.thread_scope import ThreadScopeService
+        from codex_web.storage.agent_sessions import AgentSessionStore
 
         self.routes.upsert(
             IndexedThread(
@@ -320,7 +321,7 @@ class NotificationBatchRecoveryTests(unittest.TestCase):
         )
         scope = ThreadScopeService(
             ProjectService(SimpleNamespace(load=lambda: [self.fixture.project])),
-            SimpleNamespace(store=SimpleNamespace(list=lambda: [])),
+            SimpleNamespace(store=AgentSessionStore(self.routes.store)),
             self.routes,
         )
         app = FastAPI()

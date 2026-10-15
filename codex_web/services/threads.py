@@ -621,6 +621,7 @@ class ThreadService:
                 process_observation = {"processRunning": local.running,
                     "diagnosticState": getattr(local, "diagnostic_state", "none"),
                     "validationCustodyState": getattr(local, "validation_custody_state", "unavailable"),
+                    "failureObservation": getattr(local, "failure_observation", None),
                     "pendingExecutorWork": getattr(local, "pending_executor_work", 0)}
                 if status == "running" and not local.running:
                     state = "stopped"

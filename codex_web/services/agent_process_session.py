@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import socket
 import subprocess
 import threading
@@ -16,6 +17,7 @@ from typing import Any, Callable, Sequence
 from codex_web.execution_workspaces import ExecutionWorkspaceRelease
 from codex_web.storage.state_store import StorageOperationBudget, storage_operation_budget, check_operation_budget, operation_lock
 from codex_web.services.managed_validation_custody import ManagedValidationCustody
+from codex_web.observability import log_event
 from codex_web.runtime import managed_validation_runner
 from codex_web.artifact_evidence import EvidenceCreate, EvidenceResult, EvidenceType
 from codex_web.execution_workers import (
@@ -268,6 +270,8 @@ class AssignmentBoundAgentProcessSession:
             diagnostic_state=self.diagnostic_state,
             pending_executor_work=len(self._executor_work),
             validation_custody_state=self.managed_validation.state if self.managed_validation else "unavailable",
+            failure_observation={**self._failure_observation,
+                "timings": dict(self._supervision_timings)} if self._failure_observation else None,
             credential_expires_at=(
                 self.delegation.expires_at if self.delegation is not None else None
             ),
@@ -924,28 +928,52 @@ class AssignmentBoundAgentProcessSession:
         # diagnostics use a separate bounded attempt; unavailable storage cannot
         # keep the sandbox alive or acquire newer credentials/fencing authority.
         process = (self.runtime.proc if self.runtime else None) or self._owned_process
+        assignment = self._bound_assignment
         self._failure_observation = {"observed_at": time.time(), "process_pid": process.pid if process else None,
+            "code": code, "assignment_id": self.assignment_id, "worker_id": self.worker_id,
+            "fence": self.fence,
+            "execution_id": assignment.execution_id if assignment else None,
+            "execution_workspace_id": assignment.execution_workspace_id if assignment else None,
+            "organization_id": assignment.organization_id if assignment else None,
+            "workspace_id": assignment.workspace_id if assignment else None,
+            "project_id": assignment.project_id if assignment else None,
+            "requester_identity_id": assignment.created_by if assignment else None,
+            "resource_ids": list(assignment.resource_ids) if assignment else [],
+            "definition": assignment.execution_profile_definition.model_dump(mode="json") if assignment and assignment.execution_profile_definition else None,
+            "agent_profile_record_id": assignment.agent_profile.profile_record_id if assignment and assignment.agent_profile else None,
+            "outcome": "unknown", "cleanup_state": "pending",
             "process_exit_code": process.poll() if process else None,
             "phase": getattr(self, "_supervision_phase", "process"),
             "limit_kind": next((name for name in ('disk_bytes','memory_bytes','wall_seconds')
                                 if f'exceeded {name}' in (self.last_error or '')), None),
             "observed_disk_bytes": self.last_disk_bytes,
-            "lease_expires_at": self._bound_assignment.lease.expires_at if self._bound_assignment and self._bound_assignment.lease else None}
+            "lease_expires_at": self._bound_assignment.lease.expires_at if self._bound_assignment and self._bound_assignment.lease else None,
+            "execution_profile_id": assignment.execution_profile_id if assignment else None,
+            "agent_profile_id": assignment.agent_profile.profile_id if assignment and assignment.agent_profile else None,
+            "agent_profile_revision": assignment.agent_profile.profile_revision if assignment and assignment.agent_profile else None,
+            "mutable_repository_id": assignment.repository_target.mutable_repository_id if assignment and assignment.repository_target else None,
+            "base_revision": assignment.base_revision if assignment else None,
+            "validation_registration_id": self.managed_validation.registration.id if self.managed_validation and self.managed_validation.registration else None}
+        cleanup_started = time.monotonic()
         try:
             await self._stop_runtime_from_watchdog()
             self._failure_observation['cleanup_state'] = 'stopped' if process is None or process.poll() is not None else 'unavailable'
         except Exception:
             self._failure_observation['cleanup_state'] = 'unavailable'
+        self._failure_observation['cleanup_seconds'] = round(time.monotonic() - cleanup_started, 6)
+        self._failure_observation['process_exit_code'] = process.poll() if process else None
+        self._log_failure_observation("pending")
         budget = StorageOperationBudget(1.0)
         context = contextvars.copy_context()
         context.run(storage_operation_budget.set, budget)
         self.diagnostic_state = "pending"
-        future = self._diagnostic_executor.submit(context.run,
-            lambda: self._record_runtime_failure(failure_code=code,
-                failure_message=message, release_reason=message))
-        self._executor_work.add(future)
-        future.add_done_callback(self._executor_work.discard)
+        future = None
         try:
+            future = self._diagnostic_executor.submit(context.run,
+                lambda: self._record_runtime_failure(failure_code=code,
+                    failure_message=message, release_reason=message))
+            self._executor_work.add(future)
+            future.add_done_callback(self._executor_work.discard)
             await asyncio.wait_for(asyncio.wrap_future(future), 1.0)
         except Exception:
             if self.diagnostic_state != "recorded":
@@ -954,14 +982,37 @@ class AssignmentBoundAgentProcessSession:
             if self.diagnostic_state == "pending":
                 self.diagnostic_state = "unavailable"
             budget.cancelled.set()
-            future.cancel()
+            if future is not None:
+                future.cancel()
             self._diagnostic_executor.shutdown(wait=False, cancel_futures=True)
+            self._failure_observation["validation_custody_state"] = self.managed_validation.state if self.managed_validation else "unavailable"
+            self._log_failure_observation(self.diagnostic_state)
+
+    def _log_failure_observation(self, diagnostic_state):
+        """Storage-independent, scoped metadata; never an action outcome receipt.
+
+        Same-instance status retains this observation if the bounded canonical
+        diagnostic write fails. The existing structured journal is the durable
+        fallback; no new store, retry loop or execution authority is created.
+        """
+        observation = {**self._failure_observation, "timings": dict(self._supervision_timings)}
+        with contextlib.suppress(Exception):
+            log_event(logging.getLogger(__name__), logging.ERROR,
+                "agent.runtime_supervision_failed", "Assignment-bound runtime supervision failed",
+                tenant_id=observation.get("organization_id"), workspace_id=observation.get("workspace_id"),
+                project_id=observation.get("project_id"), execution_id=observation.get("execution_id"),
+                assignment_id=self.assignment_id, diagnostic_state=diagnostic_state,
+                phase=observation.get("phase"), failure_code=observation.get("code"),
+                cleanup_state=observation.get("cleanup_state"),
+                validation_custody_state=observation.get("validation_custody_state", "unavailable"),
+                timings=dict(self._supervision_timings), observation=observation)
 
     async def _watchdog(self) -> None:
         while not self._stopping:
             try:
                 delay = min(self.watchdog_interval_seconds, self._lease_budget())
             except TimeoutError:
+                self._supervision_phase = "lease"
                 await self._retire_failed_runtime("execution_timeout", "last validated lease or deadline expired")
                 return
             await self._sleep(delay)
@@ -970,6 +1021,7 @@ class AssignmentBoundAgentProcessSession:
             runtime = self.runtime
             process = (runtime.proc if runtime is not None else None) or self._owned_process
             if process is None or process.poll() is not None:
+                self._supervision_phase = "process"
                 self.last_error = "agent runtime process exited"
                 await self._retire_failed_runtime("agent_runtime_process_exited", self.last_error)
                 return
@@ -1007,10 +1059,14 @@ class AssignmentBoundAgentProcessSession:
                 self.managed_validation.capture()
             except Exception:
                 self.managed_validation.state = 'unavailable'
+        self._failure_observation["validation_custody_state"] = self.managed_validation.state if self.managed_validation else "unavailable"
         evidence_ids = []
         metadata = {"observed_fence": self.fence,
                     "failure_code": failure_code,
-                    **self._failure_observation,
+                    **{key: value for key, value in self._failure_observation.items()
+                       if value is None or isinstance(value, (str, int, float, bool))},
+                    **{f"definition_{key}": value for key, value in (self._failure_observation.get("definition") or {}).items()
+                       if value is None or isinstance(value, (str, int, float, bool))},
                     **dict(self._supervision_timings)}
         evidence_service = self.local_worker.artifact_evidence
         if evidence_service is not None:
@@ -1026,6 +1082,7 @@ class AssignmentBoundAgentProcessSession:
                     metadata={"assignment_id": assignment.id, "worker_id": self.worker_id, **metadata}),
                     actor=self.local_worker.worker_actor)
                 evidence_ids.append(evidence.id)
+                self._failure_observation["evidence_id"] = evidence.id
                 self.diagnostic_state = "recorded"
             except Exception:
                 pass
@@ -1035,6 +1092,10 @@ class AssignmentBoundAgentProcessSession:
                 self.worker_id, assignment.id, observed_fence=self.fence,
                 failure_code=failure_code, timings=dict(self._supervision_timings),
                 evidence_id=evidence_ids[0] if evidence_ids else None,
+                phase=self._failure_observation.get("phase"),
+                cleanup_state=self._failure_observation.get("cleanup_state"),
+                validation_custody_state=self._failure_observation.get("validation_custody_state"),
+                cleanup_seconds=self._failure_observation.get("cleanup_seconds"),
                 actor=self.local_worker.worker_actor)
         except Exception:
             pass
@@ -1126,6 +1187,7 @@ class AssignmentBoundAgentProcessSession:
                 getattr(exc, "status_code", None) == 504
                 and method not in {"thread/read", "turn/interrupt"}
             ):
+                self._supervision_phase = "request"
                 self.last_error = f"agent runtime RPC timed out: {method}"
                 await self._retire_failed_runtime("agent_runtime_rpc_timeout", self.last_error)
                 await self.stop()

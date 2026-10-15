@@ -790,6 +790,11 @@ h1 {
   white-space: nowrap;
 }
 
+#thread-meta:has([data-runner-failure]) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .controls {
   min-width: 0;
   max-width: 100%;
