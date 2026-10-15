@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {applyRunner, runnerFor, allowsRuntimeActivity, runnerLabel, runnerFailureText} from '../../static/thread_runner_ui.js';
+import {applyRunner, runnerFor, allowsRuntimeActivity, runnerLabel, runnerFailureText, runnerPresentation, runnerBadgeHtml} from '../../static/thread_runner_ui.js';
 
 const live = (id, created=10, fence=2, observed=20) => ({schemaVersion:'1.0',state:'running',live:true,
   assignmentId:id,assignmentCreatedAt:created,fence,updatedAt:observed,observedAt:observed,
@@ -76,4 +76,44 @@ test('same-fence failure explains phase cleanup and unknown outcome without chan
   assert.match(runnerFailureText(runner),/reconcile provider receipts before recovery/);
   assert.equal(allowsRuntimeActivity('failure-detail'),false);
   assert.equal(runnerFailureText({...runner,fence:3}),'');
+});
+
+test('only current activity with fresh process and lease custody gets active presentation',()=>{
+  const now=Date.now()/1000;
+  const runner={...live('presentation',now-10,2,now),processRunning:true};
+  const activity={source:'current_turn',state:'active',turnId:'exact-turn'};
+  applyRunner({id:'presentation',runner,activity});
+  assert.equal(runnerPresentation('presentation').state,'active');
+  for(const change of [{live:false,state:'lost'}, {processRunning:false}, {processRunning:undefined},
+    {leaseValid:false}, {leaseExpiresAt:now-1}, {observedAt:now-61}, {observedAt:NaN}, {state:'unknown'}]) {
+    applyRunner({id:'guard-'+JSON.stringify(change),runner:{...runner,...change},activity});
+    assert.notEqual(runnerPresentation('guard-'+JSON.stringify(change)).state,'active');
+  }
+  for(const current of [undefined,{state:'active',turnId:'retained'},
+    {source:'current_turn',state:'active'}, {source:'current_turn',state:'idle'}]) {
+    applyRunner({id:'no-current-'+JSON.stringify(current),runner,activity:current,
+      status:{type:'running'},turns:[{id:'retained',status:'inProgress'}]});
+    assert.notEqual(runnerPresentation('no-current-'+JSON.stringify(current)).state,'active');
+  }
+  // A new current idle observation overrides an old exact active turn.
+  applyRunner({id:'presentation',runner:{...runner,observedAt:now+1},activity:{source:'current_turn',state:'idle'}});
+  assert.equal(runnerPresentation('presentation').state,'idle');
+  assert.match(runnerBadgeHtml('presentation',{queued:2}),/runner-queued/);
+  assert.doesNotMatch(runnerBadgeHtml('presentation'),/runner-active/);
+});
+
+test('custody states retain text and distinct non-color glyphs without trusting history or markup',()=>{
+  const glyphs=new Set();
+  for(const state of ['waiting','recovering','stopped','lost','failed','unknown']) {
+    const id='state-'+state;
+    applyRunner({id,runner:{...live(id),state,live:false}});
+    const view=runnerPresentation(id);glyphs.add(view.glyph);
+    assert.equal(view.state,state);
+    assert.match(runnerBadgeHtml(id),new RegExp(`data-runner-state="${state}"`));
+    assert.match(runnerBadgeHtml(id),/aria-hidden="true"/);
+    assert.notEqual(view.label,'');
+  }
+  assert.equal(glyphs.size,6);
+  assert.match(runnerBadgeHtml('never-observed',{waiting:true}),/custody unavailable/);
+  assert.doesNotMatch(runnerBadgeHtml('never-observed',{waiting:true}),/runner-active/);
 });
