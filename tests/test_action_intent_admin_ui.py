@@ -16,6 +16,9 @@ class ActionIntentAdminUiTests(unittest.TestCase):
         self.assertIn("action_intent_outcome_view.js", javascript)
         javascript += (ROOT / "static" / "action_intent_outcome_view.js").read_text(encoding="utf-8")
 
+        self.assertIn("action_intent_merge_view.js", javascript)
+        javascript += (ROOT / "static" / "action_intent_merge_view.js").read_text(encoding="utf-8")
+
         self.assertIn('id="action-intent-list"', html)
         self.assertIn('id="action-intent-recovery-panel"', html)
         self.assertIn('id="recover-stale-action-intents"', html)

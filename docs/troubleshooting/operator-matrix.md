@@ -10,6 +10,7 @@ the primary diagnostic record.
 | Failed Definition publication | validation/approval/lifecycle state | correct blocker and republish new revision | mutating published record in place |
 | TaskSource sync failure | credential ref, provider health, cursor/provenance | restore credential/provider then reconcile | recreating canonical Work Items blindly |
 | Action provider timeout | ActionIntent, receipt, idempotency, provider state | reconcile unknown outcome before retry | assuming timeout means failure |
+| GitHub merge head changed | ActionIntent requested head, failed receipt and HTTP 409 diagnostic | inspect the current PR and checks; authorize a new pinned intent only after review | replacing the original pin or replaying the old intent |
 | Model provider degraded | ProviderCapacity, routing, circuit/Retry-After | wait/fallback according to canonical routing policy | ad-hoc untracked provider call |
 | Worker quarantined | lifecycle, version, capability, sandbox failure, lease | drain/replace with compatible worker | forcing assignment to incompatible worker |
 | Extension quarantined | manifest/version, signature, grants, migration/conformance | inspect/repair or roll back compatible extension | re-enable without resolving failure |
@@ -28,6 +29,15 @@ the primary diagnostic record.
 | Failed release gate | artifact digest, SBOM/provenance/signature, Evidence/approval | fix gate and promote same immutable qualified artifact | rebuilding under same release identity |
 | Upgrade incompatibility | source/target matrix, worker/extension/Definition compatibility | stop at preflight/drain and resolve blocker | forcing rollout across unsupported skew |
 | Migration step failed | step idempotency, attempt/result, irreversible flag | resume only if declared idempotent or follow rollback/recovery | automatic replay of non-idempotent step |
+
+For GitHub merges, expand the existing ActionIntent and load its side-effect
+timeline. Compare the requested head with the receipt head and the verification's
+observed head and merge commit. A receipt is a provider result; only a successful
+independent verification confirms it. Older records can show “not recorded”. An
+omitted expected head has no mutation-time head guarantee. A failed stale-head
+refusal differs from a lost response: an unknown merge must reconcile the exact
+original pinned target without another merge request. An unpinned unknown merge
+cannot be declared successful by this recovery path.
 | Failed restore verification | checksum, schema, key manifest, audit root, destination | repair dependency and rerun isolated verification | enabling side effects from unverified restore |
 | Split-brain suspicion | coordination owner/lease/fencing token | pause protected execution and reconcile ownership | allowing both owners to act |
 | Duplicate event/action | event ID/idempotency key/receipt | dedupe/reconcile canonical state | deleting audit history |

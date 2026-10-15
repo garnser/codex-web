@@ -8,6 +8,7 @@
   const { procedureHistoryHtml } = await import(`${BASE}/static/procedure_discovery_view.js`);
   const { installActionProcedureRuns, procedureRunsDirty, disposeProcedureRuns } = await import(`${BASE}/static/procedure_run_ui.js`);
   const { decisionHtml, leaseHtml, failureHtml, recoveryHtml, timeText, listText } = await import(`${BASE}/static/action_intent_outcome_view.js`);
+  const { mergeRequestHtml, mergeReceiptHtml, verificationHtml } = await import(`${BASE}/static/action_intent_merge_view.js`);
   let actor = null;
   let intents = [];
   let refreshGeneration = 0;
@@ -114,7 +115,8 @@
       ${intent.publication_recovery_scope || publicationRecovery ? `<small>Publication recovery provenance: ${escapeHtml(JSON.stringify(intent.publication_recovery_scope || {work_item_ref: intent.work_item_ref, execution_id: intent.execution_id}))}. Inspect retired workspace scopes.</small>` : ""}
       <small>Binding: ${escapeHtml(intent.binding_id)} · risk: ${escapeHtml(definition.risk_class || "unknown")} · capabilities: ${escapeHtml(capabilityText(definition.capabilities))}</small>
       <small>Resources: ${(intent.resource_ids || []).map(id => ref('resource',id)).join(', ') || 'none'} · credential reference: ${escapeHtml(intent.credential_ref || "none")} · dry-run: ${request.dry_run ? "yes" : "no"}</small>
-      <small>Request parameter keys only: ${listText(paramKeys)}. Parameter values and provider output bodies are intentionally not rendered in this timeline.</small>
+      <small>Request parameter keys only: ${listText(paramKeys)}. Merge commit identities are shown separately; other parameter values and provider output bodies are hidden.</small>
+      ${mergeRequestHtml(intent)}
       ${decisionHtml("Authority", intent.authority_decision)}
       ${decisionHtml("Policy", intent.policy_decision)}
 
@@ -152,18 +154,9 @@
       <small>ID: ${escapeHtml(receipt.id)} · received ${timeText(receipt.received_at)} · provider external ID ${escapeHtml(receipt.provider_external_id || result?.external_id || "none")}</small>
       <small>Action: ${escapeHtml(receipt.action_id)} · idempotency ${escapeHtml(receipt.idempotency_key)} · correlation ${escapeHtml(receipt.correlation_id)}</small>
       ${result ? `<small>Provider result: ${escapeHtml(result.status)} · execution ${escapeHtml(result.execution_id)} · started ${timeText(result.started_at)} · completed ${timeText(result.completed_at)}</small>
+        ${mergeReceiptHtml(result)}
         <small>Error: ${escapeHtml(result.error_code || "none")} · ${escapeHtml(result.error_message || "none")} · evidence references: ${providerEvidence.map((item) => escapeHtml(item.reference || item.evidence_type)).join(", ") || "none"}</small>
         <small>Provider output body and rollback token are intentionally not rendered.</small>` : "<small>No durable provider result body is attached to this receipt.</small>"}
-    </div>`;
-  }
-
-  function verificationHtml(item) {
-    const provider = item.provider_verification || {};
-    return `<div class="comm-entry">
-      <strong>Verification receipt · ${item.verified ? "verified" : "not verified"}</strong>
-      <small>ID: ${escapeHtml(item.id)} · verified ${timeText(item.verified_at)} · evidence gate ${item.evidence_satisfied == null ? "not evaluated" : item.evidence_satisfied ? "satisfied" : "blocked"}</small>
-      <small>Findings: ${listText(item.findings)} · provider verified: ${provider.verified == null ? "not evaluated" : provider.verified ? "yes" : "no"} · provider findings: ${listText(provider.findings)}</small>
-      <small>Evidence-evaluation payload is retained canonically but not dumped into this UI; use the Artifact/Evidence explorer for evidence detail.</small>
     </div>`;
   }
 

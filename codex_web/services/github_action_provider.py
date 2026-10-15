@@ -19,7 +19,7 @@ from codex_web.action_providers import (
     ActionResult,
     ActionVerification,
 )
-from codex_web.integrations.github_client import GitHubClient
+from codex_web.integrations.github_client import GitHubAPIError, GitHubClient
 from codex_web.services.code_host_continuation import continuation_for
 from codex_web.services.code_host_action_contract import (
     CODE_HOST_BRANCH_EVIDENCE,
@@ -122,6 +122,16 @@ class GitHubActionProvider:
         if isinstance(value, dict):
             return str(value.get("ref") or "")
         return str(value or "")
+
+    @staticmethod
+    def _evidence_sha(value: Any) -> str:
+        # Provider fields are untrusted: retain only commit identities in the
+        # additional verification metadata, never arbitrary response content.
+        if isinstance(value, str) and len(value) == 40 and all(
+            character in "0123456789abcdef" for character in value.casefold()
+        ):
+            return value.casefold()
+        return ""
 
     def _publish_branch_sync(
         self,
@@ -534,14 +544,33 @@ class GitHubActionProvider:
                     raise ActionRequirementError(
                         "GitHub pull request is not clean and mergeable; required checks may not be green"
                     )
-                merged = await self.client.merge_pull_request(
-                    self.api_base,
-                    repository,
-                    number,
-                    token=credential,
-                    payload={"merge_method": payload["merge_method"]},
-                )
-                if not bool(merged.get("merged")):
+                merge_payload = {"merge_method": payload["merge_method"]}
+                if expected_head_sha is not None:
+                    # GitHub enforces this atomically with the mutation. The
+                    # earlier read cannot fence a push arriving after preflight.
+                    merge_payload["sha"] = expected_head_sha
+                try:
+                    merged = await self.client.merge_pull_request(
+                        self.api_base,
+                        repository,
+                        number,
+                        token=credential,
+                        payload=merge_payload,
+                    )
+                except GitHubAPIError as exc:
+                    # Only documented refusals from this merge endpoint are
+                    # known failures. Transport/5xx/invalid responses stay
+                    # unknown and require canonical verification, never replay.
+                    if exc.status_code in {405, 409, 422}:
+                        raise ActionRequirementError(
+                            "GitHub refused the pull request merge "
+                            f"(HTTP {exc.status_code}); expected_head_sha and "
+                            "merge requirements must be re-evaluated"
+                        ) from exc
+                    raise
+                if merged.get("merged") is False:
+                    raise ActionRequirementError("GitHub declined the pull request merge")
+                if merged.get("merged") is not True:
                     raise ValueError("GitHub declined the pull request merge")
                 merge_sha = str(merged.get("sha") or "")
             else:
@@ -626,6 +655,7 @@ class GitHubActionProvider:
             raise ValueError("GitHub result binding does not match verification binding")
         repository = self.contract.locator_for_result(result, binding)
         findings: list[str] = []
+        merge_evidence: dict[str, Any] = {}
         verified = False
         if result.action_id == CODE_HOST_ISSUE_CREATE_ACTION_ID:
             item = await self.client.issue(
@@ -705,6 +735,11 @@ class GitHubActionProvider:
                 token=credential,
             )
             head = item.get("head") if isinstance(item.get("head"), dict) else {}
+            merge_evidence = {
+                "expected_head_sha": self._evidence_sha(result.output.get("head_sha")),
+                "observed_head_sha": self._evidence_sha(head.get("sha")),
+                "merge_commit_sha": self._evidence_sha(item.get("merge_commit_sha")),
+            }
             verified = bool(item.get("merged")) and (
                 not result.output.get("merge_commit_sha")
                 or str(item.get("merge_commit_sha") or "")
@@ -741,6 +776,7 @@ class GitHubActionProvider:
                     "resource_id": str(result.output["resource_id"]),
                     "repository": repository,
                     "verified": verified,
+                    **merge_evidence,
                 },
             ),
         )

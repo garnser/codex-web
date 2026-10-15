@@ -160,6 +160,32 @@ Missing, unrelated, forked, protected, stale or changed proofs fail closed. The
 existing ActionIntent preparation and receipts expose the MR and issue reference;
 no separate mutation path or authority is introduced.
 
+GitHub merge retains its preflight checks and forwards a supplied, validated
+`expected_head_sha` as the REST merge endpoint's atomic `sha` condition. It never
+replaces the caller's pin with a newly observed head. An omitted pin retains the
+existing optional-field behavior and sends no `sha`; it provides no atomic head
+guarantee. The canonical request remains unchanged, including the original pin.
+GitLab delivery is unaffected. See GitHub's
+[merge endpoint contract](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request).
+
+Only typed HTTP 405/409/422 refusals from the merge mutation and an explicit
+`merged: false` response become known `ActionRequirementError` failures. Provider
+messages are not copied into diagnostics. Transport loss, server errors, invalid
+JSON, or incomplete responses remain unknown and require reconciliation. This
+classification does not apply to other operations or arbitrary exceptions.
+Already-merged handling reads and checks the supplied head without another PUT.
+Unknown-result reconciliation retains the original repository, PR and mandatory
+pin, independently verifies provider state, and never repeats the mutation.
+
+UI impact (#127): the existing ActionIntent timeline remains canonical for
+failed, uncertain, reconciliation-required and verified states. Its merge details
+show only validated SHA fields: requested head, receipt head/merge commit, and
+independently observed verification head/merge commit. Generic parameter/output
+bodies and credential material remain hidden. Missing historical fields display
+as not recorded; no schema migration, new state, grant, definition, control or
+provider-specific administration surface is introduced. These are protocol and
+security engine invariants, not mutable Definition Registry catalog entries.
+
 Provider success returns normalized `code-host-*` Evidence. Verification uses a
 fresh brokered credential to read the comment, issue, change request, or branch
 back from the provider and compare it with the durable ActionResult. ActionIntent
