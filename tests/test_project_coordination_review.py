@@ -24,6 +24,69 @@ from codex_web.execution_workers import AssignmentClaimRequest, AssignmentStartR
 from tests.test_project_coordination import ProjectCoordinationBrokerTests
 
 
+async def wait_for_pending_phase(event, producer, *, timeout=2):
+    """Observe startup and its request together, within the broker fixture budget.
+
+    The producer prepares a workspace and checks authority before entering the
+    parked manager.start seam. A task being scheduled proves neither admission
+    nor success; surface an early response/exception instead of masking it with
+    an event-only timeout. Do not cancel the producer: its owner releases the
+    seam and observes completion in finally.
+    """
+    waiter = asyncio.create_task(event.wait())
+    try:
+        done, _ = await asyncio.wait(
+            (waiter, producer), timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if producer in done:
+            result = await producer
+            raise AssertionError(f"Producer completed before pending phase: {result!r}")
+        if waiter not in done:
+            raise AssertionError("Pending phase not reached within broker fixture budget")
+    finally:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+
+
+class PendingPhaseSynchronizationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pending_phase_leaves_producer_parked(self):
+        event = asyncio.Event()
+        release = asyncio.Event()
+        async def produce():
+            event.set()
+            await release.wait()
+        producer = asyncio.create_task(produce())
+        try:
+            await wait_for_pending_phase(event, producer)
+            self.assertFalse(producer.done())
+        finally:
+            release.set()
+            await producer
+
+    async def test_early_exception_is_reported(self):
+        producer = asyncio.get_running_loop().create_future()
+        producer.set_exception(RuntimeError("preparation failed"))
+        with self.assertRaisesRegex(RuntimeError, "preparation failed"):
+            await wait_for_pending_phase(asyncio.Event(), producer)
+
+    async def test_early_response_is_reported(self):
+        producer = asyncio.get_running_loop().create_future()
+        producer.set_result((403, {}, {"reason": "admission denied"}))
+        with self.assertRaisesRegex(AssertionError, "403.*admission denied"):
+            await wait_for_pending_phase(asyncio.Event(), producer)
+
+    async def test_timeout_preserves_producer_for_owned_cleanup(self):
+        producer = asyncio.get_running_loop().create_future()
+        try:
+            with self.assertRaisesRegex(AssertionError, "Pending phase not reached"):
+                await wait_for_pending_phase(asyncio.Event(), producer, timeout=0)
+            self.assertFalse(producer.done())
+        finally:
+            producer.cancel()
+            await asyncio.gather(producer, return_exceptions=True)
+
+
 class ReviewCorrectionsTests(ProjectCoordinationBrokerTests):
     async def test_F4_coordination_and_codehost_bindings_compose(self):
         from codex_web.action_providers import ActionProviderBindingCreate
@@ -366,7 +429,7 @@ class ReviewCorrectionsTests(ProjectCoordinationBrokerTests):
         payload=dict(profile_id='engineer',profile_revision=1,idempotency_key='pending-reservation')
         creating=asyncio.create_task(self.call('POST','/threads',payload))
         try:
-            await asyncio.wait_for(pending_seen.wait(),1)
+            await wait_for_pending_phase(pending_seen, creating)
             self.assertEqual(pending[0].status,'pending')
             status,_,second=await self.call('POST','/threads',dict(payload,idempotency_key='competing-reservation'))
             self.assertEqual(status,200,second)
@@ -414,7 +477,7 @@ class ReviewCorrectionsTests(ProjectCoordinationBrokerTests):
         creating=asyncio.create_task(self.call('POST','/threads',payload))
         path='/api/project-coordination/threads?project_id=home&repository_resource_id='+self.f.repository.id
         try:
-            await asyncio.wait_for(seen.wait(),1)
+            await wait_for_pending_phase(seen, creating)
             self.replace_assignment(self.assignment.model_copy(update={'lease':self.assignment.lease.model_copy(update={'expires_at':1})}))
             status,_,value=await self._request.__func__(second,'POST',path,payload=dict(payload,idempotency_key='successor-before-cleanup'))
             self.assertEqual(status,200,value)
@@ -510,4 +573,7 @@ class ReviewCorrectionsTests(ProjectCoordinationBrokerTests):
 
 def load_tests(loader,tests,pattern):
     # Exercise correction witnesses here; the original module owns its own suite.
-    return unittest.TestSuite(ReviewCorrectionsTests(name) for name in ReviewCorrectionsTests.__dict__ if name.startswith('test_'))
+    return unittest.TestSuite([
+        loader.loadTestsFromTestCase(PendingPhaseSynchronizationTests),
+        *(ReviewCorrectionsTests(name) for name in ReviewCorrectionsTests.__dict__ if name.startswith('test_')),
+    ])
