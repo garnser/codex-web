@@ -899,6 +899,7 @@ class TurnExecutionBindingService:
         execution_profile_id: str | None = None,
         agent_profile: AgentProfileExecutionBinding | None = None,
         skill_refs: tuple[DefinitionReference, ...] = (),
+        assignment_admission=None,
     ) -> TurnExecutionBinding:
         normalized_execution_id = str(execution_id or "").strip()
         if not normalized_execution_id:
@@ -1436,6 +1437,7 @@ class TurnExecutionBindingService:
                         },
                     ),
                     actor=self.control_actor,
+                    **({"assignment_admission": assignment_admission} if assignment_admission is not None else {}),
                 )
             except Exception:
                 # Preparation has reserved a workspace but has no assignment to
@@ -1566,6 +1568,7 @@ class TurnExecutionBindingService:
         routing_repository_id: str | None = None,
         execution_profile_id: str | None = None,
         agent_profile: AgentProfileExecutionBinding | None = None,
+        assignment_admission=None,
     ) -> TurnExecutionBinding:
         subject = self._bootstrap_subject(bootstrap_id)
         if (
@@ -1599,4 +1602,5 @@ class TurnExecutionBindingService:
             routing_repository_id=routing_repository_id,
             execution_profile_id=execution_profile_id,
             agent_profile=agent_profile,
+            assignment_admission=assignment_admission,
         )

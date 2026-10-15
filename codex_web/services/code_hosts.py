@@ -63,6 +63,13 @@ class CodeHostRegistry:
             )
         self._providers[provider.provider_type] = provider
 
+    def provider(self, provider_type: str) -> CodeHostProvider:
+        """Resolve an installed adapter; a binding cannot create capabilities."""
+        provider = self._providers.get(provider_type)
+        if provider is None:
+            raise CodeHostError(f"code-host provider unavailable: {provider_type}")
+        return provider
+
     def register_binding(self, binding: CodeHostProviderBinding) -> None:
         provider = self._providers.get(binding.provider_type)
         if provider is None:

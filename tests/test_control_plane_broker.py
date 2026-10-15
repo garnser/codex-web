@@ -242,6 +242,10 @@ class _CodeHostRegistry:
     def __init__(self) -> None:
         self.binding = None
 
+    def provider(self, provider_type):
+        from codex_web.code_hosts import CodeHostCapability
+        return SimpleNamespace(capabilities=lambda: tuple(CodeHostCapability))
+
     def register_binding(self, binding) -> None:
         self.binding = binding
 
@@ -300,7 +304,10 @@ class _ActionRegistry:
 
     def provider(self, provider_type, provider_instance, *, actor):
         del provider_instance, actor
+        from codex_web.services.code_host_action_contract import CodeHostActionContract
         return SimpleNamespace(
+            actions=lambda: CodeHostActionContract(None, None, provider_type=provider_type,
+                provider_label="fixture", credential_purpose="fixture", alias_namespaces=()).actions(),
             api_base=(
                 "https://api.github.com"
                 if provider_type == "github"
@@ -1759,7 +1766,10 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 result = await client.get("/api/control-plane-broker/operations")
         self.assertEqual(result.status_code, 200)
-        self.assertEqual(result.json()["items"], self.service.public_assignment_capability(self.assignment)["operations"])
+        self.assertEqual([item for item in result.json()["items"] if not item["id"].startswith("project.")],
+                         self.service.public_assignment_capability(self.assignment)["operations"])
+        self.assertFalse(any(item["id"].startswith("project.") for item in
+                             self.service.public_assignment_capability(self.assignment)["operations"]))
         self.assertNotIn("assignment_context", result.json())
 
     async def test_repository_write_assignment_receives_same_scoped_broker(self) -> None:
@@ -2447,7 +2457,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(
             ControlPlaneBrokerDeniedError,
-            "exactly one enabled provider binding",
+            "exactly one eligible enabled provider binding",
         ):
             self.service._repository_action_binding(
                 action_registry=registry,
@@ -2457,6 +2467,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 project_id="project-a",
                 repository_id="repository-a",
+                action_id="code-host.branch.publish",
             )
 
     async def test_repository_write_assignment_can_discover_open_pull_requests(self) -> None:

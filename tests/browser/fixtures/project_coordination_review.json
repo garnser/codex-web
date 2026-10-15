@@ -1,0 +1,620 @@
+{
+  "provenance": {
+    "source": "tests/test_project_coordination_review.py composed broker and actual FastAPI inspector",
+    "data": "Synthetic isolated test identities and records; no production content or live acceptance claim",
+    "cases": [
+      "F2 activity matrix",
+      "F3 independent operator record visibility"
+    ]
+  },
+  "runner": {
+    "matching": {
+      "active_execution_id": "matching-execution",
+      "activity": "active",
+      "agent_profile": {
+        "profile_id": "engineer",
+        "revision": 1
+      },
+      "assignment_id": "assignment-755d747dbac14b79ac996c5fbbcfcf59",
+      "assignment_status": "running",
+      "blocker": null,
+      "current_turn": {
+        "source": "current_turn",
+        "state": "active",
+        "turnId": "matching-turn"
+      },
+      "definition": {
+        "checksum": "4c4e0297851f5f3a9178db84dddb01eb7287efcb34073b193354de9888322802",
+        "definition_id": "execution.profiles.default",
+        "definition_schema_version": "1.2",
+        "kind": "execution-profile-catalog",
+        "record_id": "151209295a514da5b0d3009a4fffdfe6",
+        "revision": 1
+      },
+      "execution_id": "thread-bootstrap-d3781276d8e9430e98cd393f6bd6ed39",
+      "execution_workspace_id": "execws-2ad01bbfd84cd4b5db71",
+      "fence": 1,
+      "project_id": "home",
+      "queue_depth": 1,
+      "resource_ids": [
+        "resource-0f2f72b7b8554b3899b877db1d588233"
+      ],
+      "retained_execution_id": "matching-execution",
+      "retained_turn_id": "matching-turn",
+      "runner": {
+        "assignmentCreatedAt": 1792067703.6381912,
+        "assignmentId": "assignment-755d747dbac14b79ac996c5fbbcfcf59",
+        "assignmentStatus": "running",
+        "diagnosticState": "none",
+        "fence": 1,
+        "leaseExpiresAt": 1792067823.6579068,
+        "leaseValid": true,
+        "live": true,
+        "observedAt": 1792067703.81887,
+        "pendingExecutorWork": 0,
+        "processRunning": true,
+        "reason": null,
+        "schemaVersion": "1.0",
+        "source": "assignment",
+        "state": "running",
+        "updatedAt": 1792067703.6620507,
+        "validationCustodyState": "unavailable"
+      },
+      "thread_id": "native-1",
+      "work_item_ref": null
+    },
+    "live-idle": {
+      "active_execution_id": null,
+      "activity": "idle",
+      "agent_profile": {
+        "profile_id": "engineer",
+        "revision": 1
+      },
+      "assignment_id": "assignment-755d747dbac14b79ac996c5fbbcfcf59",
+      "assignment_status": "running",
+      "blocker": null,
+      "current_turn": {
+        "source": "current_turn",
+        "state": "idle",
+        "turnId": null
+      },
+      "definition": {
+        "checksum": "4c4e0297851f5f3a9178db84dddb01eb7287efcb34073b193354de9888322802",
+        "definition_id": "execution.profiles.default",
+        "definition_schema_version": "1.2",
+        "kind": "execution-profile-catalog",
+        "record_id": "151209295a514da5b0d3009a4fffdfe6",
+        "revision": 1
+      },
+      "execution_id": "thread-bootstrap-d3781276d8e9430e98cd393f6bd6ed39",
+      "execution_workspace_id": "execws-2ad01bbfd84cd4b5db71",
+      "fence": 1,
+      "project_id": "home",
+      "queue_depth": 1,
+      "resource_ids": [
+        "resource-0f2f72b7b8554b3899b877db1d588233"
+      ],
+      "retained_execution_id": null,
+      "retained_turn_id": null,
+      "runner": {
+        "assignmentCreatedAt": 1792067703.6381912,
+        "assignmentId": "assignment-755d747dbac14b79ac996c5fbbcfcf59",
+        "assignmentStatus": "running",
+        "diagnosticState": "none",
+        "fence": 1,
+        "leaseExpiresAt": 1792067823.6579068,
+        "leaseValid": true,
+        "live": true,
+        "observedAt": 1792067703.9342885,
+        "pendingExecutorWork": 0,
+        "processRunning": true,
+        "reason": null,
+        "schemaVersion": "1.0",
+        "source": "assignment",
+        "state": "running",
+        "updatedAt": 1792067703.6620507,
+        "validationCustodyState": "unavailable"
+      },
+      "thread_id": "native-1",
+      "work_item_ref": null
+    },
+    "stale-assignment": {
+      "active_execution_id": null,
+      "activity": "unknown",
+      "agent_profile": {
+        "profile_id": "engineer",
+        "revision": 1
+      },
+      "assignment_id": "assignment-755d747dbac14b79ac996c5fbbcfcf59",
+      "assignment_status": "running",
+      "blocker": null,
+      "current_turn": {
+        "source": "current_turn",
+        "state": "unknown",
+        "turnId": null
+      },
+      "definition": {
+        "checksum": "4c4e0297851f5f3a9178db84dddb01eb7287efcb34073b193354de9888322802",
+        "definition_id": "execution.profiles.default",
+        "definition_schema_version": "1.2",
+        "kind": "execution-profile-catalog",
+        "record_id": "151209295a514da5b0d3009a4fffdfe6",
+        "revision": 1
+      },
+      "execution_id": "thread-bootstrap-d3781276d8e9430e98cd393f6bd6ed39",
+      "execution_workspace_id": "execws-2ad01bbfd84cd4b5db71",
+      "fence": 1,
+      "project_id": "home",
+      "queue_depth": 1,
+      "resource_ids": [
+        "resource-0f2f72b7b8554b3899b877db1d588233"
+      ],
+      "retained_execution_id": "matching-execution",
+      "retained_turn_id": "matching-turn",
+      "runner": {
+        "assignmentCreatedAt": 1792067703.6381912,
+        "assignmentId": "assignment-755d747dbac14b79ac996c5fbbcfcf59",
+        "assignmentStatus": "running",
+        "diagnosticState": "none",
+        "fence": 1,
+        "leaseExpiresAt": 1792067823.6579068,
+        "leaseValid": true,
+        "live": true,
+        "observedAt": 1792067704.1117473,
+        "pendingExecutorWork": 0,
+        "processRunning": true,
+        "reason": null,
+        "schemaVersion": "1.0",
+        "source": "assignment",
+        "state": "running",
+        "updatedAt": 1792067703.6620507,
+        "validationCustodyState": "unavailable"
+      },
+      "thread_id": "native-1",
+      "work_item_ref": null
+    },
+    "stale-fence": {
+      "active_execution_id": null,
+      "activity": "unknown",
+      "agent_profile": {
+        "profile_id": "engineer",
+        "revision": 1
+      },
+      "assignment_id": "assignment-755d747dbac14b79ac996c5fbbcfcf59",
+      "assignment_status": "running",
+      "blocker": null,
+      "current_turn": {
+        "source": "current_turn",
+        "state": "unknown",
+        "turnId": null
+      },
+      "definition": {
+        "checksum": "4c4e0297851f5f3a9178db84dddb01eb7287efcb34073b193354de9888322802",
+        "definition_id": "execution.profiles.default",
+        "definition_schema_version": "1.2",
+        "kind": "execution-profile-catalog",
+        "record_id": "151209295a514da5b0d3009a4fffdfe6",
+        "revision": 1
+      },
+      "execution_id": "thread-bootstrap-d3781276d8e9430e98cd393f6bd6ed39",
+      "execution_workspace_id": "execws-2ad01bbfd84cd4b5db71",
+      "fence": 1,
+      "project_id": "home",
+      "queue_depth": 1,
+      "resource_ids": [
+        "resource-0f2f72b7b8554b3899b877db1d588233"
+      ],
+      "retained_execution_id": "matching-execution",
+      "retained_turn_id": "matching-turn",
+      "runner": {
+        "assignmentCreatedAt": 1792067703.6381912,
+        "assignmentId": "assignment-755d747dbac14b79ac996c5fbbcfcf59",
+        "assignmentStatus": "running",
+        "diagnosticState": "none",
+        "fence": 1,
+        "leaseExpiresAt": 1792067823.6579068,
+        "leaseValid": true,
+        "live": true,
+        "observedAt": 1792067704.3159134,
+        "pendingExecutorWork": 0,
+        "processRunning": true,
+        "reason": null,
+        "schemaVersion": "1.0",
+        "source": "assignment",
+        "state": "running",
+        "updatedAt": 1792067703.6620507,
+        "validationCustodyState": "unavailable"
+      },
+      "thread_id": "native-1",
+      "work_item_ref": null
+    },
+    "missing-native-turn": {
+      "active_execution_id": null,
+      "activity": "unknown",
+      "agent_profile": {
+        "profile_id": "engineer",
+        "revision": 1
+      },
+      "assignment_id": "assignment-755d747dbac14b79ac996c5fbbcfcf59",
+      "assignment_status": "running",
+      "blocker": null,
+      "current_turn": {
+        "source": "current_turn",
+        "state": "unknown",
+        "turnId": null
+      },
+      "definition": {
+        "checksum": "4c4e0297851f5f3a9178db84dddb01eb7287efcb34073b193354de9888322802",
+        "definition_id": "execution.profiles.default",
+        "definition_schema_version": "1.2",
+        "kind": "execution-profile-catalog",
+        "record_id": "151209295a514da5b0d3009a4fffdfe6",
+        "revision": 1
+      },
+      "execution_id": "thread-bootstrap-d3781276d8e9430e98cd393f6bd6ed39",
+      "execution_workspace_id": "execws-2ad01bbfd84cd4b5db71",
+      "fence": 1,
+      "project_id": "home",
+      "queue_depth": 1,
+      "resource_ids": [
+        "resource-0f2f72b7b8554b3899b877db1d588233"
+      ],
+      "retained_execution_id": "matching-execution",
+      "retained_turn_id": null,
+      "runner": {
+        "assignmentCreatedAt": 1792067703.6381912,
+        "assignmentId": "assignment-755d747dbac14b79ac996c5fbbcfcf59",
+        "assignmentStatus": "running",
+        "diagnosticState": "none",
+        "fence": 1,
+        "leaseExpiresAt": 1792067823.6579068,
+        "leaseValid": true,
+        "live": true,
+        "observedAt": 1792067704.531238,
+        "pendingExecutorWork": 0,
+        "processRunning": true,
+        "reason": null,
+        "schemaVersion": "1.0",
+        "source": "assignment",
+        "state": "running",
+        "updatedAt": 1792067703.6620507,
+        "validationCustodyState": "unavailable"
+      },
+      "thread_id": "native-1",
+      "work_item_ref": null
+    },
+    "stopped": {
+      "active_execution_id": null,
+      "activity": "unknown",
+      "agent_profile": {
+        "profile_id": "engineer",
+        "revision": 1
+      },
+      "assignment_id": "assignment-755d747dbac14b79ac996c5fbbcfcf59",
+      "assignment_status": "running",
+      "blocker": null,
+      "current_turn": {
+        "source": "current_turn",
+        "state": "unknown",
+        "turnId": null
+      },
+      "definition": {
+        "checksum": "4c4e0297851f5f3a9178db84dddb01eb7287efcb34073b193354de9888322802",
+        "definition_id": "execution.profiles.default",
+        "definition_schema_version": "1.2",
+        "kind": "execution-profile-catalog",
+        "record_id": "151209295a514da5b0d3009a4fffdfe6",
+        "revision": 1
+      },
+      "execution_id": "thread-bootstrap-d3781276d8e9430e98cd393f6bd6ed39",
+      "execution_workspace_id": "execws-2ad01bbfd84cd4b5db71",
+      "fence": 1,
+      "project_id": "home",
+      "queue_depth": 1,
+      "resource_ids": [
+        "resource-0f2f72b7b8554b3899b877db1d588233"
+      ],
+      "retained_execution_id": "matching-execution",
+      "retained_turn_id": "matching-turn",
+      "runner": {
+        "assignmentCreatedAt": 1792067703.6381912,
+        "assignmentId": "assignment-755d747dbac14b79ac996c5fbbcfcf59",
+        "assignmentStatus": "running",
+        "diagnosticState": "unavailable",
+        "fence": 1,
+        "leaseExpiresAt": 1792067823.6579068,
+        "leaseValid": true,
+        "live": false,
+        "observedAt": 1792067704.6908011,
+        "pendingExecutorWork": 1,
+        "processRunning": false,
+        "reason": null,
+        "schemaVersion": "1.0",
+        "source": "assignment",
+        "state": "stopped",
+        "updatedAt": 1792067703.6620507,
+        "validationCustodyState": "unavailable"
+      },
+      "thread_id": "native-1",
+      "work_item_ref": null
+    },
+    "lost": {
+      "active_execution_id": null,
+      "activity": "unknown",
+      "agent_profile": {
+        "profile_id": "engineer",
+        "revision": 1
+      },
+      "assignment_id": "assignment-755d747dbac14b79ac996c5fbbcfcf59",
+      "assignment_status": "lost",
+      "blocker": null,
+      "current_turn": {
+        "source": "current_turn",
+        "state": "unknown",
+        "turnId": null
+      },
+      "definition": {
+        "checksum": "4c4e0297851f5f3a9178db84dddb01eb7287efcb34073b193354de9888322802",
+        "definition_id": "execution.profiles.default",
+        "definition_schema_version": "1.2",
+        "kind": "execution-profile-catalog",
+        "record_id": "151209295a514da5b0d3009a4fffdfe6",
+        "revision": 1
+      },
+      "execution_id": "thread-bootstrap-d3781276d8e9430e98cd393f6bd6ed39",
+      "execution_workspace_id": "execws-2ad01bbfd84cd4b5db71",
+      "fence": 1,
+      "project_id": "home",
+      "queue_depth": 1,
+      "resource_ids": [
+        "resource-0f2f72b7b8554b3899b877db1d588233"
+      ],
+      "retained_execution_id": "matching-execution",
+      "retained_turn_id": "matching-turn",
+      "runner": {
+        "assignmentCreatedAt": 1792067703.6381912,
+        "assignmentId": "assignment-755d747dbac14b79ac996c5fbbcfcf59",
+        "assignmentStatus": "lost",
+        "diagnosticState": "none",
+        "fence": 1,
+        "leaseExpiresAt": null,
+        "leaseValid": false,
+        "live": false,
+        "observedAt": 1792067704.9264736,
+        "pendingExecutorWork": 0,
+        "processRunning": true,
+        "reason": null,
+        "schemaVersion": "1.0",
+        "source": "assignment",
+        "state": "lost",
+        "updatedAt": 1792067703.6620507,
+        "validationCustodyState": "unavailable"
+      },
+      "thread_id": "native-1",
+      "work_item_ref": null
+    },
+    "expired": {
+      "active_execution_id": null,
+      "activity": "unknown",
+      "agent_profile": {
+        "profile_id": "engineer",
+        "revision": 1
+      },
+      "assignment_id": "assignment-755d747dbac14b79ac996c5fbbcfcf59",
+      "assignment_status": "running",
+      "blocker": null,
+      "current_turn": {
+        "source": "current_turn",
+        "state": "unknown",
+        "turnId": null
+      },
+      "definition": {
+        "checksum": "4c4e0297851f5f3a9178db84dddb01eb7287efcb34073b193354de9888322802",
+        "definition_id": "execution.profiles.default",
+        "definition_schema_version": "1.2",
+        "kind": "execution-profile-catalog",
+        "record_id": "151209295a514da5b0d3009a4fffdfe6",
+        "revision": 1
+      },
+      "execution_id": "thread-bootstrap-d3781276d8e9430e98cd393f6bd6ed39",
+      "execution_workspace_id": "execws-2ad01bbfd84cd4b5db71",
+      "fence": 1,
+      "project_id": "home",
+      "queue_depth": 1,
+      "resource_ids": [
+        "resource-0f2f72b7b8554b3899b877db1d588233"
+      ],
+      "retained_execution_id": "matching-execution",
+      "retained_turn_id": "matching-turn",
+      "runner": {
+        "assignmentCreatedAt": 1792067703.6381912,
+        "assignmentId": "assignment-755d747dbac14b79ac996c5fbbcfcf59",
+        "assignmentStatus": "running",
+        "diagnosticState": "none",
+        "fence": 1,
+        "leaseExpiresAt": 1.0,
+        "leaseValid": false,
+        "live": false,
+        "observedAt": 1792067705.0416713,
+        "pendingExecutorWork": 0,
+        "processRunning": true,
+        "reason": null,
+        "schemaVersion": "1.0",
+        "source": "assignment",
+        "state": "unknown",
+        "updatedAt": 1792067703.6620507,
+        "validationCustodyState": "unavailable"
+      },
+      "thread_id": "native-1",
+      "work_item_ref": null
+    },
+    "unavailable": {
+      "active_execution_id": null,
+      "activity": "unknown",
+      "agent_profile": {
+        "profile_id": "engineer",
+        "revision": 1
+      },
+      "assignment_id": "assignment-755d747dbac14b79ac996c5fbbcfcf59",
+      "assignment_status": "running",
+      "blocker": null,
+      "current_turn": {
+        "source": "current_turn",
+        "state": "unknown",
+        "turnId": null
+      },
+      "definition": {
+        "checksum": "4c4e0297851f5f3a9178db84dddb01eb7287efcb34073b193354de9888322802",
+        "definition_id": "execution.profiles.default",
+        "definition_schema_version": "1.2",
+        "kind": "execution-profile-catalog",
+        "record_id": "151209295a514da5b0d3009a4fffdfe6",
+        "revision": 1
+      },
+      "execution_id": "thread-bootstrap-d3781276d8e9430e98cd393f6bd6ed39",
+      "execution_workspace_id": "execws-2ad01bbfd84cd4b5db71",
+      "fence": 1,
+      "project_id": "home",
+      "queue_depth": 1,
+      "resource_ids": [
+        "resource-0f2f72b7b8554b3899b877db1d588233"
+      ],
+      "retained_execution_id": "matching-execution",
+      "retained_turn_id": "matching-turn",
+      "runner": null,
+      "thread_id": "native-1",
+      "work_item_ref": null
+    }
+  },
+  "memory": {
+    "denied": {
+      "items": [],
+      "count": 0,
+      "next_cursor": null,
+      "coordination_scope": {
+        "project_id": "home",
+        "repository_resource_id": "resource-e187e84f15a44656ae47cebcb4566fc4",
+        "assignment_id": "assignment-77c00a60c7974605a8cc68a6cb68c876",
+        "requester": "local-admin",
+        "definition": {
+          "definition_id": "execution.profiles.default",
+          "kind": "execution-profile-catalog",
+          "revision": 1,
+          "record_id": "8fc78a870ca04cea84906e47aff12977",
+          "checksum": "8b0779dfa41af9a801f5f86683440d8d46b6b51f7398d32ef44a4b7ab9e5eb2a",
+          "definition_schema_version": "1.2"
+        },
+        "authority_checked": true,
+        "declaration_grants_authority": false
+      },
+      "operator_inspection": {
+        "actor": "review-operator",
+        "assignment_requester": "local-admin",
+        "read_only": true
+      }
+    },
+    "allowed": {
+      "items": [
+        {
+          "id": "knowledge-0bef97f161c14ada4ce2b6d554f56ecb",
+          "project_id": "home",
+          "logical_key": "private",
+          "version": 1,
+          "content_digest": "37d2986898327429d0d317d973d10f99db28cd0a0f0040a5cc934c6cd27056af",
+          "summary": "PRIVATE_ROLE_SUMMARY",
+          "freshness": "fresh",
+          "governance_record_id": "data-4d269680f597401aa4cc35b0bb2b8376",
+          "provenance": {
+            "source_kind": "other",
+            "source_ref": "role-source",
+            "source_url": null,
+            "source_revision": null,
+            "authored_by": null,
+            "authored_at": null,
+            "observed_at": 1792067705.268448,
+            "evidence_ids": [],
+            "source_governance_record_ids": [],
+            "origin": "unknown",
+            "review_status": "unreviewed",
+            "origin_sources": []
+          }
+        }
+      ],
+      "count": 1,
+      "next_cursor": null,
+      "coordination_scope": {
+        "project_id": "home",
+        "repository_resource_id": "resource-e187e84f15a44656ae47cebcb4566fc4",
+        "assignment_id": "assignment-77c00a60c7974605a8cc68a6cb68c876",
+        "requester": "local-admin",
+        "definition": {
+          "definition_id": "execution.profiles.default",
+          "kind": "execution-profile-catalog",
+          "revision": 1,
+          "record_id": "8fc78a870ca04cea84906e47aff12977",
+          "checksum": "8b0779dfa41af9a801f5f86683440d8d46b6b51f7398d32ef44a4b7ab9e5eb2a",
+          "definition_schema_version": "1.2"
+        },
+        "authority_checked": true,
+        "declaration_grants_authority": false
+      },
+      "operator_inspection": {
+        "actor": "review-operator",
+        "assignment_requester": "local-admin",
+        "read_only": true
+      }
+    },
+    "revoked": {
+      "items": [],
+      "count": 0,
+      "next_cursor": null,
+      "coordination_scope": {
+        "project_id": "home",
+        "repository_resource_id": "resource-e187e84f15a44656ae47cebcb4566fc4",
+        "assignment_id": "assignment-77c00a60c7974605a8cc68a6cb68c876",
+        "requester": "local-admin",
+        "definition": {
+          "definition_id": "execution.profiles.default",
+          "kind": "execution-profile-catalog",
+          "revision": 1,
+          "record_id": "8fc78a870ca04cea84906e47aff12977",
+          "checksum": "8b0779dfa41af9a801f5f86683440d8d46b6b51f7398d32ef44a4b7ab9e5eb2a",
+          "definition_schema_version": "1.2"
+        },
+        "authority_checked": true,
+        "declaration_grants_authority": false
+      },
+      "operator_inspection": {
+        "actor": "review-operator",
+        "assignment_requester": "local-admin",
+        "read_only": true
+      }
+    },
+    "derived-denied": {
+      "items": [],
+      "count": 0,
+      "next_cursor": null,
+      "coordination_scope": {
+        "project_id": "home",
+        "repository_resource_id": "resource-e187e84f15a44656ae47cebcb4566fc4",
+        "assignment_id": "assignment-77c00a60c7974605a8cc68a6cb68c876",
+        "requester": "local-admin",
+        "definition": {
+          "definition_id": "execution.profiles.default",
+          "kind": "execution-profile-catalog",
+          "revision": 1,
+          "record_id": "8fc78a870ca04cea84906e47aff12977",
+          "checksum": "8b0779dfa41af9a801f5f86683440d8d46b6b51f7398d32ef44a4b7ab9e5eb2a",
+          "definition_schema_version": "1.2"
+        },
+        "authority_checked": true,
+        "declaration_grants_authority": false
+      },
+      "operator_inspection": {
+        "actor": "review-operator",
+        "assignment_requester": "local-admin",
+        "read_only": true
+      }
+    }
+  }
+}

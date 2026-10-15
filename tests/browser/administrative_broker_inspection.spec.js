@@ -203,7 +203,7 @@ test('worker administration loaded after DOM readiness still initializes and bin
   let reads=0;
   await page.route('**/worker-late-fixture',route=>route.fulfill({contentType:'text/html',body:
     '<meta charset="utf-8"><body data-project-id="project-a"><details id="developer-panel" open><summary>Developer</summary><button id="refresh-execution-workers">Refresh workers</button><div id="execution-worker-status"></div><div id="execution-worker-list"></div><div id="execution-assignment-list"></div><div id="execution-worker-events"></div></details></body>'}));
-  await page.route('**/api/execution-workers**',route=>{
+  await page.route(/\/api\/execution-workers(?:\/.*)?$/,route=>{
     const path=new URL(route.request().url()).pathname;
     if(path.endsWith('/assignments')){reads++;return route.fulfill({json:{items:[{...assignment(),subject:{kind:'work_item',ref:'group/source#1'},resource_ids:[],required_capabilities:[],status:'cancelled'}]}})}
     return route.fulfill({json:{items:[]}});
@@ -325,4 +325,101 @@ test('repository CREATE conflict displays canonical 409 denial and safe guidance
   expect(mutationCalls).toBe(0);
   await page.setViewportSize({width:375,height:812});
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+});
+
+function governorAssignment() {
+  const item=assignment(); item.execution_profile_id='project-governor';
+  delete item.brokered_control_plane.assignment_context.declared_administrative_scope;
+  item.brokered_control_plane.assignment_context.project_coordination={
+    declaration:{repository_resource_id:'resource-repo',max_delivery_threads:2,child_profiles:[{profile_id:'engineer',revision:1}]},
+    definition:{record_id:'definition-pin',definition_id:'execution.profiles.default',revision:2},
+    current_definition:{record_id:'definition-pin',definition_id:'execution.profiles.default',revision:2},definition_is_current:true,
+    operations:[{id:'project.threads.list',capability:'thread.read',declared:true,status:'allowed',reason:'Live observation only'}]};
+  return item;
+}
+test('governor inspection uses explicit scope, keyboard, escaped evidence and truthful empty/denied/stale states',async({page})=>{
+  let mode='rows';const reads=[];
+  await page.route('**/api/control-plane-broker/coordination?*',route=>{
+    reads.push(new URL(route.request().url()));
+    if(mode==='denied')return route.fulfill({status:403,json:{detail:'Authority revoked'}});
+    if(mode==='stale')return route.fulfill({status:409,json:{detail:'Snapshot changed'}});
+    return route.fulfill({json:{coordination_scope:{project_id:'project-a',repository_resource_id:'resource-repo'},
+      items:mode==='empty'?[]:[{thread_id:'native-1',assignment_id:'assignment-child',execution_workspace_id:'workspace-child',
+        queue_depth:0,activity:'idle',blocker:'<img src=x onerror=alert(1)>'}]}});
+  });
+  await mountBroker(page);await emit(page,governorAssignment());
+  const panel=page.locator('[data-project-coordination]');await panel.locator('summary').first().click();
+  await expect(panel).toContainText('Declarations do not grant authority');
+  await expect(panel).toContainText('delivery-thread bound 2');
+  await expect(panel).toContainText('authority observation allowed');
+  const button=panel.getByRole('button',{name:'Inspect current threads'});
+  await button.focus();await page.keyboard.press('Enter');
+  await expect(panel.locator('[data-coordination-results]')).toContainText('native-1 · idle');
+  await panel.locator('[data-coordination-results] summary').click();
+  await expect(panel.locator('[data-coordination-results]')).toContainText('<img src=x onerror=alert(1)>');
+  await expect(panel.locator('img,script')).toHaveCount(0);
+  expect(reads[0].searchParams.get('project_id')).toBe('project-a');
+  expect(reads[0].searchParams.get('repository_resource_id')).toBe('resource-repo');
+  mode='denied';await button.click();await expect(panel.locator('[data-coordination-status]')).toContainText('Coordination access denied');
+  await expect(panel.locator('[data-coordination-results]')).toBeEmpty();
+  mode='stale';await button.click();await expect(panel.locator('[data-coordination-status]')).toContainText('snapshot is stale');
+  mode='empty';await button.click();await expect(panel.locator('[data-coordination-status]')).toContainText('Missing evidence is unknown, not success');
+  await page.setViewportSize({width:375,height:812});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+});
+test('governor project switch rejects late coordination reads including ignored cancellation',async({page})=>{
+  await mountBroker(page);await emit(page,governorAssignment());
+  await page.evaluate(()=>{const original=window.fetch;window.fetch=(url,options)=>String(url).includes('/api/control-plane-broker/coordination?')
+    ? new Promise(resolve=>{window.releaseCoordination=()=>resolve(new Response(JSON.stringify({coordination_scope:{project_id:'project-a',repository_resource_id:'resource-repo'},items:[{thread_id:'PRIVATE_OLD_THREAD',activity:'active'}]})))})
+    :original(url,options)});
+  await page.locator('[data-project-coordination] > summary').click();
+  await page.getByRole('button',{name:'Inspect current threads'}).click();
+  await expect(page.locator('[data-coordination-status]')).toContainText('Loading');
+  await page.evaluate(()=>window.dispatchEvent(new CustomEvent('codex:project-changed',{detail:{projectId:'project-b'}})));
+  await expect(page.locator('[data-project-coordination]')).toHaveCount(0);
+  await page.evaluate(async()=>{releaseCoordination();await new Promise(resolve=>setTimeout(resolve,0));});
+  await expect(page.locator('body')).not.toContainText('PRIVATE_OLD_THREAD');
+});
+
+const reviewFixtureDir=process.env.CODEX_WEB_REVIEW_FIXTURE_DIR;
+test('canonical governor runner projections show retained evidence without resurrecting activity',async({page})=>{
+  const fs=require('node:fs');const rows=reviewFixtureDir ? JSON.parse(fs.readFileSync(`${reviewFixtureDir}/runner-fixtures.json`,'utf8')) : require('./fixtures/project_coordination_review.json').runner;
+  let current=rows.stopped;
+  await page.route('**/api/control-plane-broker/coordination?*',route=>route.fulfill({json:{
+    coordination_scope:{project_id:'home',repository_resource_id:current.resource_ids[0]},items:[current]}}));
+  await mountBroker(page);
+  await page.evaluate(async()=>{await import('/static/project_view_scope.js');window.dispatchEvent(new CustomEvent('codex:project-changed',{detail:{projectId:'home'}}));});
+  const item=governorAssignment();item.project_id='home';
+  item.brokered_control_plane.assignment_context.project_coordination.declaration.repository_resource_id=current.resource_ids[0];
+  await emit(page,item);const panel=page.locator('[data-project-coordination]');await panel.locator('summary').first().click();
+  for(const [name,row] of Object.entries(rows)) {
+    current=row;await panel.getByRole('button',{name:'Inspect current threads'}).click();
+    const results=panel.locator('[data-coordination-results]');
+    await expect(results.locator('summary')).toContainText(`${row.thread_id} · ${row.activity}`);
+    await results.locator('summary').click();
+    await expect(results).toContainText(`Runner custody: ${row.runner?.state || 'unavailable'}`);
+    await expect(results).toContainText('queue 1');
+    await expect(results).toContainText('Retained markers and queued work do not establish active custody');
+    if(row.activity==='unknown')await expect(results.locator('summary')).not.toContainText('· active');
+    if(row.retained_turn_id)await expect(results).toContainText(row.retained_turn_id);
+  }
+});
+test('actual inspector role grant and revoke responses hide inaccessible Memory from DOM',async({page})=>{
+  const fs=require('node:fs');const responses=reviewFixtureDir ? JSON.parse(fs.readFileSync(`${reviewFixtureDir}/memory-fixtures.json`,'utf8')) : require('./fixtures/project_coordination_review.json').memory;
+  let mode='denied';
+  await page.route('**/api/control-plane-broker/coordination?*',route=>route.fulfill({json:responses[mode]}));
+  await mountBroker(page);
+  await page.evaluate(async()=>{await import('/static/project_view_scope.js');window.dispatchEvent(new CustomEvent('codex:project-changed',{detail:{projectId:'home'}}));});
+  const item=governorAssignment();item.project_id='home';
+  item.brokered_control_plane.assignment_context.project_coordination.declaration.repository_resource_id=responses.allowed.coordination_scope.repository_resource_id;
+  await emit(page,item);const panel=page.locator('[data-project-coordination]');await panel.locator('summary').first().click();
+  const button=panel.getByRole('button',{name:'Inspect project checkpoints'});
+  await button.click();await expect(panel.locator('[data-coordination-results]')).toBeEmpty();
+  await expect(page.locator('body')).not.toContainText('PRIVATE_ROLE_SUMMARY');
+  mode='allowed';await button.click();await expect(panel.locator('[data-coordination-results]')).toContainText('PRIVATE_ROLE_SUMMARY');
+  for(const next of ['revoked','derived-denied']){
+    mode=next;await button.click();await expect(panel.locator('[data-coordination-results]')).toBeEmpty();
+    await expect(page.locator('body')).not.toContainText('PRIVATE_ROLE_SUMMARY');
+    await expect(page.locator('body')).not.toContainText('PRIVATE_DERIVED_SUMMARY');
+  }
 });
