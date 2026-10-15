@@ -311,6 +311,8 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertLessEqual((STATIC / "procedure_discovery_view.js").stat().st_size, 3_000)
         self.assertIn("action_intent_outcome_view.js", source)
         self.assertLessEqual((STATIC / "action_intent_outcome_view.js").stat().st_size, 3_000)
+        self.assertIn("action_intent_merge_view.js", source)
+        self.assertLessEqual((STATIC / "action_intent_merge_view.js").stat().st_size, 3_000)
 
     def test_work_graph_admin_has_its_own_budget_and_api_client(self) -> None:
         source_path = STATIC / "work_graph_admin.js"

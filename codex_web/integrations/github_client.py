@@ -6,6 +6,14 @@ from urllib.parse import quote
 import httpx
 
 
+class GitHubAPIError(RuntimeError):
+    """An HTTP error response, distinct from transport/response uncertainty."""
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"GitHub API returned HTTP {status_code}")
+        self.status_code = status_code
+
+
 class GitHubClient:
     """Small async GitHub REST transport used by the TaskSource adapter."""
 
@@ -43,9 +51,7 @@ class GitHubClient:
         async with httpx.AsyncClient(transport=self.transport, timeout=self.timeout) as client:
             response = await client.request(method.upper(), url, headers=headers, params=params, json=json_body)
         if response.status_code >= 400:
-            error = RuntimeError(f"GitHub API returned HTTP {response.status_code}")
-            error.status_code = response.status_code
-            raise error
+            raise GitHubAPIError(response.status_code)
         try:
             return response.json()
         except ValueError as exc:
