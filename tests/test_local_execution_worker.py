@@ -1466,8 +1466,11 @@ class PollOwnershipCleanupTests(unittest.TestCase):
             backend=BubblewrapExecutionBackend(executable="/usr/bin/bwrap",probe_runner=_probe_success,
                 popen=lambda *args,**kwargs:process)
             assignment=_assignment()
+            checks = []
             def lost_owner():
-                raise RuntimeError("controlled lease loss")
+                checks.append(True)
+                if len(checks) > 1:  # Pre-spawn admission succeeds; ownership is lost while running.
+                    raise RuntimeError("controlled lease loss")
             with patch.object(backend,'_kill_process_group') as kill:
                 with self.assertRaisesRegex(RuntimeError,'controlled lease loss'):
                     backend.run(assignment,argv=('python3','-c','pass'),workspace_path=workspace,poll_hook=lost_owner)

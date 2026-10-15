@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import tempfile
 from pathlib import Path
@@ -57,7 +58,7 @@ class SkillScannerRegistry:
             raise SkillScannerError("skill scanner provider is unavailable")
         return provider
 
-    def list(self, *, tenant_scope: TenantScope | None = None) -> list[dict[str, object]]:
+    def list(self, *, tenant_scope: TenantScope | None = None, actor=None) -> list[dict[str, object]]:
         providers = {
             key[2]: value
             for key, value in self._providers.items()
@@ -71,7 +72,8 @@ class SkillScannerRegistry:
                     if key[:2] == (tenant_scope.organization_id, tenant_scope.workspace_id)
                 }
             )
-        return [providers[key].metadata() for key in sorted(providers)]
+        return [(providers[key].inspect(actor=actor) if actor is not None and hasattr(providers[key], "inspect")
+                 else providers[key].metadata()) for key in sorted(providers)]
 
 
 class SkillSpectorJsonParser:
@@ -83,8 +85,52 @@ class SkillSpectorJsonParser:
         aliases = {"moderate": "medium", "warn": "medium", "error": "high"}
         try:
             return SkillFindingSeverity(aliases.get(normalized, normalized))
-        except ValueError:
-            return SkillFindingSeverity.INFO
+        except ValueError as exc:
+            raise SkillScannerError("SkillSpector finding severity is invalid") from exc
+
+    def parse_native_static(self, value: dict[str, object], *, scanner_version: str) -> SkillScanProviderResult:
+        """SkillSpector 2.12.0 single-skill JSON; code-owned wire contract.
+
+        Verified against NVIDIA/SkillSpector commit
+        240421219409dc0bafef9f618a10d80c2d7e83a3 nodes/report.py and models.py.
+        Never retain snippets, matches, provider telemetry or raw report fields.
+        """
+        if not isinstance(value, dict):
+            raise SkillScannerError("SkillSpector report must be a JSON object")
+        completeness = value.get("analysis_completeness")
+        metadata = value.get("metadata")
+        if (value.get("execution_successful") is not True or not isinstance(completeness, dict)
+                or completeness.get("execution_successful") is False
+                or completeness.get("is_complete") is not True or completeness.get("status") != "complete"):
+            raise SkillScannerError("SkillSpector execution or analysis coverage is incomplete; inspect the isolated scanner installation and supported static analyzers.")
+        if (not isinstance(metadata, dict) or metadata.get("skillspector_version") != scanner_version
+                or metadata.get("llm_requested") is not False or metadata.get("meta_analysis_applied") is not False
+                or metadata.get("llm_calls_attempted", 0) != 0 or metadata.get("inference_usage") != []):
+            raise SkillScannerError("SkillSpector report does not match the credential-free static/version contract")
+        risk = value.get("risk_assessment")
+        issues = value.get("issues")
+        if not isinstance(risk, dict) or "score" not in risk or not isinstance(issues, list):
+            raise SkillScannerError("SkillSpector report is missing risk assessment or issues")
+        if len(issues) > self.MAX_FINDINGS:
+            raise SkillScannerError("SkillSpector report exceeds the finding limit")
+        findings = []
+        for issue in issues:
+            if not isinstance(issue, dict) or not isinstance(issue.get("location"), dict):
+                raise SkillScannerError("SkillSpector issue location is invalid")
+            location = issue["location"]
+            if (not isinstance(issue.get("id"), str) or not issue["id"].strip()
+                    or not isinstance(issue.get("explanation"), str) or not issue["explanation"].strip()
+                    or str(issue.get("severity", "")).casefold() not in {item.value for item in SkillFindingSeverity}
+                    or not isinstance(location.get("file"), str) or not location["file"]
+                    or type(location.get("start_line")) is not int or location["start_line"] < 1):
+                raise SkillScannerError("SkillSpector issue fields are invalid")
+            findings.append({"rule_id": issue.get("id"), "severity": issue.get("severity"),
+                "category": issue.get("category") or "general", "message": issue.get("explanation"),
+                "path": issue["location"].get("file"), "line": issue["location"].get("start_line"),
+                "fingerprint": issue.get("match_fingerprint")})
+        if type(risk["score"]) not in {int, float}:
+            raise SkillScannerError("SkillSpector risk score is invalid")
+        return self.parse({"scanner_version": scanner_version, "risk_score": risk["score"], "findings": findings})
 
     def parse(self, payload: str | bytes | dict[str, object]) -> SkillScanProviderResult:
         if isinstance(payload, bytes):
@@ -100,13 +146,15 @@ class SkillSpectorJsonParser:
             value = payload
         if not isinstance(value, dict):
             raise SkillScannerError("SkillSpector report must be a JSON object")
-        raw_findings = value.get("findings") or value.get("results") or []
-        if not isinstance(raw_findings, list):
+        if not any(key in value for key in ("risk_score", "riskScore", "score")):
+            raise SkillScannerError("SkillSpector report is missing its risk score")
+        raw_findings = value.get("findings", value.get("results"))
+        if not isinstance(raw_findings, list) or len(raw_findings) > self.MAX_FINDINGS:
             raise SkillScannerError("SkillSpector findings must be a JSON array")
         findings = []
         for index, raw in enumerate(raw_findings[: self.MAX_FINDINGS]):
             if not isinstance(raw, dict):
-                continue
+                raise SkillScannerError("SkillSpector finding must be an object")
             findings.append(
                 SkillSecurityFinding(
                     rule_id=str(raw.get("rule_id") or raw.get("ruleId") or raw.get("id") or f"finding-{index}"),
@@ -120,7 +168,9 @@ class SkillSpectorJsonParser:
             )
         score_value = value.get("risk_score", value.get("riskScore", value.get("score", 0)))
         try:
-            score = max(0.0, min(100.0, float(score_value or 0)))
+            score = float(score_value)
+            if not math.isfinite(score) or not 0 <= score <= 100:
+                raise ValueError("invalid risk score")
         except (TypeError, ValueError) as exc:
             raise SkillScannerError("SkillSpector risk score is invalid") from exc
         return SkillScanProviderResult(
@@ -140,7 +190,7 @@ class SkillSpectorCliProvider:
         self,
         *,
         executable: str = "skillspector",
-        run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+        run: Callable[..., subprocess.CompletedProcess[str]],
         timeout_seconds: float = 120.0,
         parser: SkillSpectorJsonParser | None = None,
     ) -> None:
@@ -149,9 +199,10 @@ class SkillSpectorCliProvider:
         self.timeout_seconds = min(max(float(timeout_seconds), 1.0), 300.0)
         self.parser = parser or SkillSpectorJsonParser()
 
-    def metadata(self) -> dict[str, object]:
+    @staticmethod
+    def metadata() -> dict[str, object]:
         return {
-            "providerId": self.provider_id,
+            "providerId": SkillSpectorCliProvider.provider_id,
             "transport": "isolated_worker_cli",
             "modes": [item.value for item in SkillScanMode],
             "structuredOutput": "json",
@@ -166,7 +217,7 @@ class SkillSpectorCliProvider:
             path.write_text(content, encoding="utf-8")
             command = [self.executable, "scan", str(path), "--format", "json"]
             if mode == SkillScanMode.STATIC:
-                command.append("--static-only")
+                command.append("--no-llm")
             try:
                 result = self.run(
                     command,

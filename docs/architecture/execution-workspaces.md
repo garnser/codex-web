@@ -10,7 +10,8 @@ Supported subject kinds are explicit durable contract values:
 
 - `work_item:<ref>` for canonical Work Item execution;
 - `thread:<thread-id>` for an already-created Codex thread;
-- `thread_bootstrap:<bootstrap-id>` for isolated thread creation before Codex has returned the canonical thread ID.
+- `thread_bootstrap:<bootstrap-id>` for isolated thread creation before Codex has returned the canonical thread ID;
+- `skill_scan:<execution-id>` for bounded scanner discovery/static operations, admitted through the [scanner Upgrade boundary](skill-security.md#enforced-scanner-admission-and-policy).
 
 The canonical record includes:
 

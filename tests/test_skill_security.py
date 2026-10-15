@@ -181,7 +181,8 @@ class SkillSecurityTests(unittest.TestCase):
 
         result = SkillSpectorCliProvider(run=run).scan(content="# Safe skill", mode=SkillScanMode.STATIC)
         self.assertEqual(result.scanner_version, "2.0.0")
-        self.assertIn("--static-only", calls[0][0])
+        self.assertIn("--no-llm", calls[0][0])
+        self.assertNotIn("--static-only", calls[0][0])
         self.assertNotIn("shell", calls[0][1])
         self.assertEqual(calls[0][1]["env"], {"PATH": "/usr/local/bin:/usr/bin:/bin"})
 

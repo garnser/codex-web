@@ -170,6 +170,10 @@ EXECUTION_WORKER_MIGRATIONS.register(
     "1.10", "1.11", lambda payload: {**payload, "schema_version": "1.11"},
 )
 
+EXECUTION_WORKER_MIGRATIONS.register(
+    "1.11", "1.12", lambda payload: {**payload, "schema_version": "1.12"},
+)
+
 
 class ExecutionWorkerStore:
     namespace = "execution_workers"

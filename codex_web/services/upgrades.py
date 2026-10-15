@@ -74,6 +74,10 @@ from codex_web.upgrades import (
 )
 
 
+# Code-owned persisted schema boundary; this is not an operational definition.
+SKILL_SCAN_CONTRACT_HANDLER = "skill-scan-contract/1.0"
+
+
 class UpgradeError(RuntimeError):
     pass
 
@@ -203,6 +207,57 @@ class UpgradeService:
             )
         self._migration_handlers[key] = handler
 
+    def install_skill_scan_contract(self):
+        self.register_migration_handler(SKILL_SCAN_CONTRACT_HANDLER, self._enable_skill_scan_contract)
+
+    @staticmethod
+    def _skill_scan_boundary(plan):
+        return (plan.irreversible_boundary_crossed and not plan.rollback_available
+                and any(step.handler_id == SKILL_SCAN_CONTRACT_HANDLER
+                        and step.status == UpgradeStepStatus.SUCCEEDED and step.irreversible
+                        and step.requires_backup and step.requires_drain and step.evidence_id
+                        and step.result.get("backup_verification_id") for step in plan.steps))
+
+    def _enable_skill_scan_contract(self, plan, step, actor):
+        from codex_web.upgrades import UpgradeDeploymentMode
+        # The service-wide drain excludes old writers and all hosted scopes.
+        if (plan.compatibility.deployment_mode != UpgradeDeploymentMode.LOCAL
+                or plan.maintenance_scope != UpgradeMaintenanceScope.SERVICE
+                or not plan.maintenance_mode or plan.service_instance_id != self.service_instance_id
+                or not step.irreversible or not step.requires_backup or not step.requires_drain
+                or step.phase != UpgradePhase.CONTRACT
+                or len(set(plan.observed_control_plane_versions)) != 1
+                or plan.preflight is None or not plan.preflight.satisfied
+                or plan.preflight.admission_epoch != plan.admission_epoch):
+            raise UpgradeConflictError("Skill scan contract requires approved irreversible contract step, service drain and a single local writer version")
+        if self.admission.active_count():
+            raise UpgradeConflictError("Skill scan contract requires all service admissions drained")
+        state = self.workers.store.load()
+        if any(a.status not in {AssignmentStatus.SUCCEEDED, AssignmentStatus.FAILED, AssignmentStatus.CANCELLED, AssignmentStatus.LOST} for a in state.assignments):
+            raise UpgradeConflictError("Skill scan contract requires all worker assignments terminal")
+        if any(w.lifecycle in {WorkerLifecycle.ACTIVE, WorkerLifecycle.DRAINING}
+               and "skill-scan/1.0" not in w.supported_execution_contract_versions for w in state.workers):
+            raise UpgradeConflictError("Skill scan contract excludes old active workers")
+        verification = self.recovery.verify_restore(plan.pre_upgrade_backup_id, actor=actor)
+        if verification.status != "pass":
+            raise UpgradeConflictError("Skill scan contract requires verified pre-upgrade snapshot")
+        return {"backup_verification_id": verification.id, "contract": SKILL_SCAN_CONTRACT_HANDLER}
+
+    @contextmanager
+    def skill_scan_admission(self, actor):
+        # Hold the canonical admission across workspace reservation, discovery,
+        # assignment, report and scan-result writes. Drain sees the whole operation.
+        with self.worker_admission(actor.organization_id, actor.workspace_id) as admitted:
+            if not admitted:
+                raise UpgradeConflictError("Skill scanner is drained during upgrade maintenance")
+            plans = self.store.load().plans.values()
+            if not any(self._skill_scan_boundary(plan)
+                       and plan.maintenance_scope == UpgradeMaintenanceScope.SERVICE
+                       and any(scope.organization_id == actor.organization_id and scope.workspace_id == actor.workspace_id
+                               for scope in plan.covered_scopes) for plan in plans):
+                raise UpgradeConflictError("Skill scanner requires the verified irreversible skill-scan-contract/1.0 Upgrade step before new-format writes")
+            yield
+
     def list(self, actor: AuthenticationActor) -> list[UpgradePlan]:
         return self.store.list(
             organization_id=actor.organization_id,
@@ -234,6 +289,13 @@ class UpgradeService:
             if current.status == UpgradeStatus.FAILED and current.completed_at is not None:
                 raise UpgradeConflictError("cancelled upgrade is terminal; create a new plan")
             updated = updater(current)
+            if updated.status == UpgradeStatus.ROLLED_BACK and any(self._skill_scan_boundary(p) for p in state.plans.values()):
+                raise UpgradeConflictError("rollback is unavailable after the service scanner contract boundary")
+            if self._skill_scan_boundary(updated):
+                # One local database is shared by hosted scopes. Invalidate older
+                # plans atomically too, so no stale plan advertises binary rollback.
+                for previous in state.plans.values():
+                    previous.rollback_available = False
             state.plans[plan_id] = updated
             result.append(updated)
             return state
@@ -287,6 +349,10 @@ class UpgradeService:
         )
 
         def apply(state):
+            # Retained incompatible rows cannot regain binary rollback permission
+            # through a newer plan. Snapshot + matching binary recovery is separate.
+            if any(self._skill_scan_boundary(previous) for previous in state.plans.values()):
+                plan.rollback_available = False
             state.plans[plan.id] = plan
             return state
 

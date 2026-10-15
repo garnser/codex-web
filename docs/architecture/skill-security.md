@@ -18,7 +18,7 @@ Imported Skills require a current-revision acceptable scan by default. Locally a
 
 The NVIDIA SkillSpector adapter consumes bounded JSON and supports static and semantic modes. Static scanning is the default and requires no model. Semantic scanning is an optional policy choice; any provider credential remains behind canonical secret references and cannot enter a Skill, scan request, finding, log, or report metadata.
 
-CLI execution is an isolated-worker transport. The adapter uses an argument vector without a shell, a private temporary input directory, a fixed environment allowlist, a 300-second maximum timeout, a 512 KiB input bound, and bounded stdout/stderr. The control-plane composition registers the provider identity but deliberately fails execution until a trusted isolated worker loader supplies the transport. This preserves the control-plane/execution-plane boundary instead of spawning untrusted scanner work inside the application process.
+CLI execution is an isolated-worker transport. The adapter uses an argument vector without a shell, a private temporary input directory, a fixed environment allowlist, a 300-second maximum timeout, a 512 KiB input bound, and bounded stdout/stderr. The application supplies the canonical local isolated-worker transport described below. Missing transport or scanner prerequisites are visible blockers; there is no unsandboxed fallback.
 
 ## Lifecycle and UI
 
@@ -27,3 +27,138 @@ Catalog ingestion invokes the configured provider automatically and records scan
 The Skill Catalog shows security status, exact-revision currency, scanner/version/mode, score/severity, findings, report-artifact reference, and assignment decision. Operators can filter by security state, severity, risk range, finding category, and scanner; run static or semantic scans; and publish versioned policy changes. The Thread picker shows status and denial reason and disables new assignment of blocked Skills while allowing an existing blocked assignment to be removed.
 
 Audit records cover first scan, re-scan, scanner version and finding changes, quarantine, baselines, and overrides. Future scanner providers must reuse these records and gates rather than adding a second trust or policy system.
+
+## Request-driven local transport
+
+The application composes the built-in provider with `LocalExecutionWorkerRuntime`.
+It does not supply a control-plane subprocess runner. The existing operator
+Configuration Registry owns `skills.scanner.runtime_root` (a dedicated installed
+runtime directory containing `bin/skillspector`) and `skills.scanner.project_id`
+(the same-tenant canonical Project owning scratch workspaces and evidence).
+Neither value grants worker, network, credential, publication or assignment
+authority. Installation is an independent operator prerequisite; this integration
+never installs or downloads scanner code. Configuration publication/supersession,
+rollback and live resolution use the existing Configuration APIs and administration
+UI. Each report records the effective configuration record IDs/revisions.
+
+Provider inspection requires existing Skill administrator assurance and performs
+one bounded isolated `--version` operation. A static scan performs at most one
+version discovery followed by one scan, without retries. Both use canonical
+`skill_scan` subjects, scratch ExecutionWorkspaces, published exact
+`orchestration-only` profile references and `skill-scan/1.0` assignments. This is
+an explicit operation contract advertised by compatible local workers, not a
+new profile or an authority grant. Tenant mismatch, missing installation or
+configuration, incompatible profile/worker/version, missing isolation, exhausted
+concurrency and maintenance admission remain fail-closed blockers.
+
+Discovery has a 10-second wall/CPU limit; scanning has 120 seconds. Each assignment
+has 2 GiB address-space, 64 MiB writable disk and 64-process headroom limits. The
+scanner receives a read-only installed runtime and bounded private input mount,
+with a read-only scratch workspace, private HOME/tmp, no network, no repository,
+no provider/broker channel and no secret references. Live identity, capability,
+contract compatibility, workspace/resource lease and assignment fence checks
+remain required. Output is bounded by the canonical backend and then restricted
+to 2,000,000 bytes stdout and 64,000 bytes stderr; overflow is an error. Scratch
+workspaces are released after each request. No idle timer, model invocation or
+hidden scan retry is introduced.
+
+The code-owned wire adapter currently supports SkillSpector 2.12.0, verified
+against upstream commit `240421219409dc0bafef9f618a10d80c2d7e83a3`:
+`src/skillspector/cli.py`, `nodes/report.py`, `models.py`, `__init__.py` and
+`pyproject.toml`. Static arguments are `scan SKILL.md --format json --no-llm`.
+The version callback prints `SkillSpector v2.12.0`; single-skill stdout JSON uses
+`risk_assessment.score`, `issues`, nested issue `location`,
+`analysis_completeness`, `execution_successful` and `metadata`. Exit 1 can mean
+findings/threshold failure and still contains a valid report; exit 2 means
+execution failure. A completed command alone cannot establish a successful scan:
+invalid/incomplete reports, version disagreement or model activity fail closed.
+Semantic mode is explicitly unavailable in this credential-free, network-disabled
+transport; enabling it would require a separately governed model/credential
+transport. No ambient provider login or credential is borrowed.
+
+Normalized reports discard raw snippets, matched content, telemetry and arbitrary
+upstream artifact references, apply the canonical boundary redactor, and create
+canonical content-backed Report Artifacts and verification Evidence. They record
+the exact Skill record/checksum, input digest, scanner version/launcher digest,
+configuration revisions, execution-profile reference, assignment, workspace,
+worker and fence. The launcher digest is **not** package signature verification
+or qualification of all installed dependencies. Scanner execution is untrusted;
+only canonical policy evaluates publication/assignment. Transport failure records
+retain their assignment/evidence links when available and never claim findings.
+
+The Skills UI exposes current provider readiness, version and actionable blockers,
+refreshes only on request/scope changes, and displays exact report attribution.
+`scan_error` uses null risk/severity and empty findings; legacy numeric/critical
+error sentinels are normalized in API projections. Policy outcome remains
+independent and fail-closed. Genuine critical findings remain critical. This UI
+work is included in issue #1471's delivery scope under cross-cutting #127; no
+separate status catalog or UI enforcement path is introduced.
+
+### Persisted compatibility and rollback boundary
+
+Worker state advances from 1.11 to 1.12 and workspace state from 1.7 to 1.8 to
+admit the explicit `skill_scan` subject without inventing a Thread or Work Item.
+Forward migrations preserve every existing subject/record and do not mutate
+caller input; legacy Work Item, Thread and bootstrap subjects remain readable.
+The exact new execution contract is `skill-scan/1.0`; older workers that do not
+advertise it are ineligible. Scan-result schema 1.1 adds attribution/error codes
+and permits null risk/severity for execution errors. Legacy unversioned scan
+records load through the existing model defaults, with error sentinels normalized
+at the public projection.
+
+Older binaries cannot read the new subject or scan-result shape. **Mixed old/new
+writers are unsupported.** Drain old application writers and workers before
+upgrading, retain a verified database backup, then start the new control plane.
+After new records are written, binary-only local rollback is unavailable; restore
+the pre-upgrade database and matching application together under the canonical
+upgrade/maintenance procedure. Do not claim that a Git revert makes persisted
+state compatible. Tests cover previous-state migration, preservation of previous
+subjects and explicit rejection by the previous subject/version readers.
+
+### Enforced scanner admission and policy
+
+`SkillSecurityService.required_mode` resolves source trust from the canonical
+same-tenant Skill Source store. Missing sources are untrusted. A manual static
+request is promoted to semantic when effective policy requires semantic assurance;
+publication and assignment independently recheck mode and provider against current
+policy. Earlier static evidence cannot satisfy a later semantic requirement or
+source trust revocation. Semantic transport remains unavailable without any model
+or network dispatch. Existing audited overrides remain explicit policy decisions.
+The detail UI exposes the canonical required mode and denial reason.
+
+The application registers the code-owned `skill-scan-contract/1.0` Upgrade handler.
+Before any new scan-result write (including an error) or discovery workspace
+reservation, canonical Upgrade admission requires a successfully evidenced,
+irreversible contract step for this local database and covered tenant.
+The database marker survives replacement of the process instance; its drain
+authorization remains bound to the enabling service instance. The step
+requires service maintenance, no active admissions/assignments, a single observed
+control-plane writer version, no active old scanner-incompatible workers, canonical
+irreversible approval consumption and successful RecoveryService verification of
+the exact pre-upgrade backup. Shared/replicated transitions are refused by this
+local integration. Execute the step through the existing Upgrade API and finish
+post-upgrade verification before using scans; scanner/configuration publication
+cannot enable the boundary. No upgrade is executed automatically by inspection.
+
+The completed step and rollback denial are persisted before scanner writes become
+eligible. The same Upgrade transaction disables binary rollback on prior plans;
+subsequent plans inherit the denial while this boundary remains in the database.
+This is conservative: only restoration of the pre-boundary database together with
+a matching binary reestablishes compatibility. Restoration removes the enablement
+step too; it cannot silently replay scans or authorize new-format writes. Existing
+Upgrade UI step/Evidence and rollback fields are the operator surface. Maintenance
+admission covers the complete operation, including version discovery and result
+persistence, so a closed drain creates no scanner subject or scan-result rows.
+
+Runtime roots must be direct dedicated children of `/opt/codex-skill-runtimes`.
+Only `bin`, `lib`, `lib64` and `pyvenv.cfg` are admitted at the root; bounded recursive
+inventory rejects hidden/credential filenames, non-regular entries and escaping
+symlinks (except system Python interpreter links). The fixed launcher is a regular
+executable. Both provider settings and worker dispatch validate this contract.
+A project checkout, home directory, generic environment or broad host root is not
+a scanner installation. Operators must supply a dedicated credential-free runtime;
+this validation neither installs dependencies nor proves NVIDIA qualification.
+Live canonical worker identity/membership, compatibility and leases are checked
+before launch, after command preparation immediately before spawn, during polling
+and before accepting terminal output. Worker completion independently checks live
+identity, including an immediate-exit process that skipped the polling loop.

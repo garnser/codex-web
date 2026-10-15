@@ -5,6 +5,7 @@ import json
 import time
 import uuid
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -87,9 +88,11 @@ class SkillScanProviderResult(BaseModel):
     risk_score: float = Field(ge=0, le=100)
     findings: tuple[SkillSecurityFinding, ...] = Field(default=(), max_length=500)
     report_artifact_id: str | None = Field(default=None, max_length=300)
+    execution_attribution: dict[str, str | int | None] = Field(default_factory=dict)
 
 
 class SkillScanResult(BaseModel):
+    schema_version: Literal["1.1"] = "1.1"
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
     id: str = Field(default_factory=lambda: f"skill-scan-{uuid.uuid4().hex}")
@@ -102,13 +105,15 @@ class SkillScanResult(BaseModel):
     scanner_version: str = Field(min_length=1, max_length=120)
     mode: SkillScanMode
     status: SkillScanStatus
-    risk_score: float = Field(ge=0, le=100)
-    severity: SkillFindingSeverity
+    risk_score: float | None = Field(default=None, ge=0, le=100)
+    severity: SkillFindingSeverity | None = None
     findings: tuple[SkillSecurityFinding, ...] = Field(default=(), max_length=500)
     policy_result: str = Field(min_length=1, max_length=120)
     report_artifact_id: str | None = Field(default=None, max_length=300)
+    execution_attribution: dict[str, str | int | None] = Field(default_factory=dict)
     scanned_at: float = Field(default_factory=time.time)
     error: str | None = Field(default=None, max_length=1000)
+    error_code: str | None = Field(default=None, max_length=120)
 
 
 class SkillSecurityPolicy(BaseModel):

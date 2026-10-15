@@ -34,7 +34,7 @@ from codex_web.failures import (
     worker_failure_reason,
 )
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind
-from codex_web.services.identity import AuthorizationError, IdentityService
+from codex_web.services.identity import AuthorizationError, IdentityError, IdentityService
 from codex_web.services.execution_workspaces import (
     ExecutionWorkspaceRelease,
     ExecutionWorkspaceService,
@@ -80,6 +80,7 @@ class ExecutionWorkerService:
         self.store = store
         self.identity = identity
         self.workspaces = workspaces
+        self.skill_scan_admission = None
         self.maintenance_guard = maintenance_guard
         self.maintenance_admission = maintenance_admission
         self.assignment_notifier = assignment_notifier
@@ -175,11 +176,21 @@ class ExecutionWorkerService:
             raise AssignmentNotFoundError("execution assignment not found")
         return item
 
-    @staticmethod
     def _require_worker_actor(
+        self,
         worker: ExecutionWorker,
         actor: AuthenticationActor,
     ) -> None:
+        if self.identity is not None:
+            try:
+                live = self.identity.actor_for_identity(actor.identity_id, scope=actor.tenant)
+            except IdentityError as exc:
+                raise AuthorizationError("worker service identity or membership is revoked/unavailable") from exc
+            if live.principal_kind != PrincipalKind.SERVICE:
+                raise AuthorizationError("worker identity is no longer a service principal")
+            # actor_for_identity validates live principal/membership, but does not
+            # authenticate or synthesize credential scopes. Retain authenticated
+            # invocation scopes; never turn membership roles into run authority.
         if actor.principal_kind != PrincipalKind.SERVICE:
             raise AuthorizationError("execution worker operation requires service identity")
         if actor.identity_id != worker.service_identity_id:
@@ -895,6 +906,11 @@ class ExecutionWorkerService:
         actor: AuthenticationActor,
         assignment_admission=None,
     ) -> ExecutionAssignment:
+        if payload.subject.kind == "skill_scan":
+            if self.skill_scan_admission is None:
+                raise WorkerConflictError("Skill scanner Upgrade admission unavailable")
+            with self.skill_scan_admission(actor):
+                return self._create_assignment(payload, actor=actor)
         if self.maintenance_admission is not None:
             with self.maintenance_admission(
                 actor.organization_id,

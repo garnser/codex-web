@@ -312,3 +312,11 @@ exact deployment source/target revisions and preflight Evidence ID, step
 progress/Evidence, irreversible boundaries and rollback availability. The
 operator upgrade/runbook documentation describes the guarded local path and its
 external bypass limit.
+
+
+The local Skill scanner persisted-contract transition uses the registered
+`skill-scan-contract/1.0` handler and canonical irreversible-step workflow. See
+[Skill security admission](skill-security.md#enforced-scanner-admission-and-policy)
+for its service drain, verified snapshot, old-worker exclusion and write gate.
+It disables rollback on earlier plans atomically and on later plans conservatively;
+a new plan cannot make retained incompatible rows safe for an old binary.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from starlette.concurrency import run_in_threadpool
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -42,7 +43,12 @@ def build_skill_security_router(security: SkillSecurityService, skills: SkillSer
 
     @router.get("/api/skill-security/providers")
     async def providers(request: Request) -> dict[str, Any]:
-        items = security.providers.list(tenant_scope=request_actor(request).tenant)
+        actor = request_actor(request)
+        try:
+            security._require_admin(actor)
+        except AuthorizationError as exc:
+            raise error(exc) from exc
+        items = await run_in_threadpool(security.providers.list, tenant_scope=actor.tenant, actor=actor)
         return {"items": items, "count": len(items)}
 
     @router.get("/api/skill-security/policy")
@@ -66,7 +72,7 @@ def build_skill_security_router(security: SkillSecurityService, skills: SkillSer
     @router.post("/api/skills/{skill_id}/revisions/{record_id}/scan")
     async def scan(skill_id: str, record_id: str, payload: SkillScanRequest, request: Request) -> dict[str, Any]:
         try:
-            return security.scan(view(skill_id, record_id, request), payload, actor=request_actor(request))
+            return await run_in_threadpool(security.scan, view(skill_id, record_id, request), payload, actor=request_actor(request))
         except Exception as exc:
             raise error(exc) from exc
 

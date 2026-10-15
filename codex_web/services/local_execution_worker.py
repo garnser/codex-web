@@ -740,10 +740,34 @@ class LocalExecutionWorkerRuntime:
         assignment_id: str,
         argv: Sequence[str],
     ) -> LocalExecutionCompletion:
+        return self._execute_command(assignment_id, argv)
+
+    def execute_skill_scanner(self, assignment_id: str, *, runtime_root: Path, input_directory: Path | None = None):
+        """Fixed CLI operation, never an arbitrary argv or network/credential API."""
+        from codex_web.services.skill_scanner_configuration import validate_scanner_runtime
+        runtime_root = validate_scanner_runtime(runtime_root)
+        assignment = self._pending_assignment(assignment_id)
+        if (assignment.subject.kind != "skill_scan" or assignment.execution_contract_version != "skill-scan/1.0"
+                or assignment.network.enabled or assignment.secret_refs or assignment.runtime_binding is not None
+                or assignment.sandbox != "read-only" or assignment.resource_ids):
+            raise LocalExecutionWorkerRuntimeError("incompatible Skill scan assignment")
+        executable = str(runtime_root / "bin" / "skillspector")
+        mounts = [(runtime_root, runtime_root)]
+        if input_directory is None:
+            argv = (executable, "--version")
+        else:
+            mounts.append((input_directory, Path("/opt/codex-skill-input")))
+            argv = (executable, "scan", "/opt/codex-skill-input/SKILL.md", "--format", "json", "--no-llm")
+        return self._execute_command(assignment_id, argv, scanner_mounts=tuple(mounts),
+                                     scanner_operation=True, accepted_exit_codes=(0, 1) if input_directory else (0,))
+
+    def _execute_command(self, assignment_id, argv, *, scanner_mounts=(), scanner_operation=False, accepted_exit_codes=(0,)):
         assignment = self._pending_assignment(assignment_id)
         workspace_path = self._workspace_path(assignment)
         readonly_mounts, writable_mounts = self.repository_mounts(assignment)
-        python_environment = self.python_environment(assignment)
+        readonly_mounts = (*readonly_mounts, *scanner_mounts)
+        python_environment = (ExecutionPythonEnvironment(environment={"PATH": "/usr/local/bin:/usr/bin:/bin", "PYTHONNOUSERSITE": "1"})
+                              if scanner_operation else self.python_environment(assignment))
         readonly_mounts = (*readonly_mounts, *python_environment.readonly_mounts)
         readonly_disk_bytes = self.readonly_disk_bytes(assignment)
         self.backend.validate_assignment(assignment)
@@ -778,6 +802,30 @@ class LocalExecutionWorkerRuntime:
         last_heartbeat = {"at": time.monotonic()}
 
         def poll() -> None:
+            if scanner_operation:
+                active = current["assignment"]
+                live = self.worker_service.store.assignment(active.id)
+                worker = self.worker_service.store.worker(self.worker.id)
+                workspace = self._workspace(active)
+                resource_lease = self.workspace_service.store.lease(workspace.lease_id)
+                now = time.time()
+                if (live is None or live.status != AssignmentStatus.RUNNING or live.fence != active.fence
+                        or live.lease is None or active.lease is None
+                        or live.lease.lease_token != active.lease.lease_token
+                        or live.lease.expires_at <= now or live.assigned_worker_id != self.worker.id
+                        or worker is None or worker.lifecycle not in {"active", "draining"}
+                        or worker.service_identity_id != self.worker_actor.identity_id
+                        or (worker.organization_id, worker.workspace_id) != (active.organization_id, active.workspace_id)
+                        or not set(active.required_capabilities).issubset(worker.capabilities)
+                        or active.execution_contract_version not in worker.supported_execution_contract_versions
+                        or active.sandbox not in worker.supported_sandbox_profiles
+                        or resource_lease is None or resource_lease.released_at is not None
+                        or resource_lease.expires_at <= now or resource_lease.execution_id != active.execution_id
+                        or (active.deadline_at is not None and active.deadline_at <= now)):
+                    raise LocalExecutionWorkerRuntimeError("Skill scanner worker lease or compatibility lost")
+                if self.worker_service.identity is None:
+                    raise LocalExecutionWorkerRuntimeError("Skill scanner worker identity unavailable")
+                self.worker_service.identity.actor_for_identity(self.worker_actor.identity_id, scope=self.worker_actor.tenant)
             now_monotonic = time.monotonic()
             if now_monotonic - last_heartbeat["at"] >= self.heartbeat_interval_seconds:
                 self.worker_service.heartbeat(
@@ -807,6 +855,8 @@ class LocalExecutionWorkerRuntime:
                 current["assignment"] = renewed
 
         try:
+            if scanner_operation:
+                poll()  # Validate live identity/fences before backend launch, even for immediate exit.
             run_kwargs = {
                 "argv": argv,
                 "workspace_path": workspace_path,
@@ -823,7 +873,11 @@ class LocalExecutionWorkerRuntime:
                 current["assignment"],
                 **run_kwargs,
             )
-        except LocalExecutionBackendError as exc:
+            if scanner_operation:
+                poll()  # Never accept terminal output based on a skipped polling loop.
+        except Exception as exc:
+            if not scanner_operation and not isinstance(exc, LocalExecutionBackendError):
+                raise
             active = current["assignment"]
             active_lease = active.lease
             if active_lease is not None and active.status == AssignmentStatus.RUNNING:
@@ -850,11 +904,13 @@ class LocalExecutionWorkerRuntime:
             raise LocalExecutionWorkerRuntimeError(
                 "worker lease disappeared before completion"
             )
+        succeeded = (result.exit_code in accepted_exit_codes and not result.timed_out
+                     and result.limit_breach is None and (not scanner_operation or not result.output_truncated))
         evidence_id = self._limit_evidence(active, result)
         evidence_ids = (evidence_id,) if evidence_id else ()
         failure_code = None
         failure_message = None
-        if not result.succeeded:
+        if not succeeded:
             if result.limit_breach:
                 failure_code = f"worker_limit_{result.limit_breach}"
                 failure_message = (
@@ -873,7 +929,7 @@ class LocalExecutionWorkerRuntime:
                 AssignmentCompleteRequest(
                     lease_token=active_lease.lease_token,
                     fence=active_lease.fence,
-                    succeeded=result.succeeded,
+                    succeeded=succeeded,
                     failure_code=failure_code,
                     failure_message=failure_message,
                     evidence_ids=evidence_ids,
