@@ -1759,7 +1759,10 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 result = await client.get("/api/control-plane-broker/operations")
         self.assertEqual(result.status_code, 200)
-        self.assertEqual(result.json()["items"], self.service.public_assignment_capability(self.assignment)["operations"])
+        self.assertEqual([item for item in result.json()["items"] if not item["id"].startswith("project.")],
+                         self.service.public_assignment_capability(self.assignment)["operations"])
+        self.assertFalse(any(item["id"].startswith("project.") for item in
+                             self.service.public_assignment_capability(self.assignment)["operations"]))
         self.assertNotIn("assignment_context", result.json())
 
     async def test_repository_write_assignment_receives_same_scoped_broker(self) -> None:

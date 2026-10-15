@@ -89,6 +89,9 @@ from codex_web.services.execution_workspaces import (
 from codex_web.services.work_item_operator import WorkItemOperatorService
 from codex_web.services.work_items import WorkItemService
 from codex_web.storage.control_plane_broker import ControlPlaneBrokerAuditStore
+from codex_web.services.project_coordination import (
+    PREFIX as COORDINATION_PREFIX, PROJECT_COORDINATION_OPERATIONS, resolve_operation,
+)
 
 
 class ControlPlaneBrokerError(RuntimeError):
@@ -126,6 +129,7 @@ class _ResolvedOperation:
 
 
 OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
+    *PROJECT_COORDINATION_OPERATIONS,
     ControlPlaneBrokerOperation(
         id="work_graph.edge.create", method="POST", path_template="/api/work-graph/edges",
         capability="work_graph.manage", authority_level=AuthorityLevel.EXECUTE,
@@ -439,7 +443,7 @@ _DELIVERY_EVIDENCE_REPOSITORY_ACTION_IDS = (
 # request is still operation-allowlisted, tenant/project scoped, authorized,
 # fenced, rate limited, and audited below.
 CONTROL_PLANE_EXECUTION_PROFILES = frozenset(
-    {"orchestration-only", "repository-write", "orchestration-admin"}
+    {"orchestration-only", "repository-write", "orchestration-admin", "project-governor"}
 )
 
 
@@ -484,6 +488,7 @@ class ControlPlaneBrokerService:
         self._monotonic = monotonic
         self._local_installers = {}
         self.procedure_admission = None
+        self.project_coordination = None
 
     @staticmethod
     def operations() -> tuple[ControlPlaneBrokerOperation, ...]:
@@ -596,6 +601,40 @@ class ControlPlaneBrokerService:
         enabled = assignment.execution_profile_id in CONTROL_PLANE_EXECUTION_PROFILES
         context = self._public_assignment_context(assignment) if enabled else None
         operations = [self.public_operation(item) for item in OPERATIONS] if enabled else []
+        # Ordinary repository-write declarations and historical catalogs never
+        # acquire governor operations simply because the engine supports them.
+        coordination = None
+        if enabled and self.project_coordination is not None:
+            try:
+                profile, ref = self.execution_profiles.resolve(assignment.execution_profile_id,
+                    organization_id=assignment.organization_id, workspace_id=assignment.workspace_id,
+                    project_id=assignment.project_id)
+                if profile.project_coordination:
+                    coordination = {"declaration": profile.project_coordination.model_dump(mode="json"),
+                        "definition": assignment.execution_profile_definition.model_dump(mode="json") if assignment.execution_profile_definition else None,
+                        "current_definition": ref.model_dump(mode="json"),
+                        "definition_is_current": ref == assignment.execution_profile_definition,
+                        "effective_authority_requires_operation_checks": True,
+                        "operations": []}
+                    actor = self._requester_actor(assignment)
+                    for op in PROJECT_COORDINATION_OPERATIONS:
+                        observation = {"id": op.id, "capability": op.capability,
+                            "declared": op.id in profile.control_plane_operations}
+                        try:
+                            self.project_coordination.guard(assignment, op)
+                            observation.update(status="allowed", reason="Observed live scope and authority; rechecked on use")
+                        except Exception as exc:
+                            observation.update(status="blocked", reason=str(getattr(exc, "detail", exc)))
+                        coordination["operations"].append(observation)
+            except Exception:
+                # Catalog inspection grants nothing; dispatch retains typed denial.
+                coordination = None
+        operations = [item for item in operations if not item["id"].startswith("project.")
+            or (coordination and any(v["id"] == item["id"] and v["declared"] for v in coordination["operations"]))]
+        if context is not None and coordination is not None:
+            context["project_coordination"] = coordination
+        if assignment.execution_profile_id == "project-governor":
+            operations = [item for item in operations if coordination and item["id"] in profile.control_plane_operations]
         if (context is not None and assignment.execution_workspace_id and self.execution_workspaces is not None
                 and getattr(self.execution_workspaces, "store", None) is not None):
             workspace = self.execution_workspaces.store.workspace(assignment.execution_workspace_id)
@@ -750,6 +789,10 @@ class ControlPlaneBrokerService:
             )
         path = parsed.path
         query = parse_qs(parsed.query, keep_blank_values=False)
+        if path == COORDINATION_PREFIX or path.startswith(COORDINATION_PREFIX + "/"):
+            operation, target_ref = resolve_operation(method, path)
+            return _ResolvedOperation(operation=operation, target_ref=target_ref,
+                query=parse_qs(parsed.query, keep_blank_values=True))
         member_query = parse_qs(parsed.query, keep_blank_values=True)
         for key in ("member_path", "repository_resource_id"):
             if key in member_query:
@@ -1026,7 +1069,7 @@ class ControlPlaneBrokerService:
 
     @staticmethod
     def _writable_repository_id(assignment: ExecutionAssignment) -> str:
-        if assignment.execution_profile_id != "repository-write":
+        if assignment.execution_profile_id not in {"repository-write", "project-governor"}:
             raise ControlPlaneBrokerDeniedError(
                 "repository actions require the repository-write execution profile"
             )
@@ -1458,6 +1501,10 @@ class ControlPlaneBrokerService:
             raise ControlPlaneBrokerDeniedError(
                 "control-plane broker requires an assignment project"
             )
+        if operation.id.startswith("project.") or assignment.execution_profile_id == "project-governor":
+            if self.project_coordination is None:
+                raise ControlPlaneBrokerDeniedError("project coordination adapters unavailable")
+            self.project_coordination.authorize(assignment, operation, self._requester_actor(assignment))
         if assignment.execution_profile_id == "orchestration-admin":
             if self.execution_profiles is None:
                 raise ControlPlaneBrokerDeniedError("administrative execution capability is unavailable")
@@ -1502,23 +1549,27 @@ class ControlPlaneBrokerService:
         actor = self._actor(assignment, worker_actor)
         repository_read = operation.id.startswith("repository.read.")
         if ("repository_resource_id" in resolved.query and not repository_read
+                and not operation.id.startswith("project.")
                 and assignment.execution_profile_id != "orchestration-admin"):
             raise ControlPlaneBrokerRequestError(
                 "repository_resource_id is only supported for repository fact reads"
             )
         requester_actor = (
             self._requester_actor(assignment)
-            if assignment.execution_profile_id == "orchestration-admin"
+            if assignment.execution_profile_id in {"orchestration-admin", "project-governor"}
             or operation.id.startswith("repository.")
             or operation.id.startswith("action_intent.")
             or operation.id.startswith("deployment.local.")
             or operation.id == "control_plane.operations.list"
+            or operation.id.startswith("project.")
             else actor
         )
         authority_actor = actor if repository_read else requester_actor
         state = None
         resource_ids: tuple[str, ...] = ()
-        if (
+        if operation.id.startswith("project."):
+            resource_ids = (self._writable_repository_id(assignment),)
+        elif (
             operation.id.startswith("repository.")
             or operation.id.startswith("action_intent.")
             or operation.id.startswith("deployment.local.")
@@ -1642,7 +1693,10 @@ class ControlPlaneBrokerService:
                     raise ControlPlaneBrokerDeniedError("administrative coordination must use its own agent Role attribution")
                 payload[attributed_field] = own_role
 
-        if operation.id == "work_graph.edge.create":
+        if operation.id.startswith("project."):
+            result = await self.project_coordination.dispatch(assignment, operation,
+                resolved.target_ref, resolved.query, payload, assignment_validator, actor)
+        elif operation.id == "work_graph.edge.create":
             if self.work_graph is None or assignment.execution_profile_id != "orchestration-admin":
                 raise ControlPlaneBrokerDeniedError("dependency administration requires an enabled administrative profile")
             from codex_web.work_graph import WorkGraphEdgeCreate

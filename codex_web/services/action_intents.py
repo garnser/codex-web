@@ -827,7 +827,17 @@ class ActionIntentService:
         *,
         actor: AuthenticationActor,
         assignment_id: str | None = None,
+        admission_idempotency_key: str | None = None,
     ) -> ActionIntent:
+        # Internal canonical admission dedupe is distinct from a provider's
+        # ability to replay an effect. Never advertise provider idempotency for
+        # thread creation/input whose native outcome can be uncertain.
+        if admission_idempotency_key is not None and (
+            not isinstance(admission_idempotency_key, str)
+            or not 1 <= len(admission_idempotency_key) <= 500
+            or payload.request.idempotency_key is not None
+        ):
+            raise ActionIntentConflictError("invalid separate admission idempotency key")
         request = payload.request
         recovery_admission = capture_scope(self.execution_workers, request, payload.execution_id, actor, assignment_id)
         if recovery_admission is not None:
@@ -876,10 +886,11 @@ class ActionIntentService:
         # idempotency key is bound to the same canonical request and execution
         # attribution. Reusing a key for another repository/resource must never
         # return an intent for the wrong target.
-        if request.idempotency_key:
+        admission_key = admission_idempotency_key or request.idempotency_key
+        if admission_key:
             existing = self.store.find_idempotent(
                 actor.organization_id, actor.workspace_id, binding.id,
-                request.action_id, request.idempotency_key,
+                request.action_id, admission_key,
             )
             if existing is not None:
                 same_request = (
@@ -889,6 +900,7 @@ class ActionIntentService:
                 same_attribution = (
                     existing.work_item_ref == payload.work_item_ref
                     and existing.execution_id == payload.execution_id
+                    and existing.requested_by == actor.identity_id
                 )
                 if not same_request or not same_attribution:
                     raise ActionIntentConflictError(
@@ -925,7 +937,7 @@ class ActionIntentService:
             intent_id=intent_id,
         )
         provider_idempotency = bool(definition.capabilities.idempotency)
-        idempotency_key = request.idempotency_key or f"codex-intent:{intent_id}"
+        idempotency_key = admission_key or f"codex-intent:{intent_id}"
         provider_request = request
         if provider_idempotency and not request.idempotency_key:
             provider_request = request.model_copy(
@@ -1055,6 +1067,7 @@ class ActionIntentService:
             != self._idempotency_request_identity(request)
             or persisted.work_item_ref != payload.work_item_ref
             or persisted.execution_id != payload.execution_id
+            or persisted.requested_by != actor.identity_id
         ):
             raise ActionIntentConflictError(
                 "idempotency key is already bound to a different action target or execution context"

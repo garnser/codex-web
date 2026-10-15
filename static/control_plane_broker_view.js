@@ -1,3 +1,4 @@
+import { coordinationDeclarationHtml } from './project_coordination_view.js';
 import { referenceLink, projectPath } from './reference_navigation.js';
 const esc = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;')
   .replaceAll('>', '&gt;').replaceAll('"', '&quot;');
@@ -36,5 +37,7 @@ export function brokerDeclarationHtml(item, projectId) {
       <small>Observed declaration validation: ${esc(observation?.status || 'unavailable')} · ${esc(observation?.reason || admin.inspection_error || 'No validation observation')}${observation?.operation_id ? ` · sampled operation ${esc(observation.operation_id)} / repository ${link('resource', observation.repository_id, projectId)}` : ''}. This observation grants no operation authority.</small>` : ''}
     <small>Git scope: writable ${(context.declared_repository_scope?.writable_repository_ids || []).map(id => link('resource', id, projectId)).join(', ') || 'none'} · read context ${(context.declared_repository_scope?.read_only_repository_ids || []).map(id => link('resource', id, projectId)).join(', ') || 'none'}</small>
     <small>Source Work Item: ${link('work_item', item.work_item_ref, projectId)} · <a href="${esc(projectPath('work-items', {}, projectId))}#work-graph-panel" data-broker-graph>Inspect dependency graph</a> · ${item.execution_id ? `<a href="${esc(projectPath('automations', {action_execution: item.execution_id}, projectId))}">Inspect related ActionIntents and provider receipts</a>` : 'No execution correlation available'}</small>
-    <button type="button" class="ghost-button">Load broker audit for ${esc(item.id)}</button><div role="status" aria-live="polite">Broker audit has not been loaded.</div><div data-broker-events></div>`
+    ${coordinationDeclarationHtml(context.project_coordination, projectId)}
+    <button type="button" class="ghost-button" data-broker-audit>Load broker audit for ${esc(item.id)}</button><div role="status" aria-live="polite" data-broker-status>Broker audit has not been loaded.</div><div data-broker-events></div>`
 }
+

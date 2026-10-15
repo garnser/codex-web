@@ -993,6 +993,7 @@ class ThreadService:
         writable_repository_resource_ids: tuple[str, ...] = (),
         bootstrap_token: str | None = None,
         before_provider_start: Callable[[], None] | None = None,
+        admission_guard: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         # Internal recovery correlation; the public create request cannot set it.
         if bootstrap_token is not None:
@@ -1119,6 +1120,8 @@ class ThreadService:
         bootstrap_id = f"bootstrap-{token}"
         execution_id = f"thread-bootstrap-{token}"
 
+        if admission_guard is not None:
+            admission_guard()
         try:
             binding = await asyncio.to_thread(
                 binding_service.prepare_bootstrap,
@@ -1145,6 +1148,17 @@ class ThreadService:
                     "retryable": False,
                 },
             ) from exc
+        if admission_guard is not None:
+            try:
+                admission_guard()
+            except Exception:
+                from codex_web.execution_workers import AssignmentCancelRequest
+                # A just-prepared bootstrap has not crossed worker startup.
+                # Cancellation is fenced and retains all files, as elsewhere.
+                await asyncio.to_thread(binding_service.workers.cancel_bootstrap,
+                    binding.assignment_id, AssignmentCancelRequest(expected_fence=0,
+                        reason="governor admission changed before isolated worker startup"), actor=control_actor)
+                raise
         session = await session_manager.start(binding.assignment_id)
         status = session.status()
         workspace_path = session.workspace_path
@@ -1217,6 +1231,8 @@ class ThreadService:
             session,
         )
         try:
+            if admission_guard is not None:
+                admission_guard()
             if before_provider_start is not None:
                 before_provider_start()
             runtime_result = await runtime_adapter.create_session(runtime_request)

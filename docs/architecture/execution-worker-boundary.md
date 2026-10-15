@@ -1237,3 +1237,81 @@ and clean-filter configuration. Harmless host marker reproduction establishes th
 trigger; isolated inspection preserves clean/dirty/head observations while leaving
 host markers absent. The mandatory qualification refuses unsupported isolation
 rather than treating a skipped fixture or capability escalation as successful.
+
+### Opt-in Project governor coordination
+
+The `project-governor` engine profile composes existing canonical Thread,
+ExecutionAssignment, Organizational Memory, ApprovalRequest, Attention and broker
+audit services. It is a separate repository workspace profile; installing its
+engine does not add control rights to `repository-write` or to a named Agent
+Profile. Its mutable activation data belongs in a Project-scoped
+`execution-profile-catalog` Definition, schema `1.2`. The payload carries one
+explicit repository Resource, one or two exact child Agent Profile revisions,
+a delivery-thread ceiling of at most two and an explicit operation allowlist.
+The default seed does not contain or activate this profile.
+
+The assignment-bound `/api/project-coordination` protocol supports typed Thread
+list/detail/create/message, assignment list/detail, project Memory list/detail/
+checkpoint, elevation feedback and ActionIntent receipt inspection. Every call
+requires explicit `project_id` and `repository_resource_id` query fields. Other,
+blank or repeated scope fields fail closed. Canonical tenant/workspace/Project
+and repository scope are filtered before visible totals, pagination or cursors.
+Lists return at most 50 rows (20 by default) and opaque snapshot cursors; changed
+visible state requires a fresh read. Inventory scans fail closed above 5,000
+rows, and existing broker byte/rate/concurrency bounds still apply.
+
+Every call independently requires `project.coordinate` and the operation's
+canonical authority capability (`thread.read/create/message`, `execution.read`,
+`memory.read/write` or `project.elevation.read`). The original requester must
+still exist with current membership, and the executing worker remains a distinct
+service identity. Profile declarations are never grants. Dispatch and side-effect
+boundaries re-resolve current assignment/worker identity, deadline, lease/fence,
+workspace ownership/lease, singular Resource, exact current Project Definition
+and any pinned Agent Profile. Mutations refuse draining workers. Reads can
+inspect a still-live draining assignment. Canonical ThreadBinding, rather than
+provider DTO `projectId`, determines each Thread's execution/workspace scope.
+
+Mutations first persist a canonical ActionIntent through a separately enabled,
+credential-free, exact Project/Resource `project-coordination/canonical`
+ActionProvider binding. An internal admission key is separate from provider
+idempotency. Concurrent duplicate admissions share the original intent; changed
+payloads conflict. Native thread creation/input is not advertised as safely
+replayable, and attempts are bounded to one. Accepted, failed or uncertain input
+cannot be replayed by repeating the admission key. An operator must inspect
+canonical receipts/reconciliation evidence. Maintenance, authority, approval,
+profile invocation, runtime routing, quota and worker isolation gates remain in
+the existing services. Children cannot inherit governor/admin profiles; their
+exact Agent Profile revisions, invocation rights, concurrency budgets and
+singular repository envelope are checked before bootstrap.
+
+Message receipts prove durable queue admission only: `native_start_verified`
+remains false. Creating a Thread proves neither active work nor task completion.
+Monitoring reports canonical active execution, queue depth, runner custody and
+blocker separately; an idle runner stays idle. These adapters add no polling,
+model call, business action, new controller or state store. Existing governed
+Memory versions retain assignment/Definition provenance, governance and origin
+labels; global/unscoped Memory never enters the projection. Elevation feedback
+only reads scoped ApprovalRequests, Attention and correlated broker denials.
+It exposes an authorized next action and cannot approve or grant access.
+
+The existing worker broker inspector provides lazy operator views of Threads,
+project checkpoints and elevation evidence. Operator inspection independently
+checks admin/step-up and read authority, then uses the same assignment/requester
+gates. It displays declared versus observed authority, pinned/current Definition,
+child envelope, blockers and queued-versus-native evidence. Loading/empty/denied/
+stale results and Project changes invalidate stale content. It adds no UI-only
+authority or activation control. This is the UI adaptation for issue #1473;
+shared workspace tracking remains #125/#127, with #1357 related inspection work.
+
+Schema `1.0` and `1.1` validators reject coordination payloads; readers of those
+schemas retain their historical behavior. Schema `1.2` is opt-in and cannot be
+published at a global/workspace slot for governor execution. There is no state
+migration or automatic Definition upgrade; exact older assignments retain their
+pins, and a superseding governor Definition revokes dispatch from the old pin.
+Before activation an operator must qualify the new engine and publish reviewed
+Project-scoped definitions, Role grants, child profiles and provider binding.
+Mixed writers that cannot understand `1.2` are unsupported for that slot. To
+roll back, first drain/cancel new governor admissions and reconcile uncertain
+intents, then retire the opt-in definition/binding with the canonical lifecycle
+and upgrade compatibility gates. Never reinterpret `1.2` as an older schema or
+promise binary rollback while incompatible live definitions remain enabled.
