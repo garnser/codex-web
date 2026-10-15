@@ -476,7 +476,17 @@ class ActionExecutionService:
         definition.capabilities.require("verification")
 
         async def invoke(credential: str | None) -> ActionVerification:
+            admission = _provider_mutation_admission.get()
+            if admission is not None:
+                await admission()
             verification = await provider.verify(result, binding=binding, credential=credential)
+            if admission is not None:
+                await admission()
+                if self.registry.binding(binding_id, actor) != binding:
+                    raise ActionRequirementError('Provider binding changed during verification')
+                current_provider = self.registry.provider(binding.provider_type, binding.provider_instance, actor=actor)
+                if current_provider is not provider or self._definition(current_provider, result.action_id) != definition:
+                    raise ActionRequirementError('Provider action changed during verification')
             return _credential_safe_output(verification, credential)
 
         credential_ref = binding.credential_ref

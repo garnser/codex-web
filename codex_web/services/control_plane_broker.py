@@ -1771,6 +1771,20 @@ class ControlPlaneBrokerService:
                     raise ControlPlaneBrokerDeniedError("administrative coordination must use its own agent Role attribution")
                 payload[attributed_field] = own_role
 
+        async def current_admission():
+            if assignment_validator is None:
+                raise ControlPlaneBrokerDeniedError('Live assignment validator is unavailable')
+            current = await asyncio.to_thread(assignment_validator)
+            fields = ('organization_id', 'workspace_id', 'project_id', 'execution_id',
+                'execution_profile_id', 'execution_profile_definition', 'agent_profile',
+                'execution_workspace_id', 'repository_scope', 'repository_target', 'resource_ids')
+            if (any(getattr(current, name) != getattr(assignment, name) for name in fields)
+                    or current.status not in {'running', 'claimed'}
+                    or (current.deadline_at is not None and current.deadline_at <= self._clock())):
+                raise ControlPlaneBrokerDeniedError('Assignment scope or deadline changed during provider read')
+            await asyncio.to_thread(self._dispatch_scope, current, worker_actor, resolved)
+            await asyncio.to_thread(self._require_readiness_declaration, current)
+
         if operation.id.startswith("project."):
             result = await self.project_coordination.dispatch(assignment, operation,
                 resolved.target_ref, resolved.query, payload, assignment_validator, actor)
@@ -2023,19 +2037,7 @@ class ControlPlaneBrokerService:
                 raise ControlPlaneBrokerRequestError(str(exc), status_code=409) from exc
             result = {"item": recovered.model_dump(mode="json")}
         elif operation.id.startswith("repository."):
-            async def current_admission():
-                if assignment_validator is None:
-                    raise ControlPlaneBrokerDeniedError('Live assignment validator is unavailable')
-                current = await asyncio.to_thread(assignment_validator)
-                fields = ('organization_id', 'workspace_id', 'project_id', 'execution_id',
-                    'execution_profile_id', 'execution_profile_definition', 'agent_profile',
-                    'execution_workspace_id', 'repository_scope', 'repository_target', 'resource_ids')
-                if (any(getattr(current, name) != getattr(assignment, name) for name in fields)
-                        or current.status not in {'running', 'claimed'}
-                        or (current.deadline_at is not None and current.deadline_at <= self._clock())):
-                    raise ControlPlaneBrokerDeniedError('Assignment scope or deadline changed during provider read')
-                await asyncio.to_thread(self._dispatch_scope, current, worker_actor, resolved)
-            with provider_operation_admission(current_admission):
+            with provider_operation_admission(current_admission if operation.id == "repository.pull-request.ready" else None):
                 result = await self._execute_repository_action(
                     assignment=assignment, worker_actor=actor, requester_actor=requester_actor,
                     operation=operation, payload=payload,
@@ -2085,11 +2087,10 @@ class ControlPlaneBrokerService:
                     "a recovered assignment may reconcile but not retry a "
                     "historical action intent"
                 )
-            item = await self.action_intents.reconcile(
-                intent.id,
-                reconcile_request,
-                actor=actor,
-            )
+            if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+                self._require_readiness_declaration(assignment)
+            with provider_operation_admission(current_admission if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID else None):
+                item = await self.action_intents.reconcile(intent.id, reconcile_request, actor=actor)
             result = {"item": item.model_dump(mode="json")}
             if (reconcile_request.retry_if_idempotent
                     and intent.execution_id == assignment.execution_id

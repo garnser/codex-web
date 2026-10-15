@@ -210,3 +210,18 @@ class GitHubReadyTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(status, 200, result)
                 self.assertEqual(result['item']['status'], 'failed', result)
                 self.assertEqual(sum(method == 'POST' for method, _ in self.calls), 1)
+        fixture.b.current_assignment = original
+        self.item['draft'] = True
+        reads = 0
+        def expire_during_verification():
+            nonlocal reads
+            reads += 1
+            if reads == 3:
+                fixture.b.current_assignment = original.model_copy(update={
+                    'lease': original.lease.model_copy(update={'expires_at': 0})})
+        self.after_read = expire_during_verification
+        status, _, result = await fixture.b._request('POST', route,
+            payload={**payload, 'idempotency_key': 'expired-during-verification'})
+        self.assertEqual(status, 200, result)
+        self.assertEqual(result['item']['status'], 'requires_reconciliation', result)
+        self.assertEqual(sum(method == 'POST' for method, _ in self.calls), 2)
