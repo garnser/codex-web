@@ -1,11 +1,12 @@
 const { test, expect } = require('@playwright/test');
 
-for (const kind of ['artifact', 'evidence']) test(`${kind} playbook reference focuses the exact canonical inspection row`, async ({page}) => {
+for (const kind of ['artifact', 'evidence', 'verification']) test(`${kind} playbook reference focuses the exact canonical inspection row`, async ({page}) => {
   await page.route('**/playbook-reference?**', route => route.fulfill({contentType:'text/html',body:`<body data-project-id="project-a"><details id="developer-panel" open><button id="refresh-artifact-evidence">Refresh</button><div id="artifact-evidence-status"></div><div id="artifact-list"></div><div id="evidence-list"></div><div id="verification-list"></div></details><script src="/static/artifact_evidence_admin.js"></script></body>`}));
   await page.route('**/api/**', route => {
     const path = new URL(route.request().url()).pathname;
     if (path === '/api/artifacts') return route.fulfill({json:{items:[{id:'artifact-exact',artifact_type:'input',name:'Pinned input',lifecycle:'active',project_id:'project-a'}]}});
     if (path === '/api/evidence') return route.fulfill({json:{items:[{id:'evidence-exact',evidence_type:'verification',result:'pass',lifecycle:'valid',artifact_ids:['artifact-exact'],project_id:'project-a'}]}});
+    if (path === '/api/verifications') return route.fulfill({json:{items:[{id:'verification-exact',result:'verified',independent:true,method:'notification-original-outcome/1.0',project_id:'project-a',evidence_ids:['evidence-exact']}]}});
     if (path === '/api/identity/me') return route.fulfill({json:{identity_id:'viewer',roles:['member']}});
     return route.fulfill({json:{items:[]}});
   });

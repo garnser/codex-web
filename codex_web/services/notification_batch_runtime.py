@@ -140,18 +140,27 @@ class NotificationBatchRuntimeControls:
             # grouping. The ordinary admission path keeps its own refusal rules.
             return None
 
-    def _resolve(self, item, project):
+    def resolve_processing(self, item, project):
+        # Explicit processing consumes no admission/model budget and does not
+        # depend on enabling autonomous admission. It still resolves live scope,
+        # exact profile access, Definitions, resources and Role authority.
+        try:
+            return self._resolve(item, project, processing=True)
+        except (HTTPException, ValueError, LookupError, RuntimeError, PermissionError):
+            return None
+
+    def _resolve(self, item, project, *, processing=False):
         project = self.projects.get(project.id)
         actor = self.actor_resolver(item.agent_profile_actor_id, project)
         policy = self.policy_for(actor, project)
-        if not policy["enabled"]:
+        if not processing and not policy["enabled"]:
             return None
         work = self.work_item(item.work_item_ref)
         if (work.organization_id, work.workspace_id, work.project_id) != (
             project.organization_id,
             project.workspace_id,
             project.id,
-        ) or work.handoff is not None:
+        ) or (not processing and work.handoff is not None):
             return None
         profile, access = self.profiles.resolve_for_execution(
             item.agent_profile_id,
@@ -268,10 +277,10 @@ class NotificationBatchRuntimeControls:
                 level=AuthorityLevel.EXECUTE,
                 project_id=project.id,
                 resource_ids=resource_ids,
-                input_tokens=max_bytes,
-                output_tokens=profile.budgets.max_output_tokens,
-                amount_usd=profile.budgets.max_cost_usd,
-                model_calls=1,
+                input_tokens=0 if processing else max_bytes,
+                output_tokens=0 if processing else profile.budgets.max_output_tokens,
+                amount_usd=0 if processing else profile.budgets.max_cost_usd,
+                model_calls=0 if processing else 1,
             ),
             actor=actor,
         )

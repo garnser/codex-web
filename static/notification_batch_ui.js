@@ -1,7 +1,22 @@
 // Presentation only. Inspecting originals never admits, releases or retries work.
+import { attachNotificationProcessing } from './notification_processing_ui.js';
+import { referenceNode } from './reference_navigation.js';
 export function createNotificationBatchUi({ api, addMessage, captureView, loadThread, scheduleRefresh }) {
   const history = new Map();
   const cards = new Map();
+  let selectedThread = null;
+  let threadGeneration = 0;
+  let panelGeneration = 0;
+  function selectThread(threadId) {
+    if (selectedThread !== threadId) {
+      selectedThread = threadId; threadGeneration += 1; panelGeneration += 1;
+    }
+  }
+  function capturePanelView() {
+    const current = captureView();
+    const thread = threadGeneration, panel = panelGeneration;
+    return () => current() && thread === threadGeneration && panel === panelGeneration;
+  }
   const labels = {
     prepared: "Admission prepared · guarded recovery required",
     prestart_refused: "Admission refused before worker routing · guarded recovery required",
@@ -11,21 +26,26 @@ export function createNotificationBatchUi({ api, addMessage, captureView, loadTh
   };
 
   async function load(threadId, after = null) {
-    const current = captureView();
+    selectThread(threadId);
+    const requestCurrent = captureView(), thread = threadGeneration;
+    const current = () => requestCurrent() && thread === threadGeneration;
     const path = `/api/threads/${encodeURIComponent(threadId)}/notification-batches`
       + (after ? `?after=${encodeURIComponent(after)}` : "");
     try {
       const result = await api(path);
       if (!current()) return;
-      const previous = after ? history.get(threadId)?.items || [] : [];
+      const cached = history.get(threadId);
+      const previous = after && cached?.current?.() ? cached.items || [] : [];
       const seen = new Set(previous.map(item => item.id));
       history.set(threadId, {
+        current,
         items: [...previous, ...(result.items || []).filter(item => !seen.has(item.id))],
         next: result.next_cursor || null,
       });
     } catch (error) {
       if (current()) history.set(threadId, {
-        ...(after ? history.get(threadId) : {items:[]}), error: error.message,
+        ...(after && history.get(threadId)?.current?.() ? history.get(threadId) : {items:[]}),
+        current, error: error.message,
       });
     }
   }
@@ -114,10 +134,9 @@ export function createNotificationBatchUi({ api, addMessage, captureView, loadTh
               const href=`/api/${kind}/${encodeURIComponent(id)}`;
               if (seenProofs.has(href)) continue;
               seenProofs.add(href);
-              const link=document.createElement('a');
-              link.href=href; link.target='_blank'; link.rel='noopener noreferrer';
-              link.textContent=`Inspect ${kind === 'evidence' ? 'evidence' : 'verification'} ${id}`;
-              proofs.append(link,document.createElement('br'));
+              proofs.append(referenceNode(kind === 'evidence' ? 'evidence' : 'verification', id,
+                {projectId:batch.project_id || summary?.project_id,
+                  label:`Inspect ${kind === 'evidence' ? 'evidence' : 'verification'} ${id}`}),document.createElement('br'));
             }
           }
         }
@@ -185,14 +204,19 @@ export function createNotificationBatchUi({ api, addMessage, captureView, loadTh
       body.append(capture,result);
     }
     if (summary?.can_review_recovery) attachRecovery(href,body);
+    if (summary?.can_review_processing) attachNotificationProcessing({api, captureView:capturePanelView,
+      scheduleRefresh,projectId:summary.project_id}, href, body);
   }
 
   function render(threadId) {
+    selectThread(threadId);
+    panelGeneration += 1;
     for (const card of cards.get(threadId) || []) card?.remove();
     const rendered = [];
     cards.set(threadId, rendered);
     const snapshot = history.get(threadId);
     if (!snapshot) return;
+    if (snapshot.current && !snapshot.current()) return;
     if (snapshot.error) {
       rendered.push(addMessage("Notification history unavailable", snapshot.error, "tool", new Date()));
     }
@@ -204,6 +228,7 @@ export function createNotificationBatchUi({ api, addMessage, captureView, loadTh
         `Original count: ${batch.original_count}; oldest age: ${Math.floor(batch.oldest_age_seconds || 0)} seconds`,
         `Original IDs: ${(batch.original_ids || []).join(", ")}`,
         `Recovery: ${batch.recovery_state}`,
+        `Historical processed originals: ${batch.processing_count || 0}; review current proof and follow-up eligibility before acting.`,
         counts ? `Original outcomes: ${counts.reconciled} reconciled; ${counts.follow_up_required} require follow-up; ${counts.unresolved} unresolved.`
           : "Every original outcome remains unresolved.",
         "Notification reconciliation does not prove ACK, business acceptance or issue closure. Shared native completion does not prove individual outcomes.",
@@ -237,5 +262,5 @@ export function createNotificationBatchUi({ api, addMessage, captureView, loadTh
       card?.querySelector(".body")?.append(button);
     }
   }
-  return { load, render, attach };
+  return { load, render, attach, selectThread };
 }

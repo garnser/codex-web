@@ -13,10 +13,13 @@ from codex_web.models import TurnCreate, QueueOrderRepairRequest, QueuedBootstra
 from codex_web.services.turns import TurnService
 from codex_web.notification_batches import NotificationBatchRecoveryRequest
 from codex_web.notification_results import NotificationResultCaptureRequest
+from codex_web.api.notification_processing import attach_notification_processing
 
 
-def build_turns_router(service: TurnService, scope: ThreadScopeService, order_recovery=None, bootstrap_recovery=None, notification_batches=None, batch_recovery=None, batch_results=None, operator_admission=None) -> APIRouter:
+def build_turns_router(service: TurnService, scope: ThreadScopeService, order_recovery=None, bootstrap_recovery=None, notification_batches=None, batch_recovery=None, batch_results=None, operator_admission=None, batch_processing=None) -> APIRouter:
     router = APIRouter(tags=["turns"], dependencies=[Depends(thread_scope_dependency(scope))])
+    if batch_processing is not None:
+        attach_notification_processing(router, batch_processing)
 
     @router.post("/api/threads/{thread_id}/resume")
     async def resume_thread(

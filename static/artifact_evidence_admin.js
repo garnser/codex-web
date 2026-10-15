@@ -160,7 +160,7 @@
     const host = document.getElementById("verification-list");
     if (!host) return;
     const rows = verifications.filter(verificationVisible);
-    host.innerHTML = rows.map((item) => `<details class="comm-entry">
+    host.innerHTML = rows.map((item) => `<details class="comm-entry" ${referenceAttributes('verification',item.id)}>
       <summary><strong>${escapeHtml(item.result)} · ${item.independent ? "independent" : "producer-related"} · ${escapeHtml(item.method)}</strong></summary>
       <small>ID: ${escapeHtml(item.id)} · verifier: ${escapeHtml(item.verifier_identity_id)} · verified: ${timeText(item.verified_at)}</small>
       <small>Verifier kind: ${escapeHtml(item.verifier_principal_kind || 'unknown')}</small>
@@ -176,13 +176,14 @@
     renderVerifications();
     focusReference(document.getElementById('artifact-list'));
     focusReference(document.getElementById('evidence-list'));
+    focusReference(document.getElementById('verification-list'));
     const activeArtifacts = artifacts.filter((item) => item.lifecycle === "active").length;
     const validEvidence = evidence.filter((item) => item.lifecycle === "valid").length;
     const independent = verifications.filter((item) => item.independent && item.result === "verified").length;
     setStatus(`${artifacts.length} artifact(s), ${activeArtifacts} active · ${evidence.length} evidence record(s), ${validEvidence} valid · ${verifications.length} verification(s), ${independent} independent verified. Artifact/evidence metadata is canonical; payload contents are not rendered here.`);
     const query = new URLSearchParams(location.search), kind = query.get('consumer_type'), id = query.get('consumer_id');
-    if (['artifact','evidence'].includes(kind) && id) {
-      const host = document.getElementById(kind === 'artifact' ? 'artifact-list' : 'evidence-list');
+    if (['artifact','evidence','verification'].includes(kind) && id) {
+      const host = document.getElementById(kind === 'artifact' ? 'artifact-list' : kind === 'verification' ? 'verification-list' : 'evidence-list');
       if (![...host.querySelectorAll('[data-reference-id]')].some(row => row.dataset.referenceId === id)) setStatus('Requested canonical reference is unavailable or outside the current filters. Refresh or change filters; no substitute record was selected.');
     }
   }

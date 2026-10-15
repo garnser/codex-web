@@ -18,6 +18,7 @@ export function createExecutionPreflightUi({
   const bootstrapRecovery=createQueuedBootstrapRecoveryUi({api,loadThread,scheduleRefresh,captureView});
 
   async function load(threadId, limit = 50) {
+    batches.selectThread(threadId);
     const current = captureView();
     try {
       const response = await api(

@@ -108,6 +108,7 @@
           reconciled:1,follow_up_required:0,unresolved:1} : null,
         can_review_recovery:new URLSearchParams(location.search).has('batchRecovery'),
         can_capture_results:new URLSearchParams(location.search).has('batchCapture'),
+        can_review_processing:new URLSearchParams(location.search).has('batchProcessing'),
         oldest_created_at:1800000000,original_ids:['original-one','original-two'],
         recovery_state:batchPhase==='released' ? 'released_to_original_queue' : 'batch_reconciliation_required',
         project_id:'project-a',organization_id:'org-a',workspace_id:'workspace-a',
@@ -132,6 +133,28 @@
           read_only_repository_resource_ids:['repo-docs'],reply_target:null,snapshot_sha256:'a'.repeat(64),queue_sha256:'b'.repeat(64)};
       }
       if (path.includes("/preflight-attempts?")) return { items: attempts };
+      if (path.endsWith('/notification-batches/fixture-batch/processing')) {
+        if (new URLSearchParams(location.search).has('processingDenied')) throw new Error('Current authority denied or installed feature unavailable');
+        const item={original_id:'original-one',outcome:'follow_up_required',
+          expected_processing_sha256:'a'.repeat(64),can_process:true,processing_state:'ready',blockers:[],
+          evidence_ids:['fixture-evidence'],verification_ids:['fixture-independent-review'],
+          follow_up:{ref:'fixture/repo#1',current_owner:'fixture-owner',next_action:'Review exact work'},
+          reply:{state:'preview',destination:{provider:'slack',external_conversation_id:'fixture-room'},
+            delivery_state:'not_sent',provider_receipt_id:null,text:'Reviewed result <img src=x onerror="window.__unsafe=true">'}};
+        if (options.method==='POST') {
+          window.__processingBody=JSON.parse(options.body);
+          if (new URLSearchParams(location.search).has('holdProcessing')) return new Promise((resolve,reject)=>{window.__finishProcessing={resolve,reject};});
+          if (new URLSearchParams(location.search).has('processingConflict')) throw new Error('Reviewed proof changed');
+          return {original:{...item,processing_state:'processed_current',can_process:false}};
+        }
+        if (new URLSearchParams(location.search).has('processingStale')) {
+          item.can_process=false;item.processing_state='historical_requires_reconciliation';item.blockers=['evidence_inactive_or_expired'];
+        }
+        if (new URLSearchParams(location.search).has('holdProcessingPreview')) {
+          return new Promise((resolve,reject)=>{window.__finishProcessingPreview={resolve:()=>resolve({originals:[item]}),reject};});
+        }
+        return {originals:[item]};
+      }
       if (path.endsWith('/notification-batches/fixture-batch/results')) {
         window.__captureBody=JSON.parse(options.body);
         if (new URLSearchParams(location.search).has('captureDenied')) throw new Error('Canonical result is unavailable or capture authority is denied');
