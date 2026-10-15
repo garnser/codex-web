@@ -63,7 +63,9 @@ async function canonicalSkill(page) {
 }
 
 async function tenant(page, id) {
-  await page.request.post(`${base}/fixture/tenant/${id}`);
+  const response = await page.request.post(`${base}/fixture/tenant/${id}`);
+  expect(response.status()).toBe(200);
+  expect(await response.json()).toEqual({ tenant: id });
   const actor = await (await page.request.get(`${base}/api/identity/me`)).json();
   await page.evaluate(actor => window.dispatchEvent(new CustomEvent('codex:identity-state-rendered', { detail: { actor } })), actor);
 }
@@ -75,6 +77,33 @@ async function project(page, id) {
     window.dispatchEvent(new CustomEvent('codex:project-changed', { detail: { projectId } }));
   }, id);
 }
+
+test('synthetic tenant switching accepts fixed modes and refuses arbitrary cookie input without changing identity', async ({ page }) => {
+  const initial = await (await page.request.get(`${base}/api/identity/me`)).json();
+  const foreign = await page.request.post(`${base}/fixture/tenant/foreign`);
+  expect(foreign.status()).toBe(200);
+  expect(await foreign.json()).toEqual({ tenant: 'foreign' });
+  expect(foreign.headers()['set-cookie']).toContain('fixture_tenant=foreign;');
+  const actor = await (await page.request.get(`${base}/api/identity/me`)).json();
+  expect(actor.workspace_id).not.toBe(initial.workspace_id);
+  for (const value of ['arbitrary', 'member-extra', 'foreign; injected=yes', 'home\r\nX-Injected: yes', 'HOME']) {
+    const denied = await page.request.post(`${base}/fixture/tenant/${encodeURIComponent(value)}`);
+    expect(denied.status()).toBe(422);
+    expect(denied.headers()['set-cookie']).toBeUndefined();
+    // The foreign fixture issues a fresh authentication timestamp per request.
+    expect(await (await page.request.get(`${base}/api/identity/me`)).json()).toEqual({ ...actor, authenticated_at: expect.any(Number) });
+  }
+  const member = await page.request.post(`${base}/fixture/tenant/member`);
+  expect(member.status()).toBe(200);
+  expect(member.headers()['set-cookie']).toContain('fixture_tenant=member;');
+  expect((await (await page.request.get(`${base}/api/identity/me`)).json()).identity_id).toBe('limited-reader');
+  const home = await page.request.post(`${base}/fixture/tenant/home`);
+  expect(home.status()).toBe(200);
+  expect(home.headers()['set-cookie']).toContain('fixture_tenant=home;');
+  expect(await (await page.request.get(`${base}/api/identity/me`)).json()).toEqual(initial);
+  const malformed = await page.request.get(`${base}/api/identity/me`, { headers: { Cookie: 'fixture_tenant=arbitrary' } });
+  expect(malformed.status()).toBe(422);
+});
 
 test('structured authoring preserves canonical rejection, scans exact revision and publishes with history', async ({ page }) => {
   await selected(page);

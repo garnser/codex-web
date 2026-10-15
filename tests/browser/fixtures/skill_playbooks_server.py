@@ -77,8 +77,10 @@ async def make_app():
             request.state.identity_actor = fixture_actor("foreign", workspace_id="workspace-foreign", admin=True)
         elif mode == "member":
             request.state.identity_actor = fixture.actor.model_copy(update={"identity_id": "limited-reader", "roles": (MembershipRole.MEMBER,)})
-        else:
+        elif mode in {None, "home"}:
             request.state.identity_actor = fixture.actor
+        else:
+            return JSONResponse({"detail": "Unknown synthetic tenant mode"}, status_code=422)
         return await call_next(request)
 
     class Projects:
@@ -110,8 +112,17 @@ async def make_app():
 
     @app.post("/fixture/tenant/{tenant}")
     async def tenant(tenant: str):
-        response = JSONResponse({"tenant": tenant})
-        response.set_cookie("fixture_tenant", tenant, httponly=True, samesite="strict")
+        # Never construct a cookie from route input, even in this isolated fixture.
+        if tenant == "home":
+            mode = "home"
+        elif tenant == "foreign":
+            mode = "foreign"
+        elif tenant == "member":
+            mode = "member"
+        else:
+            raise HTTPException(422, "Unknown synthetic tenant mode")
+        response = JSONResponse({"tenant": mode})
+        response.set_cookie("fixture_tenant", mode, httponly=True, samesite="strict")
         return response
 
     @app.post("/fixture/provider/{mode}")
