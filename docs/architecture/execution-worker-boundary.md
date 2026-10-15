@@ -1381,3 +1381,83 @@ The reviewed activation draft and its native-call budget of 20 remain unapplied
 review data. This slice does not enforce an inner native model-call counter and
 does not qualify that budget as enforced. Current profile pins, rollout authority
 and independent installation/CI qualification remain prerequisites to activation.
+
+### User-bound Project delegation while general automation is paused
+
+Project coordination messages retain the server-assigned `project-coordination`
+agent origin through `TurnService`, the durable queue, preflight and native
+admission. They never acquire `web`/human origin or coalesce into a human wakeup.
+The typed message accepts an optional `goal_binding_id`; it accepts neither a
+source override nor a caller-supplied admission callback/proof. Without a binding,
+ordinary automation pause gates continue to hold the message.
+
+An operator can explicitly bind the governor's canonical session to an existing
+user-owned Goal through the existing Goal execution-binding API (admin plus MFA,
+or its existing scoped service authority). Runtime-objective attach is an
+existing alternative when supported; provider objective text is not authority.
+No new Goal, controller, Definition kind, authority grant or pause flag is added.
+A binding alone supplies no repository or operation authority.
+
+For this delegation the Goal must be active at the exact bound revision, owned
+by the current human requester, and explicitly cover the whole current Project.
+The binding must be created and execution-owned by that requester, be requested,
+active or idle, and identify the exact canonical governor session/thread,
+assignment and workspace/provider/runtime. A foreign live continuation lease,
+paused/terminal/unknown binding, missing project scope, or Work-Graph-root-limited
+binding fails closed. Narrow-root delegation requires separate explicit Work Item
+admission support; it is not inferred from task prose. General Goal continuation
+retains its existing global/exclusive-scope gates and cannot borrow this path.
+
+The canonical coordination ActionIntent constructs the internal
+`ProjectCoordinationDispatch` schema `1.0` references (binding ID, origin assignment
+and fence). Unknown proof schema versions fail validation.
+An optional queue field preserves these references and original agent provenance
+across persistence/restart. Existing serializers omit it for all legacy requests;
+no existing original snapshot is rewritten and no store/index migration occurs.
+Its presence is not an authorization decision: queue selection, the owned drain,
+native admission and existing post-await/pre-input checks re-resolve the current
+Goal/binding, origin lease/fence/current Project Definition, requester authority,
+canonical target child scope and exact invokable profile. Revocation retains the
+original for inspection instead of relabeling, dropping or replaying input.
+Queue APIs expose the references and agent source, and waiting counts use the
+same deterministic admission check; existing operator queue/preflight and Goal
+binding surfaces remain the inspection path. No UI-only authorization is added.
+
+This is explicitly delegated own-Project execution, not a global autonomy resume.
+Other automated/business origins remain paused. The existing two-delivery and
+profile-concurrency bounds still apply; a message receipt proves queue admission,
+not native start. Token/output/model-call defaults remain declared unless their
+particular enforcement path is separately qualified, including the native-call
+budget of 20. No polling, new model reasoning or additional model-call path is
+introduced by these deterministic checks.
+
+Compatibility is one-way for activated delegation behavior: older engines lack
+this admission proof and must not consume/rewrite delegated queues. The durable
+agent source remains nonhuman, so losing an optional proof cannot grant human
+admission. Drain/reconcile delegated requests before rollback; byte-compatible
+legacy payloads do not qualify mixed writers or rollback of new activated state.
+Independent review, exact-head CI, qualified installation and explicit binding
+activation remain separate gates before claiming two useful installed children.
+
+Delegated native input additionally requires the guarded Codex capture transport.
+The server-created live admission validator is composed with the existing child
+assignment/session, reservation and correlation guards and runs synchronously
+inside the native writer lock, after session/capture preparation and lock awaits,
+immediately before `stdin.write`. An adapter without this guarded capture path
+refuses delegated input before send; it cannot silently use response-only input.
+
+An authoritative pre-write refusal preserves the viable child session/assignment.
+The capture retires only its exact still-unstarted reservation, retains its
+correlation as a bounded preflight blocker-history witness, and keeps the claim
+and immutable original for queue-order restoration. This is affirmative local
+non-send evidence, never an inference from timeout or missing response. Cleanup
+removes only provisional active/history entries with no native progress. A later
+legitimate binding reauthorization can admit the same canonical child once.
+Positive reader evidence/receipts and post-send uncertainty are checked first
+and never cleared or reset by this path. Existing capture correlation checks
+remain independent of the live delegation validator.
+
+Queue status preserves the actual human-readable delegation blocker with global
+pause both on and off. Mixed queues retain both that blocker and the unrelated
+automation pause reason; enabling general automation is not a remedy for revoked
+Goal authorization. Existing queue-notice rendering consumes the same message.

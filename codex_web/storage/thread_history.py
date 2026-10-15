@@ -193,6 +193,17 @@ class ThreadHistoryRepository:
             default=self._empty(thread_id),
         )
 
+    def discard_unstarted(self, thread_id: str, turn_id: str) -> None:
+        """Internal pre-write refusal cleanup; never remove native progress."""
+        def apply(value):
+            state = self._normalize(value, thread_id)
+            state['turns'] = [turn for turn in state['turns'] if not (
+                turn.get('id') == turn_id and turn.get('providerTurnId') is None
+                and turn.get('status') == 'inProgress'
+                and all(item.get('type') == 'userMessage' for item in turn.get('items', [])))]
+            return state
+        self.store.record_update(self.NAMESPACE, thread_id, apply, default=self._empty(thread_id))
+
     def project_message(
         self,
         thread_id: str,

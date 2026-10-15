@@ -256,6 +256,8 @@ class TurnService:
         retry_claim_id: str | None = None,
         work_item_ref: str | None = None,
         admission_guard=None,
+        source: str = "web",
+        project_coordination_dispatch=None,
     ) -> dict[str, Any]:
         self.recovery.raise_if_thread_replaced(thread_id)
         project = self.projects.get(payload.project_id)
@@ -436,6 +438,9 @@ class TurnService:
                 admission_guard()
             queued = self.execution.enqueue_turn(
                 thread_id=thread_id,
+                source=source,
+                **({"project_coordination_dispatch": project_coordination_dispatch}
+                   if project_coordination_dispatch is not None else {}),
                 project_id=project.id,
                 message=payload.message,
                 sandbox=effective_sandbox,
@@ -528,6 +533,7 @@ class TurnService:
         try:
             result = await self.execution.start_thread_turn_now(
                 thread_id,
+                source=source,
                 project=project,
                 message=payload.message,
                 sandbox=effective_sandbox,
@@ -855,6 +861,8 @@ class TurnService:
                 {
                     "id": queued.id,
                     "source": queued.source,
+                    **({"projectCoordinationDispatch": queued.project_coordination_dispatch.model_dump(mode="json")}
+                       if queued.project_coordination_dispatch is not None else {}),
                     "priority": TurnQueuePolicy.admission_priority(queued.source),
                     "createdAt": queued.created_at,
                     "attempts": queued.attempts,
