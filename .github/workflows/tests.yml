@@ -471,8 +471,11 @@ jobs:
         run: |
           docker run --rm --network none --read-only \
             --tmpfs /tmp:rw,nosuid,nodev,size=32m,mode=1777 \
+            --tmpfs /app/data:rw,nosuid,nodev,size=32m,mode=1777 \
             --entrypoint python codex-web:test \
-            -m unittest tests.test_delivery_validation tests.test_isolated_git_metadata.IsolatedGitMetadataProtocolTests
+            -m unittest tests.test_delivery_validation \
+            tests.test_isolated_git_metadata.IsolatedGitMetadataProtocolTests \
+            tests.test_queued_native_start
         if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Verify pinned Codex version
         run: |

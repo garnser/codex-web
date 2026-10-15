@@ -1097,12 +1097,24 @@ class AssignmentBoundAgentProcessSession:
             self._stopping = False
 
     async def request(self, method: str, params: Any = None) -> dict[str, Any]:
-        await asyncio.to_thread(self.validate_current)
+        return await self._request(method, params)
+
+    async def request_with_start_capture(self, method: str, params: Any, capture) -> dict[str, Any]:
+        if method != 'turn/start':
+            raise ValueError('native start capture requires turn/start')
+        return await self._request(method, params, start_capture=capture)
+
+    async def _request(self, method: str, params: Any, *, start_capture=None) -> dict[str, Any]:
+        assignment = await asyncio.to_thread(self.validate_current)
         if self.runtime is None:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session is not started"
             )
         try:
+            if start_capture is not None:
+                capture = start_capture.bind_assignment(assignment, worker_id=self.worker_id,
+                    fence=self.fence, validator=self.validate_current)
+                return await self.runtime.request(method, params, start_capture=capture)
             return await self.runtime.request(method, params)
         except Exception as exc:
             # A timed-out interrupt has an unknown outcome; it does not prove

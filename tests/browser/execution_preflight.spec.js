@@ -1,5 +1,46 @@
 const { test, expect } = require('@playwright/test');
 
+for (const phase of ['captured', 'reconciled']) {
+  test(`retired scheduling preserves later ${phase} positive native outcome without replay`, async ({page}) => {
+    const status = phase === 'reconciled' ? 'started' : 'reconciliation_required';
+    await page.goto(`http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?disposition=${status}&retired&nativeCorrelation&positiveEvidence`);
+    await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+    const card = page.locator('.message.tool');
+    await expect(card).toContainText('Queue scheduling remains retired.');
+    await expect(card).not.toContainText('The earlier native start outcome remains unknown');
+    await expect(card).toContainText(phase === 'reconciled'
+      ? 'Scheduling retired · native start confirmed' : 'Scheduling retired · native receipt pending');
+    await expect(page.getByRole('button', {name:'Retry', exact:true})).toHaveCount(0);
+    await expect(page.getByRole('button', {name:'Reconcile captured native start', exact:true}))
+      .toHaveCount(phase === 'captured' ? 1 : 0);
+  });
+}
+
+for (const state of ['unknown', 'captured', 'reconciled']) {
+  test(`exact native attribution shows ${state} without replay`, async ({ page }) => {
+    const disposition = state === 'reconciled' ? 'started' : 'reconciliation_required';
+    await page.goto(`http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?disposition=${disposition}&nativeCorrelation=1${state === 'unknown' ? '' : '&positiveEvidence=1'}`);
+    await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+    const card = page.locator('.message.tool');
+    await expect(card).toContainText('generation-original / rpc-original');
+    await expect(card).toContainText('org-original/workspace-original · Project project-original · actor original-actor');
+    await expect(card).toContainText('original-assignment · worker original-worker · send fence 7');
+    await expect(card).toContainText('Resources at send: repo-app, repo-docs');
+    await expect(page.getByRole('button', {name:'Retry', exact:true})).toHaveCount(0);
+    const reconcile = page.getByRole('button', {name:'Reconcile captured native start', exact:true});
+    if (state === 'captured') {
+      await expect(card).toContainText('Authoritative native response captured');
+      await expect(reconcile).toBeVisible();
+      await reconcile.click();
+      expect(await page.evaluate(() => window.__apiCalls.filter(x => x.method === 'POST').map(x => x.path)))
+        .toEqual(['/api/threads/thread-1/preflight-attempts/preflight-thread-turn-1/reconcile-prestart']);
+    } else {
+      await expect(reconcile).toHaveCount(0);
+      await expect(card).toContainText(state === 'unknown' ? 'native outcome remains unknown' : 'Exact positive evidence reconciled');
+    }
+  });
+}
+
 for (const disposition of ['queued', 'reconciliation_required']) {
   test(`retained ${disposition} exposes original provenance without an unsafe retry`, async ({ page }) => {
     await page.goto(`http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?disposition=${disposition}`);

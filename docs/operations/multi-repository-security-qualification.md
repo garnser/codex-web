@@ -8,6 +8,13 @@ Changes to repository selection, execution workspaces, worker isolation, migrati
 
 Screenshots document UX; they are not security evidence.
 
+The packaged recovery-protocol gate also runs `tests.test_queued_native_start`
+inside the exact built image without network access, with read-only source and
+fresh temporary data. The immutable recovery-candidate regression step runs the
+same module. Its encrypted restore test qualifies retained correlation and
+positive evidence in an isolated artifact, not a deployed original or live
+provider outcome. The changed exact-head pipeline must pass before delivery.
+
 ## Security evidence matrix
 
 | Security claim | Automated evidence |
@@ -34,6 +41,8 @@ Screenshots document UX; they are not security evidence.
 | Compatibility mappings are observable, time-bounded, and removable | test_compatibility_mapping_expires_truthfully and test_compatibility_mapping_can_be_revoked_early_with_provenance |
 | Retained structural blockers survive reload | tests/test_execution_preflight.py::test_blocked_attempt_survives_store_and_service_reload |
 | Repeated retry clicks/replays do not duplicate execution | execution-preflight claim tests and TurnService retry tests |
+| Exact native RPC correlation survives positive-evidence capture, storage reopen and receipt projection failure without replay | tests/test_queued_native_start.py independent-interpreter, concurrent-CAS, scope-mismatch and generation-reuse tests |
+| Assignment authority and the retained admission claim are rechecked after correlation preparation before native bytes are written | tests/test_queued_native_start.py::test_held_prepare_rechecks_canonical_assignment_and_admission_before_native_write |
 | Crash recovery does not redispatch an already-active retained execution | TurnService recovered-active execution retry test |
 | Browser shows retained message, context, blocker, remediation, correlation and retry | tests/browser/execution_preflight.spec.js |
 | Tenant/resource isolation is enforced | ExecutionWorkspace tenant inspection, Resource Catalog isolation, broker project-scope tests |

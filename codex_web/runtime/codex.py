@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
@@ -204,6 +205,9 @@ class CodexRuntime:
         self.proc: subprocess.Popen[str] | None = None
         self.next_id = 1
         self.pending: dict[int | str, asyncio.Future[dict[str, Any]]] = {}
+        self.generation = uuid.uuid4().hex
+        self._start_captures: dict[str, tuple[float, Any, Any]] = {}
+        self._start_capture_lock = asyncio.Lock()
         self.pending_approvals: dict[int | str, dict[str, Any]] = {}
         self.pending_approval_rpc_ids: dict[int | str, int | str] = {}
         self.approval_namespace: str | None = None
@@ -292,6 +296,7 @@ class CodexRuntime:
             self.ready.clear()
             self.last_error = None
             self._fail_pending(RuntimeError("Codex app-server restarted"))
+            self.generation = uuid.uuid4().hex
             self._pipe_reader_executor()
             self.proc = self._popen(
                 list(self.command),
@@ -315,7 +320,7 @@ class CodexRuntime:
             )
             process = self.proc
             self.reader_task = asyncio.create_task(
-                self._read_loop(process),
+                self._read_loop(process, generation=self.generation),
                 name="codex-app-server-stdout",
             )
             self.stderr_task = asyncio.create_task(
@@ -362,6 +367,7 @@ class CodexRuntime:
                 raise
 
     async def stop(self) -> None:
+        self.generation = uuid.uuid4().hex
         self._fail_pending(RuntimeError("Codex app-server stopped"))
         process = self.proc
         # Retire this generation before terminating it. Reader tasks retain
@@ -430,6 +436,7 @@ class CodexRuntime:
                 future.set_exception(exc)
                 failed += 1
         self.pending.clear()
+        self._start_captures.clear()
         if self.metrics and failed:
             self.metrics.increment("codex.pending_requests_failed", failed)
 
@@ -455,8 +462,9 @@ class CodexRuntime:
             )
             await self.host.hub.publish({"type": "codex.stderr", "text": text})
 
-    async def _read_loop(self, process: subprocess.Popen[str] | None = None) -> None:
+    async def _read_loop(self, process: subprocess.Popen[str] | None = None, *, generation: str | None = None) -> None:
         proc = process or self.proc
+        generation = generation or self.generation
         assert proc and proc.stdout
         executor = self._pipe_reader_executor()
         loop = asyncio.get_running_loop()
@@ -490,10 +498,39 @@ class CodexRuntime:
                 await self.host.hub.publish({"type": "codex.raw", "text": line.rstrip("\n")})
                 continue
 
-            await self._dispatch_message(message)
+            if self.proc is not proc:
+                return
+            await self._dispatch_message(message, generation=generation)
 
-    async def _dispatch_message(self, message: dict[str, Any]) -> None:
+    # Code-owned protocol bounds, not a mutable operational catalog. The slot
+    # never extends a process lifetime or changes timeout/retirement policy.
+    START_CAPTURE_MAX_SLOTS = 128
+    START_CAPTURE_TTL_SECONDS = 120.0
+
+    def _prune_start_captures(self) -> None:
+        now = time.monotonic()
+        for key, (deadline, _, _) in tuple(self._start_captures.items()):
+            if deadline <= now:
+                self._start_captures.pop(key, None)
+
+    async def _dispatch_message(self, message: dict[str, Any], *, generation: str | None = None) -> None:
+        generation = generation or self.generation
+        if generation != self.generation or not isinstance(message, dict):
+            return
         if message.get("id") is not None and "method" not in message:
+            self._prune_start_captures()
+            slot = self._start_captures.get(message['id']) if isinstance(message['id'], str) else None
+            if slot is not None:
+                _, capture, correlation = slot
+                try:
+                    if await asyncio.to_thread(capture.observe, correlation,
+                                               generation=generation, message=message):
+                        self._start_captures.pop(message['id'], None)
+                except Exception:
+                    # Do not turn a persistence/projection failure into provider
+                    # nonstart, kill the reader, or log raw response contents.
+                    if self.metrics:
+                        self.metrics.increment('codex.start_capture_failures')
             await CodexRuntime._handle_message_safely(self, message)
             return
         queue = getattr(self, "notification_queue", None)
@@ -700,14 +737,19 @@ class CodexRuntime:
         await self.host._record_bot_outbound(message)
         await self.host.hub.publish({"type": "codex.event", "message": message})
 
-    async def _send(self, message: dict[str, Any]) -> None:
+    async def _send(self, message: dict[str, Any], *, expected_generation: str | None = None,
+                    start_guard: Callable[[], None] | None = None) -> None:
         if not self.proc or self.proc.poll() is not None or not self.proc.stdin:
             raise HTTPException(status_code=503, detail="Codex app-server is not running")
         async with self.write_lock:
+            if expected_generation is not None and expected_generation != self.generation:
+                raise RuntimeError('native start transport generation changed before send')
+            if start_guard is not None:
+                start_guard()
             self.proc.stdin.write(json.dumps(message) + "\n")
             self.proc.stdin.flush()
 
-    async def request(self, method: str, params: Any = None) -> dict[str, Any]:
+    async def request(self, method: str, params: Any = None, *, start_capture: Any = None) -> dict[str, Any]:
         if method in {"account/logout", "account/login/start"}:
             self._invalidate_authenticated_account()
         await self.ensure_started(method == "initialize")
@@ -715,10 +757,36 @@ class CodexRuntime:
         account_context = self._authentication_context() if method == "account/read" else None
         message_id = self.next_id
         self.next_id += 1
+        if start_capture is not None:
+            if method != 'turn/start' or not isinstance(params, dict):
+                raise ValueError('native start capture is only valid for turn/start')
+            async with self._start_capture_lock:
+                self._prune_start_captures()
+                if len(self._start_captures) >= self.START_CAPTURE_MAX_SLOTS:
+                    raise RuntimeError('native start capture capacity exhausted')
+                # Opaque unique IDs prevent reuse even across new runtime objects;
+                # the reader also checks the immutable process generation.
+                message_id = 'queued-start-' + uuid.uuid4().hex
+                generation = self.generation
+                correlation = await asyncio.to_thread(start_capture.prepare,
+                    generation=generation, rpc_request_id=message_id,
+                    native_session_id=params.get('threadId'))
+                if generation != self.generation:
+                    raise RuntimeError('native start transport generation changed during preparation')
+                self._start_captures[message_id] = (
+                    time.monotonic() + self.START_CAPTURE_TTL_SECONDS, start_capture, correlation)
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self.pending[message_id] = future
-        await self._send({"method": method, "id": message_id, "params": params})
+        try:
+            send_options = ({'expected_generation':correlation.runtime_generation,
+                             'start_guard':lambda: start_capture.validate_before_send(correlation)}
+                            if start_capture is not None else {})
+            await self._send({"method": method, "id": message_id, "params": params}, **send_options)
+        except BaseException:
+            self.pending.pop(message_id, None)
+            future.cancel()
+            raise
 
         timeout = request_timeout(method)
         started = time.monotonic()
