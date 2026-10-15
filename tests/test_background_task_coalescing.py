@@ -350,6 +350,87 @@ class ContinuityCoalescingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dispatches[0][2],'operator-retry')
         await service.stop()
 
+    async def test_retry_superseded_during_replacement_keeps_new_actor_and_attempt(self) -> None:
+        for shared_mutable_state, revalidate in (
+            (False, True), (True, True), (False, False), (True, False),
+        ):
+            with self.subTest(
+                shared_mutable_state=shared_mutable_state,
+                revalidate_after_thread_replacement=revalidate,
+            ):
+                state = _state(ref="example/app!274")
+                state.resource_ids = ["original-repository"]
+                state.execution.retry.attempt = 1
+                states = {state.ref: state}
+                old_started, release_old = asyncio.Event(), asyncio.Event()
+                new_started, release_new = asyncio.Event(), asyncio.Event()
+                replacements = 0
+
+                async def replace(binding, _source):
+                    nonlocal replacements
+                    replacements += 1
+                    if replacements == 1:
+                        old_started.set()
+                        await release_old.wait()
+                    else:
+                        new_started.set()
+                        await release_new.wait()
+                    return binding
+
+                dispatches, scopes, events, keys = [], [], [], []
+                service = self._service(
+                    states, replace=replace, dispatches=dispatches,
+                    dispatch_scopes=scopes,
+                )
+                # The supported historical compatibility edge disables optional
+                # owner/stage revalidation, but must still fence retry identity.
+                service.revalidate_after_thread_replacement = revalidate
+                if shared_mutable_state:
+                    service.get_state = lambda ref: states[ref]
+                service.append_event = events.append
+                record = service.record_watchdog_dispatch
+
+                def record_key(key):
+                    keys.append(key)
+                    record(key)
+
+                service.record_watchdog_dispatch = record_key
+                try:
+                    service.schedule_actionable_owner_dispatch(
+                        state, source="operator-retry", actor="operator-a",
+                    )
+                    await asyncio.wait_for(old_started.wait(), 1)
+                    # Mutate the canonical object in place: the old invocation
+                    # must retain its attempt independently of this alias.
+                    state.execution.retry.attempt = 2
+                    service.schedule_actionable_owner_dispatch(
+                        state, source="operator-retry", actor="operator-b",
+                    )
+                    release_old.set()
+                    await asyncio.wait_for(new_started.wait(), 1)
+                    self.assertEqual(dispatches, [])
+                    self.assertEqual(keys, [])
+                    self.assertEqual(events, [])
+                    release_new.set()
+                    await asyncio.wait_for(asyncio.gather(
+                        *list(service.dispatch_coordinator._tasks.values())
+                    ), 1)
+                    self.assertEqual(len(dispatches), 1)
+                    self.assertEqual(len(keys), 1)
+                    self.assertTrue(keys[0].endswith(":operator-retry:2"))
+                    self.assertEqual(events[0]["actor"], "operator-b")
+                    self.assertEqual(len(events), 1)
+                    self.assertEqual(scopes, [{
+                        "work_item_ref": state.ref,
+                        "repository_resource_id": "original-repository",
+                        "writable_repository_resource_ids": ("original-repository",),
+                        "require_idle": False,
+                    }])
+                finally:
+                    release_old.set()
+                    release_new.set()
+                    await service.stop()
+
     async def test_governed_steer_dispatches_exact_owner_scope_once(self) -> None:
         state = _state()
         state.resource_ids = ["repository-a"]
