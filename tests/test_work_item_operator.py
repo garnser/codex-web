@@ -122,6 +122,7 @@ class WorkItemOperatorTests(unittest.IsolatedAsyncioTestCase):
         self.source = ReferenceTaskSource("operator-test", snapshots=[self.snapshot])
         self.registry = TaskSourceRegistry()
         self.registry.register("reference", lambda state: self.source)
+        self.registry.register_project("reference", lambda configuration, project_id, scope: self.source)
         self.projector = TaskSourceWorkItemProjector(self.host, self.machine)
         state = WorkItemState(
             ref="TASK-42",

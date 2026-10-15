@@ -9,7 +9,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from codex_web.models import TaskSourceIdentity, WorkItemEvent, WorkItemState
+from codex_web.identity import TenantScope
+from codex_web.models import WorkItemEvent, WorkItemState
 from codex_web.services.task_source_runtime import TaskSourceResolutionError
 from codex_web.services.task_source_reconciliation import same_task_source_identity
 from codex_web.services.task_sources import (
@@ -167,20 +168,22 @@ class WorkItemOperatorService:
         *,
         required: bool,
     ) -> TaskSource | None:
-        now = time.time()
-        probe = WorkItemState(
-            ref=f"task-source-config:{project_id}",
-            project_id=project_id,
-            source_identity=TaskSourceIdentity(
-                source_type=configuration.source_type,
-                source_instance=configuration.source_instance,
-                external_id="__configuration_probe__",
+        project = self._project(project_id)
+        if project is None:
+            raise TaskSourceResolutionError("Project not found for task-source configuration")
+        if self._project_source(project) != configuration:
+            raise TaskSourceResolutionError("Project task-source binding changed during resolution")
+        # Configuration readiness/discovery precedes item identity. Resolve using
+        # the canonical Project scope; real Work Items retain strict validation.
+        return self.work_items.task_source_registry.resolve_project(
+            configuration,
+            project_id=project.id,
+            scope=TenantScope(
+                organization_id=project.organization_id,
+                workspace_id=project.workspace_id,
             ),
-            last_meaningful_update_at=now,
-            updated_at=now,
-            created_at=now,
+            required=required,
         )
-        return self.work_items.task_source_registry.resolve(probe, required=required)
 
     def _source_for_state(self, state: WorkItemState, *, required: bool) -> TaskSource | None:
         return self.work_items.task_source_registry.resolve(state, required=required)
