@@ -250,3 +250,74 @@ service method remains an internal provider boundary used by ActionIntent worker
 not an operator mutation API. #141 should project provider capabilities/bindings
 and requirements from these canonical APIs rather than hard-code provider features
 in the UI.
+
+### Explicit pull-request readiness (`ready/1.0`)
+
+`code-host.pull-request.ready` is a separate, medium-risk GitHub capability,
+requiring `repository.pull-request.ready`, a canonical repository binding and a
+credential reference. It neither approves nor merges a PR. The upsert draft
+transition guard remains in force. GitLab does not advertise readiness; its
+existing draft-title semantics are unchanged.
+
+The closed request schema accepts only `pull_request_number`,
+`expected_head_sha`, `expected_base_sha` and `expected_base_ref`. Both hashes are
+full lowercase SHA-1 identities. Tenant, Workspace, Project, repository and
+provider instance come from the canonical request/binding; callers cannot supply
+a node ID, GraphQL query, provider URL or credential override. Preparation is
+side-effect free and reports the normalized target. This is an additive action
+under ActionProvider 1.2; unsupported providers fail visibly rather than guessing
+an implementation.
+
+The GitHub implementation reads and validates the open PR's number, canonical
+base repository, exact head/base/ref and REST-derived node identity. It reads
+effective branch protection and rules before and after the transition. A missing
+or inaccessible protection/rules response blocks preflight; a documented 404 for
+an explicitly unprotected branch is distinct from inaccessible protection for a
+protected branch. The fixed official
+[`markPullRequestReadyForReview`](https://docs.github.com/en/graphql/reference/pulls#markpullrequestreadyforreview)
+mutation receives that validated node ID and an idempotency-derived correlation
+marker. The client preserves GitHub Enterprise's `/api/graphql` endpoint instead
+of appending GraphQL to `/api/v3`. No inverse/draft, approval, merge or protection
+mutation is available through this action.
+
+GitHub offers no expected-head CAS input on this mutation. Preflight denies known
+stale targets; post-send head, base/ref, rules, credential, Definition, authority
+or worker-admission races remain uncertain/not verified. They cannot be described
+as an atomic head fence, rolled back automatically or blindly replayed. Independent
+provider reads must match the exact authorized PR repository/head/base/ref and
+non-draft state. Reconciliation attests current readiness, not historical rule
+continuity, CI qualification, approval, merge or installed acceptance. A separate
+expected-head merge gate remains necessary.
+
+The ActionIntent is single-attempt, with a 120-second execution deadline. A normal
+successful transition/verification makes at most 21 bounded HTTP calls and one
+GraphQL mutation; a known already-ready PR performs reads only. Durable duplicate
+keys retain the original intent/receipts. Lost responses use only read-only
+verification; explicit retry is refused. Provider results and evidence contain
+canonical references, exact target identities and bounded verification metadata,
+never credential material.
+
+Only the claimed canonical executor establishes ephemeral readiness admission.
+Around network awaits it rechecks the original typed assignment/fence/worker,
+live leases, current pinned execution-profile Definition, exact provider binding,
+repository and action contract, active credential reference, requester authority,
+security and must-use procedure admission. A selected procedure requires its
+canonical interpreter; unavailable enforcement cannot be treated as permission.
+These checks are deterministic and invoke no model.
+
+The broker's additive `POST /api/repository-actions/pull-request/ready` operation
+requires explicit `repository.pull-request.ready` declaration in the current
+pinned execution profile. Engine recognition changes no stored/default profile,
+Role or grant. Receipt inspection and read-only reconciliation require the same
+originating assignment/fence and declared capability, plus existing canonical
+identity, tenant, Project, resource and authority checks. They do not open generic
+ActionIntent administration or cross-assignment adoption.
+
+Existing ActionProvider and ActionIntent inspectors expose the action contract,
+PR target, expected hashes, typed origin/Definition, canonical failures,
+uncertainty, receipt and independent verification through their existing APIs.
+The inspector is read-only; starting readiness uses the declared worker broker
+operation. It does not infer execution permission from a displayed action or
+provide a UI-only bypass. Keyboard and narrow-screen browser qualification covers
+failed, uncertain, reconciliation-required and verified states. No new object or
+dashboard is introduced.

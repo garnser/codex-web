@@ -32,6 +32,7 @@ CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID = CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION
 CODE_HOST_BRANCH_PUBLISH_ACTION_ID = "code-host.branch.publish"
 CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID = "code-host.pull-request.merge"
 CODE_HOST_PULL_REQUEST_READY_ACTION_ID = "code-host.pull-request.ready"
+CODE_HOST_PULL_REQUEST_READY_EVIDENCE = "code-host-pull-request-ready"
 CODE_HOST_JOB_RERUN_ACTION_ID = "code-host.job.rerun"
 
 CODE_HOST_ISSUE_COMMENT_EVIDENCE = "code-host-issue-comment"
@@ -40,7 +41,6 @@ CODE_HOST_ISSUE_STATE_EVIDENCE = "code-host-issue-state"
 CODE_HOST_CHANGE_REQUEST_EVIDENCE = "code-host-change-request"
 CODE_HOST_BRANCH_EVIDENCE = "code-host-branch"
 CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE = "code-host-pull-request-merge"
-CODE_HOST_PULL_REQUEST_READY_EVIDENCE = "code-host-pull-request-ready"
 CODE_HOST_JOB_RERUN_EVIDENCE = "code-host-job-rerun"
 
 _LOCATOR_SEGMENT = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -98,14 +98,6 @@ class CodeHostActionContract:
             "network_access": True,
         }
         return (
-            ActionDefinition(
-                action_id=CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
-                title="Mark pull request ready for review",
-                description="Make one exact-head draft ready for review; does not approve or merge.",
-                required_authority=("repository.pull-request.ready",),
-                expected_evidence=(CODE_HOST_PULL_REQUEST_READY_EVIDENCE,),
-                **{**common, "retry_max_attempts": 1},
-            ),
             ActionDefinition(
                 action_id=CODE_HOST_ISSUE_CREATE_ACTION_ID,
                 title="Create issue",
@@ -179,6 +171,23 @@ class CodeHostActionContract:
                 retry_max_attempts=1,
                 network_access=True,
             ),
+            # Readiness is additive and explicitly implemented only by GitHub.
+            # Registration never grants an execution profile this capability.
+            *((ActionDefinition(
+                action_id=CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
+                title="Mark pull request ready for review",
+                description="Mark one exact open PR head ready; never approve or merge it.",
+                capabilities=capabilities,
+                risk_class=ActionRiskClass.MEDIUM,
+                required_resource_types=(ResourceType.REPOSITORY,),
+                required_authority=("repository.pull-request.ready",),
+                credential_required=True,
+                credential_purpose=self.credential_purpose,
+                expected_evidence=(CODE_HOST_PULL_REQUEST_READY_EVIDENCE,),
+                timeout_seconds=120.0,
+                retry_max_attempts=1,
+                network_access=True,
+            ),) if self.provider_type == "github" else ()),
             ActionDefinition(
                 action_id=CODE_HOST_JOB_RERUN_ACTION_ID,
                 title="Rerun CI job",
@@ -199,7 +208,6 @@ class CodeHostActionContract:
     @staticmethod
     def evidence_type(action_id: str) -> str:
         evidence_types = {
-            CODE_HOST_PULL_REQUEST_READY_ACTION_ID: CODE_HOST_PULL_REQUEST_READY_EVIDENCE,
             CODE_HOST_ISSUE_COMMENT_ACTION_ID: CODE_HOST_ISSUE_COMMENT_EVIDENCE,
             CODE_HOST_ISSUE_CREATE_ACTION_ID: CODE_HOST_ISSUE_CREATE_EVIDENCE,
             CODE_HOST_ISSUE_UPDATE_ACTION_ID: CODE_HOST_ISSUE_STATE_EVIDENCE,
@@ -210,6 +218,7 @@ class CodeHostActionContract:
             CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID: (
                 CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE
             ),
+            CODE_HOST_PULL_REQUEST_READY_ACTION_ID: CODE_HOST_PULL_REQUEST_READY_EVIDENCE,
             CODE_HOST_JOB_RERUN_ACTION_ID: CODE_HOST_JOB_RERUN_EVIDENCE,
         }
         try:
@@ -425,14 +434,21 @@ class CodeHostActionContract:
             "draft": draft,
         }
 
-    @classmethod
-    def pull_request_ready(cls, request: ActionRequest) -> dict[str, Any]:
-        if set(request.parameters) != {"pull_request_number", "expected_head_sha"}:
-            raise ValueError("readiness requires only pull_request_number and expected_head_sha")
-        payload = cls.pull_request_merge(request)
-        if payload["expected_head_sha"] is None or not request.idempotency_key:
-            raise ValueError("readiness requires an exact expected head and idempotency key")
-        return {"number": payload["number"], "expected_head_sha": payload["expected_head_sha"]}
+    @staticmethod
+    def pull_request_ready(request: ActionRequest) -> dict[str, Any]:
+        if set(request.parameters) != {"pull_request_number", "expected_head_sha", "expected_base_sha", "expected_base_ref"}:
+            raise ValueError("ready requires only PR number and exact expected head/base target")
+        number = request.parameters["pull_request_number"]
+        if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+            raise ValueError("pull_request_number must be a positive integer")
+        output = {"pull_request_number": number,
+                  "expected_base_ref": CodeHostActionContract.branch(request.parameters["expected_base_ref"], field="expected_base_ref")}
+        for field in ("expected_head_sha", "expected_base_sha"):
+            value = request.parameters[field]
+            if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
+                raise ValueError(f"{field} requires an exact lowercase SHA-1")
+            output[field] = value
+        return output
 
     @classmethod
     def pull_request_merge(cls, request: ActionRequest) -> dict[str, Any]:

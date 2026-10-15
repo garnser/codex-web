@@ -34,7 +34,6 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_ISSUE_UPDATE_ACTION_ID,
     CODE_HOST_JOB_RERUN_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
-    CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE,
     CodeHostActionContract,
     AttestedBranch,
@@ -112,7 +111,7 @@ class GitLabActionProvider:
         return tuple(
             action
             for action in self.contract.actions()
-            if action.action_id not in {CODE_HOST_JOB_RERUN_ACTION_ID, CODE_HOST_PULL_REQUEST_READY_ACTION_ID}
+            if action.action_id != CODE_HOST_JOB_RERUN_ACTION_ID
         )
 
     @staticmethod

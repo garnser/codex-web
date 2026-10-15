@@ -32,7 +32,7 @@ from codex_web.action_intents import (
     ActionIntentStatus,
 )
 from codex_web.action_providers import ActionRequest
-from codex_web.services.action_providers import ActionProviderNotFoundError, provider_operation_admission
+from codex_web.services.action_providers import ActionProviderNotFoundError
 from codex_web.authority import (
     AuthorityDecisionOutcome,
     AuthorityEvaluationRequest,
@@ -335,17 +335,17 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
         authority_level=AuthorityLevel.EXECUTE,
     ),
     ControlPlaneBrokerOperation(
-        id="repository.pull-request.merge",
-        method="POST",
-        path_template="/api/repository-actions/pull-request/merge",
-        capability="repository.pull-request.merge",
-        authority_level=AuthorityLevel.EXECUTE,
-    ),
-    ControlPlaneBrokerOperation(
         id="repository.pull-request.ready",
         method="POST",
         path_template="/api/repository-actions/pull-request/ready",
         capability="repository.pull-request.ready",
+        authority_level=AuthorityLevel.EXECUTE,
+    ),
+    ControlPlaneBrokerOperation(
+        id="repository.pull-request.merge",
+        method="POST",
+        path_template="/api/repository-actions/pull-request/merge",
+        capability="repository.pull-request.merge",
         authority_level=AuthorityLevel.EXECUTE,
     ),
     ControlPlaneBrokerOperation(
@@ -405,9 +405,6 @@ _MUTATION_SUFFIXES = {
 _SAFE_TRACE_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _REPOSITORY_ACTION_PAYLOAD_FIELDS = ("parameters", "idempotency_key")
 _REPOSITORY_ACTIONS = {
-    "/api/repository-actions/pull-request/ready": (
-        "repository.pull-request.ready", CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
-    ),
     "/api/repository-actions/issue/create": (
         "repository.issue.create",
         CODE_HOST_ISSUE_CREATE_ACTION_ID,
@@ -428,6 +425,10 @@ _REPOSITORY_ACTIONS = {
         "repository.issue.update",
         CODE_HOST_ISSUE_UPDATE_ACTION_ID,
     ),
+    "/api/repository-actions/pull-request/ready": (
+        "repository.pull-request.ready",
+        CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
+    ),
     "/api/repository-actions/pull-request/merge": (
         "repository.pull-request.merge",
         CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
@@ -439,9 +440,9 @@ _REPOSITORY_ACTIONS = {
 }
 _RECONCILABLE_REPOSITORY_ACTION_IDS = frozenset(
     {
-        CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
         CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
         CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+        CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
     }
 )
 
@@ -539,6 +540,15 @@ class ControlPlaneBrokerService:
                     if item.id == "repository.branch.publish" else []
                 ),
             }
+            if item.id == "repository.pull-request.ready":
+                result["explicit_declaration_required"] = True
+                result["request_body"]["parameters"] = {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["pull_request_number", "expected_head_sha", "expected_base_sha", "expected_base_ref"],
+                    "properties": {"pull_request_number": {"type": "integer", "minimum": 1},
+                        "expected_head_sha": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+                        "expected_base_sha": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+                        "expected_base_ref": {"type": "string"}}}
             if item.id == "repository.branch.publish":
                 result["request_body"]["parameters"] = {
                     "type": "object",
@@ -556,14 +566,6 @@ class ControlPlaneBrokerService:
                         "existing ref: expected_remote_revision=observed SHA"
                     ),
                 }
-        if item.id == 'repository.pull-request.ready':
-            result['request_body']['parameters'] = {
-                'type': 'object', 'required': ['pull_request_number', 'expected_head_sha'],
-                'additionalProperties': False,
-                'properties': {'pull_request_number': {'type': 'integer', 'minimum': 1},
-                    'expected_head_sha': {'type': 'string', 'pattern': '^[0-9a-fA-F]{40}$'}},
-            }
-            result['requires_explicit_definition_declaration'] = True
         if item.id == "repository.workspace.publication-recovery":
             result["handoff_request_body"] = PublicationRecoveryHandoffRequest.model_json_schema()
             result["request_body"] = {
@@ -622,6 +624,11 @@ class ControlPlaneBrokerService:
         enabled = assignment.execution_profile_id in CONTROL_PLANE_EXECUTION_PROFILES
         context = self._public_assignment_context(assignment) if enabled else None
         operations = [self.public_operation(item) for item in OPERATIONS] if enabled else []
+        # New action recognition must not widen stored/default profile authority.
+        try:
+            self._ready_declaration(assignment)
+        except (ValueError, ControlPlaneBrokerDeniedError):
+            operations = [op for op in operations if op["id"] != "repository.pull-request.ready"]
         # Ordinary repository-write declarations and historical catalogs never
         # acquire governor operations simply because the engine supports them.
         coordination = None
@@ -1290,6 +1297,7 @@ class ControlPlaneBrokerService:
             CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
             CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
             CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
+            CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
         }
         deadline = {"timeout_seconds": 120.0} if extended_deadline else {}
         try:
@@ -1549,15 +1557,18 @@ class ControlPlaneBrokerService:
             return {"item": item.model_dump(mode="json")}
         raise ControlPlaneBrokerDeniedError("unsupported repository read operation")
 
-    def _require_readiness_declaration(self, assignment):
-        if self.execution_profiles is None or assignment.execution_profile_definition is None:
-            raise ControlPlaneBrokerDeniedError('Readiness requires an explicitly published execution declaration')
-        profile, reference = self.execution_profiles.resolve(assignment.execution_profile_id,
-            organization_id=assignment.organization_id, workspace_id=assignment.workspace_id,
-            project_id=assignment.project_id)
+    def _ready_declaration(self, assignment):
+        if self.execution_profiles is None:
+            raise ControlPlaneBrokerDeniedError("Readiness requires an explicit current execution-profile declaration")
+        try:
+            profile, reference = self.execution_profiles.resolve(assignment.execution_profile_id,
+                organization_id=assignment.organization_id, workspace_id=assignment.workspace_id,
+                project_id=assignment.project_id)
+        except Exception as exc:
+            raise ControlPlaneBrokerDeniedError("Readiness execution-profile declaration is unavailable") from exc
         if (reference != assignment.execution_profile_definition
-                or 'repository.pull-request.ready' not in profile.control_plane_operations):
-            raise ControlPlaneBrokerDeniedError('Readiness is not declared by the current assignment definition')
+                or "repository.pull-request.ready" not in profile.control_plane_operations):
+            raise ControlPlaneBrokerDeniedError("Readiness is not explicitly declared by the current pinned execution profile")
 
     def _authorize(
         self,
@@ -1567,12 +1578,12 @@ class ControlPlaneBrokerService:
         actor,
         resource_ids: tuple[str, ...],
     ):
+        if operation.id == "repository.pull-request.ready":
+            self._ready_declaration(assignment)
         if assignment.execution_profile_id not in CONTROL_PLANE_EXECUTION_PROFILES:
             raise ControlPlaneBrokerDeniedError(
                 "assignment execution profile does not permit control-plane broker access"
             )
-        if operation.id == 'repository.pull-request.ready':
-            self._require_readiness_declaration(assignment)
         if not assignment.project_id:
             raise ControlPlaneBrokerDeniedError(
                 "control-plane broker requires an assignment project"
@@ -1679,13 +1690,17 @@ class ControlPlaneBrokerService:
         if self.action_intents is None or intent_id is None:
             raise ControlPlaneBrokerDeniedError("delivery evidence is unavailable")
         intent = self.action_intents.get(intent_id, requester_actor)
+        if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            self._ready_declaration(assignment)
+            if (intent.execution_id != assignment.execution_id or intent.readiness_origin is None
+                    or intent.readiness_origin.assignment_id != assignment.id
+                    or intent.readiness_origin.fence != assignment.fence):
+                raise ControlPlaneBrokerDeniedError("Readiness receipts belong to a different originating assignment")
         repository_id = self._operation_repository_id(
             assignment, "repository.read.delivery-evidence", query, actor=requester_actor
         )
         if (
             intent.action_id not in _DELIVERY_EVIDENCE_REPOSITORY_ACTION_IDS
-            or (intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID
-                and intent.execution_id != assignment.execution_id)
             or intent.organization_id != assignment.organization_id
             or intent.workspace_id != assignment.workspace_id
             or intent.project_id != assignment.project_id
@@ -1699,7 +1714,7 @@ class ControlPlaneBrokerService:
             return {key: row.get(key) for key in fields}
         # Metadata only: never expose arbitrary request/provider/inbox bodies.
         # Eight recent rows bound inspection; original receipt IDs remain exact.
-        return {
+        result = {
             "intent": select(original, ("id", "action_id", "status", "attempt",
                 "organization_id", "workspace_id", "project_id", "resource_ids",
                 "work_item_ref", "execution_id", "execution_started_at", "completed_at",
@@ -1714,6 +1729,11 @@ class ControlPlaneBrokerService:
             "omitted_receipts": max(0, len(history["receipts"]) - 8),
             "omitted_verifications": max(0, len(history["verifications"]) - 8),
         }
+        if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            result["intent"]["readiness_origin"] = intent.readiness_origin.model_dump(mode="json")
+            result["parameters"] = select(intent.request.parameters,
+                ("pull_request_number", "expected_head_sha", "expected_base_sha", "expected_base_ref"))
+        return result
 
     async def dispatch(
         self,
@@ -1770,20 +1790,6 @@ class ControlPlaneBrokerService:
                 if payload.get(attributed_field) not in {None, own_role}:
                     raise ControlPlaneBrokerDeniedError("administrative coordination must use its own agent Role attribution")
                 payload[attributed_field] = own_role
-
-        async def current_admission():
-            if assignment_validator is None:
-                raise ControlPlaneBrokerDeniedError('Live assignment validator is unavailable')
-            current = await asyncio.to_thread(assignment_validator)
-            fields = ('organization_id', 'workspace_id', 'project_id', 'execution_id',
-                'execution_profile_id', 'execution_profile_definition', 'agent_profile',
-                'execution_workspace_id', 'repository_scope', 'repository_target', 'resource_ids')
-            if (any(getattr(current, name) != getattr(assignment, name) for name in fields)
-                    or current.status not in {'running', 'claimed'}
-                    or (current.deadline_at is not None and current.deadline_at <= self._clock())):
-                raise ControlPlaneBrokerDeniedError('Assignment scope or deadline changed during provider read')
-            await asyncio.to_thread(self._dispatch_scope, current, worker_actor, resolved)
-            await asyncio.to_thread(self._require_readiness_declaration, current)
 
         if operation.id.startswith("project."):
             result = await self.project_coordination.dispatch(assignment, operation,
@@ -2037,13 +2043,16 @@ class ControlPlaneBrokerService:
                 raise ControlPlaneBrokerRequestError(str(exc), status_code=409) from exc
             result = {"item": recovered.model_dump(mode="json")}
         elif operation.id.startswith("repository."):
-            with provider_operation_admission(current_admission if operation.id == "repository.pull-request.ready" else None):
-                result = await self._execute_repository_action(
-                    assignment=assignment, worker_actor=actor, requester_actor=requester_actor,
-                    operation=operation, payload=payload,
-                    repository_id=self._operation_repository_id(
-                        assignment, operation.id, resolved.query, actor=requester_actor),
-                )
+            result = await self._execute_repository_action(
+                assignment=assignment,
+                worker_actor=actor,
+                requester_actor=requester_actor,
+                operation=operation,
+                payload=payload,
+                repository_id=self._operation_repository_id(
+                    assignment, operation.id, resolved.query, actor=requester_actor
+                ),
+            )
         elif operation.id == "action_intent.reconcile":
             if self.action_intents is None:
                 raise ControlPlaneBrokerDeniedError(
@@ -2062,8 +2071,6 @@ class ControlPlaneBrokerService:
             )
             if (
                 intent.action_id not in _RECONCILABLE_REPOSITORY_ACTION_IDS
-                or (intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID
-                    and intent.execution_id != assignment.execution_id)
                 or intent.organization_id != assignment.organization_id
                 or intent.workspace_id != assignment.workspace_id
                 or intent.project_id != assignment.project_id
@@ -2073,6 +2080,12 @@ class ControlPlaneBrokerService:
                 raise ControlPlaneBrokerDeniedError(
                     "action intent is outside the assignment delivery scope"
                 )
+            if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+                self._ready_declaration(assignment)
+                if (intent.execution_id != assignment.execution_id or intent.readiness_origin is None
+                        or intent.readiness_origin.assignment_id != assignment.id
+                        or intent.readiness_origin.fence != assignment.fence or reconcile_request.retry_if_idempotent):
+                    raise ControlPlaneBrokerDeniedError("Readiness permits only own-assignment read-only reconciliation")
             # A recovered thread receives a fresh execution assignment. It must
             # still be able to verify and settle an uncertain repository action
             # from its superseded assignment, otherwise a service restart
@@ -2087,10 +2100,11 @@ class ControlPlaneBrokerService:
                     "a recovered assignment may reconcile but not retry a "
                     "historical action intent"
                 )
-            if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
-                self._require_readiness_declaration(assignment)
-            with provider_operation_admission(current_admission if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID else None):
-                item = await self.action_intents.reconcile(intent.id, reconcile_request, actor=actor)
+            item = await self.action_intents.reconcile(
+                intent.id,
+                reconcile_request,
+                actor=actor,
+            )
             result = {"item": item.model_dump(mode="json")}
             if (reconcile_request.retry_if_idempotent
                     and intent.execution_id == assignment.execution_id

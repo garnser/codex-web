@@ -115,7 +115,7 @@
       ${intent.publication_recovery_scope || publicationRecovery ? `<small>Publication recovery provenance: ${escapeHtml(JSON.stringify(intent.publication_recovery_scope || {work_item_ref: intent.work_item_ref, execution_id: intent.execution_id}))}. Inspect retired workspace scopes.</small>` : ""}
       <small>Binding: ${escapeHtml(intent.binding_id)} · risk: ${escapeHtml(definition.risk_class || "unknown")} · capabilities: ${escapeHtml(capabilityText(definition.capabilities))}</small>
       <small>Resources: ${(intent.resource_ids || []).map(id => ref('resource',id)).join(', ') || 'none'} · credential reference: ${escapeHtml(intent.credential_ref || "none")} · dry-run: ${request.dry_run ? "yes" : "no"}</small>
-      <small>Request parameter keys only: ${listText(paramKeys)}. Commit identities and review targets are shown separately; other parameter values and provider output bodies are hidden.</small>
+      <small>Request parameter keys only: ${listText(paramKeys)}. Merge commit identities are shown separately; other parameter values and provider output bodies are hidden.</small>
       ${mergeRequestHtml(intent)}
       ${decisionHtml("Authority", intent.authority_decision)}
       ${decisionHtml("Policy", intent.policy_decision)}

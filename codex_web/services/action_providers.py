@@ -1,29 +1,7 @@
 from __future__ import annotations
 
 import time
-from contextvars import ContextVar
-from contextlib import contextmanager
 from typing import Any, Mapping
-
-_provider_mutation_admission = ContextVar('provider_mutation_admission', default=None)
-
-
-@contextmanager
-def provider_operation_admission(admission):
-    """Carry an originating controller's live scope guard across provider awaits."""
-    token = _provider_mutation_admission.set(admission)
-    try:
-        yield
-    finally:
-        _provider_mutation_admission.reset(token)
-
-
-async def revalidate_provider_mutation() -> None:
-    """Repeat canonical admission after a provider's awaited preflight read."""
-    admission = _provider_mutation_admission.get()
-    if admission is None:
-        raise ActionRequirementError('Canonical provider mutation admission is unavailable')
-    await admission()
 
 from codex_web.action_providers import (
     ACTION_PROVIDER_CONTRACT,
@@ -428,21 +406,8 @@ class ActionExecutionService:
             await self.procedure_admission(binding, provider, definition, request, actor, "execute")
 
         async def invoke(credential: str | None) -> ActionResult:
-            origin_admission = _provider_mutation_admission.get()
-            async def admission():
-                if origin_admission is not None:
-                    await origin_admission()
-                current = self._resolve(binding_id, request, actor)
-                if current[:3] != (binding, provider, definition):
-                    raise ActionRequirementError('Provider binding or action changed during execution')
-                if self.procedure_admission is not None:
-                    await self.procedure_admission(binding, provider, definition, request, actor, 'execute')
-            token = _provider_mutation_admission.set(admission)
-            try:
-                result = await provider.execute(request, binding=binding, credential=credential)
-                return _credential_safe_output(result, credential)
-            finally:
-                _provider_mutation_admission.reset(token)
+            result = await provider.execute(request, binding=binding, credential=credential)
+            return _credential_safe_output(result, credential)
 
         if request.credential_ref:
             assert self.secret_broker is not None
@@ -476,17 +441,7 @@ class ActionExecutionService:
         definition.capabilities.require("verification")
 
         async def invoke(credential: str | None) -> ActionVerification:
-            admission = _provider_mutation_admission.get()
-            if admission is not None:
-                await admission()
             verification = await provider.verify(result, binding=binding, credential=credential)
-            if admission is not None:
-                await admission()
-                if self.registry.binding(binding_id, actor) != binding:
-                    raise ActionRequirementError('Provider binding changed during verification')
-                current_provider = self.registry.provider(binding.provider_type, binding.provider_instance, actor=actor)
-                if current_provider is not provider or self._definition(current_provider, result.action_id) != definition:
-                    raise ActionRequirementError('Provider action changed during verification')
             return _credential_safe_output(verification, credential)
 
         credential_ref = binding.credential_ref

@@ -168,8 +168,7 @@ class ExecutionProfileDefinitionService:
             or operation_id.startswith("work_item.")
             or operation_id in {
                 "repository.issue.create", "repository.issue.comment", "repository.issue.update",
-                "repository.pull-request.upsert", "repository.pull-request.merge",
-                "repository.pull-request.ready",
+                "repository.pull-request.upsert", "repository.pull-request.merge", "repository.pull-request.ready",
                 "repository.check.rerun", "action_intent.reconcile",
                 "project.read", "resource.read", "execution.read", "evidence.read",
                 "control_plane.operations.list", "work_graph.edge.create",
