@@ -892,7 +892,7 @@ class AssignmentBoundAgentProcessSession:
             )
         return assignment
 
-    async def _supervise(self, phase, function, *args, seconds):
+    async def _supervise(self, phase, function, *args, seconds, reconcile_late=True):
         budget = StorageOperationBudget(seconds)
         context = contextvars.copy_context()
         context.run(storage_operation_budget.set, budget)
@@ -917,8 +917,18 @@ class AssignmentBoundAgentProcessSession:
         self._executor_work.add(future)
         future.add_done_callback(self._executor_work.discard)
         try:
-            return await asyncio.wait_for(asyncio.wrap_future(future), seconds)
+            result = await asyncio.wait_for(asyncio.wrap_future(future), seconds)
+            # Callback ordering may deliver a completed result before a delayed
+            # timeout callback. That is still late observation, including for
+            # the one-shot authority gate, which must not accept stale success.
+            if time.monotonic() >= budget.deadline:
+                raise TimeoutError("supervision result observed after its deadline")
+            return result
         except TimeoutError:
+            if not reconcile_late:
+                # Authority reconciliation itself gets one bounded attempt,
+                # never a recursive sequence of late-success probes.
+                raise
             # asyncio's wrapper and timeout callbacks both need the main loop.
             # A stalled observer can time out after the actual worker has
             # already completed successfully within its unchanged real budget.
@@ -931,6 +941,16 @@ class AssignmentBoundAgentProcessSession:
             # Timely work is not a lease extension. The last validated lease
             # and assignment deadline must still be live at observation.
             self._lease_budget()
+            # The same successful work may have finished before authority was
+            # revoked while the observer loop remained blocked. Check current
+            # canonical authority for *both* validation and renewal results,
+            # off-loop in the existing serial executor. Do not repeat resource
+            # validation, heartbeat or renewal, or install the old result yet.
+            await self._supervise(
+                f"{phase}_authority", self._validate_current_authority,
+                seconds=self._lease_budget(), reconcile_late=False,
+            )
+            self._supervision_phase = phase
             return result
         finally:
             self._supervision_timings[f"{phase}_wait_seconds"] = round(time.monotonic() - submitted, 6)

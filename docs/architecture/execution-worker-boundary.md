@@ -812,11 +812,18 @@ the operation must have succeeded, passed its cooperative storage budget, and
 recorded completion before its original monotonic deadline. It does not rerun
 validation, submit a replacement probe, increase a timeout, or infer success
 from timing diagnostics. The last validated lease and assignment deadline must
-still be live when the result is observed. The normal next renewal phase
-re-resolves current worker, assignment, credential authority and fence before
-using or renewing the same lease; an old validation snapshot cannot authorize
-a heartbeat or renewal after revocation. This is reconciliation of bounded
-supervision work, not replay or reconciliation of native/provider outcomes.
+still be live when the result is observed. Before accepting either a late
+validation result or a late renewal result, one bounded, read-only authority
+gate in the same serial executor re-resolves the original session's current
+worker, assignment, credential authority, lease, deadline and fence. A stale
+renewal result is not installed before this gate passes. The gate does not
+repeat the resource scan, heartbeat or completed renewal; its budget is bounded
+by the live lease/deadline and the existing ten-second maximum. Failure, timeout
+or delayed observation of this gate fails closed without another reconciliation
+attempt. The normal renewal phase also checks current authority before any
+heartbeat or renewal. Old work completion alone cannot authorize continued
+execution after revocation. This is reconciliation of bounded supervision work,
+not replay or reconciliation of native/provider outcomes.
 
 A still-running, cancelled, failed or over-budget future continues to fail
 closed and stops the owned process through existing cleanup. Its cooperative

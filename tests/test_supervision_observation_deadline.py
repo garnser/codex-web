@@ -54,15 +54,25 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
         entered = threading.Event()
         release = threading.Event()
         completed = threading.Event()
+        authority_completed = threading.Event()
         finish_unfinished = threading.Event()
         captured = []
+        captured_phases = []
+        selected = []
+        before_observation = []
         submit = session._supervision_executor.submit
+        self.worker_service.heartbeat = Mock(wraps=self.worker_service.heartbeat)
+        self.worker_service.renew = Mock(wraps=self.worker_service.renew)
 
         def capture(function, *args, **kwargs):
             future = submit(function, *args, **kwargs)
             captured.append(future)
-            if len(captured) == (1 if phase == "validation" else 2):
+            captured_phases.append(session._supervision_phase)
+            if session._supervision_phase == phase:
+                selected.append(future)
                 future.add_done_callback(lambda _: completed.set())
+            if session._supervision_phase == "renewal_authority":
+                future.add_done_callback(lambda _: authority_completed.set())
             return future
         session._supervision_executor.submit = capture
         name = "validate_current" if phase == "validation" else "_heartbeat_and_renew"
@@ -97,8 +107,27 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
                 time.sleep(.17)
             else:
                 self.assertTrue(completed.wait(2))
+            before_observation.append(session._bound_assignment.model_dump(mode="json"))
             if fault == "authority":
                 self.delegation.validation_error = CodexAuthDelegationStaleError("revoked credential")
+            if fault == "authority_gate_unfinished":
+                authority = session._validate_current_authority
+                def hold_authority():
+                    if not finish_unfinished.wait(2):
+                        raise AssertionError("authority gate fixture was not reaped")
+                    return authority()
+                # Install only after the real renewal has already completed.
+                session._validate_current_authority = hold_authority
+            if fault == "authority_gate_late":
+                authority = session._validate_current_authority
+                def delay_authority_observation():
+                    self.assertTrue(authority_completed.wait(2))
+                    time.sleep(.2)
+                def timely_authority():
+                    result = authority()
+                    loop.call_soon_threadsafe(delay_authority_observation)
+                    return result
+                session._validate_current_authority = timely_authority
             if fault == "quarantine":
                 self.worker_service.set_lifecycle(self.worker.id, WorkerLifecycle.QUARANTINED,
                                                  actor=self.admin, reason="fixture revocation")
@@ -118,13 +147,15 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
             start.set()
             while not entered.is_set():
                 await asyncio.sleep(.001)
-            asyncio.get_running_loop().call_soon(delay_loop)
+            loop = asyncio.get_running_loop()
+            loop.call_soon(delay_loop)
             for _ in range(300):
                 if session.watchdog_task.done() or cycle.is_set():
                     break
                 await asyncio.sleep(.005)
             self.assertTrue(session.watchdog_task.done() or cycle.is_set())
-            future = captured[0 if phase == "validation" else 1]
+            self.assertEqual(len(selected), 1)
+            future = selected[0]
             if fault == "unfinished":
                 self.assertTrue(future.running())
                 self.assertIn(future, session._executor_work)
@@ -136,7 +167,9 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(session.watchdog_task.done(), session.last_error)
                 self.assertIsNone(process.poll(), "successful bounded work must not kill native owner")
                 self.assertEqual(self.observations(), [])
-                self.assertEqual(len(captured), 2, "one validation and one renewal, no retry/probe")
+                self.assertEqual(captured_phases.count("validation"), 1)
+                self.assertEqual(captured_phases.count("renewal"), 1)
+                self.assertLessEqual(len(captured), 3, "at most one bounded authority reconciliation")
                 self.assertIsNotNone(session._bound_assignment.lease.renewed_at)
             else:
                 self.assertTrue(session.watchdog_task.done())
@@ -148,10 +181,27 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
                 if fault in {"over_budget", "worker_failure"}:
                     self.assertIsNotNone(future.exception())
                 if fault in {"authority", "quarantine", "lease", "deadline", "fence"}:
-                    self.assertEqual(session._failure_observation["phase"], "renewal")
                     self.assertEqual(session._failure_observation["code"], "agent_runtime_validation_failed")
+                    self.assertFalse(cycle.is_set(), "reject before another watchdog sleep")
+                    self.assertEqual(session._bound_assignment.model_dump(mode="json"),
+                                     before_observation[0], "never install a stale or changed claim")
+                    self.assertEqual(self.worker_service.renew.call_count,
+                                     1 if phase == "renewal" else 0)
+                    self.assertEqual(self.worker_service.heartbeat.call_count, 0)
                 if fault == "authority":
                     self.assertIn("revoked credential", session.last_error)
+                if fault in {"authority_gate_unfinished", "authority_gate_late"}:
+                    self.assertFalse(cycle.is_set())
+                    self.assertEqual(captured_phases, ["validation", "renewal", "renewal_authority"])
+                    if fault == "authority_gate_unfinished":
+                        self.assertTrue(captured[-1].running())
+                        self.assertIn(captured[-1], session._executor_work)
+                    else:
+                        self.assertTrue(captured[-1].done())
+                        self.assertIsNone(captured[-1].exception())
+                    self.assertEqual(session._failure_observation["code"], "execution_timeout")
+                    self.assertEqual(self.worker_service.renew.call_count, 1)
+                    self.assertEqual(self.worker_service.heartbeat.call_count, 0)
         finally:
             release.set()
             finish_unfinished.set()
@@ -192,3 +242,24 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_late_validation_rechecks_worker_authority_before_renewal(self):
         await self.exercise(fault="quarantine")
+
+    async def test_late_renewal_rechecks_credential_authority_before_sleep(self):
+        await self.exercise(phase="renewal", fault="authority")
+
+    async def test_late_renewal_rechecks_worker_authority_before_sleep(self):
+        await self.exercise(phase="renewal", fault="quarantine")
+
+    async def test_late_renewal_does_not_borrow_expired_lease(self):
+        await self.exercise(phase="renewal", fault="lease")
+
+    async def test_late_renewal_does_not_ignore_expired_deadline(self):
+        await self.exercise(phase="renewal", fault="deadline")
+
+    async def test_late_renewal_does_not_borrow_new_fence(self):
+        await self.exercise(phase="renewal", fault="fence")
+
+    async def test_late_renewal_authority_gate_is_bounded_and_not_recursively_reconciled(self):
+        await self.exercise(phase="renewal", fault="authority_gate_unfinished")
+
+    async def test_late_observation_of_successful_authority_gate_fails_without_recursion(self):
+        await self.exercise(phase="renewal", fault="authority_gate_late")
