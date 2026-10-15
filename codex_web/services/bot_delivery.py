@@ -165,6 +165,7 @@ class BotDeliveryService:
         *,
         reply_in_thread: bool | None = None,
         username: str | None = None,
+        credential: str | None = None,
         icon_emoji: str | None = None,
     ) -> dict[str, Any]:
         connection = (
@@ -208,6 +209,8 @@ class BotDeliveryService:
                         thread_ts=thread_ts,
                     )
 
+                if credential is not None:
+                    return await send_slack(credential)
                 return await self._with_credential(
                     connection,
                     "bot_token",
@@ -233,19 +236,48 @@ class BotDeliveryService:
             return {"sent": False, "reason": str(exc)}
         return {"sent": False, "reason": "unsupported_provider"}
 
-    async def send_details(self, binding: BotBinding) -> dict[str, Any]:
+    async def send_details(self, binding: BotBinding, *, credential: str | None = None) -> dict[str, Any]:
         detail = await asyncio.to_thread(self.details.latest, binding.thread_id)
         if not detail:
             return await self.send_outbound(
                 binding,
                 "No command or file details are available for this thread yet.",
                 reply_in_thread=True,
+                **({"credential": credential} if credential is not None else {}),
             )
         return await self.send_outbound(
             binding,
             self.presentation.format_detail_response(detail),
             reply_in_thread=True,
+            **({"credential": credential} if credential is not None else {}),
         )
+
+    async def admit_details(self, binding, message):
+        from codex_web.action_intents import ActionIntentCreate, ActionIntentRetryPolicy
+        from codex_web.action_providers import ActionRequest
+        from codex_web.services.conversation_channels import ConversationChannelReconciliationError
+        actor = self.connections.runtime_actor(binding.project_id)
+        if actor.identity_id != message._ingress_actor_id:
+            raise ConversationChannelReconciliationError("details_original_actor_unavailable")
+        intents = getattr(self, "action_intents", None)
+        registry = getattr(self, "action_registry", None)
+        if intents is None or registry is None:
+            raise ConversationChannelReconciliationError("details_action_intent_boundary_unavailable")
+        connection = self.connections.get(binding.connection_id)
+        candidates = [row for row in registry.list_bindings(actor) if row.enabled
+            and row.provider_type == "conversation-channel" and row.provider_instance == "slack"
+            and row.project_id == binding.project_id and row.credential_ref == connection.bot_token_secret_id]
+        if len(candidates) != 1:
+            raise ConversationChannelReconciliationError("details_project_connection_action_binding_required")
+        intent = intents.create(ActionIntentCreate(binding_id=candidates[0].id,
+            request=ActionRequest(action_id="conversation.details.reply", organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id, project_id=binding.project_id,
+                resource_ids=candidates[0].resource_ids, credential_ref=connection.bot_token_secret_id,
+                parameters={"bot_binding_id": binding.id, "canonical_ingress_id": message.canonical_ingress_id,
+                    "connection_id": binding.connection_id, "thread_id": binding.thread_id},
+                requested_by=actor.identity_id),
+            retry_policy=ActionIntentRetryPolicy(max_attempts=1), verification_required=True), actor=actor)
+        return {"actionIntentId": intent.id, "status": intent.status.value}
 
     async def record_outbound(self, message: dict[str, Any]) -> None:
         if message.get("method") != "item/completed":

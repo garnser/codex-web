@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const fixtureUrl = `${process.env.CODEX_WEB_BROWSER_BASE_URL || 'http://127.0.0.1:18766'}/tests/browser/conversation_channel_fixture.html`;
 
 test('conversation channel inspector shows capabilities and canonical routing provenance', async ({ page }) => {
   await page.route('**/api/conversation-channels/providers', async (route) => {
@@ -84,7 +85,7 @@ test('conversation channel inspector shows capabilities and canonical routing pr
     });
   });
 
-  await page.goto('http://127.0.0.1:18766/tests/browser/conversation_channel_fixture.html');
+  await page.goto(fixtureUrl);
   const inspector = page.locator('#conversation-channel-inspector');
   await expect(inspector).toBeVisible();
   await inspector.locator('summary').click();
@@ -114,9 +115,42 @@ test('conversation channel inspector remains usable at phone width', async ({ pa
     status: 200, contentType: 'application/json', body: JSON.stringify({ count: 0, items: [] }),
   }));
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto('http://127.0.0.1:18766/tests/browser/conversation_channel_fixture.html');
+  await page.goto(fixtureUrl);
   await page.locator('#conversation-channel-inspector summary').click();
   const box = await page.locator('#conversation-channel-inspector').boundingBox();
   expect(box.width).toBeLessThanOrEqual(390);
   await expect(page.locator('#refresh-conversation-channels')).toBeVisible();
+});
+
+test('canonical retention and reconciliation remain distinct from transport and execution completion', async ({ page }) => {
+  await page.route('**/api/conversation-channels/providers', route => route.fulfill({ json: { items: [] } }));
+  await page.route('**/api/conversation-channels/messages?*', route => route.fulfill({ json: { items: [] } }));
+  const states = ['retained_pending', 'queue_admitted', 'projected', 'failed', 'reconciliation', 'action_admitted'];
+  await page.route('**/api/conversation-channels/receipts?*', route => route.fulfill({ json: {
+    canonical_state_counts: { retained_pending: 4, queue_admitted: 2, action_admitted: 1, projected: 7, failed: 1, reconciliation: 3 },
+    items: states.map((state, i) => ({ canonical_event_id: `evt-${i}`, message_key: `slack::fixture::channel::thread::${i}`,
+      delivery_state: state, outcome: state, connection_id: 'fixture-connection', project_id: 'fixture-project',
+      input_retained: true, input_protected: true, governance_record_id: `governance-${i}`,
+      authority_digest: 'exact-authority', ingest_actor_id: 'runtime-identity', queued_id: i === 2 ? 'queued-proof' : null,
+      routing_result: i === 5 ? {actionIntentId:'details-action-proof', actionIntentStatus:'reconciliation_required'} : {},
+      reason: i === 4 ? 'Native outcome unknown; canonical reconciliation required' : null }))
+  } }));
+  await page.goto(fixtureUrl);
+  await page.locator('#conversation-channel-inspector summary').click();
+  const counts = page.locator('#conversation-channel-canonical-status');
+  await expect(counts).toContainText('retained/pending 4');
+  await expect(counts).toContainText('queue admitted 2');
+  await expect(counts).toContainText('reconciliation 3');
+  await expect(counts).toContainText('projection completion does not prove native execution completed');
+  const receipts = page.locator('#conversation-channel-receipts');
+  for (const state of states) await expect(receipts).toContainText(state);
+  await expect(receipts).toContainText('Protected original');
+  await expect(receipts).toContainText('fixture-project');
+  await expect(receipts).toContainText('queued-proof');
+  await expect(receipts).toContainText('Details ActionIntent');
+  await expect(receipts.locator('a[href="/api/action-intents/details-action-proof"]')).toHaveText('details-action-proof');
+  await page.locator('#refresh-conversation-channels').focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#conversation-channel-status')).toHaveText('Canonical state loaded');
+  await expect(page.locator('body')).not.toContainText('ciphertext');
 });

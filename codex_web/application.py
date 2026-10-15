@@ -2894,6 +2894,7 @@ core._load_turn_queues = turn_queue_repository.load
 core._save_turn_queues = turn_queue_repository.save
 core._thread_queue_record = turn_queue_repository.get
 core._update_thread_queue_record = turn_queue_repository.update
+core._update_thread_queue_with_ingress = turn_queue_repository.update_with_ingress
 core._put_thread_queue_record = turn_queue_repository.put
 core._delete_thread_queue_record = turn_queue_repository.delete
 
@@ -3829,8 +3830,8 @@ agent_channel_preference_service = (
     )
 )
 
-def _agent_profile_for_bot_binding(binding):
-    actor = identity_service.local_trusted_actor()
+def _agent_profile_for_bot_binding(binding, actor=None):
+    actor = actor or identity_service.local_trusted_actor()
     owner = work_item_state_machine._coerce_owner(
         bot_presentation_service.binding_prefix(binding)
     )
@@ -4141,6 +4142,11 @@ bot_delivery_service = install_bot_delivery_service(
     slack_client=slack_client,
     telegram_client=telegram_client,
 )
+from codex_web.services.conversation_details_action_provider import ConversationDetailsActionProvider
+action_provider_registry.register(ConversationDetailsActionProvider(bot_delivery_service,
+    bot_connection_service, project_runtime_service))
+bot_delivery_service.action_intents = action_intent_service
+bot_delivery_service.action_registry = action_provider_registry
 bot_routing_service = install_bot_routing_service(
     app,
     core,
@@ -4279,12 +4285,63 @@ conversation_channel_registry.register_provider(
     "teams",
     TeamsConversationChannel,
 )
+def _conversation_ingress_authority(event, actor):
+    from codex_web.models import BotBindingCreate, ThreadRunSettings
+    from codex_web.services.conversation_channels import capture_repository_selection
+    project = bot_connection_service._project(event.project_id)
+    snapshot = bot_connection_service.ingress_snapshot(event, actor)
+    rows = bot_connection_service.load_bindings()
+    rows = [item for item in rows if item.project_id == event.project_id and item.provider == "slack"]
+    if len(rows) > 1000:
+        raise ValueError("canonical routing authority exceeds bounded inspection")
+    snapshot["routing"] = []
+    default_profile, default_definition = execution_profile_definition_service.resolve(None,
+        organization_id=actor.organization_id, workspace_id=actor.workspace_id, project_id=event.project_id)
+    default_binding = BotBindingCreate(provider="slack", project_id=event.project_id,
+        external_conversation_id=event.message.conversation.conversation_id)
+    from codex_web.services.resources import RepositoryTargetSelectionError
+    try:
+        default_settings = capture_repository_selection(ThreadRunSettings(), project,
+            default_profile, resource_catalog_service, actor)
+    except RepositoryTargetSelectionError as exc:
+        snapshot["new_binding_error"] = exc.code
+        # An unusable auto-binding default does not disable an existing binding
+        # with its own proven scope (for example an orchestration-only profile).
+        snapshot["new_binding"] = None
+    else:
+        snapshot["new_binding"] = {
+            "binding": {"sandbox": default_binding.sandbox, "approval_policy": default_binding.approval_policy},
+            "settings": default_settings.model_dump(mode="json"), "profile": None,
+            "execution_profile": default_profile.model_dump(mode="json"),
+            "definition": default_definition.model_dump(mode="json"),
+        }
+    for binding in sorted(rows, key=lambda item: item.id):
+        settings = thread_execution_settings_service.get(binding.thread_id)
+        profile_context = _agent_profile_for_bot_binding(binding, actor=actor)
+        profile = profile_context[0] if profile_context else None
+        execution_profile, definition = execution_profile_definition_service.resolve(
+            getattr(profile, "execution_profile_id", None) or settings.execution_profile_id,
+            organization_id=actor.organization_id, workspace_id=actor.workspace_id, project_id=event.project_id)
+        snapshot["routing"].append({
+            "binding": binding.model_dump(mode="json", exclude={"updated_at", "created_at", "external_name", "thread_name"}),
+            "settings": capture_repository_selection(settings, project, execution_profile,
+                resource_catalog_service, actor).model_dump(mode="json"),
+            "profile": profile.model_dump(mode="json") if profile else None,
+            "execution_profile": execution_profile.model_dump(mode="json"),
+            "definition": definition.model_dump(mode="json"),
+        })
+    return snapshot
+
 conversation_channel_service = ConversationChannelService(
     conversation_channel_store,
     conversation_channel_registry,
     canonical_event_ingestion,
     bot_routing_service.route_normalized,
+    crypto=crypto_key_service,
+    governance=data_governance_service,
+    authority_snapshot=_conversation_ingress_authority,
 )
+data_governance_service.register_action_handler("conversation_ingress", conversation_channel_service.governance_action)
 bot_routing_service.conversation_channels = conversation_channel_service
 bot_runtime.conversation_channels = conversation_channel_service
 app.state.conversation_channel_store = conversation_channel_store

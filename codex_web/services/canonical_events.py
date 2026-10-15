@@ -396,6 +396,9 @@ class CanonicalEventIngestionService:
         causation_id: str | None = None,
         tenant_id: str | None = None,
         workspace_id: str | None = None,
+        duplicate_validator=None,
+        related_defaults=None,
+        related_mutation=None,
     ) -> tuple[Any, CanonicalEventDelivery]:
         normalized_source = str(source or "").strip()
         normalized_key = str(idempotency_key or "").strip()
@@ -418,13 +421,16 @@ class CanonicalEventIngestionService:
             workspace_id=workspace_id,
             payload=dict(payload),
         )
-        domain, persisted, inserted = self.bus.store.record_with_document_mutation(
+        domain, persisted, inserted = await asyncio.to_thread(self.bus.store.record_with_document_mutation,
             namespace,
             default,
             updater,
             event,
             idempotency_key=normalized_key,
             enqueue_transport=self.bus.transport is not None,
+            duplicate_validator=duplicate_validator,
+            related_defaults=related_defaults,
+            related_mutation=related_mutation,
         )
         delivery = await self.bus.dispatch_committed(
             persisted,

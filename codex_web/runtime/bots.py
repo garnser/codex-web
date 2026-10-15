@@ -40,6 +40,10 @@ class SlackSocketLifecycleError(RuntimeError):
     failure_class = "transport_error"
 
 
+class SlackSocketAuthorityChanged(SlackSocketLifecycleError):
+    failure_class = "authentication_configuration"
+
+
 class SlackSocketCleanClose(SlackSocketLifecycleError):
     failure_class = "clean_close"
 
@@ -656,6 +660,9 @@ class BotRuntime:
                 )
             if connection.id in self.slack_payload_stats:
                 self.slack_payload_stats[connection.id]["canonicalPendingSample"] = len(events)
+                if callable(getattr(self.conversation_channels, "status", None)):
+                    self.slack_payload_stats[connection.id]["canonicalStateCounts"] = await asyncio.to_thread(
+                        self.conversation_channels.status, actor=actor, connection_id=connection.id, project_id=connection.project_id)
                 self._update_slack_payload_status(connection)
         except Exception as exc:
             # Retention is already committed. A recovery failure must neither
@@ -1123,6 +1130,11 @@ class BotRuntime:
                 "status": "connecting",
             }
         )
+        from types import SimpleNamespace
+        source_context = SimpleNamespace(connection_id=connection.id, project_id=connection.project_id,
+            message=SimpleNamespace(conversation=SimpleNamespace(provider_type="slack")))
+        source_snapshot = self.connections.ingress_snapshot(source_context,
+            self.connections.runtime_actor(connection.project_id))
         socket_url = await self._with_credential(
             connection,
             "slack_app_token",
@@ -1173,6 +1185,19 @@ class BotRuntime:
                 payload = envelope.get("payload") or {}
                 if not isinstance(payload, dict):
                     payload = {}
+                # Pin the canonical credential versions actually used when
+                # opening this transport. A reference rotated in place must not
+                # let an old authenticated socket impersonate its new account.
+                try:
+                    getter = getattr(self.connections, "get", None)
+                    if callable(getter) and getter(connection.id) != connection:
+                        raise RuntimeError("canonical connection changed")
+                    current_source = self.connections.ingress_snapshot(source_context,
+                        self.connections.runtime_actor(connection.project_id))
+                    if current_source != source_snapshot:
+                        raise RuntimeError("canonical authenticated source changed")
+                except Exception:
+                    raise SlackSocketAuthorityChanged("authenticated source changed; reconnect required") from None
                 try:
                     if payload.get("type") == "block_actions":
                         # Approval interactions already have canonical pending
@@ -1189,6 +1214,7 @@ class BotRuntime:
                             self._normalized_slack_payload(payload),
                             actor=self.connections.runtime_actor(connection.project_id),
                             connection_id=connection.id, project_id=connection.project_id,
+                            original_payload={key: value for key, value in payload.items() if key not in {"token", "response_url", "authorization"}},
                         )
                         admission = "durably_retained" if receipts else "ignored"
                         if receipts:

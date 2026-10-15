@@ -27,6 +27,7 @@ function ensureInspector() {
     <div class="section-title"><span>Recent canonical message state</span></div>
     <div id="conversation-channel-message-state" class="comm-log"></div>
     <div class="section-title"><span>Recent routing provenance</span></div>
+    <div id="conversation-channel-canonical-status" class="comm-log" aria-live="polite"></div>
     <div id="conversation-channel-receipts" class="comm-log"></div>
   `;
   const menu = form.querySelector('menu');
@@ -75,6 +76,10 @@ function receiptRows(items, selected) {
     <strong>${esc(item.outcome)}</strong>
     <span>${esc(item.thread_id || item.queued_id || 'no canonical thread/work id')}</span>
     <small>event ${esc(item.canonical_event_id)} · external ${esc(item.message_key)}</small>
+    <small>Canonical delivery ${esc(item.delivery_state || item.outcome)} · connection ${esc(item.connection_id || 'unknown')} · project ${esc(item.project_id || 'unknown')}</small>
+    ${item.input_protected ? `<small>Protected original · governance ${esc(item.governance_record_id || 'unknown')} · authority ${esc(item.authority_digest || 'unknown')}</small>` : ''}
+    ${item.queued_id ? `<small>Queue admission ${esc(item.queued_id)} · execution must be verified in queue/preflight inspection</small>` : ''}
+    ${item.routing_result?.actionIntentId ? `<small>Details ActionIntent <a href="/api/action-intents/${encodeURIComponent(item.routing_result.actionIntentId)}" target="_blank" rel="noreferrer">${esc(item.routing_result.actionIntentId)}</a> · admitted status ${esc(item.routing_result.actionIntentStatus || 'unknown')} · inspect canonical action state for delivery/reconciliation</small>` : ''}
     ${item.input_retained ? `<small>Input retained · ingest identity ${esc(item.ingest_actor_id || 'unknown')} · project ${esc(item.project_id || 'unknown')}</small>` : ''}
     ${item.reason ? `<small>${esc(item.reason)}</small>` : ''}
   </div>`).join('');
@@ -96,6 +101,11 @@ async function loadInspector() {
     if (providerHost) providerHost.innerHTML = providerRows(providers.items || [], provider);
     if (messageHost) messageHost.innerHTML = messageRows(messages.items || []);
     if (receiptHost) receiptHost.innerHTML = receiptRows(receipts.items || [], provider);
+    const canonicalHost = document.querySelector('#conversation-channel-canonical-status');
+    if (canonicalHost) {
+      const counts = receipts.canonical_state_counts || {};
+      canonicalHost.textContent = `Canonical delivery: retained/pending ${counts.retained_pending ?? 'unknown'} · queue admitted ${counts.queue_admitted ?? 'unknown'} · action admitted ${counts.action_admitted ?? 0} · projected ${counts.projected ?? 'unknown'} · failed ${counts.failed ?? 'unknown'} · reconciliation ${counts.reconciliation ?? 'unknown'}. Transport accepted/processed counters describe worker traffic; projection completion does not prove native execution completed.`;
+    }
     if (status) status.textContent = 'Canonical state loaded';
   } catch (error) {
     if (status) status.textContent = error?.message || 'Failed to load ConversationChannel state';

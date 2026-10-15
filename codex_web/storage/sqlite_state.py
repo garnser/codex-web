@@ -495,6 +495,12 @@ class SQLiteStateStore:
                 connection.execute("BEGIN IMMEDIATE")
                 current = {}
                 for namespace, keys in selected.items():
+                    if None in keys:
+                        if keys != (None,) or self._record_collection_exists_in_connection(connection, namespace):
+                            raise ValueError("document selector must name a single non-record namespace")
+                        row = connection.execute("SELECT payload FROM state_documents WHERE namespace = ?", (namespace,)).fetchone()
+                        current[namespace] = {None: self._decode(row)}
+                        continue
                     self._ensure_record_collection_in_connection(connection, namespace)
                     current[namespace] = {}
                     for key in dict.fromkeys(keys):
@@ -507,6 +513,16 @@ class SQLiteStateStore:
                 for namespace, delta in changes.items():
                     if not isinstance(delta, dict):
                         raise TypeError("collection delta must be a mapping")
+                    if selected[namespace] == (None,):
+                        if set(delta) != {None}:
+                            raise ValueError("document delta must contain exactly its None row")
+                        if delta[None] is None:
+                            connection.execute("DELETE FROM state_documents WHERE namespace = ?", (namespace,))
+                        else:
+                            self._upsert(connection, namespace, delta[None])
+                        continue
+                    if None in delta:
+                        raise ValueError("record delta cannot use a document selector")
                     changed, deleted_revision = False, 0.0
                     for key, payload in delta.items():
                         storage_key = state_record_storage_key(namespace, str(key))

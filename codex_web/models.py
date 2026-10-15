@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator, model_serializer
 
 from codex_web.ux_briefs import UxBriefSelection, UxBriefTurnBinding
 from codex_web.notification_provenance import ProviderNotificationPin
@@ -650,6 +650,8 @@ class ActiveThreadTurn(BaseModel):
 
 
 class QueuedTurn(BaseModel):
+    canonical_ingress_id: str | None = None
+    ingress_execution_profile_definition: DefinitionReference | None = None
     id: str
     thread_id: str
     project_id: str
@@ -793,6 +795,9 @@ class BotBindingCreate(BaseModel):
 
 
 class BotInboundMessage(BaseModel):
+    _ingress_authority: dict[str, Any] | None = PrivateAttr(default=None)
+    _ingress_actor_id: str | None = PrivateAttr(default=None)
+    canonical_ingress_id: str | None = None
     provider: BotProvider
     external_conversation_id: str = Field(min_length=1)
     text: str = Field(min_length=1)

@@ -9,7 +9,8 @@ from types import SimpleNamespace
 from typing import Any
 
 from codex_web.conversation_channels import ConversationProjectionOutcome
-from codex_web.models import BotInboundMessage, BotRouteTest
+from codex_web.services.conversation_channels import ConversationChannelReconciliationError
+from codex_web.models import BotInboundMessage, BotRouteTest, ThreadRunSettings
 from codex_web.paths import SLACK_RELAY_NOTICE
 from codex_web.runtime.execution import TurnExecutionService
 from codex_web.services.bot_binding_selection import BotBindingSelectionService
@@ -359,6 +360,8 @@ class BotRoutingService:
         self,
         message: BotInboundMessage,
     ) -> dict[str, Any]:
+        if message.canonical_ingress_id and message._ingress_authority is None:
+            raise ConversationChannelReconciliationError("captured_ingress_authority_unavailable")
         provider = message.provider.lower()
         bindings = self.bindings.for_connection(
             provider,
@@ -465,11 +468,18 @@ class BotRoutingService:
                 "ambiguous": True,
                 "availablePrefixes": available_prefixes,
             }
+        captured_default = None
         if binding is None:
             from codex_web.models import BotBindingCreate
 
+            captured_default = message._ingress_authority.get("new_binding") if message.canonical_ingress_id else None
+            if message.canonical_ingress_id and captured_default is None:
+                raise ConversationChannelReconciliationError(message._ingress_authority.get(
+                    "new_binding_error", "captured_auto_binding_scope_unavailable"))
+
             binding = await self.binding_lifecycle.start(
                 BotBindingCreate(
+                    **(captured_default["binding"] if captured_default else {}),
                     connection_id=message.connection_id,
                     provider=provider,
                     external_conversation_id=(
@@ -487,6 +497,19 @@ class BotRoutingService:
 
         project = self.projects.get(binding.project_id)
         settings = self.settings.get(binding.thread_id)
+        captured = None
+        if message.canonical_ingress_id:
+            captured = next((row for row in message._ingress_authority.get("routing", ())
+                if row["binding"]["thread_id"] == binding.thread_id and row["binding"]["project_id"] == project.id), None)
+            if captured is None:
+                captured = captured_default
+            if captured is None:
+                raise ConversationChannelReconciliationError("selected_binding_authority_unavailable")
+            # Scope comes from the protected original, never from settings that
+            # changed while this routing coroutine awaited another boundary.
+            settings = ThreadRunSettings.model_validate(captured["settings"])
+            binding = binding.model_copy(update={"sandbox": captured["binding"]["sandbox"],
+                "approval_policy": captured["binding"]["approval_policy"]})
         effective_model = settings.model or project.model
         effective_reasoning_effort = settings.reasoning_effort
         if not routed_text.strip():
@@ -497,12 +520,15 @@ class BotRoutingService:
             }
         reply_target = self.targets.remember_reply_target(binding, message)
         if self.presentation.is_details_command(routed_text):
-            delivery = await self.delivery.send_details(binding)
+            delivery = (await self.delivery.admit_details(binding, message)
+                if message.canonical_ingress_id else await self.delivery.send_details(binding))
             return {
                 "ok": True,
                 "threadId": binding.thread_id,
                 "details": True,
                 "delivery": delivery,
+                "actionIntentId": delivery.get("actionIntentId"),
+                "actionIntentStatus": delivery.get("status"),
             }
         prompt = self.presentation.format_prompt(
             message,
@@ -510,12 +536,17 @@ class BotRoutingService:
             routed_text,
         )
         if steer_now and self.execution.thread_is_active(binding.thread_id):
-            with contextlib.suppress(Exception):
+            if message.canonical_ingress_id:
+                # A failed interrupt may have taken effect. Keep the durable
+                # claim uncertain; do not start another turn or replay it.
                 await self.execution.request_for_thread(
                     binding.thread_id,
                     "turn/interrupt",
                     {"threadId": binding.thread_id},
                 )
+            else:
+                with contextlib.suppress(Exception):
+                    await self.execution.request_for_thread(binding.thread_id, "turn/interrupt", {"threadId": binding.thread_id})
             self.execution.clear_thread_active(binding.thread_id)
         if not steer_now:
             self.recovery.release_stale_active_turn(
@@ -527,7 +558,26 @@ class BotRoutingService:
             event_type: str,
             reason: str | None = None,
         ) -> dict[str, Any]:
+            ingress_scope = {}
+            if message.canonical_ingress_id:
+                profile = captured.get("profile") or {}
+                from codex_web.definitions import DefinitionReference
+                ingress_scope = {
+                    "ingress_execution_profile_definition": DefinitionReference.model_validate(captured["definition"]),
+                    "repository_resource_id": settings.repository_resource_id,
+                    "writable_repository_resource_ids": settings.writable_repository_resource_ids,
+                    "read_only_repository_resource_ids": settings.read_only_repository_resource_ids,
+                    "execution_profile_id": profile.get("execution_profile_id") or captured["execution_profile"]["id"],
+                    "agent_profile_id": profile.get("profile_id"),
+                    "agent_profile_revision": profile.get("revision"),
+                    "agent_profile_actor_id": message._ingress_actor_id,
+                }
+                if captured["execution_profile"]["repository_access"] == "none":
+                    ingress_scope.update(repository_resource_id=None, writable_repository_resource_ids=(), read_only_repository_resource_ids=())
             queued = self.execution.enqueue_turn(
+                **({"admit_first": True} if message.canonical_ingress_id and steer_now else {}),
+                **ingress_scope,
+                **({"canonical_ingress_id": message.canonical_ingress_id} if message.canonical_ingress_id else {}),
                 thread_id=binding.thread_id,
                 project_id=project.id,
                 message=prompt,
@@ -535,7 +585,7 @@ class BotRoutingService:
                 approval_policy=binding.approval_policy,
                 model=effective_model,
                 reasoning_effort=effective_reasoning_effort,
-                source=provider,
+                source=f"steer:{provider}" if steer_now else provider,
                 reply_target=reply_target,
             )
             binding.updated_at = time.time()
@@ -558,7 +608,7 @@ class BotRoutingService:
                 )
             self.telemetry.append(event_payload)
             await self.execution.publish_queue_status(binding.thread_id)
-            if not self.execution.thread_is_active(binding.thread_id):
+            if not (message.canonical_ingress_id and steer_now) and not self.execution.thread_is_active(binding.thread_id):
                 asyncio.get_running_loop().call_later(
                     5,
                     self.execution.schedule_queue_drain,
@@ -589,6 +639,16 @@ class BotRoutingService:
                 "queueDepth": queue_depth,
             }
 
+        if message.canonical_ingress_id:
+            result = await queue_inbound_turn("inbound_turn_steered" if steer_now else "inbound_turn_queued")
+            if steer_now:
+                # The canonical drain persists the selected queue snapshot and
+                # preflight/start claim before invoking the worker. It carries
+                # the captured per-turn profile/actor/repository scope and owns
+                # unknown native-start outcomes; never use the raw RPC path.
+                await self.execution.drain_thread_queue(binding.thread_id)
+                result["steered"] = True
+            return result
         if not steer_now and (
             self.execution.thread_is_active(binding.thread_id)
             or self.queue_policy.depth(binding.thread_id)
@@ -596,7 +656,7 @@ class BotRoutingService:
             return await queue_inbound_turn("inbound_turn_queued")
 
         turn: dict[str, Any] | None = None
-        for attempt in range(3):
+        for attempt in range(1 if message.canonical_ingress_id else 3):
             try:
                 await self.execution.request_for_thread(
                     binding.thread_id,
@@ -642,6 +702,8 @@ class BotRoutingService:
                 )
                 break
             except Exception as exc:
+                if message.canonical_ingress_id:
+                    raise
                 if self.resume.is_timeout_error(exc):
                     self.telemetry.append(
                         {
@@ -719,6 +781,8 @@ class BotRoutingService:
                     or reply_target
                 )
 
+        if message.canonical_ingress_id and not (turn.get("turn") or {}).get("id"):
+            raise RuntimeError("native start has no authoritative turn receipt; reconciliation required")
         self.execution.mark_thread_active(
             binding.thread_id,
             turn_id=(

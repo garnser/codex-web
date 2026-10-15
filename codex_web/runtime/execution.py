@@ -793,6 +793,9 @@ class TurnExecutionService:
         agent_profile_actor_id: str | None = None,
         memory_context_binding: UxBriefTurnBinding | None = None,
         provider_notification_pin=None,
+        canonical_ingress_id: str | None = None,
+        ingress_execution_profile_definition=None,
+        admit_first: bool = False,
     ) -> QueuedTurn:
         h = self.host
         selected: dict[str, QueuedTurn] = {}
@@ -800,6 +803,8 @@ class TurnExecutionService:
         def mutate(items: list[QueuedTurn]) -> list[QueuedTurn]:
             for existing in items:
                 if (
+                    existing.canonical_ingress_id == canonical_ingress_id
+                    and
                     existing.source == source
                     and existing.message == message
                     and existing.project_id == project_id
@@ -870,6 +875,8 @@ class TurnExecutionService:
             # rather than reporting successful admission.
 
             queued = QueuedTurn(
+                canonical_ingress_id=canonical_ingress_id,
+                ingress_execution_profile_definition=ingress_execution_profile_definition,
                 id=(
                     h.uuid.uuid4().hex[:12]
                     if hasattr(h, "uuid")
@@ -910,11 +917,17 @@ class TurnExecutionService:
                         'message':'This original request is retained for recovery; use its existing preflight action.',
                         'attemptId':retained.id,'retainedMessage':True,
                         'status':retained.status,'retryable':False})
-            items.append(queued)
+            if admit_first:
+                items.insert(0, queued)
+            else:
+                items.append(queued)
             selected["item"] = queued
             return items
 
-        self._update_thread_queue(thread_id, mutate)
+        if canonical_ingress_id is not None:
+            h._update_thread_queue_with_ingress(thread_id, canonical_ingress_id, mutate)
+        else:
+            self._update_thread_queue(thread_id, mutate)
         return selected["item"]
 
     def find_duplicate_queued_turn(
@@ -1855,6 +1868,7 @@ class TurnExecutionService:
         read_only_repository_resource_ids: tuple[str, ...] = (),
         read_only_scope_supplied: bool = False,
         execution_profile_id: str | None = None,
+        ingress_execution_profile_definition=None,
         actor: AuthenticationActor | None = None,
         agent_profile_id: str | None = None,
         agent_profile_revision: int | None = None,
@@ -1916,6 +1930,8 @@ class TurnExecutionService:
                     read_only_repository_resource_ids=read_only_repository_resource_ids,
                     read_only_scope_supplied=read_only_scope_supplied,
                     execution_profile_id=execution_profile_id,
+                    **({"ingress_execution_profile_definition": ingress_execution_profile_definition}
+                       if ingress_execution_profile_definition is not None else {}),
                     actor=actor,
                     agent_profile_id=agent_profile_id,
                     agent_profile_revision=agent_profile_revision,
@@ -1946,6 +1962,8 @@ class TurnExecutionService:
             read_only_repository_resource_ids=read_only_repository_resource_ids,
             read_only_scope_supplied=read_only_scope_supplied,
             execution_profile_id=execution_profile_id,
+                    **({"ingress_execution_profile_definition": ingress_execution_profile_definition}
+                       if ingress_execution_profile_definition is not None else {}),
             actor=actor,
             agent_profile_id=agent_profile_id,
             agent_profile_revision=agent_profile_revision,
@@ -1979,6 +1997,7 @@ class TurnExecutionService:
         read_only_repository_resource_ids: tuple[str, ...] = (),
         read_only_scope_supplied: bool = False,
         execution_profile_id: str | None = None,
+        ingress_execution_profile_definition=None,
         actor: AuthenticationActor | None = None,
         agent_profile_id: str | None = None,
         agent_profile_revision: int | None = None,
@@ -2041,6 +2060,14 @@ class TurnExecutionService:
                         notification_batch_admission_id,claim_id=queued_admission_claim_id,code=code)
                 raise
         binding_service, default_session_manager = self._require_worker_routing()
+        if ingress_execution_profile_definition is not None:
+            catalogs = getattr(binding_service, "execution_profiles", None)
+            if catalogs is None:
+                raise ExecutionPrestartRefusal(status_code=409, detail={"code": "ingress_execution_definition_unavailable"})
+            _, current_definition = catalogs.resolve(execution_profile_id,
+                organization_id=project.organization_id, workspace_id=project.workspace_id, project_id=project.id)
+            if current_definition != ingress_execution_profile_definition:
+                raise ExecutionPrestartRefusal(status_code=409, detail={"code": "ingress_execution_definition_changed"})
         settings = h._thread_run_settings(thread_id)
         effective_sandbox = sandbox or settings.sandbox or project.sandbox
         effective_approval_policy = (
@@ -3114,6 +3141,18 @@ class TurnExecutionService:
                             if path is not None
                         ),
                     )
+            if (ingress_execution_profile_definition is not None
+                    and getattr(assignment, "execution_profile_definition", None) != ingress_execution_profile_definition):
+                raise ExecutionPrestartRefusal(status_code=409, detail={"code": "ingress_execution_definition_assignment_mismatch"})
+            if ingress_execution_profile_definition is not None:
+                assigned_scope = getattr(assignment, "repository_scope", None)
+                assigned_writes = tuple(getattr(assigned_scope, "writable_repository_ids", ()))
+                assigned_reads = tuple(getattr(assigned_scope, "read_only_repository_ids", ()))
+                expected_writes = writable_repository_resource_ids or (
+                    (repository_resource_id,) if repository_resource_id else ())
+                if (set(assigned_writes) != set(expected_writes)
+                        or set(assigned_reads) != set(read_only_repository_resource_ids)):
+                    raise ExecutionPrestartRefusal(status_code=409, detail={"code": "ingress_repository_assignment_mismatch"})
             params["input"][0]["text"] = self.with_relay_guard(
                 params["input"][0]["text"],
                 self.turn_source_for_relay_guard(thread_id, source),
@@ -3700,11 +3739,13 @@ class TurnExecutionService:
                     ),
                     repository_resource_id=(
                         queued.repository_resource_id
-                        or current_settings.repository_resource_id
+                        if queued.canonical_ingress_id else
+                        queued.repository_resource_id or current_settings.repository_resource_id
                     ),
                     writable_repository_resource_ids=(
                         queued.writable_repository_resource_ids
-                        or current_settings.writable_repository_resource_ids
+                        if queued.canonical_ingress_id else
+                        queued.writable_repository_resource_ids or current_settings.writable_repository_resource_ids
                     ),
                     read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
                     execution_profile_id=(
@@ -3713,7 +3754,7 @@ class TurnExecutionService:
                     ),
                 )
             queued_actor = None
-            if queued.agent_profile_id:
+            if queued.agent_profile_id or queued.canonical_ingress_id:
                 if (
                     not queued.agent_profile_actor_id
                     or self.actor_resolver is None
@@ -3748,6 +3789,8 @@ class TurnExecutionService:
                 writable_repository_resource_ids=queued.writable_repository_resource_ids,
                 read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
                 execution_profile_id=queued.execution_profile_id,
+                **({"ingress_execution_profile_definition": queued.ingress_execution_profile_definition}
+                   if queued.ingress_execution_profile_definition is not None else {}),
                 actor=queued_actor,
                 agent_profile_id=queued.agent_profile_id,
                 agent_profile_revision=queued.agent_profile_revision,

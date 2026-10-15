@@ -184,6 +184,7 @@ class DataGovernanceService:
         payload: GovernedDataCreate,
         *,
         actor: AuthenticationActor,
+        state: DataGovernanceState | None = None,
     ) -> GovernedDataRecord:
         """Register mandatory metadata for an already-authorized domain write.
 
@@ -263,7 +264,13 @@ class DataGovernanceService:
             created.append(record)
             return state
 
-        self.store.update(apply)
+        if state is None:
+            self.store.update(apply)
+        else:
+            # Owning domain may compose registration into its canonical
+            # transaction. The same validation/audit engine is used; failed
+            # domain retention cannot leave an orphan registration behind.
+            apply(state)
         return created[0]
 
     def set_legal_hold(

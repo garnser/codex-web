@@ -21,9 +21,42 @@ from codex_web.conversation_channels import (
     ConversationProjectionReceipt,
 )
 from codex_web.identity import AuthenticationActor
+from codex_web.crypto import EncryptionContext, KeyPurpose, KeyStatus, KeyVersionStatus, CryptoKeyState
+from codex_web.data_governance import DataGovernanceState
+from codex_web.data_governance import GovernedDataCreate, DataCategory, DataClassification, GovernedDataLifecycle
 from codex_web.models import BotInboundMessage
 from codex_web.services.canonical_events import CanonicalEventIngestionService
 from codex_web.storage.conversation_channels import ConversationChannelStore
+
+
+def capture_repository_selection(settings, project, execution_profile, resources, actor):
+    """Freeze existing canonical repository selection; never resolve from payload/path."""
+    from codex_web.resources import ResourceType, ResourceLifecycle
+    from codex_web.services.identity import TenantIsolationError
+    if (project.organization_id, project.workspace_id) != (actor.organization_id, actor.workspace_id):
+        raise TenantIsolationError("cross-tenant repository capture denied")
+    if execution_profile.repository_access == "none":
+        return settings.model_copy(update={"repository_resource_id": None,
+            "writable_repository_resource_ids": (), "read_only_repository_resource_ids": ()})
+    writes = settings.writable_repository_resource_ids
+    if not writes and project.repository_selection_policy == "coordinated":
+        writes = tuple(row.id for row in resources.project_resources(project, actor=actor)
+            if row.resource_type == ResourceType.REPOSITORY and row.lifecycle == ResourceLifecycle.ACTIVE)
+    if writes:
+        if settings.repository_resource_id and settings.repository_resource_id not in writes:
+            raise ValueError("captured repository selectors conflict")
+        for repository in writes:
+            resources.resolve_repository_target(project, actor=actor, explicit_repository_id=repository,
+                read_only_repository_ids=settings.read_only_repository_resource_ids)
+        selected = settings.repository_resource_id or (writes[0] if len(writes) == 1 else None)
+    else:
+        target = resources.resolve_repository_target(project, actor=actor,
+            explicit_repository_id=settings.repository_resource_id,
+            read_only_repository_ids=settings.read_only_repository_resource_ids)
+        selected = target.mutable_repository_id
+        writes = (selected,) if selected else ()
+    return settings.model_copy(update={"repository_resource_id": selected,
+        "writable_repository_resource_ids": tuple(writes)})
 
 
 ConversationRouteHandler = Callable[[BotInboundMessage], Awaitable[dict[str, Any]]]
@@ -46,6 +79,12 @@ class ConversationChannelConflictError(ConversationChannelError):
 
 class ConversationChannelUnavailableError(ConversationChannelError):
     pass
+
+
+class ConversationChannelReconciliationError(ConversationChannelError):
+    def __init__(self, reason_code: str):
+        self.reason_code = reason_code
+        super().__init__(reason_code)
 
 
 class ConversationChannelValidationError(ConversationChannelError):
@@ -253,6 +292,8 @@ class ConversationChannelService:
 
     MAX_RECEIPTS = 20_000
     MAX_MESSAGES = 20_000
+    MAX_INPUT_BYTES = 2 * 1024 * 1024
+    MAX_PROTECTED_BYTES = 64 * 1024 * 1024
 
     def __init__(
         self,
@@ -262,12 +303,55 @@ class ConversationChannelService:
         route_handler: ConversationRouteHandler,
         *,
         clock=time.time,
+        crypto=None,
+        governance=None,
+        authority_snapshot=None,
     ) -> None:
         self.store = store
         self.registry = registry
         self.canonical_events = canonical_events
         self.route_handler = route_handler
         self.clock = clock
+        self.crypto = crypto
+        self.governance = governance
+        self.authority_snapshot = authority_snapshot
+
+    def _context(self, receipt):
+        return EncryptionContext(organization_id=receipt.organization_id,
+            workspace_id=receipt.workspace_id, project_id=receipt.project_id,
+            object_type="conversation_ingress", object_id=receipt.canonical_event_id)
+
+    def _authority(self, event, actor):
+        if self.authority_snapshot is None or event.message.conversation.provider_type != "slack":
+            return None
+        snapshot = self.authority_snapshot(event, actor)
+        return hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    def retained_input(self, receipt, actor):
+        if not self._same_scope(receipt, actor) or receipt.ingest_actor_id != actor.identity_id:
+            raise ConversationChannelConflictError("retained conversation actor/scope changed")
+        if receipt.protected_input is None:
+            return {"event": receipt.retained_event.model_dump(mode="json")} if receipt.retained_event else None
+        record = self.governance.get_record(receipt.governance_record_id, actor=actor)
+        if record.lifecycle != GovernedDataLifecycle.ACTIVE or (
+            record.retention_expires_at is not None and record.retention_expires_at <= self.clock()
+        ):
+            raise ConversationChannelUnavailableError("retained input is unavailable under data policy")
+        return json.loads(self.crypto.decrypt(receipt.protected_input, self._context(receipt), actor=actor))
+
+    def governance_action(self, record, action):
+        def apply(state):
+            receipt = state.receipts.get(record.object_id)
+            if receipt is None or (receipt.organization_id, receipt.workspace_id) != (record.organization_id, record.workspace_id):
+                raise ConversationChannelNotFoundError("retained input not found")
+            state.receipts[record.object_id] = receipt.model_copy(update={
+                "retained_event": None, "protected_input": None,
+                "outcome": ConversationProjectionOutcome.FAILED,
+                "reason": "input removed by canonical data-governance action",
+            })
+            return state
+        self.store.update(apply)
+        return record.object_id
 
     @staticmethod
     def _same_scope(item: Any, actor: AuthenticationActor) -> bool:
@@ -281,17 +365,76 @@ class ConversationChannelService:
         return event.model_dump(mode="json")
 
     @staticmethod
-    def _message_state_key(
-        actor: AuthenticationActor,
-        event: ConversationChannelEvent,
-    ) -> str:
-        return "::".join(
-            (
-                actor.organization_id,
-                actor.workspace_id,
-                event.message.stable_key(),
-            )
-        )
+    def _retention_identity(event: ConversationChannelEvent, actor: AuthenticationActor) -> tuple[str, str]:
+        conversation = event.message.conversation
+        source = f"conversation-channel:{conversation.provider_type}:{conversation.provider_instance}"
+        # Canonical connection/Project values are supplied by authenticated
+        # ingress, never by Slack's team/project claims. JSON avoids delimiter
+        # collisions. Thread/message/sender changes under this delivery identity
+        # are conflicts, rather than opportunities to create a second receipt.
+        key = json.dumps([
+            actor.organization_id, actor.workspace_id, source,
+            event.connection_id, event.project_id, conversation.conversation_id,
+            event.delivery_id,
+        ], separators=(",", ":"), ensure_ascii=False)
+        return source, key
+
+    @classmethod
+    def _input_digest(cls, event: ConversationChannelEvent, original_payload: dict[str, Any] | None) -> str:
+        content = {"event": cls._event_payload(event)}
+        if original_payload is not None:
+            # Socket Mode delivery diagnostics may change on a legitimate
+            # resend. Only these TOP-LEVEL transport fields are excluded from
+            # compatibility; similarly named fields inside a message are data.
+            transport_fields = {"envelope_id", "retry_attempt", "retry_reason", "accepts_response_payload"}
+            content["original_payload"] = {key: value for key, value in original_payload.items()
+                if key not in transport_fields}
+        return hashlib.sha256(json.dumps(content, sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest()
+
+    @staticmethod
+    def _source_authority_digest(snapshot):
+        if snapshot is None:
+            return None
+        # Source authentication is independent of routing state that this very
+        # delivery can legitimately create/update. Routing pins stay immutable
+        # and are revalidated separately before any retained routing resumes.
+        source = {key:value for key,value in snapshot.items() if key not in {"routing","new_binding","new_binding_error"}}
+        return hashlib.sha256(json.dumps(source, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    def _validate_retained(self, receipt, event, actor, *, input_digest=None,
+            authority_digest=None, source_authority_digest=None, check_authority=False, persisted_event=None):
+        incompatible = (receipt is None or not self._same_scope(receipt, actor)
+            or receipt.ingest_actor_id != actor.identity_id
+            or receipt.connection_id != event.connection_id
+            or receipt.project_id != event.project_id
+            or receipt.message_key != event.message.stable_key()
+            or (input_digest is not None and receipt.input_digest != input_digest))
+        if check_authority and not incompatible:
+            proof = persisted_event.payload if persisted_event is not None else None
+            incompatible = (proof is None or any(proof.get(field) != getattr(receipt,field)
+                for field in ("connection_id","project_id","message_key","ingest_actor_id",
+                    "input_digest","authority_digest","source_authority_digest")))
+            if receipt.source_authority_digest is None:
+                # Older protected readers did not distinguish authentication
+                # from mutable routing state. Do not guess their source pins.
+                incompatible = incompatible or receipt.authority_digest != authority_digest
+            else:
+                incompatible = incompatible or receipt.source_authority_digest != source_authority_digest
+        if incompatible:
+            raise ConversationChannelConflictError("retained original input/provenance is incompatible; no acknowledgement")
+
+    @staticmethod
+    def _position_key(organization_id, workspace_id, connection_id, project_id, message):
+        if connection_id is None and project_id is None:
+            return "::".join((organization_id, workspace_id, message.stable_key()))
+        return json.dumps([organization_id, workspace_id, connection_id, project_id,
+            message.stable_key()], separators=(",", ":"), ensure_ascii=False)
+
+    @classmethod
+    def _message_state_key(cls, actor, event):
+        return cls._position_key(actor.organization_id, actor.workspace_id,
+            event.connection_id, event.project_id, event.message)
 
     @staticmethod
     def _message_text(event: ConversationChannelEvent) -> str:
@@ -321,6 +464,9 @@ class ConversationChannelService:
             "empty",
             "timedOut",
             "steered",
+            "details",
+            "actionIntentId",
+            "actionIntentStatus",
             "threadId",
             "queuedId",
             "queueDepth",
@@ -415,11 +561,19 @@ class ConversationChannelService:
         now = float(self.clock())
 
         def apply(state: ConversationChannelState) -> ConversationChannelState:
+            nonlocal outcome, thread_id, queued_id, routing_result
             current = state.receipts.get(canonical_event_id)
             if current is None or not self._same_scope(current, actor):
                 raise ConversationChannelNotFoundError(
                     "conversation projection receipt not found"
                 )
+            if current.outcome == ConversationProjectionOutcome.QUEUE_ADMITTED:
+                # Successful atomic queue admission is proven even if a later
+                # publication or projection failed. Preserve that evidence.
+                thread_id = current.thread_id
+                queued_id = current.queued_id
+                routing_result = current.routing_result
+                outcome = ConversationProjectionOutcome.ROUTED
             updated = current.model_copy(
                 update={
                     "outcome": outcome,
@@ -445,19 +599,13 @@ class ConversationChannelService:
             )
             state.receipts[canonical_event_id] = updated
             if message_state is not None:
-                state.messages[
-                    "::".join(
-                        (
-                            message_state.organization_id,
-                            message_state.workspace_id,
-                            message_state.message.stable_key(),
-                        )
-                    )
-                ] = message_state
+                state.messages[self._position_key(message_state.organization_id,
+                    message_state.workspace_id, message_state.connection_id,
+                    message_state.project_id, message_state.message)] = message_state
             if len(state.receipts) > self.MAX_RECEIPTS:
                 protected = {
                     key: item for key, item in state.receipts.items()
-                    if item.retained_event is not None
+                    if item.retained_event is not None or item.protected_input is not None or item.input_digest is not None
                     or item.outcome in {
                         ConversationProjectionOutcome.PENDING,
                         ConversationProjectionOutcome.ROUTING,
@@ -476,16 +624,8 @@ class ConversationChannelService:
                     key=lambda item: (item.updated_at, item.last_canonical_event_id),
                     reverse=True,
                 )[: self.MAX_MESSAGES]
-                state.messages = {
-                    "::".join(
-                        (
-                            item.organization_id,
-                            item.workspace_id,
-                            item.message.stable_key(),
-                        )
-                    ): item
-                    for item in rows
-                }
+                state.messages = {self._position_key(item.organization_id, item.workspace_id,
+                    item.connection_id, item.project_id, item.message): item for item in rows}
             saved.append(updated)
             return state
 
@@ -504,6 +644,7 @@ class ConversationChannelService:
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
             message=event.message,
+            connection_id=event.connection_id, project_id=event.project_id,
             event_kind=event.event_kind,
             occurred_at=event.occurred_at,
             provider_sequence=event.provider_sequence,
@@ -519,58 +660,123 @@ class ConversationChannelService:
         event: ConversationChannelEvent,
         *,
         actor: AuthenticationActor,
+        original_payload: dict[str, Any] | None = None,
     ) -> ConversationProjectionReceipt:
-        provider = event.message.conversation.provider_type
-        instance = event.message.conversation.provider_instance
-        source = f"conversation-channel:{provider}:{instance}"
-        delivery = await self.canonical_events.ingest(
-            event_type=CanonicalEventType.CONVERSATION_CHANNEL,
-            source=source,
-            idempotency_key="::".join(
-                (
-                    actor.organization_id,
-                    actor.workspace_id,
-                    source,
-                    event.delivery_id,
-                )
-            ),
-            occurred_at=event.occurred_at,
-            tenant_id=actor.organization_id,
-            workspace_id=actor.workspace_id,
-            payload=self._event_payload(event),
+        source, key = self._retention_identity(event, actor)
+        canonical_id = self.canonical_events._event_id(source, key)
+        authority_snapshot = (self.authority_snapshot(event, actor)
+            if self.authority_snapshot is not None and event.message.conversation.provider_type == "slack" else None)
+        authority_digest = (hashlib.sha256(json.dumps(authority_snapshot, sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest() if authority_snapshot is not None else None)
+        source_authority_digest = self._source_authority_digest(authority_snapshot)
+        legacy_key = "::".join((actor.organization_id, actor.workspace_id, source, event.delivery_id))
+        legacy_id = self.canonical_events._event_id(source, legacy_key)
+        if (legacy_id in self.store.load().receipts
+            or self.canonical_events.bus.store.event(legacy_id) is not None):
+            # A new identity format is not evidence that a legacy delivery never
+            # routed. Old receipts cannot prove exact connection/authority
+            # compatibility, so leave them for governed reconciliation.
+            raise ConversationChannelConflictError("legacy delivery identity requires reconciliation; no acknowledgement")
+        content = {"event": self._event_payload(event)}
+        if authority_snapshot is not None:
+            content["authority_snapshot"] = authority_snapshot
+        if original_payload is not None:
+            content["original_payload"] = original_payload
+        serialized = json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
+        if len(serialized) > self.MAX_INPUT_BYTES:
+            raise ConversationChannelUnavailableError("original input exceeds protected retention capacity; no acknowledgement")
+        input_digest = self._input_digest(event, original_payload)
+        existing = self.store.load().receipts.get(canonical_id)
+        if existing is not None:
+            # A committed compatible receipt is the durability proof. Do not
+            # re-encrypt, register governance metadata or append audit writes
+            # for each transport resend. A concurrent uncommitted original is
+            # invisible here and still goes through the canonical transaction.
+            self._validate_retained(existing, event, actor, input_digest=input_digest,
+                authority_digest=authority_digest, source_authority_digest=source_authority_digest,
+                check_authority=True, persisted_event=self.canonical_events.bus.store.event(canonical_id))
+            return existing
+        candidate = ConversationProjectionReceipt(
+            canonical_event_id=canonical_id, organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id, message_key=event.message.stable_key(),
+            outcome=ConversationProjectionOutcome.PENDING, ingest_actor_id=actor.identity_id,
+            connection_id=event.connection_id, project_id=event.project_id,
+            input_digest=input_digest, authority_digest=authority_digest,
+            source_authority_digest=source_authority_digest,
+            reason="durably retained; routing has not started",
         )
-        canonical_id = delivery.event.event_id
-        saved: list[ConversationProjectionReceipt] = []
+        protect_input = self.crypto is not None and event.message.conversation.provider_type == "slack"
+        if protect_input:
+            def protect():
+                keys = [item for item in self.crypto.store.load().keys
+                    if self.crypto._same_scope(item, actor)
+                    if item.purpose == KeyPurpose.INTEGRATION_PAYLOAD and item.status == KeyStatus.ACTIVE
+                    and item.scope.project_id == event.project_id and item.scope.resource_id is None]
+                if len(keys) != 1:
+                    raise ConversationChannelUnavailableError("exact Project integration-payload key required")
+                return self.crypto.encrypt(keys[0].id, serialized, self._context(candidate), actor=actor)
+            candidate.protected_input = await asyncio.to_thread(protect)
+        else:
+            candidate.retained_event = event
 
-        def apply(state: ConversationChannelState) -> ConversationChannelState:
+        def apply(raw):
+            state = self.store._decode(raw)
             existing = state.receipts.get(canonical_id)
             if existing is not None:
-                if not self._same_scope(existing, actor):
-                    raise ConversationChannelConflictError("retained conversation scope changed")
-                if existing.ingest_actor_id is not None and existing.ingest_actor_id != actor.identity_id:
-                    raise ConversationChannelConflictError("retained conversation actor changed")
-                saved.append(existing)
-                return state
-            receipt = ConversationProjectionReceipt(
-                canonical_event_id=canonical_id,
-                organization_id=actor.organization_id,
-                workspace_id=actor.workspace_id,
-                message_key=event.message.stable_key(),
-                outcome=ConversationProjectionOutcome.PENDING,
-                retained_event=event,
-                ingest_actor_id=actor.identity_id,
-                retention_sequence=state.next_retention_sequence,
-                reason="durably retained; routing has not started",
-                created_at=float(self.clock()),
-                updated_at=float(self.clock()),
-            )
+                raise ConversationChannelConflictError("receipt exists without its atomic canonical event")
+            if candidate.protected_input is not None:
+                protected_bytes = sum(len(row.protected_input.ciphertext_b64) for row in state.receipts.values() if row.protected_input is not None)
+                if protected_bytes + len(candidate.protected_input.ciphertext_b64) > self.MAX_PROTECTED_BYTES:
+                    raise ConversationChannelUnavailableError("protected retention is full; no acknowledgement")
             state.next_retention_sequence += 1
-            state.receipts[canonical_id] = receipt
-            saved.append(receipt)
-            return state
+            candidate.retention_sequence = state.next_retention_sequence - 1
+            state.receipts[canonical_id] = candidate
+            return state.model_dump(mode="json")
 
-        await asyncio.to_thread(self.store.update, apply)
-        return saved[0]
+        def validate_duplicate(raw, persisted):
+            receipt = self.store._decode(raw).receipts.get(persisted.event_id)
+            self._validate_retained(receipt, event, actor, input_digest=input_digest,
+                authority_digest=authority_digest, source_authority_digest=source_authority_digest,
+                check_authority=True, persisted_event=persisted)
+
+        def register_protection(documents):
+            keys = self.crypto.store._decode(documents[self.crypto.store.namespace])
+            protected = candidate.protected_input
+            key_record = self.crypto._key(keys, protected.key_id, actor)
+            self.crypto._ensure_key_context(key_record, self._context(candidate))
+            if key_record.status != KeyStatus.ACTIVE or self.crypto._version(key_record, protected.key_version).status != KeyVersionStatus.ACTIVE:
+                raise ConversationChannelUnavailableError("retention key changed before canonical commit")
+            governance = self.governance.store._decode(documents[self.governance.store.namespace])
+            record = self.governance.register_domain_record(GovernedDataCreate(
+                project_id=event.project_id, object_type="conversation_ingress", object_id=canonical_id,
+                category=DataCategory.INTEGRATION_PAYLOAD, classification=DataClassification.CONFIDENTIAL,
+            ), actor=actor, state=governance)
+            candidate.governance_record_id = record.id
+            documents[self.governance.store.namespace] = governance.model_dump(mode="json")
+            return documents
+
+        # Event metadata, inbox/outbox identity and retained input share the
+        # existing canonical document/event transaction. A duplicate waits for
+        # that transaction; there is no accepted-in-memory dedupe authority.
+        raw, delivery = await self.canonical_events.ingest_with_mutation(
+            namespace=self.store.namespace, default=ConversationChannelState().model_dump(mode="json"),
+            updater=apply, event_type=CanonicalEventType.CONVERSATION_CHANNEL,
+            duplicate_validator=validate_duplicate,
+            related_defaults=({self.crypto.store.namespace: CryptoKeyState().model_dump(mode="json"),
+                self.governance.store.namespace: DataGovernanceState().model_dump(mode="json")} if protect_input else None),
+            related_mutation=register_protection if protect_input else None,
+            source=source, idempotency_key=key, occurred_at=event.occurred_at,
+            tenant_id=actor.organization_id, workspace_id=actor.workspace_id,
+            payload={"message_key": event.message.stable_key(), "input_digest": input_digest,
+                "connection_id": event.connection_id, "project_id": event.project_id,
+                "ingest_actor_id": actor.identity_id, "authority_digest": authority_digest,
+                "source_authority_digest": source_authority_digest},
+        )
+        receipt = self.store._decode(raw).receipts.get(delivery.event.event_id)
+        self._validate_retained(receipt, event, actor, input_digest=input_digest,
+            authority_digest=authority_digest, source_authority_digest=source_authority_digest,
+            check_authority=True, persisted_event=delivery.event)
+        return receipt
 
     async def ingest(
         self,
@@ -578,7 +784,23 @@ class ConversationChannelService:
         *,
         actor: AuthenticationActor,
     ) -> ConversationProjectionReceipt:
-        retained = await self.retain(event, actor=actor)
+        source, key = self._retention_identity(event, actor)
+        retained = self.store.load().receipts.get(self.canonical_events._event_id(source, key))
+        if retained is None:
+            retained = await self.retain(event, actor=actor)
+        self._validate_retained(retained, event, actor)
+        if retained.outcome == ConversationProjectionOutcome.PENDING:
+            content = self.retained_input(retained, actor)
+            if content is None or content["event"] != event.model_dump(mode="json"):
+                raise ConversationChannelConflictError("retained original input changed")
+        if retained.outcome == ConversationProjectionOutcome.PENDING and retained.authority_digest is not None:
+            try:
+                if self._authority(event, actor) != retained.authority_digest:
+                    raise ConversationChannelConflictError("canonical connection/routing authority changed")
+            except Exception as exc:
+                return self._finish(retained.canonical_event_id, actor=actor,
+                    outcome=ConversationProjectionOutcome.REQUIRES_RECONCILIATION,
+                    reason=f"retained authority no longer valid: {type(exc).__name__}")
         canonical_id = retained.canonical_event_id
         provider = event.message.conversation.provider_type
         receipt, claimed = self._claim(
@@ -601,9 +823,14 @@ class ConversationChannelService:
                 }
             )
 
-        current = self.store.load().messages.get(
-            self._message_state_key(actor, event)
-        )
+        messages = self.store.load().messages
+        position_key = self._message_state_key(actor, event)
+        legacy_key = self._position_key(actor.organization_id, actor.workspace_id, None, None, event.message)
+        if position_key != legacy_key and legacy_key in messages:
+            return self._finish(canonical_id, actor=actor,
+                outcome=ConversationProjectionOutcome.REQUIRES_RECONCILIATION,
+                reason="legacy external-message position lacks exact connection/Project scope")
+        current = messages.get(position_key)
         if current is not None and self._is_stale(current, event):
             return self._finish(
                 canonical_id,
@@ -664,6 +891,7 @@ class ConversationChannelService:
             )
 
         message = BotInboundMessage(
+            canonical_ingress_id=canonical_id if retained.protected_input is not None else None,
             provider=provider,
             external_conversation_id=event.message.conversation.conversation_id,
             text=text,
@@ -675,6 +903,8 @@ class ConversationChannelService:
             external_thread_id=event.message.conversation.thread_id,
             message_id=event.message.message_id,
         )
+        message._ingress_authority = content.get("authority_snapshot")
+        message._ingress_actor_id = actor.identity_id
         try:
             result = await self.route_handler(message)
         except Exception as exc:
@@ -684,7 +914,7 @@ class ConversationChannelService:
                 outcome=ConversationProjectionOutcome.REQUIRES_RECONCILIATION,
                 reason=(
                     "routing claim is durable but downstream routing outcome is uncertain: "
-                    f"{type(exc).__name__}: {exc}"
+                    f"{getattr(exc, 'reason_code', type(exc).__name__)}"
                 )[:2000],
             )
 
@@ -692,7 +922,8 @@ class ConversationChannelService:
         return self._finish(
             canonical_id,
             actor=actor,
-            outcome=ConversationProjectionOutcome.ROUTED,
+            outcome=(ConversationProjectionOutcome.ROUTED if result.get("ok") is True
+                else ConversationProjectionOutcome.FAILED),
             thread_id=(
                 str(result.get("threadId"))
                 if result.get("threadId") is not None
@@ -767,12 +998,13 @@ class ConversationChannelService:
         self, provider_type: str, provider_instance: str, payload: object,
         *, actor: AuthenticationActor, connection_id: str | None = None,
         project_id: str | None = None,
+        original_payload: dict[str, Any] | None = None,
     ) -> tuple[ConversationProjectionReceipt, ...]:
         adapter = self.registry.resolve(provider_type, provider_instance)
         events = await adapter.normalize_events(
             payload, connection_id=connection_id, project_id=project_id,
         )
-        return tuple([await self.retain(event, actor=actor) for event in events])
+        return tuple([await self.retain(event, actor=actor, original_payload=original_payload or payload) for event in events])
 
     def pending_events(
         self, *, actor: AuthenticationActor, connection_id: str,
@@ -784,36 +1016,79 @@ class ConversationChannelService:
             raise ConversationChannelValidationError("pending event limit must be between 1 and 100")
         if not 1 <= partition_count <= 32:
             raise ConversationChannelValidationError("pending partition count must be between 1 and 32")
+        state = self.store.load()
+        # Complete only the ingress projection from atomic admission evidence.
+        # Missing native receipts/queue rows cannot prove non-start and never
+        # cause re-admission of this input.
+        for receipt in state.receipts.values():
+            if self._same_scope(receipt, actor) and receipt.ingest_actor_id == actor.identity_id and receipt.connection_id == connection_id and receipt.project_id == project_id and receipt.outcome == ConversationProjectionOutcome.QUEUE_ADMITTED:
+                self._finish(receipt.canonical_event_id, actor=actor, outcome=ConversationProjectionOutcome.ROUTED,
+                    reason="projection recovered from committed canonical queue admission")
         receipts = [
-            receipt for receipt in self.store.load().receipts.values()
+            receipt for receipt in state.receipts.values()
             if self._same_scope(receipt, actor)
             and receipt.ingest_actor_id == actor.identity_id
             and receipt.outcome == ConversationProjectionOutcome.PENDING
-            and receipt.retained_event is not None
-            and receipt.retained_event.connection_id == connection_id
-            and receipt.retained_event.project_id == project_id
+            and (receipt.retained_event is not None or receipt.protected_input is not None)
+            and (receipt.connection_id or (receipt.retained_event.connection_id if receipt.retained_event else None)) == connection_id
+            and (receipt.project_id or (receipt.retained_event.project_id if receipt.retained_event else None)) == project_id
         ]
         receipts.sort(key=lambda item: (item.retention_sequence, item.created_at, item.canonical_event_id))
         counts = [0] * partition_count
         selected = []
         for receipt in receipts:
+            # Inspect metadata to choose the bounded shard sample BEFORE
+            # decrypting. Never retrieve the whole retained backlog as payload.
+            conversation = receipt.message_key.split("::")[2]
             event = receipt.retained_event
+            if event is None:
+                from codex_web.conversation_channels import ExternalConversationRef, ExternalMessageRef
+                event = ConversationChannelEvent(delivery_id=receipt.canonical_event_id,
+                    event_kind=ConversationEventKind.MESSAGE_DELETED,
+                    message=ExternalMessageRef(conversation=ExternalConversationRef(
+                        provider_type="slack", provider_instance=connection_id,
+                        conversation_id=conversation), message_id=receipt.canonical_event_id))
             index = partition_index(event) if partition_index else 0
             if not isinstance(index, int) or not 0 <= index < partition_count:
                 raise ConversationChannelValidationError("invalid pending partition index")
             if counts[index] < limit:
-                selected.append(event)
+                try:
+                    content = self.retained_input(receipt, actor)
+                    selected.append(ConversationChannelEvent.model_validate(content["event"]))
+                except Exception as exc:
+                    self._finish(receipt.canonical_event_id, actor=actor,
+                        outcome=ConversationProjectionOutcome.REQUIRES_RECONCILIATION,
+                        reason=f"retained input recovery unavailable: {type(exc).__name__}")
                 counts[index] += 1
         return tuple(selected)
 
     @staticmethod
     def public_receipt(receipt: ConversationProjectionReceipt) -> dict[str, Any]:
         return {
-            **receipt.model_dump(mode="json", exclude={"retained_event"}),
-            "input_retained": receipt.retained_event is not None,
-            "connection_id": receipt.retained_event.connection_id if receipt.retained_event else None,
-            "project_id": receipt.retained_event.project_id if receipt.retained_event else None,
+            **receipt.model_dump(mode="json", exclude={"retained_event", "protected_input"}),
+            "input_retained": receipt.retained_event is not None or receipt.protected_input is not None,
+            "connection_id": receipt.connection_id,
+            "project_id": receipt.project_id,
+            "input_protected": receipt.protected_input is not None,
+            "delivery_state": ("retained_pending" if receipt.outcome == ConversationProjectionOutcome.PENDING
+                else "reconciliation" if receipt.outcome in {ConversationProjectionOutcome.ROUTING, ConversationProjectionOutcome.REQUIRES_RECONCILIATION}
+                else "action_admitted" if receipt.routing_result.get("actionIntentId")
+                else "projected" if receipt.outcome == ConversationProjectionOutcome.ROUTED else receipt.outcome.value),
         }
+
+    def status(self, *, actor, connection_id=None, project_id=None):
+        counts = {"retained_pending": 0, "queue_admitted": 0, "action_admitted": 0, "projected": 0,
+            "failed": 0, "reconciliation": 0, "other": 0}
+        for receipt in self.store.load().receipts.values():
+            if not self._same_scope(receipt, actor):
+                continue
+            if connection_id is not None and receipt.connection_id != connection_id:
+                continue
+            if project_id is not None and receipt.project_id != project_id:
+                continue
+            state = self.public_receipt(receipt)["delivery_state"]
+            counts[state if state in counts else "other"] += 1
+        return counts
 
     async def ingest_bot_message(
         self,

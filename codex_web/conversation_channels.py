@@ -11,6 +11,7 @@ from typing import Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from codex_web.compatibility import ContractSpec
+from codex_web.crypto import EncryptedEnvelope
 
 
 CONVERSATION_CHANNEL_CONTRACT = ContractSpec(
@@ -20,7 +21,7 @@ CONVERSATION_CHANNEL_CONTRACT = ContractSpec(
 )
 
 CONVERSATION_CHANNEL_STATE_CONTRACT = ContractSpec(
-    "conversation-channel-state", "2.0", ("1.0", "2.0"),
+    "conversation-channel-state", "3.0", ("1.0", "2.0", "3.0"),
 )
 
 
@@ -78,6 +79,7 @@ class ConversationSenderKind(StrEnum):
 class ConversationProjectionOutcome(StrEnum):
     PENDING = "pending"
     ROUTING = "routing"
+    QUEUE_ADMITTED = "queue_admitted"
     ROUTED = "routed"
     DUPLICATE = "duplicate"
     STALE = "stale"
@@ -180,14 +182,14 @@ class ConversationReaction(BaseModel):
 
 
 class ConversationChannelEvent(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     contract_version: str = CONVERSATION_CHANNEL_CONTRACT.current
     delivery_id: str = Field(min_length=1, max_length=1000)
     event_kind: ConversationEventKind
     message: ExternalMessageRef
     sender: ConversationSenderRef = Field(default_factory=ConversationSenderRef)
-    text: str | None = Field(default=None, max_length=32000)
+    text: str | None = Field(default=None, max_length=1_000_000)
     attachments: tuple[ConversationAttachmentRef, ...] = ()
     references: tuple[ConversationReference, ...] = ()
     mentions: tuple[ConversationMention, ...] = ()
@@ -266,6 +268,8 @@ class ConversationChannel(Protocol):
 
 
 class ConversationMessageState(BaseModel):
+    connection_id: str | None = None
+    project_id: str | None = None
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     organization_id: str
@@ -294,6 +298,13 @@ class ConversationProjectionReceipt(BaseModel):
     reason: str | None = None
     routing_result: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
     retained_event: ConversationChannelEvent | None = None
+    protected_input: EncryptedEnvelope | None = None
+    governance_record_id: str | None = None
+    connection_id: str | None = None
+    project_id: str | None = None
+    authority_digest: str | None = None
+    source_authority_digest: str | None = None
+    input_digest: str | None = None
     ingest_actor_id: str | None = None
     retention_sequence: int = Field(default=0, ge=0)
     created_at: float = Field(default_factory=time.time)

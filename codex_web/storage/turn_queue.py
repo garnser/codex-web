@@ -106,6 +106,38 @@ class TurnQueueRepository:
         )
         return self._validate(raw)
 
+    def update_with_ingress(self, thread_id, ingress_id, updater):
+        """Commit the exact thread row and existing ingress document together.
+
+        Conversation state remains one document; only queue access is bounded
+        to a single thread. Unrelated queue rows are not read or rewritten.
+        """
+        from codex_web.storage.conversation_channels import ConversationChannelStore
+        from codex_web.conversation_channels import ConversationChannelState, ConversationProjectionOutcome
+        self._ensure_records()
+        conversations = ConversationChannelStore(self.store)
+        def apply(documents):
+            state = conversations._decode(documents[conversations.namespace][None])
+            receipt = state.receipts.get(ingress_id)
+            if receipt is None or receipt.outcome != ConversationProjectionOutcome.ROUTING:
+                raise ValueError("ingress has no exclusive routing claim")
+            updated = list(updater(self._validate(documents[self.namespace][thread_id])))
+            admitted = [item for item in updated if item.canonical_ingress_id == ingress_id]
+            if len(admitted) != 1 or admitted[0].project_id != receipt.project_id:
+                raise ValueError("canonical ingress queue admission scope mismatch")
+            item = admitted[0]
+            state.receipts[ingress_id] = receipt.model_copy(update={
+                "outcome": ConversationProjectionOutcome.QUEUE_ADMITTED,
+                "thread_id": thread_id, "queued_id": item.id,
+                "routing_result": {"ok": True, "queued": True, "threadId": thread_id, "queuedId": item.id},
+                "reason": "canonical queue admission committed; ingress projection pending",
+            })
+            return {self.namespace: {thread_id: [row.model_dump(mode="json") for row in updated]},
+                conversations.namespace: {None: state.model_dump(mode="json")}}
+        result = self.store.record_mutate_many({self.namespace: (thread_id,),
+            conversations.namespace: (None,)}, apply)
+        return self._validate(result[self.namespace].get(thread_id))
+
     def put(self, thread_id: str, items: list[QueuedTurn]) -> None:
         self._ensure_records()
         key = str(thread_id)
