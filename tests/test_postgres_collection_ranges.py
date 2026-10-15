@@ -171,3 +171,101 @@ class PostgresLocaleCollectionRangeTests(PostgresCollectionRangeTests):
     # The distributed CI job uses Debian PostgreSQL's default libc locale.
     # These regressions fail before the byte-collated range/index correction.
     collation = 'en_US.utf8'
+
+
+@unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'), 'PostgreSQL test DSN required')
+class PostgresCallbackReadTests(unittest.TestCase):
+    postgres_pool_max_size = 1
+    postgres_pool_timeout = .25
+    setUp = fixtures.PostgresAutonomyAppendTests.setUp
+
+    def prepare(self):
+        self.backend.put('admission', {'allowed': True})
+        self.backend.record_replace('records', {'a': 1, 'b': 2})
+
+    def checked(self, value):
+        state = self.backend
+        self.assertEqual(state.get('admission'), {'allowed': True})
+        self.assertEqual(state.document_get('admission'), {'allowed': True})
+        self.assertEqual(state.get('records'), {'a': 1, 'b': 2})
+        self.assertEqual(state.record_get('records', 'a'), 1)
+        self.assertEqual(state.record_get_many('records', ('a', 'missing')), {'a': 1})
+        self.assertEqual(state.record_items('records'), {'a': 1, 'b': 2})
+        self.assertEqual(state.record_count('records'), 2)
+        self.assertEqual(state.record_page('records', limit=1), ({'a': 1}, 'a'))
+        self.assertTrue(state.record_collection_exists('records'))
+        self.assertEqual(state.record_collections_exist(('records', 'missing')),
+                         {'records': True, 'missing': False})
+        self.assertIsNotNone(state.namespace_revision('records'))
+        self.assertTrue(state.contains('admission'))
+        self.assertEqual(state.documents()['records'], {'a': 1, 'b': 2})
+        self.assertEqual(state.schema_version(), state.SCHEMA_VERSION)
+        self.assertTrue(state.status()['ok'])
+        return value
+
+    def test_all_mutation_callbacks_read_without_another_pool_checkout(self):
+        from unittest.mock import patch
+        self.prepare()
+        state = self.backend
+        operations = (
+            lambda: state.record_update('records', 'a', self.checked, default=None),
+            lambda: state.record_mutate('records', ('a',), self.checked),
+            lambda: state.record_mutate_many({'records': ('a',)}, self.checked),
+            lambda: state.update('admission', self.checked, default=None),
+            lambda: state.update('records', self.checked, default=None),
+            lambda: state.update_many({'admission': {}}, self.checked),
+        )
+        for index, operation in enumerate(operations):
+            with self.subTest(index=index), patch.object(state._pool, 'connection', wraps=state._pool.connection) as checkout:
+                operation()
+                self.assertEqual(checkout.call_count, 1)
+        state.put('legacy', {'a': 1})
+        def migrated(rows):
+            # Initialization belongs to the outer mutation. Reads must see its
+            # uncommitted marker/rows, not a different transaction's old view.
+            self.assertTrue(state.record_collection_exists('legacy'))
+            self.assertEqual(state.record_count('legacy'), 1)
+            self.assertEqual(state.record_page('legacy'), ({'a': 1}, None))
+            return rows
+        state.record_mutate_many({'legacy': ('a',)}, migrated)
+
+    def test_failed_callback_rolls_back_and_releases_reader_custody(self):
+        from unittest.mock import patch
+        self.prepare()
+        def fail(rows):
+            self.checked(rows)
+            rows['records']['a'] = 99
+            raise ValueError('denied admission')
+        with self.assertRaisesRegex(ValueError, 'denied admission'):
+            self.backend.record_mutate_many({'records': ('a',)}, fail)
+        with patch.object(self.backend._pool, 'connection', wraps=self.backend._pool.connection) as checkout:
+            self.assertEqual(self.backend.record_get('records', 'a'), 1)
+            self.assertEqual(checkout.call_count, 1)
+        self.backend.record_update('records', 'a', lambda value: value + 1, default=0)
+        self.assertEqual(self.backend.record_get('records', 'a'), 2)
+
+    def test_nested_mutation_is_refused_without_independent_side_effects(self):
+        self.prepare()
+        def mutate(rows):
+            self.backend.put('outside', {'unexpected': True})
+            return rows
+        with self.assertRaisesRegex(RuntimeError, 'nested mutation'):
+            self.backend.record_mutate_many({'records': ('a',)}, mutate)
+        self.assertFalse(self.backend.contains('outside'))
+        self.assertEqual(self.backend.record_get('records', 'a'), 1)
+
+    def test_another_thread_cannot_borrow_the_callback_connection(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from psycopg_pool import PoolTimeout
+        self.prepare()
+        def inspect(rows):
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                other = executor.submit(self.backend.get, 'admission')
+                # The only lease is owned here. A separate thread must use the
+                # bounded pool and time out, never share the live transaction.
+                with self.assertRaises(PoolTimeout):
+                    other.result(timeout=2)
+            self.assertEqual(self.backend.get('admission'), {'allowed': True})
+            return rows
+        self.backend.record_mutate_many({'records': ('a',)}, inspect)
+        self.assertEqual(self.backend.get('admission'), {'allowed': True})
