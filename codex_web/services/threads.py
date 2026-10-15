@@ -605,17 +605,36 @@ class ThreadService:
             except Exception:
                 lease_valid = False
         state = {"cancelled": "cancelled", "succeeded": "idle", "failed": "failed",
-                 "lost": "unknown", "pending": "waiting", "claimed": "waiting"}.get(status, "unknown")
+                 "lost": "lost", "pending": "waiting", "claimed": "waiting"}.get(status, "unknown")
         if status == "running":
             state = "running" if lease_valid else "unknown"
         elif status == "claimed" and not lease_valid:
             state = "unknown"
-        return {**unknown, "state": state, "live": status == "running" and lease_valid,
+        if status == "pending" and assignment.fence > 0:
+            state = "recovering"
+        process_observation = {}
+        try:
+            manager = self._manager_for_binding(getattr(assignment, "runtime_binding", None))
+            session = manager.get(assignment.id)
+            local = session.status() if session is not None else None
+            if local and local.fence == assignment.fence and local.worker_id == assignment.assigned_worker_id:
+                process_observation = {"processRunning": local.running,
+                    "diagnosticState": getattr(local, "diagnostic_state", "none"),
+                    "validationCustodyState": getattr(local, "validation_custody_state", "unavailable"),
+                    "pendingExecutorWork": getattr(local, "pending_executor_work", 0)}
+                if status == "running" and not local.running:
+                    state = "stopped"
+        except Exception:
+            # An unavailable process observation cannot establish live activity.
+            # Canonical lease custody remains distinct from process evidence.
+            pass
+        return {**unknown, "state": state,
                 "assignmentId": assignment.id, "assignmentStatus": status,
                 "assignmentCreatedAt": assignment.created_at, "updatedAt": assignment.updated_at,
                 "fence": assignment.fence, "leaseValid": lease_valid,
                 "leaseExpiresAt": lease.expires_at if lease else None,
-                "reason": assignment.failure_code}
+                "reason": assignment.failure_code, **process_observation,
+                "live": status == "running" and lease_valid and process_observation.get("processRunning", True)}
 
     async def list(
         self,

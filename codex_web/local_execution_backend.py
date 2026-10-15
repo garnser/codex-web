@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from codex_web.storage.state_store import check_operation_budget
+
 import hashlib
 import json
 import os
@@ -290,6 +292,7 @@ class BubblewrapExecutionBackend:
         total = 0
         pending = [root]
         while pending:
+            check_operation_budget()
             directory = pending.pop()
             try:
                 with os.scandir(directory) as entries:
@@ -388,6 +391,7 @@ class BubblewrapExecutionBackend:
         seen: set[int] = set()
         total = 0
         while pending:
+            check_operation_budget()
             current = pending.pop()
             if current in seen:
                 continue

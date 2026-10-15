@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from codex_web.storage.state_store import (
+    storage_operation_budget, check_operation_budget, operation_lock,
     OperationTimingMetrics,
     parse_state_record_storage_key,
     state_record_marker,
@@ -50,13 +51,22 @@ class SQLiteStateStore:
                 continue
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=5.0)
-        self._secure_database_files()
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA synchronous=NORMAL")
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=5000")
-        self._secure_database_files()
+        check_operation_budget()
+        budget = storage_operation_budget.get()
+        timeout = min(5.0, budget.remaining()) if budget else 5.0
+        connection = sqlite3.connect(self.path, timeout=timeout)
+        if budget:
+            connection.set_progress_handler(lambda: int(budget.cancelled.is_set() or time.monotonic() >= budget.deadline), 1000)
+        try:
+            self._secure_database_files()
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=NORMAL")
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute(f"PRAGMA busy_timeout={max(1, int(timeout * 1000))}")
+            self._secure_database_files()
+        except BaseException:
+            connection.close()
+            raise
         return connection
 
     @contextmanager
@@ -66,6 +76,7 @@ class SQLiteStateStore:
         try:
             with connection:
                 yield connection
+                check_operation_budget()
         finally:
             self._secure_database_files()
             connection.close()
@@ -79,7 +90,7 @@ class SQLiteStateStore:
         can otherwise contend for the single WAL writer and exhaust SQLite's
         busy timeout. Reads retain their normal concurrent WAL behavior.
         """
-        with self._write_lock:
+        with operation_lock(self._write_lock):
             with self._connection() as connection:
                 yield connection
 

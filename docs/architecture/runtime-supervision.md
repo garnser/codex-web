@@ -38,7 +38,108 @@ Failed refreshes clear busy indicators, expose uncertainty and retain ordering
 watermarks. Unknown detail hydrates activity before the unloaded early return,
 preserving the transcript and its unfinished turn IDs/status.
 Browser caches are display state only; server admission remains authoritative.
+Lost assignments are explicitly `lost`; a pending assignment with a previous
+fence is `recovering`. Neither establishes activity. A same-instance process
+handle for the exact assignment/worker/fence can establish that its process has
+stopped even while a last observed canonical lease remains valid. That read
+reports `stopped`, diagnostic persistence state and outstanding executor work;
+it never updates canonical assignment state. An old process cannot mask a new
+claim. Historical unfinished turns remain evidence, not successful validation.
 Runtime naming failures retain the canonical name and display scoped feedback.
+
+## Bounded assignment supervision and failure custody
+
+Each admitted process session owns one serial supervision executor and one
+bounded diagnostic executor. These are lifecycle resources, not admission or
+scheduling authorities. The watchdog validates worker/assignment/delegation and
+resource bounds before renewal. Each validation and renewal wait is bounded by
+the lesser of ten seconds and the remaining last validated lease. There is no
+lease extension for delayed validation and no cached resource-limit bypass.
+Default-executor browser projections cannot occupy these supervision slots.
+Queue, validation/identity/resource, renewal and total wait timings distinguish
+executor admission delay from work duration; they do not diagnose historical
+CPU, GIL, OOM or database corruption without evidence.
+
+Cancellation propagates a cooperative operation budget through existing store
+locks, SQLite busy/progress/commit checks, PostgreSQL pool/statement/commit
+checks and resource traversal. Start, completion and renewal use the existing
+cross-record transaction primitive to read the worker and assignment and write
+transition events together. Lease and assignment-deadline time is sampled after
+the database writer lock is acquired. A delayed callback cannot borrow an old
+clock or a later claimant's token/fence. Claim and cancellation timestamp reads
+also occur inside their existing callbacks; they are not execution completion.
+
+On supervision failure, fixed diagnostic metadata is captured before teardown.
+The owned process group is killed independently of storage and executors,
+including descendants of an already-exited parent. Process polling and runtime
+transport cleanup are bounded separately. Only then is one one-second diagnostic
+attempt made through canonical Evidence and worker events. Metadata includes
+assignment/worker/execution/workspace/resource provenance, observed fence,
+observed lease expiry, process ID/exit code and measured phase timings. Raw
+exception/log bodies, credentials and assignment tokens are excluded; Evidence
+is denied model context and uses canonical governance/retention. Failed runtime
+Evidence is not successful test Evidence.
+
+An original worker may append an observation only with retained original claim
+provenance. The observation explicitly separates observed and current fences and
+does not assert completion. A failed completion still requires the exact original
+live lease, worker identity and fence in the canonical transaction. Expired or
+reclaimed execution remains lost/recovering/current; diagnostics never resurrect
+it. Failure release atomically compares the original failed assignment, worker,
+fence and workspace lease before releasing ownership, always retaining files.
+It cannot release a later claimant's workspace. Uncommitted Git source remains
+in that retained workspace; ignored files are not silently discarded.
+
+Before native launch, an available content service registers a canonical REPORT
+Artifact for the exact assignment/fence and creates a private managed-output
+slot inside the retained workspace. The trusted standard-library runner is a
+read-only worker mount, exposed by `CODEX_WEB_MANAGED_VALIDATION_RUNNER`; the
+registered slot is exposed by `CODEX_WEB_MANAGED_VALIDATION_DIR`. Existing native
+assignment instructions require validation to invoke:
+`python "$CODEX_WEB_MANAGED_VALIDATION_RUNNER" --source path/to/source -- command args`.
+Repeated `--source` arguments identify up to 32 bounded source files. Before
+launching the command in the same process group/sandbox/limits, the runner
+atomically writes a versioned report containing source SHA256s, a command digest,
+start time and unknown outcome. It records an exit observation only after actual
+wait returns. Neither exit zero nor a worker-controlled report proves tests pass.
+
+After process-group retirement, normal stop and failure retirement automatically
+capture only registered bounded JSON reports through existing governed
+ArtifactContent and informational TEST_RESULT Evidence. Source/report attribution
+includes the registration Artifact, assignment, original worker and fence. There
+is no caller pre-upload or arbitrary `/tmp` discovery. Reports reject extra
+fields, log bodies, symlinks and oversized payloads; outputs are denied model
+context. Interrupted reports retain `running`, null exit/finish and result
+`unknown`. Existing Artifact/Evidence views expose their content and provenance;
+the runner projection displays registration/capture/unavailability separately
+from live custody. Repeated/concurrent stop callers share one owned cleanup task
+and capture attempt, including cancellation of an awaiting caller. Broker cleanup
+still runs when another cleanup component fails.
+
+Unregistered commands and namespace-local `/tmp` files have no custody guarantee.
+Missing content service or unavailable capture remains explicitly unavailable;
+registration alone is not captured content. A process-wide crash before capture
+leaves the registered report/source in the retained workspace for scoped recovery,
+not a fabricated managed-content receipt. Independent validation/release gates
+remain required. External unknown outcomes remain reconciliation only; no tool-log
+parsing infers a passed test or replays an external action.
+
+Unavailable storage cannot be advertised as recorded Evidence. The local process
+projection reports diagnostic state `unavailable` and outstanding executor work;
+canonical expiry/recovery remains authoritative after process loss. Running
+executor futures remain tracked until their cooperative exit. Arbitrary kernel
+I/O or injected adapters cannot be forcibly interrupted by Python cancellation;
+the deadline fences subsequent canonical writes, and the runtime must not claim
+that such work has ended. Controlled lock faults must release and verify those
+threads exit. Backend/kernel unresponsiveness requiring operator intervention
+is a visible limitation, not an extra host grant.
+
+Compatibility is additive: session/runner projections and worker event details
+add metadata; persisted assignment/API/worker contract versions and Definition
+revisions are unchanged. No mutable operational catalog, new storage domain,
+policy, worker capability or authority is introduced. Existing drain, upgrade,
+unknown-start and source custody contracts remain in force. Older displays may
+show unfamiliar runner states as unknown; they cannot acquire execution authority.
 
 ## Handoff delivery and acknowledgement deadlines
 

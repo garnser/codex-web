@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
 from codex_web.storage.state_store import (
+    check_operation_budget, storage_operation_budget,
     OperationTimingMetrics,
     parse_state_record_storage_key,
     state_record_marker,
@@ -118,20 +119,34 @@ class PostgresStateStore:
 
     @contextmanager
     def _connection(self) -> Iterator[Any]:
+        check_operation_budget()
         if getattr(self, "_closed", False):
             raise RuntimeError("PostgreSQL state store is closed")
         if getattr(self, "_pool", None) is not None:
             # The official pool commits/rolls back before returning this
             # connection. Never share an in-flight transaction across callers.
-            with self._pool.connection() as connection:
+            budget = storage_operation_budget.get()
+            checkout = self._pool.connection(timeout=budget.remaining()) if budget else self._pool.connection()
+            with checkout as connection:
+                self._operation_deadline(connection)
                 yield connection
+                check_operation_budget()
             return
         connection = self._connect()
         try:
             with connection:
+                self._operation_deadline(connection)
                 yield connection
+                check_operation_budget()
         finally:
             connection.close()
+
+    @staticmethod
+    def _operation_deadline(connection):
+        budget = storage_operation_budget.get()
+        if budget is not None:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT set_config('statement_timeout', %s, true)", (str(max(1, int(budget.remaining() * 1000))),))
 
     @staticmethod
     def _serialized(payload: Any) -> str:

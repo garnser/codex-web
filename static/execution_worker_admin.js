@@ -7,6 +7,7 @@
   const { captureProjectView } = await import(`${BASE}/static/project_view_scope.js`);
   const { workerDetailsHtml, timeText } = await import(`${BASE}/static/execution_worker_presenters.js`);
   let refreshGeneration = 0;
+  const { workerEventsHtml } = await import(`${BASE}/static/execution_worker_presenters.js`);
   let workers = [];
   let assignments = [];
   let events = [];
@@ -169,11 +170,7 @@
   function renderEvents() {
     const host = document.getElementById("execution-worker-events");
     if (!host) return;
-    host.innerHTML = events.slice(0, 100).map((item) => `<div class="comm-entry">
-      <strong>${escapeHtml(item.event_type)} · ${timeText(item.occurred_at)}</strong>
-      <small>Worker: ${escapeHtml(item.worker_id || "none")} · assignment: ${escapeHtml(item.assignment_id || "none")} · actor: ${escapeHtml(item.actor_id || "system")}</small>
-      <small>Details: ${escapeHtml(JSON.stringify(item.details || {}))}</small>
-    </div>`).join("") || '<div class="comm-entry"><strong>No worker events recorded.</strong></div>';
+    host.innerHTML = workerEventsHtml(events);
   }
 
   function renderAll() {

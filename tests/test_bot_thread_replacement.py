@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
+from pathlib import Path
+from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.storage.thread_index import ThreadIndexRepository
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -26,6 +30,12 @@ class BotThreadReplacementTests(unittest.TestCase):
 
         creator = AsyncMock(return_value={"thread": {"id": "new-thread"}})
         recovery = server._replace_stale_bot_thread.__self__
+        # Recovery intentionally persists successor edges. This fixture must
+        # own both durable and process-local state, including across reruns.
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        index = ThreadIndexRepository(SQLiteStateStore(root/'state.db'), root/'index.json')
         project = Project(
             id="a956644fc336",
             name="veridataops",
@@ -35,6 +45,9 @@ class BotThreadReplacementTests(unittest.TestCase):
         )
 
         with (
+            patch.object(recovery, "thread_index", index),
+            patch.object(recovery, "thread_replacements", {}),
+            patch.object(recovery, "terminal_failures", {}),
             patch.object(recovery.projects, "get", return_value=project),
             patch.object(
                 recovery.settings,
@@ -59,7 +72,9 @@ class BotThreadReplacementTests(unittest.TestCase):
             patch.object(server.hub, "publish", new=AsyncMock()),
             patch.object(recovery, "thread_creator", creator),
         ):
+            self.assertIsNone(index.replacement_thread_id(binding.thread_id))
             replacement = asyncio.run(server._replace_stale_bot_thread(binding, "thread not found"))
+            self.assertEqual(index.replacement_thread_id(binding.thread_id), "new-thread")
 
         self.assertEqual(replacement.thread_id, "new-thread")
         creator.assert_awaited_once()

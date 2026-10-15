@@ -1182,9 +1182,8 @@ class ExecutionWorkerService:
         ):
             return None
         claimed: list[ExecutionAssignment] = []
-        now = time.time()
-
         def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            now = time.time()
             worker = self._worker(state, worker_id, actor)
             self._require_worker_actor(worker, actor)
             candidates = [
@@ -1282,6 +1281,43 @@ class ExecutionWorkerService:
             raise WorkerLeaseError("assignment deadline has expired")
         return lease
 
+    def record_runtime_observation(
+        self, worker_id: str, assignment_id: str, *, observed_fence: int,
+        failure_code: str, timings: dict[str, float], evidence_id: str | None,
+        actor: AuthenticationActor,
+    ) -> None:
+        """Append an old process observation without changing lease authority.
+
+        The original worker principal may report after expiry/revocation. It
+        cannot complete, renew, release or rewrite a successor through this path.
+        Only fixed diagnostics are accepted; no raw error/log/token payloads.
+        """
+        allowed = {"validation_seconds", "validation_queue_seconds", "renewal_seconds",
+                   "renewal_queue_seconds", "identity_seconds", "resource_seconds",
+                   "validation_wait_seconds", "renewal_wait_seconds"}
+        if failure_code not in {"agent_runtime_validation_failed", "resource_limit", "execution_timeout",
+                                "agent_runtime_process_exited", "agent_runtime_rpc_timeout"}:
+            raise WorkerConflictError("unsupported runtime observation")
+        if set(timings) - allowed or any(not isinstance(v, (int, float)) or not 0 <= v < 86400 for v in timings.values()):
+            raise WorkerConflictError("invalid runtime timing")
+        def apply(state):
+            worker = self._worker(state, worker_id, actor)
+            assignment = self._assignment(state, assignment_id, actor)
+            if actor.identity_id != worker.service_identity_id or observed_fence < 1 or observed_fence > assignment.fence:
+                raise AuthorizationError("runtime observation requires the original worker principal")
+            if not any(event.event_type == "assignment_claimed" and event.assignment_id == assignment_id
+                       and event.worker_id == worker_id and event.details.get("fence") == observed_fence
+                       for event in state.events):
+                raise AuthorizationError("original fenced claim evidence is unavailable")
+            self._event(state, actor=actor, event_type="agent_runtime_supervision_failed",
+                worker_id=worker_id, assignment_id=assignment_id,
+                details={"observed_fence": observed_fence, "current_fence": assignment.fence,
+                         "current_status": assignment.status.value, "failure_code": failure_code,
+                         "evidence_id": evidence_id, "evidence_state": "recorded" if evidence_id else "unavailable",
+                         "completion_asserted": False, **timings})
+            return state
+        self.store.update(apply)
+
     def renew(
         self,
         worker_id: str,
@@ -1324,7 +1360,7 @@ class ExecutionWorkerService:
             updated.append(replacement)
             return state
 
-        self.store.update_assignment(worker_id, assignment_id, apply)
+        self.store.transition_assignment(worker_id, assignment_id, apply)
         result = updated[0]
         self._notify_assignment(result, "assignment_renewed")
         return result
@@ -1338,9 +1374,9 @@ class ExecutionWorkerService:
         actor: AuthenticationActor,
     ) -> ExecutionAssignment:
         updated: list[ExecutionAssignment] = []
-        now = time.time()
 
         def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            now = time.time()
             worker = self._worker(state, worker_id, actor)
             assignment = self._assignment(state, assignment_id, actor)
             self._validate_lease(
@@ -1375,7 +1411,7 @@ class ExecutionWorkerService:
             updated.append(replacement)
             return state
 
-        self.store.update(apply)
+        self.store.transition_assignment(worker_id, assignment_id, apply)
         result = updated[0]
         self._notify_assignment(result, "assignment_started")
         return result
@@ -1389,9 +1425,8 @@ class ExecutionWorkerService:
         actor: AuthenticationActor,
     ) -> ExecutionAssignment:
         updated: list[ExecutionAssignment] = []
-        now = time.time()
-
         def apply(state: ExecutionWorkerState) -> ExecutionWorkerState:
+            now = time.time()
             worker = self._worker(state, worker_id, actor)
             assignment = self._assignment(state, assignment_id, actor)
             self._validate_lease(
@@ -1458,7 +1493,7 @@ class ExecutionWorkerService:
             updated.append(replacement)
             return state
 
-        self.store.update(apply)
+        self.store.transition_assignment(worker_id, assignment_id, apply)
         result = updated[0]
         self._notify_assignment(result, "assignment_completed")
         return result

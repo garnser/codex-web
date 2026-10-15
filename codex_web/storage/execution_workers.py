@@ -13,6 +13,7 @@ from codex_web.execution_workers import (
     ExecutionWorkerState,
 )
 from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.storage.state_store import operation_lock
 
 EXECUTION_WORKER_MIGRATIONS = MigrationRegistry("execution-worker-state")
 EXECUTION_WORKER_MIGRATIONS.register(
@@ -256,7 +257,7 @@ class ExecutionWorkerStore:
         )
 
     def load(self) -> ExecutionWorkerState:
-        with self._lock:
+        with operation_lock(self._lock):
             return self._load_unlocked()
 
     def load_execution_state(self) -> ExecutionWorkerState:
@@ -265,12 +266,12 @@ class ExecutionWorkerStore:
         Recovery uses ownership, lifecycle, lease and fence state; event and
         enrollment catalogs remain available through the full load method.
         """
-        with self._lock:
+        with operation_lock(self._lock):
             return self._load_unlocked(include_history=False)
 
     def list_workers(self) -> list[ExecutionWorker]:
         """Read fresh validated workers without assignments or history."""
-        with self._lock:
+        with operation_lock(self._lock):
             self._ensure_records()
             records = self.store.record_items(self.worker_namespace)
             return [
@@ -315,7 +316,7 @@ class ExecutionWorkerStore:
         updater: Callable[[ExecutionWorkerState], ExecutionWorkerState],
     ) -> ExecutionWorkerState:
         """Mutate one current worker without scanning retained runtime history."""
-        with self._lock:
+        with operation_lock(self._lock):
             self._ensure_records()
             result: list[ExecutionWorkerState] = []
 
@@ -332,6 +333,31 @@ class ExecutionWorkerStore:
             self.store.record_update(self.worker_namespace, worker_id, apply, default=None)
             return result[0]
 
+    def transition_assignment(self, worker_id, assignment_id, updater):
+        """Read actor/assignment and append transition events in one transaction.
+
+        A repository lock alone does not fence a second store facade or an SQL
+        writer wait. The callback must run after the database writer is owned.
+        """
+        with operation_lock(self._lock):
+            self._ensure_records()
+            result = []
+            def apply(rows):
+                raw_worker = rows[self.worker_namespace][worker_id]
+                raw_assignment = rows[self.assignment_namespace][assignment_id]
+                workers = [ExecutionWorker.model_validate(raw_worker)] if raw_worker else []
+                assignments = [ExecutionAssignment.model_validate(raw_assignment)] if raw_assignment else []
+                state = updater(ExecutionWorkerState(workers=workers, assignments=assignments))
+                if (len(state.assignments) != 1 or state.assignments[0].id != assignment_id
+                        or state.workers != workers or state.enrollments):
+                    raise ValueError("assignment transition may only change its target and append events")
+                result.append(state)
+                return {self.assignment_namespace: {assignment_id: state.assignments[0].model_dump(mode="json")},
+                        self.event_namespace: {event.id: event.model_dump(mode="json") for event in state.events}}
+            self.store.record_mutate_many({self.worker_namespace: (worker_id,),
+                self.assignment_namespace: (assignment_id,), self.event_namespace: ()}, apply)
+            return result[0]
+
     def update_assignment(
         self,
         worker_id: str,
@@ -339,7 +365,7 @@ class ExecutionWorkerStore:
         updater: Callable[[ExecutionWorkerState], ExecutionWorkerState],
     ) -> ExecutionWorkerState:
         """Mutate a current assignment with its owning worker's trust context."""
-        with self._lock:
+        with operation_lock(self._lock):
             self._ensure_records()
             raw_worker = self.store.record_get(self.worker_namespace, worker_id)
             worker = ExecutionWorker.model_validate(raw_worker) if raw_worker is not None else None
@@ -363,7 +389,7 @@ class ExecutionWorkerStore:
         self,
         updater: Callable[[ExecutionWorkerState], ExecutionWorkerState],
     ) -> ExecutionWorkerState:
-        with self._lock:
+        with operation_lock(self._lock):
             current = self._load_unlocked()
             before = {
                 self.worker_namespace: {

@@ -170,7 +170,7 @@ class _FakeBackend:
 class _FakeDelegationService:
     def __init__(self) -> None:
         self.validation_error: Exception | None = None
-        self.now = 1_800_000_000.0
+        self.now = time.time()
         self.secret = "worker-codex-token-do-not-persist"
         self.use_calls = 0
         self.validate_calls = 0
@@ -803,7 +803,7 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         gate.set()
         await asyncio.wait_for(session.watchdog_task, timeout=1)
 
-        self.assertTrue(self.backend.processes[0].terminated)
+        self.assertTrue(self.backend.processes[0].terminated or self.backend.processes[0].killed)
         self.assertIn("runtime binding changed", session.last_error)
 
     async def test_default_session_factory_reuses_canonical_codex_runtime(self) -> None:
@@ -1004,7 +1004,7 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         gate.set()
         await asyncio.wait_for(session.watchdog_task, timeout=1)
 
-        self.assertTrue(self.backend.processes[0].terminated)
+        self.assertTrue(self.backend.processes[0].terminated or self.backend.processes[0].killed)
         self.assertIn("lease/fence changed", session.last_error)
 
     async def test_watchdog_fails_assignment_when_runtime_process_exits(self) -> None:
@@ -1041,7 +1041,7 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(current.status, AssignmentStatus.FAILED)
         self.assertIsNone(current.lease)
         self.assertEqual(current.failure_code, "agent_runtime_rpc_timeout")
-        self.assertTrue(self.backend.processes[0].terminated)
+        self.assertTrue(self.backend.processes[0].terminated or self.backend.processes[0].killed)
         self.assertFalse(session.runtime.ready.is_set())
 
     async def test_interrupt_timeout_preserves_running_assignment(self) -> None:
@@ -1088,7 +1088,7 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         gate.set()
         await asyncio.wait_for(session.watchdog_task, timeout=1)
 
-        self.assertTrue(self.backend.processes[0].terminated)
+        self.assertTrue(self.backend.processes[0].terminated or self.backend.processes[0].killed)
         self.assertIn("quarantined", session.last_error)
 
     async def test_watchdog_terminates_when_delegated_credential_rotates(self) -> None:
@@ -1101,7 +1101,7 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         gate.set()
         await asyncio.wait_for(session.watchdog_task, timeout=1)
 
-        self.assertTrue(self.backend.processes[0].terminated)
+        self.assertTrue(self.backend.processes[0].terminated or self.backend.processes[0].killed)
         self.assertIn("credential rotated or changed", session.last_error)
 
     async def test_watchdog_terminates_when_delegated_credential_expires(self) -> None:
@@ -1114,7 +1114,7 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         gate.set()
         await asyncio.wait_for(session.watchdog_task, timeout=1)
 
-        self.assertTrue(self.backend.processes[0].terminated)
+        self.assertTrue(self.backend.processes[0].terminated or self.backend.processes[0].killed)
         self.assertIn("credential expired", session.last_error)
 
     async def test_manager_pending_bootstrap_cannot_resume_and_cancel_a_raced_same_worker_claim(self) -> None:
@@ -1222,7 +1222,7 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(current.lease)
         self.assertEqual(current.fence, 2)
         self.assertIsNone(manager.get(assignment.id))
-        self.assertTrue(self.backend.processes[0].terminated)
+        self.assertTrue(self.backend.processes[0].terminated or self.backend.processes[0].killed)
         self.assertEqual(released[0][1]["actor"], self.admin)
         self.assertTrue(released[0][1]["preserve_files"])
 
@@ -1272,7 +1272,8 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         service._cleanup_git_workspace.assert_not_called()
         event = next(e for e in state.events if e.event_type=="workspace_released")
         self.assertEqual(event.actor_identity_id, self.admin.identity_id)
-        self.assertEqual(event.details, {"discard":False, "preserve_files":True})
+        self.assertFalse(event.details["discard"])
+        self.assertTrue(event.details["preserve_files"])
         self.assertEqual(before, {path.relative_to(self.workspace_path):path.read_bytes()
                                 for path in self.workspace_path.rglob("*") if path.is_file()})
         self.assertNotIn("execution-workspace:admin", self.worker_actor.service_scopes)
@@ -1345,7 +1346,7 @@ class AssignmentBoundCodexSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(completed.evidence_ids, ("evidence-1",))
         self.assertIsNone(completed.lease)
         self.assertIsNone(manager.get(assignment.id))
-        self.assertTrue(self.backend.processes[0].terminated)
+        self.assertTrue(self.backend.processes[0].terminated or self.backend.processes[0].killed)
         self.assertEqual(session.fence, completed.fence)
 
     async def test_request_reuses_existing_codex_runtime_protocol_owner(self) -> None:

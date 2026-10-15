@@ -69,6 +69,19 @@ def assignment_control_plane_instructions() -> str:
         "the execution subject. Then publish with existing_change_request_number and the observed "
         "expected_remote_revision. A denial is an actionable scope/owner/lease blocker; do not ask "
         "Orchestrator to grant repository authority or use Operator provisioning as a substitute.\n\n"
+        "MANAGED VALIDATION OUTPUT\n"
+        "When CODEX_WEB_MANAGED_VALIDATION_RUNNER and CODEX_WEB_MANAGED_VALIDATION_DIR are present, "
+        "the native runtime has registered an assignment/fence-scoped output slot in canonical Artifacts. "
+        "Invoke validation as: python \"$CODEX_WEB_MANAGED_VALIDATION_RUNNER\" --source <workspace-relative-source> "
+        "[--source <another-source>] -- <validation-command> [arguments]. This existing worker command runs "
+        "inside the same sandbox and limits. The managed report records command/source digests and an "
+        "unverified exit observation, never stdout, credentials or a passed-test claim. Runtime stop/loss "
+        "captures the bounded registered report through canonical governed ArtifactContent/Evidence. "
+        "Source files stay in the retained execution workspace. Arbitrary /tmp logs and commands outside "
+        "this managed-output protocol have no native custody guarantee; report their result as unknown "
+        "after interruption. Missing registration/content service is unavailable evidence, not permission "
+        "to use a different API, copy secrets, or claim durable validation. Independent validation gates "
+        "remain authoritative.\n\n"
     ).rstrip()
 
 
