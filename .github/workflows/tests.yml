@@ -260,6 +260,15 @@ jobs:
           NEEDS_JSON: ${{ toJSON(needs) }}
           SELECTION_ONLY: 'true'
         run: python3 scripts/ci/check_gate.py
+      - name: Prepare runner-local data directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -L data && ! -e data ]]; then
+            unlink data
+          fi
+          mkdir -p data
+        if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
@@ -276,7 +285,7 @@ jobs:
         if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Exercise PostgreSQL and Redis replicated semantics
         run: python -m unittest tests.test_distributed_backends tests.test_keyed_revisions tests.test_postgres_collection_ranges
-          tests.test_autonomy_append_scaling
+          tests.test_autonomy_append_scaling tests.test_agent_session_custody_postgres
         if: ${{ needs.changes.outputs.full == 'true' }}
     needs:
       - changes

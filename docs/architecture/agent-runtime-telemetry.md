@@ -49,6 +49,51 @@ closed even when the filter would otherwise exclude their target.
 
 ## Evidence
 
+### Current custody after admitted same-thread resume
+
+An assignment-bound native resume captures its existing canonical AgentSession
+before the provider await. Only successful resume may invoke the internal
+custody projection hook. The hook revalidates the trusted worker session and
+requires exact tenant/Project/provider/runtime/native-thread identity, current
+bootstrap binding, assignment/worker/fence/deadline, workspace and lease, and
+published execution/Profile Definition pins. Compare-and-swap refuses a
+concurrently modified session. Legacy adoption and public session-resume APIs
+do not gain permission to rebind from caller-supplied assignment identifiers.
+
+The current session row and a metadata-only
+`agent_session_execution_reassociated` event in the existing worker audit
+collection commit together through canonical StateStore cross-domain mutation.
+The event identifies previous custody and the admitted fence/Definition. Old
+assignments, workspace custody, RuntimeUsage and prior receipts remain unchanged.
+The project-coordination delegation guard continues requiring exact current
+session/assignment joins; neither global pause nor an operator Goal binding
+relaxes a stale join. No continuation engine is added.
+
+This uses existing session and WorkerEvent schemas and existing record storage;
+no schema migration or catalog Definition change is introduced. Older binaries
+can read the same records but do not perform reassociation; a downgrade therefore
+does not promise continued rollover functionality. Resume failure/unknown outcome
+does not advance custody. Successful same-custody resume also recovers failed or
+closed current status to ready and clears current failure fields, without
+rewriting the earlier reassociation event. Repeated ready-state recovery is a
+no-op. Cancelling the owning turn, including all-task shutdown or repeated
+cancellation, drains the actual concurrent executor Future before returning,
+not merely a cancelled asynchronous wrapper. Production work uses the existing
+worker-session executor and pending-work custody set; standalone lifecycle
+callers own and join a bounded one-worker executor. Existing session/runner/worker/Goal UI
+must distinguish current custody from immutable prior execution evidence and
+expose stale-join denials. That UI and installed end-to-end qualification remain
+part of the issue's acceptance; source tests alone cannot prove them.
+
+Custody fault coverage uses the same service contract on SQLite and the isolated
+PostgreSQL CI backend. Independent connections compete from the same captured
+Session to prove a single CAS winner; a database-triggered event-write rejection
+checks rollback of the preceding Session delta and visibility from another
+connection. Legacy adoption remains an idempotent lookup, followed by a separate
+trusted resume hook before native input. Tests without the isolated PostgreSQL
+test DSN are skipped and provide no PostgreSQL qualification; the required
+distributed-backends job explicitly runs the custody integration module.
+
 Terminal runtime outcomes emit compact EvidenceType.RUNTIME_RESULT records linked to project/work/execution scope. Evidence contains identifiers, result, telemetry quality and bounded counters; it does not contain prompts, provider transcripts, shell output or raw model responses.
 
 Runtime usage telemetry is operational/evidentiary data only. It cannot grant authority, approve tools, change an ExecutionAssignment, or mark an external side effect successful.
