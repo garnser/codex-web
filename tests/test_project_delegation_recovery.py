@@ -235,9 +235,9 @@ class ProjectDelegationRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.execution._start_thread_turn_now_admitted.assert_not_awaited()
         self.assertEqual(self.host._thread_queue(child), [old])
         current = self.authorize()
-        repo = TurnQueueRepository(self.f.sqlite)
+        repo = TurnQueueRepository(self.f.sqlite, self.f.sqlite.path.parent / 'queues.json')
         repo.put(child, [old])
-        reopened = TurnQueueRepository(self.f.sqlite).get(child)[0]
+        reopened = TurnQueueRepository(self.f.sqlite, self.f.sqlite.path.parent / 'queues.json').get(child)[0]
         self.assertEqual(reopened, old)
         with self.assertRaises(HTTPException):
             self.coordination.validate_queued_delegation(reopened)
@@ -259,9 +259,9 @@ class ProjectDelegationRecoveryTests(unittest.IsolatedAsyncioTestCase):
         raw['project_coordination_dispatch'].pop('delegation_revision')
         raw['project_coordination_dispatch']['schema_version'] = '1.0'
         # Actual old persisted shape, not a new proof with a fabricated revision.
-        repo = TurnQueueRepository(self.f.sqlite)
+        repo = TurnQueueRepository(self.f.sqlite, self.f.sqlite.path.parent / 'queues.json')
         self.f.sqlite.record_apply(repo.namespace, upserts={child: [raw]})
-        legacy = TurnQueueRepository(self.f.sqlite).get(child)[0]
+        legacy = TurnQueueRepository(self.f.sqlite, self.f.sqlite.path.parent / 'queues.json').get(child)[0]
         self.assertIsNone(legacy.project_coordination_dispatch.delegation_revision)
         self.authorize()
         await self.execution.drain_thread_queue(child)
