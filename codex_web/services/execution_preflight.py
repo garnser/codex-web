@@ -107,7 +107,7 @@ class ExecutionPreflightService:
                     or value.workspace_id != incoming.workspace_id
                     or value.project_id != incoming.project_id
                     or value.queued_turn_snapshot is None
-                    or expected != incoming.queued_turn_snapshot
+                    or not self.store.queued_snapshots_equal(expected, incoming.queued_turn_snapshot)
                     or (value.replacement_thread_id or value.thread_id)
                        not in {prior_target, target}
                     or value.status in {"admitting", "retrying"}):
