@@ -379,6 +379,10 @@ class WorkItemOperatorService:
             and state.execution.retry.attempt < state.execution.retry.policy.max_attempts
         )
         return {
+            "projection_retry": {
+                "allowed": bool(source and state.source_projection and state.source_projection.status != "succeeded"),
+                "scope": "provider_projection_only",
+            },
             "retry": {
                 "allowed": retry_allowed,
                 "reason": None if retry_allowed else "closed, ownerless, or retry policy exhausted",

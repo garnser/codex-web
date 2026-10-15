@@ -316,6 +316,47 @@ class BuiltInTaskSourceRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 required=True,
             )
 
+    async def test_github_mapping_and_retry_preserve_secret_and_project_boundaries(self):
+        import httpx
+        from codex_web.models import GitHubTaskSourceSettings
+        from codex_web.integrations.github_client import GitHubClient
+        from codex_web.services.task_source_runtime import TaskSourceWritebackService
+        from tests.test_task_source_writeback import _Dependencies, _state
+        secret = self._secret("github")
+        config = TaskSourceConfiguration(source_type="github", source_instance="https://api.github.test",
+            scope="acme/app", credential_secret_id=secret.id,
+            provider_settings=GitHubTaskSourceSettings(assignee_mapping={"vp-engineering": "engineer"}))
+        project = Project(id="project-a", name="A", path=self.temp.name, authoritative_task_source=config)
+        calls = []
+        def respond(request):
+            calls.append(request.method)
+            return httpx.Response(200, json={"number": 4, "state": "open", "updated_at": "r1",
+                "assignees": [{"login": "human"}, {"login": "engineer"}], "labels": []})
+        BuiltInTaskSourceRuntime(self.registry, _Host([project]), self.identity, self.secrets,
+            github_client=GitHubClient(transport=httpx.MockTransport(respond))).install()
+        state = _state(owner="vp-engineering")
+        state.project_id = project.id
+        state.source_identity = TaskSourceIdentity(source_type="github", source_instance=config.source_instance,
+            external_id="acme/app#4", revision="r1")
+        deps = _Dependencies(state)
+        coordinator = TaskSourceWritebackService(None, self.registry, dependencies=deps)
+        result = await coordinator.sync(state)
+        self.assertEqual(result.source_projection.status, "succeeded")
+        self.assertEqual(calls, ["GET"])
+        self.assertEqual(result.current_owner, "vp-engineering")
+        source = self.registry.resolve(result)
+        self.assertIsInstance(source, SecretBoundTaskSource)
+        self.assertFalse(hasattr(source, "token"))
+        self.secrets.revoke(secret.id, actor=self.admin)
+        failed = await coordinator.retry_projection(result,
+            expected_revision=result.source_projection.desired_revision, actor=self.admin.identity_id)
+        self.assertEqual(failed.source_projection.status, "failed")
+        self.assertEqual(calls, ["GET"])
+        # Restoring a foreign source identity or tenant never selects this credential.
+        for update in ({"workspace_id": "foreign"}, {"source_identity": state.source_identity.model_copy(update={"external_id": "other/repo#4"})}):
+            with self.subTest(update=update), self.assertRaises(TaskSourceResolutionError):
+                self.registry.resolve(state.model_copy(update=update), required=True)
+
     def test_provider_settings_are_typed_and_must_match_source(self) -> None:
         with self.assertRaises(ValidationError):
             TaskSourceConfiguration(

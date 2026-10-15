@@ -242,6 +242,7 @@ class TaskSourceWritebackCoalescingTests(unittest.IsolatedAsyncioTestCase):
         )
 
         for index in range(100):
+            dependencies.state = _state(owner=f"owner-{index}", updated_at=float(index + 1))
             service.schedule(
                 _state(
                     owner=f"owner-{index}",
@@ -326,6 +327,32 @@ class TaskSourceWritebackCoalescingTests(unittest.IsolatedAsyncioTestCase):
             "r2",
         )
 
+    async def test_http_backoff_survives_typed_projection_failure_without_domain_replay(self):
+        import httpx
+        for status in (429, 503):
+            with self.subTest(status=status):
+                source = _CombinedSource()
+                original = source.write_projection
+                attempts = []
+                async def project(*args, **kwargs):
+                    attempts.append(1)
+                    if len(attempts) == 1:
+                        response = httpx.Response(status, headers={"Retry-After": "7"}, request=httpx.Request("PATCH", "https://provider.test"))
+                        response.raise_for_status()
+                    return await original(*args, **kwargs)
+                source.write_projection = project
+                dependencies = _Dependencies(_state())
+                service = TaskSourceWritebackService(None, _registry(source), dependencies=dependencies)
+                with patch("codex_web.services.task_source_runtime.asyncio.sleep", new=AsyncMock()) as sleep:
+                    service.schedule(dependencies.state)
+                    await asyncio.gather(*list(service._tasks.values()))
+                self.assertEqual(source.write_calls, 1)
+                self.assertEqual(len(attempts), 2)
+                self.assertEqual(dependencies.state.source_projection.status, "succeeded")
+                self.assertEqual(dependencies.state.source_projection.attempts, 2)
+                if status == 429:
+                    self.assertIn(unittest.mock.call(7.0), sleep.call_args_list)
+
     async def test_retry_is_bounded_and_reuses_one_coordinator_task(self) -> None:
         source = _CombinedSource()
         source.failures = 2
@@ -345,6 +372,7 @@ class TaskSourceWritebackCoalescingTests(unittest.IsolatedAsyncioTestCase):
             "codex_web.services.task_source_runtime.asyncio.sleep",
             new=AsyncMock(),
         ):
+            dependencies.state = _state(owner="retry")
             service.schedule(_state(owner="retry"))
             tasks = list(service._tasks.values())
             self.assertEqual(len(tasks), 1)

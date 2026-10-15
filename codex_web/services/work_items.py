@@ -413,6 +413,7 @@ class WorkItemService:
                 host,
                 registry,
                 dependencies=self.work_items,
+                append_event=getattr(self.state_machine, "_append_work_item_event", None),
             )
             self.task_source_registry = registry
         else:
@@ -1472,7 +1473,7 @@ class WorkItemService:
             )
         if split_brain_findings(state):
             recovery.schedule(reason="work-item-progress-routing-drift")
-        return {"ok": True, "item": public}
+        return {"ok": True, "canonical_committed": True, "item": public}
 
     async def progress(
         self,

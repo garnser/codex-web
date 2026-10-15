@@ -183,6 +183,13 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
         authority_level=AuthorityLevel.EXECUTE,
     ),
     ControlPlaneBrokerOperation(
+        id="work_item.projection_retry",
+        method="POST",
+        path_template="/api/work-items/{ref}/projection-retry",
+        capability="work_item.reconcile",
+        authority_level=AuthorityLevel.EXECUTE,
+    ),
+    ControlPlaneBrokerOperation(
         id="work_item.reconcile",
         method="POST",
         path_template="/api/work-items/{ref}/reconcile",
@@ -376,6 +383,7 @@ _MUTATION_SUFFIXES = {
     "steer": "work_item.steer",
     "retry": "work_item.retry",
     "reconcile": "work_item.reconcile",
+    "projection-retry": "work_item.projection_retry",
 }
 _SAFE_TRACE_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _REPOSITORY_ACTION_PAYLOAD_FIELDS = ("parameters", "idempotency_key")
@@ -2022,6 +2030,22 @@ class ControlPlaneBrokerService:
                 actor=actor.identity_id,
                 reason=(str(payload["reason"]) if payload.get("reason") else None),
             )
+        elif operation.id == "work_item.projection_retry":
+            from codex_web.api.work_items import WorkItemProjectionRetry
+            from codex_web.services.task_source_projection import TaskSourceProjectionError
+            request = WorkItemProjectionRetry.model_validate(payload)
+            def check_projection_authority():
+                current_assignment = assignment_validator() if assignment_validator else assignment
+                self._dispatch_scope(current_assignment, worker_actor, resolved)
+            check_projection_authority()
+            try:
+                await self.work_items.task_source_writeback.retry_projection(
+                    state, expected_revision=request.expected_revision, actor=actor.identity_id,
+                    authorization_guard=check_projection_authority,
+                )
+            except TaskSourceProjectionError as exc:
+                raise ControlPlaneBrokerRequestError(exc.reason, status_code=409) from exc
+            result = {"ok": True, **self.operator.detail(resolved.target_ref)}
         elif operation.id == "work_item.reconcile":
             assert resolved.target_ref is not None
             result = await self.operator.reconcile(

@@ -611,3 +611,56 @@ test('delivery thread is saved with its project source configuration', async ({ 
   await dialog.locator('.work-source-save').click();
   await expect.poll(() => supervision).toEqual({ thread_id: 'delivery-thread', enabled: true });
 });
+
+test('committed progress shows projection failure and retries only its exact revision', async ({ page }) => {
+  const posts = [];
+  const projection = {
+    status: 'failed', reason: 'provider_http_rejected', http_status: 422,
+    desired_revision: 'a'.repeat(64), target: { external_id: 'acme/app#4', source_instance: 'https://api.github.com', revision: 'r1' },
+    retry_scope: 'provider_projection_only', attempts: 1,
+  };
+  const payload = operatorPayload({ source_projection: projection });
+  payload.actions.projection_retry = { allowed: true };
+  await mockOperatorApis(page, posts, payload);
+  await page.route('**/api/work-items/**/projection-retry?*', async route => {
+    posts.push({ action: 'projection-retry', body: route.request().postDataJSON() });
+    await route.fulfill({ json: { ...payload, item: { ...payload.item, source_projection: { ...projection, status: 'conflict', reason: 'provider_state_changed' } } } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
+  const card = page.getByRole('region', { name: 'Provider projection' });
+  await expect(card).toContainText('Canonical progress committed · provider projection failed');
+  await expect(card).toContainText('422');
+  await expect(card).toContainText('provider_http_rejected');
+  await expect(card).toContainText('provider projection only');
+  await card.getByRole('button', { name: 'Retry provider projection' }).click();
+  await expect(card).toContainText('provider projection conflict');
+  await expect(card).toContainText('provider_state_changed');
+  expect(posts).toEqual([{ action: 'projection-retry', body: { expected_revision: 'a'.repeat(64) } }]);
+});
+
+test('GitHub TaskSource edits explicit role mappings through canonical Project configuration', async ({ page }) => {
+  const posts = [];
+  await mockOperatorApis(page, posts);
+  const project = projectPayload()[0];
+  project.authoritative_task_source = {
+    source_type: 'github', source_instance: 'https://api.github.com', scope: 'acme/app',
+    provider_settings: { kind: 'github', schema_version: '1.0', assignee_mapping: { 'vp-engineering': 'existing-user' } },
+  };
+  await page.route('**/api/projects', route => route.fulfill({ json: [project] }));
+  let saved;
+  await page.route('**/api/projects/project-a/task-source', async route => {
+    saved = route.request().postDataJSON();
+    await route.fulfill({ json: { ...project, authoritative_task_source: saved } });
+  });
+  await page.goto('http://127.0.0.1:18766/tests/browser/work_items_fixture.html');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
+  const mapping = page.locator('[data-github-mapping]');
+  await expect(mapping).toBeVisible();
+  await expect(mapping).toHaveValue('vp-engineering=existing-user');
+  await mapping.fill('vp-engineering=reviewed-user\ncto=reviewed-cto');
+  await page.locator('.work-source-save').click();
+  await expect.poll(() => saved).toMatchObject({ provider_settings: {
+    kind: 'github', schema_version: '1.0', assignee_mapping: { 'vp-engineering': 'reviewed-user', cto: 'reviewed-cto' },
+  } });
+});

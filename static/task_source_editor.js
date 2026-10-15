@@ -5,7 +5,7 @@ import { captureProjectView } from './project_view_scope.js';
 import { trackDirtyEditor, confirmDiscard } from './dirty_editor.js';
 import { formValidation } from './form_validation.js';
 import { renderSecretOptions } from './task_source_credentials.js';
-import { renderProviderDetails, captureProviderDetails } from './task_source_provider_fields.js';
+import { renderProviderDetails, captureProviderDetails, captureGitHubMapping } from './task_source_provider_fields.js';
 
 export function createTaskSourceEditor(state, { refreshAll, setStatus, esc, fmtTime }) {
   let root, dirty, validation, lastProject = '', epoch = 0, busy = false;
@@ -16,7 +16,7 @@ export function createTaskSourceEditor(state, { refreshAll, setStatus, esc, fmtT
   }
   function setBusy(value) {
     busy = value;
-    root?.querySelectorAll('input,select,button').forEach(control => { control.disabled = value || !state.projectId; });
+    root?.querySelectorAll('input,select,textarea,button').forEach(control => { control.disabled = value || !state.projectId; });
   }
   function bind(container) {
     root = container; validation = formValidation(root);
@@ -54,7 +54,7 @@ function renderProviderFields(sourceType, config = null) {
   const closedRow = document.querySelector('.work-source-servicenow-closed-row');
   const isJira = normalized === 'jira';
   const isServiceNow = normalized === 'servicenow';
-  const needsCredential = isJira || isServiceNow || normalized === 'gitlab' || Boolean(config?.credential_secret_id);
+  const needsCredential = isJira || isServiceNow || normalized === 'github' || normalized === 'gitlab' || Boolean(config?.credential_secret_id);
   if (wrapper) wrapper.hidden = !needsCredential;
   if (secretRow) secretRow.hidden = !needsCredential;
   if (jiraRow) jiraRow.hidden = !isJira;
@@ -148,6 +148,10 @@ async function saveSource() {
       else delete details.canonical_state_values.closed;
       payload.provider_settings = { kind: 'servicenow', table, ...details };
     }
+  }
+  if (source_type === 'github') {
+    try { payload.provider_settings = captureGitHubMapping(root); }
+    catch (error) { setStatus(error.message, true); return; }
   }
   setStatus('Saving source…'); setBusy(true);
   try {

@@ -844,6 +844,8 @@ class WorkItemStateMachine:
         return state
 
     def _save_work_item_state(self, state: WorkItemState) -> WorkItemState:
+        from codex_web.services.task_source_projection import ensure_projection
+        ensure_projection(state)
         if self.dependencies.save_state is not None:
             self.dependencies.save_state(state)
             return state

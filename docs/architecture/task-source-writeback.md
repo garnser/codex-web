@@ -113,3 +113,93 @@ remain governed separately. The secret-bound facade does not acquire a new
 combined capability; rotation/revocation and existing issue behavior remain
 unchanged. Operation counters on the individual writeback path are not proof
 of actual HTTP mutations; verification checks the exact provider calls.
+
+## Durable canonical success and provider projection (1.0)
+
+Canonical Work Item saves create or supersede `source_projection` in the same
+record write. Its SHA-256 `desired_revision` binds tenant, Project, source item,
+operational owner/stage and the meaningful-progress revision. Provider receipt
+and activity clocks do not generate a new desired revision or owner dispatch.
+The existing Work Item record is the durable reconciliation source; coordinator
+queues remain execution aids, not a second outbox or scheduler.
+
+`TaskSourceProjectionState` schema `1.0` records pending, failed, conflict or
+succeeded independently of committed domain progress, with exact target identity
+and revision, desired role/provider account fields, attempted actor/time/count, mapping checksum,
+observed provider revision/state and protected source-state baseline. Reasons
+are bounded code-owned identifiers and HTTP status only: raw response bodies,
+exception strings, tokens and request URLs are never diagnostic evidence.
+Attempt and outcome evidence is appended to the existing canonical Work Item event
+history, retaining exact desired/mapping revision attribution after supersession.
+These evidence events do not replay domain progress or dispatch an owner.
+Storage/programming failures are not provider success. A cancelled/lost response
+may leave pending evidence; GET readback remains authoritative. Progress never
+needs replay to recover a projection.
+
+`POST /api/work-items/{ref}/projection-retry` requires the exact current desired
+revision and existing `work-item.operate` authority, tenant and requested Project
+checks. The assignment broker uses existing `work_item.reconcile` capability and
+its assignment, resource and ownership checks; adding the operation grants no
+role/profile authority. Retry resolves the current credential-bound adapter and
+configuration, reads current canonical and provider state, and only projects the
+provider. It creates no progress, handoff, Attention, dispatch or execution retry.
+Explicit source reconciliation supersedes an existing outbound desired revision
+when it changes canonical state; read-only discovery creates no new outbound work.
+The canonical repository's transactional update checks desired revision before
+merging receipt/evidence fields, so stale results cannot replace newer ownership.
+A restart requires no background model call: the operator can retry a persisted
+pending/failed record through this same endpoint. The existing coalescer retains
+bounded retries for transient transport failures; conflicts, mapping failures and
+permanent provider denials require explicit operator reconciliation.
+
+### GitHub account mapping and concurrency
+
+Project `TaskSourceConfiguration.provider_settings` accepts
+`GitHubTaskSourceSettings` schema `1.0`, including `assignee_mapping` from exact
+operational role identifiers to GitHub logins. These are deployment-specific
+adapter configuration values, like existing Jira/ServiceNow settings, rather than
+reusable execution definitions or authority grants. No new Definition Registry
+catalog is introduced. The exact configuration checksum is attributed to each
+attempt. Existing Projects migrate to an empty mapping: there is no role-name
+fallback or guessed human account. Syntax and unambiguous reverse mapping are
+validated on configuration save; GitHub repository assignability is validated
+before adding a mapped account. Missing mapping is a visible failed projection.
+Unknown/manual provider accounts do not become operational roles on ingestion.
+
+Assignee projection uses GitHub's additive assignee endpoint, never replacement
+of the assignee array. Null canonical owner does not clear human assignees.
+Manual accounts, including accounts added during awaited requests, are retained.
+Reads and verification surround the additive mutation; response loss is recovered
+by readback before another write. A changed external revision conflicts unless
+readback verifies the complete desired projection. The original protected issue
+state persists across retries and is checked after assignability and assignee
+awaits; a human close/reopen yields conflict and never a reverse state PATCH.
+
+[GitHub conditional-request guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests-if-appropriate)
+does not support unsafe conditional requests unless an endpoint explicitly
+supports them. The [issue update contract](https://docs.github.com/en/rest/issues/issues#update-an-issue)
+documents no revision compare-and-swap. Accordingly guarded writeback reports
+`github_state_transition_requires_reconciliation` when a close/reopen is needed,
+and sends no state PATCH. Operators inspect canonical versus observed state and
+use the existing governed `code-host.issue.update` ActionIntent path for an
+intentional provider issue-state action, then retry only the projection to verify.
+Read/verify evidence (`read_verify_no_state_cas`) is an observation, not atomic
+provider synchronization or an enduring claim against subsequent human edits.
+
+The existing Work Item operator view exposes the two outcomes, bounded failure
+reason, desired/observed/protected revision provenance and a projection-only retry
+button. The Project TaskSource editor manages the explicit mapping. This extends
+the Work Item UI tracked by #102 and #127; it adds no separate dashboard.
+
+### Compatibility and drain
+
+The optional Work Item field is additive; old records load without it and acquire
+pending evidence on their next canonical save. Unknown nested schema versions
+fail validation. Mapping publication uses the existing admin-controlled Project
+binding API, with current credential use checks on every attempt. There is no
+new destructive storage migration, secret material or autonomous scheduler.
+Drain old API/writeback processes before enabling these settings: an old writer
+can drop unknown evidence and retains unsafe role-to-account behavior. Do not run
+mixed old/new writers. Rollback requires draining writeback and removing the new
+GitHub settings under the same Project admin boundary; retain the canonical
+records/evidence for readback and reconciliation, and never replay progress.
