@@ -216,8 +216,8 @@ atomically and advance its authorization revision.
 Admission still checks the current Goal/revision/owner, Project roots, invoking
 actor, native Session/bootstrap/assignment/fence, lease, tenant/resources, child
 profile and invocation rights; queued proof is checked again before native input.
-Project coordination ActionProvider contract 1.3 carries the server-produced proof
-outside client input. Existing unbound actions retain their parameter shape; old
+The existing ActionProvider contract 1.2 envelope carries the server-produced
+dispatch proof outside client input; its protocol version is unchanged. Existing unbound actions retain their parameter shape; old
 bound intents without a pin refuse rather than being upgraded on execution.
 Project coordination dispatch proof version 1.1 pins `delegation_revision` at
 server-side intent creation. The immutable intent carries that same proof into

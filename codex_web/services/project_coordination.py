@@ -576,7 +576,7 @@ class ProjectCoordinationService:
 
 class ProjectCoordinationActionProvider:
     """Canonical local actions: persistent intent precedes any possibly uncertain effect."""
-    contract_version = "1.3"
+    contract_version = "1.2"
     provider_type, provider_instance = "project-coordination", "canonical"
 
     def __init__(self, service):
