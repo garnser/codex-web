@@ -21,6 +21,7 @@ class RecoveryExecutor:
     def __init__(self):
         self._admission_lock = threading.RLock()
         self._quiescing = False
+        self._owned_key = contextvars.ContextVar("recovery_owned_future", default=None)
         self._pool = None
         self._futures = {}
         self._closed = False
@@ -58,7 +59,13 @@ class RecoveryExecutor:
                 if self._pool is None:
                     self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='recovery-scheduled')
                 context = contextvars.copy_context()
-                future = self._pool.submit(context.run, operation)
+                def owned():
+                    token = self._owned_key.set(key)
+                    try:
+                        return operation()
+                    finally:
+                        self._owned_key.reset(token)
+                future = self._pool.submit(context.run, owned)
                 self._futures[key] = future
         try:
             return await self._settle(future)
@@ -84,8 +91,9 @@ class RecoveryExecutor:
         # A thread performing the canonical CAS blocks ALL local submissions,
         # including manual requests, without holding a lock across await/I/O.
         with self._admission_lock:
-            if self._quiescing or self._futures:
-                raise RecoveryExecutorBusy('actual local recovery work is not drained')
+            own = self._owned_key.get()
+            if self._quiescing or any(key != own for key in self._futures):
+                raise RecoveryExecutorBusy('other actual local Recovery work is not drained')
             self._quiescing = True
         try:
             yield

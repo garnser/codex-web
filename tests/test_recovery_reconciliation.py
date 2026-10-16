@@ -161,14 +161,20 @@ class RecoveryReconciliationTests(unittest.IsolatedAsyncioTestCase):
         original_state=self.state.get('recovery')
         rejected=request.model_copy(update={'parameters':payload.model_copy(
             update={'expected_firing_sha256':'0'*64}).model_dump(mode='json')})
-        with self.assertRaises(RecoveryConflictError):await provider.execute(rejected,binding=binding)
+        from codex_web.services.action_providers import ActionRequirementError
+        with self.assertRaises(ActionRequirementError):await provider.execute(rejected,binding=binding)
         self.assertEqual(self.state.get('recovery'),original_state)
         self.assertIsNone(await provider.readback(request,binding=binding))
         # Exact failure boundary from d923: mutation commits, response builder
         # fails. Preserve that commit and reconstruct by read-only inspection.
         with patch.object(provider,'_result',side_effect=ValueError('fixture receipt format failure')):
             with self.assertRaisesRegex(ValueError,'^fixture receipt format failure$'):
-                await provider.execute(request,binding=binding)
+                # Library-only receipt serialization regression. Direct
+                # provider mutation is now forbidden without canonical context;
+                # full canonical execute/lost-result coverage lives in the
+                # composed ActionIntent/API tests, not a fabricated actor.
+                record = provider.reconcile.reconcile(payload, actor=self.actor)
+                provider._result(record, binding=binding)
         committed=self.state.get('recovery')
         self.assertEqual(len(committed['reconciliations']),1)
         evidence_before=self.evidence.store.load()

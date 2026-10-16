@@ -553,3 +553,31 @@ settlement uses the already registered service worker, just as initial execution
 does. An administrator is not granted worker scopes. The requester/tenant/firing
 binding is checked before delegation, and provider readback/settlement recheck
 current human authority. The normal service-principal guard is unchanged.
+
+
+### Final irreversible-write admission and provider custody
+
+Recovery provider mutation is entered only from the actual ActionIntent executor
+through an internal process-local context; no request can supply that context,
+a worker identity, a guard callback or a successful admission flag. The existing
+Recovery executor owns the entire mutation/admission worker, including its real
+concurrent future during cancellation and ActionIntent timeout. Stop closes
+admission and joins that future. Readback remains receipt-only and never calls
+the mutation worker again.
+
+For operator/provider first state1.3 persistence, the existing canonical record_mutate_many
+transaction acquires the globally sorted shared admission and Recovery/key/
+Evidence/Scheduler locks together. It pins/rechecks current HTTP authentication,
+MFA/expiry/membership, worker identity and scope, binding and ActionDefinition,
+Role/Definition authority, policy/security, current procedure discovery and
+applicable durable procedure step. Admission rows are guard-only; only the
+actual domain deltas are written. Checks run before and after the domain updater;
+a final ActionIntent failure is not a substitute for preventing a denied domain
+migration. A separate writer committed before these locks causes refusal;
+a writer acquiring the same locks afterward is ordered after the domain commit.
+
+Independent original-writer/effect proof, explicit activation and qualified
+backup/restore/drain remain mandatory and are not produced by these guards.
+Manual HTTP offload is retained source awaiting the explicit bounded follow-up
+tracking decision under stabilization/#1489 provenance; it is not silently
+accepted as extra scope or published while that tracking remains pending.

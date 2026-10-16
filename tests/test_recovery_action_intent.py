@@ -70,6 +70,11 @@ class RecoveryActionIntentTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(OSError,'^settlement unavailable$'):
                     await self.scheduler.run_due()
         await self.recovery.stop()
+        original_owner = self.recovery._scheduled_admission.owner_id
+        # Fresh actual executor/incarnation after the original writer drained;
+        # do not submit new provider work to an already closed executor.
+        self.recovery.start()
+        self.assertNotEqual(original_owner, self.recovery._scheduled_admission.owner_id)
         self.clock.value=time.time()+10
         firing=next(iter(self.recovery.store.load().scheduled_firings.values()))
         fixture=SimpleNamespace(service=self.recovery,scheduler=self.scheduler,evidence=self.artifacts,actor=self.actor)

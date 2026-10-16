@@ -181,7 +181,7 @@ class RecoveryService:
     def policy(self) -> RecoveryPolicy | None:
         return self.store.load().policy
 
-    def _write_key_bound(self, updater, *, actor, requirements, active_key=None, scheduler_update=None, _firing=None, evidence_update=None, _activate_reconciliation=False):
+    def _write_key_bound(self, updater, *, actor, requirements, active_key=None, scheduler_update=None, _firing=None, evidence_update=None, _activate_reconciliation=False, mutation_admission=None):
         if self.crypto.store.store is not self.store.store:
             raise RecoveryConflictError('Recovery and keys require the same canonical transactional store')
         key_namespace = self.crypto.store.namespace
@@ -249,7 +249,22 @@ class RecoveryService:
             # credential or membership change cannot race successful settlement.
             # Its complete payload is returned unchanged, not normalized.
             defaults[identity.store.namespace] = identity.store._empty()
-        result = self.store.store.update_many(defaults, apply)
+        if mutation_admission is None:
+            result = self.store.store.update_many(defaults, apply)
+        else:
+            # Existing bounded row transaction takes globally sorted namespace
+            # locks once. Guard-only identity/admission rows are NOT rewritten.
+            selected = dict(mutation_admission['guard_rows'])
+            selected.update({name: (None,) for name in defaults})
+            def guarded(rows):
+                mutation_admission['guard'](rows)
+                documents = {name: rows[name][None] if rows[name][None] is not None else default
+                             for name, default in defaults.items()}
+                updated = apply(documents)
+                mutation_admission['guard'](rows)
+                return {name: {None: value} for name, value in updated.items()}
+            changed = self.store.store.record_mutate_many(selected, guarded)
+            result = {name: rows[None] for name, rows in changed.items()}
         return RecoveryStore._decode(result[self.store.namespace])
 
     def configure(self, policy: RecoveryPolicy, *, actor: AuthenticationActor,
