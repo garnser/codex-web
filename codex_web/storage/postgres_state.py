@@ -5,6 +5,7 @@ import json
 import math
 import time
 import threading
+import uuid
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
@@ -1062,27 +1063,41 @@ class PostgresStateStore:
                 return bool(direct_count or cursor.rowcount)
 
     def documents(self) -> dict[str, Any]:
-        with self._read_connection() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    'SELECT namespace, payload FROM codex_state_documents ORDER BY namespace COLLATE "C"'
-                )
-                rows = cursor.fetchall()
         documents: dict[str, Any] = {}
         records: dict[str, dict[str, Any]] = {}
         record_collections: set[str] = set()
-        for storage_namespace, payload in rows:
-            name = str(storage_namespace)
-            parsed = parse_state_record_storage_key(name)
-            decoded = json.loads(payload) if isinstance(payload, str) else payload
-            if parsed is None:
-                documents[name] = decoded
-                continue
-            logical_namespace, key = parsed
-            record_collections.add(logical_namespace)
-            if key is not None:
-                records.setdefault(logical_namespace, {})[key] = decoded
+        # A named server cursor keeps one SELECT snapshot without buffering the
+        # entire encoded export in libpq and Python alongside the decoded map.
+        # Reuse a callback's owning transaction; never commit/return its lease.
+        with self._read_connection() as connection:
+            with connection.cursor(name="codex_export_" + uuid.uuid4().hex) as cursor:
+                cursor.execute(
+                    'SELECT namespace, payload FROM codex_state_documents ORDER BY namespace COLLATE "C"'
+                )
+                while True:
+                    # FETCH is a new statement: refresh its remaining timeout,
+                    # and cooperate with cancellation during Python decoding.
+                    self._operation_deadline(connection)
+                    rows = cursor.fetchmany(64)
+                    check_operation_budget()
+                    if not rows:
+                        break
+                    for storage_namespace, payload in rows:
+                        check_operation_budget()
+                        name = str(storage_namespace)
+                        parsed = parse_state_record_storage_key(name)
+                        decoded = json.loads(payload) if isinstance(payload, str) else payload
+                        if parsed is None:
+                            documents[name] = decoded
+                            continue
+                        logical_namespace, key = parsed
+                        record_collections.add(logical_namespace)
+                        if key is not None:
+                            records.setdefault(logical_namespace, {})[key] = decoded
+                    del rows
         for namespace in record_collections:
+            check_operation_budget()
             if namespace not in documents:
                 documents[namespace] = records.get(namespace, {})
+        check_operation_budget()
         return documents
