@@ -130,15 +130,32 @@ function installRoutes(page, actions = [], state = {}) {
       contentType: 'application/json',
       body: JSON.stringify({
         trace: {
+          agent_session: { assignment_id: 'assignment-a', execution_id: 'execution-a', execution_workspace_id: 'execws-a' },
           assignment: { id: 'assignment-a', status: 'running', fence: 4 },
           worker: { id: 'worker-a', lifecycle: 'active', version: 'worker-v1' },
           execution_workspace: { id: 'execws-a', status: 'active', branch_name: 'codex/work' },
           runtime_events: [
             {
               id: 'usage-a',
+              assignment_id: 'assignment-a',
+              execution_id: 'execution-a',
+              execution_workspace_id: 'execws-a',
               provider_native_turn_id: 'turn-a',
               terminal_outcome: 'succeeded',
               telemetry_completeness: 'partial',
+            },
+            {
+              id: 'usage-old', provider_native_turn_id: 'turn-old',
+              assignment_id: 'assignment-old', execution_id: 'execution-old',
+              execution_workspace_id: 'execws-old',
+              terminal_outcome: 'succeeded', telemetry_completeness: 'complete',
+            },
+            {
+              id: 'usage-unknown', terminal_outcome: 'unknown', telemetry_completeness: 'partial',
+            },
+            {
+              id: 'usage-partial', assignment_id: 'assignment-a', execution_id: 'execution-a',
+              terminal_outcome: 'unknown', telemetry_completeness: 'partial',
             },
           ],
           action_intents: [{ id: 'intent-a', status: 'completed' }],
@@ -310,7 +327,20 @@ test('AgentSession execution trace links canonical assignment/runtime/action/evi
   await trace.locator('summary').click();
 
   await expect(trace.locator('.agent-trace-body')).toContainText('Assignment: assignment-a · running · fence 4');
-  await expect(trace.locator('.agent-trace-body')).toContainText('Runtime events: turn-a:succeeded/partial');
+  await expect(trace.locator('.agent-trace-body')).toContainText('Runtime events: 4');
+  const current = trace.locator('[data-runtime-event-id="usage-a"]');
+  await expect(current).toContainText('turn-a:succeeded/partial · Current custody');
+  await expect(current).toContainText('assignment: assignment-a · execution: execution-a · workspace: execws-a');
+  const recorded = trace.locator('[data-runtime-event-id="usage-old"]');
+  await expect(recorded).toContainText('Recorded under another assignment');
+  await expect(recorded).toContainText('assignment: assignment-old · execution: execution-old · workspace: execws-old');
+  await expect(recorded).not.toContainText('Current custody');
+  for (const id of ['usage-unknown', 'usage-partial']) {
+    const unknown = trace.locator(`[data-runtime-event-id="${id}"]`);
+    await expect(unknown).toContainText('Custody attribution unavailable');
+    await expect(unknown).toContainText('workspace: unknown');
+    await expect(unknown).not.toContainText('workspace: execws-a');
+  }
   await expect(trace.locator('.agent-trace-body')).toContainText('ActionIntents: intent-a:completed');
   await expect(trace.locator('.agent-trace-body')).toContainText('Evidence: evidence-a:pass');
   await expect(trace.getByRole('link', { name: 'Assignments' })).toHaveAttribute('href', '#execution-assignment-list');
@@ -350,6 +380,35 @@ test('routing explanation is rendered from canonical route response', async ({ p
     },
   });
 });
+
+for (const width of [390, 1440]) {
+  test(`recorded custody remains readable with long identifiers at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1000 });
+    await installRoutes(page);
+    const assignment = 'assignment-0a617509df654be797dd31eb54597538';
+    await page.route('**/api/agent-sessions/*/trace', (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ trace: {
+        runtime_events: [{
+          id: 'usage-long', provider_native_turn_id: '<img src=x onerror=alert(1)>',
+          assignment_id: assignment,
+          execution_id: 'thread-bootstrap-07f73f92717c49f99abb69faa7772ca1',
+          execution_workspace_id: 'execws-8a4f38a3645a38c119aa',
+          terminal_outcome: 'succeeded', telemetry_completeness: 'partial',
+        }],
+      } }),
+    }));
+    await page.goto('http://127.0.0.1:18766/tests/browser/agent_provider_admin_fixture.html');
+    const trace = page.locator('.agent-session-item', { hasText: 'agent-session-claude' }).locator('.agent-session-trace');
+    await trace.locator('summary').click();
+    const row = trace.locator('[data-runtime-event-id="usage-long"]');
+    await expect(row).toContainText('Recorded custody; current custody unavailable');
+    await expect(row).toContainText(`assignment: ${assignment}`);
+    await expect(row).toContainText('<img src=x onerror=alert(1)>');
+    await expect(row.locator('img')).toHaveCount(0);
+    expect(await row.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  });
+}
 
 test('explicit runtime thread creation forces the selected runtime through the thread API', async ({ page }) => {
   const state = {};
