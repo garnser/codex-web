@@ -43,7 +43,8 @@ function freshUntil(runner) {
 export function runnerPresentation(threadId, now = Date.now() / 1000) {
   const runner = runnerFor(threadId);
   if (!runner) return {state:'unknown', glyph:'?', label:'Unknown runner'};
-  let state = runner.state;
+  // 'active' is derived below, never accepted as a custody state.
+  let state = runner.state === 'active' ? 'unknown' : runner.state;
   let label = runnerLabel(threadId);
   if (runner.live) {
     if (!runner.leaseValid || !Number.isFinite(freshUntil(runner)) || freshUntil(runner) <= now
