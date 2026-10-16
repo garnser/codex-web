@@ -1938,6 +1938,8 @@ class ControlPlaneBrokerService:
                             requested_revision,
                             checkout=Path(member.workspace_path),
                             actor=actor,
+                            disk_budget_bytes=max(0, assignment.limits.disk_bytes
+                                - current_workspace.actual_disk_bytes),
                         )
                     )
                 except CodeHostTransientError as materialization_exc:

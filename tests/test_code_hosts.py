@@ -428,7 +428,7 @@ class CodeHostContractTests(unittest.IsolatedAsyncioTestCase):
 
         checkout = Path(self.temp.name) / "git-command-checkout"
         checkout.mkdir()
-        with patch("codex_web.services.code_hosts.subprocess.run", side_effect=run):
+        with patch.object(CodeHostService, "_run_materialization_git", side_effect=run):
             CodeHostService._materialize_git_sync(
                 checkout,
                 "https://github.com/org/repo.git",
@@ -455,7 +455,7 @@ class CodeHostContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("CODEX_MATERIALIZE_TOKEN", options["env"])
 
         with patch(
-            "codex_web.services.code_hosts.subprocess.run",
+            "codex_web.services.code_hosts.CodeHostService._run_materialization_git",
             side_effect=subprocess.CalledProcessError(
                 128,
                 ["git", "fetch"],

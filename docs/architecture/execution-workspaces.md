@@ -317,10 +317,16 @@ materialization path requires a non-shallow repository with all reachable commit
 tree and blob objects; connectivity checks disable lazy fetch and replacement
 objects. The same check applies when the exact tip already exists locally.
 
-The bounded snapshot fetch currently refuses incomplete ancestry before importing
-its pack or changing workspace HEAD, with an explicit complete-history-required
-error. It does not claim shallow source is publishable or extend fetch deadlines
-or disk limits. Complete public-history input through the canonical source
-preparation path remains valid; credentials and provider attestations stay behind
-the existing boundary. Existing workspace/broker denial diagnostics expose this
-refusal; no new inspector, store or authority is introduced.
+Hydration uses the existing credential-isolated Git pipeline with finite fetch
+depths 64, 512 and 4096. It requires complete non-shallow connectivity before
+export/import, rechecks the exact provider tip at each fetch and through the
+provider facade after hydration, and preserves checkout HEAD until refresh.
+A shared 120-second materialization deadline and monitored scratch/pack byte
+budget bound all owned subprocesses; timeout/cancellation/size refusal kills
+and reaps the owned Git process group. The scratch ceiling is the minimum of
+128MiB, one quarter of the supplied assignment disk remainder, and one quarter
+of the observed scratch/destination free capacity. Existing worker disk quotas
+remain authoritative; this cooperative monitor is not a kernel filesystem quota.
+Incomplete histories beyond these bounds fail visibly, never masquerading as
+complete source. No unbounded fetch, credential-bearing checkout config, hook,
+submodule, replacement or lazy-fetch shortcut is enabled.

@@ -8,6 +8,9 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import time
+import signal
+import shutil
 from typing import TypeVar
 from urllib.parse import urlsplit
 
@@ -45,6 +48,8 @@ from codex_web.services.identity import TenantIsolationError
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.services.secrets import SecretBroker
 
+
+_MATERIALIZATION_DEPTHS = (64, 512, 4096)
 
 T = TypeVar("T")
 
@@ -274,6 +279,7 @@ class CodeHostService:
         *,
         checkout: Path,
         actor: AuthenticationActor,
+        disk_budget_bytes: int = 128 * 1024 * 1024,
     ) -> CodeHostRevisionMaterializationFact:
         """Fetch one exact, provider-attested default-branch tip into a checkout."""
         requested = str(revision or "").strip().casefold()
@@ -344,7 +350,13 @@ class CodeHostService:
                         credential,
                         binding.provider_type,
                         resource.id,
+                        disk_budget_bytes=disk_budget_bytes,
                     )
+                # Refresh still requires the same attested default branch after I/O.
+                current_refs = await provider.refs(binding, resource, credential=credential)
+                if [ref.revision.casefold() for ref in current_refs
+                    if ref.kind == "branch" and ref.name == branch] != [requested]:
+                    raise CodeHostError("provider default branch changed during materialization")
                 return CodeHostRevisionMaterializationFact(
                     resource_id=resource.id,
                     provider_type=binding.provider_type,
@@ -485,6 +497,57 @@ class CodeHostService:
             raise CodeHostTransientError("execution workspace ancestry inspection failed") from exc
 
     @staticmethod
+    def _run_materialization_git(command, *, root, deadline, disk_bytes, env,
+                                 input=None, stdin=None, stdout=None, **_options):
+        """Bound the existing trusted Git subprocess, reap it on every exit."""
+        from codex_web.storage.state_store import check_operation_budget
+        def check():
+            check_operation_budget()
+            if time.monotonic() >= deadline:
+                raise CodeHostError("history materialization time bound exceeded")
+            total = 0
+            for directory, dirs, files in os.walk(root, followlinks=False):
+                dirs[:] = [name for name in dirs if not Path(directory, name).is_symlink()]
+                for name in files:
+                    path = Path(directory, name)
+                    try:
+                        if not path.is_symlink():
+                            total += path.stat().st_size
+                    except FileNotFoundError:
+                        continue  # Git atomically renames temporary packs/refs.
+                    if total > disk_bytes:
+                        raise CodeHostError("history materialization scratch/pack disk bound exceeded")
+        check()
+        with tempfile.TemporaryFile(dir=root) as output:
+            child = subprocess.Popen(command, env=env,
+                stdin=subprocess.PIPE if input is not None else stdin,
+                stdout=stdout if stdout is not None else output,
+                stderr=subprocess.DEVNULL, start_new_session=True)
+            try:
+                if input is not None:
+                    child.stdin.write(input)
+                    child.stdin.close()
+                while child.poll() is None:
+                    check()
+                    time.sleep(.02)
+                code = child.wait()
+                check()
+                if code:
+                    raise subprocess.CalledProcessError(code, command)
+                output.seek(0)
+                result = output.read(65537)
+                if len(result) > 65536:
+                    raise CodeHostError("history materialization output bound exceeded")
+                return subprocess.CompletedProcess(command, code, result.decode(), "")
+            finally:
+                # Git transport/askpass descendants must not outlive this step.
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                child.wait()
+
+    @staticmethod
     def _materialize_git_sync(
         checkout: Path,
         remote: str,
@@ -493,6 +556,7 @@ class CodeHostService:
         credential: str,
         provider_type: str,
         resource_id: str,
+        *, disk_budget_bytes: int = 128 * 1024 * 1024,
     ) -> None:
         internal_ref = (
             "refs/codex/materialized/"
@@ -500,6 +564,14 @@ class CodeHostService:
         )
         with tempfile.TemporaryDirectory(prefix="codex-materialize-") as root:
             root_path = Path(root)
+            deadline = time.monotonic() + 120
+            scratch_bytes = min(128 * 1024 * 1024, disk_budget_bytes // 4,
+                shutil.disk_usage(root_path).free // 4, shutil.disk_usage(checkout).free // 4)
+            if scratch_bytes < 4096:
+                raise CodeHostError("insufficient materialization disk quota")
+            def run(command, **options):
+                return CodeHostService._run_materialization_git(command,
+                    root=root_path, deadline=deadline, disk_bytes=scratch_bytes, **options)
             askpass = root_path / "askpass.sh"
             username = "x-access-token" if provider_type.casefold() == "github" else "oauth2"
             askpass.write_text(
@@ -550,51 +622,46 @@ class CodeHostService:
                 remote, f"+refs/heads/{branch}:{internal_ref}",
             ]
             try:
-                subprocess.run(
+                run(
                     ["git", "init", "--bare", "--template=", str(isolated)],
                     env=safe_environment, check=True, capture_output=True,
                     text=True, timeout=30,
                 )
-                subprocess.run(
-                    command,
-                    env=environment,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
-                observed = subprocess.run(
-                    [*isolated_git, "rev-parse", "--verify", f"{internal_ref}^{{commit}}"],
-                    env=safe_environment,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                ).stdout.strip().casefold()
-                if observed != revision:
-                    raise CodeHostError("provider default branch changed during materialization")
-                if not CodeHostService._git_has_complete_history(isolated, revision):
-                    raise CodeHostError(
-                        "provider ancestry is incomplete within bounded snapshot fetch; "
-                        "complete public history is required before workspace refresh")
+                # Finite depth progression, never an unbounded fetch/unshallow.
+                for depth in _MATERIALIZATION_DEPTHS:
+                    bounded = [f"--depth={depth}" if arg == "--depth=1" else arg for arg in command]
+                    run(bounded, env=environment)
+                    observed = run([*isolated_git, "rev-parse", "--verify",
+                        f"{internal_ref}^{{commit}}"], env=safe_environment).stdout.strip().casefold()
+                    if observed != revision:
+                        raise CodeHostError("provider default branch changed during materialization")
+                    shallow = run([*isolated_git, "rev-parse", "--is-shallow-repository"],
+                                  env=safe_environment).stdout.strip()
+                    if shallow == "false":
+                        run([*isolated_git, "rev-list", "--objects", "--quiet",
+                             "--missing=error", revision, "--"], env=safe_environment)
+                        break
+                else:
+                    raise CodeHostError(f"complete history exceeds materialization depth bound{_MATERIALIZATION_DEPTHS[-1]}")
                 # Import only the verified object pack. This step has no token,
                 # network transport, reference updates or working-tree writes.
                 with (root_path / "verified.pack").open("w+b") as pack:
-                    subprocess.run(
+                    run(
                         [*isolated_git, "pack-objects", "--stdout", "--revs"],
                         input=(revision + "\n").encode(), stdout=pack,
                         stderr=subprocess.PIPE, env=safe_environment,
                         check=True, timeout=120,
                     )
                     pack.seek(0)
-                    subprocess.run(
+                    run(
                         ["git", "-C", str(checkout), "-c", "core.hooksPath=/dev/null",
                          "-c", "gc.auto=0", "index-pack", "--stdin"],
                         stdin=pack, capture_output=True, env=safe_environment,
                         check=True, timeout=120,
                     )
-                if not CodeHostService._git_has_complete_history(checkout, revision):
-                    raise CodeHostError("imported provider ancestry is incomplete; workspace not refreshed")
+                run(["git", "-C", str(checkout), "-c", "protocol.allow=never",
+                     "--no-replace-objects", "rev-list", "--objects", "--quiet",
+                     "--missing=error", revision, "--"], env=safe_environment)
             except (OSError, subprocess.SubprocessError) as exc:
                 raise CodeHostTransientError(
                     "provider revision materialization failed"
