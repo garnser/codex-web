@@ -39,12 +39,13 @@
   "runtime_capability_advertised": false,
   "activation": "not wired or installed; native private-store prerequisite only",
   "trusted_build_commands": [
-    "python3 /work/app/patches/codex/goal-control-v1/normalize_release_lock.py codex-rs/Cargo.lock /work/derived-Cargo.lock",
-    "cp /work/derived-Cargo.lock codex-rs/Cargo.lock",
-    "git apply --check /work/app/patches/codex/goal-control-v1/control.patch",
-    "git apply /work/app/patches/codex/goal-control-v1/control.patch",
+    "python3 \"$APP_SOURCE/patches/codex/goal-control-v1/normalize_release_lock.py\" codex-rs/Cargo.lock Cargo.lock.derived",
+    "cp Cargo.lock.derived codex-rs/Cargo.lock",
+    "git apply --check \"$APP_SOURCE/patches/codex/goal-control-v1/control.patch\"",
+    "git apply \"$APP_SOURCE/patches/codex/goal-control-v1/control.patch\"",
     "cd codex-rs && cargo fmt --all -- --check",
-    "cd codex-rs && cargo test --locked --offline -p codex-state atomic_receipt_fences_legacy_writers_and_preserves_accounting"
+    "cd codex-rs && cargo test --locked --offline -p codex-state --lib",
+    "cd codex-rs && cargo check --locked --offline -p codex-goal-extension"
   ],
   "build_requirements": "Sterile exact public checkout/Cargo.lock and prequalified public toolchain+locked dependency cache, dedicated cgroup2GiB/256tasks with bounded timeout and real cleanup. No network/private cache mount/install.",
   "fixture_schema_sha256": "b3aac485fec27eaefbdd3e68651bdf6d640908fb10226f3562cc5ffe92ca3d1f",
@@ -63,7 +64,7 @@
     "goal_behavior_patch_unchanged": true,
     "source_comparison_files_verified": 17,
     "archive_verification": "operator provenance; archive not locally present",
-    "build_and_tests": "unexecuted; qualified dedicated cgroup still required"
+    "build_and_tests": "Root independent qualification on exact a167: fmt all PASS; all229 codex-state unit tests PASS; codex-goal-extension check PASS. See prerequisite_qualification; this is not full1500/runtime installation proof."
   },
   "build_lock": {
     "upstream_sha256": "17cdd862471774ba7aef836aaf0a0a3ed76bd23e503b1fc7278c89d1f2719d03",
@@ -71,5 +72,32 @@
     "recipe": "python3 /work/app/patches/codex/goal-control-v1/normalize_release_lock.py codex-rs/Cargo.lock /work/derived-Cargo.lock; then copy derived file to codex-rs/Cargo.lock before existing --locked --offline command",
     "scope": "160 local package versions and explicit local dependency version references only; external package records and resolved dependency graph preserved",
     "evidence": "Root supplied dependency fetch r2 success only; no compiler/test success inferred"
+  },
+  "prerequisite_qualification": {
+    "source_head": "a167185701d29b3c343108803e861970faa628fa",
+    "source_tree": "17f857754071c03c3266c7bd3a49c261efdda1d9",
+    "producer": "Root AI operator independent isolated source qualification",
+    "artifact_id": "artifact-5cbce90a67f94f118eb28acb69d7fb08",
+    "evidence_id": "evidence-7938e549f72646998d56be95d572da27",
+    "fmt_all_exit": 0,
+    "app_sql_tests_passed": 8,
+    "state_unit_tests": {
+      "passed": 229,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0
+    },
+    "goal_extension_check_exit": 0,
+    "goal_extension_seconds": 95.62971520423889,
+    "private_state_or_credentials": false,
+    "network": false,
+    "memory_bytes": 2147483648,
+    "tasks_max": 256,
+    "all_processes_reaped": true,
+    "prior_failures_retained": true,
+    "native_managed_seal_claimed": false,
+    "sdk_installed": false,
+    "full1500_complete": false,
+    "new_integration_ci": "required; not inferred from unchanged hashes"
   }
 }

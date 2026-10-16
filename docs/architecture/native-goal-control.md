@@ -56,3 +56,28 @@ checking all package records and dependency edges. It changes 160 local package
 versions and matching references to the release version; third-party resolution
 remains fixed. Build qualification must record both hashes and retain `--locked`
 and `--offline`. Supplied dependency-fetch success is not compilation/test proof.
+
+## Qualified inactive source prerequisite
+
+Independent Root operator qualification on source
+a167185701d29b3c343108803e861970faa628fa passed formatting, eight app/SQL
+checks, all 229 codex-state unit tests (zero failed, ignored or filtered), and
+the codex-goal-extension compile check. Canonical Artifact
+5cbce90a67f94f118eb28acb69d7fb08 and Evidence
+7938e549f72646998d56be95d572da27 describe that bounded source qualification.
+Earlier formatting, missing-dependency and extension-timeout results remain
+retained. This is not a native managed seal, binary installation, all-writer
+barrier qualification or completion of #1500.
+
+From the exact public SDK source root, set APP_SOURCE to the public app checkout
+and use the portable commands in UPSTREAM.json with the pinned derived lock.
+The full state unit command uses --lib; the extension command is a compile check.
+Run them in the declared isolated, bounded, offline environment. Preserve both
+lock digests, source hashes and actual terminal process custody. A new integrated
+app head still requires its own current-head CI and independent source review.
+
+No runtime capability, route, grant or profile is activated. Full #1500 still
+requires native wire and coordinator quiescence, crash recovery, authenticated
+pre-egress admission for all transports, private Goal database tool isolation,
+canonical authority/ActionIntent/UI integration and qualified installed
+continuation of the same original Goal followed by a genuine event-driven turn.

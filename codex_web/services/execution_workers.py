@@ -1322,6 +1322,8 @@ class ExecutionWorkerService:
         """
         allowed = {"validation_seconds", "validation_queue_seconds", "renewal_seconds",
                    "renewal_queue_seconds", "identity_seconds", "resource_seconds",
+                   "resource_disk_lock_seconds", "resource_disk_seconds",
+                   "resource_readonly_seconds", "resource_rss_seconds",
                    "validation_wait_seconds", "renewal_wait_seconds"}
         if failure_code not in {"agent_runtime_validation_failed", "resource_limit", "execution_timeout",
                                 "agent_runtime_process_exited", "agent_runtime_rpc_timeout"}:
