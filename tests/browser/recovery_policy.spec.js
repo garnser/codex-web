@@ -31,13 +31,13 @@ for (const width of [1280, 375]) {
     expect(state.writes).toEqual([]);
   });
 }
-async function mount(page, { readonly = false, intercept, firings = [] } = {}) {
+async function mount(page, { readonly = false, intercept, firings = [], operatorControl } = {}) {
   const state = { writes: [], preview: [], current: structuredClone(policy), fail: false, failPreview: false };
   await page.route('**/projects/**', route => route.request().resourceType() === 'document' ? route.fulfill({ contentType: 'text/html', body: fixture }) : route.continue());
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url()); const method = route.request().method();
     if (intercept && await intercept(route, url)) return;
-    if (url.pathname === '/api/recovery/status') return route.fulfill({ json: { policy: state.current, policy_control: { schema, can_configure: !readonly, expected_fingerprint: 'current-fingerprint', organization_id: 'org', workspace_id: 'ws', destinations: [{ id: 'local' }], scheduler_available: true, history: [{ id: 'change-one', policy, actor_id: 'operator', occurred_at: 1 }] }, health: { recovery_qualified: false, blockers: ['Restore verification required'] }, backups: [{ id: 'backup-one', key_id: 'key-backup', key_version: 1, key_manifest: [{ key_id: 'key-backup', versions: [1] }], destination_ref: 'hidden-destination-path' }], verifications: [], scheduled_work: { firings } } });
+    if (url.pathname === '/api/recovery/status') return route.fulfill({ json: { policy: state.current, policy_control: { schema, can_configure: !readonly, expected_fingerprint: 'current-fingerprint', organization_id: 'org', workspace_id: 'ws', destinations: [{ id: 'local' }], scheduler_available: true, history: [{ id: 'change-one', policy, actor_id: 'operator', occurred_at: 1 }] }, health: { recovery_qualified: false, blockers: ['Restore verification required'] }, backups: [{ id: 'backup-one', key_id: 'key-backup', key_version: 1, key_manifest: [{ key_id: 'key-backup', versions: [1] }], destination_ref: 'hidden-destination-path' }], verifications: [], scheduled_work: { firings, operator_control: operatorControl } } });
     if (url.pathname === '/api/crypto/keys') return route.fulfill({ json: { items: [{ id: 'key-backup', purpose: 'backup', status: 'active', scope: {} }] } });
     if (url.pathname === '/api/recovery/policy/preview') {
       state.preview.push(route.request().postDataJSON());
@@ -155,4 +155,61 @@ test('recovery editor uses the main content width on desktop', async ({ page }) 
   await page.setViewportSize({ width: 1440, height: 1000 });
   await mount(page);
   expect((await page.locator('[data-recovery-form]').boundingBox()).width).toBeGreaterThan(850);
+});
+
+
+for (const width of [1280, 375]) {
+  test(`operator reconciliation confirms explicit activation and observes without replay at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const effects = []; const observations = [];
+    await mount(page, { firings: [{ event_id: 'original-event', status: 'unknown', owner_id: '<img src=x>' }],
+      operatorControl: { registered: true, bindings: [{ id: 'canonical-binding', enabled: true }] },
+      intercept: async (route, url) => {
+        if (url.pathname.endsWith('/reconciliation-preview')) {
+          await route.fulfill({ json: { event_id: 'original-event', activation_required: true,
+            expected_state_sha256: 'a'.repeat(64), expected_firing_sha256: 'b'.repeat(64),
+            expected_schedule_sha256: 'c'.repeat(64), expected_policy_fingerprint: 'policy' } }); return true;
+        }
+        if (url.pathname.endsWith('/reconcile')) {
+          effects.push(route.request().postDataJSON());
+          await route.fulfill({ json: { item: { id: 'original-intent', status: 'requires_reconciliation', last_receipt_id: 'receipt' } } }); return true;
+        }
+        if (url.pathname.endsWith('/original-intent/observe')) {
+          observations.push(url.pathname);
+          await route.fulfill({ json: { item: { id: 'original-intent', status: 'succeeded', last_receipt_id: 'receipt', last_verification_id: 'verification' } } }); return true;
+        }
+      } });
+    const form = page.getByRole('form', { name: 'Evidence-bound Recovery reconciliation' });
+    await expect(form.locator('img')).toHaveCount(0);
+    await form.locator('[name=evidence]').fill('independent-evidence');
+    await form.locator('[name=verification]').fill('independent-verification');
+    await form.locator('[name=key]').fill('stable-original-key');
+    await form.locator('[data-preview]').click();
+    const submit = form.getByRole('button', { name: 'Submit guarded reconciliation' });
+    await expect(submit).toBeEnabled(); await submit.click();
+    await expect(form.locator('[data-result]')).toContainText('Explicit qualified Recovery1.3 activation');
+    expect(effects).toHaveLength(0);
+    await form.locator('[name=activate]').check();
+    await submit.click(); await resolveAction(page, false); expect(effects).toHaveLength(0);
+    await submit.click(); await resolveAction(page);
+    await expect(form.locator('[data-result]')).toContainText('requires_reconciliation');
+    expect(effects).toHaveLength(1);
+    expect(effects[0]).toMatchObject({ binding_id: 'canonical-binding', request: {
+      event_id: 'original-event', idempotency_key: 'stable-original-key', activate_state_1_3: true,
+      evidence_id: 'independent-evidence', verification_id: 'independent-verification' } });
+    await form.locator('[name=key]').fill('must-not-implicitly-retry');
+    await expect(submit).toBeDisabled();
+    await form.locator('[data-observe]').click();
+    await expect(form.locator('[data-result]')).toContainText('original-intent: succeeded');
+    await expect(form.locator('[data-result]')).toContainText('not effect success or Recovery qualification');
+    expect(effects).toHaveLength(1); expect(observations).toHaveLength(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
+test('operator reconciliation missing binding or authority stays visibly unavailable', async ({ page }) => {
+  await mount(page, { readonly: true, firings: [{ event_id: 'original', status: 'unknown' }],
+    operatorControl: { registered: true, bindings: [] } });
+  await expect(page.getByRole('form', { name: 'Evidence-bound Recovery reconciliation' })).toHaveCount(0);
+  await expect(page.locator('#recovery-policy-content')).toContainText('No binding, authority or activation is created here');
 });

@@ -540,6 +540,7 @@ class IdentityService:
         csrf_token: str | None = None,
         require_csrf: bool = False,
         touch: bool = True,
+        retire_expired: bool = True,
     ) -> AuthenticatedSession:
         now = time.time()
         state = self.store.load()
@@ -554,7 +555,8 @@ class IdentityService:
         if matched is None:
             raise AuthenticationError("invalid session")
         if now >= matched.idle_expires_at or now >= matched.absolute_expires_at:
-            self.revoke_session(matched.id, reason="expired")
+            if retire_expired:
+                self.revoke_session(matched.id, reason="expired")
             raise AuthenticationError("session expired")
         if require_csrf and (not csrf_token or not _matches(csrf_token, matched.csrf_token_hash)):
             raise AuthenticationError("csrf validation failed")
@@ -845,7 +847,7 @@ class IdentityService:
             expires_at=record.expires_at,
         )
 
-    def authenticate_service_token(self, raw_token: str) -> AuthenticationActor:
+    def authenticate_service_token(self, raw_token: str, *, touch: bool = True) -> AuthenticationActor:
         now = time.time()
         state = self.store.load()
         record = next(
@@ -883,7 +885,8 @@ class IdentityService:
                     break
             return current
 
-        self.store.update(apply)
+        if touch:
+            self.store.update(apply)
         return actor
 
     def rotate_service_token(

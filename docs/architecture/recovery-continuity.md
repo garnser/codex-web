@@ -371,74 +371,79 @@ production firing. Existing Recovery status/UI includes original identity,
 operator disposition, Evidence/verification references and the next guarded
 operator action; a reconcile receipt alone is not a qualified installation.
 
-#### Bootstrap before installation: executable integration is BLOCKED
+#### Installed application integration and explicit activation
 
-The installed code cannot load this provider. Registry `register` is an internal
-composition call; `bind` resolves an already registered runtime. Neither an
-artifact upload, a procedure dispatch, nor an extension wrapper loads trusted
-code. Upgrade preflight requires qualified Recovery and execute_step requires a
-satisfied preflight. Therefore the new provider/API **does not close the bootstrap
-cycle**, and this source must not be reported delivery-complete or activated.
-A privileged shell import, store edit, false effect outcome, or disabling the
-Recovery gate is not an alternative.
+The trusted application composition registers `RecoveryOperatorActions` and its
+`RecoveryActionProvider` using the existing ActionProviderRegistry, ActionIntent
+service and local ActionIntent worker principal. Registration is code availability
+only: it creates no binding, Role grant, procedure definition, enabled feature or
+Recovery1.3 write. A caller cannot load arbitrary code, supply a worker identity,
+forge operator assurance or change the action through these routes.
 
-The following is the precise proposed missing integration contract, **not an
-implemented/advertised route or an instruction to invoke it**. The owning
-operator/platform must supply a canonically admitted trusted maintenance adapter
-before this source can execute preinstall. There is no generic code-upload or
-arbitrary executable argument. Proposed action
-`recovery.bridge.activate.v1` has only these typed inputs:
+An operator explicitly configures a scoped `recovery` / `canonical-recovery`
+binding through the EXISTING `/api/action-providers/bindings` administration API.
+Binding/enabling does not grant `recovery.scheduled-firing.reconcile` authority.
+Current role/policy/security/procedure/provider admission and the existing worker
+scope remain authoritative; a missing tenant worker, disabled binding or denied
+procedure refuses. There is no fallback direct engine call or second queue.
 
-- canonical reviewed Artifact ID + SHA256, immutable source revision and provider
-  protocol `recovery-owner-disposition.v2`;
-- expected installed application revision, exact tenant/resource, protected
-  Recovery/Scheduler/Evidence snapshot digests and maintenance generation;
-- exact original firing/owner/effect and a `RecoveryReconcileRequest`;
-- canonical independently VERIFIED Evidence IDs for complete writer-incarnation
-  inventory/fencing, private-free restore of the protected backup, preservation
-  comparison, and exact-artifact codec/older-writer qualification;
-- stable ActionIntent key and expected unactivated/activated bridge generation.
+The existing Recovery UI uses these scoped ordinary operator routes:
 
-The adapter must be part of the trusted installed maintenance composition and
-existing provider/ActionIntent machinery; it cannot be registered by a worker
-or loaded from caller-selected Python. Registration is separate from a
-scope-limited enabled binding, existing capability/role/procedure admission,
-credential/security checks and operator admin/MFA authorization. None is granted
-by this proposal. Its only callable runtime is the reviewed Recovery service
-behind `RecoveryActionProvider`, with its canonical actor resolver. No second
-StateStore, executor, timer or reconciliation engine is permitted.
+- GET `/api/recovery/scheduled-firings/{event_id}/reconciliation-preview` reads
+  exact state/firing/policy/schedule digests, owner/effect identity and whether
+  first1.3 activation is required.
+- POST `/api/recovery/scheduled-firings/{event_id}/reconcile` accepts only
+  `binding_id` plus the typed `RecoveryReconcileRequest`, including stable key,
+  independent Evidence/verification references and explicit activation flag.
+  The server derives actor/tenant/action and creates the existing durable
+  ActionIntent, then uses the existing service worker's claim/execute boundary.
+  An already attempted intent is returned without another execute.
+- POST `/api/recovery/scheduled-firings/{event_id}/reconciliation-intents/{intent_id}/observe`
+  binds the current operator/firing/action to that intent and calls the existing
+  ActionIntent reconciliation with `retry_if_idempotent=false`. It never executes
+  the engine or original backup effect to manufacture a missing receipt.
 
-Required phases and refusal boundaries:
+The request-scoped provider resolver reauthenticates through the existing HTTP
+Identity boundary. Session rotation/revocation/expiry, MFA and membership are
+current, not inferred from an identity ID or copied assurance. Revalidation does
+not touch session/token timestamps or retire expired sessions inside Recovery's
+shared transaction. Local-trusted assurance is retained only for an already
+middleware-authenticated local request while the existing local-trusted mode is
+still effective; membership/identity are reread. No credentials enter intent
+parameters, UI, ordinary logs or persisted provider state. Outside an admitted
+operator request the provider refuses, including generic effect execution.
 
-1. Resolve canonical actor/tenant/resource/current policy and verify exact
-   artifact provenance, immutable source and version compatibility. Acquire the
-   existing maintenance/drain guard; reject unknown writer incarnations.
-2. Before any persisted1.3 state, qualify the actual protected backup through an
-   independent isolated restore/integrity/preservation comparison under existing
-   authority, with all side effects disabled. This is required evidence, **not**
-   a waiver or a claim that Recovery health is already qualified. Refuse if the
-   installed maintenance adapter cannot validate this proof independently of
-   the blocked ordinary upgrade preflight.
-3. Fence all original/older writers, recheck complete inventory and current
-   store/firing/policy/schedule/Evidence generations. Admit exactly the pinned
-   action through existing ActionIntent/provider/procedure checks. First1.3
-   persistence and custody release share the canonical transaction/CAS. Until
-   then reads and ordinary writes preserve1.2. Unknown effect stays unknown.
-4. Verify the durable receipt after any lost response; never replay the original
-   effect. Distinct new backup and isolated PASS restore must then satisfy normal
-   Recovery health before the ordinary full UpgradePlan may pass preflight.
-5. Preserve the original backup, generations, claims and history. Once1.3 is
-   persisted, a1.2 process refuses; source-only rollback is unavailable. Recovery
-   requires the independently verified protected restore under its actual guarded
-   restore contract, not an automatic inverse operation.
+The executable bootstrap sequence is the EXISTING qualified source-upgrade path,
+not the old proposed host-code loader. A separate exact-tree upgrade may explicitly
+set `require_recovery_qualification=false` only when current operator policy
+approves that per-plan exception. It must still obtain a fresh protected backup,
+PASS isolated restore, independent compatibility/preservation proof, complete drain,
+current actor/MFA/plan CAS, guarded helper and postverification. Original firing,
+UNKNOWN effect and aggregate Recovery health stay unchanged through installation.
+It does not activate1.3 or authorize an API action. No new privileged host executor
+or application import against production is introduced.
 
-**Exact next operator input:** the actual installed maintenance-adapter operation
-and typed contract implementing phases1–3, including its current authority and
-qualification-evidence admission. No such operation is advertised or implemented
-in the inspected installed code. If unavailable, the platform integration itself
-must be delivered/reviewed before production activation; this draft is not that
-executable bridge. Also required are genuine complete original-writer fencing
-and effect proof. Manifest/destination absence cannot establish failure.
+After the qualified source is installed, actual operator activation requires:
+
+1. Independently inventory/fence every original owner incarnation, PID birth,
+   future/callback/process group and effect/destination/retention writer. Zero local
+   queue and elapsed time do not prove failure, never-started or quiescence.
+2. Obtain current canonical independently verified `recovery-owner-disposition.v2`
+   Evidence binding exact event/owner/effect, complete writer inventory/fence
+   digests, actual custody/effect disposition, qualified activation and backup/
+   isolated-restore proof. Absence of a file is not terminal effect proof.
+3. Read a fresh preview, explicitly confirm the one-way1.3 boundary and submit
+   only the immutable typed request through the operator route. The unchanged
+   core validates current proof and state/policy/firing/schedule CAS in its shared
+   transaction, retains the original receipt and records truthful UNKNOWN.
+4. After any response loss, observe the SAME intent/key without replay. Independently
+   verify its durable receipt and original effect identity. Obtain a distinct fresh
+   backup and PASS isolated restore before claiming Recovery health/issue closure.
+
+After any persisted1.3 write, an old1.2 writer refuses. There is no source-only
+rollback; restoration requires the protected backup and its separately authorized
+restore/preservation contract. These are source contracts, not evidence that any
+production binding, activation or repair has occurred.
 
 #### Unknown outcome and explicit codec activation
 
@@ -465,7 +470,7 @@ all documents at1.2. After activation the codec refuses downgrades with retained
 records; frozen original1.2 load/update must refuse without mutation. This is a
 one-way persisted boundary, not a configuration flag or startup migration.
 
-#### Provider receipt loss (source contract; activation remains blocked)
+#### Provider receipt loss and operator request custody
 
 The provider uses canonical `ActionEvidence.evidence_type`, `reference` and
 scalar metadata. The reference identifies the existing canonical disposition
@@ -496,14 +501,8 @@ procedure admission is invoked for verification under the existing ActionIntent
 context. Production must have its actual registered procedure/profile controls;
 a standalone synthetic test configuration is not a production grant.
 
-This source is NOT installed or provider-activated. The discovered existing
-per-plan `require_recovery_qualification=false` upgrade option is a potential
-operator route to install qualified source without first falsifying aggregate
-Recovery health. It needs independent policy/runbook approval and real fresh
-backup/PASS isolated restore, protected baseline, drain, exact plan CAS, guarded
-helper and postverification. The interrupted plan was CANCELLED; no install or
-pre-upgrade backup is inferred. This option does not release original custody,
-change the UNKNOWN outcome, activate state1.3 or authorize this provider. A
-separate reviewed composition/binding/procedure activation with actual current
-operator session/assurance remains required before repair; resolving an identity
-ID alone cannot manufacture MFA. Do not run a source service against live state.
+Core reconciliation and lost-result settlement were installed inactive through a
+separately qualified source-only upgrade. The application/operator adapter added
+here requires its own exact-head review, current CI and qualified source upgrade.
+No source/fixture result proves production registration, binding, procedure
+admission, all-writer fencing, first1.3 activation or original effect resolution.

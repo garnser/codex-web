@@ -44,6 +44,40 @@ def request_actor(request: Request):
     return actor
 
 
+def revalidate_request_actor(request: Request, service: IdentityService):
+    """Reauthenticate the admitted request without writes inside domain transactions.
+
+    Credentials remain in the existing HTTP identity boundary, never in action
+    parameters or durable provider state. Rotation/revocation/expiry and current
+    membership/assurance are checked on every invocation.
+    """
+    admitted = request_actor(request)
+    session = request.cookies.get(SESSION_COOKIE)
+    header = request.headers.get('authorization', '')
+    bearer = header[7:].strip() if header.lower().startswith('bearer ') else None
+    if session:
+        current = service.authenticate_session(session, touch=False, retire_expired=False,
+            csrf_token=request.headers.get(CSRF_HEADER),
+            require_csrf=request.method.upper() not in SAFE_METHODS).actor
+    elif bearer:
+        try:
+            current = service.authenticate_session(bearer, touch=False, retire_expired=False).actor
+        except AuthenticationError:
+            current = service.authenticate_service_token(bearer, touch=False)
+    elif ((os.environ.get('CODEX_WEB_IDENTITY_MODE') or 'local-trusted').strip().lower() == 'local-trusted'
+            and admitted.assurance == AuthenticationAssurance.LOCAL_TRUSTED):
+        # Only an already middleware-authenticated local request may retain this
+        # assurance; do not call bootstrap_local() or mint it from an identity ID.
+        current = service.actor_for_identity(admitted.identity_id, scope=admitted.tenant)
+        current = current.model_copy(update={'assurance': AuthenticationAssurance.LOCAL_TRUSTED})
+    else:
+        raise AuthenticationError('Current request authentication unavailable')
+    if (current.identity_id, current.principal_kind, current.tenant) != (
+            admitted.identity_id, admitted.principal_kind, admitted.tenant):
+        raise AuthenticationError('Authenticated request identity or scope changed')
+    return current
+
+
 def _public_state(service: IdentityService, actor) -> dict[str, Any]:
     IdentityService.require_admin(actor)
     state = service.state()
