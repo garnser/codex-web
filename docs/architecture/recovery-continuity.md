@@ -506,3 +506,19 @@ separately qualified source-only upgrade. The application/operator adapter added
 here requires its own exact-head review, current CI and qualified source upgrade.
 No source/fixture result proves production registration, binding, procedure
 admission, all-writer fencing, first1.3 activation or original effect resolution.
+
+
+### Operator integration qualification
+
+`tests.test_recovery_operator_api` exercises the real HTTP identity middleware,
+Recovery router, provider registry, ActionIntent worker and Recovery stores using
+synthetic data. `tests.test_recovery_operator_postgres` repeats that composition
+on an isolated PostgreSQL schema with single-connection pools, adds independent
+late-writer and schedule-CAS connections, and checks concurrent same-key requests.
+The distributed-backends CI job selects the PostgreSQL module explicitly;
+missing isolated PostgreSQL is a skip, never PostgreSQL qualification.
+Cancellation before domain commit preserves original state; lost-result readback
+uses the immutable receipt without another effect. These fixtures do not prove
+production writer termination, qualify an operator's evidence, or activate a
+live state contract. Actual process restart/drain and installed UI acceptance
+remain operator qualification, alongside exact-current-head CI and review.

@@ -1,4 +1,5 @@
 """Actual HTTP identity/router/registry/ActionIntent/Recovery composition; synthetic only."""
+import asyncio
 import unittest
 from unittest.mock import patch
 
@@ -137,6 +138,14 @@ class RecoveryOperatorApiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.json()['item']['status'], 'succeeded', response.text)
             self.assertEqual(self.recovery.store.load().reconciliations[self.payload.event_id], before)
             self.assertEqual(self.artifacts.store.load().evidence, evidence.evidence)
+
+    async def test_cancel_before_domain_commit_preserves_original_state(self):
+        async with self.client() as client:
+            before = self.recovery.store.load()
+            with patch.object(self.operator.provider.reconcile, 'reconcile', side_effect=asyncio.CancelledError):
+                with self.assertRaises(asyncio.CancelledError):
+                    await client.post(self.url(), json=self.body())
+            self.assertEqual(self.recovery.store.load(), before)
 
     async def test_cookie_csrf_and_extra_authority_fields_are_not_accepted(self):
         async with self.client() as client:

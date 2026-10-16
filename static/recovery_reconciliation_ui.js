@@ -1,3 +1,4 @@
+import { referenceLink } from './reference_navigation.js';
 import { esc } from './secret_reference_ui.js';
 import { confirmAction } from './action_confirmation.js';
 import { trackDirtyEditor } from './dirty_editor.js';
@@ -9,6 +10,9 @@ export function bindRecoveryReconciliation(root, snapshot, op, status) {
   const section = document.createElement('section');
   root.append(section);
   section.innerHTML = '<h3>Scheduled owner reconciliation</h3><p>No effect replay. UNKNOWN remains UNKNOWN. Releasing custody is not fresh Recovery qualification.</p>';
+  if (control?.blockers?.length) {
+    const note = document.createElement('p'); note.textContent = control.blockers.join('; '); section.append(note);
+  }
   if (!snapshot.policy_control?.can_configure || control?.registered !== true || !bindings.length || !firings.length) {
     const note = document.createElement('p');
     note.textContent = 'Requires an authenticated Recovery administrator, an explicitly configured/enabled canonical recovery provider binding, and a scoped unresolved firing. No binding, authority or activation is created here.';
@@ -27,7 +31,7 @@ export function bindRecoveryReconciliation(root, snapshot, op, status) {
     <button type="submit" disabled>Submit guarded reconciliation</button>
     <label>Existing ActionIntent ID for read-only outcome reconciliation<input name="intent" maxlength="200"></label>
     <button type="button" data-observe>Observe existing intent without replay</button>
-    <pre data-result role="status"></pre></form>`);
+    <pre data-result role="status"></pre><p data-result-links></p></form>`);
   const form = section.querySelector('form');
   const field = name => form.elements.namedItem(name);
   const editor = trackDirtyEditor(form, { label: 'Recovery reconciliation' });
@@ -55,6 +59,8 @@ export function bindRecoveryReconciliation(root, snapshot, op, status) {
     const item = value.item;
     field('intent').value = item.id;
     result.textContent = `ActionIntent ${item.id}: ${item.status}\nReceipt ${item.last_receipt_id || 'unobserved'} · verification ${item.last_verification_id || 'unobserved'}\nThis is custody disposition, not effect success or Recovery qualification. UNKNOWN outcomes require observation; do not retry effects.`;
+    const history = referenceLink('action_intent', item.id, { label: `ActionIntent ${item.id} and receipt ${item.last_receipt_id || 'unobserved'} history` });
+    form.querySelector('[data-result-links]').innerHTML = history + ' · ' + referenceLink('verification', item.last_verification_id);
     status('Canonical Recovery intent observed; original effect/health must be inspected separately.');
   };
   form.onsubmit = async event => {

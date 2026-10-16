@@ -10,7 +10,7 @@ from contextvars import ContextVar
 from codex_web.action_intents import (ActionDecisionOutcome, ActionDecisionSnapshot,
     ActionIntentClaimRequest, ActionIntentCreate, ActionIntentReconcileRequest, ActionIntentStatus)
 from codex_web.action_providers import ActionRequest
-from codex_web.services.identity import AuthenticationError
+from codex_web.services.identity import AuthenticationError, AuthorizationError
 from codex_web.services.recovery import RecoveryConflictError
 from codex_web.services.recovery_action_provider import RecoveryActionProvider
 from codex_web.services.recovery_reconciliation import require_operator
@@ -45,7 +45,17 @@ class RecoveryOperatorActions:
 
     def describe(self, actor):
         bindings = self.intents.execution.registry.list_bindings(actor)
-        return {'registered': True, 'action_id': 'recovery.scheduled-firing.reconcile',
+        blockers = []
+        try:
+            require_operator(actor)
+        except AuthorizationError:
+            blockers.append('Current Recovery administrator authority and MFA are required')
+        if self.worker_actor.tenant != actor.tenant:
+            blockers.append('No existing ActionIntent worker for this tenant')
+        if not any(b.enabled and not b.resource_ids and b.provider_type == 'recovery'
+                and b.provider_instance == 'canonical-recovery' for b in bindings):
+            blockers.append('Explicit enabled canonical Recovery provider binding required')
+        return {'registered': True, 'blockers': blockers, 'eligibility': 'Not asserted: current execution guards and independent writer/effect Evidence remain mandatory', 'action_id': 'recovery.scheduled-firing.reconcile',
             'bindings': [{'id': b.id, 'enabled': b.enabled} for b in bindings
                 if b.provider_type == 'recovery' and b.provider_instance == 'canonical-recovery'
                 and not b.resource_ids],

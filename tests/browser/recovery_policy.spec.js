@@ -202,6 +202,8 @@ for (const width of [1280, 375]) {
     await form.locator('[data-observe]').click();
     await expect(form.locator('[data-result]')).toContainText('original-intent: succeeded');
     await expect(form.locator('[data-result]')).toContainText('not effect success or Recovery qualification');
+    await expect(form.locator('[data-result-links] a').first()).toHaveAttribute('href', /consumer_type=action_intent.*consumer_id=original-intent/);
+    await expect(form.locator('[data-result-links] a').last()).toHaveAttribute('href', /consumer_type=verification.*consumer_id=verification/);
     expect(effects).toHaveLength(1); expect(observations).toHaveLength(1);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
