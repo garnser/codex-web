@@ -84,7 +84,7 @@ test('only current activity with fresh process and lease custody gets active pre
   const activity={source:'current_turn',state:'active',turnId:'exact-turn'};
   applyRunner({id:'presentation',runner,activity});
   assert.equal(runnerPresentation('presentation').state,'active');
-  for(const change of [{live:false,state:'lost'}, {processRunning:false}, {processRunning:undefined},
+  for(const change of [{live:false,state:'active'}, {live:false,state:'lost'}, {processRunning:false}, {processRunning:undefined},
     {leaseValid:false}, {leaseExpiresAt:now-1}, {observedAt:now-61}, {observedAt:NaN}, {state:'unknown'}]) {
     applyRunner({id:'guard-'+JSON.stringify(change),runner:{...runner,...change},activity});
     assert.notEqual(runnerPresentation('guard-'+JSON.stringify(change)).state,'active');
