@@ -98,6 +98,21 @@ class AgentRuntimeListRequest(BaseModel):
     limit: int = Field(default=100, ge=1, le=1000)
 
 
+class NativeGoalControlUnavailable(RuntimeError):
+    """Complete native lifecycle contract is not qualified or admitted."""
+    reason_code = "native_goal_control_contract_unavailable"
+
+
+class NativeGoalControlRequest(BaseModel):
+    """Server-admitted status-only command; identifiers confer no authority."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    operation_id: str = Field(min_length=1, max_length=128)
+    expected_goal_id: str = Field(min_length=1)
+    expected_revision: int = Field(ge=1, strict=True)
+    owner_epoch: int = Field(ge=1, strict=True)
+    status: str = Field(pattern="^(active|paused|blocked)$")
+
+
 class AgentRuntimeObjectiveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 

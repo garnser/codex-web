@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from codex_web.agent_runtime import NativeGoalControlRequest, NativeGoalControlUnavailable
+
 import time
 
 from codex_web.agent_runtime import (
@@ -435,6 +437,19 @@ class AgentSessionService:
         if self.procedure_admission is not None:
             await self.procedure_admission(session, request, actor, "objective")
         return await adapter.set_objective(native_id, request)
+
+    async def control_objective(self, session_id: str, request: NativeGoalControlRequest, *, actor: AuthenticationActor):
+        session = self.get(session_id, actor)
+        if self.procedure_admission is None:
+            raise NativeGoalControlUnavailable("Complete native lifecycle contract is not qualified/admitted")
+        # This new operation must be admitted explicitly by the existing procedure engine;
+        # generic objective permission is insufficient. No endpoint exposes it yet.
+        await self.procedure_admission(session, request, actor, "objective_control")
+        adapter = self.registry.get(session.provider_id, session.runtime_id)
+        native_id = session.provider_native_session_id
+        if not native_id or not callable(getattr(adapter, "control_objective", None)):
+            raise NativeGoalControlUnavailable("Complete native lifecycle contract is not qualified/admitted")
+        return await adapter.control_objective(native_id, request)
 
     async def clear_objective(
         self,
