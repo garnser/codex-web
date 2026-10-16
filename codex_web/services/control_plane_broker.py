@@ -72,6 +72,7 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_ISSUE_UPDATE_ACTION_ID,
     CODE_HOST_JOB_RERUN_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
     CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
 )
 from codex_web.services.code_hosts import CodeHostService
@@ -339,6 +340,13 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
         authority_level=AuthorityLevel.EXECUTE,
     ),
     ControlPlaneBrokerOperation(
+        id="repository.pull-request.ready",
+        method="POST",
+        path_template="/api/repository-actions/pull-request/ready",
+        capability="repository.pull-request.ready",
+        authority_level=AuthorityLevel.EXECUTE,
+    ),
+    ControlPlaneBrokerOperation(
         id="repository.pull-request.merge",
         method="POST",
         path_template="/api/repository-actions/pull-request/merge",
@@ -422,6 +430,10 @@ _REPOSITORY_ACTIONS = {
         "repository.issue.update",
         CODE_HOST_ISSUE_UPDATE_ACTION_ID,
     ),
+    "/api/repository-actions/pull-request/ready": (
+        "repository.pull-request.ready",
+        CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
+    ),
     "/api/repository-actions/pull-request/merge": (
         "repository.pull-request.merge",
         CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
@@ -435,6 +447,7 @@ _RECONCILABLE_REPOSITORY_ACTION_IDS = frozenset(
     {
         CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
         CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+        CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
     }
 )
 
@@ -536,6 +549,15 @@ class ControlPlaneBrokerService:
                     if item.id == "repository.branch.publish" else []
                 ),
             }
+            if item.id == "repository.pull-request.ready":
+                result["explicit_declaration_required"] = True
+                result["request_body"]["parameters"] = {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["pull_request_number", "expected_head_sha", "expected_base_sha", "expected_base_ref"],
+                    "properties": {"pull_request_number": {"type": "integer", "minimum": 1},
+                        "expected_head_sha": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+                        "expected_base_sha": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+                        "expected_base_ref": {"type": "string"}}}
             if item.id == "repository.branch.publish":
                 result["request_body"]["parameters"] = {
                     "type": "object",
@@ -626,6 +648,11 @@ class ControlPlaneBrokerService:
                     context['merge_requirements_declaration'] = {'declared': declared,
                         'status': 'declared' if declared else 'unavailable',
                         'effective_authority_requires_operation_checks': True}
+        # New action recognition must not widen stored/default profile authority.
+        try:
+            self._ready_declaration(assignment)
+        except (ValueError, ControlPlaneBrokerDeniedError):
+            operations = [op for op in operations if op["id"] != "repository.pull-request.ready"]
         # Ordinary repository-write declarations and historical catalogs never
         # acquire governor operations simply because the engine supports them.
         coordination = None
@@ -1297,6 +1324,7 @@ class ControlPlaneBrokerService:
             CODE_HOST_BRANCH_PUBLISH_ACTION_ID,
             CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
             CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,
+            CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
         }
         deadline = {"timeout_seconds": 120.0} if extended_deadline else {}
         try:
@@ -1557,6 +1585,19 @@ class ControlPlaneBrokerService:
             return {"item": item.model_dump(mode="json")}
         raise ControlPlaneBrokerDeniedError("unsupported repository read operation")
 
+    def _ready_declaration(self, assignment):
+        if self.execution_profiles is None:
+            raise ControlPlaneBrokerDeniedError("Readiness requires an explicit current execution-profile declaration")
+        try:
+            profile, reference = self.execution_profiles.resolve(assignment.execution_profile_id,
+                organization_id=assignment.organization_id, workspace_id=assignment.workspace_id,
+                project_id=assignment.project_id)
+        except Exception as exc:
+            raise ControlPlaneBrokerDeniedError("Readiness execution-profile declaration is unavailable") from exc
+        if (reference != assignment.execution_profile_definition
+                or "repository.pull-request.ready" not in profile.control_plane_operations):
+            raise ControlPlaneBrokerDeniedError("Readiness is not explicitly declared by the current pinned execution profile")
+
     def _authorize(
         self,
         assignment: ExecutionAssignment,
@@ -1565,6 +1606,8 @@ class ControlPlaneBrokerService:
         actor,
         resource_ids: tuple[str, ...],
     ):
+        if operation.id == "repository.pull-request.ready":
+            self._ready_declaration(assignment)
         if assignment.execution_profile_id not in CONTROL_PLANE_EXECUTION_PROFILES:
             raise ControlPlaneBrokerDeniedError(
                 "assignment execution profile does not permit control-plane broker access"
@@ -1675,6 +1718,12 @@ class ControlPlaneBrokerService:
         if self.action_intents is None or intent_id is None:
             raise ControlPlaneBrokerDeniedError("delivery evidence is unavailable")
         intent = self.action_intents.get(intent_id, requester_actor)
+        if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            self._ready_declaration(assignment)
+            if (intent.execution_id != assignment.execution_id or intent.readiness_origin is None
+                    or intent.readiness_origin.assignment_id != assignment.id
+                    or intent.readiness_origin.fence != assignment.fence):
+                raise ControlPlaneBrokerDeniedError("Readiness receipts belong to a different originating assignment")
         repository_id = self._operation_repository_id(
             assignment, "repository.read.delivery-evidence", query, actor=requester_actor
         )
@@ -1693,7 +1742,7 @@ class ControlPlaneBrokerService:
             return {key: row.get(key) for key in fields}
         # Metadata only: never expose arbitrary request/provider/inbox bodies.
         # Eight recent rows bound inspection; original receipt IDs remain exact.
-        return {
+        result = {
             "intent": select(original, ("id", "action_id", "status", "attempt",
                 "organization_id", "workspace_id", "project_id", "resource_ids",
                 "work_item_ref", "execution_id", "execution_started_at", "completed_at",
@@ -1708,6 +1757,11 @@ class ControlPlaneBrokerService:
             "omitted_receipts": max(0, len(history["receipts"]) - 8),
             "omitted_verifications": max(0, len(history["verifications"]) - 8),
         }
+        if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            result["intent"]["readiness_origin"] = intent.readiness_origin.model_dump(mode="json")
+            result["parameters"] = select(intent.request.parameters,
+                ("pull_request_number", "expected_head_sha", "expected_base_sha", "expected_base_ref"))
+        return result
 
     async def dispatch(
         self,
@@ -2059,6 +2113,12 @@ class ControlPlaneBrokerService:
                 raise ControlPlaneBrokerDeniedError(
                     "action intent is outside the assignment delivery scope"
                 )
+            if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+                self._ready_declaration(assignment)
+                if (intent.execution_id != assignment.execution_id or intent.readiness_origin is None
+                        or intent.readiness_origin.assignment_id != assignment.id
+                        or intent.readiness_origin.fence != assignment.fence or reconcile_request.retry_if_idempotent):
+                    raise ControlPlaneBrokerDeniedError("Readiness permits only own-assignment read-only reconciliation")
             # A recovered thread receives a fresh execution assignment. It must
             # still be able to verify and settle an uncertain repository action
             # from its superseded assignment, otherwise a service restart

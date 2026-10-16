@@ -97,6 +97,17 @@ class ActionIntentRollbackCheckpoint(BaseModel):
     error_code: str | None = None
 
 
+class ReadinessExecutionOrigin(BaseModel):
+    """Engine-derived origin; callers cannot supply it through ActionIntentCreate."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    assignment_id: str = Field(min_length=1)
+    repository: str = Field(min_length=1)
+    binding_checksum: str = Field(pattern=r"^[a-f0-9]{64}$")
+    fence: int = Field(ge=1)
+    worker_id: str = Field(min_length=1)
+    execution_profile_definition: DefinitionReference
+
+
 class ActionIntent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -113,6 +124,7 @@ class ActionIntent(BaseModel):
     provider_instance: str
     action_id: str
     action_definition: ActionDefinition
+    readiness_origin: ReadinessExecutionOrigin | None = None
     request: ActionRequest
     authority_decision: ActionDecisionSnapshot
     authority_recheck: ActionDecisionSnapshot | None = None
@@ -210,7 +222,7 @@ class ActionInboxMessage(BaseModel):
 class ActionIntentState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.5"
+    schema_version: str = "1.6"
     intents: list[ActionIntent] = Field(default_factory=list)
     receipts: list[ActionIntentReceipt] = Field(default_factory=list)
     verifications: list[ActionIntentVerificationReceipt] = Field(default_factory=list)

@@ -46,6 +46,14 @@ suite. Named cross-cutting checks may still overlap; removing those small repeat
 would add brittle case-level selection. Container and distributed executions are
 retained because their environments add distinct validation.
 
+Readiness settlement qualification runs the composed provider, broker and intent
+cases on SQLite and again against real PostgreSQL in the distributed job. Its
+additional broad-suite cases retain the same required unit/static check with a
+15-minute job bound. The earlier 10-minute job cancelled after a completed
+4,169-test Python stage before JavaScript checks could finish; added transaction
+coverage needs room for the entire gate. Test selection, assertions, application
+deadlines and other operational limits remain unchanged.
+
 The unit runner resolves its repository root from its own file and refuses that
 repository's `data` symlink before discovery or application imports, whether the
 link exists or dangles. Discovery, import precedence and the process working

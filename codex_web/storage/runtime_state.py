@@ -191,7 +191,8 @@ class ModelMapRepository(Generic[T]):
         self._snapshot.set(None)
         return value
 
-    def update(self, key: str, updater: Callable[[T | None], T | None]) -> T | None:
+    def update(self, key: str, updater: Callable[[T | None], T | None], *,
+               guard_rows=None, guard=None) -> T | None:
         """Mutate one current model under the canonical record lock."""
         key = str(key)
         if not self._included(key):
@@ -203,7 +204,21 @@ class ModelMapRepository(Generic[T]):
             updated = updater(current)
             return updated.model_dump(mode="json") if updated is not None else None
 
-        raw = self.store.record_update(self.namespace, key, update_raw, default=None)
+        if guard is None:
+            raw = self.store.record_update(self.namespace, key, update_raw, default=None)
+        else:
+            result = []
+            selected = dict(guard_rows)
+            selected[self.namespace] = tuple(dict.fromkeys((*selected.get(self.namespace, ()), key)))
+            def guarded(documents):
+                guard(documents)
+                value = update_raw(documents[self.namespace].get(key))
+                # Candidate preparation must not outlive a time-bounded lease.
+                guard(documents)
+                result.append(value)
+                return {self.namespace: {key: value}}
+            self.store.record_mutate_many(selected, guarded)
+            raw = result[0]
         self._snapshot.set(None)
         return self.model.model_validate(raw) if raw is not None else None
 

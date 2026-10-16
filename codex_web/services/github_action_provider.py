@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import subprocess
 import tempfile
@@ -36,6 +37,8 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_JOB_RERUN_EVIDENCE,
     CODE_HOST_PULL_REQUEST_UPSERT_ACTION_ID,  # noqa: F401 - compatibility export
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_READY_EVIDENCE,
     CODE_HOST_PULL_REQUEST_MERGE_EVIDENCE,
     CodeHostActionContract,
     result_resource_output,
@@ -43,6 +46,7 @@ from codex_web.services.code_host_action_contract import (
 from codex_web.services.execution_workspaces import ExecutionWorkspaceService
 from codex_web.services.resources import ResourceCatalogService
 from codex_web.services.action_providers import ActionRequirementError
+from codex_web.services.code_host_readiness import readiness_checkpoint, readiness_verification_checkpoint
 
 
 GITHUB_ACTION_PROVIDER_TYPE = "github"
@@ -101,6 +105,25 @@ class GitHubActionProvider:
         ):
             raise ValueError(f"GitHub {field} must be an HTTPS URL without credentials")
         return str(value).rstrip("/")
+
+    @staticmethod
+    def _ready_rules_hash(rules):
+        return hashlib.sha256(json.dumps(rules, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    @staticmethod
+    def _ready_target(item, repository, parameters, *, node=None):
+        head = item.get("head") or {}
+        base = item.get("base") or {}
+        if (item.get("number") != parameters["pull_request_number"]
+                or item.get("state") != "open" or item.get("merged") is not False
+                or not isinstance(item.get("draft"), bool)
+                or not isinstance(item.get("node_id"), str) or not item["node_id"]
+                or node is not None and item["node_id"] != node
+                or head.get("sha") != parameters["expected_head_sha"]
+                or base.get("sha") != parameters["expected_base_sha"]
+                or base.get("ref") != parameters["expected_base_ref"]
+                or (base.get("repo") or {}).get("full_name", "").casefold() != repository.casefold()):
+            raise ActionRequirementError("GitHub readiness target is stale, closed or outside the pinned repository/head/base")
 
     def actions(self):
         return self.contract.actions()
@@ -259,6 +282,9 @@ class GitHubActionProvider:
                 "expected_remote_absent": attested.expected_remote_revision == "",
                 "workspace_attested": attested.workspace_path.is_dir(),
             }
+        if request.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            return {"operation": "pull-request-ready", "repository": repository,
+                    **self.contract.pull_request_ready(request)}
         if request.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
             payload = self.contract.pull_request_merge(request)
             return {
@@ -519,6 +545,68 @@ class GitHubActionProvider:
                 }
             )
             summary = "GitHub branch matches the committed execution workspace head."
+        elif request.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            parameters = self.contract.pull_request_ready(request)
+            try:
+                await readiness_checkpoint(request, binding.id)
+                current = await self.client.pull_request(self.api_base, repository,
+                    parameters["pull_request_number"], token=credential)
+                self._ready_target(current, repository, parameters)
+                node = current["node_id"]
+                await readiness_checkpoint(request, binding.id)
+                rules = await self.client.readiness_rules(self.api_base, repository,
+                    current["base"]["ref"], token=credential)
+                await readiness_checkpoint(request, binding.id)
+                # Re-read after the protection read and pin the exact REST-derived node.
+                current = await self.client.pull_request(self.api_base, repository,
+                    parameters["pull_request_number"], token=credential)
+                self._ready_target(current, repository, parameters, node=node)
+                await readiness_checkpoint(request, binding.id)
+                repeated_rules = await self.client.readiness_rules(self.api_base, repository,
+                    current["base"]["ref"], token=credential)
+                if rules != repeated_rules:
+                    raise ActionRequirementError("GitHub readiness rules changed before mutation")
+                await readiness_checkpoint(request, binding.id)
+            except ActionRequirementError:
+                raise
+            except Exception as exc:
+                raise ActionRequirementError("GitHub readiness preflight or effective rules are unavailable") from exc
+            mutated = current["draft"]
+            if mutated:
+                # No expected-head CAS is offered by this GitHub mutation. Never
+                # claim atomic head fencing: post-send races remain uncertain.
+                response = await self.client.mark_pull_request_ready_for_review(self.api_base,
+                    node_id=node, mutation_id=self.contract.marker_from_key(request.idempotency_key or ""),
+                    token=credential)
+                pr = response.get("pullRequest") or {}
+                if (pr.get("id") != node or pr.get("number") != parameters["pull_request_number"]
+                        or pr.get("isDraft") is not False
+                        or pr.get("headRefOid") != parameters["expected_head_sha"]
+                        or pr.get("baseRefOid") != parameters["expected_base_sha"]
+                        or pr.get("baseRefName") != parameters["expected_base_ref"]
+                        or (pr.get("repository") or {}).get("nameWithOwner", "").casefold() != repository.casefold()):
+                    raise RuntimeError("GitHub readiness mutation response does not confirm the pinned target")
+            # All errors after a possible mutation are unknown outcomes, including
+            # admission revocation. ActionRequirementError must never mislabel it.
+            try:
+                await readiness_checkpoint(request, binding.id)
+                observed = await self.client.pull_request(self.api_base, repository,
+                    parameters["pull_request_number"], token=credential)
+                self._ready_target(observed, repository, parameters, node=node)
+                await readiness_checkpoint(request, binding.id)
+                observed_rules = await self.client.readiness_rules(self.api_base, repository,
+                    observed["base"]["ref"], token=credential)
+                await readiness_checkpoint(request, binding.id)
+                if observed["draft"] is not False or observed_rules != rules:
+                    raise RuntimeError("GitHub readiness state or effective rules changed")
+            except Exception as exc:
+                raise RuntimeError("GitHub readiness outcome requires read-only reconciliation") from exc
+            evidence_type = CODE_HOST_PULL_REQUEST_READY_EVIDENCE
+            external_id = str(parameters["pull_request_number"])
+            url = str(observed.get("html_url") or "") or None
+            output.update({**parameters, "draft": False, "node_id": node,
+                "rules_sha256": self._ready_rules_hash(rules), "provider_mutation_performed": mutated})
+            summary = "Exact open GitHub pull request is ready for review; no approval or merge was performed."
         elif request.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
             payload = self.contract.pull_request_merge(request)
             number = payload["number"]
@@ -727,6 +815,34 @@ class GitHubActionProvider:
             verified = str(commit.get("sha") or "") == str(
                 result.output["head_revision"]
             )
+        elif result.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            parameters = {key: result.output[key] for key in (
+                "pull_request_number", "expected_head_sha", "expected_base_sha", "expected_base_ref")}
+            await readiness_verification_checkpoint(binding.id)
+            item = await self.client.pull_request(self.api_base, repository,
+                parameters["pull_request_number"], token=credential)
+            try:
+                await readiness_verification_checkpoint(binding.id)
+                self._ready_target(item, repository, parameters, node=result.output.get("node_id"))
+                rules = await self.client.readiness_rules(self.api_base, repository,
+                    item["base"]["ref"], token=credential)
+                await readiness_verification_checkpoint(binding.id)
+                again = await self.client.pull_request(self.api_base, repository,
+                    parameters["pull_request_number"], token=credential)
+                await readiness_verification_checkpoint(binding.id)
+                self._ready_target(again, repository, parameters, node=item["node_id"])
+                repeated = await self.client.readiness_rules(self.api_base, repository,
+                    again["base"]["ref"], token=credential)
+                await readiness_verification_checkpoint(binding.id)
+                verified = (again["draft"] is False and item["draft"] is False and rules == repeated
+                    and (not result.output.get("rules_sha256") or
+                         result.output["rules_sha256"] == self._ready_rules_hash(rules)))
+            except (ActionRequirementError, KeyError, TypeError, ValueError):
+                verified = False
+            merge_evidence = {"expected_head_sha": parameters["expected_head_sha"],
+                "expected_base_sha": parameters["expected_base_sha"], "draft": item.get("draft"),
+                "observed_head_sha": self._evidence_sha((item.get("head") or {}).get("sha")),
+                "provider_mutation_replayed": False}
         elif result.action_id == CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID:
             item = await self.client.pull_request(
                 self.api_base,

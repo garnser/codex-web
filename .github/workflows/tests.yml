@@ -285,7 +285,7 @@ jobs:
         if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Exercise PostgreSQL and Redis replicated semantics
         run: python -m unittest tests.test_distributed_backends tests.test_keyed_revisions tests.test_postgres_collection_ranges
-          tests.test_autonomy_append_scaling tests.test_agent_session_custody_postgres tests.test_project_delegation_recovery_postgres
+          tests.test_autonomy_append_scaling tests.test_agent_session_custody_postgres tests.test_project_delegation_recovery_postgres tests.test_pull_request_ready_postgres
         if: ${{ needs.changes.outputs.full == 'true' }}
     needs:
       - changes

@@ -357,3 +357,12 @@ inspecting their canonical usage can show other authorized consumers, and changi
 them retains the existing broader-scope authority and impact requirements. This
 optional view constraint narrows the existing tenant/role/assurance checks; it
 never grants additional permission. Unscoped administration remains compatible.
+
+The code-host readiness operation is engine-recognized but opt-in. Adding
+`repository.pull-request.ready` to the broker catalog does not edit any existing
+execution-profile payload/checksum, Role, grant or default/VP profile. An operator
+must separately publish and authorize a reviewed declaration through this registry;
+the assignment must pin that exact currently effective revision. Readiness intents
+retain that reference with their originating assignment/fence. Publishing or
+superseding a profile during an operation revokes the old readiness admission;
+no local cache or provider capability can substitute a newer Definition silently.

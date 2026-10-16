@@ -904,7 +904,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         artifact_download = next(item for item in payload["operations"] if item["id"] == "repository.read.artifact-download")
         evidence = next(item for item in payload["operations"] if item["id"] == "repository.read.delivery-evidence")
         self.assertEqual(evidence['supported_action_ids'], [
-            'code-host.branch.publish', 'code-host.pull-request.merge', 'code-host.pull-request.upsert'])
+            'code-host.branch.publish', 'code-host.pull-request.merge', 'code-host.pull-request.ready', 'code-host.pull-request.upsert'])
         self.assertTrue(evidence['inspection']['read_only'])
         self.assertTrue(evidence['inspection']['superseded_execution_receipts'])
         self.assertIn("member_path", artifact_download["optional_query_parameters"])
@@ -1768,8 +1768,12 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 result = await client.get("/api/control-plane-broker/operations")
         self.assertEqual(result.status_code, 200)
-        self.assertEqual([item for item in result.json()["items"] if not item["id"].startswith("project.")],
+        self.assertEqual([item for item in result.json()["items"]
+                          if not item["id"].startswith("project.") and item["id"] != "repository.pull-request.ready"],
                          self.service.public_assignment_capability(self.assignment)["operations"])
+        # Engine recognition in the operator catalog is not an opt-in declaration.
+        self.assertFalse(any(item["id"] == "repository.pull-request.ready" for item in
+                             self.service.public_assignment_capability(self.assignment)["operations"]))
         self.assertFalse(any(item["id"].startswith("project.") for item in
                              self.service.public_assignment_capability(self.assignment)["operations"]))
         self.assertNotIn("assignment_context", result.json())
