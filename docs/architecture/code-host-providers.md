@@ -36,6 +36,16 @@ A binding cannot declare a capability the adapter does not implement. Calling an
 
 Provider-specific SDK objects and terminology remain inside adapters. Callers receive canonical fact models such as `CodeHostRepositoryFact`, `CodeHostPullRequestFact`, and `CodeHostCheckFact`.
 
+The internal `GitHubClient.read_json_bounded` transport supports fixed-provider
+REST reads and engine-owned GraphQL queries with a maximum 512 KiB JSON body and
+64 container levels. It requests identity encoding, rejects unrequested compressed
+responses before decompression, and does not follow redirects. Missing or invalid
+JSON, duplicate object keys, non-finite numeric constants, content-length mismatch,
+and unexpected media types are incomplete reads, never empty fact collections.
+HTTP denial and absence retain their original status codes. Endpoint schemas,
+pagination completeness, scope and authority remain the adapter/service caller's
+responsibility; this internal transport grants no provider capability by itself.
+
 ## Read-only by construction
 
 `CodeHostService` exposes read/discovery and webhook-normalization operations only.
