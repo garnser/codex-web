@@ -1,0 +1,179 @@
+--- a/codex-rs/ext/goal/src/api.rs
++++ b/codex-rs/ext/goal/src/api.rs
+@@ -189,10 +189,8 @@
+             ),
+             None => None,
+         };
+-        if let Some(runtime) = runtime.as_ref()
+-            && let Err(err) = runtime.prepare_external_goal_mutation().await
+-        {
+-            tracing::warn!("failed to prepare external goal mutation: {err}");
++        if let Some(runtime) = runtime.as_ref() {
++            runtime.prepare_external_goal_mutation().await.map_err(GoalServiceError::Internal)?;
+         }
+ 
+         let existing_goal = state_db
+@@ -312,10 +310,8 @@
+             ),
+             None => None,
+         };
+-        if let Some(runtime) = runtime.as_ref()
+-            && let Err(err) = runtime.prepare_external_goal_mutation().await
+-        {
+-            tracing::warn!("failed to prepare external goal mutation: {err}");
++        if let Some(runtime) = runtime.as_ref() {
++            runtime.prepare_external_goal_mutation().await.map_err(GoalServiceError::Internal)?;
+         }
+ 
+         // A failed set can leave authorization in history without a goal row.
+--- /dev/null
++++ b/codex-rs/state/goals_migrations/0003_goal_control.sql
+@@ -0,0 +1,12 @@
++-- Native private Goal database only. No application Goal/authority store.
++CREATE TABLE goal_control_clock(thread_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, epoch INTEGER NOT NULL DEFAULT 0, held INTEGER NOT NULL DEFAULT 0 CHECK(held IN (0,1)));
++INSERT INTO goal_control_clock(thread_id,revision) SELECT thread_id,1 FROM thread_goals;
++CREATE TABLE goal_control_receipts(thread_id TEXT NOT NULL, operation_id TEXT NOT NULL, request TEXT NOT NULL, snapshot TEXT NOT NULL, PRIMARY KEY(thread_id,operation_id));
++CREATE TRIGGER goal_receipt_no_update BEFORE UPDATE ON goal_control_receipts BEGIN SELECT RAISE(ABORT,'immutable goal receipt'); END;
++CREATE TRIGGER goal_receipt_no_delete BEFORE DELETE ON goal_control_receipts BEGIN SELECT RAISE(ABORT,'immutable goal receipt'); END;
++CREATE TRIGGER goal_control_fence_insert BEFORE INSERT ON thread_goals WHEN EXISTS(SELECT 1 FROM goal_control_clock WHERE thread_id=NEW.thread_id AND held=1) BEGIN SELECT RAISE(ABORT,'goal writer fenced'); END;
++CREATE TRIGGER goal_control_revision_insert AFTER INSERT ON thread_goals BEGIN INSERT INTO goal_control_clock(thread_id,revision) VALUES(NEW.thread_id,1) ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1; END;
++CREATE TRIGGER goal_control_fence_update BEFORE UPDATE ON thread_goals WHEN EXISTS(SELECT 1 FROM goal_control_clock WHERE (thread_id=OLD.thread_id OR thread_id=NEW.thread_id) AND held=1) BEGIN SELECT RAISE(ABORT,'goal writer fenced'); END;
++CREATE TRIGGER goal_control_revision_update AFTER UPDATE ON thread_goals BEGIN INSERT INTO goal_control_clock(thread_id,revision) VALUES(NEW.thread_id,1) ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1; END;
++CREATE TRIGGER goal_control_fence_delete BEFORE DELETE ON thread_goals WHEN EXISTS(SELECT 1 FROM goal_control_clock WHERE thread_id=OLD.thread_id AND held=1) BEGIN SELECT RAISE(ABORT,'goal writer fenced'); END;
++CREATE TRIGGER goal_control_revision_delete AFTER DELETE ON thread_goals BEGIN INSERT INTO goal_control_clock(thread_id,revision) VALUES(OLD.thread_id,1) ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1; END;
+--- a/codex-rs/state/src/lib.rs
++++ b/codex-rs/state/src/lib.rs
+@@ -87,6 +87,7 @@
+ pub use runtime::ExternalAgentConfigImportSuccessRecord;
+ pub use runtime::GoalAccountingMode;
+ pub use runtime::GoalAccountingOutcome;
++pub use runtime::GoalControlRequest;
+ pub use runtime::GoalStore;
+ pub use runtime::GoalUpdate;
+ pub use runtime::MemoryStore;
+--- /dev/null
++++ b/codex-rs/state/src/runtime/goals/control/status.sql
+@@ -0,0 +1,4 @@
++UPDATE thread_goals SET status=?1,updated_at_ms=?2
++WHERE thread_id=?3 AND goal_id=?4 AND status IN ('active','paused','blocked')
++AND (?1!='active' OR token_budget IS NULL OR tokens_used<token_budget)
++RETURNING json_object('threadId',thread_id,'goalId',goal_id,'objective',objective,'status',status,'tokenBudget',token_budget,'tokensUsed',tokens_used,'timeUsedSeconds',time_used_seconds,'createdAtMs',created_at_ms,'updatedAtMs',updated_at_ms)
+--- /dev/null
++++ b/codex-rs/state/src/runtime/goals/control.rs
+@@ -0,0 +1,98 @@
++//! Private-store transaction prerequisite, NOT a complete scheduler/process barrier.
++//! The future trusted host must drain/flush ALL writers before acquire, and protect
++//! this database from tools. Do not advertise wire capability from this alone.
++use super::*;
++use sqlx::Row;
++use serde::{Deserialize, Serialize};
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields, rename_all = "camelCase")]
++pub struct GoalControlRequest {
++    pub thread_id: String,
++    pub operation_id: String,
++    pub expected_goal_id: String,
++    pub expected_revision: i64,
++    pub owner_epoch: i64,
++    pub status: String,
++}
++impl GoalStore {
++    /// Acquired only AFTER trusted runtime drain and fail-closed accounting flush.
++    pub async fn acquire_goal_control(&self, thread_id: &str, revision: i64, epoch: i64) -> anyhow::Result<()> {
++        anyhow::ensure!(epoch > 0 && revision > 0, "invalid goal control epoch");
++        let changed = sqlx::query("UPDATE goal_control_clock SET held=1,epoch=? WHERE thread_id=? AND revision=? AND held=0 AND epoch<?")
++            .bind(epoch).bind(thread_id).bind(revision).bind(epoch).execute(self.pool.as_ref()).await?;
++        anyhow::ensure!(changed.rows_affected()==1, "stale or busy goal control");
++        Ok(())
++    }
++    pub async fn release_goal_control(&self, thread_id: &str, epoch: i64) -> anyhow::Result<()> {
++        let changed=sqlx::query("UPDATE goal_control_clock SET held=0 WHERE thread_id=? AND epoch=? AND held=1")
++            .bind(thread_id).bind(epoch).execute(self.pool.as_ref()).await?;
++        anyhow::ensure!(changed.rows_affected()==1, "stale goal control release"); Ok(())
++    }
++    /// Serialises receipt lookup, CAS, status-only write and receipt in ONE DB tx.
++    /// Does not resume a scheduler or emit provider traffic.
++    pub async fn commit_goal_control(&self, request: &GoalControlRequest, now_ms: i64) -> anyhow::Result<serde_json::Value> {
++        anyhow::ensure!(!request.operation_id.is_empty() && request.operation_id.len()<=128, "invalid operation identity");
++        anyhow::ensure!(matches!(request.status.as_str(),"active"|"paused"|"blocked"), "invalid lifecycle status");
++        let encoded=serde_json::to_string(request)?;
++        let mut tx=self.pool.begin().await?;
++        // First acquire the SQLite writer lock, avoiding deferred read->write upgrade.
++        sqlx::query("UPDATE goal_control_clock SET revision=revision WHERE thread_id=?")
++            .bind(&request.thread_id).execute(&mut *tx).await?;
++        let previous=sqlx::query("SELECT request,snapshot FROM goal_control_receipts WHERE thread_id=? AND operation_id=?")
++            .bind(&request.thread_id).bind(&request.operation_id).fetch_optional(&mut *tx).await?;
++        if let Some(row)=previous {
++            anyhow::ensure!(row.try_get::<String,_>("request")?==encoded,"operation identity conflict");
++            let value=serde_json::from_str(&row.try_get::<String,_>("snapshot")?)?; tx.commit().await?; return Ok(value);
++        }
++        let unlocked=sqlx::query("UPDATE goal_control_clock SET held=0 WHERE thread_id=? AND epoch=? AND revision=? AND held=1")
++            .bind(&request.thread_id).bind(request.owner_epoch).bind(request.expected_revision).execute(&mut *tx).await?;
++        anyhow::ensure!(unlocked.rows_affected()==1,"stale goal identity/revision/epoch");
++        let snapshot: String=sqlx::query_scalar(include_str!("control/status.sql"))
++            .bind(&request.status).bind(now_ms).bind(&request.thread_id).bind(&request.expected_goal_id)
++            .fetch_optional(&mut *tx).await?.ok_or_else(||anyhow::anyhow!("foreign/terminal/budget-limited goal"))?;
++        sqlx::query("UPDATE goal_control_clock SET held=1 WHERE thread_id=? AND epoch=?")
++            .bind(&request.thread_id).bind(request.owner_epoch).execute(&mut *tx).await?;
++        sqlx::query("INSERT INTO goal_control_receipts(thread_id,operation_id,request,snapshot) VALUES(?,?,?,?)")
++            .bind(&request.thread_id).bind(&request.operation_id).bind(encoded).bind(&snapshot).execute(&mut *tx).await?;
++        tx.commit().await?; Ok(serde_json::from_str(&snapshot)?)
++    }
++    /// Read-only unknown-outcome reconciliation; no mutation replay.
++    pub async fn read_goal_control_receipt(&self, thread_id: &str, operation_id: &str) -> anyhow::Result<Option<serde_json::Value>> {
++        let snapshot: Option<String>=sqlx::query_scalar("SELECT snapshot FROM goal_control_receipts WHERE thread_id=? AND operation_id=?")
++            .bind(thread_id).bind(operation_id).fetch_optional(self.pool.as_ref()).await?;
++        snapshot.map(|s|serde_json::from_str(&s).map_err(Into::into)).transpose()
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[tokio::test]
++    async fn atomic_receipt_fences_legacy_writers_and_preserves_accounting() {
++        let pool=sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
++        sqlx::raw_sql(include_str!("../../../goals_migrations/0001_thread_goals.sql")).execute(&pool).await.unwrap();
++        sqlx::raw_sql(include_str!("../../../goals_migrations/0003_goal_control.sql")).execute(&pool).await.unwrap();
++        sqlx::query("INSERT INTO thread_goals VALUES('thread','goal','original','blocked',200,75,9,1,1)").execute(&pool).await.unwrap();
++        let store=GoalStore::new(std::sync::Arc::new(pool.clone()));
++        store.acquire_goal_control("thread",1,1).await.unwrap();
++        assert!(sqlx::query("UPDATE thread_goals SET tokens_used=99").execute(&pool).await.is_err());
++        let request=GoalControlRequest{thread_id:"thread".into(),operation_id:"op".into(),expected_goal_id:"goal".into(),expected_revision:1,owner_epoch:1,status:"paused".into()};
++        let receipt=store.commit_goal_control(&request,2).await.unwrap();
++        assert_eq!(receipt["objective"],"original"); assert_eq!(receipt["tokensUsed"],75);
++        assert_eq!(receipt["timeUsedSeconds"],9); assert_eq!(receipt["tokenBudget"],200);
++        // Lost response: read immutable outcome, no second native write.
++        assert_eq!(store.read_goal_control_receipt("thread","op").await.unwrap(),Some(receipt.clone()));
++        assert_eq!(store.commit_goal_control(&request,3).await.unwrap(),receipt);
++        let mut collision=request.clone(); collision.status="blocked".into();
++        assert!(store.commit_goal_control(&collision,3).await.is_err());
++        assert!(sqlx::query("DELETE FROM goal_control_receipts").execute(&pool).await.is_err());
++        store.release_goal_control("thread",1).await.unwrap();
++        sqlx::query("UPDATE thread_goals SET tokens_used=tokens_used+1").execute(&pool).await.unwrap();
++        assert!(store.acquire_goal_control("thread",1,2).await.is_err());
++        store.acquire_goal_control("thread",3,2).await.unwrap();
++        let mut foreign=request; foreign.operation_id="foreign".into(); foreign.expected_goal_id="other".into(); foreign.expected_revision=3; foreign.owner_epoch=2;
++        assert!(store.commit_goal_control(&foreign,4).await.is_err());
++        assert!(store.read_goal_control_receipt("thread","foreign").await.unwrap().is_none());
++        assert!(store.release_goal_control("thread",1).await.is_err());
++    }
++}
+--- a/codex-rs/state/src/runtime/goals.rs
++++ b/codex-rs/state/src/runtime/goals.rs
+@@ -1,3 +1,5 @@
++mod control;
++pub use control::GoalControlRequest;
+ use super::*;
+ use crate::model::ThreadGoalRow;
+ use uuid::Uuid;
+--- a/codex-rs/state/src/runtime.rs
++++ b/codex-rs/state/src/runtime.rs
+@@ -68,6 +68,7 @@
+ pub use external_agent_config_imports::ExternalAgentConfigImportSuccessRecord;
+ pub use goals::GoalAccountingMode;
+ pub use goals::GoalAccountingOutcome;
++pub use goals::GoalControlRequest;
+ pub use goals::GoalStore;
+ pub use goals::GoalUpdate;
+ pub use guardian_feedback::GuardianReviewRecord;

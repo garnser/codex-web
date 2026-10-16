@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from codex_web.agent_runtime import NativeGoalControlRequest, NativeGoalControlUnavailable
+
 from collections.abc import Callable
 from typing import Any
 
@@ -309,6 +311,31 @@ class CodexAgentRuntimeAdapter:
             provider_native_session_id=provider_native_session_id,
             payload=response if isinstance(response, dict) else {},
         )
+
+    async def _require_goal_control(self, native_id: str) -> None:
+        # Reserved protocol: never advertise from generic objective support or CLI version.
+        declaration = await self.transport.request("thread/goal/control/capabilities", {"threadId": native_id})
+        required = ("allWriterBarrier", "revisionCas", "atomicReceipt", "accountingFlush",
+                    "allTransportAdmission", "privateStateIsolation")
+        if (not isinstance(declaration, dict) or declaration.get("contractVersion") != "1.0"
+                or any(declaration.get(name) is not True for name in required)):
+            raise NativeGoalControlUnavailable("Complete native lifecycle contract is not qualified/admitted")
+
+    async def control_objective(self, native_id: str, request: NativeGoalControlRequest) -> AgentRuntimeResult:
+        await self._require_goal_control(native_id)
+        # Unknown transport outcomes propagate. The caller reconciles the same operation ID;
+        # never retry control or fall back to raw goal/set, create, or app continuation.
+        params = {"threadId": native_id, "operationId": request.operation_id,
+            "expectedGoalId": request.expected_goal_id, "expectedRevision": request.expected_revision,
+            "ownerEpoch": request.owner_epoch, "status": request.status}
+        return AgentRuntimeResult(provider_native_session_id=native_id,
+            payload=await self.transport.request("thread/goal/control/commit", params))
+
+    async def read_objective_control(self, native_id: str, operation_id: str) -> AgentRuntimeResult:
+        await self._require_goal_control(native_id)
+        return AgentRuntimeResult(provider_native_session_id=native_id,
+            payload=await self.transport.request("thread/goal/control/receipt",
+                {"threadId": native_id, "operationId": operation_id}))
 
     async def clear_objective(
         self,
