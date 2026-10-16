@@ -313,11 +313,49 @@ for line in sys.stdin:
                 if not session._executor_work: break
                 await asyncio.sleep(.005)
             self.assertFalse(session._executor_work)
+            if phase == "validation":
+                self.assertGreater(session._supervision_timings['resource_disk_lock_seconds'], .02)
             current = self.worker_service.store.assignment(session.assignment_id)
             self.assertEqual(current.lease.expires_at, session._bound_assignment.lease.expires_at)
             self.assertEqual(current.status, AssignmentStatus.RUNNING)
             self.worker_service.recover_expired(actor=self.admin, now=time.time())
             self.assertEqual(self.worker_service.store.assignment(current.id).status, AssignmentStatus.LOST)
+
+    async def test_resource_timeout_reports_distinct_stage_and_never_caches_partial_scan(self):
+        from unittest.mock import patch
+        from codex_web.storage.state_store import check_operation_budget
+        for stage, owner, attribute in (
+            ('resource_disk_seconds', self.backend, 'execution_disk_usage'),
+            ('resource_readonly_seconds', self.local_worker, 'readonly_disk_bytes'),
+            ('resource_rss_seconds', self.backend, 'process_tree_rss_bytes'),
+        ):
+            with self.subTest(stage=stage):
+                session, gate = await self.session()
+                session._bound_assignment = self.short_lease(session.assignment_id)
+                session._clock = time.time
+                session.last_disk_validation_monotonic = None
+                cached = session.last_disk_bytes
+                def blocked(*args):
+                    while True:
+                        check_operation_budget()
+                        time.sleep(.005)
+                with patch.object(owner, attribute, blocked, create=True):
+                    gate.set()
+                    await asyncio.wait_for(session.watchdog_task, 2)
+                    for _ in range(100):
+                        if not session._executor_work:
+                            break
+                        await asyncio.sleep(.005)
+                self.assertFalse(session._executor_work)
+                self.assertTrue(self.backend.processes[-1].killed)
+                self.assertGreater(session._supervision_timings[stage], .02)
+                if stage != 'resource_rss_seconds':
+                    self.assertEqual(session.last_disk_bytes, cached)
+                    self.assertIsNone(session.last_disk_validation_monotonic)
+                observation = session._failure_observation
+                self.assertEqual(observation['code'], 'execution_timeout')
+                self.assertEqual(observation['phase'], 'validation')
+                self.worker_service.recover_expired(actor=self.admin, now=time.time())
 
     async def test_real_resource_failure_is_durable_and_sanitized_before_stop(self):
         session, gate = await self.session()

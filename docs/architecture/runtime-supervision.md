@@ -862,3 +862,11 @@ verified stale-thread replacement. This refusal occurs before native admission.
 The existing queue preserves the original Work Item, profile and repository
 scope; idle-only background dispatch still skips. Other conflicts, another
 thread and unknown native-start outcomes do not establish this retry condition.
+
+Resource validation reports disk-lock wait, execution disk scan, read-only workspace
+metadata lookup and process-tree RSS durations separately, including failed stages.
+Skipped stages reset to zero on each resource validation. Disk enumeration checks
+the existing cooperative operation budget within each directory entry and before
+returning; cancellation cannot produce a partial-byte success or refresh the disk
+cache. These diagnostics do not extend the supervision deadline or establish the
+cause of a previously aggregated timeout.

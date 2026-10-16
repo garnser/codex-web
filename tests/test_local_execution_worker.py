@@ -356,6 +356,36 @@ class WorkerDiskAccountingTests(unittest.TestCase):
             with patch("os.scandir", side_effect=Entries):
                 self.assertEqual(BubblewrapExecutionBackend._tree_disk_usage(root), 0)
 
+    def test_flat_directory_scan_cancels_mid_entry_without_partial_success(self):
+        from codex_web.storage.state_store import StorageOperationBudget, storage_operation_budget
+        budget = StorageOperationBudget(10)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index in range(20):
+                (root / str(index)).write_bytes(b'fixture')
+            real_scandir = os.scandir
+            visited = []
+            class Entries:
+                def __enter__(self):
+                    self.entries = real_scandir(root)
+                    return self
+                def __exit__(self, *args):
+                    self.entries.close()
+                def __iter__(self):
+                    for entry in self.entries:
+                        visited.append(entry.name)
+                        if len(visited) == 3:
+                            budget.cancelled.set()
+                        yield entry
+            token = storage_operation_budget.set(budget)
+            try:
+                with patch('codex_web.local_execution_backend.os.scandir', return_value=Entries()):
+                    with self.assertRaises(TimeoutError):
+                        BubblewrapExecutionBackend._tree_disk_usage(root)
+                self.assertEqual(len(visited), 3)
+            finally:
+                storage_operation_budget.reset(token)
+
     def test_shared_git_metadata_remains_in_execution_disk_limit(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
