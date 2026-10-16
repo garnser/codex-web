@@ -297,6 +297,9 @@ class BubblewrapExecutionBackend:
             try:
                 with os.scandir(directory) as entries:
                     for entry in entries:
+                        # Check even within a single large directory. TimeoutError
+                        # is an OSError, so it must escape the filesystem handlers.
+                        check_operation_budget()
                         try:
                             # DirEntry reuses directory metadata instead of
                             # repeating Path.stat for type and size checks.
@@ -310,8 +313,11 @@ class BubblewrapExecutionBackend:
                                     total += metadata.st_size
                         except OSError:
                             continue
+            except TimeoutError:
+                raise
             except OSError:
                 continue
+        check_operation_budget()
         return total
 
     @classmethod
