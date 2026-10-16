@@ -1,0 +1,49 @@
+{
+  "repository": "https://github.com/openai/codex",
+  "commit": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d",
+  "tag": "rust-v0.162.1",
+  "archive_sha256": "b7182166baa0987b02d5d431caba94b673e0fce131524c9cf3a690a156b29d9d",
+  "cargo_lock_sha256": "49fe417bcafe3f69f1f6636e23274f90d37e75e388127a76888c39001a4f8117",
+  "patch_sha256": "e3ecd8899b9b8054f2f5f09ee3679d47268db8294ea604db161b3eb3ddbc1dd9",
+  "files": {
+    "codex-rs/ext/goal/src/api.rs": {
+      "base_sha256": "a08bb505652ff41540fcea628ab6bdda2fb8011c21450d10f0f240ae6ddfc157",
+      "patched_sha256": "ce92c1a89d40dcd780770c751ac9dcd5efb9a65ad95ef332f88ebcd7952c9198"
+    },
+    "codex-rs/state/goals_migrations/0003_goal_control.sql": {
+      "base_sha256": null,
+      "patched_sha256": "36c6e972d11473bcbcbcbe91a929e565780575c9018bb97d091ded20eba3569b"
+    },
+    "codex-rs/state/src/lib.rs": {
+      "base_sha256": "7a2df1f8605e5b8ce19e488e271c8c0a5ee426809783347b3e4a32ea2e46712b",
+      "patched_sha256": "74a09bb37355fd24d87a2e5c4e84c58ff1a743e1c23035d69fc29f78cc87fa9d"
+    },
+    "codex-rs/state/src/runtime/goals/control/status.sql": {
+      "base_sha256": null,
+      "patched_sha256": "6df74cd600dbae57fc20b35b5188b9680c4d35e255dc5f27ff9f6c59fb9c598b"
+    },
+    "codex-rs/state/src/runtime/goals/control.rs": {
+      "base_sha256": null,
+      "patched_sha256": "096f8cfe925bd17bf18c8cf3148ec07d9c311fe47eaf9b758a76800a08bc9cd1"
+    },
+    "codex-rs/state/src/runtime/goals.rs": {
+      "base_sha256": "11640e2a48cbd3d109f22d31695dba2ddb11f9aff9543d774d34f261fd1f48f4",
+      "patched_sha256": "213a8a09e3dca8a7d9e185d961f2d0c7a937444c7619dae27f30a7fda02f09ec"
+    },
+    "codex-rs/state/src/runtime.rs": {
+      "base_sha256": "e255590191d988e85fc1c0048196e2a57c35e37b12a71b363dfd9254b14bc234",
+      "patched_sha256": "d07853cd48a38f3c8ee386f9f319ab9195e7ae4e99caa5d894defbfe92727f57"
+    }
+  },
+  "license": "LICENSE (upstream Apache-2.0)",
+  "runtime_capability_advertised": false,
+  "activation": "not wired or installed; native private-store prerequisite only",
+  "trusted_build_commands": [
+    "git apply --check /work/app/patches/codex/goal-control-v1/control.patch",
+    "git apply /work/app/patches/codex/goal-control-v1/control.patch",
+    "cd codex-rs && cargo fmt --all -- --check",
+    "cd codex-rs && cargo test --locked --offline -p codex-state atomic_receipt_fences_legacy_writers_and_preserves_accounting"
+  ],
+  "build_requirements": "Sterile exact public checkout/Cargo.lock and prequalified public toolchain+locked dependency cache, dedicated cgroup2GiB/256tasks with bounded timeout and real cleanup. No network/private cache mount/install.",
+  "fixture_schema_sha256": "b3aac485fec27eaefbdd3e68651bdf6d640908fb10226f3562cc5ffe92ca3d1f"
+}
