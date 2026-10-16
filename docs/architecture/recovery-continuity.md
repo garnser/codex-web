@@ -479,10 +479,31 @@ receipt is **unknown execution**, never evidence of no effect or permission to
 retry. Verification compares the complete canonical typed result, including
 Evidence references, rather than accepting caller-altered Evidence.
 
-This does not add an installed ActionIntent no-result settlement endpoint.
-The current `ActionIntentService.reconcile` has specialized lost-result handling
-for code-host readiness/merge, not this new Recovery operation. The still-missing
-preinstall maintenance adapter must integrate read-only reconstruction through
-existing current-intent admission, verification, receipt persistence and
-settlement guards. Calling `readback` alone is not a verified ActionIntent or
-permission to execute/activate. No manual receipt/store injection is supported.
+The source now adds Recovery handling to the EXISTING ActionIntent reconcile
+operation with `retry_if_idempotent=false`. It resolves the current registered
+provider/binding, observes its `prepare` readback, verifies the exact typed
+receipt and persists observation, verification and terminal status through the
+canonical store. Missing domain receipt remains unknown. Explicit retry and
+automatic repeated attempts are disallowed. No separate mutation route or
+provider execution is used for reconciliation, and no Work Item success is
+advanced by this custody-only action.
+
+Current requester authority/security, provider/Definition, independent proof and
+all canonical admission stores are rechecked; shared namespace revision guards
+fence verification and terminal writes against intervening revocation. Observed
+results are retained if subsequent verification/admission is denied. Configured
+procedure admission is invoked for verification under the existing ActionIntent
+context. Production must have its actual registered procedure/profile controls;
+a standalone synthetic test configuration is not a production grant.
+
+This source is NOT installed or provider-activated. The discovered existing
+per-plan `require_recovery_qualification=false` upgrade option is a potential
+operator route to install qualified source without first falsifying aggregate
+Recovery health. It needs independent policy/runbook approval and real fresh
+backup/PASS isolated restore, protected baseline, drain, exact plan CAS, guarded
+helper and postverification. The interrupted plan was CANCELLED; no install or
+pre-upgrade backup is inferred. This option does not release original custody,
+change the UNKNOWN outcome, activate state1.3 or authorize this provider. A
+separate reviewed composition/binding/procedure activation with actual current
+operator session/assurance remains required before repair; resolving an identity
+ID alone cannot manufacture MFA. Do not run a source service against live state.

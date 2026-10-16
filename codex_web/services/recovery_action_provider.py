@@ -24,7 +24,7 @@ class RecoveryActionProvider:
             title="Reconcile terminal scheduled Recovery owner",
             description="Evidence-bound original firing settlement without effect replay",
             capabilities=ActionCapability(prepare=True,execute=True,idempotency=True,verification=True,evidence=True),
-            risk_class=ActionRiskClass.HIGH,required_authority=("recovery.scheduled-firing.reconcile",),
+            retry_max_attempts=1,risk_class=ActionRiskClass.HIGH,required_authority=("recovery.scheduled-firing.reconcile",),
             credential_required=False,network_access=False,expected_evidence=("recovery-reconciliation",)),)
 
     def _input(self, request, binding):
