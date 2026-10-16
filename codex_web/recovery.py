@@ -13,7 +13,7 @@ from codex_web.crypto import EncryptedEnvelope, KeyManifestEntry
 from codex_web.compatibility import ContractSpec
 
 
-RECOVERY_STATE_CONTRACT = ContractSpec("recovery-state", "1.3", ("1.3",))
+RECOVERY_STATE_CONTRACT = ContractSpec("recovery-state", "1.3", ("1.2", "1.3"))
 
 
 class RecoveryDeploymentMode(StrEnum):
@@ -208,6 +208,8 @@ class RecoveryFiring(BaseModel):
 class RecoveryReconcileRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     event_id: str = Field(min_length=1, max_length=200)
+    expected_state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    activate_state_1_3: bool = False
     expected_firing_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     expected_schedule_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     expected_policy_fingerprint: str = Field(min_length=1)
@@ -219,7 +221,8 @@ class RecoveryReconcileRequest(BaseModel):
 class RecoveryFiringReconciliation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     original: RecoveryFiring
-    outcome: Literal["succeeded", "failed"]
+    outcome: Literal["succeeded", "failed", "unknown"]
+    custody_released: Literal[True] = True
     evidence_id: str
     verification_id: str
     actor_id: str
@@ -239,7 +242,8 @@ class RecoveryFiringWatermark(BaseModel):
 class RecoveryState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = RECOVERY_STATE_CONTRACT.current
+    # New code remains a 1.2 writer until explicit proof-bound activation.
+    schema_version: str = "1.2"
     policy_organization_id: str | None = None
     policy_workspace_id: str | None = None
     policy_changes: tuple[RecoveryPolicyChange, ...] = ()
@@ -255,6 +259,8 @@ class RecoveryState(BaseModel):
 
     def model_post_init(self, __context: Any) -> None:
         RECOVERY_STATE_CONTRACT.require(self.schema_version)
+        if self.schema_version == "1.2" and self.reconciliations:
+            raise ValueError("Reconciliation requires explicit state1.3 activation")
 
 
 @runtime_checkable

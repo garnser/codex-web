@@ -178,7 +178,7 @@ class RecoveryService:
     def policy(self) -> RecoveryPolicy | None:
         return self.store.load().policy
 
-    def _write_key_bound(self, updater, *, actor, requirements, active_key=None, scheduler_update=None, _firing=None, evidence_update=None):
+    def _write_key_bound(self, updater, *, actor, requirements, active_key=None, scheduler_update=None, _firing=None, evidence_update=None, _activate_reconciliation=False):
         if self.crypto.store.store is not self.store.store:
             raise RecoveryConflictError('Recovery and keys require the same canonical transactional store')
         key_namespace = self.crypto.store.namespace
@@ -204,17 +204,21 @@ class RecoveryService:
                 documents[evidence_store.namespace] = evidence_update(
                     evidence_store._decode(documents[evidence_store.namespace])
                 ).model_dump(mode="json")
+            previous_version = current.schema_version
             updated = updater(current, keys)
+            if previous_version == "1.2" and updated.schema_version != "1.2" and (
+                    not _activate_reconciliation or not updated.reconciliations):
+                raise RecoveryConflictError("First1.3 write requires proof-bound reconciliation")
             if scheduler_update is not None:
                 schedules = self.scheduler.store._decode(documents[self.scheduler.store.namespace])
                 scheduler_update(updated, schedules)
                 documents[self.scheduler.store.namespace] = schedules.model_dump(mode='json')
-            documents[self.store.namespace] = updated.model_dump(mode='json')
+            documents[self.store.namespace] = RecoveryStore._encode(updated)
             return documents
 
         defaults = {
             key_namespace: CryptoKeyState().model_dump(mode='json'),
-            self.store.namespace: RecoveryState().model_dump(mode='json'),
+            self.store.namespace: RecoveryStore._encode(RecoveryState()),
         }
         if scheduler_update is not None or _firing is not None:
             from codex_web.scheduler import SchedulerState
@@ -245,9 +249,9 @@ class RecoveryService:
             # Preserve policy provenance without recursively embedding backup
             # and verification manifests in subsequent backups.
             recovery = RecoveryStore._decode(documents[RecoveryStore.namespace])
-            documents[RecoveryStore.namespace] = recovery.model_copy(update={
+            documents[RecoveryStore.namespace] = RecoveryStore._encode(recovery.model_copy(update={
                 'backups': {}, 'verifications': {},
-            }).model_dump(mode='json')
+            }))
         return documents
 
     def _snapshot_key_manifest(self, documents, actor):

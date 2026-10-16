@@ -98,7 +98,7 @@ class RecoveryPolicyTests(unittest.TestCase):
         self.state.update('recovery', lambda _: raw, default={})
         self.control.require_scope(self.service.store.load(), self.actor)
         self.service.configure(self.policy, actor=self.actor)
-        self.assertEqual(self.service.store.load().schema_version, '1.3')
+        self.assertEqual(self.service.store.load().schema_version, '1.2')
         self.assertEqual(self.service.store.load().policy_organization_id, self.actor.organization_id)
         with self.assertRaises(ContractCompatibilityError):
             RecoveryStore._decode({'schema_version': '9.0'})

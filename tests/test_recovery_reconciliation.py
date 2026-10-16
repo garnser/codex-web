@@ -53,14 +53,19 @@ class RecoveryReconciliationTests(unittest.IsolatedAsyncioTestCase):
         metadata={'contract':PROOF_CONTRACT,'event_id':firing.event_id,'owner_id':firing.owner_id,
             'effect_id':firing.effect_id,'firing_sha256':fingerprint(firing),
             'schedule_sha256':fingerprint(schedule),'policy_fingerprint':state.policy.fingerprint(),
-            'writers_quiescent':True,'effects_settled':True,'retention_settled':True,'effect_outcome':outcome}
+            'writers_quiescent':True,'effects_quiescent':True,'retention_settled':True,'effect_outcome':outcome,
+            'all_writer_incarnations_accounted':True,'original_owner_fenced':True,
+            'writer_inventory_sha256':'a'*64,'writer_fence_proof_sha256':'b'*64,
+            'state_sha256':fingerprint(state),'state_activation_qualified':True,
+            'migration_backup_restore_verified':True}
         metadata.update(extra or {})
         evidence=self.evidence.create_evidence(EvidenceCreate(evidence_type=EvidenceType.RUNTIME_RESULT,
             result=EvidenceResult.PASS,observed_at=time.time(),metadata=metadata),actor=self.actor)
         verifier=self.actor.model_copy(update={'identity_id':'independent-fixture-verifier'})
         verification=self.evidence.create_verification(VerificationCreate(evidence_ids=(evidence.id,),
             method=PROOF_CONTRACT,result=VerificationResult.VERIFIED),actor=verifier)
-        return RecoveryReconcileRequest(event_id=firing.event_id,expected_firing_sha256=fingerprint(firing),
+        return RecoveryReconcileRequest(event_id=firing.event_id,expected_state_sha256=fingerprint(state),
+            activate_state_1_3=state.schema_version == "1.2",expected_firing_sha256=fingerprint(firing),
             expected_schedule_sha256=fingerprint(schedule),expected_policy_fingerprint=state.policy.fingerprint(),
             evidence_id=evidence.id,verification_id=verification.id,idempotency_key='fixture-'+evidence.id)
 
@@ -91,7 +96,7 @@ class RecoveryReconciliationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unknown_foreign_active_or_stale_proof_refuses_without_effect_replay(self):
         firing=await self.orphan(failed=True);engine=RecoveryReconciliationService(self.service,lambda identity:self.actor)
-        for extra in [{'effect_outcome':'unknown'},{'writers_quiescent':False},{'owner_id':'foreign'},
+        for extra in [{'effect_outcome':'invented'},{'writers_quiescent':False},{'owner_id':'foreign'},
                 {'effect_id':'foreign'},{'writers_quiescent':1},{'firing_sha256':'f'*64}]:
             with self.subTest(extra=extra):
                 payload=self.proof(firing,extra=extra)
@@ -173,3 +178,64 @@ class RecoveryReconciliationTests(unittest.IsolatedAsyncioTestCase):
         engine.reconcile(payload,actor=self.actor)
         with self.assertRaises(ContractCompatibilityError):
             ContractSpec("recovery-state","1.2",("1.2",)).require(self.service.store.load().schema_version)
+
+    async def test_unknown_effect_releases_only_proven_fenced_custody_not_outcome(self):
+        firing=await self.orphan(failed=True)
+        engine=RecoveryReconciliationService(self.service,lambda identity:self.actor)
+        for extra in ({'all_writer_incarnations_accounted':False},
+                      {'original_owner_fenced':False},{'writer_inventory_sha256':None},
+                      {'writer_fence_proof_sha256':'absence-is-not-fencing'}):
+            with self.subTest(extra=extra):
+                before=self.state.get('recovery')
+                with self.assertRaises(RecoveryConflictError):
+                    engine.reconcile(self.proof(firing,outcome='unknown',extra=extra),actor=self.actor)
+                self.assertEqual(self.state.get('recovery'),before)
+        record=engine.reconcile(self.proof(firing,outcome='unknown'),actor=self.actor)
+        self.assertEqual(record.outcome,'unknown')
+        self.assertEqual(record.original,firing)
+        self.assertTrue(record.custody_released)
+        self.assertEqual(self.service.store.load().scheduled_firings[firing.event_id].status,'unknown')
+        self.assertFalse(self.service.health(actor=self.actor).recovery_qualified)
+        self.clock.value+=1
+        fresh=self.service.create_backup(actor=self.actor)
+        self.assertFalse(self.service.health(actor=self.actor).recovery_qualified)
+        self.clock.value+=1
+        self.service.verify_restore(fresh.id,actor=self.actor,publish_evidence=True)
+        self.assertTrue(self.service.health(actor=self.actor).recovery_qualified)
+        self.assertEqual(engine.inspect(firing.event_id,actor=self.actor).outcome,'unknown')
+
+    async def test_storage_activation_is_explicit_atomic_and_old_writer_refuses(self):
+        from tests.recovery_v1_2_fixture import RecoveryStore as OlderStore
+        from codex_web.compatibility import ContractCompatibilityError
+        firing=await self.orphan(failed=True)
+        before=self.state.get('recovery')
+        self.assertEqual(before['schema_version'],'1.2')
+        self.assertNotIn('reconciliations',before)
+        old=OlderStore(self.state)
+        self.service.store.load()  # load/startup does not persist normalization
+        self.assertEqual(self.state.get('recovery'),before)
+        old.update(lambda state:state)
+        self.service.store.update(lambda state:state)
+        self.assertEqual(self.state.get('recovery'),before)
+        with self.assertRaises(ValueError):
+            self.service.store.update(lambda state:state.model_copy(update={'schema_version':'1.3'}))
+        self.assertEqual(self.state.get('recovery'),before)
+        engine=RecoveryReconciliationService(self.service,lambda identity:self.actor)
+        payload=self.proof(firing)
+        for rejected in (payload.model_copy(update={'activate_state_1_3':False}),
+                         payload.model_copy(update={'expected_state_sha256':'0'*64}),
+                         self.proof(firing,extra={'state_activation_qualified':False}),
+                         self.proof(firing,extra={'migration_backup_restore_verified':False})):
+            with self.assertRaises(RecoveryConflictError):engine.reconcile(rejected,actor=self.actor)
+            self.assertEqual(self.state.get('recovery'),before)
+        engine.reconcile(payload,actor=self.actor)
+        committed=self.state.get('recovery')
+        self.assertEqual(committed['schema_version'],'1.3')
+        self.assertEqual(len(committed['reconciliations']),1)
+        for operation in (old.load,lambda:old.update(lambda state:state)):
+            with self.assertRaises(ContractCompatibilityError):operation()
+            self.assertEqual(self.state.get('recovery'),committed)
+        # No downgrade can hide reconciliation data, even with model_copy.
+        with self.assertRaises(ValueError):
+            self.service.store.update(lambda state:state.model_copy(update={'schema_version':'1.2'}))
+        self.assertEqual(self.state.get('recovery'),committed)

@@ -1,6 +1,7 @@
 """Explicit Evidence-bound settlement; never an executor, retry or timeout takeover."""
 from __future__ import annotations
 import hashlib
+import re
 from codex_web.canonical_json import canonical_json_bytes
 from codex_web.artifact_evidence import EvidenceLifecycle, EvidenceResult, EvidenceType, VerificationResult
 from codex_web.identity import PrincipalKind, AuthenticationAssurance
@@ -9,7 +10,7 @@ from codex_web.services.identity import AuthorizationError, IdentityService
 from codex_web.services.recovery import RecoveryConflictError
 from codex_web.services.recovery_policy import RecoveryPolicyControl
 
-PROOF_CONTRACT = "recovery-owner-disposition.v1"
+PROOF_CONTRACT = "recovery-owner-disposition.v2"
 
 
 def fingerprint(value):
@@ -47,13 +48,21 @@ def validate_proof(evidence_state, request, firing, actor, now):
         "firing_sha256": request.expected_firing_sha256,
         "schedule_sha256": request.expected_schedule_sha256,
         "policy_fingerprint": request.expected_policy_fingerprint,
-        "writers_quiescent": True, "effects_settled": True, "retention_settled": True}
+        "writers_quiescent": True, "effects_quiescent": True, "retention_settled": True,
+        "all_writer_incarnations_accounted": True, "original_owner_fenced": True,
+        "state_sha256": request.expected_state_sha256}
     # Booleans must be actual booleans: 1/"true" do not establish quiescence.
     if any(type(metadata.get(k)) is not type(v) or metadata.get(k) != v for k, v in required.items()):
         raise RecoveryConflictError("Owner/effect proof does not bind this exact snapshot")
     outcome = metadata.get("effect_outcome")
-    if outcome not in ("succeeded", "failed"):
-        raise RecoveryConflictError("Unknown effect outcome cannot be reconciled")
+    if outcome not in ("succeeded", "failed", "unknown"):
+        raise RecoveryConflictError("Invalid original effect outcome")
+    for name in ("writer_inventory_sha256", "writer_fence_proof_sha256"):
+        if not isinstance(metadata.get(name), str) or not re.fullmatch(r"[0-9a-f]{64}", metadata[name]):
+            raise RecoveryConflictError("Complete writer inventory/fence proof unavailable")
+    if request.activate_state_1_3 and (metadata.get("state_activation_qualified") is not True
+            or metadata.get("migration_backup_restore_verified") is not True):
+        raise RecoveryConflictError("State1.3 activation is not independently qualified")
     return outcome
 
 
@@ -115,6 +124,10 @@ class RecoveryReconciliationService:
                     or state.policy is None or state.policy.fingerprint() != request.expected_policy_fingerprint
                     or request.event_id in state.reconciliations):
                 raise RecoveryConflictError("Recovery firing/policy snapshot changed")
+            if fingerprint(state) != request.expected_state_sha256:
+                raise RecoveryConflictError("Recovery activation/state snapshot changed")
+            if state.schema_version == "1.2" and not request.activate_state_1_3:
+                raise RecoveryConflictError("Explicit qualified state1.3 activation required")
             local = service._scheduled_executor.status()
             if firing.owner_id == service._scheduled_admission.owner_id and (
                     local["accepting"] or local["waiting_or_running"] or local["inflight_work"]):
@@ -136,11 +149,14 @@ class RecoveryReconciliationService:
                 evidence_id=request.evidence_id, verification_id=request.verification_id,
                 actor_id=actor.identity_id, reconciled_at=float(service.clock()),
                 request=request, request_sha256=request_sha, idempotency_key=request.idempotency_key)
+            # This is the only first-write activation. Proof, actor, complete
+            # state/policy/schedule CAS and keys share the enclosing transaction.
+            state.schema_version = "1.3"
             state.reconciliations[firing.event_id] = result
             state.scheduled_firings[firing.event_id] = firing.model_copy(update={
                 "status": "succeeded" if outcome == "succeeded" else "unknown",
                 "finished_at": result.reconciled_at,
-                "error_code": None if outcome == "succeeded" else "operator_verified_terminal_failure"})
+                "error_code": None if outcome == "succeeded" else ("operator_verified_terminal_failure" if outcome == "failed" else "operator_released_custody_effect_unknown")})
             return state
         def schedule(state, schedules):
             # Called in the same transaction; rejection rolls back all updates.
@@ -151,7 +167,7 @@ class RecoveryReconciliationService:
             if record is None or fingerprint(record) != request.expected_schedule_sha256:
                 raise RecoveryConflictError("Recovery schedule snapshot changed")
         service._write_key_bound(apply, actor=actor, requirements=(),
-            evidence_update=evidence_update, scheduler_update=schedule)
+            evidence_update=evidence_update, scheduler_update=schedule, _activate_reconciliation=True)
         return result
 
     def preview(self, event_id, *, actor):
@@ -167,6 +183,7 @@ class RecoveryReconciliationService:
         if schedule is None:
             raise RecoveryConflictError("Canonical schedule unavailable")
         return {"event_id":event_id,"owner_id":firing.owner_id,"effect_id":firing.effect_id,
+            "expected_state_sha256":fingerprint(state),"activation_required":state.schema_version == "1.2",
             "expected_firing_sha256":fingerprint(firing),"expected_schedule_sha256":fingerprint(schedule),
             "expected_policy_fingerprint":state.policy.fingerprint(),"proof_contract":PROOF_CONTRACT,
             "action":"recovery.scheduled-firing.reconcile", "provenance":"canonical Recovery/Scheduler read; rechecked transactionally at execution",
@@ -194,7 +211,7 @@ def unresolved_unknown(service, state, actor, latest_backup, latest_verify):
     evidence = service.evidence.store.load()
     for firing in pending:
         record = state.reconciliations.get(firing.event_id)
-        if record is None or record.outcome != "failed":
+        if record is None or not record.custody_released or record.outcome not in ("failed", "unknown"):
             return True
         try:
             validate_proof(evidence, record.request, record.original, actor, float(service.clock()))
