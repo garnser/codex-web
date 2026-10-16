@@ -1,7 +1,9 @@
 """Composed canonical admission, registry, credential and provider reads."""
 import json
+import time
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 import httpx
 
 from codex_web.action_providers import ActionProviderBindingCreate
@@ -22,6 +24,7 @@ from codex_web.services.secrets import SecretUseDeniedError
 from codex_web.storage.action_providers import ActionProviderStateStore
 from codex_web.storage.control_plane_broker import ControlPlaneBrokerAuditStore
 from codex_web.storage.definition_registry import DefinitionRegistryStore
+from codex_web.storage.sqlite_state import SQLiteStateStore
 from codex_web.storage.execution_workers import ExecutionWorkerStore
 from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.execution_workers import ExecutionWorker
@@ -79,9 +82,9 @@ class BrokerMergeRequirementsTests(unittest.IsolatedAsyncioTestCase):
         self.service.execution_workers = ExecutionWorkerService(store, identity=self.env.identity)
         return store
 
-    def publish(self, kind, definition_id, payload, version='1.0'):
+    def publish(self, kind, definition_id, payload, version='1.0', *, effective_until=None):
         draft = self.registry.create_draft(DefinitionDraftCreate(kind=kind, definition_id=definition_id,
-            definition_schema_version=version, payload=payload, actor='fixture'))
+            definition_schema_version=version, payload=payload, actor='fixture', effective_until=effective_until))
         self.registry.approve_publication(draft.record_id, actor='fixture-reviewer',
             reference='PRIVATE-TEST', reason='private canonical read fixture')
         return self.registry.publish(draft.record_id, DefinitionPublishRequest(actor='fixture'))
@@ -100,12 +103,12 @@ class BrokerMergeRequirementsTests(unittest.IsolatedAsyncioTestCase):
         self.publish(AUTHORITY_ROLE_CATALOG_KIND, AUTHORITY_ROLE_CATALOG_ID,
                      dict(roles=roles, bindings=bindings))
 
-    def publish_profile(self, *, declared=True):
+    def publish_profile(self, *, declared=True, effective_until=None):
         payload = execution_profile_catalog_seed_payload()
         profile = next(item for item in payload['profiles'] if item['id'] == 'repository-write')
         if declared:
             profile['control_plane_operations'].append(OPERATION)
-        self.publish('execution-profile-catalog', 'execution.profiles.default', payload)
+        self.publish('execution-profile-catalog', 'execution.profiles.default', payload, effective_until=effective_until)
         return self.profiles.resolve('repository-write', organization_id='local',
             workspace_id='default', project_id='project-a')[1]
 
@@ -190,6 +193,45 @@ class BrokerMergeRequirementsTests(unittest.IsolatedAsyncioTestCase):
         self.env.during_status(lambda: self.publish_authority(requester=False))
         with self.assertRaises(ControlPlaneBrokerDeniedError):
             await self.read()
+
+    async def test_other_registry_supersession_cannot_reuse_a_cached_declaration(self):
+        # Complete a read before another canonical service publishes through a
+        # separate store connection. This primes the cache on affected engines.
+        await self.read()
+        publishing_registry = DefinitionRegistryService(DefinitionRegistryStore(SQLiteStateStore(self.env.state.path)),
+                                                       schemas=self.registry.schemas)
+        original_registry = self.registry
+        def supersede():
+            self.registry = publishing_registry
+            try:
+                self.publish_profile(declared=False)
+            finally:
+                self.registry = original_registry
+        self.env.during_status(supersede)
+        with self.assertRaises(ControlPlaneBrokerDeniedError):
+            await self.read()
+        declaration = self.service.public_assignment_capability(self.assignment)['assignment_context']['merge_requirements_declaration']
+        self.assertFalse(declaration['declared'])
+
+    async def test_other_registry_quarantine_invalidates_a_cached_declaration(self):
+        await self.read()
+        publisher = DefinitionRegistryService(DefinitionRegistryStore(SQLiteStateStore(self.env.state.path)),
+                                              schemas=self.registry.schemas)
+        self.env.during_status(lambda: publisher.quarantine(self.reference.record_id,
+            actor='fixture-security', reason='Private current-definition regression'))
+        with self.assertRaises(ControlPlaneBrokerDeniedError):
+            await self.read()
+
+    async def test_effective_time_expiry_invalidates_a_previously_cached_declaration(self):
+        now = [time.time()]
+        reference = self.publish_profile(effective_until=now[0] + 10)
+        self.assignment = self.assignment.model_copy(update={'execution_profile_definition': reference})
+        self.current = self.assignment
+        await self.read()
+        self.env.during_status(lambda: now.__setitem__(0, now[0] + 20))
+        with patch('codex_web.services.execution_profile_definitions.time.time', side_effect=lambda: now[0]):
+            with self.assertRaises(ControlPlaneBrokerDeniedError):
+                await self.read()
 
     async def test_expired_lease_fence_and_assignment_changes_block_return(self):
         original = self.assignment

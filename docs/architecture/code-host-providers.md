@@ -120,6 +120,13 @@ Binding/policy changes, rotation, revocation, natural credential expiry, altered
 assignment scope/fence/worker, expired lease/deadline and superseded declarations
 prevent results from escaping. Reads accept no body, provider selector or raw URL.
 
+Execution-profile records use the registry's uncached effective-time lookup.
+A second registry/process
+superseding or quarantining the declaration, or the declaration reaching its
+effective-until time, invalidates an already primed reader and the assignment
+inspector's declaration metadata. No invalidation notification is required for
+this guard. This changes read freshness without a persisted contract migration.
+
 The existing assignment inspector consumes the same typed projection through
 `GET /api/control-plane-broker/merge-requirements`. Its authenticated operator must
 have operator admission, their own current read authority and credential-use rights.

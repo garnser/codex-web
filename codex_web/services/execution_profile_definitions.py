@@ -62,6 +62,9 @@ class ExecutionProfileDefinitionService:
                 workspace_id=workspace_id,
                 project_id=project_id,
             ),
+            # Revalidate operational declarations across process publications
+            # and effective-time boundaries through the uncached lookup.
+            now=time.time(),
         )
 
     def catalog(
