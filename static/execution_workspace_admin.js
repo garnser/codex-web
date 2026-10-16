@@ -8,7 +8,7 @@
   let projects = [];
   let resources = [];
   const {createWorkspacePresenters} = await import(`${BASE}/static/execution_workspace_presenters.js`);
-  const {integrationHtml, repositoryMembersHtml} = createWorkspacePresenters({escapeHtml, resourceNames, timeText});
+  const {integrationHtml, repositoryMembersHtml} = createWorkspacePresenters({escapeHtml, resourceNames, timeText, bytes});
   const {createPublicationRecoveryUI} = await import(`${BASE}/static/publication_recovery_handoff.js`);
   const {render: recoveryHtml, submit: handoff} = createPublicationRecoveryUI({
     BASE, escapeHtml, timeText, canRecover, getActor: () => actor,

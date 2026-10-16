@@ -1,4 +1,4 @@
-export function createWorkspacePresenters({escapeHtml, resourceNames, timeText}) {
+export function createWorkspacePresenters({escapeHtml, resourceNames, timeText, bytes}) {
   function integrationHtml(workspace) {
     const integration = workspace.integration || {};
     return `<small>Integration: ${escapeHtml(integration.strategy || "none")} · outcome ${escapeHtml(integration.outcome || "pending")} · target ${escapeHtml(integration.target_revision || "none")} · result ${escapeHtml(integration.resulting_revision || "none")}</small>
