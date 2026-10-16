@@ -84,6 +84,8 @@ class PostgresDocumentsStreamingTests(unittest.TestCase):
         self.addCleanup(drop)
         self.pool = ConnectionPool(self.dsn, min_size=1, max_size=1, timeout=.5,
                                   kwargs={'options': '-c search_path=' + self.schema})
+        # Caller owns this supplied pool. LIFO: backend, pool, then schema.
+        self.addCleanup(self.pool.close)
         self.backend = PostgresStateStore(self.dsn, connection_pool=self.pool)
         self.addCleanup(self.backend.close)
 
