@@ -78,7 +78,7 @@ class RecoveryReconciliationService:
         require_operator(current)
         return current
 
-    def reconcile(self, request: RecoveryReconcileRequest, *, actor):
+    def reconcile(self, request: RecoveryReconcileRequest, *, actor, mutation_admission=None):
         actor = self._current(actor)
         service = self.service
         if service.scheduler is None or not hasattr(service.evidence, "store"):
@@ -166,8 +166,12 @@ class RecoveryReconciliationService:
             record = schedules.schedules.get(original.schedule_id)
             if record is None or fingerprint(record) != request.expected_schedule_sha256:
                 raise RecoveryConflictError("Recovery schedule snapshot changed")
-        service._write_key_bound(apply, actor=actor, requirements=(),
-            evidence_update=evidence_update, scheduler_update=schedule, _activate_reconciliation=True)
+        # Independent writer proof remains mandatory. This additional local
+        # gate prevents manual/scheduled submission behind the shared CAS.
+        with service._scheduled_executor.quiescence():
+            service._write_key_bound(apply, actor=actor, requirements=(),
+                evidence_update=evidence_update, scheduler_update=schedule, _activate_reconciliation=True,
+                mutation_admission=mutation_admission)
         return result
 
     def preview(self, event_id, *, actor):

@@ -55,7 +55,11 @@ class RecoveryActionProvider:
 
     async def execute(self, request, *, binding, credential=None):
         actor, payload = self._input(request,binding)
-        record = await asyncio.to_thread(self.reconcile.reconcile,payload,actor=actor)
+        from codex_web.services.recovery_mutation_admission import mutation_guard, mutation_intent_id
+        def mutate():
+            admitted = mutation_guard(self, binding, request)
+            return self.reconcile.reconcile(payload, actor=actor, mutation_admission=admitted)
+        record = await self.recovery._scheduled_executor.run('reconcile:' + mutation_intent_id(), mutate)
         return self._result(record, binding=binding)
 
     @staticmethod

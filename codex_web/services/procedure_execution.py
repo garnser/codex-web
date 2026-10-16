@@ -588,7 +588,10 @@ class ProcedureExecutionService:
         return restored.result.output
 
     async def provider_admission(self, intent, actor, phase):
-        """Common provider boundary verifies the durable step before every mutation."""
+        return self.provider_admission_current(intent, actor, phase)
+
+    def provider_admission_current(self, intent, actor, phase):
+        """Read-only durable-step check, reusable under canonical writer locks."""
         if not intent.execution_id:
             return False
         assignment = self.workers.assignment_for_execution(intent.execution_id, actor=actor)

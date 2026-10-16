@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextvars
+
 import hashlib
 import json
 import os
@@ -149,6 +151,7 @@ class RecoveryService:
         self.clock = clock
         from codex_web.services.recovery_executor import RecoveryExecutor
         from codex_web.services.recovery_schedules import RecoveryScheduleAdmission
+        self._manual_context = contextvars.ContextVar('recovery_manual_authentication', default=None)
         self._scheduled_executor = RecoveryExecutor()
         self._scheduled_admission = RecoveryScheduleAdmission(self, f"recovery-{uuid.uuid4().hex}")
         self._scheduled_stopped = False
@@ -178,12 +181,20 @@ class RecoveryService:
     def policy(self) -> RecoveryPolicy | None:
         return self.store.load().policy
 
-    def _write_key_bound(self, updater, *, actor, requirements, active_key=None, scheduler_update=None, _firing=None, evidence_update=None, _activate_reconciliation=False):
+    def _write_key_bound(self, updater, *, actor, requirements, active_key=None, scheduler_update=None, _firing=None, evidence_update=None, _activate_reconciliation=False, mutation_admission=None):
         if self.crypto.store.store is not self.store.store:
             raise RecoveryConflictError('Recovery and keys require the same canonical transactional store')
         key_namespace = self.crypto.store.namespace
 
+        manual = self._manual_context.get()
         def apply(documents):
+            if manual is not None:
+                identity, authenticate, original = manual
+                from codex_web.services.recovery_reconciliation import require_operator
+                current_actor = authenticate()
+                require_operator(current_actor)
+                if current_actor.identity_id != original.identity_id or current_actor.tenant != original.tenant:
+                    raise RecoveryConflictError('Manual Recovery operator changed')
             keys = self.crypto.store._decode(documents[key_namespace])
             for entry in requirements:
                 key = self.crypto._key(keys, entry.key_id, actor)
@@ -230,7 +241,30 @@ class RecoveryService:
             if self.evidence.store.store is not self.store.store:
                 raise RecoveryConflictError("Evidence and recovery require the same canonical store")
             defaults[self.evidence.store.namespace] = ArtifactEvidenceState().model_dump(mode="json")
-        result = self.store.store.update_many(defaults, apply)
+        if manual is not None:
+            identity, _, _ = manual
+            if identity.store.store is not self.store.store:
+                raise RecoveryConflictError('Manual Recovery and identity require one canonical transactional store')
+            # Lock the existing identity document alongside Recovery/keys so a
+            # credential or membership change cannot race successful settlement.
+            # Its complete payload is returned unchanged, not normalized.
+            defaults[identity.store.namespace] = identity.store._empty()
+        if mutation_admission is None:
+            result = self.store.store.update_many(defaults, apply)
+        else:
+            # Existing bounded row transaction takes globally sorted namespace
+            # locks once. Guard-only identity/admission rows are NOT rewritten.
+            selected = dict(mutation_admission['guard_rows'])
+            selected.update({name: (None,) for name in defaults})
+            def guarded(rows):
+                mutation_admission['guard'](rows)
+                documents = {name: rows[name][None] if rows[name][None] is not None else default
+                             for name, default in defaults.items()}
+                updated = apply(documents)
+                mutation_admission['guard'](rows)
+                return {name: {None: value} for name, value in updated.items()}
+            changed = self.store.store.record_mutate_many(selected, guarded)
+            result = {name: rows[None] for name, rows in changed.items()}
         return RecoveryStore._decode(result[self.store.namespace])
 
     def configure(self, policy: RecoveryPolicy, *, actor: AuthenticationActor,
@@ -387,8 +421,12 @@ class RecoveryService:
         actor: AuthenticationActor,
         _firing=None,
     ) -> None:
-        if _firing is not None:
+        if _firing is not None or self._manual_context.get() is not None:
             def retain(current, keys):
+                if current.policy is None or current.policy.fingerprint() != policy.fingerprint():
+                    # The manifest is already durable. Preserve that diagnostic
+                    # result and its bytes; a superseded policy cannot delete.
+                    raise RecoveryConflictError('Recovery policy changed before retention')
                 rows = sorted((item for item in current.backups.values()
                     if (item.organization_id, item.workspace_id) == (actor.organization_id, actor.workspace_id)),
                     key=lambda item: (item.created_at, item.id), reverse=True)
@@ -835,6 +873,23 @@ class RecoveryService:
             recovery_qualified=not blockers,
             blockers=tuple(blockers),
         )
+
+    async def run_manual(self, operation, *, authenticate, identity):
+        """Existing bounded executor owns the ACTUAL manual writer to terminal.
+
+        No request cancellation, lost HTTP response or local queue observation
+        establishes an effect outcome or authorizes a replay.
+        """
+        from codex_web.services.recovery_reconciliation import require_operator
+        def work():
+            actor = authenticate()
+            require_operator(actor)
+            token = self._manual_context.set((identity, authenticate, actor))
+            try:
+                return operation(actor)
+            finally:
+                self._manual_context.reset(token)
+        return await self._scheduled_executor.run('manual:' + uuid.uuid4().hex, work)
 
     async def _handle_schedule_event(self, event) -> None:
         if self.service_actor is None or not isinstance(event, CanonicalEventEnvelope):

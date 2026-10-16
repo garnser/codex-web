@@ -16,6 +16,7 @@ from codex_web.storage.scheduler import SchedulerStore
 from codex_web.recovery import RecoveryReconcileRequest
 from codex_web.services.recovery import RecoveryConflictError
 from codex_web.services.recovery_reconciliation import RecoveryReconciliationService, fingerprint, PROOF_CONTRACT
+from codex_web.services.recovery_executor import RecoveryExecutorBusy
 from tests import test_recovery as fixtures
 
 
@@ -75,6 +76,8 @@ class RecoveryReconciliationTests(unittest.IsolatedAsyncioTestCase):
         second.crypto=copy.copy(self.crypto);second.crypto.store=CryptoKeyStore(connection)
         second.evidence=ArtifactEvidenceService(ArtifactEvidenceStore(connection))
         second.scheduler=copy.copy(self.scheduler);second.scheduler.store=SchedulerStore(connection)
+        # SQLiteStateStore owns and closes each operation's connection; unlike
+        # PostgresStateStore it has no store-level close lifecycle.
         return second
 
     async def test_known_failed_orphan_preserves_identity_and_needs_actual_fresh_restore(self):
@@ -117,10 +120,25 @@ class RecoveryReconciliationTests(unittest.IsolatedAsyncioTestCase):
         engines=[RecoveryReconciliationService(self.service,lambda identity:self.actor),RecoveryReconciliationService(self.second_service(),lambda identity:self.actor)]
         before=self.service.store.load().backups
         def operation(engine):return engine.reconcile(payload,actor=self.actor)
+        results=[];busy=[]
         with ThreadPoolExecutor(max_workers=2) as pool:
-            results=list(pool.map(operation,engines))
-        self.assertEqual(results[0],results[1]);self.assertEqual(len(self.service.store.load().reconciliations),1)
+            futures=[pool.submit(operation,engine) for engine in engines]
+            for future in futures:
+                try:
+                    results.append(future.result())
+                except RecoveryExecutorBusy as exc:
+                    # Both canonical services share this process's executor.
+                    # A concurrent local CAS may refuse; that is not a failed
+                    # durable operation or permission to replay an effect.
+                    busy.append(str(exc))
+        self.assertIn(len(results),(1,2))
+        self.assertEqual(len(results)+len(busy),2)
+        self.assertTrue(all(reason=='other actual local Recovery work is not drained' for reason in busy))
+        self.assertTrue(all(result==results[0] for result in results))
+        self.assertTrue(all(future.done() for future in futures))
+        self.assertEqual(len(self.service.store.load().reconciliations),1)
         self.assertEqual(self.service.store.load().backups,before)
+        evidence_before=self.evidence.store.load()
         # Model response loss after committed operation; read-only receipt path.
         def lost_response():
             engines[0].reconcile(payload,actor=self.actor)
@@ -131,6 +149,7 @@ class RecoveryReconciliationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RecoveryConflictError):
             self.service._scheduled_admission.finish(firing,succeeded=True)
         self.assertEqual(self.service.store.load().backups,before)
+        self.assertEqual(self.evidence.store.load(),evidence_before)
         self.assertFalse(self.service.health(actor=self.actor).recovery_qualified)
 
     async def test_evidence_invalidation_and_nonindependence_remain_blocked(self):
@@ -161,14 +180,20 @@ class RecoveryReconciliationTests(unittest.IsolatedAsyncioTestCase):
         original_state=self.state.get('recovery')
         rejected=request.model_copy(update={'parameters':payload.model_copy(
             update={'expected_firing_sha256':'0'*64}).model_dump(mode='json')})
-        with self.assertRaises(RecoveryConflictError):await provider.execute(rejected,binding=binding)
+        from codex_web.services.action_providers import ActionRequirementError
+        with self.assertRaises(ActionRequirementError):await provider.execute(rejected,binding=binding)
         self.assertEqual(self.state.get('recovery'),original_state)
         self.assertIsNone(await provider.readback(request,binding=binding))
         # Exact failure boundary from d923: mutation commits, response builder
         # fails. Preserve that commit and reconstruct by read-only inspection.
         with patch.object(provider,'_result',side_effect=ValueError('fixture receipt format failure')):
             with self.assertRaisesRegex(ValueError,'^fixture receipt format failure$'):
-                await provider.execute(request,binding=binding)
+                # Library-only receipt serialization regression. Direct
+                # provider mutation is now forbidden without canonical context;
+                # full canonical execute/lost-result coverage lives in the
+                # composed ActionIntent/API tests, not a fabricated actor.
+                record = provider.reconcile.reconcile(payload, actor=self.actor)
+                provider._result(record, binding=binding)
         committed=self.state.get('recovery')
         self.assertEqual(len(committed['reconciliations']),1)
         evidence_before=self.evidence.store.load()
@@ -196,7 +221,13 @@ class RecoveryReconciliationTests(unittest.IsolatedAsyncioTestCase):
         # Serialization-valid but altered Evidence cannot pass verification.
         changed=result.model_copy(update={'evidence':(result.evidence[0].model_copy(update={'reference':'foreign'}),)})
         self.assertFalse((await provider.verify(changed,binding=binding)).verified)
-        self.assertEqual(await provider.execute(request,binding=binding),result)
+        # Even a matching durable receipt cannot grant a direct caller the
+        # canonical executor context. The composed ActionIntent test exercises
+        # the legitimate service worker and same-receipt settlement instead.
+        with self.assertRaisesRegex(ActionRequirementError,'Canonical Recovery mutation executor unavailable'):
+            await provider.execute(request,binding=binding)
+        self.assertEqual(self.state.get('recovery'),committed)
+        self.assertEqual(self.evidence.store.load(),evidence_before)
 
     async def test_current_operator_revocation_and_contract_downgrade_refuse(self):
         from codex_web.identity import MembershipRole

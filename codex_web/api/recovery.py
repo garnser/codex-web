@@ -7,12 +7,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.api.project_record_scope import ProjectRecordScope, project_record_context_parameter
 from codex_web.services.crypto_keys import CryptoKeyError
+from codex_web.services.recovery_executor import RecoveryExecutorBusy, RecoveryExecutorClosed
 from codex_web.services.recovery_policy import RecoveryPolicyControl
 
-from codex_web.api.identity import request_actor
+from codex_web.api.identity import request_actor, revalidate_request_actor
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
-from codex_web.recovery import RecoveryPolicy
-from codex_web.services.identity import AuthorizationError, IdentityService
+from codex_web.recovery import RecoveryPolicy, RecoveryReconcileRequest
+from codex_web.api.action_intents import _error as action_error
+from codex_web.services.action_intents import ActionIntentError
+from codex_web.services.action_providers import ActionProviderError
+from codex_web.services.identity import AuthenticationError, AuthorizationError, IdentityError, IdentityService
 from codex_web.services.recovery import (
     RecoveryConflictError,
     RecoveryError,
@@ -25,7 +29,13 @@ class RecoveryRollbackRequest(BaseModel):
     expected_fingerprint: str = Field(min_length=1)
 
 
-def build_recovery_router(service: RecoveryService, projects=None) -> APIRouter:
+class RecoveryOperatorRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    binding_id: str = Field(min_length=1, max_length=200)
+    request: RecoveryReconcileRequest
+
+
+def build_recovery_router(service: RecoveryService, projects=None, *, actions=None, identity=None) -> APIRouter:
     router = APIRouter(prefix="/api/recovery", tags=["recovery"],
                       dependencies=[Depends(project_record_context_parameter)])
     control = RecoveryPolicyControl(service)
@@ -49,6 +59,8 @@ def build_recovery_router(service: RecoveryService, projects=None) -> APIRouter:
         return actor
 
     def error(exc: Exception) -> HTTPException:
+        if isinstance(exc, AuthenticationError):
+            return HTTPException(status_code=401, detail='Current operator authentication required')
         if isinstance(exc, RecoveryConflictError):
             return HTTPException(status_code=409, detail=str(exc))
         if isinstance(exc, RecoveryError):
@@ -63,7 +75,7 @@ def build_recovery_router(service: RecoveryService, projects=None) -> APIRouter:
         state = service.store.load()
         try:
             control.require_scope(state, actor)
-        except (RecoveryError, AuthorizationError, CryptoKeyError) as exc:
+        except (RecoveryError, IdentityError, CryptoKeyError) as exc:
             raise error(exc) from exc
         try:
             admin(request)
@@ -136,6 +148,7 @@ def build_recovery_router(service: RecoveryService, projects=None) -> APIRouter:
                 "reconciliation_action": "recovery.scheduled-firing.reconcile",
                 "reconciliation_availability": "Not reported here; inspect admitted canonical provider binding and current authority. Source declaration grants no execution permission.",
                 "local_executor": service._scheduled_executor.status(),
+                "operator_control": actions.describe(actor) if actions else {'registered': False, 'bindings': []},
             },
             "backups": backups,
             "verifications": verifications,
@@ -148,8 +161,41 @@ def build_recovery_router(service: RecoveryService, projects=None) -> APIRouter:
         from codex_web.services.recovery_reconciliation import RecoveryReconciliationService
         actor = admin(request)
         try:
+            if actions is not None and identity is not None:
+                with actions.request_context(lambda: revalidate_request_actor(request, identity)):
+                    return actions.provider.reconcile.preview(event_id, actor=actor)
             return RecoveryReconciliationService(service, lambda identity: admin(request)).preview(event_id,actor=actor)
-        except (RecoveryError, AuthorizationError, CryptoKeyError) as exc:
+        except (RecoveryError, IdentityError, CryptoKeyError) as exc:
+            raise error(exc) from exc
+
+    def operator_actions():
+        if actions is None or identity is None:
+            raise HTTPException(status_code=503, detail='Recovery operator integration unavailable')
+        return actions
+
+    @router.post('/scheduled-firings/{event_id}/reconcile')
+    async def reconcile_firing(event_id: str, payload: RecoveryOperatorRequest, request: Request):
+        operator = operator_actions()
+        try:
+            with operator.request_context(lambda: revalidate_request_actor(request, identity)):
+                item = await operator.submit(event_id, payload.binding_id, payload.request, actor=admin(request))
+                return {'item': item.model_dump(mode='json'),
+                        'next_action': 'Inspect canonical ActionIntent/receipt; unknown requires read-only reconciliation, never effect replay'}
+        except (ActionIntentError, ActionProviderError) as exc:
+            raise action_error(exc) from exc
+        except (RecoveryError, IdentityError, CryptoKeyError) as exc:
+            raise error(exc) from exc
+
+    @router.post('/scheduled-firings/{event_id}/reconciliation-intents/{intent_id}/observe')
+    async def observe_firing(event_id: str, intent_id: str, request: Request):
+        operator = operator_actions()
+        try:
+            with operator.request_context(lambda: revalidate_request_actor(request, identity)):
+                item = await operator.observe(event_id, intent_id, actor=admin(request))
+                return {'item': item.model_dump(mode='json')}
+        except (ActionIntentError, ActionProviderError) as exc:
+            raise action_error(exc) from exc
+        except (RecoveryError, IdentityError, CryptoKeyError) as exc:
             raise error(exc) from exc
 
     @router.put("/policy")
@@ -181,13 +227,22 @@ def build_recovery_router(service: RecoveryService, projects=None) -> APIRouter:
         except (RecoveryError, AuthorizationError, CryptoKeyError) as exc:
             raise error(exc) from exc
 
+    def manual_authenticate(request):
+        admin(request)
+        if identity is None:
+            raise HTTPException(status_code=503, detail='Current manual Recovery identity boundary unavailable')
+        return lambda: revalidate_request_actor(request, identity)
+
     @router.post("/backups")
     async def backup(request: Request) -> dict[str, Any]:
         try:
-            item = service.create_backup(actor=admin(request))
+            item = await service.run_manual(lambda actor: service.create_backup(actor=actor),
+                authenticate=manual_authenticate(request), identity=identity)
             return {"item": item.model_dump(mode="json")}
+        except (RecoveryExecutorBusy, RecoveryExecutorClosed) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
-            if isinstance(exc, (RecoveryError, AuthorizationError, CryptoKeyError)):
+            if isinstance(exc, (RecoveryError, IdentityError, CryptoKeyError)):
                 raise error(exc) from exc
             raise
 
@@ -197,14 +252,14 @@ def build_recovery_router(service: RecoveryService, projects=None) -> APIRouter:
         request: Request,
     ) -> dict[str, Any]:
         try:
-            item = service.verify_restore(
-                backup_id,
-                actor=admin(request),
-                publish_evidence=True,
-            )
+            item = await service.run_manual(lambda actor: service.verify_restore(
+                backup_id, actor=actor, publish_evidence=True),
+                authenticate=manual_authenticate(request), identity=identity)
             return {"item": item.model_dump(mode="json")}
+        except (RecoveryExecutorBusy, RecoveryExecutorClosed) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
-            if isinstance(exc, (RecoveryError, AuthorizationError, CryptoKeyError)):
+            if isinstance(exc, (RecoveryError, IdentityError, CryptoKeyError)):
                 raise error(exc) from exc
             raise
 
