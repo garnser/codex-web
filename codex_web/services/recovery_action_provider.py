@@ -3,7 +3,7 @@ import asyncio
 from codex_web.action_providers import (ACTION_PROVIDER_CONTRACT, ActionCapability,
     ActionDefinition, ActionEvidence, ActionResult, ActionVerification, ActionRiskClass)
 from codex_web.recovery import RecoveryReconcileRequest
-from codex_web.services.recovery_reconciliation import RecoveryReconciliationService, validate_proof
+from codex_web.services.recovery_reconciliation import RecoveryReconciliationService, validate_proof, fingerprint
 from codex_web.services.recovery import RecoveryConflictError
 
 
@@ -47,17 +47,48 @@ class RecoveryActionProvider:
         actor, payload = self._input(request,binding)
         from codex_web.services.recovery_reconciliation import require_operator
         require_operator(actor)
-        return {"event_id":payload.event_id,"next_action":"Execute only through current canonical intent gates"}
+        observed = await self.readback(request, binding=binding)
+        return {"operation":"recovery-scheduled-firing-reconciliation",
+            "event_id":payload.event_id,
+            "observed_result": observed.model_dump(mode="json") if observed is not None else None,
+            "next_action":"Read-only existing receipt reconciliation; otherwise execute only through current canonical intent gates"}
 
     async def execute(self, request, *, binding, credential=None):
         actor, payload = self._input(request,binding)
         record = await asyncio.to_thread(self.reconcile.reconcile,payload,actor=actor)
-        return ActionResult(provider_binding_id=binding.id,action_id=request.action_id,
+        return self._result(record, binding=binding)
+
+    @staticmethod
+    def _result(record, *, binding):
+        # Stable identity/timestamps bind every reconstruction to the ONE durable
+        # operation, including after receipt serialization/response loss.
+        return ActionResult(execution_id="recovery-action-" + record.request_sha256,
+            provider_binding_id=binding.id, action_id="recovery.scheduled-firing.reconcile",
             status="succeeded",started_at=record.reconciled_at,completed_at=record.reconciled_at,
-            idempotency_key=request.idempotency_key,external_id=record.original.event_id,
+            idempotency_key=record.idempotency_key,external_id=record.original.event_id,
             output={"record":record.model_dump(mode="json")},
-            evidence=(ActionEvidence(kind="recovery-reconciliation",external_id=record.original.event_id,
-                summary="Canonical Evidence-bound receipt; not fresh Recovery qualification"),))
+            evidence=(ActionEvidence(evidence_type="recovery-reconciliation",
+                reference=record.evidence_id, observed_at=record.reconciled_at,
+                summary="Canonical Evidence-bound custody receipt; not fresh Recovery qualification",
+                metadata={"event_id":record.original.event_id,"owner_id":record.original.owner_id,
+                    "effect_id":record.original.effect_id,"verification_id":record.verification_id,
+                    "request_sha256":record.request_sha256,"effect_outcome":record.outcome}),))
+
+    async def readback(self, request, *, binding):
+        """Observe only; no engine call, Evidence creation or original effect.
+
+        None means no durable domain receipt, NEVER proof of no execution. This
+        is not itself an ActionIntent settlement route or replay authorization.
+        """
+        actor, payload = self._input(request, binding)
+        record = await asyncio.to_thread(self.reconcile.inspect,payload.event_id,actor=actor)
+        if record is None:
+            return None
+        if record.request_sha256 != fingerprint(payload) or record.idempotency_key != request.idempotency_key:
+            raise RecoveryConflictError("Observed receipt belongs to another immutable request")
+        validate_proof(self.recovery.evidence.store.load(),record.request,record.original,
+            actor,float(self.recovery.clock()))
+        return self._result(record,binding=binding)
 
     async def verify(self, result, *, binding, credential=None):
         # Read-only settlement reconciliation: never call execute again.
@@ -73,9 +104,7 @@ class RecoveryActionProvider:
                 actor,float(self.recovery.clock()))
         except RecoveryConflictError:
             return ActionVerification(verified=False,findings=("Current disposition proof unavailable",))
-        valid = (result.status == "succeeded" and inspected == record and record.idempotency_key == result.idempotency_key
-            and result.action_id == self.actions()[0].action_id
-            and result.output.get("record") == record.model_dump(mode="json"))
+        valid = (inspected == record and result == self._result(record,binding=binding))
         return ActionVerification(verified=valid,evidence=result.evidence if valid else ())
 
     async def rollback(self, result, *, binding, credential=None):

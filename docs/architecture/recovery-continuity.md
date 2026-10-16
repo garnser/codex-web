@@ -464,3 +464,25 @@ full-state/firing/policy/schedule CAS and reconciliation. Failed proof/CAS leave
 all documents at1.2. After activation the codec refuses downgrades with retained
 records; frozen original1.2 load/update must refuse without mutation. This is a
 one-way persisted boundary, not a configuration flag or startup migration.
+
+#### Provider receipt loss (source contract; activation remains blocked)
+
+The provider uses canonical `ActionEvidence.evidence_type`, `reference` and
+scalar metadata. The reference identifies the existing canonical disposition
+Evidence; metadata binds event/owner/effect/verification/request digest. Stable
+execution identity and observed timestamps derive from the single persisted
+domain receipt. `readback` validates current actor, exact immutable request and
+independent proof, then reconstructs that typed result without invoking the
+engine, generating Evidence or executing any backup/restore/retention effect.
+`prepare` exposes the same read-only observed result if one exists. Missing
+receipt is **unknown execution**, never evidence of no effect or permission to
+retry. Verification compares the complete canonical typed result, including
+Evidence references, rather than accepting caller-altered Evidence.
+
+This does not add an installed ActionIntent no-result settlement endpoint.
+The current `ActionIntentService.reconcile` has specialized lost-result handling
+for code-host readiness/merge, not this new Recovery operation. The still-missing
+preinstall maintenance adapter must integrate read-only reconstruction through
+existing current-intent admission, verification, receipt persistence and
+settlement guards. Calling `readback` alone is not a verified ActionIntent or
+permission to execute/activate. No manual receipt/store injection is supported.

@@ -147,7 +147,7 @@ class RecoveryReconciliationTests(unittest.IsolatedAsyncioTestCase):
             RecoveryReconciliationService(self.service,lambda identity:self.actor).reconcile(payload,actor=self.actor)
 
     async def test_provider_uses_canonical_receipt_verification_without_effect_replay(self):
-        from codex_web.action_providers import ActionRequest,ActionProviderBinding
+        from codex_web.action_providers import ActionRequest,ActionProviderBinding,ActionResult,ActionEvidence
         from codex_web.services.recovery_action_provider import RecoveryActionProvider
         firing=await self.orphan(failed=True);payload=self.proof(firing)
         provider=RecoveryActionProvider(self.service,lambda identity:self.actor)
@@ -156,12 +156,47 @@ class RecoveryReconciliationTests(unittest.IsolatedAsyncioTestCase):
         request=ActionRequest(action_id="recovery.scheduled-firing.reconcile",organization_id=self.actor.organization_id,
             workspace_id=self.actor.workspace_id,requested_by=self.actor.identity_id,
             idempotency_key=payload.idempotency_key,parameters=payload.model_dump(mode="json"))
-        await provider.prepare(request,binding=binding)
-        result=await provider.execute(request,binding=binding)
-        verification=await provider.verify(result,binding=binding)
-        self.assertTrue(verification.verified)
-        self.assertEqual((await provider.execute(request,binding=binding)).external_id,result.external_id)
-        self.assertEqual(len(self.service.store.load().reconciliations),1)
+        self.assertIsNone(await provider.readback(request,binding=binding))
+        self.assertIsNone((await provider.prepare(request,binding=binding))["observed_result"])
+        original_state=self.state.get('recovery')
+        rejected=request.model_copy(update={'parameters':payload.model_copy(
+            update={'expected_firing_sha256':'0'*64}).model_dump(mode='json')})
+        with self.assertRaises(RecoveryConflictError):await provider.execute(rejected,binding=binding)
+        self.assertEqual(self.state.get('recovery'),original_state)
+        self.assertIsNone(await provider.readback(request,binding=binding))
+        # Exact failure boundary from d923: mutation commits, response builder
+        # fails. Preserve that commit and reconstruct by read-only inspection.
+        with patch.object(provider,'_result',side_effect=ValueError('fixture receipt format failure')):
+            with self.assertRaisesRegex(ValueError,'^fixture receipt format failure$'):
+                await provider.execute(request,binding=binding)
+        committed=self.state.get('recovery')
+        self.assertEqual(len(committed['reconciliations']),1)
+        evidence_before=self.evidence.store.load()
+        with (
+            patch.object(provider.reconcile,'reconcile',side_effect=AssertionError('engine replay')),
+            patch.object(self.service,'create_backup',side_effect=AssertionError('backup replay')),
+            patch.object(self.service,'verify_restore',side_effect=AssertionError('restore replay')),
+            patch.object(self.evidence,'create_evidence',side_effect=AssertionError('extra Evidence')),
+        ):
+            result=await provider.readback(request,binding=binding)
+            restored=ActionResult.model_validate_json(result.model_dump_json())
+            self.assertEqual(restored,result)
+            self.assertEqual(ActionEvidence.model_validate_json(result.evidence[0].model_dump_json()),result.evidence[0])
+            self.assertEqual(result.evidence[0].reference,payload.evidence_id)
+            self.assertEqual(result.evidence[0].metadata['effect_id'],firing.effect_id)
+            self.assertTrue((await provider.verify(restored,binding=binding)).verified)
+            self.assertEqual(await provider.readback(request,binding=binding),result)
+            self.assertEqual((await provider.prepare(request,binding=binding))['observed_result'],result.model_dump(mode='json'))
+            # Foreign payload/key must not observe this operation as its own.
+            foreign=request.model_copy(update={'idempotency_key':'foreign',
+                'parameters':payload.model_copy(update={'idempotency_key':'foreign'}).model_dump(mode='json')})
+            with self.assertRaises(RecoveryConflictError):await provider.readback(foreign,binding=binding)
+        self.assertEqual(self.state.get('recovery'),committed)
+        self.assertEqual(self.evidence.store.load(),evidence_before)
+        # Serialization-valid but altered Evidence cannot pass verification.
+        changed=result.model_copy(update={'evidence':(result.evidence[0].model_copy(update={'reference':'foreign'}),)})
+        self.assertFalse((await provider.verify(changed,binding=binding)).verified)
+        self.assertEqual(await provider.execute(request,binding=binding),result)
 
     async def test_current_operator_revocation_and_contract_downgrade_refuse(self):
         from codex_web.identity import MembershipRole
