@@ -4,6 +4,7 @@ import time
 import uuid
 import hashlib
 import json
+import contextlib
 from typing import Any, Callable
 
 from fastapi import HTTPException
@@ -42,6 +43,18 @@ class ExecutionPreflightService:
         self.clock = clock
         self.replacement_resolver = replacement_resolver
         self.event_sink = event_sink
+        self.queued_start_observer = None
+
+    def observe_queued_start(self, attempt):
+        """Project a committed native fact; metadata failure never permits replay."""
+        if self.queued_start_observer is None:
+            return
+        try:
+            self.queued_start_observer(attempt)
+        except Exception:
+            if self.event_sink is not None:
+                with contextlib.suppress(Exception):
+                    self.event_sink({'type': 'queued_native_start_projection_failed', 'attempt_id': attempt.id})
 
     @staticmethod
     def _attempt_id(execution_id: str) -> str:

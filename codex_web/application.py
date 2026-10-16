@@ -3960,6 +3960,8 @@ owner_routing_service = OwnerRoutingService(
     preflight=execution_preflight_store,
 )
 canonical_work_item_continuity_service.owner_routing = owner_routing_service
+owner_routing_service.delivery_recorder = canonical_work_item_continuity_service.record_handoff_delivery
+execution_preflight_service.queued_start_observer = owner_routing_service.project_native_start
 bot_event_dispatch_service.owner_routing_context = owner_routing_service.context_for_pin
 turn_execution_service.owner_routing_validator = owner_routing_service.validate_native
 app.state.owner_routing_service = owner_routing_service

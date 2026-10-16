@@ -336,3 +336,63 @@ class OwnerRoutingContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(accepted.handoff.to_agent, 'operator')
         self.assertEqual(accepted.handoff.owner_routing.definition.record_id, env.reference.record_id)
         self.assertEqual(accepted.implementation_owner, 'carl')
+
+    async def test_captured_late_native_fact_projects_delivery_without_ack_after_mapping_and_profile_change(self):
+        from codex_web.execution_workers import ExecutionAssignment, AssignmentLease, NetworkPolicy, WorkerResourceLimits
+        from codex_web.services.execution_preflight import ExecutionPreflightService
+        from codex_web.services.queued_native_start import QueuedNativeStartCapture, reconcile_captured_start
+        env = self.fixture.env
+        pending = env.pending()
+        pending.handoff.owner_routing = env.machine._owner_routing(pending).binding('operator')
+        pending.handoff.delivery = WorkItemHandoffDelivery()
+        env.states.put(pending.ref, pending)
+        pin = self.fixture.service.pin(pending, self.fixture.binding, 'operator')
+        original = QueuedTurn(id='native-original', execution_id='requested-native-original',
+            thread_id=self.fixture.binding.thread_id, project_id='project-a', message='Original recovery',
+            work_item_ref=pending.ref, handoff_requested_at=1, created_at=1, owner_routing_pin=pin,
+            agent_profile_id=self.fixture.profile.profile_id, agent_profile_revision=1,
+            agent_profile_actor_id=self.fixture.actor.identity_id, execution_profile_id='orchestration-only')
+        service = ExecutionPreflightService(self.fixture.preflight, clock=lambda: 3)
+        service.queued_start_observer = self.fixture.service.project_native_start
+        self.fixture.service.delivery_recorder = self.continuity.record_handoff_delivery
+        attempt = service.retain_queued(original, organization_id='org-a', workspace_id='workspace-a')
+        _, claim = service.claim_queued_admission(attempt.id)
+        service.begin_queued_start(attempt.id, claim_id=claim)
+        assignment = ExecutionAssignment(id='native-assignment', organization_id='org-a', workspace_id='workspace-a',
+            subject={'kind': 'thread_bootstrap', 'ref': 'fixture-bootstrap'}, project_id='project-a',
+            execution_id='native-bootstrap-execution', resource_ids=(), execution_contract_version='1.0',
+            required_capabilities=(), sandbox='read-only', approval_policy='on-request', network=NetworkPolicy(),
+            limits=WorkerResourceLimits(), created_by=self.fixture.actor.identity_id, assigned_worker_id='fixture-worker',
+            fence=7, execution_profile_id='orchestration-only', agent_profile=self.fixture.assignment.agent_profile,
+            lease=AssignmentLease(worker_id='fixture-worker', fence=7, lease_token='private-test-lease-never-persisted',
+                acquired_at=1, expires_at=10))
+        capture = QueuedNativeStartCapture(service, attempt.id, claim, original.execution_id,
+            original.thread_id, self.fixture.actor.identity_id).bind_assignment(assignment,
+                worker_id='fixture-worker', fence=7, validator=lambda: assignment)
+        correlation = capture.prepare(generation='fixture-generation', rpc_request_id='fixture-rpc',
+            native_session_id='fixture-native-session')
+        self.assertFalse(self.fixture.service.project_native_start(self.fixture.preflight.get(attempt.id)))
+        self.assertEqual(env.states.get(pending.ref).handoff.delivery.status, 'awaiting_dispatch')
+        env.env.publish({'operator': 'james'})
+        self.fixture.profiles.lifecycle(self.fixture.profile.profile_id, AgentProfileLifecycle.DISABLED,
+            AgentProfileLifecycleChange(reason='Private post-start revocation fixture'), actor=self.fixture.actor)
+        # Real capture/reconciliation over a synthetic exact RPC response. This
+        # establishes source attribution, never installed work or a live ACK.
+        self.assertTrue(capture.observe(correlation, generation='fixture-generation', message={
+            'id': 'fixture-rpc', 'result': {'thread': {'id': 'fixture-native-session'},
+                'turn': {'id': 'fixture-native-turn', 'threadId': 'fixture-native-session', 'status': 'inProgress'}}}))
+        delivered = env.states.get(pending.ref)
+        self.assertEqual(delivered.handoff.delivery.status, 'delivered')
+        self.assertTrue(delivered.handoff.delivery.scope_verified)
+        self.assertEqual(delivered.handoff.delivery.turn_id, 'fixture-native-turn')
+        self.assertEqual(delivered.handoff.status, 'pending')
+        self.assertIsNone(delivered.handoff.acknowledged_at)
+        saved = self.fixture.preflight.get(attempt.id)
+        reconcile_captured_start(service, attempt.id)
+        self.assertEqual(env.states.get(pending.ref), delivered)
+        self.assertEqual(self.fixture.preflight.get(attempt.id), saved)
+        bad = saved.model_copy(update={'queued_start_receipt': saved.queued_start_receipt.model_copy(
+            update={'provider_native_turn_id': 'foreign-turn'})})
+        with self.assertRaisesRegex(OwnerRoutingError, 'native_fact_mismatch'):
+            self.fixture.service.project_native_start(bad)
+        self.assertEqual(env.states.get(pending.ref), delivered)

@@ -107,6 +107,15 @@ native outcomes retain their existing reconciliation semantics and never
 authorize replay. Actual start recording uses the original bound recipient,
 not the mapping effective after the native input was sent.
 
+A committed native-start observer also projects exact late positive delivery
+after a waiter times out or an earlier metadata projection fails. It reuses the
+canonical snapshot-digest/correlation checks, exact response evidence and
+receipt, and the original immutable AgentProfile revision's role. Current alias
+or profile revocation cannot rename or erase that historical fact. The observer
+does not renew a lease, grant authority, replay input or ACK the handoff. Failed
+metadata projection leaves the native fact committed; the existing authorized
+native-evidence reconciliation can retry the idempotent projection.
+
 The existing preflight collection also maintains a derived `wi/` scope/ref index
 (projection schema `1.0`). Startup backfills old authoritative `a/` records in
 200-record pages with a resumable readiness marker; it does not rewrite their

@@ -31,6 +31,63 @@ class OwnerRoutingService:
         self.replacement_resolver = replacement_resolver
         self.update_state, self.append_event = update_state, append_event
         self.preflight = preflight
+        self.delivery_recorder = None
+
+    def project_native_start(self, attempt):
+        """Attribute an exact late positive receipt without renewing authority.
+
+        This projects historical delivery only. It cannot ACK, start a turn,
+        resume a worker, replace an intent or reinterpret the original alias.
+        """
+        from codex_web.models import QueuedTurn
+        from codex_web.services.queued_native_start import validate_attribution
+        from codex_web.services.execution_preflight import ExecutionPreflightService
+        receipt, correlation, evidence = (attempt.queued_start_receipt,
+            attempt.queued_start_correlation, attempt.queued_start_evidence)
+        if (self.delivery_recorder is None or attempt.status != 'started'
+                or receipt is None or correlation is None or evidence is None
+                or attempt.queued_turn_snapshot is None):
+            return False
+        original = QueuedTurn.model_validate(attempt.queued_turn_snapshot)
+        pin = original.owner_routing_pin
+        if pin is None or pin.handoff_requested_at is None:
+            return False
+        # Reuse the canonical original/correlation checks. The observer runs
+        # after the native receipt commit; a changed live lease is irrelevant
+        # to attribution of a proven historical start.
+        validate_attribution(ExecutionPreflightService, attempt, correlation)
+        if (receipt.admission_claim_id != correlation.admission_claim_id
+                or receipt.execution_id != correlation.execution_id
+                or receipt.requested_execution_id != correlation.requested_execution_id
+                or receipt.thread_id != correlation.thread_id
+                or receipt.provider_id != correlation.provider_id
+                or receipt.runtime_id != correlation.runtime_id
+                or receipt.observed_at != evidence.observed_at
+                or receipt.provider_native_turn_id != evidence.provider_native_turn_id
+                or receipt.provider_native_session_id != evidence.provider_native_session_id
+                or evidence.runtime_generation != correlation.runtime_generation
+                or evidence.rpc_request_id != correlation.rpc_request_id
+                or evidence.provider_native_session_id != correlation.provider_native_session_id
+                or original.work_item_ref != pin.work_item_ref
+                or original.handoff_requested_at != pin.handoff_requested_at
+                or (attempt.organization_id, attempt.workspace_id, attempt.project_id)
+                != (pin.binding.organization_id, pin.binding.workspace_id, pin.binding.project_id)
+                or correlation.actor_identity_id != original.agent_profile_actor_id):
+            raise OwnerRoutingError('owner_routing_native_fact_mismatch')
+        profile = self.profiles.store.revision(original.agent_profile_id, original.agent_profile_revision,
+            organization_id=attempt.organization_id, workspace_id=attempt.workspace_id)
+        if profile is None or profile.role_id != pin.binding.canonical_owner:
+            raise OwnerRoutingError('owner_routing_native_profile_unverified')
+        return self.delivery_recorder(pin.work_item_ref,
+            expected_requested_at=pin.handoff_requested_at, recipient=profile.role_id,
+            organization_id=attempt.organization_id, workspace_id=attempt.workspace_id,
+            project_id=attempt.project_id, thread_id=receipt.thread_id,
+            turn_id=receipt.provider_native_turn_id, execution_id=receipt.execution_id,
+            started_at=receipt.observed_at, execution_profile_id=correlation.execution_profile_id,
+            repository_resource_id=correlation.repository_resource_id,
+            writable_repository_resource_ids=correlation.writable_repository_resource_ids,
+            read_only_repository_resource_ids=correlation.read_only_repository_resource_ids,
+            owner_routing_pin=pin)
 
     def require_resolved_originals(self, state, *, excluding_attempt_id=None, pin=None):
         if self.preflight is None:
