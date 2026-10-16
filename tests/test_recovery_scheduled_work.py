@@ -96,7 +96,7 @@ class ScheduledRecoveryWorkTests(unittest.IsolatedAsyncioTestCase):
                        if item.trigger_type == self.service.VERIFY_TRIGGER)
         self.assertEqual(state.verifications[receipt.effect_id].status.value, "pass")
         self.assertEqual(state.scheduled_firings[receipt.event_id].status, "succeeded")
-        self.assertEqual(len(self.evidence.items), 1)
+        self.assertEqual(len(self.evidence.list_evidence(actor=self.actor)), 1)
 
     async def test_cancelled_observers_do_not_release_custody_or_duplicate_actual_backup(self):
         destination = self.service.destinations['local']
@@ -234,11 +234,12 @@ class ScheduledRecoveryWorkTests(unittest.IsolatedAsyncioTestCase):
             receipt = next(item for item in state.scheduled_firings.values()
                            if item.trigger_type == self.service.VERIFY_TRIGGER)
             await self.service._handle_schedule_event(self.bus.store.event(receipt.event_id))
-        self.assertEqual(len(self.evidence.items), 1)
-        self.assertFalse(self.service.store.load().verifications)
-        self.assertEqual(receipt.status, 'unknown')
-        self.assertEqual(self.evidence.items[0].payload.metadata['verification_id'], receipt.effect_id)
-        self.assertEqual(self.evidence.items[0].payload.metadata['canonical_event_id'], receipt.event_id)
+        self.assertEqual(len(self.evidence.list_evidence(actor=self.actor)), 1)
+        self.assertEqual(self.service.store.load().verifications[receipt.effect_id].evidence_id,
+                         self.evidence.list_evidence(actor=self.actor)[0].id)
+        self.assertEqual(receipt.status, 'succeeded')
+        self.assertEqual(self.evidence.list_evidence(actor=self.actor)[0].metadata['verification_id'], receipt.effect_id)
+        self.assertEqual(self.evidence.list_evidence(actor=self.actor)[0].metadata['canonical_event_id'], receipt.event_id)
 
     async def test_pausing_current_schedule_during_verification_prevents_evidence_and_success(self):
         self.service.create_backup(actor=self.actor)
@@ -255,7 +256,7 @@ class ScheduledRecoveryWorkTests(unittest.IsolatedAsyncioTestCase):
                 release.set()
                 with self.assertRaises(RecoveryConflictError):
                     await work
-        self.assertFalse(self.evidence.items)
+        self.assertFalse(self.evidence.list_evidence(actor=self.actor))
         state = self.service.store.load()
         self.assertFalse(state.verifications)
         receipt = next(item for item in state.scheduled_firings.values()
@@ -292,7 +293,7 @@ class ScheduledRecoveryWorkTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(verification.done())
                 # Verification has an owned queued future, but cannot perform
                 # effects while the backup still owns the sole worker thread.
-                self.assertFalse(self.evidence.items)
+                self.assertFalse(self.evidence.list_evidence(actor=self.actor))
             finally:
                 release.set()
                 outcomes = await asyncio.gather(backup, *([verification] if verification else []),
@@ -300,6 +301,6 @@ class ScheduledRecoveryWorkTests(unittest.IsolatedAsyncioTestCase):
         state = self.service.store.load()
         self.assertEqual(len(state.scheduled_firings), 2)
         self.assertTrue(all(item.status == 'succeeded' for item in state.scheduled_firings.values()))
-        self.assertEqual(len(self.evidence.items), 1)
+        self.assertEqual(len(self.evidence.list_evidence(actor=self.actor)), 1)
         self.assertEqual(len(state.verifications), 1)
         self.assertIsNone(executor._pool)

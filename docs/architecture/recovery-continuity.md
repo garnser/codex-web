@@ -325,3 +325,10 @@ Evidence preparation does not publish PASS. A committed success survives a lost
 observer response; an admission conflict leaves the firing unknown without replay.
 Existing Recovery/Evidence surfaces retain the canonical evidence/verification IDs
 and denied or unknown outcome; no separate dashboard or authority is introduced.
+
+Canonical KeyUsage retirement checks include every backup manifest key/version in
+the shared Key/Recovery transaction. Auxiliary-key and non-current-version
+revocations are refused while such consumers remain; this is positive protection,
+not an executed revocation attack. Final frozen-requirement validation remains
+defense in depth. Policy/schedule admission is independently rechecked at the
+Evidence/verification success transaction.

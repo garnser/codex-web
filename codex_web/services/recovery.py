@@ -584,6 +584,7 @@ class RecoveryService:
         def commit_evidence(apply):
             nonlocal verification
             def prepare(current):
+                nonlocal verification
                 updated = apply(current)
                 verification = verification.model_copy(update={"evidence_id": updated.evidence[-1].id})
                 return updated
