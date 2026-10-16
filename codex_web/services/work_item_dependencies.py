@@ -68,6 +68,7 @@ class WorkItemRuntimeDependencies:
     save_state: Callable[[WorkItemState], None] | None = None
     update_state: Callable[[str, Callable], WorkItemState | None] | None = None
     get_states: Callable[[tuple[str, ...]], Mapping[str, WorkItemState]] | None = None
+    owner_routing: Callable[[WorkItemState], Any] | None = None
 
     def project_tenant(self, project_id: str) -> tuple[str, str]:
         for project in self.load_projects():

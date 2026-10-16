@@ -160,8 +160,7 @@ class WorkItemContractService:
             "workspace_id": state.workspace_id,
             "project_id": state.project_id,
         }
-        catalog = self.execution_roles.catalog(**context)
-        definition_ref = self.execution_roles.reference(**context)
+        catalog, definition_ref = self.execution_roles.resolve_catalog(**context)
         role = execution_role_for_work_item(
             state,
             split_brain=bool(findings),
@@ -304,7 +303,11 @@ class WorkItemContractService:
             "current owner with the catalogued `work_item.steer` operation. Supply the canonical expected owner and "
             "owner-thread ID plus a bounded idempotency key; never call arbitrary `/api/threads` mutations. Active, "
             "queued, stale-owner, stale-thread, cross-Project, and duplicate requests return explicit outcomes or "
-            "denials.\n\n"
+            "denials. For a configured coordination owner alias, also supply the exact `expected_definition` "
+            "from `owner_dispatch`. The alias selects a role reference and grants no identity or capability. "
+            "An aliased handoff ACK requires its exact `expected_handoff_requested_at`, original bound "
+            "recipient and scope-verified actual native delivery. Do not infer delivery from queue admission "
+            "or rewrite historical recipient evidence after a mapping changes.\n\n"
             f"{execution_contract_prompt(role, catalog=catalog)}"
         )
 

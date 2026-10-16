@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-const fixture = "http://127.0.0.1:18766/tests/browser/fixtures/work-items-ui.html";
+const fixture = `http://127.0.0.1:${process.env.CODEX_WEB_TEST_PORT || '18766'}/tests/browser/fixtures/work-items-ui.html`;
 
 function workItems(count, offset = 0) {
   return Array.from({ length: count }, (_, index) => {
@@ -63,6 +63,39 @@ async function installCommonRoutes(page) {
     });
   });
 }
+
+test('owner routing inspector separates current alias from original recipient and escapes stored text', async ({ page }) => {
+  await installCommonRoutes(page);
+  const item = { ...workItems(1)[0], current_owner: 'operator', next_owner: 'operator',
+    artifact_state: 'branch', execution: {}, owner_routing: {
+      configured_owner: 'operator', canonical_owner: 'orchestrator', alias_applied: true,
+      status: 'aliased', organization_id: 'org-a', workspace_id: 'workspace-a', project_id: 'project-a',
+      definition: { definition_id: 'execution-roles.default', revision: 8, record_id: 'current-definition' },
+    }, owner_routing_blocker: { code: 'owner_executor_profile_unavailable' }, handoff: {
+      from_agent: 'carl', to_agent: 'operator', status: 'accepted',
+      owner_routing: { canonical_owner: 'original-recipient', definition: { record_id: 'original-definition' } },
+    } };
+  await page.route('**/api/work-items?**', route => route.fulfill({ json: { items: [item], hasMore: false } }));
+  await page.route('**/api/work-items/**/operator?*', route => route.fulfill({ json: {
+    item, history: { items: [] }, actions: {}, diagnostics: [], execution_contract: {}, external: {},
+    owner_dispatch: { blocked_reason: 'owner_executor_profile_unavailable',
+      agent_profile_id: '<img src=x onerror="window.ownerRoutingInjected=true">', agent_profile_revision: 3,
+      configured_execution_profile_id: 'orchestration-only', next_action: 'Inspect current profile and binding' },
+  } }));
+  await page.goto(fixture);
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
+  await page.locator('.work-item-row').first().click();
+  const inspector = page.getByRole('region', { name: 'Coordination owner routing' });
+  await expect(inspector).toContainText('operator');
+  await expect(inspector).toContainText('orchestrator');
+  await expect(inspector).toContainText('original-recipient');
+  await expect(inspector).toContainText('original-definition');
+  await expect(inspector).toContainText('current-definition');
+  await expect(inspector).toContainText('owner_executor_profile_unavailable');
+  await expect(inspector).toContainText('Inspect current profile and binding');
+  await expect(inspector.locator('img')).toHaveCount(0);
+  expect(await page.evaluate(() => window.ownerRoutingInjected)).toBeUndefined();
+});
 
 test("opens in current Project and pages without rendering the full collection", async ({ page }) => {
   await installCommonRoutes(page);

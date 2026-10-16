@@ -900,6 +900,15 @@ class TurnService:
         thread_id: str,
         queued: QueuedTurn,
     ) -> dict[str, Any]:
+        if queued.owner_routing_pin is not None:
+            # Direct steering has no retained native-admission claim. Preserve
+            # the complete original for the guarded owned drain instead of
+            # rebuilding an unpinned request or interrupting another turn.
+            self.execution.requeue_turn_front(queued)
+            raise HTTPException(status_code=409, detail={
+                'code': 'owner_routing_guarded_queue_required', 'queuePreserved': True,
+                'message': 'This owner-bound request must start through its retained queue admission.',
+                'retryable': False})
         if self.preflight is not None and hasattr(self.preflight, 'retained_queued'):
             retained = self.preflight.retained_queued(queued)
             if retained is not None and retained.status != 'queued':

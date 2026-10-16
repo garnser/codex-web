@@ -435,6 +435,27 @@ function renderDetail(payload) {
           recipient_execution_profile: item.handoff?.delivery?.execution_profile_id,
           handoff_deadline: state.detailPayload?.handoff_deadline ? `${state.detailPayload.handoff_deadline.kind}: ${fmtTime(state.detailPayload.handoff_deadline.deadline_at)} (${state.detailPayload.handoff_deadline.clock_source})` : '—',
         })}</div>
+        ${item.owner_routing?.alias_applied || item.owner_routing?.status === 'blocked' || item.owner_routing_blocker || item.handoff?.owner_routing ? `
+          <section aria-label="Coordination owner routing">
+            <h5>Coordination owner routing</h5>
+            <div class="work-kv">${keyValueRows({
+              configured_owner: item.owner_routing?.configured_owner,
+              canonical_role: item.owner_routing?.canonical_owner,
+              routing_status: item.owner_routing_blocker?.code || item.owner_routing?.reason || item.owner_routing?.status,
+              dispatch_blocker: state.detailPayload?.owner_dispatch?.blocked_reason,
+              scope: [item.owner_routing?.organization_id, item.owner_routing?.workspace_id, item.owner_routing?.project_id].filter(Boolean).join(' / '),
+              definition: item.owner_routing?.definition ? `${item.owner_routing.definition.definition_id}@${item.owner_routing.definition.revision}` : 'unavailable',
+              definition_record: item.owner_routing?.definition?.record_id,
+              agent_profile: state.detailPayload?.owner_dispatch?.agent_profile_id,
+              agent_profile_revision: state.detailPayload?.owner_dispatch?.agent_profile_revision,
+              configured_execution_profile: state.detailPayload?.owner_dispatch?.configured_execution_profile_id,
+              dispatch_thread: state.detailPayload?.owner_dispatch?.expected_thread_id,
+              original_handoff_recipient: item.handoff?.owner_routing?.canonical_owner,
+              original_handoff_definition: item.handoff?.owner_routing?.definition?.record_id,
+              repair_action: state.detailPayload?.owner_dispatch?.next_action,
+            })}</div>
+            <p>Owner aliases select coordination roles. Actual identity, permissions and admitted scope come from the existing executor. Historical handoff recipients retain their original definition.</p>
+          </section>` : ''}
       </section>
       <section class="work-detail-card external-card">
         <h4>Authoritative external source</h4>

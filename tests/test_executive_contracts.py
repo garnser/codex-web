@@ -33,6 +33,9 @@ install_execution_role_catalog_provider(lambda: CATALOG)
 
 
 class _ExecutionRoles:
+    def resolve_catalog(self, **kwargs):
+        return CATALOG, DEFINITION_REF
+
     def catalog(self, **kwargs):
         return CATALOG
 

@@ -277,6 +277,28 @@ def _admin_actor() -> AuthenticationActor:
 
 
 class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_alias_pinned_queue_steering_preserves_original_and_requires_guarded_drain(self):
+        from codex_web.owner_routing import OwnerRoutingPin
+        service, queue, execution, events, _settings = self._service()
+        queued = queue.queued[0]
+        queued.owner_routing_pin = OwnerRoutingPin(binding={
+            'organization_id': 'local', 'workspace_id': 'default', 'project_id': 'home',
+            'configured_owner': 'operator', 'canonical_owner': 'orchestrator',
+            'definition': {'definition_id': 'execution-roles.default', 'kind': 'execution-role-catalog',
+                'revision': 2, 'record_id': 'private-definition', 'checksum': 'a'*64,
+                'definition_schema_version': '1.0'}},
+            work_item_ref='acme/widgets#1', stage='implementation_active', retry_attempt=0,
+            bot_binding_id='existing-binding', original_thread_id='thread-1')
+        original = queued.model_dump(mode='json')
+        with self.assertRaises(HTTPException) as caught:
+            await service.steer('thread-1', queued.id)
+        self.assertEqual(caught.exception.detail['code'], 'owner_routing_guarded_queue_required')
+        self.assertTrue(caught.exception.detail['queuePreserved'])
+        self.assertEqual([item.model_dump(mode='json') for item in queue.queued], [original])
+        self.assertFalse(execution.start_calls)
+        self.assertFalse(execution.handoffs)
+        self.assertTrue(execution.active)
+
     def _service(self):
         queue = _QueuePolicy()
         execution = _Execution(queue)

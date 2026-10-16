@@ -51,6 +51,97 @@ recipient's published execution profile still controls repository access; a
 scratch-only coordinator receives task identity without repository grants.
 Queue admission does not acknowledge the handoff on the recipient's behalf.
 
+### Project-scoped coordination owner references
+
+The existing `execution-roles.default` / `execution-role-catalog` Definition
+Registry schema `1.0` owns mutable `owner_to_execution_role` mappings. A direct
+Project-scoped mapping from a legacy owner label to an active coordination role
+may resolve that label for routing. The target must map to itself. Canonical
+role names, claimed implementation/validation/release owners, chained mappings,
+cycles and conflicting normalized names cannot be aliased. Global mappings do
+not activate coordination aliases. Canonical Project scope is attested before
+using an alias, and each operation reads a fresh effective definition record.
+There is no hard-coded Operator identity, new Operator profile, seeded alias or
+installed configuration change. Authenticated principals and authority roles
+are never passed through owner-reference normalization.
+
+Intake retains original provider labels and owner fields. Unknown/unavailable
+routing cannot infer implementation claims. Reads explain the configured label,
+effective canonical role, scope and exact definition without changing receipts.
+An alias selects only an existing exact-role, same-Project bot binding; it cannot
+clone a binding, use fuzzy thread names, or select the first similarly named
+profile. The thread's canonical bootstrap assignment supplies the actual actor
+and Agent Profile. Current profile lifecycle/access, exact revision, role and
+tenant must qualify; absent or changed provenance is an explicit blocker.
+ExecutionProfile, RoleAuthority, resource, SecretBroker and live worker
+lease/fence checks remain the authority for actual execution and actions.
+The execution-role catalog's default execution profile is not an authorization
+grant or a substitute for the actual published Agent Profile override.
+
+New aliased handoffs retain an immutable `owner_routing` binding, schema `1.0`,
+with configured and canonical recipients, tenant/Project and exact Definition
+reference. An ACK must name the actual canonical actor, identify the exact
+`expected_handoff_requested_at`, and have qualified actual native delivery.
+Queue admission, a current alias or an old delivery without the original binding
+cannot prove an alias ACK. Historical accepted recipients retain their original
+binding even when the current mapping changes or disappears. Legacy accepted
+handoffs retain their original raw recipient; a new mapping cannot retrofit an
+old receipt. Existing unbound pending aliases require a governed new intent,
+not automatic reinterpretation of potentially started work.
+
+An aliased dispatch retains an `owner_routing_pin`, schema `1.0`, on the existing
+QueuedTurn. It identifies that binding, Work Item, stage/retry/handoff generation,
+original bot binding and thread. Existing queue fields retain exact actor,
+AgentProfile revision, reply target and admitted repository scope; the pin adds
+no grants or credentials. Pinned originals cannot be compacted with wakeups,
+deduplicated by text alone or batched as provider notifications. They enter the
+ordinary retained preflight/owned queue drain, including idle-thread dispatch.
+Direct queue steering preserves a pinned original and returns
+`owner_routing_guarded_queue_required` before interrupting or starting a turn;
+that path has no retained native-start claim and cannot reconstruct the request.
+Current definition, owner, generation, binding/profile and verified replacement
+lineage are checked after awaited recovery and again under the native writer
+lock. Unsupported guarded transports refuse before input. Authoritative
+pre-input refusals retain the original for inspection; unknown or positive
+native outcomes retain their existing reconciliation semantics and never
+authorize replay. Actual start recording uses the original bound recipient,
+not the mapping effective after the native input was sent.
+
+The existing preflight collection also maintains a derived `wi/` scope/ref index
+(projection schema `1.0`). Startup backfills old authoritative `a/` records in
+200-record pages with a resumable readiness marker; it does not rewrite their
+snapshots or outcomes. Current writers commit index entries before queue removal
+or native start. Alias admission requires a ready index and a complete bounded
+200-entry lookup, then rechecks authoritative records. Any unresolved original
+for the same tenant/Project/Work Item blocks a fresh alias dispatch, including an
+old unpinned original on another thread. Scheduling retirement does not settle a
+native outcome. At native admission only the exact current pinned reservation
+can be excluded; its own claim/fence still crosses the ordinary guarded send.
+Unavailable or truncated lookup fails visibly. This index is not a new queue,
+permission store or outcome authority, and requires the same writer drain.
+
+The optional WorkItem `owner_routing_blocker`, schema `1.0`, records one current
+configuration denial without overwriting execution failures, lane claims or
+substantive prerequisites. Repeated identical denials add no routing-failure
+events or native requests. A qualifying queued dispatch clears it only while
+its original intent is still current. Reads remain observations, not grants;
+alias steering additionally requires the exact `expected_definition` from the
+current `owner_dispatch` projection. The existing Work Item inspector shows
+current routing, actual profile selection, denial/repair and historical binding.
+
+Absent bindings, pins and blockers are omitted during serialization, preserving
+legacy shapes and retained snapshot hashes. New readers accept old rows; nested
+unknown routing schema versions/fields fail visibly. The turn queue itself has
+no version envelope and old queue/Work Item readers may ignore these optional
+fields. Mixed writers are therefore unsupported after the first routing-field
+write. Before activation, stop and drain **all** Work Item, queue, preflight and
+native-admission writers, take and verify a canonical backup, install compatible
+readers/writers everywhere and qualify retained originals before resuming.
+Source-only rollback is supported only before the first routing binding, pin or
+blocker write; afterwards it requires a qualified backup restore plus native
+outcome reconciliation. Deleting pins or draining descriptors is not a rollback
+proof. Source tests do not establish installed original-work delivery or ACK.
+
 Archiving intake preserves its original `acknowledged_at`: unacknowledged
 pending intake remains unset, and accepted/rejected intake keeps the actual
 recipient receipt time. Expiry, supersession and closure use their attributed

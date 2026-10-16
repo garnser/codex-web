@@ -51,6 +51,7 @@ class WorkItemOwnerDispatchRequest(BaseModel):
 
     expected_owner: str = Field(min_length=1, max_length=200)
     expected_thread_id: str = Field(min_length=1, max_length=200)
+    expected_definition: DefinitionReference | None = None
     idempotency_key: str = Field(
         min_length=1,
         max_length=128,

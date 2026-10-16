@@ -5,6 +5,7 @@ import time
 from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 from typing import Any
+from functools import wraps
 
 from fastapi import HTTPException
 
@@ -12,6 +13,19 @@ from codex_web.models import WorkItemState, WorkItemHandoffDelivery
 from codex_web.services.work_item_dependencies import actionable_owner_value, work_item_repository_scope
 from codex_web.services.keyed_background_tasks import KeyedTaskCoordinator
 from codex_web.services.runtime_policy import RuntimePolicy
+from codex_web.owner_routing import OwnerRoutingError
+
+
+def _routing_dispatch(method):
+    @wraps(method)
+    async def dispatch(self, state, *args, **kwargs):
+        try:
+            return await method(self, state, *args, **kwargs)
+        except OwnerRoutingError as exc:
+            if self.owner_routing is not None:
+                self.owner_routing.record_failure(state, exc)
+            return {'status': 'owner_routing_blocked', 'code': str(exc), 'dispatched': False}
+    return dispatch
 
 
 class DeferredWorkItemContinuityService:
@@ -81,6 +95,7 @@ class DeferredWorkItemContinuityService:
         idempotency_key: str,
         actor: str,
         source: str,
+        expected_definition=None,
     ) -> dict[str, Any]:
         return await self._require().steer_actionable_owner(
             state,
@@ -89,6 +104,7 @@ class DeferredWorkItemContinuityService:
             idempotency_key=idempotency_key,
             actor=actor,
             source=source,
+            **({'expected_definition': expected_definition} if expected_definition is not None else {}),
         )
 
     def schedule_actionable_owner_continuity_check(
@@ -135,6 +151,7 @@ class WorkItemContinuityService:
         update_state: Callable[..., Any] | None = None,
     ) -> None:
         self.policy = policy
+        self.owner_routing = None
         self.update_state = update_state
         self.get_state = get_state
         self.coerce_owner = coerce_owner
@@ -233,21 +250,43 @@ class WorkItemContinuityService:
         }
 
     def responsible_binding(self, state: WorkItemState) -> Any | None:
-        owner = self.coerce_owner(actionable_owner_value(state))
+        configured = actionable_owner_value(state)
+        owner = self._routed_owner(state, configured)
         if not owner or not state.project_id:
             return None
+        if self._alias_intent(state, configured) is not None:
+            self.owner_routing.require_resolved_originals(state)
+            binding = self.owner_routing.existing_binding(state, owner,
+                preferred_conversation_id=self.coordination_channel)
+            self.owner_routing.executor(state, binding, owner)
+            return binding
         return self.binding_for_agent(
             owner,
             state.project_id,
             preferred_conversation_id=self.coordination_channel,
         )
 
+    def _alias_intent(self, state, value):
+        routing = self.owner_routing.snapshot(state) if self.owner_routing is not None else None
+        return routing.binding(value) if routing is not None else None
+
+    def _routed_owner(self, state, value):
+        routing = self.owner_routing.snapshot(state) if self.owner_routing is not None else None
+        owner = routing.owner(value) if routing is not None else self.coerce_owner(value)
+        if routing is not None and owner is not None and owner not in routing.known_owners:
+            raise OwnerRoutingError('owner_routing_owner_unmapped')
+        return owner
+
     def _owner_dispatch_resolution(
         self,
         state: WorkItemState,
     ) -> tuple[str | None, Any | None, str | None]:
         """Resolve the bounded owner binding shared by reads and steering."""
-        owner = self.coerce_owner(actionable_owner_value(state))
+        from codex_web.owner_routing import OwnerRoutingError
+        try:
+            owner = self._routed_owner(state, actionable_owner_value(state))
+        except OwnerRoutingError as exc:
+            return self.coerce_owner(actionable_owner_value(state)), None, str(exc)
         if state.current_stage == "closed" or state.closed_at:
             return owner, None, "work_item_closed"
         if not self.actionable_owner_stage(state.current_stage):
@@ -256,7 +295,10 @@ class WorkItemContinuityService:
             return owner, None, "work_item_handoff_pending"
         if not owner:
             return None, None, "work_item_owner_unavailable"
-        binding = self.responsible_binding(state)
+        try:
+            binding = self.responsible_binding(state)
+        except OwnerRoutingError as exc:
+            return owner, None, str(exc)
         if binding is None or not str(getattr(binding, "thread_id", "")).strip():
             return owner, None, "work_item_owner_binding_unavailable"
         if getattr(binding, "project_id", None) != state.project_id:
@@ -271,6 +313,7 @@ class WorkItemContinuityService:
         repository_resource_id: str | None = None,
         writable_repository_resource_ids: tuple[str, ...] = (),
         read_only_repository_resource_ids: tuple[str, ...] = (),
+        owner_routing_pin=None,
     ) -> bool:
         """Record a successful native start, never a queue/unknown-start receipt."""
         if self.update_state is None or not all((thread_id, turn_id, execution_id, execution_profile_id)):
@@ -290,13 +333,25 @@ class WorkItemContinuityService:
                 or current.project_id != project_id or handoff is None
                 or handoff.status != "pending" or handoff.requested_at != expected_requested_at
                 or handoff.delivery is None
-                or self.coerce_owner(handoff.to_agent) != self.coerce_owner(recipient)
+                or (handoff.owner_routing is None and self.coerce_owner(handoff.to_agent) != self.coerce_owner(recipient))
                 or started_at < handoff.requested_at
                 or (handoff.delivery is not None and handoff.delivery.status == "delivered")
             ):
                 return current
+            if handoff.owner_routing is not None:
+                intent = handoff.owner_routing
+                if (owner_routing_pin is None or owner_routing_pin.binding != intent
+                        or owner_routing_pin.work_item_ref != ref
+                        or owner_routing_pin.handoff_requested_at != expected_requested_at
+                        or intent.canonical_owner != self.coerce_owner(recipient)
+                        or intent.configured_owner != self.coerce_owner(handoff.to_agent)
+                        or (intent.organization_id, intent.workspace_id, intent.project_id)
+                        != (organization_id, workspace_id, project_id)):
+                    return current
+            elif owner_routing_pin is not None:
+                return current
             expected_primary, expected_writable = self._dispatch_repository_scope(current)
-            if execution_profile_id == "orchestration-only":
+            if execution_profile_id in {"orchestration-only", "orchestration-admin"}:
                 # The broker's coordination profile grants no repository scope.
                 scope_matches = not (
                     repository_resource_id or writable_repository_resource_ids
@@ -345,18 +400,38 @@ class WorkItemContinuityService:
     def owner_dispatch_projection(self, state: WorkItemState) -> dict[str, Any]:
         """Expose only a currently eligible exact owner/thread pair."""
         owner, binding, blocked_reason = self._owner_dispatch_resolution(state)
+        metadata = {}
+        if self.owner_routing is not None:
+            try:
+                intent = self._alias_intent(state, actionable_owner_value(state))
+                if intent is not None:
+                    metadata = {'expected_definition': intent.definition.model_dump(mode='json'),
+                        'owner_routing': intent.model_dump(mode='json'),
+                        'next_action': 'Inspect the existing canonical binding, bootstrap and Agent Profile; repair configuration before retrying.'}
+                    if blocked_reason == 'owner_routing_native_outcome_unresolved':
+                        metadata['next_action'] = 'Inspect and reconcile the retained original native outcome before dispatching this Work Item again.'
+                    if binding is not None:
+                        profile, _ = self.owner_routing.executor(state, binding, intent.canonical_owner)
+                        metadata.update({'agent_profile_id': profile.profile_id,
+                            'agent_profile_revision': profile.revision,
+                            'configured_execution_profile_id': profile.execution_profile_id,
+                            'bot_binding_id': binding.id})
+            except OwnerRoutingError as exc:
+                blocked_reason, binding = str(exc), None
         if blocked_reason is not None or binding is None:
             return {
                 "eligible": False,
                 "blocked_reason": blocked_reason,
                 "expected_owner": None,
                 "expected_thread_id": None,
+                **metadata,
             }
         return {
             "eligible": True,
             "blocked_reason": None,
             "expected_owner": owner,
             "expected_thread_id": binding.thread_id,
+            **metadata,
         }
 
     @staticmethod
@@ -365,6 +440,7 @@ class WorkItemContinuityService:
     ) -> tuple[str | None, tuple[str, ...]]:
         return work_item_repository_scope(state)
 
+    @_routing_dispatch
     async def dispatch_structured_handoff(
         self,
         state: WorkItemState,
@@ -374,14 +450,14 @@ class WorkItemContinuityService:
         handoff = state.handoff
         if not state.project_id or not handoff or handoff.status != "pending":
             return
-        recipient = self.coerce_owner(handoff.to_agent)
+        recipient = self._routed_owner(state, handoff.to_agent)
         if not recipient:
             return
-        binding = self.binding_for_agent(
-            recipient,
-            state.project_id,
-            preferred_conversation_id=self.coordination_channel,
-        )
+        intent = self._alias_intent(state, handoff.to_agent)
+        binding = (self.owner_routing.existing_binding(state, recipient,
+            preferred_conversation_id=self.coordination_channel) if intent is not None else
+            self.binding_for_agent(recipient, state.project_id,
+                preferred_conversation_id=self.coordination_channel))
         if not binding:
             self.append_event(
                 {
@@ -393,15 +469,18 @@ class WorkItemContinuityService:
                 }
             )
             return
+        pin = self.owner_routing.pin(state, binding, handoff.to_agent) if intent is not None else None
         binding = await self.replace_nonperforming_thread(binding, source)
-        if self.revalidate_after_thread_replacement:
+        if pin is not None:
+            self.owner_routing.context_for_pin(pin, binding)
+        if self.revalidate_after_thread_replacement or pin is not None:
             try:
                 latest = self.get_state(state.ref)
             except HTTPException:
                 return
             latest_handoff = latest.handoff
             latest_recipient = (
-                self.coerce_owner(latest_handoff.to_agent)
+                self._routed_owner(latest, latest_handoff.to_agent)
                 if latest_handoff
                 else None
             )
@@ -431,7 +510,10 @@ class WorkItemContinuityService:
             handoff_requested_at=handoff.requested_at,
             repository_resource_id=repository_resource_id,
             writable_repository_resource_ids=writable_repository_resource_ids,
+            **({'owner_routing_pin': pin} if pin is not None else {}),
         )
+        if pin is not None and result.get('queued'):
+            self.owner_routing.clear_failure(pin)
         self.append_event(
             {
                 "type": "work_item_handoff_dispatched",
@@ -539,11 +621,13 @@ class WorkItemContinuityService:
             return
         if not state.project_id or not recipient:
             return
-        binding = self.binding_for_agent(
-            recipient,
-            state.project_id,
-            preferred_conversation_id=self.coordination_channel,
-        )
+        intent = self._alias_intent(state, handoff.to_agent)
+        if intent is not None:
+            recipient = intent.canonical_owner
+        binding = (self.owner_routing.existing_binding(state, recipient,
+            preferred_conversation_id=self.coordination_channel) if intent is not None else
+            self.binding_for_agent(recipient, state.project_id,
+                preferred_conversation_id=self.coordination_channel))
         if not binding:
             return
         if (
@@ -551,6 +635,11 @@ class WorkItemContinuityService:
             or self.thread_queue_depth(binding.thread_id)
             or self.thread_recently_active(binding.thread_id)
         ):
+            return
+        if self._alias_intent(state, handoff.to_agent) is not None:
+            # Share capture/revalidation and retained native admission with the
+            # original dispatch; continuity cannot send an unpinned alias.
+            await self.dispatch_structured_handoff(state, source=source)
             return
         binding = await self.replace_nonperforming_thread(binding, source)
         dispatch_key = (
@@ -627,6 +716,7 @@ class WorkItemContinuityService:
         task = asyncio.create_task(run())
         self.handoff_tasks[state.ref] = task
 
+    @_routing_dispatch
     async def dispatch_actionable_owner(
         self,
         state: WorkItemState,
@@ -640,12 +730,14 @@ class WorkItemContinuityService:
             return {"status": "not_actionable", "dispatched": False}
         if state.handoff and state.handoff.status == "pending":
             return {"status": "handoff_pending", "dispatched": False}
-        owner = self.coerce_owner(actionable_owner_value(state))
+        owner = self._routed_owner(state, actionable_owner_value(state))
         if not owner or self.coerce_owner(actor) == owner:
             return {"status": "owner_unavailable", "dispatched": False}
         binding = self.responsible_binding(state)
         if not binding:
             return {"status": "binding_unavailable", "dispatched": False}
+        pin = (self.owner_routing.pin(state, binding, actionable_owner_value(state))
+            if self.owner_routing is not None else None)
         explicit_retry = source == 'operator-retry'
         # Capture scalars before replacement can yield: canonical state may be
         # mutated in place while this invocation is suspended.
@@ -668,7 +760,9 @@ class WorkItemContinuityService:
                 "thread_id": binding.thread_id,
             }
         binding = await self.replace_nonperforming_thread(binding, source)
-        if self.revalidate_after_thread_replacement or explicit_retry:
+        if pin is not None:
+            self.owner_routing.context_for_pin(pin, binding)
+        if self.revalidate_after_thread_replacement or explicit_retry or pin is not None:
             try:
                 latest = self.get_state(state.ref)
             except HTTPException:
@@ -680,8 +774,8 @@ class WorkItemContinuityService:
                 and latest.execution.retry.attempt != expected_retry_attempt
             ):
                 return {"status": "stale_state", "dispatched": False}
-        if self.revalidate_after_thread_replacement:
-            latest_owner = self.coerce_owner(
+        if self.revalidate_after_thread_replacement or pin is not None:
+            latest_owner = self._routed_owner(latest,
                 actionable_owner_value(latest)
             )
             if (
@@ -720,12 +814,15 @@ class WorkItemContinuityService:
             self.dispatch_text(state),
             source,
             work_item_ref=state.ref,
+            **({'owner_routing_pin': pin} if pin is not None else {}),
             repository_resource_id=repository_resource_id,
             writable_repository_resource_ids=(
                 writable_repository_resource_ids
             ),
             require_idle=not explicit_retry,
         )
+        if pin is not None and result.get('queued'):
+            self.owner_routing.clear_failure(pin)
         skipped = str(result.get("skipped") or "").strip()
         if skipped:
             self.append_event(
@@ -785,6 +882,7 @@ class WorkItemContinuityService:
         idempotency_key: str,
         actor: str,
         source: str,
+        expected_definition=None,
     ) -> dict[str, Any]:
         """Wake only the exact canonical owner binding named by the caller."""
         lock = self.owner_steer_locks.setdefault(state.ref, asyncio.Lock())
@@ -803,6 +901,7 @@ class WorkItemContinuityService:
                 idempotency_key=idempotency_key,
                 actor=actor,
                 source=source,
+                expected_definition=expected_definition,
             )
 
     async def _steer_actionable_owner_locked(
@@ -814,8 +913,13 @@ class WorkItemContinuityService:
         idempotency_key: str,
         actor: str,
         source: str,
+        expected_definition=None,
     ) -> dict[str, Any]:
-        owner = self.coerce_owner(actionable_owner_value(state))
+        owner = self._routed_owner(state, actionable_owner_value(state))
+        intent = self._alias_intent(state, actionable_owner_value(state))
+        if intent is not None and expected_definition != intent.definition:
+            raise self._steer_conflict('owner_routing_definition_changed',
+                'Read current owner dispatch and supply its exact expected_definition before steering an alias.')
         expected = self.coerce_owner(expected_owner)
         if not owner or owner != expected:
             raise self._steer_conflict(
@@ -844,7 +948,7 @@ class WorkItemContinuityService:
             }
             raise self._steer_conflict(
                 blocked_reason,
-                messages[blocked_reason],
+                messages.get(blocked_reason, 'Owner routing is blocked; inspect current binding, profile and definition.'),
             )
         assert binding is not None
         if binding.thread_id != expected_thread_id:

@@ -1028,6 +1028,29 @@ class _BootstrapBindings:
 
 
 class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
+    async def test_owner_pin_refusal_is_typed_and_precedes_any_native_input(self):
+        from codex_web.owner_routing import OwnerRoutingError
+        from codex_web.runtime.execution import ExecutionPrestartRefusal
+        for late in (False, True):
+            with self.subTest(late=late):
+                host, binding, sessions, service = self._service()
+                calls = []
+                def validate(pin, **context):
+                    calls.append(context)
+                    if not late or len(calls) > 1:
+                        raise OwnerRoutingError('owner_routing_definition_changed')
+                service.owner_routing_validator = validate
+                with self.assertRaises(ExecutionPrestartRefusal) as caught:
+                    await service.start_thread_turn_now('t1',
+                        project=Project(id='p1', name='Project', path='/workspace/project'),
+                        message='Original alias recovery', sandbox='workspace-write', approval_policy='on-request',
+                        source='owner-work-watchdog', owner_routing_pin=object(), work_item_ref='group/project#1')
+                self.assertEqual(caught.exception.detail['code'], 'owner_routing_definition_changed')
+                self.assertFalse(any(method == 'turn/start' for method, _ in sessions.session.requests))
+                self.assertFalse(service.thread_is_active('t1'))
+                if not late:
+                    self.assertFalse(binding.calls)
+
     async def test_selected_memory_revalidated_at_native_boundary_and_recorded_only_after_acceptance(self):
         from codex_web.ux_briefs import UxBriefTurnBinding, UxBriefSelection
         binding = UxBriefTurnBinding(selection=UxBriefSelection(knowledge_id="brief-exact", version=1,

@@ -1051,6 +1051,7 @@ thread_index_repository = install_thread_index_repository(
 thread_history_repository = ThreadHistoryRepository(state_store)
 app.state.thread_history_repository = thread_history_repository
 project_service = ProjectService(project_repository)
+execution_role_definition_service.projects = project_service
 care_composer_service = CareComposerService(skill_service)
 app.include_router(build_care_composer_router(care_composer_service,project_service))
 app.include_router(build_entitlements_router(entitlement_service, project_service))
@@ -2374,6 +2375,9 @@ work_item_dependencies = WorkItemRuntimeDependencies(
     get_state_by_source_identity=_get_work_item_state_by_source_identity,
     save_state=_put_work_item_state_record,
     update_state=_update_work_item_state_record,
+    owner_routing=lambda state: execution_role_definition_service.owner_routing(
+        project_id=state.project_id, scope=TenantScope(organization_id=state.organization_id,
+            workspace_id=state.workspace_id)) if state.project_id else None,
 )
 gitlab_work_item_dependencies = GitLabWorkItemDependencies(
     api_base_url=os.environ.get(
@@ -3939,6 +3943,26 @@ canonical_work_item_continuity_service = WorkItemContinuityService(
     record_watchdog_dispatch=watchdog_dispatch_policy.record,
     coordination_channel=HANDOFF_COORDINATION_CHANNEL,
 )
+from codex_web.services.owner_routing import OwnerRoutingService
+execution_preflight_store.prepare_work_item_index()
+owner_routing_service = OwnerRoutingService(
+    routing=work_item_state_machine._owner_routing,
+    get_state=work_item_state_machine._work_item_state, projects=project_service,
+    load_bindings=bot_binding_repository.load,
+    binding_prefix=bot_presentation_service.binding_prefix,
+    bootstraps=thread_bootstrap_binding_service,
+    assignments=execution_worker_service.store.assignment, profiles=agent_profile_service,
+    control_actor=identity_service.local_trusted_actor,
+    actor_resolver=turn_execution_service.actor_resolver,
+    replacement_resolver=thread_index_repository.replacement_thread_id,
+    update_state=_update_work_item_state_record,
+    append_event=work_item_state_machine._append_work_item_event,
+    preflight=execution_preflight_store,
+)
+canonical_work_item_continuity_service.owner_routing = owner_routing_service
+bot_event_dispatch_service.owner_routing_context = owner_routing_service.context_for_pin
+turn_execution_service.owner_routing_validator = owner_routing_service.validate_native
+app.state.owner_routing_service = owner_routing_service
 work_item_continuity_service.bind(
     canonical_work_item_continuity_service
 )

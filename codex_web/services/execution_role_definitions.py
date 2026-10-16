@@ -29,13 +29,17 @@ class ExecutionRoleDefinitionService:
         from codex_web.owner_routing import OwnerRoutingError, owner_routing_snapshot
         if self.projects is None or not project_id:
             raise OwnerRoutingError('owner_routing_project_unavailable')
-        project = self.projects.get(project_id, scope=scope)
         record = self.registry.resolve(definition_id=EXECUTION_ROLE_CATALOG_ID,
             kind=EXECUTION_ROLE_CATALOG_KIND, context=DefinitionContext(
-                organization_id=scope.organization_id, workspace_id=scope.workspace_id, project_id=project.id),
+                organization_id=scope.organization_id, workspace_id=scope.workspace_id, project_id=project_id),
             now=time.time())
-        return owner_routing_snapshot(record, organization_id=scope.organization_id,
-            workspace_id=scope.workspace_id, project_id=project.id)
+        routing = owner_routing_snapshot(record, organization_id=scope.organization_id,
+            workspace_id=scope.workspace_id, project_id=project_id)
+        if routing.aliases or routing.rejected:
+            # Aliases require canonical Project attestation. Unchanged role
+            # references retain their caller's existing scope enforcement.
+            self.projects.get(project_id, scope=scope)
+        return routing
 
     def bootstrap(self) -> None:
         self.registry.bootstrap(
@@ -58,6 +62,11 @@ class ExecutionRoleDefinitionService:
         workspace_id: str | None = None,
         project_id: str | None = None,
     ) -> ExecutionRoleCatalogDefinition:
+        return self.resolve_catalog(organization_id=organization_id, workspace_id=workspace_id,
+                                    project_id=project_id)[0]
+
+    def resolve_catalog(self, *, organization_id=None, workspace_id=None, project_id=None):
+        """Resolve current role data and its exact reference from one record."""
         record = self.registry.resolve(
             definition_id=EXECUTION_ROLE_CATALOG_ID,
             kind=EXECUTION_ROLE_CATALOG_KIND,
@@ -66,8 +75,9 @@ class ExecutionRoleDefinitionService:
                 workspace_id=workspace_id,
                 project_id=project_id,
             ),
+            now=time.time(),
         )
-        return ExecutionRoleCatalogDefinition.model_validate(record.payload)
+        return ExecutionRoleCatalogDefinition.model_validate(record.payload), reference_for(record)
 
     def reference(
         self,
@@ -76,16 +86,8 @@ class ExecutionRoleDefinitionService:
         workspace_id: str | None = None,
         project_id: str | None = None,
     ) -> DefinitionReference:
-        record = self.registry.resolve(
-            definition_id=EXECUTION_ROLE_CATALOG_ID,
-            kind=EXECUTION_ROLE_CATALOG_KIND,
-            context=DefinitionContext(
-                organization_id=organization_id,
-                workspace_id=workspace_id,
-                project_id=project_id,
-            ),
-        )
-        return reference_for(record)
+        return self.resolve_catalog(organization_id=organization_id, workspace_id=workspace_id,
+                                    project_id=project_id)[1]
 
 
 def install_execution_role_definitions(

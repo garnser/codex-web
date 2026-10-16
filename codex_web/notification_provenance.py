@@ -66,6 +66,7 @@ class ProviderNotificationPin(BaseModel):
             and queued.project_id == self.project_id
             and queued.work_item_ref == self.work_item_ref
             and queued.handoff_requested_at is None
+            and queued.owner_routing_pin is None
             and queued.source == self.source_origin
             and hashlib.sha256(queued.message.encode()).hexdigest()
             == self.message_sha256
