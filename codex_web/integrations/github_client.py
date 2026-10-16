@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 
@@ -256,6 +256,55 @@ class GitHubClient:
             )
             setattr(error, "status_code", response.status_code)
             raise error
+
+    async def mark_pull_request_ready_for_review(
+        self, api_base: str, *, node_id: str, mutation_id: str, token: str,
+    ) -> dict[str, Any]:
+        """Only this fixed official mutation is exposed; callers cannot send GraphQL."""
+        base = urlsplit(api_base.rstrip("/"))
+        if base.scheme != "https" or not base.hostname or base.username or base.password or base.query or base.fragment:
+            raise ValueError("GitHub GraphQL base must be a credential-free HTTPS API base")
+        path = base.path.rstrip("/")
+        path = path[:-3] + "/graphql" if path.endswith("/api/v3") else path + "/graphql"
+        endpoint = urlunsplit((base.scheme, base.netloc, path, "", ""))
+        query = """mutation ReadyForReview($input: MarkPullRequestReadyForReviewInput!) {
+          markPullRequestReadyForReview(input: $input) {
+            clientMutationId
+            pullRequest { id number isDraft headRefOid baseRefOid baseRefName repository { nameWithOwner } }
+          }
+        }"""
+        async with httpx.AsyncClient(transport=self.transport, timeout=self.timeout) as client:
+            response = await client.post(endpoint,
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+                json={"query": query, "variables": {"input": {
+                    "pullRequestId": node_id, "clientMutationId": mutation_id}}})
+        if response.status_code >= 400:
+            raise GitHubAPIError(response.status_code)
+        data = response.json()
+        if not isinstance(data, dict) or data.get("errors"):
+            raise RuntimeError("GitHub readiness response is uncertain; inspect provider state")
+        result = (data.get("data") or {}).get("markPullRequestReadyForReview")
+        if not isinstance(result, dict) or result.get("clientMutationId") != mutation_id:
+            raise RuntimeError("GitHub readiness response is incomplete; inspect provider state")
+        return result
+
+    async def readiness_rules(self, api_base: str, repo: str, base_ref: str, *, token: str) -> dict[str, Any]:
+        """Read current effective protection, never alter or bypass it."""
+        path = f"repos/{quote(repo, safe='/')}/branches/{quote(base_ref, safe='')}"
+        branch = await self.request_json("GET", api_base, path, token=token)
+        if not isinstance(branch, dict) or not isinstance(branch.get("protected"), bool):
+            raise ValueError("GitHub branch protection visibility is unavailable")
+        try:
+            protection = await self.request_json("GET", api_base, path + "/protection", token=token)
+        except GitHubAPIError as exc:
+            if exc.status_code != 404 or branch["protected"]:
+                raise
+            protection = None  # GitHub's documented unprotected-branch response.
+        rules = await self.request_json("GET", api_base,
+            f"repos/{quote(repo, safe='/')}/rules/branches/{quote(base_ref, safe='')}", token=token)
+        if not isinstance(rules, list) or protection is not None and not isinstance(protection, dict):
+            raise ValueError("GitHub readiness protection/rules response is malformed")
+        return {"protection": protection, "rules": rules}
 
     async def actions_job(self, api_base: str, repo: str, job_id: int, *, token: str) -> dict[str, Any]:
         result = await self.request_json(
