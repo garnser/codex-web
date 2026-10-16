@@ -264,6 +264,11 @@ OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
         authority_level=AuthorityLevel.READ,
     ),
     ControlPlaneBrokerOperation(
+        id="repository.read.merge-requirements", method="GET",
+        path_template="/api/repository-facts/pull-requests/{external_id}/merge-requirements",
+        capability="repository.pull-request.merge-requirements.read", authority_level=AuthorityLevel.READ,
+    ),
+    ControlPlaneBrokerOperation(
         id="repository.read.checks",
         method="GET",
         path_template="/api/repository-facts/checks/{revision}",
@@ -465,6 +470,7 @@ class ControlPlaneBrokerService:
         local_execution_worker=None,
         service_instance_id: str | None = None,
         execution_profiles=None,
+        execution_workers=None,
         work_graph=None,
         operator: WorkItemOperatorService | None = None,
         limits: ControlPlaneBrokerLimits | None = None,
@@ -475,6 +481,7 @@ class ControlPlaneBrokerService:
         self.authority = authority
         self.work_items = work_items
         self.execution_profiles = execution_profiles
+        self.execution_workers = execution_workers
         self.work_graph = work_graph
         self.operator = operator or WorkItemOperatorService(work_items)
         self.audit = audit
@@ -508,6 +515,8 @@ class ControlPlaneBrokerService:
             result["optional_query_parameters"] = ["repository_resource_id"]
         if item.id == "repository.read.artifact-download":
             result["optional_query_parameters"].append("member_path")
+        if item.id == 'repository.read.merge-requirements':
+            result['requires_explicit_declaration'] = True
         if item.id == "repository.read.delivery-evidence":
             result["supported_action_ids"] = sorted(_DELIVERY_EVIDENCE_REPOSITORY_ACTION_IDS)
             result["inspection"] = {
@@ -602,6 +611,21 @@ class ControlPlaneBrokerService:
         enabled = assignment.execution_profile_id in CONTROL_PLANE_EXECUTION_PROFILES
         context = self._public_assignment_context(assignment) if enabled else None
         operations = [self.public_operation(item) for item in OPERATIONS] if enabled else []
+        for item in operations:
+            if item['id'] == 'repository.read.merge-requirements':
+                declared = False
+                try:
+                    profile, ref = self.execution_profiles.resolve(assignment.execution_profile_id,
+                        organization_id=assignment.organization_id, workspace_id=assignment.workspace_id,
+                        project_id=assignment.project_id)
+                    declared = (ref == assignment.execution_profile_definition
+                                and item['id'] in profile.control_plane_operations)
+                except (AttributeError, ValueError, LookupError):
+                    pass
+                if context is not None:
+                    context['merge_requirements_declaration'] = {'declared': declared,
+                        'status': 'declared' if declared else 'unavailable',
+                        'effective_authority_requires_operation_checks': True}
         # Ordinary repository-write declarations and historical catalogs never
         # acquire governor operations simply because the engine supports them.
         coordination = None
@@ -883,6 +907,9 @@ class ControlPlaneBrokerService:
                     candidate = "repository.read.reviews"
                     encoded_target = encoded_target.removesuffix("/reviews")
                 target_ref = unquote(encoded_target).strip()
+                if candidate == "repository.read.pull-request" and encoded_target.endswith('/merge-requirements'):
+                    candidate = 'repository.read.merge-requirements'
+                    target_ref = unquote(encoded_target.removesuffix('/merge-requirements')).strip()
                 if not target_ref or len(target_ref) > 500:
                     raise ControlPlaneBrokerDeniedError(
                         "invalid repository fact target"
@@ -1366,6 +1393,7 @@ class ControlPlaneBrokerService:
             "repository.read.pull-request": CodeHostCapability.PULL_REQUEST_READ,
             "repository.read.pull-requests": CodeHostCapability.PULL_REQUEST_READ,
             "repository.read.reviews": CodeHostCapability.REVIEW_READ,
+            "repository.read.merge-requirements": CodeHostCapability.MERGE_REQUIREMENTS_READ,
             "repository.read.checks": CodeHostCapability.CHECKS_READ,
             "repository.read.job-logs": CodeHostCapability.JOB_LOGS_READ,
             "repository.read.artifacts": CodeHostCapability.ARTIFACTS_READ,
@@ -1770,6 +1798,11 @@ class ControlPlaneBrokerService:
                 self._read_delivery_evidence, assignment, requester_actor,
                 resolved.target_ref, resolved.query,
             )
+        elif operation.id == 'repository.read.merge-requirements':
+            if body:
+                raise ControlPlaneBrokerRequestError("Merge-requirement reads accept no body")
+            from codex_web.services.broker_merge_requirements import read_merge_requirements
+            result = await read_merge_requirements(self, assignment, worker_actor, resolved, assignment_validator)
         elif repository_read:
             result = await self._read_repository_fact(
                 assignment=assignment,

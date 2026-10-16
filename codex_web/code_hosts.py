@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from enum import StrEnum
 import unicodedata
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.resources import Resource
+from codex_web.code_host_merge_requirements import CodeHostMergeRequirementsFact
 
 
 class CodeHostCapability(StrEnum):
@@ -15,6 +16,7 @@ class CodeHostCapability(StrEnum):
     COMMITS_READ = "commits.read"
     PULL_REQUEST_READ = "pull_request.read"
     REVIEW_READ = "review.read"
+    MERGE_REQUIREMENTS_READ = "pull_request.merge_requirements.read"
     CHECKS_READ = "checks.read"
     JOB_LOGS_READ = "job_logs.read"
     ARTIFACTS_READ = "artifacts.read"
@@ -238,6 +240,10 @@ class CodeHostProvider(Protocol):
     provider_type: str
 
     def capabilities(self) -> frozenset[CodeHostCapability]: ...
+
+    async def merge_requirements(self, binding: CodeHostProviderBinding, resource: Resource,
+        external_id: str, *, credential: str | None,
+        checkpoint: Callable[[], Awaitable[None]] | None = None) -> CodeHostMergeRequirementsFact: ...
 
     async def repository(
         self,

@@ -38,3 +38,6 @@
 .control-plane-broker-status small { display: block; overflow-wrap: anywhere; }
 .control-plane-broker-status summary { overflow-wrap: anywhere; }
 .control-plane-broker-status button { justify-self: start; white-space: normal; }
+.control-plane-broker-status form { display: grid; gap: .5rem; min-width: 0; }
+.control-plane-broker-status label { display: grid; gap: .25rem; min-width: 0; }
+.control-plane-broker-status input, .control-plane-broker-status select { max-width: 100%; box-sizing: border-box; }
