@@ -822,9 +822,12 @@ class BubblewrapExecutionBackend:
         script = (
             "import json,subprocess; "
             "g=lambda *a: subprocess.run(['/usr/bin/git','--no-optional-locks','-c','core.fsmonitor=false',*a],"
-            "check=True,capture_output=True,text=True,timeout=3).stdout.strip(); "
+            "check=True,capture_output=True,text=True,timeout=3).stdout.strip()\n"
+            "b=subprocess.run(['/usr/bin/git','--no-optional-locks','-c','core.fsmonitor=false',"
+            "'symbolic-ref','--quiet','--short','HEAD'],capture_output=True,text=True,timeout=3)\n"
+            "if b.returncode not in (0,1): raise SystemExit('Git branch inspection failed')\n"
             "print(json.dumps({'head':g('rev-parse','HEAD'),"
-            "'branch':g('symbolic-ref','--short','HEAD'),"
+            "'branch':b.stdout.strip() if b.returncode==0 else '',"
             "'dirty':g('status','--porcelain')}))"
         )
         result = self.run(restricted, argv=('/usr/bin/env', '-i',

@@ -484,8 +484,20 @@ class NativeProcedureAdmissionService:
         discovery, text = await asyncio.to_thread(self.discovery.discover, context)
         await asyncio.to_thread(self.history.record_procedure_discovery, thread_id, execution_id, discovery)
         if assignment is not None:
-            await asyncio.to_thread(self.workers.record_procedure_discovery, assignment.id, discovery,
-                expected_fence=assignment.fence, actor=self.control_actor)
+            from codex_web.services.execution_workers import ProcedureHistoryExhaustedError
+            try:
+                await asyncio.to_thread(self.workers.record_procedure_discovery, assignment.id, discovery,
+                    expected_fence=assignment.fence, actor=self.control_actor)
+            except ProcedureHistoryExhaustedError as exc:
+                message = 'This assignment has retained its maximum procedure history. Renew the assignment before retrying the retained request.'
+                raise ExecutionPrestartRefusal(status_code=409, detail={
+                    'code': 'execution_preflight_blocked', 'message': message,
+                    'retryable': True, 'blockers': [{
+                        'code': 'procedure_assignment_exhausted', 'message': message,
+                        'retryable': True, 'target_type': 'execution_assignment',
+                        'target_id': assignment.id, 'remediation_route': '/api/execution-workers',
+                    }],
+                }) from exc
         if not discovery.admitted:
             raise ExecutionPrestartRefusal(status_code=409, detail={
                 "code": "procedure_" + discovery.outcome, "message": "; ".join(discovery.blockers),

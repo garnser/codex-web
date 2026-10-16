@@ -1,5 +1,26 @@
 const { test, expect } = require('@playwright/test');
 
+test('exhausted healthy runner exposes retained-message renewal and authorized retry', async ({page}) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?assignmentExhausted');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+  const card = page.locator('.message.tool');
+  await expect(card).toContainText('The runner needs a fresh assignment.');
+  await expect(card).toContainText('Your original message is retained.');
+  await expect(card).toContainText('execution_assignment/exhausted-assignment');
+  await expect(page.locator('.message.user')).toContainText('make the requested change');
+  await page.getByRole('button', {name:'Retry', exact:true}).click();
+  await expect.poll(() => page.evaluate(() => window.__apiCalls.filter(x => x.method === 'POST').length)).toBe(1);
+});
+
+test('unknown renewed resume remains held without a retry button or hidden replay', async ({page}) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?renewalUnknown');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+  await expect(page.locator('.message.tool')).toContainText('Native resume or input outcome is unknown.');
+  await expect(page.locator('.message.user')).toContainText('make the requested change');
+  await expect(page.getByRole('button', {name:'Retry', exact:true})).toHaveCount(0);
+  expect(await page.evaluate(() => window.__apiCalls.filter(x => x.method === 'POST'))).toEqual([]);
+});
+
 for (const phase of ['captured', 'reconciled']) {
   test(`retired scheduling preserves later ${phase} positive native outcome without replay`, async ({page}) => {
     const status = phase === 'reconciled' ? 'started' : 'reconciliation_required';

@@ -102,9 +102,13 @@ export function createExecutionPreflightUi({
             : status === 'reconciliation_required'
             ? (attempt.queued_start_evidence
               ? 'Authoritative native response captured; finish receipt reconciliation without resending.'
-              : 'Native start outcome is unknown. Reconcile the original execution before retrying.')
+              : !attempt.queued_turn_snapshot
+                ? 'Native resume or input outcome is unknown. Reconcile the original execution before retrying.'
+                : 'Native start outcome is unknown. Reconcile the original execution before retrying.')
             : status === 'queued' ? 'Original request retained for admission; no start is confirmed.'
               : status === 'admitting' ? 'Pre-start admission reserved. Retry fences this reservation before native startup.' : '',
+          attempt.blockers?.some(blocker => blocker.code === 'procedure_assignment_exhausted')
+            ? 'The runner needs a fresh assignment. Your original message is retained. Retry checks current ownership and idle state; finish active validation or preserve repository changes first.' : '',
           schedulingRetired
             ? (attempt.queued_start_receipt
               ? 'Queue scheduling remains retired. A later exact native start was confirmed; no execution was resumed and no replay is permitted.'

@@ -258,6 +258,7 @@ class TurnService:
         admission_guard=None,
         source: str = "web",
         project_coordination_dispatch=None,
+        allow_assignment_renewal: bool = True,
     ) -> dict[str, Any]:
         self.recovery.raise_if_thread_replaced(thread_id)
         project = self.projects.get(payload.project_id)
@@ -576,6 +577,36 @@ class TurnService:
                     effective=effective_preflight,
                     detail=detail,
                 )
+                # Retain the immutable original BEFORE any awaited renewal.
+                # The retry claim and existing native admission own delivery;
+                # cancellation or an unknown renewal never discards this input.
+                from codex_web.services.execution_workers import ProcedureHistoryExhaustedError
+                renew = getattr(self.execution, 'renew_exhausted_assignment', None)
+                exhausted = next((b for b in attempt.blockers
+                    if b.code == 'procedure_assignment_exhausted'), None)
+                if (allow_assignment_renewal and source == 'web'
+                        and actor.principal_kind == 'human' and exhausted is not None
+                        and isinstance(exc.__cause__, ProcedureHistoryExhaustedError) and callable(renew)):
+                    try:
+                        self.preflight.authorize_retry(attempt.id, actor=actor)
+                        await renew(thread_id, project=project, actor=actor,
+                            expected_assignment_id=exhausted.target_id)
+                    except Exception as renewal_error:
+                        message = 'Assignment renewal is incomplete. Inspect the current runner and retry the retained original.'
+                        extra = (renewal_error.detail.get('blockers', [])
+                            if isinstance(renewal_error, HTTPException) and isinstance(renewal_error.detail, dict)
+                            else [{'code': 'procedure_assignment_renewal_blocked', 'message': message,
+                                'retryable': True, 'target_type': 'execution_assignment',
+                                'target_id': exhausted.target_id, 'remediation_route': '/api/execution-workers'}])
+                        detail = {**detail, 'blockers': [*detail.get('blockers', []), *extra]}
+                        attempt = self.preflight.record_blocked(actor=actor, thread_id=thread_id,
+                            project_id=project.id, execution_id=execution_id, payload=payload,
+                            effective=effective_preflight, detail=detail)
+                    else:
+                        retried = await self.retry_preflight(thread_id, attempt.id, actor=actor,
+                            allow_assignment_renewal=False)
+                        result = retried.get('result', retried)
+                        return {**result, 'assignmentRenewed': True, 'retainedAttemptId': attempt.id}
                 detail.update(
                     {
                         "attemptId": attempt.id,
@@ -728,6 +759,7 @@ class TurnService:
         attempt_id: str,
         *,
         actor: AuthenticationActor,
+        allow_assignment_renewal: bool = True,
     ) -> dict[str, Any]:
         if self.preflight is None:
             raise HTTPException(
@@ -737,7 +769,15 @@ class TurnService:
         attempt = self.preflight.get(attempt_id, actor=actor)
         if thread_id not in {attempt.thread_id, attempt.replacement_thread_id}:
             raise HTTPException(status_code=404, detail="preflight attempt not found")
-        if attempt.queued_turn_snapshot is not None and attempt.status == 'reconciliation_required':
+        if (allow_assignment_renewal and attempt.queued_turn_snapshot is not None
+                and attempt.status == 'blocked' and actor.principal_kind == 'human'):
+            exhausted = next((b for b in attempt.blockers if b.code == 'procedure_assignment_exhausted'), None)
+            renew = getattr(self.execution, 'renew_exhausted_assignment', None)
+            if exhausted is not None and callable(renew):
+                self.preflight.authorize_retry(attempt.id, actor=actor)
+                await renew(thread_id, project=self.projects.get(attempt.project_id), actor=actor,
+                    expected_assignment_id=exhausted.target_id)
+        if attempt.status == 'reconciliation_required':
             raise HTTPException(status_code=409, detail={
                 'code':'queued_start_reconciliation_required',
                 'message':'Resolve the original native start outcome before retrying this retained request.',
@@ -815,6 +855,7 @@ class TurnService:
                 result = await self.start(
                     thread_id, payload, actor=actor,
                     execution_id=attempt.execution_id, retry_claim_id=claim_id,
+                    **({'allow_assignment_renewal': False} if not allow_assignment_renewal else {}),
                 )
                 if not result.get("staleThreadReplaced"):
                     break
@@ -828,9 +869,28 @@ class TurnService:
                 thread_id = replacement
                 if continuation:
                     raise HTTPException(status_code=409, detail="preflight replacement continuation exhausted")
+        except asyncio.CancelledError as exc:
+            if not allow_assignment_renewal:
+                held = self.preflight.hold_renewal_retry(attempt.id, actor=actor, claim_id=claim_id, error=exc)
+                if not asyncio.current_task().cancelling():
+                    # An aborted transport Future is uncertainty, not a client
+                    # cancellation that should tear down the HTTP request task.
+                    raise HTTPException(status_code=409, detail={
+                        'code': 'execution_preflight_blocked', 'message': held.last_error,
+                        'retainedMessage': True, 'attemptId': held.id, 'retryable': False,
+                        'reconciliationRequired': True,
+                        'blockers': [b.model_dump(mode='json') for b in held.blockers]}) from exc
+            raise
         except Exception as exc:
             if self.preflight.is_preflight_http_error(exc):
                 exc.detail = {**exc.detail, "threadId": thread_id}
+            elif not allow_assignment_renewal:
+                held = self.preflight.hold_renewal_retry(attempt.id, actor=actor, claim_id=claim_id, error=exc)
+                raise HTTPException(status_code=409, detail={
+                    'code': 'execution_preflight_blocked', 'message': held.last_error,
+                    'blockers': [b.model_dump(mode='json') for b in held.blockers],
+                    'retainedMessage': True, 'attemptId': held.id, 'retryable': held.status == 'blocked',
+                    'reconciliationRequired': held.status == 'reconciliation_required'}) from exc
             else:
                 self.preflight.mark_failed(
                     attempt.id,

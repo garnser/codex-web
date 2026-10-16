@@ -54,6 +54,7 @@ class ThreadBootstrapBindingService:
         assignment_id: str,
         execution_workspace_id: str,
         actor: AuthenticationActor,
+        expected_assignment_id: str | None = None,
     ) -> ThreadBootstrapBinding:
         """Bind a thread to a new bootstrap, superseding any prior binding.
 
@@ -132,6 +133,10 @@ class ThreadBootstrapBindingService:
                 ),
                 None,
             )
+            if expected_assignment_id is not None and (
+                existing_thread is None or existing_thread.assignment_id != expected_assignment_id
+            ):
+                raise ThreadBootstrapBindingConflictError('thread bootstrap changed during assignment renewal')
             replacement = candidate.model_copy(
                 update={
                     "initial_turn_pending": bool(

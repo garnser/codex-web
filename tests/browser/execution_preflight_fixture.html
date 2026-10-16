@@ -138,6 +138,17 @@
       attempts[0].can_admit_original = true;
       attempts[0].operator_admission_href = '/fixture/operator-admission';
     }
+    if (new URLSearchParams(location.search).has('assignmentExhausted')) {
+      attempts[0].blockers = [{code:'procedure_assignment_exhausted',
+        message:'Assignment procedure history is full.',target_type:'execution_assignment',target_id:'exhausted-assignment'}];
+    }
+    if (new URLSearchParams(location.search).has('renewalUnknown')) {
+      attempts[0].status = 'reconciliation_required';
+      attempts[0].can_retry = false;
+      attempts[0].queued_turn_snapshot = null;
+      attempts[0].blockers = [{code:'native_start_outcome_unknown',
+        message:'Native resume or input requires authoritative reconciliation.'}];
+    }
     const api = async (path, options = {}) => {
       window.__apiCalls.push({ path, method: options.method || "GET" });
       if (path === '/fixture/operator-admission') {
