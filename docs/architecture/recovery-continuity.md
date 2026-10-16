@@ -522,3 +522,26 @@ uses the immutable receipt without another effect. These fixtures do not prove
 production writer termination, qualify an operator's evidence, or activate a
 live state contract. Actual process restart/drain and installed UI acceptance
 remain operator qualification, alongside exact-current-head CI and review.
+
+
+### Manual HTTP writer custody and reconciliation CAS
+
+Manual backup/verification HTTP requests use the same bounded RecoveryExecutor
+as scheduled operations. The actual submitted future remains owned until its
+worker is terminal, including after observer cancellation. Close/shutdown also
+closes manual admission and waits for that work; a lost response is an unknown
+observation, never permission for an automatic repeat. Current request identity,
+credential rotation, tenant and operator assurance are revalidated at worker
+entry and at Recovery/key/Evidence settlement. Manual settlement includes the
+existing identity document in the shared transaction and returns its full payload
+unchanged; its storage revision may advance, without session touch/normalization.
+
+Reconciliation holds the executor's local quiescence admission barrier across
+its complete canonical CAS. Active/queued manual or scheduled work refuses;
+manual/scheduled submissions cannot begin behind that CAS. The barrier is not a
+proof about another process, upgrade helper, direct trusted service caller,
+callback, destination writer, or the original effect. Those remain explicit
+independent writer-incarnation/fence/effect evidence obligations. This does not
+claim every trusted synchronous Recovery helper is an executor task. Dry-run,
+zero local futures, source installation and this local barrier cannot substitute
+for the original all-writer proof or activate state1.3.

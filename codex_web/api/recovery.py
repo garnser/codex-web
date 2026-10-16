@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.api.project_record_scope import ProjectRecordScope, project_record_context_parameter
 from codex_web.services.crypto_keys import CryptoKeyError
+from codex_web.services.recovery_executor import RecoveryExecutorBusy, RecoveryExecutorClosed
 from codex_web.services.recovery_policy import RecoveryPolicyControl
 
 from codex_web.api.identity import request_actor, revalidate_request_actor
@@ -226,13 +227,22 @@ def build_recovery_router(service: RecoveryService, projects=None, *, actions=No
         except (RecoveryError, AuthorizationError, CryptoKeyError) as exc:
             raise error(exc) from exc
 
+    def manual_authenticate(request):
+        admin(request)
+        if identity is None:
+            raise HTTPException(status_code=503, detail='Current manual Recovery identity boundary unavailable')
+        return lambda: revalidate_request_actor(request, identity)
+
     @router.post("/backups")
     async def backup(request: Request) -> dict[str, Any]:
         try:
-            item = service.create_backup(actor=admin(request))
+            item = await service.run_manual(lambda actor: service.create_backup(actor=actor),
+                authenticate=manual_authenticate(request), identity=identity)
             return {"item": item.model_dump(mode="json")}
+        except (RecoveryExecutorBusy, RecoveryExecutorClosed) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
-            if isinstance(exc, (RecoveryError, AuthorizationError, CryptoKeyError)):
+            if isinstance(exc, (RecoveryError, IdentityError, CryptoKeyError)):
                 raise error(exc) from exc
             raise
 
@@ -242,14 +252,14 @@ def build_recovery_router(service: RecoveryService, projects=None, *, actions=No
         request: Request,
     ) -> dict[str, Any]:
         try:
-            item = service.verify_restore(
-                backup_id,
-                actor=admin(request),
-                publish_evidence=True,
-            )
+            item = await service.run_manual(lambda actor: service.verify_restore(
+                backup_id, actor=actor, publish_evidence=True),
+                authenticate=manual_authenticate(request), identity=identity)
             return {"item": item.model_dump(mode="json")}
+        except (RecoveryExecutorBusy, RecoveryExecutorClosed) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
-            if isinstance(exc, (RecoveryError, AuthorizationError, CryptoKeyError)):
+            if isinstance(exc, (RecoveryError, IdentityError, CryptoKeyError)):
                 raise error(exc) from exc
             raise
 

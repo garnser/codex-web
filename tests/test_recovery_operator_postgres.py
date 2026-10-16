@@ -75,3 +75,14 @@ class PostgresRecoveryOperatorTests(_PostgresFixture, api.RecoveryOperatorApiTes
             self.assertEqual(replies[0].json()['item']['id'], replies[1].json()['item']['id'])
             self.assertEqual(engine.call_count, 1)
             self.assertEqual(len(self.recovery.store.load().reconciliations), 1)
+
+
+from tests import test_recovery_manual_api as manual
+
+
+@unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'), 'isolated PostgreSQL test DSN required')
+class PostgresManualRecoveryTests(_PostgresFixture, manual.ManualRecoveryApiTests):
+    async def asyncSetUp(self):
+        with patch.object(intent_fixtures, 'SQLiteStateStore', self.state_store_factory):
+            await manual.ManualRecoveryApiTests.asyncSetUp(self)
+        self.addCleanup(self.sqlite.close)
