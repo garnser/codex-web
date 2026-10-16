@@ -422,12 +422,18 @@ class CodeHostContractTests(unittest.IsolatedAsyncioTestCase):
 
         def run(command, **kwargs):
             calls.append((command, kwargs))
-            stdout = ("false\n" if "--is-shallow-repository" in command
+            if "index-pack" in command:
+                packs = Path(command[command.index("--git-dir") + 1]) / "objects/pack"
+                packs.mkdir(parents=True)
+                (packs / "pack-fixture.pack").write_bytes(b"fixture")
+                (packs / "pack-fixture.idx").write_bytes(b"fixture-index")
+            stdout = (str(checkout / ".git") + "\n" if "--git-common-dir" in command
+                      else "false\n" if "--is-shallow-repository" in command
                       else revision + "\n" if "rev-parse" in command else "")
             return subprocess.CompletedProcess(command, 0, stdout, "")
 
         checkout = Path(self.temp.name) / "git-command-checkout"
-        checkout.mkdir()
+        (checkout / ".git/objects/pack").mkdir(parents=True)
         with patch.object(CodeHostService, "_run_materialization_git", side_effect=run):
             CodeHostService._materialize_git_sync(
                 checkout,

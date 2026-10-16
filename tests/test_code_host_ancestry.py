@@ -73,7 +73,7 @@ class MaterializationAncestryTests(unittest.TestCase):
         self.git('-C', str(normal), 'reset', '--hard', self.tip)
         self.assertEqual(self.git('-C', str(normal), 'rev-parse', 'HEAD').strip(), self.tip)
 
-    def materialize(self, *, depths=(64, 512, 4096), drift=False, checkout=None):
+    def materialize(self, *, depths=(64, 512, 4096), drift=False, checkout=None, gate=None, quota=None):
         if checkout is None:
             checkout = self.root / ('fresh-' + str(time.monotonic_ns()))
             self.git('init', '-b', 'local', str(checkout))
@@ -87,6 +87,8 @@ class MaterializationAncestryTests(unittest.TestCase):
                 index = command.index('fetch')
                 command[index:index] = ['-c', 'protocol.file.allow=always']
                 command[command.index('https://fixture.invalid/repo.git')] = self.repo.as_uri()
+            if gate is not None:
+                gate(command, kwargs, real_run)
             result = real_run(command, **kwargs)
             if drift and '--verify' in command:
                 return subprocess.CompletedProcess(command, 0, 'f' * 40 + '\n', '')
@@ -96,7 +98,7 @@ class MaterializationAncestryTests(unittest.TestCase):
             try:
                 CodeHostService._materialize_git_sync(checkout,
                     'https://fixture.invalid/repo.git', 'main', self.tip,
-                    'synthetic-unused', 'github', 'fixture-resource')
+                    'synthetic-unused', 'github', 'fixture-resource', disk_quota_bytes=quota)
             finally:
                 self.assertEqual(self.git('-C', str(checkout), 'symbolic-ref', 'HEAD'), before)
         return checkout, calls
@@ -149,3 +151,91 @@ class MaterializationAncestryTests(unittest.TestCase):
             CodeHostService._materialize_git_sync(checkout,
                 'https://fixture.invalid/repo.git', 'main', self.tip,
                 'synthetic-unused', 'github', 'fixture-resource', disk_budget_bytes=1)
+
+    def broken_checkout(self):
+        shallow = self.root / ('shallow-' + str(time.monotonic_ns()))
+        normal = self.root / ('broken-' + str(time.monotonic_ns()))
+        self.git('clone', '--depth=1', self.repo.as_uri(), str(shallow))
+        self.git('init', '-b', 'local', str(normal))
+        pack = subprocess.run(['git', '-C', str(shallow), 'pack-objects', '--stdout', '--revs'],
+            input=(self.tip+'\n').encode(), check=True, capture_output=True).stdout
+        subprocess.run(['git','-C',str(normal),'index-pack','--stdin'],input=pack,check=True,capture_output=True)
+        self.git('-C',str(normal),'reset','--hard',self.tip)
+        return normal
+
+    def test_literal_grafts_common_directory_and_replacement_refs(self):
+        normal = self.broken_checkout()
+        graft = normal / '.git/info/grafts'
+        graft.write_text(self.tip+'\n')
+        environment = dict(os.environ, GIT_GRAFT_FILE=str(graft), GIT_NO_REPLACE_OBJECTS='1')
+        rewritten = subprocess.run(['git','-C',str(normal),'rev-list','--objects','--quiet',self.tip],
+            env=environment,capture_output=True)
+        self.assertEqual(rewritten.returncode,0)
+        self.assertFalse(CodeHostService._git_has_complete_history(normal,self.tip))
+        linked = self.root/'linked'
+        self.git('-C',str(normal),'worktree','add','--detach',str(linked),self.tip)
+        self.assertFalse(CodeHostService._git_has_complete_history(linked,self.tip))
+        # Replacement refs and a promisor hint must not permit lazy network repair.
+        self.git('-C',str(normal),'config','remote.origin.promisor','true')
+        self.git('-C',str(normal),'config','remote.origin.url','https://fixture.invalid/never')
+        self.materialize(checkout=normal)
+        self.assertTrue(CodeHostService._git_has_complete_history(linked,self.tip))
+        self.assertEqual(graft.read_text(),self.tip+'\n')
+        env=dict(os.environ,GIT_GRAFT_FILE=os.devnull,GIT_NO_REPLACE_OBJECTS='1')
+        subprocess.run(['git','-C',str(linked),'rev-list','--objects','--quiet','--missing=error',self.tip],
+            env=env,check=True,capture_output=True)
+
+    def test_interrupted_staged_index_pack_preserves_destination_repeatedly(self):
+        normal = self.broken_checkout()
+        (normal/'untracked').write_text('retained')
+        (normal/'.git/info/exclude').write_text('ignored\n')
+        (normal/'ignored').write_text('retained ignored')
+        before={str(p.relative_to(normal)):p.read_bytes() for p in normal.rglob('*') if p.is_file()}
+        groups=[]
+        def gate(command,kwargs,real_run):
+            if 'index-pack' not in command:
+                return
+            staged=Path(command[command.index('--git-dir')+1])
+            # Start the actual Git importer stopped before EOF, with an owned
+            # partial pack beside it. Cancellation must kill/reap then clean.
+            pidfile=kwargs['root']/'interrupted-pids'
+            script=("import subprocess,time,os; from pathlib import Path; "
+                "p=subprocess.Popen("+repr(command)+",stdin=subprocess.PIPE); "
+                "Path("+repr(str(staged/'objects/pack/partial-owned'))+").write_bytes(b'x'*8192); "
+                "Path("+repr(str(pidfile))+").write_text(str(os.getpid())+' '+str(p.pid)); time.sleep(30)")
+            with self.assertRaisesRegex(CodeHostError,'time bound'):
+                real_run([sys.executable,'-c',script],**dict(kwargs,deadline=time.monotonic()+.15))
+            groups.append(int(pidfile.read_text().split()[0]))
+            raise CodeHostError('controlled import interruption')
+        for _ in range(2):
+            with self.assertRaisesRegex(CodeHostError,'controlled import'):
+                self.materialize(checkout=normal,gate=gate)
+            self.assertEqual(before,{str(p.relative_to(normal)):p.read_bytes() for p in normal.rglob('*') if p.is_file()})
+            self.assertFalse(list((normal/'.git/objects/pack').glob('.codex-import-*')))
+        for group in groups:
+            # Killed descendants may briefly be zombies until the namespace init
+            # reaps them; no running member may remain.
+            for status in Path('/proc').glob('[0-9]*/stat'):
+                try:
+                    fields=status.read_text().split()
+                    self.assertFalse(int(fields[4])==group and fields[2]!='Z')
+                except FileNotFoundError:
+                    pass
+
+    def test_current_quota_and_shallow_destination_refusal(self):
+        normal=self.broken_checkout()
+        with self.assertRaisesRegex(CodeHostError,'disk quota'):
+            self.materialize(checkout=normal,quota=1)
+        shallow=self.root/'unsupported-shallow'
+        self.git('clone','--depth=1',self.repo.as_uri(),str(shallow))
+        with self.assertRaisesRegex(CodeHostError,'shallow destination unsupported'):
+            self.materialize(checkout=shallow)
+
+    def test_replace_ref_cannot_hide_missing_parent(self):
+        normal=self.broken_checkout()
+        tree=self.git('-C',str(normal),'rev-parse',self.tip+'^{tree}').strip()
+        env=dict(os.environ,GIT_AUTHOR_NAME='Fixture',GIT_AUTHOR_EMAIL='fixture@example.invalid',GIT_COMMITTER_NAME='Fixture',GIT_COMMITTER_EMAIL='fixture@example.invalid')
+        replacement=subprocess.run(['git','-C',str(normal),'commit-tree',tree,'-m','synthetic root'],env=env,check=True,capture_output=True,text=True).stdout.strip()
+        self.git('-C',str(normal),'replace',self.tip,replacement)
+        self.git('-C',str(normal),'rev-list','--objects','--quiet',self.tip)
+        self.assertFalse(CodeHostService._git_has_complete_history(normal,self.tip))

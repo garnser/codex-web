@@ -108,10 +108,12 @@ class ControlPlaneBrokerRequestError(ControlPlaneBrokerDeniedError):
     def __init__(
         self, message: str, *, status_code: int = 400,
         code: str = "control_plane_broker_denied",
+        history_readiness: dict | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
+        self.history_readiness = history_readiness
 
 
 class ControlPlaneBrokerAuthorityDeniedError(ControlPlaneBrokerDeniedError):
@@ -1939,16 +1941,23 @@ class ControlPlaneBrokerService:
                             checkout=Path(member.workspace_path),
                             actor=actor,
                             disk_budget_bytes=max(0, assignment.limits.disk_bytes
-                                - current_workspace.actual_disk_bytes),
+                                - getattr(current_workspace, "actual_disk_bytes", 0)),
+                            disk_quota_bytes=assignment.limits.disk_bytes,
                         )
                     )
                 except CodeHostTransientError as materialization_exc:
                     raise ControlPlaneBrokerRequestError(
-                        str(materialization_exc), status_code=502
+                        str(materialization_exc), status_code=502,
+                        history_readiness={"state": "unavailable", "target_revision": requested_revision,
+                            "next_action": "reconcile_provider_and_retry_refresh", "deadline_seconds": 120,
+                            "maximum_depth": 4096}
                     ) from materialization_exc
                 except CodeHostError as materialization_exc:
                     raise ControlPlaneBrokerRequestError(
-                        str(materialization_exc), status_code=409
+                        str(materialization_exc), status_code=409,
+                        history_readiness={"state": "not_ready", "target_revision": requested_revision,
+                            "next_action": "inspect_history_bound_or_destination_refusal",
+                            "deadline_seconds": 120, "maximum_depth": 4096}
                     ) from materialization_exc
                 if assignment_validator is not None:
                     await asyncio.to_thread(assignment_validator)
@@ -2718,6 +2727,7 @@ class AssignmentBoundControlPlaneBroker:
         status = 500
         denial_reason = None
         denial_code = "control_plane_broker_denied"
+        history_readiness = None
         procedure_discovery = None
         correlation_id = uuid.uuid4().hex
         causation_id = None
@@ -2844,6 +2854,7 @@ class AssignmentBoundControlPlaneBroker:
             authority_decision = exc.decision
             denial_reason = str(exc)
         except ControlPlaneBrokerRequestError as exc:
+            history_readiness = getattr(exc, "history_readiness", None)
             status = exc.status_code
             denial_reason = str(exc)
             denial_code = getattr(exc, "code", denial_code)
@@ -2895,7 +2906,8 @@ class AssignmentBoundControlPlaneBroker:
                                 "error": {
                                     "code": denial_code,
                                     **({"procedure_discovery": procedure_discovery} if procedure_discovery is not None else {}),
-                                    "message": denial_reason[:500],
+                    **({"history_readiness": history_readiness} if history_readiness else {}),
+                    "message": denial_reason[:500],
                                     "correlation_id": correlation_id,
                                 }
                             },

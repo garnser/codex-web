@@ -11,6 +11,7 @@ import tempfile
 import time
 import signal
 import shutil
+import fcntl
 from typing import TypeVar
 from urllib.parse import urlsplit
 
@@ -280,6 +281,7 @@ class CodeHostService:
         checkout: Path,
         actor: AuthenticationActor,
         disk_budget_bytes: int = 128 * 1024 * 1024,
+        disk_quota_bytes: int | None = None,
     ) -> CodeHostRevisionMaterializationFact:
         """Fetch one exact, provider-attested default-branch tip into a checkout."""
         requested = str(revision or "").strip().casefold()
@@ -351,6 +353,7 @@ class CodeHostService:
                         binding.provider_type,
                         resource.id,
                         disk_budget_bytes=disk_budget_bytes,
+                        disk_quota_bytes=disk_quota_bytes,
                     )
                 # Refresh still requires the same attested default branch after I/O.
                 current_refs = await provider.refs(binding, resource, credential=credential)
@@ -481,7 +484,7 @@ class CodeHostService:
             return False
         environment = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL") if key in os.environ}
         environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
-                           GIT_NO_LAZY_FETCH="1", GIT_NO_REPLACE_OBJECTS="1")
+                           GIT_NO_LAZY_FETCH="1", GIT_NO_REPLACE_OBJECTS="1", GIT_GRAFT_FILE=os.devnull)
         command = ["git", "-C", str(checkout), "-c", "core.hooksPath=/dev/null",
                    "-c", "protocol.allow=never", "--no-replace-objects"]
         try:
@@ -498,7 +501,8 @@ class CodeHostService:
 
     @staticmethod
     def _run_materialization_git(command, *, root, deadline, disk_bytes, env,
-                                 input=None, stdin=None, stdout=None, **_options):
+                                 input=None, stdin=None, stdout=None, extra_roots=(),
+                                 quota_check=None, **_options):
         """Bound the existing trusted Git subprocess, reap it on every exit."""
         from codex_web.storage.state_store import check_operation_budget
         def check():
@@ -506,17 +510,26 @@ class CodeHostService:
             if time.monotonic() >= deadline:
                 raise CodeHostError("history materialization time bound exceeded")
             total = 0
-            for directory, dirs, files in os.walk(root, followlinks=False):
-                dirs[:] = [name for name in dirs if not Path(directory, name).is_symlink()]
-                for name in files:
-                    path = Path(directory, name)
-                    try:
-                        if not path.is_symlink():
-                            total += path.stat().st_size
-                    except FileNotFoundError:
-                        continue  # Git atomically renames temporary packs/refs.
-                    if total > disk_bytes:
-                        raise CodeHostError("history materialization scratch/pack disk bound exceeded")
+            for owned in (root, *extra_roots):
+                for directory, dirs, files in os.walk(owned, followlinks=False):
+                    check_operation_budget()
+                    if time.monotonic() >= deadline:
+                        raise CodeHostError("history materialization time bound exceeded")
+                    dirs[:] = [name for name in dirs if not Path(directory, name).is_symlink()]
+                    for name in files:
+                        check_operation_budget()
+                        if time.monotonic() >= deadline:
+                            raise CodeHostError("history materialization time bound exceeded")
+                        path = Path(directory, name)
+                        try:
+                            if not path.is_symlink():
+                                total += path.stat().st_size
+                        except FileNotFoundError:
+                            continue
+                        if total > disk_bytes:
+                            raise CodeHostError("history materialization scratch/pack disk bound exceeded")
+            if quota_check is not None:
+                quota_check()
         check()
         with tempfile.TemporaryFile(dir=root) as output:
             child = subprocess.Popen(command, env=env,
@@ -557,6 +570,7 @@ class CodeHostService:
         provider_type: str,
         resource_id: str,
         *, disk_budget_bytes: int = 128 * 1024 * 1024,
+        disk_quota_bytes: int | None = None,
     ) -> None:
         internal_ref = (
             "refs/codex/materialized/"
@@ -569,9 +583,12 @@ class CodeHostService:
                 shutil.disk_usage(root_path).free // 4, shutil.disk_usage(checkout).free // 4)
             if scratch_bytes < 4096:
                 raise CodeHostError("insufficient materialization disk quota")
+            extra_roots = []
+            quota_check = None
             def run(command, **options):
                 return CodeHostService._run_materialization_git(command,
-                    root=root_path, deadline=deadline, disk_bytes=scratch_bytes, **options)
+                    root=root_path, deadline=deadline, disk_bytes=scratch_bytes,
+                    extra_roots=tuple(extra_roots), quota_check=quota_check, **options)
             askpass = root_path / "askpass.sh"
             username = "x-access-token" if provider_type.casefold() == "github" else "oauth2"
             askpass.write_text(
@@ -599,6 +616,9 @@ class CodeHostService:
                     "GIT_TERMINAL_PROMPT": "0",
                     "GIT_CONFIG_NOSYSTEM": "1",
                     "GIT_CONFIG_GLOBAL": "/dev/null",
+                    "GIT_NO_LAZY_FETCH": "1",
+                    "GIT_NO_REPLACE_OBJECTS": "1",
+                    "GIT_GRAFT_FILE": os.devnull,
                 }
             )
             # Never expose provider credentials to checkout-local config,
@@ -622,6 +642,55 @@ class CodeHostService:
                 remote, f"+refs/heads/{branch}:{internal_ref}",
             ]
             try:
+                # Resolve the shared object directory through Git, not .git shape.
+                def common_dir():
+                    return Path(run(["git", "-C", str(checkout), "rev-parse",
+                        "--path-format=absolute", "--git-common-dir"],
+                        env=safe_environment).stdout.strip()).resolve()
+                common = common_dir()
+                objects = common / "objects"
+                pack_dir = objects / "pack"
+                if objects.is_symlink() or pack_dir.is_symlink() or not objects.is_dir():
+                    raise CodeHostError("unsupported destination object directory")
+                pack_dir.mkdir(exist_ok=True)
+                def used_bytes(path):
+                    from codex_web.storage.state_store import check_operation_budget
+                    total = 0
+                    for directory, dirs, files in os.walk(path, followlinks=False):
+                        dirs[:] = [name for name in dirs if not Path(directory, name).is_symlink()]
+                        for name in files:
+                            check_operation_budget()
+                            if time.monotonic() >= deadline:
+                                raise CodeHostError("history materialization time bound exceeded")
+                            candidate = Path(directory, name)
+                            try:
+                                if not candidate.is_symlink():
+                                    total += candidate.stat().st_size
+                            except FileNotFoundError:
+                                continue
+                    return total
+                def check_quota():
+                    from codex_web.storage.state_store import check_operation_budget
+                    check_operation_budget()
+                    if time.monotonic() >= deadline:
+                        raise CodeHostError("history materialization time bound exceeded")
+                    # Recompute actual usage; the broker's cached byte snapshot is
+                    # only an additional conservative allowance, never quota proof.
+                    if disk_quota_bytes is not None:
+                        used = used_bytes(checkout)
+                        if not objects.is_relative_to(checkout.resolve()):
+                            used += used_bytes(objects)
+                        used += used_bytes(root_path)
+                        if used > disk_quota_bytes:
+                            raise CodeHostError("destination materialization disk quota exceeded")
+                    if min(shutil.disk_usage(pack_dir).free, shutil.disk_usage(root_path).free) < scratch_bytes:
+                        raise CodeHostError("insufficient destination materialization free capacity")
+                quota_check = check_quota
+                check_quota()
+                shallow_destination = run(["git", "-C", str(checkout), "rev-parse",
+                    "--is-shallow-repository"], env=safe_environment).stdout.strip()
+                if shallow_destination != "false":
+                    raise CodeHostError("shallow destination unsupported; acquire a complete-history workspace")
                 run(
                     ["git", "init", "--bare", "--template=", str(isolated)],
                     env=safe_environment, check=True, capture_output=True,
@@ -643,25 +712,65 @@ class CodeHostService:
                         break
                 else:
                     raise CodeHostError(f"complete history exceeds materialization depth bound{_MATERIALIZATION_DEPTHS[-1]}")
-                # Import only the verified object pack. This step has no token,
-                # network transport, reference updates or working-tree writes.
                 with (root_path / "verified.pack").open("w+b") as pack:
-                    run(
-                        [*isolated_git, "pack-objects", "--stdout", "--revs"],
-                        input=(revision + "\n").encode(), stdout=pack,
-                        stderr=subprocess.PIPE, env=safe_environment,
-                        check=True, timeout=120,
-                    )
+                    run([*isolated_git, "pack-objects", "--stdout", "--revs"],
+                        input=(revision + "\n").encode(), stdout=pack, env=safe_environment)
                     pack.seek(0)
-                    run(
-                        ["git", "-C", str(checkout), "-c", "core.hooksPath=/dev/null",
-                         "-c", "gc.auto=0", "index-pack", "--stdin"],
-                        stdin=pack, capture_output=True, env=safe_environment,
-                        check=True, timeout=120,
-                    )
-                run(["git", "-C", str(checkout), "-c", "protocol.allow=never",
-                     "--no-replace-objects", "rev-list", "--objects", "--quiet",
-                     "--missing=error", revision, "--"], env=safe_environment)
+                    # index-pack writes only inside this attempt-owned private area
+                    # on the destination filesystem. Kill/reap precedes cleanup.
+                    with tempfile.TemporaryDirectory(prefix=".codex-import-", dir=pack_dir) as staging:
+                        stage = Path(staging)
+                        extra_roots.append(stage)
+                        try:
+                            staged_git = stage / "objects.git"
+                            run(["git", "init", "--bare", "--template=", str(staged_git)], env=safe_environment)
+                            run(["git", "--git-dir", str(staged_git), "index-pack", "--stdin"],
+                                stdin=pack, env=safe_environment)
+                            run(["git", "--git-dir", str(staged_git), "--no-replace-objects",
+                                 "rev-list", "--objects", "--quiet", "--missing=error", revision, "--"],
+                                env=safe_environment)
+                            if common_dir() != common:
+                                raise CodeHostError("destination common directory changed")
+                            check_quota()
+                            # Serialize publication to the shared object store. The
+                            # stable empty lock is metadata, never a source/pack file.
+                            with (pack_dir / '.codex-materialize.lock').open('a+b') as lock:
+                                while True:
+                                    try:
+                                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                                        break
+                                    except BlockingIOError:
+                                        check_quota()
+                                        time.sleep(.02)
+                                created = []
+                                try:
+                                    check_quota()
+                                    pairs = list((staged_git / 'objects' / 'pack').glob('pack-*.idx'))
+                                    if len(pairs) != 1:
+                                        raise CodeHostError("verified import must contain one indexed pack")
+                                    index = pairs[0]
+                                    for source in (index.with_suffix('.pack'), index):
+                                        destination = pack_dir / source.name
+                                        try:
+                                            os.link(source, destination)
+                                            created.append((destination, source.stat().st_ino))
+                                        except FileExistsError:
+                                            if destination.is_symlink():
+                                                raise CodeHostError("preexisting object pack is a symlink")
+                                            with destination.open('rb') as existing, source.open('rb') as proposed:
+                                                if hashlib.file_digest(existing, 'sha256').digest() != hashlib.file_digest(proposed, 'sha256').digest():
+                                                    raise CodeHostError("preexisting object pack does not match verified content")
+                                    # Publishing the index last is the commit point;
+                                    # no subprocess or quota failure follows it.
+                                except BaseException:
+                                    for destination, inode in reversed(created):
+                                        if destination.exists() and destination.stat().st_ino == inode:
+                                            destination.unlink()
+                                    raise
+                                finally:
+                                    fcntl.flock(lock, fcntl.LOCK_UN)
+                        finally:
+                            extra_roots.remove(stage)
             except (OSError, subprocess.SubprocessError) as exc:
                 raise CodeHostTransientError(
                     "provider revision materialization failed"

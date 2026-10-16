@@ -1265,6 +1265,8 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             revision,
             checkout=checkout,
             actor=ANY,
+            disk_budget_bytes=assignment.limits.disk_bytes,
+            disk_quota_bytes=assignment.limits.disk_bytes,
         )
 
     async def test_workspace_refresh_preserves_dirty_and_stale_fence_guards(self) -> None:

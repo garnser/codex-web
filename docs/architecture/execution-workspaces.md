@@ -330,3 +330,16 @@ remain authoritative; this cooperative monitor is not a kernel filesystem quota.
 Incomplete histories beyond these bounds fail visibly, never masquerading as
 complete source. No unbounded fetch, credential-bearing checkout config, hook,
 submodule, replacement or lazy-fetch shortcut is enabled.
+
+Literal ancestry validation disables replacement refs, legacy grafts (including
+linked-worktree common metadata), and lazy fetch. The importer indexes into an
+attempt-owned destination staging directory, monitors both scratch and staging,
+and cleans staging only after the subprocess has terminated. Verified pack/index
+files are linked without overwriting existing objects under a common-store lock;
+the index is published last. Failures remove only newly linked matching inodes.
+Actual disk usage is recomputed at admission/import, under the existing shared
+deadline; this cooperative accounting does not claim kernel quota enforcement.
+Shallow destination repositories are explicitly unsupported: acquire a complete
+history workspace. Success facts expose complete/ready/refresh_exact_revision;
+broker history refusals expose target, bounds and next action in existing error
+diagnostics. This is additive diagnostics, not installed inspector qualification.

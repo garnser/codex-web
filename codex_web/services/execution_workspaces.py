@@ -509,9 +509,11 @@ class ExecutionWorkspaceService:
         if not CodeHostService._git_has_complete_history(checkout, resolved):
             raise ExecutionWorkspaceNotFoundError(
                 "revision ancestry is incomplete; complete public history is required")
+        expected_tree = git("rev-parse", f"{resolved}^{{tree}}").stdout.strip()
         git("reset", "--hard", resolved)
         observed = git("rev-parse", "HEAD").stdout.strip()
-        if observed != resolved:
+        observed_tree = git("rev-parse", "HEAD^{tree}").stdout.strip()
+        if observed != resolved or observed_tree != expected_tree:
             raise ExecutionWorkspaceBackendError("workspace refresh verification failed")
         updated_at = time.time()
 

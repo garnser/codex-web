@@ -30,6 +30,7 @@ from codex_web.execution_workspaces import (
 from codex_web.models import Project, WorkItemState
 from codex_web.resources import ResourceAlias, ResourceCreate, ResourceType
 from codex_web.services.execution_workspaces import (
+    ExecutionWorkspaceBackendError,
     ExecutionWorkspaceConflictError,
     ExecutionWorkspaceNotFoundError,
     ExecutionWorkspaceQuotaError,
@@ -335,6 +336,34 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         (checkout / "dirty.txt").write_text("dirty\n", encoding="utf-8")
         with self.assertRaisesRegex(ExecutionWorkspaceConflictError, "uncommitted"):
             self.service.refresh_revision(workspace.id, first, actor=self.actor)
+
+    def test_composed_history_hydration_refresh_and_zero_exit_postcondition(self):
+        from tests.test_code_host_ancestry import MaterializationAncestryTests
+        from unittest.mock import patch
+        graph = MaterializationAncestryTests()
+        graph.setUp()
+        self.addCleanup(graph.doCleanups)
+        workspace = self._acquire("composed-history", self.repo.id)
+        checkout = Path(workspace.path)
+        subprocess.run(["git", "init", "-b", workspace.branch_name, str(checkout)], check=True, capture_output=True)
+        graph.materialize(checkout=checkout)
+        refreshed = self.service.refresh_revision(workspace.id, graph.tip, actor=self.actor)
+        self.assertEqual(refreshed.head_revision, graph.tip)
+        self.assertEqual(subprocess.check_output(["git","-C",str(checkout),"rev-parse","HEAD"]).decode().strip(),graph.tip)
+        first=graph.git('-C',str(graph.repo),'rev-list','--max-parents=0','HEAD').strip()
+        real_run=subprocess.run
+        def zero_reset(command,*args,**kwargs):
+            if "reset" in command:
+                return subprocess.CompletedProcess(command,0,"","")
+            return real_run(command,*args,**kwargs)
+        with patch("codex_web.services.execution_workspaces.subprocess.run",side_effect=zero_reset):
+            with self.assertRaisesRegex(ExecutionWorkspaceBackendError,"verification failed"):
+                self.service.refresh_revision(workspace.id,first,actor=self.actor)
+        self.assertEqual(graph.git('-C',str(checkout),'rev-parse','HEAD').strip(),graph.tip)
+        (checkout/'untracked').write_text('preserved')
+        with self.assertRaisesRegex(ExecutionWorkspaceConflictError,'uncommitted'):
+            self.service.refresh_revision(workspace.id,first,actor=self.actor)
+        self.assertEqual((checkout/'untracked').read_text(),'preserved')
 
     def test_repository_checkpoint_is_canonical_and_release_preserves_branch(self) -> None:
         workspace = self._acquire("checkpoint-exec", self.repo.id)
