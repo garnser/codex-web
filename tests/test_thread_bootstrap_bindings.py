@@ -22,6 +22,27 @@ from codex_web.thread_bootstrap import (
 
 
 class ThreadBootstrapBindingTests(unittest.TestCase):
+    def test_competing_assignment_renewals_compare_the_original_binding_atomically(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        original = self._bind()
+        barrier = threading.Barrier(2)
+        def renew(index):
+            barrier.wait(5)
+            try:
+                result = self.service.rebind(bootstrap_id=f'new-{index}', thread_id=original.thread_id,
+                    execution_id=f'new-execution-{index}', assignment_id=f'new-assignment-{index}',
+                    execution_workspace_id=f'new-workspace-{index}', actor=self.actor,
+                    expected_assignment_id=original.assignment_id)
+                return result.assignment_id
+            except ThreadBootstrapBindingConflictError:
+                return None
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(renew, (1, 2)))
+        winners = [value for value in results if value is not None]
+        self.assertEqual(len(winners), 1)
+        self.assertEqual(self.service.get_by_thread(original.thread_id, self.actor).assignment_id, winners[0])
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.sqlite = SQLiteStateStore(Path(self.temp.name) / "state.sqlite3")

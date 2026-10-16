@@ -117,3 +117,45 @@ class ManagedValidationCustody:
             return tuple(self.artifact_ids)
         finally:
             os.close(descriptor)
+
+    def blocks_assignment_renewal(self):
+        """Veto renewal for running/unknown output; this alone never proves idle."""
+        if self.registration is None or self.state not in {'registered', 'captured'}:
+            return True
+        descriptor = None
+        try:
+            descriptor = os.open(self.workspace_path, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            for part in self.parts:
+                replacement = os.open(part, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = replacement
+            reports = []
+            with os.scandir(descriptor) as entries:
+                for count, entry in enumerate(entries):
+                    check_operation_budget()
+                    if count >= 64:
+                        return True
+                    if entry.name == '.gitignore':
+                        continue
+                    if not re.fullmatch(r'report-[0-9a-f]{32}\.json', entry.name):
+                        return True
+                    reports.append(entry.name)
+            if len(reports) > 4:
+                return True
+            for name in reports:
+                fd = os.open(name, os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK, dir_fd=descriptor)
+                with os.fdopen(fd, 'rb') as source:
+                    if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                        return True
+                    body = source.read(16385)
+                if len(body) > 16384:
+                    return True
+                report = sanitize_report(json.loads(body))
+                if name != f"report-{report['run_id']}.json" or report['state'] != 'finished':
+                    return True
+            return False
+        except (OSError, ValueError, TypeError):
+            return True
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)

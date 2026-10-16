@@ -851,6 +851,31 @@ class ExecutionPreflightService:
             error=str(error)[:1000],
         )
 
+    def hold_renewal_retry(self, attempt_id, *, actor, claim_id, error):
+        """Keep the same original when resumed delivery did not settle.
+
+        A controller-owned prestart refusal remains blocked. Other failures,
+        including cancellation, require reconciliation; a stale retry TTL is
+        never evidence that native input or resume did not happen.
+        """
+        from codex_web.runtime.execution import ExecutionPrestartRefusal
+        current = self.get(attempt_id, actor=actor)
+        self._authorize(current, actor, require_admin=True)
+        known = isinstance(error, ExecutionPrestartRefusal)
+        detail = error.detail if known and isinstance(error.detail, dict) else {}
+        message = ('Native admission refused before input; inspect its blocker before retrying.' if known
+            else 'Native resume or input outcome is unknown. Reconcile the current native thread before retrying this original.')
+        message = detail.get('message') or message
+        blocker = ExecutionPreflightBlocker(code=detail.get('code') or ('execution_prestart_refused' if known else 'native_start_outcome_unknown'),
+            message=message, retryable=known, target_type='thread', target_id=current.thread_id,
+            remediation_route=detail.get('remediation_route') or f'/api/threads/{current.thread_id}/preflight-attempts')
+        def update(value):
+            if value.status != 'retrying' or value.retry_claim_id != claim_id:
+                return value
+            return value.model_copy(update={'status': 'blocked' if known else 'reconciliation_required',
+                'blockers': (blocker,), 'last_error': message, 'updated_at': float(self.clock())})
+        return self.store.update(attempt_id, update)
+
     @staticmethod
     def can_retry(actor: AuthenticationActor) -> bool:
         try:

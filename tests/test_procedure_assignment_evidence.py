@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from codex_web.execution_workers import AssignmentClaimRequest
 from codex_web.procedure_discovery import ProcedureDiscovery
-from codex_web.services.execution_workers import WorkerLeaseError
+from codex_web.services.execution_workers import WorkerLeaseError, ProcedureHistoryExhaustedError
 from codex_web.services.identity import AuthorizationError
 from tests import test_execution_workers as fixtures
 
@@ -49,3 +49,26 @@ class ProcedureAssignmentEvidenceTests(unittest.TestCase):
         for namespace in namespaces:
             for key in ('unrelated-0', 'unrelated-999'):
                 self.assertEqual(store.record_get(namespace, key), unrelated[key])
+
+    def test_exact_history_limit_preserves_original_evidence_and_lease(self):
+        assignment = self._assignment()
+        claimed = self.service.claim(self.worker.id, AssignmentClaimRequest(lease_seconds=30),
+            actor=self.worker_actor, assignment_id=assignment.id)
+        discoveries = tuple(ProcedureDiscovery(actor_identity_id=self.admin.identity_id,
+            organization_id='local', workspace_id='default', project_id='home',
+            resource_ids=('repo-1',), operation='repository.read', context_checksum=f'original-{index}',
+            evaluated_at=1, outcome='no_match', policy_source='canonical:existing-policy', policy_allows=True)
+            for index in range(65))
+        for discovery in discoveries[:63]:
+            self.service.record_procedure_discovery(assignment.id, discovery,
+                expected_fence=claimed.fence, actor=self.admin)
+        last = self.service.record_procedure_discovery(assignment.id, discoveries[63],
+            expected_fence=claimed.fence, actor=self.admin)
+        self.assertEqual(last.procedure_discoveries, discoveries[:64])
+        with self.assertRaises(ProcedureHistoryExhaustedError):
+            self.service.record_procedure_discovery(assignment.id, discoveries[64],
+                expected_fence=claimed.fence, actor=self.admin)
+        current = self.service.store.assignment(assignment.id)
+        self.assertEqual(current.procedure_discoveries, discoveries[:64])
+        self.assertEqual(current.lease, claimed.lease)
+        self.assertEqual(current.fence, claimed.fence)

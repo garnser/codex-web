@@ -175,3 +175,40 @@ consume the new fields/state versions: stop workers and restore a compatible
 snapshot before downgrading. Never run mixed writers or imply rollback of newly
 persisted contracts. No deployment, existing-input replay, host access, credential
 expansion or automatic procedure publication follows from source installation.
+
+## Assignment history exhaustion during messaging
+
+An assignment retains at most 64 procedure-discovery observations. Exhaustion
+raises a typed controller refusal before native input; the ordinary message API
+retains the complete original in the existing execution-preflight domain and
+shows its blocker in the thread inspector.
+
+A new human web message may perform one bounded renewal followed by the existing
+fenced preflight retry. The original is durable before the first renewal await.
+Renewal shares the thread's admission lock and requires the exact authenticated
+owner, tenant/Project and bootstrap, live assignment/fence, no active turn or
+handoff, no pending executor work, inspectable managed-validation custody and a
+provider-confirmed idle state for the same Codex native thread. Running, malformed
+or incomplete managed output vetoes renewal; absence of output alone is never
+idle proof. Each repository member is inspected read-only in the current isolated
+worker. Dirty checkouts or commits beyond the original base require a canonical
+handoff before renewal. Inspection and preparation have a 30-second aggregate
+deadline, and owned synchronous work is settled before cancellation returns.
+
+The existing bootstrap cancellation fences the predecessor and retains its files
+and discovery history. Fresh admission preserves requested repository scope,
+runtime/profile bindings and resource limits. Bootstrap reassociation compares
+the expected predecessor atomically. Ordinary resume performs the existing
+canonical AgentSession custody transaction before any turn input; it does not
+create a native thread or set/replace a native Goal. Concurrent messages retain
+their separate originals and retry claims.
+
+Explicit retry of an exhausted retained queue original can use the same renewal
+checks. Automatic renewal is not an idle timer or an agent-origin-to-human
+conversion. It adds no model call, provider fallback, history deletion or cap
+increase. An uncertain resume/input or cancellation after delivery admission holds
+the original as `reconciliation_required`; expiry of a retry claim cannot authorize
+replay. A cancelled renewal inspection leaves the original blocked and recoverable.
+The existing preflight UI exposes renewal requirements and hides Retry for unknown
+outcomes. Existing fields/statuses are reused without a persisted schema change;
+the platform's existing drain, compatibility and rollback constraints still apply.

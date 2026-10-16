@@ -154,7 +154,7 @@ class TurnExecutionService:
     """Own turn execution, queue draining, activity and terminal recovery state."""
 
     @staticmethod
-    async def _settle_custody_call(function, *args, work_owner=None):
+    async def _settle_custody_call(function, *args, work_owner=None, **kwargs):
         # Retain the REAL concurrent Future, as the worker supervisor does.
         # Cancelling a to_thread Task/wrapper is not actual thread completion.
         # Production uses the session's existing serial executor/custody set;
@@ -163,7 +163,7 @@ class TurnExecutionService:
         private_executor = executor is None
         if private_executor:
             executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='session-custody')
-        future = executor.submit(contextvars.copy_context().run, function, *args)
+        future = executor.submit(contextvars.copy_context().run, function, *args, **kwargs)
         tracked = getattr(work_owner, '_executor_work', None)
         if tracked is not None:
             tracked.add(future)
@@ -2272,7 +2272,7 @@ class TurnExecutionService:
             if self.thread_is_active(thread_id) and not (
                 preserve_active_handoff and self.thread_handoff_in_progress(thread_id)
             ):
-                raise HTTPException(
+                raise ExecutionPrestartRefusal(
                     status_code=409,
                     detail={
                         "code": "thread_turn_already_active",
@@ -4511,13 +4511,16 @@ class TurnExecutionService:
         writable_repository_ids: tuple[str, ...] = (),
         read_only_repository_ids: tuple[str, ...] = (),
         previous_assignment_id: str | None,
+        retirement_reason: str | None = None,
+        renewal_limits=None,
     ):
-        """Replace a thread's bootstrap with one bound to a different runtime.
+        """Replace a thread's bootstrap through canonical retirement/admission.
 
         The canonical thread identity, settings and work-item context persist;
         the superseded assignment/session is completed (releasing its lease
         and workspace) and the thread rebinds to a fresh assignment on the
-        selected runtime with a fresh provider-native session.
+        selected runtime. Runtime switching uses a fresh provider-native session;
+        exhaustion renewal retains the same native identity for ordinary resume.
         """
 
         h = self.host
@@ -4528,9 +4531,10 @@ class TurnExecutionService:
                     await manager.complete(
                         previous_assignment_id,
                         succeeded=False,
-                        failure_code="thread_runtime_switched",
+                        failure_code=(retirement_reason or "thread_runtime_switched"),
                         failure_message=(
-                            "thread superseded onto a different agent runtime"
+                            "thread procedure admission history exhausted" if retirement_reason
+                            else "thread superseded onto a different agent runtime"
                         ),
                     )
                     released = True
@@ -4578,7 +4582,7 @@ class TurnExecutionService:
                     await asyncio.to_thread(release_superseded)
         h._append_bot_event(
             {
-                "type": "thread_runtime_switched",
+                "type": "thread_assignment_renewal_started" if retirement_reason else "thread_runtime_switched",
                 "thread_id": thread_id,
                 "project_id": project.id,
                 "target_runtime": (
@@ -4631,6 +4635,7 @@ class TurnExecutionService:
                 read_only_repository_ids=read_only_repository_ids,
                 execution_profile_id=execution_profile_id,
                 agent_profile=agent_profile,
+                **({'limits': renewal_limits} if retirement_reason else {}),
             )
             try:
                 self.bootstrap_bindings.rebind(
@@ -4640,6 +4645,7 @@ class TurnExecutionService:
                     assignment_id=binding.assignment_id,
                     execution_workspace_id=binding.workspace_id,
                     actor=self.control_actor,
+                    **({'expected_assignment_id': previous_assignment_id} if retirement_reason else {}),
                 )
             except Exception:
                 self.binding_service.workers.cancel_bootstrap(
@@ -4654,9 +4660,134 @@ class TurnExecutionService:
             return self._bootstrap_binding_for_thread(thread_id)
 
         try:
+            if retirement_reason:
+                return await self._settle_custody_call(prepare_and_rebind)
             return await asyncio.to_thread(prepare_and_rebind)
         except TurnExecutionBindingError as exc:
             raise _execution_preflight_blocked(exc) from exc
+
+    async def renew_exhausted_assignment(self, thread_id, *, project, actor, expected_assignment_id):
+        try:
+            return await self._renew_exhausted_assignment(thread_id, project=project,
+                actor=actor, expected_assignment_id=expected_assignment_id)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            message = 'The assignment could not be safely renewed. Inspect current ownership, worker diagnostics and recovery before retrying the retained original.'
+            raise ExecutionPrestartRefusal(status_code=409, detail={
+                'code': 'execution_preflight_blocked', 'message': message, 'retryable': True,
+                'blockers': [{'code': 'procedure_assignment_renewal_blocked', 'message': message,
+                    'retryable': True, 'target_type': 'execution_assignment',
+                    'target_id': expected_assignment_id, 'remediation_route': '/api/execution-workers'}]}) from exc
+
+    async def _renew_exhausted_assignment(self, thread_id, *, project, actor, expected_assignment_id):
+        """One bounded, fenced idle renewal; the caller must retain input first.
+
+        This sends no turn input and does not replace the native thread or Goal.
+        A subsequent ordinary admission rechecks scope and resumes canonical
+        session custody. Uncertain/busy execution and unpublished work stay held.
+        """
+        from pathlib import Path
+
+        def blocked(message):
+            return ExecutionPrestartRefusal(status_code=409, detail={
+                'code': 'execution_preflight_blocked', 'message': message, 'retryable': True,
+                'blockers': [{'code': 'procedure_assignment_renewal_blocked', 'message': message,
+                    'retryable': True, 'target_type': 'execution_assignment',
+                    'target_id': expected_assignment_id, 'remediation_route': '/api/execution-workers'}]})
+
+        lock = self._turn_start_locks.get(thread_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._turn_start_locks[thread_id] = lock
+        async with lock, asyncio.timeout(30):
+            binding = self._bootstrap_binding_for_thread(thread_id)
+            if binding is None:
+                raise blocked('Assignment renewal requires the existing canonical thread bootstrap.')
+            if binding.assignment_id != expected_assignment_id:
+                current = self._assignment_record(binding.assignment_id)
+                if (current is not None and current.created_by == actor.identity_id
+                        and (current.organization_id, current.workspace_id, current.project_id)
+                        == (actor.organization_id, actor.workspace_id, project.id)
+                        and len(current.procedure_discoveries) < 64):
+                    return binding
+                raise blocked('The thread binding changed; inspect current assignment custody before retrying.')
+            if self.thread_is_active(thread_id) or self.thread_handoff_in_progress(thread_id):
+                raise blocked('Wait for the current native turn and steering handoff before renewing this assignment.')
+            manager, session = self._session_for_assignment(expected_assignment_id)
+            assignment = session.validate_current()
+            if (assignment.id != binding.assignment_id or assignment.execution_id != binding.execution_id
+                    or assignment.execution_workspace_id != binding.execution_workspace_id
+                    or assignment.subject.kind != 'thread_bootstrap'
+                    or assignment.created_by != actor.identity_id
+                    or (assignment.organization_id, assignment.workspace_id, assignment.project_id)
+                    != (actor.organization_id, actor.workspace_id, project.id)
+                    or len(assignment.procedure_discoveries) != 64):
+                raise blocked('The exhausted assignment no longer matches the authenticated thread owner and scope.')
+            local_worker = getattr(manager, 'local_worker', None)
+            custody = getattr(session, 'managed_validation', None)
+            status = session.status()
+            if (local_worker is None or not getattr(status, 'running', False)
+                    or not getattr(status, 'ready', False) or getattr(status, 'pending_executor_work', None) != 0
+                    or custody is None):
+                raise blocked('The runner has pending work or unavailable custody; inspect it before renewal.')
+            identity = local_worker.worker_service.identity
+            current_actor = await self._settle_custody_call(identity.actor_for_identity,
+                actor.identity_id, scope=actor.tenant, work_owner=session)
+            if current_actor.identity_id != assignment.created_by:
+                raise blocked('The assignment requester is no longer available for renewal.')
+            if await self._settle_custody_call(custody.blocks_assignment_renewal, work_owner=session):
+                raise blocked('Managed validation is running or its outcome is unknown; preserve its current assignment.')
+            workspace = await self._settle_custody_call(local_worker.workspace_service.get,
+                assignment.execution_workspace_id, current_actor, work_owner=session)
+            members = workspace.repository_members
+            if not workspace.path or not members or len(members) > 64:
+                raise blocked('Automatic renewal requires an inspectable repository workspace; use canonical recovery for this workspace.')
+            root = Path(workspace.path).resolve(strict=True)
+            readonly_mounts, writable_mounts = await self._settle_custody_call(
+                local_worker.repository_mounts, assignment, work_owner=session)
+            # Secondary members are canonical sibling worktrees, not children
+            # of the primary checkout. Reuse the worker's scoped mount boundary.
+            allowed_paths = {root, *(Path(source).resolve(strict=True)
+                for source, _ in (*readonly_mounts, *writable_mounts))}
+            for member in members:
+                path = Path(member.workspace_path).resolve(strict=True)
+                if path not in allowed_paths:
+                    raise blocked('A repository member is outside the canonical workspace.')
+                observed = await self._settle_custody_call(local_worker.inspect_git_metadata,
+                    assignment, workspace_path=path, source_path=Path(member.source_path), work_owner=session)
+                if observed['dirty'] or observed['head'] != member.base_revision or observed['branch'] != (member.branch_name or ''):
+                    raise blocked('Preserve and hand off the current repository changes before renewing this assignment.')
+            runtime = assignment.runtime_binding
+            native_id = getattr(getattr(session, 'runtime', None), 'native_session_id', None) or thread_id
+            if runtime is None or (runtime.provider_id, runtime.runtime_id) != ('openai', 'codex') or native_id != thread_id:
+                raise blocked('This runtime cannot attest same-native-thread idle renewal; use its canonical recovery controls.')
+            reply = await session.request('thread/read', {'threadId': native_id, 'includeTurns': False})
+            native = reply.get('thread') if isinstance(reply, dict) else None
+            if (not isinstance(native, dict) or native.get('id') != native_id
+                    or native.get('status') != {'type': 'idle'}):
+                raise blocked('The provider has not confirmed that this exact native thread is idle.')
+            current = session.validate_current()
+            current_binding = self._bootstrap_binding_for_thread(thread_id)
+            if (self.thread_is_active(thread_id) or self.thread_handoff_in_progress(thread_id)
+                    or current_binding.assignment_id != assignment.id
+                    or current.id != assignment.id or current.fence != assignment.fence
+                    or current.lease != assignment.lease or current.execution_profile_definition != assignment.execution_profile_definition
+                    or current.repository_scope != assignment.repository_scope
+                    or session.status().pending_executor_work != 0):
+                raise blocked('Assignment ownership or activity changed during renewal inspection.')
+            scope = assignment.repository_scope
+            renewed = await self._supersede_thread_bootstrap(thread_id=thread_id, project=project,
+                runtime_binding=runtime, sandbox=assignment.sandbox, approval_policy=assignment.approval_policy,
+                execution_profile_id=assignment.execution_profile_id, agent_profile=assignment.agent_profile,
+                explicit_repository_id=assignment.repository_target.mutable_repository_id if assignment.repository_target else None,
+                writable_repository_ids=tuple(scope.writable_repository_ids) if scope else (),
+                read_only_repository_ids=tuple(scope.read_only_repository_ids) if scope else (),
+                previous_assignment_id=assignment.id, retirement_reason='procedure_assignment_exhausted',
+                renewal_limits=assignment.limits)
+            self.host._append_bot_event({'type': 'thread_assignment_renewed', 'thread_id': thread_id,
+                'project_id': project.id, 'previous_assignment_id': assignment.id, 'assignment_id': renewed.assignment_id})
+            return renewed
 
     async def _convert_legacy_thread_to_bootstrap(
         self,

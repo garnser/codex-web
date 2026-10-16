@@ -58,6 +58,10 @@ class WorkerConflictError(ExecutionWorkerError):
     pass
 
 
+class ProcedureHistoryExhaustedError(WorkerConflictError):
+    """The current assignment cannot retain another procedure admission."""
+
+
 class WorkerLeaseError(ExecutionWorkerError):
     reason_code = FailureReason.WORKER_LEASE_LOST
 
@@ -1136,7 +1140,7 @@ class ExecutionWorkerService:
                 discovery.organization_id, discovery.workspace_id, discovery.project_id):
                 raise AuthorizationError("procedure discovery scope differs from assignment")
             if len(item.procedure_discoveries) >= 64:
-                raise WorkerConflictError("procedure history limit: create a new admitted assignment")
+                raise ProcedureHistoryExhaustedError("procedure history limit: create a new admitted assignment")
             item.procedure_discoveries = (*item.procedure_discoveries, discovery)
             item.updated_at = time.time()
             return state

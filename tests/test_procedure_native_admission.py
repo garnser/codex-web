@@ -179,6 +179,61 @@ class ProductionNativeProcedureAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(d.admitted and d.outcome == 'no_match' for d in evidence))
         self.assertTrue(all(d.policy_source.startswith('definition:') for d in evidence))
 
+    async def test_message_api_retains_original_when_assignment_history_is_exhausted(self):
+        import httpx
+        from fastapi import FastAPI
+        from codex_web.api.turns import build_turns_router
+        from codex_web.procedure_discovery import ProcedureDiscovery
+        from codex_web.services.execution_preflight import ExecutionPreflightService
+        from codex_web.services.procedure_discovery import install_native_procedure_admission
+        from codex_web.storage.execution_preflight import ExecutionPreflightStore
+        from tests import test_turn_service as web_fixtures
+
+        for index in range(64):
+            self.workers.record_procedure_discovery(self.native_assignment.id, ProcedureDiscovery(
+                actor_identity_id=self.actor.identity_id, organization_id=self.actor.organization_id,
+                workspace_id=self.actor.workspace_id, project_id=self.project.id,
+                resource_ids=(self.repo.id,), operation=None, context_checksum=f'preserved-{index}', evaluated_at=1,
+                outcome='no_match', policy_source='canonical:existing-policy', policy_allows=True),
+                expected_fence=self.native_assignment.fence, actor=self.actor)
+        original_assignment = self.workers.store.assignment(self.native_assignment.id).model_dump(mode='json')
+        admission = install_native_procedure_admission(SimpleNamespace(), SimpleNamespace(), self.discovery,
+            self.workers, self.history, self.actor, self.profiles)
+        web, queue, execution, _, _ = web_fixtures.TurnServiceTests._service(self)
+        queue.queued = []
+        execution.active = False
+        native_inputs = []
+        async def admitted_start(thread_id, **kwargs):
+            # The transport seam supplies the existing admitted assignment's
+            # canonical execution ID, as the real bootstrap path does. The
+            # message API, retention, discovery and worker record writer are real.
+            await admission(project=kwargs['project'], actor=kwargs['actor'], thread_id=thread_id,
+                execution_id=self.native_assignment.execution_id, assignment_id=self.native_assignment.id,
+                sandbox=kwargs['sandbox'], source=kwargs['source'])
+            native_inputs.append(kwargs['message'])
+        execution.start_thread_turn_now = admitted_start
+        web.projects.get = lambda _: self.project
+        web.preflight = ExecutionPreflightService(ExecutionPreflightStore(self.sqlite))
+        app = FastAPI()
+        @app.middleware('http')
+        async def identity(request, call_next):
+            request.state.identity_actor = self.actor
+            return await call_next(request)
+        app.include_router(build_turns_router(web, SimpleNamespace(for_thread=lambda *args: self.project)))
+        message = 'Preserve this exact original after the 64th discovery.\nKeep every line.'
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            response = await client.post('/api/threads/t1/turns', json={
+                'project_id': self.project.id, 'message': message})
+        self.assertEqual(response.status_code, 409, response.text)
+        detail = response.json()['detail']
+        self.assertTrue(detail.get('retainedMessage'), detail)
+        self.assertEqual(detail['blockers'][0]['code'], 'procedure_assignment_exhausted')
+        retained = web.preflight.get(detail['attemptId'], actor=self.actor)
+        self.assertEqual(retained.message, message)
+        self.assertEqual(retained.status, 'blocked')
+        self.assertEqual(self.workers.store.assignment(self.native_assignment.id).model_dump(mode='json'), original_assignment)
+        self.assertEqual(native_inputs, [])
+
     async def test_protected_scope_refuses_without_tool_execution(self):
         from codex_web.services.procedure_discovery import install_native_procedure_admission
         admission = install_native_procedure_admission(SimpleNamespace(), SimpleNamespace(), self.discovery,
