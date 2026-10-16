@@ -537,11 +537,7 @@ existing identity document in the shared transaction and returns its full payloa
 unchanged; its storage revision may advance, without session touch/normalization.
 
 Reconciliation holds the executor's local quiescence admission barrier across
-its complete canonical CAS. It atomically reserves exclusive admission together
-with tracked-future submission, refusing existing work before any queue wait.
-That reservation blocks other submissions until the actual future is terminal,
-including through observer cancellation; same-key observers join that future.
-Active/queued manual or scheduled work refuses;
+its complete canonical CAS. Active/queued manual or scheduled work refuses;
 manual/scheduled submissions cannot begin behind that CAS. The barrier is not a
 proof about another process, upgrade helper, direct trusted service caller,
 callback, destination writer, or the original effect. Those remain explicit
@@ -549,6 +545,20 @@ independent writer-incarnation/fence/effect evidence obligations. This does not
 claim every trusted synchronous Recovery helper is an executor task. Dry-run,
 zero local futures, source installation and this local barrier cannot substitute
 for the original all-writer proof or activate state1.3.
+
+The bounded executor may serialize reconciliation behind already accepted manual
+work. Queue custody remains visible; observers must not hold a fixture or
+external writer barrier while awaiting that queued operation. Once work reaches
+the CAS, a changed Recovery snapshot still refuses; queue admission is not a
+reservation of an earlier snapshot or authority.
+
+Manual retention compares the captured backup policy fingerprint with the
+current policy under the existing Recovery/key/identity transaction before any
+deletion. A changed policy refuses retention, preserving the already committed
+manifest and encrypted bytes as diagnostic results. That conflict is not a
+successful backup response or permission to replay the backup. Destination
+deletion failures can have unknown external outcomes; the transaction does not
+promise rollback of arbitrary destination side effects.
 
 
 Operator observation preserves two identities: the HTTP requester remains the

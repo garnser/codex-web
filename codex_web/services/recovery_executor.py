@@ -21,7 +21,6 @@ class RecoveryExecutor:
     def __init__(self):
         self._admission_lock = threading.RLock()
         self._quiescing = False
-        self._exclusive_key = None
         self._owned_key = contextvars.ContextVar("recovery_owned_future", default=None)
         self._pool = None
         self._futures = {}
@@ -49,19 +48,12 @@ class RecoveryExecutor:
             raise error
         return future.result()
 
-    async def run(self, key, operation, *, exclusive=False):
+    async def run(self, key, operation):
         with self._admission_lock:
             if self._closed or self._quiescing:
                 raise RecoveryExecutorClosed('recovery admission is closed or settling a quiescent snapshot')
-            # Reserve exclusive work at submission, not inside the single
-            # worker where it could wait behind the writer it must refuse.
-            # The reservation also prevents new writers entering before CAS.
-            if self._exclusive_key is not None and self._exclusive_key != key:
-                raise RecoveryExecutorBusy('exclusive Recovery work is still owned')
             future = self._futures.get(key)
             if future is None:
-                if exclusive and self._futures:
-                    raise RecoveryExecutorBusy('other actual local Recovery work is not drained')
                 if len(self._futures) >= 2:
                     raise RecoveryExecutorBusy('recovery executor is at capacity')
                 if self._pool is None:
@@ -75,8 +67,6 @@ class RecoveryExecutor:
                         self._owned_key.reset(token)
                 future = self._pool.submit(context.run, owned)
                 self._futures[key] = future
-                if exclusive:
-                    self._exclusive_key = key
         try:
             return await self._settle(future)
         finally:
@@ -94,8 +84,6 @@ class RecoveryExecutor:
             while len(self._terminal_observations) > 2:
                 del self._terminal_observations[next(iter(self._terminal_observations))]
             del self._futures[key]
-            if self._exclusive_key == key:
-                self._exclusive_key = None
 
 
     @contextmanager
@@ -141,7 +129,6 @@ class RecoveryExecutor:
                 self._pool = None
             with self._admission_lock:
                 self._futures.clear()
-                self._exclusive_key = None
         if cancelled:
             raise asyncio.CancelledError
         if error is not None:

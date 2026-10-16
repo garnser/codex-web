@@ -423,6 +423,10 @@ class RecoveryService:
     ) -> None:
         if _firing is not None or self._manual_context.get() is not None:
             def retain(current, keys):
+                if current.policy is None or current.policy.fingerprint() != policy.fingerprint():
+                    # The manifest is already durable. Preserve that diagnostic
+                    # result and its bytes; a superseded policy cannot delete.
+                    raise RecoveryConflictError('Recovery policy changed before retention')
                 rows = sorted((item for item in current.backups.values()
                     if (item.organization_id, item.workspace_id) == (actor.organization_id, actor.workspace_id)),
                     key=lambda item: (item.created_at, item.id), reverse=True)

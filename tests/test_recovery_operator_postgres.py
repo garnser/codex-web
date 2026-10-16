@@ -82,7 +82,60 @@ from tests import test_recovery_manual_api as manual
 
 @unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'), 'isolated PostgreSQL test DSN required')
 class PostgresManualRecoveryTests(_PostgresFixture, manual.ManualRecoveryApiTests):
+    writer_store = PostgresRecoveryOperatorTests.writer_store
+
     async def asyncSetUp(self):
         with patch.object(intent_fixtures, 'SQLiteStateStore', self.state_store_factory):
             await manual.ManualRecoveryApiTests.asyncSetUp(self)
         self.addCleanup(self.sqlite.close)
+
+    async def test_separate_policy_writer_during_put_preserves_backups_before_stale_retention(self):
+        from copy import copy
+        from codex_web.storage.crypto_keys import CryptoKeyStore
+        from codex_web.storage.scheduler import SchedulerStore
+        async with self.client() as client:
+            policy = self.recovery.policy()
+            policy = self.recovery.configure(policy.model_copy(update={'retention_count': 1}),
+                actor=self.actor, expected_fingerprint=policy.fingerprint())
+            first = await client.post('/api/recovery/backups')
+            self.assertEqual(first.status_code, 200, first.text)
+            old = self.recovery.store.load().backups[first.json()['item']['id']]
+            destination = self.recovery.destinations['local']
+            old_bytes = destination.get(old.destination_ref)
+            self.clock.value += 1
+            # Same canonical service/transaction implementation, separate PG
+            # connection and repositories; no direct policy-document mutation.
+            store = self.writer_store()
+            writer = copy(self.recovery)
+            writer.store = RecoveryStore(store)
+            writer.state_store = store
+            writer.crypto = copy(self.recovery.crypto)
+            writer.crypto.store = CryptoKeyStore(store)
+            writer.scheduler = copy(self.scheduler)
+            writer.scheduler.store = SchedulerStore(store)
+            entered, release, controlled = self.gate(destination.put)
+            with patch.object(destination, 'put', side_effect=controlled) as put, \
+                 patch.object(destination, 'delete', wraps=destination.delete) as delete:
+                work = asyncio.create_task(client.post('/api/recovery/backups'))
+                try:
+                    self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+                    new_policy = await asyncio.to_thread(writer.configure,
+                        policy.model_copy(update={'retention_count': 100}), actor=self.actor,
+                        expected_fingerprint=policy.fingerprint())
+                    self.assertEqual(writer.policy().fingerprint(), new_policy.fingerprint())
+                finally:
+                    release.set()
+                    response = await work
+                self.assertEqual(put.call_count, 1)
+                self.assertEqual(delete.call_count, 0)
+            self.assertEqual(response.status_code, 409, response.text)
+            self.assertIn('policy changed before retention', response.text)
+            state = self.recovery.store.load()
+            self.assertEqual(state.policy.fingerprint(), new_policy.fingerprint())
+            self.assertEqual(state.backups[old.id], old)
+            self.assertEqual(len(state.backups), 2)
+            added = next(item for item in state.backups.values() if item.id != old.id)
+            self.assertEqual(added.policy_fingerprint, policy.fingerprint())
+            self.assertEqual(destination.get(old.destination_ref), old_bytes)
+            self.assertTrue(destination.get(added.destination_ref))
+            self.assertEqual(self.recovery._scheduled_executor.status()['waiting_or_running'], 0)
