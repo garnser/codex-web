@@ -1,5 +1,26 @@
 const {test,expect}=require('@playwright/test');
 const base=process.env.CODEX_WEB_BROWSER_BASE_URL || 'http://127.0.0.1:18766';
+for(const width of [1440,1024,390])for(const theme of ['light','dark'])for(const state of ['active','idle'])
+test(`runner header remains readable beside the complete toolbar (${width}, ${theme}, ${state})`,async({page},testInfo)=>{
+  await page.setViewportSize({width,height:844});
+  await page.goto(`${base}/tests/browser/runner_header_layout_fixture.html?theme=${theme}&state=${state}`);
+  await expect(page.locator('body')).toHaveAttribute('data-ready','true');
+  await expect(page.locator('#thread-meta [data-runner-state]')).toHaveAttribute('data-runner-state',state);
+  const layout=await page.evaluate(()=>{
+    const rect=selector=>{const r=document.querySelector(selector).getBoundingClientRect();return{width:r.width,height:r.height,left:r.left,right:r.right};};
+    return{heading:rect('.thread-heading'),title:rect('h1'),badge:rect('.runner-status'),viewport:innerWidth,document:document.documentElement.scrollWidth,
+      controls:[...document.querySelectorAll('.controls button')].map(n=>({text:n.textContent,content:n.scrollWidth,available:n.clientWidth}))};
+  });
+  if(width>900)expect(layout.heading.width).toBeGreaterThanOrEqual(320);
+  expect(layout.title.height).toBeLessThanOrEqual(50);
+  expect(layout.badge.height).toBeLessThanOrEqual(48);
+  expect(layout.badge.left).toBeGreaterThanOrEqual(0);
+  expect(layout.badge.right).toBeLessThanOrEqual(width);
+  expect(layout.document).toBeLessThanOrEqual(width);
+  for(const control of layout.controls)expect(control.content,control.text).toBeLessThanOrEqual(control.available);
+  await testInfo.attach('header-layout',{body:JSON.stringify(layout),contentType:'application/json'});
+  if(state==='active'&&width!==1024)await page.screenshot({path:testInfo.outputPath('runner-header.png'),fullPage:true});
+});
 test('lost recovering stopped and actual activity remain distinct with unavailable diagnostics',async({page})=>{
   await page.setViewportSize({width:390,height:844});
   await page.goto(`${base}/tests/browser/runtime_supervision_fixture.html`);
