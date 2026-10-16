@@ -132,10 +132,30 @@ class RecoveryOperatorApiTests(unittest.IsolatedAsyncioTestCase):
             before = self.recovery.store.load().reconciliations[self.payload.event_id]
             evidence = self.artifacts.store.load()
             with patch.object(self.operator.provider.reconcile, 'reconcile', side_effect=AssertionError('engine replay')), \
-                 patch.object(self.recovery, 'create_backup', side_effect=AssertionError('backup replay')):
+                 patch.object(self.recovery, 'create_backup', side_effect=AssertionError('backup replay')), \
+                 patch.object(self.service, 'reconcile', wraps=self.service.reconcile) as settlement:
                 response = await client.post(self.url('/reconciliation-intents/' + intent['id'] + '/observe'), json={})
                 self.assertEqual(response.status_code, 200, response.text)
-                self.assertEqual(response.json()['item']['status'], 'succeeded', response.text)
+                settled = response.json()['item']
+                self.assertEqual(settled['status'], 'succeeded', response.text)
+                self.assertEqual(settlement.call_args.kwargs['actor'], self.worker_actor)
+                self.assertNotEqual(self.worker_actor.identity_id, self.actor.identity_id)
+                self.assertIn('action-intent:worker', self.worker_actor.service_scopes)
+                repeated = await client.post(self.url('/reconciliation-intents/' + intent['id'] + '/observe'), json={})
+                self.assertEqual(repeated.status_code, 200, repeated.text)
+                for name in ('id', 'status', 'last_receipt_id', 'last_verification_id'):
+                    self.assertEqual(repeated.json()['item'][name], settled[name])
+                # A successful service-worker settlement cannot substitute for
+                # current HUMAN MFA on a subsequent operator observation.
+                def demote(state):
+                    state.sessions = [row.model_copy(update={'assurance': AuthenticationAssurance.PRIMARY,
+                        'step_up_until': None}) if row.id == self.credentials.session_id else row for row in state.sessions]
+                    return state
+                self.identity.store.update(demote)
+                calls = settlement.call_count
+                refused = await client.post(self.url('/reconciliation-intents/' + intent['id'] + '/observe'), json={})
+                self.assertEqual(refused.status_code, 403, refused.text)
+                self.assertEqual(settlement.call_count, calls)
             self.assertEqual(self.recovery.store.load().reconciliations[self.payload.event_id], before)
             self.assertEqual(self.artifacts.store.load().evidence, evidence.evidence)
 

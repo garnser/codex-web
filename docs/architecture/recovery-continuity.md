@@ -545,3 +545,11 @@ independent writer-incarnation/fence/effect evidence obligations. This does not
 claim every trusted synchronous Recovery helper is an executor task. Dry-run,
 zero local futures, source installation and this local barrier cannot substitute
 for the original all-writer proof or activate state1.3.
+
+
+Operator observation preserves two identities: the HTTP requester remains the
+current administrator/MFA and proof subject, while canonical ActionIntent
+settlement uses the already registered service worker, just as initial execution
+does. An administrator is not granted worker scopes. The requester/tenant/firing
+binding is checked before delegation, and provider readback/settlement recheck
+current human authority. The normal service-principal guard is unchanged.

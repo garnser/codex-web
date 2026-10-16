@@ -97,5 +97,11 @@ class RecoveryOperatorActions:
                 or intent.requested_by != actor.identity_id
                 or intent.request.parameters.get('event_id') != event_id):
             raise RecoveryConflictError('Intent does not bind this operator/firing')
+        if self.worker_actor.tenant != actor.tenant:
+            raise RecoveryConflictError('No existing ActionIntent worker for this tenant')
+        # The human remains the authenticated requester/proof subject through
+        # resolve_actor and the guarded provider readback. Canonical settlement
+        # belongs to the SAME existing service worker used by submit/execute;
+        # never lend its scopes to the human or weaken _require_worker.
         return await self.intents.reconcile(intent_id,
-            ActionIntentReconcileRequest(retry_if_idempotent=False), actor=actor)
+            ActionIntentReconcileRequest(retry_if_idempotent=False), actor=self.worker_actor)
