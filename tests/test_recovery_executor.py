@@ -55,7 +55,8 @@ class RecoveryExecutorTests(unittest.IsolatedAsyncioTestCase):
         finally:
             release.set()
             try:
-                await asyncio.gather(work, *([stopping] if stopping is not None else []))
+                replies = await asyncio.gather(work, *([stopping] if stopping is not None else []),
+                    return_exceptions=True)
                 # Give scheduled completion/shield callbacks a chance to report
                 # errors; the handler records, rather than suppresses, failures.
                 await asyncio.sleep(0)
@@ -63,6 +64,11 @@ class RecoveryExecutorTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 loop.set_exception_handler(previous_handler)
         self.assertEqual(cancellations, [True])
+        self.assertEqual(len(replies), 2)
+        self.assertIsInstance(replies[0], asyncio.CancelledError)
+        self.assertIsNone(replies[1], 'drain failed instead of joining the actual worker')
+        self.assertTrue(work.done())
+        self.assertTrue(stopping.done())
         self.assertTrue(future.done())
         self.assertIsInstance(future.exception(), ValueError)
         self.assertEqual(str(future.exception()), 'terminal worker denial')
