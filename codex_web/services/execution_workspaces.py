@@ -543,6 +543,9 @@ class ExecutionWorkspaceService:
                     details.update(
                         {
                             "materialization_resource_id": materialization.resource_id,
+                            "history_readiness": {**materialization.model_dump(mode="json"),
+                                "local_revision": observed, "deadline_seconds": 120,
+                                "maximum_depth": 4096, "provenance": "canonical workspace refresh"},
                             "materialization_provider_type": materialization.provider_type,
                             "materialization_provider_instance": materialization.provider_instance,
                             "materialization_repository": materialization.repository_full_name,

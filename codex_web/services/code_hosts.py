@@ -303,13 +303,36 @@ class CodeHostService:
         lock = self._materialization_locks.setdefault(lock_key, asyncio.Lock())
         async with lock:
             async def materialize(credential: str | None) -> CodeHostRevisionMaterializationFact:
+                def current_scope():
+                    current_binding, current_provider = self.registry.resolve(binding_id, actor=actor)
+                    current_resource = self._resource(resource_id, actor=actor, binding=current_binding)
+                    if (current_binding != binding or current_provider is not provider
+                            or current_resource != resource):
+                        raise CodeHostError("materialization binding/provider/Resource changed")
+                    for capability in (CodeHostCapability.REPOSITORY_READ,
+                            CodeHostCapability.REFS_READ, CodeHostCapability.COMMITS_READ):
+                        self._require_capability(current_binding, current_provider, capability)
+
+                async def checkpoint():
+                    current_scope()
+                    async def verify(current_credential):
+                        if current_credential != credential:
+                            raise CodeHostError("materialization credential changed")
+                    # Re-enter the existing secret-use boundary, including current
+                    # status and use authority. Never retain a new credential here.
+                    await self._with_credential(binding, actor=actor, resource=resource,
+                        operation="code-host.revision.materialize", callback=verify)
+                    current_scope()
+
                 if not credential:
                     raise CodeHostError(
                         "authenticated provider access is required for materialization"
                     )
+                await checkpoint()
                 repository = await provider.repository(
                     binding, resource, credential=credential
                 )
+                await checkpoint()
                 if (
                     repository.resource_id != resource.id
                     or repository.provider_type.casefold() != binding.provider_type.casefold()
@@ -325,6 +348,7 @@ class CodeHostService:
                 ):
                     raise CodeHostError("provider repository has no safe default branch")
                 refs = await provider.refs(binding, resource, credential=credential)
+                await checkpoint()
                 matches = [
                     item for item in refs
                     if item.kind == "branch" and item.name == branch
@@ -336,12 +360,14 @@ class CodeHostService:
                 commit = await provider.commit(
                     binding, resource, requested, credential=credential
                 )
+                await checkpoint()
                 if commit.revision.casefold() != requested:
                     raise CodeHostError("provider commit attestation changed")
                 remote = self._verified_remote_url(binding, repository)
                 already_present = await asyncio.to_thread(
                     self._git_has_complete_history, checkout, requested
                 )
+                await checkpoint()
                 if not already_present:
                     await asyncio.to_thread(
                         self._materialize_git_sync,
@@ -355,8 +381,10 @@ class CodeHostService:
                         disk_budget_bytes=disk_budget_bytes,
                         disk_quota_bytes=disk_quota_bytes,
                     )
+                await checkpoint()
                 # Refresh still requires the same attested default branch after I/O.
                 current_refs = await provider.refs(binding, resource, credential=credential)
+                await checkpoint()
                 if [ref.revision.casefold() for ref in current_refs
                     if ref.kind == "branch" and ref.name == branch] != [requested]:
                     raise CodeHostError("provider default branch changed during materialization")
@@ -734,7 +762,8 @@ class CodeHostService:
                             check_quota()
                             # Serialize publication to the shared object store. The
                             # stable empty lock is metadata, never a source/pack file.
-                            with (pack_dir / '.codex-materialize.lock').open('a+b') as lock:
+                            with os.fdopen(os.open(pack_dir / '.codex-materialize.lock',
+                                    os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600), 'a+b') as lock:
                                 while True:
                                     try:
                                         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -757,9 +786,18 @@ class CodeHostService:
                                         except FileExistsError:
                                             if destination.is_symlink():
                                                 raise CodeHostError("preexisting object pack is a symlink")
-                                            with destination.open('rb') as existing, source.open('rb') as proposed:
-                                                if hashlib.file_digest(existing, 'sha256').digest() != hashlib.file_digest(proposed, 'sha256').digest():
-                                                    raise CodeHostError("preexisting object pack does not match verified content")
+                                            def digest(path):
+                                                from codex_web.storage.state_store import check_operation_budget
+                                                result = hashlib.sha256()
+                                                with path.open('rb') as stream:
+                                                    while chunk := stream.read(65536):
+                                                        check_operation_budget()
+                                                        if time.monotonic() >= deadline:
+                                                            raise CodeHostError("history materialization time bound exceeded")
+                                                        result.update(chunk)
+                                                return result.digest()
+                                            if digest(destination) != digest(source):
+                                                raise CodeHostError("preexisting object pack does not match verified content")
                                     # Publishing the index last is the commit point;
                                     # no subprocess or quota failure follows it.
                                 except BaseException:

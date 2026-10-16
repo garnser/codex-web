@@ -1,0 +1,8 @@
+<!doctype html><meta charset="utf-8"><title>Source history observation fixture</title>
+<main role="region" aria-label="History fixture"></main><script type="module">
+import {historyReadinessHtml, brokerHistoryObservation} from '/static/execution_history_view.js';
+const esc = value => String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
+const history = {history_state:'complete',readiness:'ready',revision:'a'.repeat(40),local_revision:'b'.repeat(40),fetched:true,maximum_depth:4096,deadline_seconds:120,next_action:'refresh_exact_revision',provenance:'canonical workspace refresh'};
+const refusal = {state:'not_ready',target_revision:'a'.repeat(40),maximum_depth:4096,deadline_seconds:120,next_action:'inspect_history_bound_or_destination_refusal',provenance:'<img src=x onerror=alert(1)>'};
+document.querySelector('main').innerHTML=historyReadinessHtml(history,esc)+historyReadinessHtml(brokerHistoryObservation(JSON.stringify({history_readiness:refusal})),esc);
+</script>

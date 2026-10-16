@@ -831,6 +831,22 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 parsed_headers[key.casefold()] = value.strip()
         return status, parsed_headers, json.loads(raw_body or b"{}")
 
+    async def test_history_refusal_survives_http_transport_and_audit_projection(self):
+        observation = {"state": "not_ready", "target_revision": "a" * 40,
+            "local_revision": "b" * 40, "maximum_depth": 4096, "deadline_seconds": 120,
+            "next_action": "inspect_history_bound_or_destination_refusal"}
+        failure = ControlPlaneBrokerRequestError("bounded history refusal", status_code=409,
+            history_readiness=observation)
+        with patch.object(self.service, "dispatch", new=AsyncMock(side_effect=failure)):
+            status, _, response = await self._request("GET", "/api/work-items")
+        self.assertEqual(status, 409)
+        self.assertEqual(response["error"]["history_readiness"], observation)
+        self.assertTrue(response["error"]["correlation_id"])
+        # The existing 500-character audit reason must retain parseable details;
+        # a truncated JSON string must never become a false ready observation.
+        events = self.service.audit.load().events
+        self.assertEqual(json.loads(events[-1].denial_reason)["history_readiness"], observation)
+
     async def test_work_item_list_continues_cursor_with_unchanged_filters(self) -> None:
         pages = [
             {"items": [{"ref": "group/app#42"}], "nextCursor": "opaque-cursor"},

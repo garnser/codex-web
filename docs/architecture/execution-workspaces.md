@@ -343,3 +343,19 @@ Shallow destination repositories are explicitly unsupported: acquire a complete
 history workspace. Success facts expose complete/ready/refresh_exact_revision;
 broker history refusals expose target, bounds and next action in existing error
 diagnostics. This is additive diagnostics, not installed inspector qualification.
+
+Materialization re-enters the existing secret-use boundary and compares current
+binding, provider adapter and repository Resource after every asynchronous
+provider/object-transfer boundary. A changed credential/status/use authority or
+scope refuses readiness even when public objects were imported; imported objects
+do not authorize checkout reset. Existing broker assignment/procedure checks
+remain required before refresh.
+
+Workspace refresh events retain structured history readiness with immutable
+target/local revisions and provenance. The existing workspace event inspector
+renders these alongside raw canonical details. History refusals also remain in
+the existing bounded broker audit reason as a JSON observation and appear in the
+existing audit inspector, including bounds and next action; missing observations
+are unknown, never inferred ready. No new store, permission or polling loop is
+introduced. Rendered fixture and installed inspector acceptance remain delivery
+gates, distinct from source implementation.

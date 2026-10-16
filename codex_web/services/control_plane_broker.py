@@ -1949,6 +1949,7 @@ class ControlPlaneBrokerService:
                     raise ControlPlaneBrokerRequestError(
                         str(materialization_exc), status_code=502,
                         history_readiness={"state": "unavailable", "target_revision": requested_revision,
+                            "local_revision": current_workspace.head_revision,
                             "next_action": "reconcile_provider_and_retry_refresh", "deadline_seconds": 120,
                             "maximum_depth": 4096}
                     ) from materialization_exc
@@ -1956,6 +1957,7 @@ class ControlPlaneBrokerService:
                     raise ControlPlaneBrokerRequestError(
                         str(materialization_exc), status_code=409,
                         history_readiness={"state": "not_ready", "target_revision": requested_revision,
+                            "local_revision": current_workspace.head_revision,
                             "next_action": "inspect_history_bound_or_destination_refusal",
                             "deadline_seconds": 120, "maximum_depth": 4096}
                     ) from materialization_exc
@@ -2895,7 +2897,8 @@ class AssignmentBoundControlPlaneBroker:
                         actor_identity_id=actor_identity_id,
                         authority_decision=authority_decision,
                         response_status=status,
-                        denial_reason=denial_reason,
+                        denial_reason=(json.dumps({"message": denial_reason[:80],
+                            "history_readiness": history_readiness}) if history_readiness else denial_reason),
                     )
                 if not writer.is_closing():
                     with contextlib.suppress(Exception):
@@ -2906,8 +2909,8 @@ class AssignmentBoundControlPlaneBroker:
                                 "error": {
                                     "code": denial_code,
                                     **({"procedure_discovery": procedure_discovery} if procedure_discovery is not None else {}),
-                    **({"history_readiness": history_readiness} if history_readiness else {}),
-                    "message": denial_reason[:500],
+                                    **({"history_readiness": history_readiness} if history_readiness else {}),
+                                    "message": denial_reason[:500],
                                     "correlation_id": correlation_id,
                                 }
                             },
