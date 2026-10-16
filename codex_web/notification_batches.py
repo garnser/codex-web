@@ -362,6 +362,7 @@ def _eligible(
         or attempt.project_id != original.project_id
         or TurnQueuePolicy.source_origin(original.source) != notification_source_origin
         or original.handoff_requested_at is not None
+        or original.owner_routing_pin is not None
         or not original.work_item_ref
         or not original.agent_profile_id
         or not original.agent_profile_revision

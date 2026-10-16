@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from codex_web.definitions import DefinitionContext, DefinitionDraftCreate, DefinitionReference, reference_for
 from codex_web.execution_contract_seed import execution_role_catalog_seed_payload
 from codex_web.execution_contracts import install_execution_role_catalog_provider
@@ -19,8 +21,25 @@ from codex_web.services.definitions import (
 class ExecutionRoleDefinitionService:
     """Resolve the execution-role catalog exclusively from Definition Registry."""
 
-    def __init__(self, registry: DefinitionRegistryService) -> None:
+    def __init__(self, registry: DefinitionRegistryService, *, projects=None) -> None:
         self.registry = registry
+        self.projects = projects
+
+    def owner_routing(self, *, project_id: str, scope):
+        from codex_web.owner_routing import OwnerRoutingError, owner_routing_snapshot
+        if self.projects is None or not project_id:
+            raise OwnerRoutingError('owner_routing_project_unavailable')
+        record = self.registry.resolve(definition_id=EXECUTION_ROLE_CATALOG_ID,
+            kind=EXECUTION_ROLE_CATALOG_KIND, context=DefinitionContext(
+                organization_id=scope.organization_id, workspace_id=scope.workspace_id, project_id=project_id),
+            now=time.time())
+        routing = owner_routing_snapshot(record, organization_id=scope.organization_id,
+            workspace_id=scope.workspace_id, project_id=project_id)
+        if routing.aliases or routing.rejected:
+            # Aliases require canonical Project attestation. Unchanged role
+            # references retain their caller's existing scope enforcement.
+            self.projects.get(project_id, scope=scope)
+        return routing
 
     def bootstrap(self) -> None:
         self.registry.bootstrap(
@@ -43,6 +62,11 @@ class ExecutionRoleDefinitionService:
         workspace_id: str | None = None,
         project_id: str | None = None,
     ) -> ExecutionRoleCatalogDefinition:
+        return self.resolve_catalog(organization_id=organization_id, workspace_id=workspace_id,
+                                    project_id=project_id)[0]
+
+    def resolve_catalog(self, *, organization_id=None, workspace_id=None, project_id=None):
+        """Resolve current role data and its exact reference from one record."""
         record = self.registry.resolve(
             definition_id=EXECUTION_ROLE_CATALOG_ID,
             kind=EXECUTION_ROLE_CATALOG_KIND,
@@ -51,8 +75,9 @@ class ExecutionRoleDefinitionService:
                 workspace_id=workspace_id,
                 project_id=project_id,
             ),
+            now=time.time(),
         )
-        return ExecutionRoleCatalogDefinition.model_validate(record.payload)
+        return ExecutionRoleCatalogDefinition.model_validate(record.payload), reference_for(record)
 
     def reference(
         self,
@@ -61,20 +86,13 @@ class ExecutionRoleDefinitionService:
         workspace_id: str | None = None,
         project_id: str | None = None,
     ) -> DefinitionReference:
-        record = self.registry.resolve(
-            definition_id=EXECUTION_ROLE_CATALOG_ID,
-            kind=EXECUTION_ROLE_CATALOG_KIND,
-            context=DefinitionContext(
-                organization_id=organization_id,
-                workspace_id=workspace_id,
-                project_id=project_id,
-            ),
-        )
-        return reference_for(record)
+        return self.resolve_catalog(organization_id=organization_id, workspace_id=workspace_id,
+                                    project_id=project_id)[1]
 
 
 def install_execution_role_definitions(
     registry: DefinitionRegistryService,
+    *, projects=None,
 ) -> ExecutionRoleDefinitionService:
     if not any(
         item["kind"] == EXECUTION_ROLE_CATALOG_KIND
@@ -88,7 +106,7 @@ def install_execution_role_definitions(
                 validate=validate_execution_role_catalog,
             )
         )
-    service = ExecutionRoleDefinitionService(registry)
+    service = ExecutionRoleDefinitionService(registry, projects=projects)
     service.bootstrap()
     install_execution_role_catalog_provider(service.catalog)
     return service

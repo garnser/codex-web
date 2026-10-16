@@ -82,6 +82,9 @@ _TEST_DEFINITION_REF = DefinitionReference(
 
 
 class _ExecutionRoles:
+    def resolve_catalog(self, **_kwargs):
+        return _TEST_ROLE_CATALOG, _TEST_DEFINITION_REF
+
     def catalog(self, **_kwargs):
         return _TEST_ROLE_CATALOG
 

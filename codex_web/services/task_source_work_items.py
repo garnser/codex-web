@@ -281,11 +281,7 @@ class TaskSourceWorkItemProjector:
                 priority=priority,
                 current_owner=projected_owner,
                 current_stage=projected_stage,
-                implementation_owner=(
-                    projected_owner
-                    if projected_owner and projected_owner not in self.dependencies.non_implementation_owners
-                    else None
-                ),
+                implementation_owner=None,
                 validation_owner=self.dependencies.default_validation_owner,
                 release_owner=self.dependencies.default_release_owner,
                 artifact_state="branch",
@@ -379,8 +375,7 @@ class TaskSourceWorkItemProjector:
                 reconcile_implementation_owner
                 and projection.owner_known
                 and projected_owner
-                and self.state_machine._coerce_owner(projected_owner)
-                not in self.dependencies.non_implementation_owners
+                and self.state_machine._is_implementation_candidate(state, projected_owner)
             ):
                 previous_implementation_owner = self.state_machine._coerce_owner(
                     state.implementation_owner

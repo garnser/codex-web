@@ -216,6 +216,7 @@ class TurnExecutionService:
         self.host = host
         self.handoff_delivery_recorder: Callable[..., Any] | None = None
         self.queued_preflight = None
+        self.owner_routing_validator = None
         self.procedure_admission = None
         self.session_custody = None
         self.notification_batch_handler = None
@@ -882,6 +883,7 @@ class TurnExecutionService:
         agent_profile_actor_id: str | None = None,
         memory_context_binding: UxBriefTurnBinding | None = None,
         provider_notification_pin=None,
+        owner_routing_pin=None,
         canonical_ingress_id: str | None = None,
         ingress_execution_profile_definition=None,
         project_coordination_dispatch=None,
@@ -910,6 +912,7 @@ class TurnExecutionService:
                     and existing.agent_profile_actor_id == agent_profile_actor_id
                     and existing.memory_context_binding == memory_context_binding
                     and existing.provider_notification_pin == provider_notification_pin
+                    and existing.owner_routing_pin == owner_routing_pin
                     and existing.reply_target == reply_target
                     and existing.sandbox == sandbox
                     and existing.approval_policy == approval_policy
@@ -921,7 +924,7 @@ class TurnExecutionService:
 
             incoming_entries = (
                 h._work_item_wakeup_entries(message)
-                if (reply_target is None and memory_context_binding is None and provider_notification_pin is None
+                if (reply_target is None and memory_context_binding is None and provider_notification_pin is None and owner_routing_pin is None
                     and source != "project-coordination" and project_coordination_dispatch is None)
                 else []
             )
@@ -934,6 +937,7 @@ class TurnExecutionService:
                     and existing.project_coordination_dispatch is None
                     and existing.memory_context_binding is None
                     and existing.provider_notification_pin is None
+                    and existing.owner_routing_pin is None
                     and h._work_item_wakeup_entries(existing.message)
                 ]
                 if wakeup_items:
@@ -999,6 +1003,7 @@ class TurnExecutionService:
                 agent_profile_actor_id=agent_profile_actor_id,
                 **({"memory_context_binding": memory_context_binding} if memory_context_binding is not None else {}),
                 **({"provider_notification_pin":provider_notification_pin} if provider_notification_pin is not None else {}),
+                **({"owner_routing_pin": owner_routing_pin} if owner_routing_pin is not None else {}),
                 source=source,
                 **({"project_coordination_dispatch": project_coordination_dispatch}
                    if project_coordination_dispatch is not None else {}),
@@ -1033,6 +1038,7 @@ class TurnExecutionService:
         # Legacy callers without identity defer to atomic enqueue deduplication.
         if not identity:
             return None
+        identity.setdefault('owner_routing_pin', None)
         for queued in self.host._thread_queue(thread_id):
             if (queued.source == source and queued.message == message
                     and all(getattr(queued, key) == value for key, value in identity.items())):
@@ -1959,6 +1965,7 @@ class TurnExecutionService:
         execution_id: str | None = None,
         work_item_ref: str | None = None,
         handoff_requested_at: float | None = None,
+        owner_routing_pin=None,
         repository_resource_id: str | None = None,
         writable_repository_resource_ids: tuple[str, ...] = (),
         read_only_repository_resource_ids: tuple[str, ...] = (),
@@ -2021,6 +2028,7 @@ class TurnExecutionService:
                     execution_id=execution_id,
                     work_item_ref=work_item_ref,
                     handoff_requested_at=handoff_requested_at,
+                    **({'owner_routing_pin': owner_routing_pin} if owner_routing_pin is not None else {}),
                     repository_resource_id=repository_resource_id,
                     writable_repository_resource_ids=writable_repository_resource_ids,
                     read_only_repository_resource_ids=read_only_repository_resource_ids,
@@ -2053,6 +2061,7 @@ class TurnExecutionService:
             execution_id=execution_id,
             work_item_ref=work_item_ref,
             handoff_requested_at=handoff_requested_at,
+            **({'owner_routing_pin': owner_routing_pin} if owner_routing_pin is not None else {}),
             repository_resource_id=repository_resource_id,
             writable_repository_resource_ids=writable_repository_resource_ids,
             read_only_repository_resource_ids=read_only_repository_resource_ids,
@@ -2088,6 +2097,7 @@ class TurnExecutionService:
         execution_id: str | None = None,
         work_item_ref: str | None = None,
         handoff_requested_at: float | None = None,
+        owner_routing_pin=None,
         repository_resource_id: str | None = None,
         writable_repository_resource_ids: tuple[str, ...] = (),
         read_only_repository_resource_ids: tuple[str, ...] = (),
@@ -2107,6 +2117,25 @@ class TurnExecutionService:
         operator_admission_validator=None,
     ) -> dict[str, Any]:
         h = self.host
+        def owner_admission_validator():
+            if owner_routing_pin is None:
+                return
+            self._require_automated_admission(source, operator_admission_validator)
+            try:
+                if self.owner_routing_validator is None:
+                    raise ValueError('owner_routing_validator_unavailable')
+                self.owner_routing_validator(owner_routing_pin, thread_id=thread_id, project=project,
+                    work_item_ref=work_item_ref, handoff_requested_at=handoff_requested_at,
+                    queued_admission_attempt_id=queued_admission_attempt_id,
+                    agent_profile_id=agent_profile_id, agent_profile_revision=agent_profile_revision,
+                    agent_profile_actor_id=agent_profile_actor_id)
+            except (LookupError, RuntimeError, ValueError, HTTPException) as exc:
+                from codex_web.owner_routing import OwnerRoutingError
+                code = str(exc) if isinstance(exc, OwnerRoutingError) else 'owner_routing_validation_unavailable'
+                raise ExecutionPrestartRefusal(status_code=409, detail={
+                    'code': code, 'message': 'Original owner routing no longer qualifies; inspect the retained request.',
+                    'retryable': False}) from exc
+        owner_admission_validator()
         if notification_batch_admission_id:
             if queued_admission_attempt_id or not queued_admission_claim_id or self.queued_preflight is None:
                 raise ValueError("notification admission requires its exclusive retained claim")
@@ -3297,26 +3326,37 @@ class TurnExecutionService:
                     except AutomatedAdmissionPaused:
                         preinput_admission_refused = True
                         raise
+                try:
+                    owner_admission_validator()
+                except (ExecutionPrestartRefusal, AutomatedAdmissionPaused):
+                    preinput_admission_refused = True
+                    raise
                 start_options = {}
                 delegated = (TurnQueuePolicy.source_origin(source) == "project-coordination"
                              and operator_admission_validator is not None)
+                guarded_owner = owner_routing_pin is not None
                 capture_supported = (queued_admission_attempt_id and queued_admission_claim_id
                         and self.queued_preflight is not None
                         and isinstance(runtime_adapter, CodexAgentRuntimeAdapter))
-                if delegated and not capture_supported:
+                if (delegated or guarded_owner) and not capture_supported:
                     preinput_admission_refused = True
-                    raise AutomatedAdmissionPaused(status_code=409, detail={
-                        "code": "project_delegation_transport_unsupported",
-                        "message": "Delegated input requires the canonical guarded native-start transport",
+                    refusal = ExecutionPrestartRefusal if guarded_owner else AutomatedAdmissionPaused
+                    raise refusal(status_code=409, detail={
+                        "code": "owner_routing_transport_unsupported" if guarded_owner else "project_delegation_transport_unsupported",
+                        "message": "Recipient-pinned input requires the canonical guarded native-start transport",
                         "retryable": False})
                 if capture_supported:
                     from codex_web.services.queued_native_start import QueuedNativeStartCapture
+                    def validate_native_admission():
+                        if operator_admission_validator is not None:
+                            operator_admission_validator()
+                        owner_admission_validator()
                     start_options['start_capture'] = QueuedNativeStartCapture(
                         self.queued_preflight, queued_admission_attempt_id,
                         queued_admission_claim_id, requested_execution_id, thread_id,
                         actor.identity_id if actor is not None else agent_profile_actor_id,
-                        admission_validator=operator_admission_validator,
-                        require_send_guard=delegated)
+                        admission_validator=validate_native_admission if guarded_owner else operator_admission_validator,
+                        require_send_guard=delegated or guarded_owner)
                 runtime_turn_result = await runtime_adapter.start_turn(
                     native_session_id,
                     runtime_turn_request,
@@ -3487,9 +3527,11 @@ class TurnExecutionService:
                         self.transcript.discard_unstarted(thread_id, requested_execution_id)
                     if history_started and self.thread_history is not None:
                         self.thread_history.discard_unstarted(thread_id, canonical_execution_id)
-                    if isinstance(exc, AutomatedAdmissionPaused):
+                    if isinstance(exc, (AutomatedAdmissionPaused, ExecutionPrestartRefusal)):
                         raise
                     cause = exc.__cause__
+                    if isinstance(cause, ExecutionPrestartRefusal):
+                        raise ExecutionPrestartRefusal(status_code=cause.status_code, detail=cause.detail) from exc
                     if isinstance(cause, AutomatedAdmissionPaused):
                         raise AutomatedAdmissionPaused(status_code=cause.status_code, detail=cause.detail) from exc
                     raise AutomatedAdmissionPaused(status_code=409, detail={
@@ -3672,6 +3714,7 @@ class TurnExecutionService:
                 await asyncio.to_thread(
                     self.handoff_delivery_recorder,
                     work_item_ref, expected_requested_at=handoff_requested_at,
+                    **({'owner_routing_pin': owner_routing_pin} if owner_routing_pin is not None else {}),
                     recipient=agent_profile_binding.role_id,
                     organization_id=getattr(assignment, "organization_id", None),
                     workspace_id=getattr(assignment, "workspace_id", None),
@@ -3954,6 +3997,7 @@ class TurnExecutionService:
                     if retained_attempt is not None else queued.execution_id),
                 work_item_ref=queued.work_item_ref,
                 handoff_requested_at=queued.handoff_requested_at,
+                **({'owner_routing_pin': queued.owner_routing_pin} if queued.owner_routing_pin is not None else {}),
                 repository_resource_id=queued.repository_resource_id,
                 writable_repository_resource_ids=queued.writable_repository_resource_ids,
                 read_only_repository_resource_ids=queued.read_only_repository_resource_ids,

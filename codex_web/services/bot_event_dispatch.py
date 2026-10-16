@@ -76,6 +76,7 @@ class BotEventDispatchService:
         self.binding_name = binding_name
         self.agent_profile_resolver = agent_profile_resolver
         self.execution_profiles = execution_profiles
+        self.owner_routing_context = None
 
     @staticmethod
     def recent_activity_grace_seconds() -> float:
@@ -191,6 +192,7 @@ class BotEventDispatchService:
         read_only_repository_resource_ids: tuple[str, ...] = (),
         require_idle: bool = False,
         provider_notification_pin=None,
+        owner_routing_pin=None,
     ) -> dict[str, Any]:
         project = self.projects.get(binding.project_id)
         settings = self.settings.get(binding.thread_id)
@@ -202,9 +204,13 @@ class BotEventDispatchService:
         )
         profile_context = (
             await asyncio.to_thread(self.agent_profile_resolver, binding)
-            if self.agent_profile_resolver is not None
+            if self.agent_profile_resolver is not None and owner_routing_pin is None
             else None
         )
+        if owner_routing_pin is not None:
+            if self.owner_routing_context is None:
+                raise HTTPException(status_code=409, detail={'code': 'owner_routing_context_unavailable'})
+            profile_context = await asyncio.to_thread(self.owner_routing_context, owner_routing_pin, binding)
         agent_profile, profile_actor = (
             profile_context if profile_context is not None else (None, None)
         )
@@ -274,6 +280,7 @@ class BotEventDispatchService:
                 reply_target=reply_target,
                 handoff_requested_at=handoff_requested_at,
                 provider_notification_pin=provider_notification_pin,
+                **({'owner_routing_pin': owner_routing_pin} if owner_routing_pin is not None else {}),
                 **profile_kwargs,
             )
             if duplicate:
@@ -320,6 +327,7 @@ class BotEventDispatchService:
                 source=source,
                 reply_target=reply_target,
                 **({"provider_notification_pin":provider_notification_pin} if provider_notification_pin is not None else {}),
+                **({'owner_routing_pin': owner_routing_pin} if owner_routing_pin is not None else {}),
             )
             binding.updated_at = time.time()
             await asyncio.to_thread(self.bindings.upsert, binding)
@@ -363,6 +371,13 @@ class BotEventDispatchService:
                 "queuedId": queued.id,
                 "dispatchScope": dispatch_scope,
             }
+
+        if owner_routing_pin is not None:
+            # Recipient-pinned inputs need the durable retained claim and the
+            # synchronous guarded native transport, including an idle thread.
+            result = await queue_turn('event_turn_queued_owner_routing')
+            self.execution.schedule_queue_drain(binding.thread_id)
+            return result
 
         self.recovery.release_stale_active_turn(
             binding.thread_id,

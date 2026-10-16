@@ -249,14 +249,20 @@ class QueuedNativeStartTests(unittest.IsolatedAsyncioTestCase):
         return self.runtime._send.call_args.args[0]['id']
 
     async def test_exact_positive_after_waiter_timeout_reconciles_once_without_native_replay(self):
+        self.service.queued_start_observer = Mock()
         rpc_id = await self.timed_out_request()
         self.assertIsNone(self.saved().queued_start_receipt)
+        self.service.queued_start_observer.assert_not_called()
         await self.runtime._dispatch_message(self.response(rpc_id))
         saved = self.saved()
         self.assertEqual(saved.status, 'started')
         self.assertEqual(saved.queued_start_receipt.provider_native_turn_id, 'native-turn')
         self.assertEqual(saved.queued_start_receipt.execution_id, 'bootstrap-execution')
         self.assertEqual(saved.queued_turn_snapshot, self.original.model_dump(mode='json'))
+        observed = self.service.queued_start_observer.call_args.args[0]
+        self.assertEqual(observed, saved)
+        self.assertEqual(observed.status, 'started')
+        self.assertIsNotNone(observed.queued_start_evidence)
         before = saved.model_dump(mode='json')
         await self.runtime._dispatch_message(self.response(rpc_id))
         reconcile_captured_start(self.service, saved.id)
@@ -265,6 +271,21 @@ class QueuedNativeStartTests(unittest.IsolatedAsyncioTestCase):
         serialized = json.dumps(before)
         self.assertNotIn('private-lease-token', serialized)
         self.assertNotIn('lease_token', serialized)
+
+    async def test_delivery_projection_failure_does_not_erase_native_start_or_authorize_replay(self):
+        self.service.queued_start_observer = Mock(side_effect=RuntimeError('metadata projection unavailable'))
+        self.service.event_sink = Mock(side_effect=RuntimeError('telemetry unavailable'))
+        rpc_id = await self.timed_out_request()
+        await self.runtime._dispatch_message(self.response(rpc_id))
+        saved = self.saved()
+        self.assertEqual(saved.status, 'started')
+        self.assertIsNotNone(saved.queued_start_receipt)
+        self.assertIsNotNone(saved.queued_start_evidence)
+        self.runtime._send.assert_awaited_once()
+        self.service.queued_start_observer = Mock()
+        reconcile_captured_start(self.service, saved.id)
+        self.service.queued_start_observer.assert_called_once_with(saved)
+        self.assertEqual(self.saved(), saved)
 
     async def test_captured_positive_survives_projection_failure_and_independent_interpreter(self):
         correlation = self.prepare()

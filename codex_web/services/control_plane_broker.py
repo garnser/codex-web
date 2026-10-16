@@ -2167,6 +2167,7 @@ class ControlPlaneBrokerService:
                 resolved.target_ref,
                 expected_owner=request.expected_owner,
                 expected_thread_id=request.expected_thread_id,
+                **({'expected_definition': request.expected_definition} if request.expected_definition is not None else {}),
                 idempotency_key=request.idempotency_key,
                 actor=actor.identity_id,
             )

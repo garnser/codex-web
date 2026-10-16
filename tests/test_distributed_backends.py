@@ -30,6 +30,26 @@ REDIS_URL = os.environ.get("CODEX_WEB_TEST_REDIS_URL")
     "real distributed backends are only exercised when CI supplies PostgreSQL and Redis",
 )
 class RealDistributedBackendTests(unittest.IsolatedAsyncioTestCase):
+    async def test_postgres_owner_routing_index_finds_retained_original_across_connections(self):
+        from codex_web.models import QueuedTurn, ExecutionPreflightAttempt
+        from codex_web.storage.execution_preflight import ExecutionPreflightStore
+        first = ExecutionPreflightStore(self.postgres)
+        first.prepare_work_item_index()
+        second = ExecutionPreflightStore(self._store())
+        original = QueuedTurn(id='owner-original', thread_id='old-owner-thread', project_id='project-a',
+            work_item_ref='acme/widgets#1', message='Retained original', created_at=1)
+        attempt = ExecutionPreflightAttempt(id='preflight-queued-owner-original', correlation_id='fixture',
+            execution_id='reserved-queue-owner-original', organization_id='org-a', workspace_id='workspace-a',
+            thread_id=original.thread_id, project_id=original.project_id, message=original.message,
+            queued_turn_snapshot=original.model_dump(mode='json'), status='reconciliation_required',
+            created_at=1, updated_at=2)
+        second.retain_queued(attempt)
+        query = dict(organization_id='org-a', workspace_id='workspace-a', project_id='project-a', ref=original.work_item_ref)
+        self.assertEqual(first.unresolved_work_item(**query).id, attempt.id)
+        self.assertIsNone(first.unresolved_work_item(**{**query, 'workspace_id': 'foreign'}))
+        second.update(attempt.id, lambda current: current.model_copy(update={'status': 'blocked'}))
+        self.assertIsNone(first.unresolved_work_item(**query))
+
     def _store(self, **kwargs):
         assert POSTGRES_DSN is not None
         store = PostgresStateStore(POSTGRES_DSN, **kwargs)

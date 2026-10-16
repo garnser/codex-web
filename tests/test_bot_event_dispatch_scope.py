@@ -86,6 +86,27 @@ class BotEventDispatchScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.execution.enqueue_turn.call_args.kwargs['provider_notification_pin'],pin)
         self.assertEqual(self.execution.find_duplicate_queued_turn.call_args.kwargs['provider_notification_pin'],pin)
 
+    async def test_owner_pin_uses_actual_context_and_retained_queue_even_for_idle_thread(self):
+        pin = object()
+        profile = SimpleNamespace(profile_id='actual-profile', revision=3, execution_profile_id='orchestration-only')
+        actor = SimpleNamespace(identity_id='actual-actor')
+        self.service.owner_routing_context = Mock(return_value=(profile, actor))
+        self.service.agent_profile_resolver = Mock(side_effect=AssertionError('must not use name-based fallback'))
+        self.execution.thread_is_active.return_value = False
+        self.queue_policy.depth.return_value = 0
+        self.execution.schedule_queue_drain = Mock()
+        self.execution.start_thread_turn_now = AsyncMock()
+        result = await self.service.dispatch(self.binding, 'Original recovery', 'owner-work-watchdog',
+            work_item_ref='group/project#1', owner_routing_pin=pin)
+        self.assertTrue(result['queued'])
+        self.execution.start_thread_turn_now.assert_not_called()
+        kwargs = self.execution.enqueue_turn.call_args.kwargs
+        self.assertIs(kwargs['owner_routing_pin'], pin)
+        self.assertEqual(kwargs['agent_profile_id'], profile.profile_id)
+        self.assertEqual(kwargs['agent_profile_revision'], 3)
+        self.assertEqual(kwargs['agent_profile_actor_id'], actor.identity_id)
+        self.execution.schedule_queue_drain.assert_called_once_with(self.binding.thread_id)
+
     async def test_immediate_dispatch_and_recovery_revalidate_captured_target(self):
         self.install_captured_target()
         self.execution.thread_is_active.return_value = False

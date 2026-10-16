@@ -66,7 +66,9 @@ def reconcile_captured_start(service, attempt_id):
         return current.model_copy(update={'queued_start_receipt':receipt, 'status':'started',
             'started_at':receipt.observed_at, 'updated_at':float(service.clock()),
             'last_error':None, 'blockers':()})
-    return service.store.update(attempt_id, reconcile)
+    updated = service.store.update(attempt_id, reconcile)
+    service.observe_queued_start(updated)
+    return updated
 
 
 @dataclass(frozen=True)

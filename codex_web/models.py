@@ -9,6 +9,7 @@ from codex_web.notification_provenance import ProviderNotificationPin
 
 from codex_web.agent_profiles import AgentProfileExecutionBinding
 from codex_web.definitions import DefinitionReference
+from codex_web.owner_routing import OwnerRoutingBinding, OwnerRoutingPin, OwnerRoutingBlocker
 from codex_web.work_item_execution_models import WorkItemExecutionLifecycle
 
 
@@ -340,7 +341,7 @@ class WorkItemHandoffDelivery(BaseModel):
             if self.execution_profile_id == "repository-write":
                 if self.repository_resource_id not in self.writable_repository_resource_ids:
                     raise ValueError("verified repository delivery requires its admitted writable repository")
-            elif self.execution_profile_id == "orchestration-only":
+            elif self.execution_profile_id in {"orchestration-only", "orchestration-admin"}:
                 if self.repository_resource_id or self.writable_repository_resource_ids or self.read_only_repository_resource_ids:
                     raise ValueError("coordination delivery cannot grant repository scope")
             else:
@@ -365,6 +366,21 @@ class WorkItemHandoff(BaseModel):
     artifact_state: ArtifactState | None = None
     stage: WorkItemStage | None = None
     delivery: WorkItemHandoffDelivery | None = None
+    owner_routing: OwnerRoutingBinding | None = None
+
+    @model_validator(mode='after')
+    def validate_owner_routing(self):
+        from codex_web.owner_routing import normalized_owner
+        if self.owner_routing is not None and self.owner_routing.configured_owner != normalized_owner(self.to_agent):
+            raise ValueError('owner routing binding does not match original handoff target')
+        return self
+
+    @model_serializer(mode='wrap')
+    def serialize_owner_routing(self, handler):
+        result = handler(self)
+        if self.owner_routing is None:
+            result.pop('owner_routing', None)
+        return result
 
 
 class WorkItemState(BaseModel):
@@ -410,6 +426,15 @@ class WorkItemState(BaseModel):
     updated_at: float
     created_at: float
 
+    owner_routing_blocker: OwnerRoutingBlocker | None = None
+
+    @model_serializer(mode='wrap')
+    def serialize_owner_routing(self, handler):
+        result = handler(self)
+        if self.owner_routing_blocker is None:
+            result.pop('owner_routing_blocker', None)
+        return result
+
 
 class WorkItemEvent(BaseModel):
     ref: str
@@ -437,6 +462,7 @@ class WorkItemHandoffCreate(BaseModel):
 
 class WorkItemAckCreate(BaseModel):
     actor: str = Field(min_length=1)
+    expected_handoff_requested_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     accepted: bool = True
     next_action: str | None = None
     current_stage: WorkItemStage | None = None
@@ -788,6 +814,7 @@ class QueuedTurn(BaseModel):
     memory_context_binding: UxBriefTurnBinding | None = None
     provider_notification_pin: ProviderNotificationPin | None = None
     project_coordination_dispatch: ProjectCoordinationDispatch | None = None
+    owner_routing_pin: OwnerRoutingPin | None = None
 
     @model_serializer(mode="wrap")
     def serialize_context(self, handler):
@@ -798,6 +825,8 @@ class QueuedTurn(BaseModel):
             result.pop("provider_notification_pin", None)
         if self.project_coordination_dispatch is None:
             result.pop("project_coordination_dispatch", None)
+        if self.owner_routing_pin is None:
+            result.pop("owner_routing_pin", None)
         return result
 
 

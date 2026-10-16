@@ -42,6 +42,67 @@ class ExecutionPreflightStore:
     def _attempt_key(attempt_id: str) -> str:
         return f"a/{attempt_id}"
 
+    @staticmethod
+    def _work_item_prefix(organization_id, workspace_id, project_id, ref):
+        scope = json.dumps([organization_id, workspace_id, project_id, ref], separators=(',', ':'))
+        return 'wi/' + hashlib.sha256(scope.encode()).hexdigest() + '/'
+
+    @classmethod
+    def _work_item_index(cls, attempt):
+        ref = (attempt.queued_turn_snapshot or {}).get('work_item_ref')
+        if not ref:
+            return {}
+        return {cls._work_item_prefix(attempt.organization_id, attempt.workspace_id,
+            attempt.project_id, ref) + attempt.id: {'attemptId': attempt.id}}
+
+    def prepare_work_item_index(self):
+        """Derived index backfill before alias admission, never outcome migration.
+
+        Current writers add indexes before queue removal/native start. Old
+        writers must be drained; they cannot maintain this additive projection.
+        A crash resumes from the persisted cursor and cannot mark a partial
+        projection ready. Authoritative a/ records remain unchanged.
+        """
+        marker = 'metadata/work-item-index-1.0'
+        while True:
+            progress = self.store.record_get(self.NAMESPACE, marker) or {}
+            if progress and progress.get('schema_version') != '1.0':
+                raise ValueError('incompatible owner routing preflight index schema')
+            if progress.get('complete') is True:
+                return
+            rows, cursor = self.store.record_page(self.NAMESPACE, key_prefix='a/',
+                after=progress.get('after'), limit=200)
+            upserts = {}
+            for payload in rows.values():
+                attempt = ExecutionPreflightAttempt.model_validate(payload)
+                upserts.update(self._work_item_index(attempt))
+            upserts[marker] = {'schema_version': '1.0', 'after': cursor, 'complete': cursor is None}
+            self.store.record_apply(self.NAMESPACE, upserts=upserts)
+
+    def unresolved_work_item(self, *, organization_id, workspace_id, project_id, ref,
+                             excluding_attempt_id=None):
+        marker = self.store.record_get(self.NAMESPACE, 'metadata/work-item-index-1.0') or {}
+        if marker.get('schema_version') != '1.0' or marker.get('complete') is not True:
+            raise ValueError('owner_routing_retained_index_unavailable')
+        prefix = self._work_item_prefix(organization_id, workspace_id, project_id, ref)
+        rows, cursor = self.store.record_page(self.NAMESPACE, key_prefix=prefix, limit=200)
+        if cursor is not None:
+            raise ValueError('owner_routing_retained_lookup_truncated')
+        keys = tuple(self._attempt_key(value['attemptId']) for value in rows.values())
+        attempts = self.store.record_get_many(self.NAMESPACE, keys) if keys else {}
+        for raw in attempts.values():
+            if raw is None:
+                continue
+            current = ExecutionPreflightAttempt.model_validate(raw)
+            if ((current.organization_id, current.workspace_id, current.project_id)
+                    != (organization_id, workspace_id, project_id)
+                    or (current.queued_turn_snapshot or {}).get('work_item_ref') != ref
+                    or current.id == excluding_attempt_id):
+                continue
+            if current.status == 'reconciliation_required' and current.queued_start_receipt is None:
+                return current
+        return None
+
     # Code-owned additive schema compatibility, never a general null filter.
     OPTIONAL_INGRESS_FIELDS = ("canonical_ingress_id", "ingress_execution_profile_definition")
 
@@ -148,6 +209,7 @@ class ExecutionPreflightStore:
                     raise ValueError("notification batch member requires batch-scoped recovery")
             return {
                 self._attempt_key(attempt.id): payload,
+                **self._work_item_index(attempt),
                 self._thread_key(attempt): {
                     "attemptId": attempt.id,
                 },
@@ -495,6 +557,7 @@ class ExecutionPreflightStore:
         # A crash between them leaves the original queue intact; calling this
         # again repairs the existing domain's inspection index idempotently.
         self.store.record_apply(self.NAMESPACE, upserts={
+            **self._work_item_index(retained),
             self._thread_key(retained): {"attemptId":retained.id},
             self._queued_identity_key(attempt.queued_turn_snapshot)+retained.id:
                 {"attemptId":retained.id}})

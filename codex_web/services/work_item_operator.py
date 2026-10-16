@@ -127,6 +127,7 @@ class WorkItemOperatorService:
         expected_thread_id: str,
         idempotency_key: str,
         actor: str,
+        expected_definition=None,
     ) -> dict[str, Any]:
         if not callable(self.steer_owner):
             raise HTTPException(
@@ -138,6 +139,7 @@ class WorkItemOperatorService:
             state,
             expected_owner=expected_owner,
             expected_thread_id=expected_thread_id,
+            **({'expected_definition': expected_definition} if expected_definition is not None else {}),
             idempotency_key=idempotency_key,
             actor=actor,
             source="assignment-control-plane",
@@ -411,6 +413,7 @@ class WorkItemOperatorService:
         project = self._project(state.project_id)
         return {
             "item": self.state_machine._work_item_state_public(state),
+            "owner_dispatch": self.owner_dispatch_projection(state),
             "external": self._source_summary(state),
             "execution_contract": self._execution_contract(state),
             "execution_policy": {

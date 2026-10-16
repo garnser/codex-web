@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from functools import wraps
 from typing import Any
 
 from fastapi import HTTPException
@@ -20,8 +21,21 @@ from codex_web.services.work_item_dependencies import (
     work_item_progress_evidence,
 )
 from codex_web.services.work_item_transitions import WorkItemTransitionService
+from codex_web.owner_routing import OwnerRoutingError
 from codex_web.storage.state_store import StateStore
 from codex_web.storage.work_item_events import WorkItemEventStore
+
+
+def _routing_mutation(method):
+    @wraps(method)
+    def guarded(*args, **kwargs):
+        try:
+            return method(*args, **kwargs)
+        except OwnerRoutingError as exc:
+            raise HTTPException(status_code=409, detail={'code': str(exc),
+                'message': 'Current scoped owner routing is unavailable',
+                'next_action': 'Inspect the published Project role mapping and original ownership; no actor or grant is substituted'}) from exc
+    return guarded
 
 
 class WorkItemStateMachine:
@@ -47,6 +61,47 @@ class WorkItemStateMachine:
         self.store = store
         self.event_store = WorkItemEventStore(store) if store is not None else None
         self.transitions = WorkItemTransitionService()
+
+    def _owner_routing(self, state):
+        if self.dependencies.owner_routing is None:
+            return None
+        from codex_web.services.definitions import DefinitionError
+        try:
+            routing = self.dependencies.owner_routing(state)
+            return routing.for_work_item(state) if routing is not None else None
+        except OwnerRoutingError:
+            raise
+        except (DefinitionError, LookupError, ValueError) as exc:
+            raise OwnerRoutingError('owner_routing_unavailable') from exc
+
+    def _routing_owner(self, state, value, *, routing=None):
+        routing = routing if routing is not None else self._owner_routing(state)
+        return routing.for_work_item(state).owner(value) if routing is not None else self._coerce_owner(value)
+
+    def _recorded_recipient(self, state, handoff):
+        binding = handoff.owner_routing
+        if binding is None:
+            return self._coerce_owner(handoff.to_agent)
+        binding.for_work_item(state)
+        if binding.configured_owner != self._coerce_owner(handoff.to_agent):
+            raise OwnerRoutingError('owner_routing_recipient_mismatch')
+        return binding.canonical_owner
+
+    def _is_implementation_candidate(self, state, value, *, routing=None):
+        owner = self._coerce_owner(value)
+        if (not owner or owner in self.dependencies.non_implementation_owners
+                or owner in {self._coerce_owner(state.validation_owner), self._coerce_owner(state.release_owner)}):
+            return False
+        if routing is None and self.dependencies.owner_routing is not None:
+            # Intake/explicit claim repair must retain source facts even when
+            # routing is unavailable. Unknown configuration cannot infer a claim.
+            from codex_web.services.definitions import DefinitionError
+            try:
+                routing = self.dependencies.owner_routing(state)
+            except (DefinitionError, LookupError, ValueError):
+                return False
+        return routing is None or (owner in routing.implementation_owners and owner not in dict(routing.aliases)
+            and owner not in dict(routing.rejected) and owner not in routing.coordination_owners)
 
     def _append_work_item_event(self, event: WorkItemEvent) -> None:
         payload = event.model_dump(mode="json")
@@ -75,8 +130,17 @@ class WorkItemStateMachine:
         )
 
     def _work_item_state_public(self, state: WorkItemState) -> dict[str, Any]:
-        state = self._ensure_work_item_lane_defaults(state)
+        try:
+            routing = self._owner_routing(state)
+            state = self._ensure_work_item_lane_defaults(state, routing=routing)
+            routing_errors = self._work_item_split_brain_findings(state, routing=routing)
+            observation = routing.observation(state.next_owner or state.current_owner) if routing is not None else None
+        except OwnerRoutingError as exc:
+            routing_errors = [str(exc)]
+            observation = {'schema_version': '1.0', 'status': 'blocked', 'reason': str(exc), 'grants_execution_authority': False}
         payload = state.model_dump()
+        if observation is not None:
+            payload['owner_routing'] = observation
         payload["isConfirmationPending"] = bool(
             state.handoff and state.handoff.status == "pending"
         )
@@ -86,7 +150,6 @@ class WorkItemStateMachine:
             "failed_with_action_owner",
             "ready_to_close",
         }
-        routing_errors = self._work_item_split_brain_findings(state)
         payload["routingErrors"] = routing_errors
         payload["routingError"] = routing_errors[0] if routing_errors else None
         return payload
@@ -164,7 +227,7 @@ class WorkItemStateMachine:
             normalized.append(text)
         return normalized[:20]
 
-    def _ensure_work_item_lane_defaults(self, state: WorkItemState) -> WorkItemState:
+    def _ensure_work_item_lane_defaults(self, state: WorkItemState, *, routing=None) -> WorkItemState:
         state.validation_owner = (
             self._coerce_owner(state.validation_owner)
             or self.dependencies.default_validation_owner
@@ -181,15 +244,7 @@ class WorkItemStateMachine:
             )
             for candidate in candidates:
                 owner = self._coerce_owner(candidate)
-                if (
-                    owner
-                    and owner not in self.dependencies.non_implementation_owners
-                    and owner
-                    not in {
-                        self._coerce_owner(state.validation_owner),
-                        self._coerce_owner(state.release_owner),
-                    }
-                ):
+                if self._is_implementation_candidate(state, owner, routing=routing):
                     state.implementation_owner = owner
                     break
         state.artifact_state = self._normalize_artifact_state(
@@ -258,10 +313,12 @@ class WorkItemStateMachine:
         from_agent: str | None,
         to_agent: str | None,
         artifact_state: str | None,
+        routing=None,
     ) -> dict[str, Any] | None:
-        state = self._ensure_work_item_lane_defaults(state)
+        routing = routing if routing is not None else self._owner_routing(state)
+        state = self._ensure_work_item_lane_defaults(state, routing=routing)
         sender = self._coerce_owner(from_agent)
-        recipient = self._coerce_owner(to_agent)
+        recipient = self._routing_owner(state, to_agent, routing=routing)
         artifact = self._normalize_artifact_state(
             artifact_state or state.artifact_state,
             fallback=self._infer_artifact_state_from_state(state),
@@ -396,12 +453,13 @@ class WorkItemStateMachine:
             return "status::in progress"
         return state.status_label
 
-    def _work_item_split_brain_findings(self, state: WorkItemState) -> list[str]:
-        state = self._ensure_work_item_lane_defaults(state)
+    def _work_item_split_brain_findings(self, state: WorkItemState, *, routing=None) -> list[str]:
+        routing = routing if routing is not None else self._owner_routing(state)
+        state = self._ensure_work_item_lane_defaults(state, routing=routing)
         findings: list[str] = []
         canonical_status = self._derived_status_label_for_work_item(state)
-        current_owner = self._coerce_owner(state.current_owner)
-        next_owner = self._coerce_owner(state.next_owner)
+        current_owner = self._routing_owner(state, state.current_owner, routing=routing)
+        next_owner = self._routing_owner(state, state.next_owner, routing=routing)
         action_owner = self.dependencies.leading_owner_cue_in_action(state.next_action)
         if canonical_status != state.status_label:
             findings.append(
@@ -409,8 +467,8 @@ class WorkItemStateMachine:
                 f"stored={state.status_label or 'none'}"
             )
         if state.handoff and state.handoff.status == "pending":
-            handoff_to = self._coerce_owner(state.handoff.to_agent)
-            handoff_from = self._coerce_owner(state.handoff.from_agent)
+            handoff_to = self._routing_owner(state, state.handoff.to_agent, routing=routing)
+            handoff_from = self._routing_owner(state, state.handoff.from_agent, routing=routing)
             if state.status_label != "status::awaiting confirmation":
                 findings.append("pending handoff without awaiting-confirmation status")
             if next_owner != handoff_to:
@@ -424,7 +482,11 @@ class WorkItemStateMachine:
                     f"stored={current_owner or 'none'}"
                 )
         elif state.handoff and state.handoff.status == "accepted":
-            handoff_to = self._coerce_owner(state.handoff.to_agent)
+            # Accepted receipts retain their original resolved recipient. A new
+            # mapping cannot rename an old actor or promote a legacy receipt.
+            handoff_to = self._recorded_recipient(state, state.handoff)
+            current_owner = self._coerce_owner(state.current_owner)
+            next_owner = self._coerce_owner(state.next_owner)
             if state.status_label == "status::awaiting confirmation":
                 findings.append("accepted handoff still marked as awaiting confirmation")
             if current_owner != handoff_to:
@@ -450,6 +512,7 @@ class WorkItemStateMachine:
                 from_agent=state.handoff.from_agent,
                 to_agent=state.handoff.to_agent,
                 artifact_state=state.handoff.artifact_state or state.artifact_state,
+                routing=routing,
             )
             if handoff_error:
                 findings.append(
@@ -466,6 +529,7 @@ class WorkItemStateMachine:
                 f"routing error: release owner on pre-merge artifact_state={state.artifact_state}"
             )
         expected_action_owner = next_owner or current_owner
+        action_owner = self._routing_owner(state, action_owner, routing=routing)
         if action_owner and action_owner != expected_action_owner:
             findings.append(
                 "next-action owner cue drift: "
@@ -481,13 +545,28 @@ class WorkItemStateMachine:
         incoming_owner: str | None,
         incoming_stage: str | None,
         incoming_status_label: str | None,
+        routing=None,
     ) -> bool:
-        state = self._ensure_work_item_lane_defaults(state)
         if not state.handoff or state.handoff.status != "accepted":
             return False
-        recipient = self._coerce_owner(state.handoff.to_agent)
-        current_owner = self._coerce_owner(state.current_owner)
-        candidate_owner = self._coerce_owner(incoming_owner)
+        binding = state.handoff.owner_routing
+        if (binding is not None and binding.for_work_item(state)
+                and self._coerce_owner(state.current_owner) == binding.canonical_owner
+                and self._coerce_owner(incoming_owner) == binding.configured_owner
+                and incoming_stage != 'closed'):
+            # Repeating the source label cannot reassign an acknowledged actor
+            # because the current alias changed after genuine acceptance.
+            return True
+        try:
+            routing = routing if routing is not None else self._owner_routing(state)
+        except OwnerRoutingError:
+            # A source snapshot cannot use unavailable routing to replace an
+            # accepted owner; positive terminal source evidence is independent.
+            return incoming_stage != 'closed'
+        state = self._ensure_work_item_lane_defaults(state, routing=routing)
+        recipient = self._recorded_recipient(state, state.handoff)
+        current_owner = self._routing_owner(state, state.current_owner, routing=routing)
+        candidate_owner = self._routing_owner(state, incoming_owner, routing=routing)
         candidate_stage = self._normalize_work_item_stage(
             incoming_stage,
             fallback=state.current_stage,
@@ -634,11 +713,12 @@ class WorkItemStateMachine:
         ):
             self._raise_pending_handoff_conflict(state)
         previous_evidence = work_item_progress_evidence(state)
-        state = self._ensure_work_item_lane_defaults(state)
+        routing = self._owner_routing(state)
+        state = self._ensure_work_item_lane_defaults(state, routing=routing)
         now = time.time()
-        previous_owner = self._coerce_owner(state.current_owner)
+        previous_owner = self._routing_owner(state, state.current_owner, routing=routing)
         previous_stage = state.current_stage
-        previous_next_owner = self._coerce_owner(state.next_owner)
+        previous_next_owner = self._routing_owner(state, state.next_owner, routing=routing)
         incoming_stage = (
             self._normalize_work_item_stage(current_stage, fallback=state.current_stage)
             if current_stage is not None
@@ -649,9 +729,10 @@ class WorkItemStateMachine:
             incoming_owner=current_owner,
             incoming_stage=incoming_stage,
             incoming_status_label=status_label,
+            routing=routing,
         )
         accepted_recipient = (
-            self._coerce_owner(state.handoff.to_agent)
+            self._routing_owner(state, state.handoff.to_agent, routing=routing)
             if state.handoff and state.handoff.status == "accepted"
             else None
         )
@@ -696,8 +777,8 @@ class WorkItemStateMachine:
             and expected_handoff_requested_at != state.handoff.requested_at
             and (
                 state.current_stage != previous_stage
-                or self._coerce_owner(state.current_owner) != previous_owner
-                or self._coerce_owner(state.next_owner) != previous_next_owner
+                or self._routing_owner(state, state.current_owner, routing=routing) != previous_owner
+                or self._routing_owner(state, state.next_owner, routing=routing) != previous_next_owner
             )
         ):
             self._raise_pending_handoff_conflict(state)
@@ -715,9 +796,9 @@ class WorkItemStateMachine:
                 reason_code="closed_lane",
             )
         elif state.handoff:
-            current_owner_normalized = self._coerce_owner(state.current_owner)
-            handoff_from = self._coerce_owner(state.handoff.from_agent)
-            handoff_to = self._coerce_owner(state.handoff.to_agent)
+            current_owner_normalized = self._routing_owner(state, state.current_owner, routing=routing)
+            handoff_from = self._routing_owner(state, state.handoff.from_agent, routing=routing)
+            handoff_to = self._routing_owner(state, state.handoff.to_agent, routing=routing)
             archive_resolved_handoff = False
             if state.handoff.status == "pending":
                 unchanged_pending_lane = (
@@ -725,7 +806,7 @@ class WorkItemStateMachine:
                     and current_owner_normalized == previous_owner
                     and current_owner_normalized in {handoff_from, handoff_to}
                     and handoff_to is not None
-                    and self._coerce_owner(state.next_owner) == handoff_to
+                    and self._routing_owner(state, state.next_owner, routing=routing) == handoff_to
                 )
                 archive_resolved_handoff = not unchanged_pending_lane and (
                     incoming_stage in {
@@ -736,7 +817,7 @@ class WorkItemStateMachine:
                         and status_label != "status::awaiting confirmation"
                     )
                 )
-                if next_owner_present and self._coerce_owner(state.next_owner) != handoff_to:
+                if next_owner_present and self._routing_owner(state, state.next_owner, routing=routing) != handoff_to:
                     archive_resolved_handoff = True
                 if (
                     current_owner_normalized
@@ -786,14 +867,13 @@ class WorkItemStateMachine:
         ):
             state.blocker = None
             state.blocking_findings = []
-            if self._coerce_owner(state.next_owner) != self._coerce_owner(
-                state.current_owner
-            ):
+            if self._routing_owner(state, state.next_owner, routing=routing) != self._routing_owner(
+                state, state.current_owner, routing=routing):
                 state.next_owner = None
         if artifact_state is None:
             state.artifact_state = self._infer_artifact_state_from_state(state)
-        state = self._ensure_work_item_lane_defaults(state)
-        current_owner_normalized = self._coerce_owner(state.current_owner)
+        state = self._ensure_work_item_lane_defaults(state, routing=routing)
+        current_owner_normalized = self._routing_owner(state, state.current_owner, routing=routing)
         actor_normalized = self._coerce_owner(actor)
         refresh_owner_activity = (
             state.current_stage == "closed"
@@ -906,13 +986,15 @@ class WorkItemStateMachine:
         )
         return self._save_work_item_state(state)
 
+    @_routing_mutation
     def _structured_handoff(
         self,
         ref: str,
         payload: WorkItemHandoffCreate,
     ) -> WorkItemState:
         state = self._work_item_state(ref)
-        state = self._ensure_work_item_lane_defaults(state)
+        routing = self._owner_routing(state)
+        state = self._ensure_work_item_lane_defaults(state, routing=routing)
         now = time.time()
         from_agent = self._coerce_owner(payload.from_agent) or payload.from_agent
         to_agent = self._coerce_owner(payload.to_agent) or payload.to_agent
@@ -963,6 +1045,7 @@ class WorkItemStateMachine:
             status="pending",
             artifact_state=artifact_state,
             stage=previous_stage,
+            owner_routing=routing.binding(to_agent) if routing is not None else None,
         )
         state.current_owner = self._coerce_owner(
             payload.current_owner
@@ -1000,19 +1083,21 @@ class WorkItemStateMachine:
         state = self._sync_work_item_status_label(state)
         return self._save_work_item_state(state)
 
+    @_routing_mutation
     def _structured_ack(
         self,
         ref: str,
         payload: WorkItemAckCreate,
     ) -> WorkItemState:
         state = self._work_item_state(ref)
-        state = self._ensure_work_item_lane_defaults(state)
+        routing = self._owner_routing(state)
+        state = self._ensure_work_item_lane_defaults(state, routing=routing)
         actor = self._coerce_owner(payload.actor) or payload.actor
         now = time.time()
         handoff = state.handoff
         if not handoff:
-            current_owner = self._coerce_owner(state.current_owner)
-            next_owner = self._coerce_owner(state.next_owner)
+            current_owner = self._routing_owner(state, state.current_owner, routing=routing)
+            next_owner = self._routing_owner(state, state.next_owner, routing=routing)
             if (
                 payload.accepted
                 and current_owner
@@ -1037,7 +1122,21 @@ class WorkItemStateMachine:
                     status_code=409,
                     detail="No pending handoff for work item",
                 )
-        if actor != handoff.to_agent:
+        bound = handoff.owner_routing
+        expected_actor = self._recorded_recipient(state, handoff)
+        current_binding = routing.binding(handoff.to_agent) if routing is not None and handoff.status == 'pending' and bound is None else None
+        if (payload.expected_handoff_requested_at is not None
+                and payload.expected_handoff_requested_at != handoff.requested_at):
+            raise OwnerRoutingError('owner_ack_handoff_changed')
+        if bound is not None and payload.expected_handoff_requested_at != handoff.requested_at:
+            raise OwnerRoutingError('owner_ack_handoff_changed')
+        if handoff.status == 'pending' and (bound is not None or current_binding is not None):
+            # The producer must bind the original intent and record a qualified
+            # actual start. A newly published alias is no delivery/ACK witness.
+            if (bound is None or handoff.delivery is None or handoff.delivery.status != 'delivered'
+                    or not handoff.delivery.scope_verified):
+                raise OwnerRoutingError('owner_alias_delivery_unproven')
+        if actor != expected_actor:
             raise HTTPException(
                 status_code=409,
                 detail="Ack actor does not match handoff recipient",
@@ -1100,7 +1199,7 @@ class WorkItemStateMachine:
             state.next_owner = state.handoff.from_agent
             state.next_action = payload.next_action or state.next_action
         if payload.next_owner is not None:
-            state.next_owner = self._coerce_owner(payload.next_owner)
+            state.next_owner = self._routing_owner(state, payload.next_owner, routing=routing)
         state = self._record_handoff_history(
             state,
             state.handoff,
@@ -1123,6 +1222,8 @@ class WorkItemStateMachine:
                         and state.handoff.reason
                         == "Inferred from canonical validation/release lane state."
                     ),
+                    **({'owner_routing': bound.audit_metadata()}
+                       if bound is not None else {}),
                 },
             )
         )
@@ -1148,6 +1249,7 @@ class WorkItemStateMachine:
             },
         )
 
+    @_routing_mutation
     def _structured_progress(
         self,
         ref: str,
