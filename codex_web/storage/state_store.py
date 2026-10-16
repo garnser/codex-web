@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import threading
 import time
 import contextvars
@@ -11,6 +10,7 @@ from typing import Any, Callable, Protocol, runtime_checkable
 from urllib.parse import quote, unquote
 
 from pydantic import BaseModel, ConfigDict, Field
+from codex_web.canonical_json import canonical_json_bytes, canonical_json_chunks
 
 
 _RECORD_STORAGE_ROOT = "__codex_records__/"
@@ -227,12 +227,7 @@ class StateStoreMigrationResult(BaseModel):
 
 
 def _canonical_bytes(value: Any) -> bytes:
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
+    return canonical_json_bytes(value, default=str)
 
 
 def state_documents_checksum(documents: dict[str, Any]) -> str:
@@ -240,7 +235,10 @@ def state_documents_checksum(documents: dict[str, Any]) -> str:
     for namespace in sorted(documents):
         digest.update(namespace.encode("utf-8"))
         digest.update(b"\x00")
-        digest.update(hashlib.sha256(_canonical_bytes(documents[namespace])).digest())
+        document_hash = hashlib.sha256()
+        for chunk in canonical_json_chunks(documents[namespace], default=str):
+            document_hash.update(chunk)
+        digest.update(document_hash.digest())
         digest.update(b"\x00")
     return digest.hexdigest()
 
