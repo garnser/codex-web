@@ -26,3 +26,11 @@ test('existing audit renderer keeps old malformed and future observations unqual
   await root.locator('summary').first().focus();await page.keyboard.press('Enter');
   await expect(root.locator('details').first()).toHaveAttribute('open','');
 });
+
+test('scalar canonical event adapter qualifies only supported complete observations', async ({page}) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/source_history_readiness_fixture.html');
+  const root=page.locator('aside[aria-label="Scalar event compatibility"]');
+  await expect(root.getByRole('region',{name:'Source history readiness'})).toHaveCount(1);
+  await expect(root).toContainText('complete · ready');
+  await expect(root).toContainText('canonical workspace refresh');
+});

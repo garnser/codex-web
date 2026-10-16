@@ -369,3 +369,15 @@ The existing operator workspace/recovery inspection must establish ownership,
 terminal execution and retained source custody before manual supported recovery.
 Mixed/older inspector observations lacking exact complete/ready state remain
 unknown/not-ready; unknown extension fields do not grant readiness.
+
+History diagnostics in `ExecutionWorkspaceEvent.details` use scalar fields only,
+preserving the existing event schema: `history_version=1`, `history_state`,
+`history_readiness`, `history_target_revision`, `history_local_revision`,
+`history_next_action`, `history_deadline_seconds`, `history_maximum_depth` and
+`history_provenance`, alongside existing scalar `materialization_*` fields.
+The proposed event is model-validated before reset and appended only after exact
+HEAD/tree verification. This prevents avoidable event-validation failure after
+a source mutation; it does not promise rollback after disk/host loss. Older
+readers retain their scalar/raw detail view. The inspector normalization requires
+the supported version and scalar shape before displaying complete/ready; absent,
+malformed and future representations do not establish readiness.

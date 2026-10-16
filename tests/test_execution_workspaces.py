@@ -306,6 +306,7 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         first = subprocess.run(["git", "rev-parse", "HEAD"], cwd=checkout, check=True, capture_output=True, text=True).stdout.strip()
         (checkout / "value.txt").write_text("second\n", encoding="utf-8")
         subprocess.run(["git", "commit", "-am", "second"], cwd=checkout, check=True, capture_output=True)
+        second = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip()
 
         refreshed = self.service.refresh_revision(
             workspace.id, first[:12], actor=self.actor
@@ -333,6 +334,48 @@ class ExecutionWorkspaceTests(unittest.TestCase):
             events[-1].details["materialization_repository"],
             "org/repository",
         )
+        # Real service/store round-trip plus public JSON transport shape. This
+        # fails if nested diagnostic dictionaries enter the canonical event.
+        from codex_web.execution_workspaces import ExecutionWorkspaceEvent
+        import json
+        persisted = self.service.store.load().events[-1]
+        transported = json.loads(persisted.model_dump_json())
+        reloaded = ExecutionWorkspaceEvent.model_validate(transported)
+        self.assertEqual(reloaded.details["history_version"], 1)
+        self.assertEqual(reloaded.details["history_target_revision"], first)
+        self.assertEqual(reloaded.details["history_local_revision"], first)
+        self.assertEqual(reloaded.details["history_readiness"], "ready")
+        self.assertTrue(all(value is None or type(value) in (str,int,float,bool)
+                            for value in transported["details"].values()))
+        self.assertEqual(self.service.get(workspace.id,self.actor).head_revision,first)
+        # Exercise the actual API router against the actual persisted service,
+        # not a renderer-only fixture or a stubbed event serializer.
+        from fastapi import FastAPI, Request
+        from fastapi.testclient import TestClient
+        from codex_web.api.execution_workspaces import build_execution_workspaces_router
+        app = FastAPI()
+        @app.middleware("http")
+        async def fixture_actor(request: Request, call_next):
+            request.state.identity_actor = self.actor
+            return await call_next(request)
+        app.include_router(build_execution_workspaces_router(self.service))
+        with TestClient(app) as client:
+            response = client.get(f"/api/execution-workspaces/{workspace.id}/events")
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()["items"][-1]["details"],transported["details"])
+        self.assertEqual(ExecutionWorkspaceStateStore(self.sqlite).load().events[-1].details,
+                         transported["details"])
+        before_events = len(self.service.store.load().events)
+        # Proposed-event validation failure is caught before reset, preserving
+        # the previous successful canonical/source revision; no rollback guess.
+        with patch("codex_web.services.execution_workspaces.ExecutionWorkspaceEvent",
+                side_effect=ValueError("event schema refused")):
+            with self.assertRaisesRegex(ValueError,"event schema refused"):
+                self.service.refresh_revision(workspace.id,second,actor=self.actor,
+                    materialization=materialization.model_copy(update={"revision":second}))
+        self.assertEqual(subprocess.check_output(["git","rev-parse","HEAD"],cwd=checkout,text=True).strip(),first)
+        self.assertEqual((checkout/"value.txt").read_text(),"first\n")
+        self.assertEqual(len(self.service.store.load().events),before_events)
         (checkout / "dirty.txt").write_text("dirty\n", encoding="utf-8")
         with self.assertRaisesRegex(ExecutionWorkspaceConflictError, "uncommitted"):
             self.service.refresh_revision(workspace.id, first, actor=self.actor)
