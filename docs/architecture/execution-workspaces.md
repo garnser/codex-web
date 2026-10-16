@@ -309,3 +309,75 @@ workspace administration to the worker identity. The two durable writes remain
 separate; a suppressed release failure still requires supported reconciliation.
 Terminal-assignment retention is not proof that an unreferenced workspace is safe
 to release, and this lifecycle repair does not retire historical orphan leases.
+
+### Complete-history refresh contract
+
+An available commit/tree is insufficient for writable source refresh. The existing
+materialization path requires a non-shallow repository with all reachable commit,
+tree and blob objects; connectivity checks disable lazy fetch and replacement
+objects. The same check applies when the exact tip already exists locally.
+
+Hydration uses the existing credential-isolated Git pipeline with finite fetch
+depths 64, 512 and 4096. It requires complete non-shallow connectivity before
+export/import, rechecks the exact provider tip at each fetch and through the
+provider facade after hydration, and preserves checkout HEAD until refresh.
+A shared 120-second materialization deadline and monitored scratch/pack byte
+budget bound all owned subprocesses; timeout/cancellation/size refusal kills
+and reaps the owned Git process group. The scratch ceiling is the minimum of
+128MiB, one quarter of the supplied assignment disk remainder, and one quarter
+of the observed scratch/destination free capacity. Existing worker disk quotas
+remain authoritative; this cooperative monitor is not a kernel filesystem quota.
+Incomplete histories beyond these bounds fail visibly, never masquerading as
+complete source. No unbounded fetch, credential-bearing checkout config, hook,
+submodule, replacement or lazy-fetch shortcut is enabled.
+
+Literal ancestry validation disables replacement refs, legacy grafts (including
+linked-worktree common metadata), and lazy fetch. The importer indexes into an
+attempt-owned destination staging directory, monitors both scratch and staging,
+and cleans staging only after the subprocess has terminated. Verified pack/index
+files are linked without overwriting existing objects under a common-store lock;
+the index is published last. Failures remove only newly linked matching inodes.
+Actual disk usage is recomputed at admission/import, under the existing shared
+deadline; this cooperative accounting does not claim kernel quota enforcement.
+Shallow destination repositories are explicitly unsupported: acquire a complete
+history workspace. Success facts expose complete/ready/refresh_exact_revision;
+broker history refusals expose target, bounds and next action in existing error
+diagnostics. This is additive diagnostics, not installed inspector qualification.
+
+Materialization re-enters the existing secret-use boundary and compares current
+binding, provider adapter and repository Resource after every asynchronous
+provider/object-transfer boundary. A changed credential/status/use authority or
+scope refuses readiness even when public objects were imported; imported objects
+do not authorize checkout reset. Existing broker assignment/procedure checks
+remain required before refresh.
+
+Workspace refresh events retain structured history readiness with immutable
+target/local revisions and provenance. The existing workspace event inspector
+renders these alongside raw canonical details. History refusals also remain in
+the existing bounded broker audit reason as a JSON observation and appear in the
+existing audit inspector, including bounds and next action; missing observations
+are unknown, never inferred ready. No new store, permission or polling loop is
+introduced. Rendered fixture and installed inspector acceptance remain delivery
+gates, distinct from source implementation.
+
+After abrupt process/host loss, attempt staging can remain because no finally
+handler ran. Admission refuses any retained or active `.codex-import-*` entry
+with an explicit custody-reconciliation next action. It never deletes another
+attempt, guesses a former owner, retries its mutation or claims atomic checkout
+rollback after host loss. Orphan public object packs remain quota-accounted.
+The existing operator workspace/recovery inspection must establish ownership,
+terminal execution and retained source custody before manual supported recovery.
+Mixed/older inspector observations lacking exact complete/ready state remain
+unknown/not-ready; unknown extension fields do not grant readiness.
+
+History diagnostics in `ExecutionWorkspaceEvent.details` use scalar fields only,
+preserving the existing event schema: `history_version=1`, `history_state`,
+`history_readiness`, `history_target_revision`, `history_local_revision`,
+`history_next_action`, `history_deadline_seconds`, `history_maximum_depth` and
+`history_provenance`, alongside existing scalar `materialization_*` fields.
+The proposed event is model-validated before reset and appended only after exact
+HEAD/tree verification. This prevents avoidable event-validation failure after
+a source mutation; it does not promise rollback after disk/host loss. Older
+readers retain their scalar/raw detail view. The inspector normalization requires
+the supported version and scalar shape before displaying complete/ready; absent,
+malformed and future representations do not establish readiness.

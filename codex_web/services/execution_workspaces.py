@@ -505,9 +505,42 @@ class ExecutionWorkspaceService:
             if result.returncode != 0:
                 raise ExecutionWorkspaceNotFoundError("revision does not resolve to a commit")
             resolved = result.stdout.strip()
+        from codex_web.services.code_hosts import CodeHostService
+        if not CodeHostService._git_has_complete_history(checkout, resolved):
+            raise ExecutionWorkspaceNotFoundError(
+                "revision ancestry is incomplete; complete public history is required")
+        expected_tree = git("rev-parse", f"{resolved}^{{tree}}").stdout.strip()
+        # Construct and validate the event before the avoidable Git mutation.
+        # details is the existing scalar-only canonical contract; never put an
+        # embedded result dict here or widen validation to accommodate it.
+        details: dict[str, str | int | float | bool | None] = {
+            "requested_revision": requested, "resolved_revision": resolved,
+        }
+        if materialization is not None:
+            details.update({
+                "materialization_resource_id": materialization.resource_id,
+                "materialization_provider_type": materialization.provider_type,
+                "materialization_provider_instance": materialization.provider_instance,
+                "materialization_repository": materialization.repository_full_name,
+                "materialization_default_branch": materialization.default_branch,
+                "materialization_fetched": materialization.fetched,
+                "history_version": 1,
+                "history_state": materialization.history_state,
+                "history_readiness": materialization.readiness,
+                "history_target_revision": resolved,
+                "history_local_revision": resolved,
+                "history_next_action": materialization.next_action,
+                "history_deadline_seconds": 120,
+                "history_maximum_depth": 4096,
+                "history_provenance": "canonical workspace refresh",
+            })
+        refresh_event = ExecutionWorkspaceEvent(workspace_id=workspace_id,
+            event_type="workspace_revision_refreshed", actor_identity_id=actor.identity_id,
+            details=details)
         git("reset", "--hard", resolved)
         observed = git("rev-parse", "HEAD").stdout.strip()
-        if observed != resolved:
+        observed_tree = git("rev-parse", "HEAD^{tree}").stdout.strip()
+        if observed != resolved or observed_tree != expected_tree:
             raise ExecutionWorkspaceBackendError("workspace refresh verification failed")
         updated_at = time.time()
 
@@ -529,30 +562,7 @@ class ExecutionWorkspaceService:
                         "updated_at": updated_at,
                     }
                 )
-                details: dict[str, Any] = {
-                    "requested_revision": requested,
-                    "resolved_revision": resolved,
-                }
-                if materialization is not None:
-                    details.update(
-                        {
-                            "materialization_resource_id": materialization.resource_id,
-                            "materialization_provider_type": materialization.provider_type,
-                            "materialization_provider_instance": materialization.provider_instance,
-                            "materialization_repository": materialization.repository_full_name,
-                            "materialization_default_branch": materialization.default_branch,
-                            "materialization_fetched": materialization.fetched,
-                        }
-                    )
-                self._append_event(
-                    current_state,
-                    ExecutionWorkspaceEvent(
-                        workspace_id=workspace_id,
-                        event_type="workspace_revision_refreshed",
-                        actor_identity_id=actor.identity_id,
-                        details=details,
-                    ),
-                )
+                self._append_event(current_state, refresh_event)
                 return current_state
             raise ExecutionWorkspaceNotFoundError("execution workspace not found")
 

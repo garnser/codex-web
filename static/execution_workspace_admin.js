@@ -1,5 +1,6 @@
 (async () => {
   const BASE = window.location.pathname.startsWith("/codex") ? "/codex" : "";
+  const { historyReadinessHtml, workspaceHistoryObservation } = await import(`${BASE}/static/execution_history_view.js`);
   const { confirmAction } = await import(`${BASE}/static/action_confirmation.js`);
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   let actor = null;
@@ -182,6 +183,7 @@
       host.innerHTML = (response.items || []).map((event) => `<div class="comm-entry">
         <strong>${escapeHtml(event.event_type)} · ${timeText(event.occurred_at)}</strong>
         <small>Actor: ${escapeHtml(event.actor_identity_id || "system")} · ${escapeHtml(JSON.stringify(event.details || {}))}</small>
+        ${historyReadinessHtml(workspaceHistoryObservation(event.details), escapeHtml)}
       </div>`).join("") || "<small>No workspace events.</small>";
     } catch (error) {
       host.innerHTML = `<small>Workspace events unavailable: ${escapeHtml(error.message)}</small>`;

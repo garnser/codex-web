@@ -323,7 +323,7 @@ class CodeHostContractTests(unittest.IsolatedAsyncioTestCase):
         checkout = Path(self.temp.name) / "materialize-checkout"
         checkout.mkdir()
         with (
-            patch.object(service, "_git_has_commit", return_value=False),
+            patch.object(service, "_git_has_complete_history", return_value=False),
             patch.object(service, "_materialize_git_sync") as fetch,
         ):
             fact = await service.materialize_default_branch_revision(
@@ -391,13 +391,74 @@ class CodeHostContractTests(unittest.IsolatedAsyncioTestCase):
                 actor=self.actor,
             )
 
+    async def test_materialization_rejects_scope_and_credential_drift_across_waits(self):
+        # Mutate at actual awaited facade/thread boundaries, never via a cached
+        # readiness flag. Imported objects do not authorize a workspace reset.
+        for stage in ("repository", "refs", "commit", "proof", "import", "final_refs"):
+            for change in ("binding", "provider", "resource", "credential", "authority"):
+                with self.subTest(stage=stage, change=change):
+                    revision = "a" * 40
+                    service, provider, binding, resource = self._materialization_service(revision)
+                    checkout = Path(self.temp.name) / (stage + change)
+                    checkout.mkdir()
+                    changed = False
+                    refs_calls = 0
+                    original_resource = service._resource
+                    original_resolve = service.registry.resolve
+                    alternate_provider = type(provider)()
+                    def resolve(*args, **kwargs):
+                        b, p = original_resolve(*args, **kwargs)
+                        return (b, alternate_provider) if changed and change == "provider" else (b, p)
+                    original_secret_use = self.secrets.use_async
+                    def mutate():
+                        nonlocal changed
+                        changed = True
+                        if change == "binding":
+                            service.registry.register_binding(binding.model_copy(update={"credential_ref": "rotated-reference"}))
+                    def read_resource(*args, **kwargs):
+                        result = original_resource(*args, **kwargs)
+                        return result.model_copy(update={"name": "changed resource"}) if changed and change == "resource" else result
+                    async def secret_use(*args, **kwargs):
+                        if changed and change == "authority":
+                            raise CodeHostError("secret use authority denied")
+                        if changed and change == "credential":
+                            return await kwargs["consumer"]("rotated-synthetic-value")
+                        return await original_secret_use(*args, **kwargs)
+                    originals = {name: getattr(provider, name) for name in ("repository", "refs", "commit")}
+                    def wrap(name):
+                        async def call(*args, **kwargs):
+                            nonlocal refs_calls
+                            result = await originals[name](*args, **kwargs)
+                            if name == "refs": refs_calls += 1
+                            if stage == name and (name != "refs" or refs_calls == 1): mutate()
+                            if stage == "final_refs" and name == "refs" and refs_calls == 2: mutate()
+                            return result
+                        return call
+                    def proof(*args):
+                        if stage == "proof": mutate()
+                        return False
+                    def transfer(*args, **kwargs):
+                        if stage == "import": mutate()
+                    with (patch.object(service.registry, "resolve", side_effect=resolve),
+                            patch.object(service, "_resource", side_effect=read_resource),
+                            patch.object(self.secrets, "use_async", side_effect=secret_use),
+                            patch.object(provider, "repository", side_effect=wrap("repository")),
+                            patch.object(provider, "refs", side_effect=wrap("refs")),
+                            patch.object(provider, "commit", side_effect=wrap("commit")),
+                            patch.object(service, "_git_has_complete_history", side_effect=proof),
+                            patch.object(service, "_materialize_git_sync", side_effect=transfer)):
+                        with self.assertRaises(CodeHostError):
+                            await service.materialize_default_branch_revision(binding.id, resource.id,
+                                revision, checkout=checkout, actor=self.actor)
+                    self.assertTrue(changed)
+
     async def test_concurrent_materialization_fetches_the_revision_once(self) -> None:
         revision = "c" * 40
         service, _, binding, resource = self._materialization_service(revision)
         checkout = Path(self.temp.name) / "concurrent-checkout"
         checkout.mkdir()
         with (
-            patch.object(service, "_git_has_commit", side_effect=[False, True]),
+            patch.object(service, "_git_has_complete_history", side_effect=[False, True]),
             patch.object(service, "_materialize_git_sync") as fetch,
         ):
             first, second = await asyncio.gather(
@@ -422,12 +483,19 @@ class CodeHostContractTests(unittest.IsolatedAsyncioTestCase):
 
         def run(command, **kwargs):
             calls.append((command, kwargs))
-            stdout = revision + "\n" if "rev-parse" in command else ""
+            if "index-pack" in command:
+                packs = Path(command[command.index("--git-dir") + 1]) / "objects/pack"
+                packs.mkdir(parents=True)
+                (packs / "pack-fixture.pack").write_bytes(b"fixture")
+                (packs / "pack-fixture.idx").write_bytes(b"fixture-index")
+            stdout = (str(checkout / ".git") + "\n" if "--git-common-dir" in command
+                      else "false\n" if "--is-shallow-repository" in command
+                      else revision + "\n" if "rev-parse" in command else "")
             return subprocess.CompletedProcess(command, 0, stdout, "")
 
         checkout = Path(self.temp.name) / "git-command-checkout"
-        checkout.mkdir()
-        with patch("codex_web.services.code_hosts.subprocess.run", side_effect=run):
+        (checkout / ".git/objects/pack").mkdir(parents=True)
+        with patch.object(CodeHostService, "_run_materialization_git", side_effect=run):
             CodeHostService._materialize_git_sync(
                 checkout,
                 "https://github.com/org/repo.git",
@@ -454,7 +522,7 @@ class CodeHostContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("CODEX_MATERIALIZE_TOKEN", options["env"])
 
         with patch(
-            "codex_web.services.code_hosts.subprocess.run",
+            "codex_web.services.code_hosts.CodeHostService._run_materialization_git",
             side_effect=subprocess.CalledProcessError(
                 128,
                 ["git", "fetch"],

@@ -44,6 +44,7 @@ class MaterializationTransportTests(unittest.TestCase):
             root = Path(directory)
             upstream, checkout = root / "upstream", root / "checkout"
             run = subprocess.run
+            popen = subprocess.Popen
 
             def git(*args, cwd=None):
                 return run(["git", *args], cwd=cwd, check=True, capture_output=True,
@@ -130,10 +131,10 @@ class MaterializationTransportTests(unittest.TestCase):
                 # remain real, including the hostile checkout configuration.
                 if "fetch" in command:
                     command = [command[0], "-c", f"http.sslCAInfo={cert}", *command[1:]]
-                return run(command, **kwargs)
+                return popen(command, **kwargs)
 
             try:
-                with patch("codex_web.services.code_hosts.subprocess.run", side_effect=trusted_ca):
+                with patch("codex_web.services.code_hosts.subprocess.Popen", side_effect=trusted_ca):
                     CodeHostService._materialize_git_sync(
                         checkout, host + "/repo.git", "main", revision,
                         "fixture-token", "github", "resource",

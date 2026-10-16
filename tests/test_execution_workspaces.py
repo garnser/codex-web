@@ -30,6 +30,7 @@ from codex_web.execution_workspaces import (
 from codex_web.models import Project, WorkItemState
 from codex_web.resources import ResourceAlias, ResourceCreate, ResourceType
 from codex_web.services.execution_workspaces import (
+    ExecutionWorkspaceBackendError,
     ExecutionWorkspaceConflictError,
     ExecutionWorkspaceNotFoundError,
     ExecutionWorkspaceQuotaError,
@@ -305,6 +306,7 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         first = subprocess.run(["git", "rev-parse", "HEAD"], cwd=checkout, check=True, capture_output=True, text=True).stdout.strip()
         (checkout / "value.txt").write_text("second\n", encoding="utf-8")
         subprocess.run(["git", "commit", "-am", "second"], cwd=checkout, check=True, capture_output=True)
+        second = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip()
 
         refreshed = self.service.refresh_revision(
             workspace.id, first[:12], actor=self.actor
@@ -332,9 +334,79 @@ class ExecutionWorkspaceTests(unittest.TestCase):
             events[-1].details["materialization_repository"],
             "org/repository",
         )
+        # Real service/store round-trip plus public JSON transport shape. This
+        # fails if nested diagnostic dictionaries enter the canonical event.
+        from codex_web.execution_workspaces import ExecutionWorkspaceEvent
+        import json
+        persisted = self.service.store.load().events[-1]
+        transported = json.loads(persisted.model_dump_json())
+        reloaded = ExecutionWorkspaceEvent.model_validate(transported)
+        self.assertEqual(reloaded.details["history_version"], 1)
+        self.assertEqual(reloaded.details["history_target_revision"], first)
+        self.assertEqual(reloaded.details["history_local_revision"], first)
+        self.assertEqual(reloaded.details["history_readiness"], "ready")
+        self.assertTrue(all(value is None or type(value) in (str,int,float,bool)
+                            for value in transported["details"].values()))
+        self.assertEqual(self.service.get(workspace.id,self.actor).head_revision,first)
+        # Exercise the actual API router against the actual persisted service,
+        # not a renderer-only fixture or a stubbed event serializer.
+        from fastapi import FastAPI, Request
+        from fastapi.testclient import TestClient
+        from codex_web.api.execution_workspaces import build_execution_workspaces_router
+        app = FastAPI()
+        @app.middleware("http")
+        async def fixture_actor(request: Request, call_next):
+            request.state.identity_actor = self.actor
+            return await call_next(request)
+        app.include_router(build_execution_workspaces_router(self.service))
+        with TestClient(app) as client:
+            response = client.get(f"/api/execution-workspaces/{workspace.id}/events")
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()["items"][-1]["details"],transported["details"])
+        self.assertEqual(ExecutionWorkspaceStateStore(self.sqlite).load().events[-1].details,
+                         transported["details"])
+        before_events = len(self.service.store.load().events)
+        # Proposed-event validation failure is caught before reset, preserving
+        # the previous successful canonical/source revision; no rollback guess.
+        with patch("codex_web.services.execution_workspaces.ExecutionWorkspaceEvent",
+                side_effect=ValueError("event schema refused")):
+            with self.assertRaisesRegex(ValueError,"event schema refused"):
+                self.service.refresh_revision(workspace.id,second,actor=self.actor,
+                    materialization=materialization.model_copy(update={"revision":second}))
+        self.assertEqual(subprocess.check_output(["git","rev-parse","HEAD"],cwd=checkout,text=True).strip(),first)
+        self.assertEqual((checkout/"value.txt").read_text(),"first\n")
+        self.assertEqual(len(self.service.store.load().events),before_events)
         (checkout / "dirty.txt").write_text("dirty\n", encoding="utf-8")
         with self.assertRaisesRegex(ExecutionWorkspaceConflictError, "uncommitted"):
             self.service.refresh_revision(workspace.id, first, actor=self.actor)
+
+    def test_composed_history_hydration_refresh_and_zero_exit_postcondition(self):
+        from tests.test_code_host_ancestry import MaterializationAncestryTests
+        from unittest.mock import patch
+        graph = MaterializationAncestryTests()
+        graph.setUp()
+        self.addCleanup(graph.doCleanups)
+        workspace = self._acquire("composed-history", self.repo.id)
+        checkout = Path(workspace.path)
+        subprocess.run(["git", "init", "-b", workspace.branch_name, str(checkout)], check=True, capture_output=True)
+        graph.materialize(checkout=checkout)
+        refreshed = self.service.refresh_revision(workspace.id, graph.tip, actor=self.actor)
+        self.assertEqual(refreshed.head_revision, graph.tip)
+        self.assertEqual(subprocess.check_output(["git","-C",str(checkout),"rev-parse","HEAD"]).decode().strip(),graph.tip)
+        first=graph.git('-C',str(graph.repo),'rev-list','--max-parents=0','HEAD').strip()
+        real_run=subprocess.run
+        def zero_reset(command,*args,**kwargs):
+            if "reset" in command:
+                return subprocess.CompletedProcess(command,0,"","")
+            return real_run(command,*args,**kwargs)
+        with patch("codex_web.services.execution_workspaces.subprocess.run",side_effect=zero_reset):
+            with self.assertRaisesRegex(ExecutionWorkspaceBackendError,"verification failed"):
+                self.service.refresh_revision(workspace.id,first,actor=self.actor)
+        self.assertEqual(graph.git('-C',str(checkout),'rev-parse','HEAD').strip(),graph.tip)
+        (checkout/'untracked').write_text('preserved')
+        with self.assertRaisesRegex(ExecutionWorkspaceConflictError,'uncommitted'):
+            self.service.refresh_revision(workspace.id,first,actor=self.actor)
+        self.assertEqual((checkout/'untracked').read_text(),'preserved')
 
     def test_repository_checkpoint_is_canonical_and_release_preserves_branch(self) -> None:
         workspace = self._acquire("checkpoint-exec", self.repo.id)

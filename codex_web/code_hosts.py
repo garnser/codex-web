@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 import unicodedata
-from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
+from typing import Literal, Any, Awaitable, Callable, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -107,6 +107,9 @@ class CodeHostRevisionMaterializationFact(BaseModel):
     default_branch: str
     revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     fetched: bool = True
+    history_state: Literal["complete"] = "complete"
+    readiness: Literal["ready"] = "ready"
+    next_action: Literal["refresh_exact_revision"] = "refresh_exact_revision"
 
 
 class CodeHostPullRequestFact(BaseModel):

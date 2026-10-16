@@ -1,0 +1,21 @@
+<!doctype html><meta charset="utf-8"><title>Source history observation fixture</title>
+<main role="region" aria-label="History fixture"></main><script type="module">
+import {brokerAuditHtml} from '/static/broker_audit_view.js';
+import {historyReadinessHtml, brokerHistoryObservation, workspaceHistoryObservation} from '/static/execution_history_view.js';
+const esc = value => String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
+const eventDetails = {history_version:1,history_state:'complete',history_readiness:'ready',history_target_revision:'a'.repeat(40),history_local_revision:'b'.repeat(40),materialization_fetched:true,history_maximum_depth:4096,history_deadline_seconds:120,history_next_action:'refresh_exact_revision',history_provenance:'canonical workspace refresh'};
+const history = workspaceHistoryObservation(JSON.parse(JSON.stringify(eventDetails)));
+const refusal = {state:'not_ready',target_revision:'a'.repeat(40),maximum_depth:4096,deadline_seconds:120,next_action:'inspect_history_bound_or_destination_refusal',provenance:'<img src=x onerror=alert(1)>'};
+document.querySelector('main').innerHTML=historyReadinessHtml(history,esc)+historyReadinessHtml(brokerHistoryObservation(JSON.stringify({history_readiness:refusal})),esc);
+const mixed = document.createElement('aside'); mixed.setAttribute('aria-label','Mixed reader audit');
+const entries = [
+ {denial_reason:'older plain refusal',operation_id:'repository.workspace.refresh',decision:'deny',response_status:409},
+ {denial_reason:JSON.stringify({history_readiness:{history_state:'future-schema',readiness:'ready',revision:'c'.repeat(40),next_action:'inspect incompatible observation'}}),decision:'deny'},
+ {denial_reason:'null',decision:'deny'},
+ {denial_reason:'{"history_readiness":',decision:'deny'},
+ {denial_reason:JSON.stringify({history_readiness:refusal}),decision:'deny'}];
+mixed.innerHTML=entries.map(e=>brokerAuditHtml(e,'fixture')).join('');document.body.append(mixed);
+const scalarMixed = document.createElement('aside');scalarMixed.setAttribute('aria-label','Scalar event compatibility');
+const eventCases = [{}, {...eventDetails,history_version:2}, {...eventDetails,history_readiness:{readiness:'ready'}}, {...eventDetails,history_target_revision:'malformed'}, eventDetails];
+scalarMixed.innerHTML=eventCases.map(details=>historyReadinessHtml(workspaceHistoryObservation(details),esc)).join('');document.body.append(scalarMixed);
+</script>
