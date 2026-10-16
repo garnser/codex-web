@@ -124,11 +124,18 @@ class MutationAdmissionPostgresTests(_PostgresFixture, unittest.IsolatedAsyncioT
         def require(identity):
             writer_skills = skill_service(identity.store.store)
             content = procedure()
+            # The shared schema fixture uses an artificial clock (10..300).
+            # This composition uses the real SkillService clock: publish a
+            # currently reviewed procedure rather than bypass its expiry gate.
+            now = time.time()
+            content.update(reviewed_at=now - 1, review_due_at=now + 3600,
+                expires_at=now + 7200)
             content['operation_triggers'] = ['recovery.scheduled-firing.reconcile']
             draft = writer_skills.create(SkillCreate(skill_id='recovery-late-procedure',
                 name='Current Recovery procedure', instructions='Canonical Evidence and current authority required.',
                 operational_procedure=content), actor=self.actor)
-            writer_skills.publish(draft['skillId'], draft['recordId'], SkillPublish(), actor=self.actor)
+            published = writer_skills.publish(draft['skillId'], draft['recordId'], SkillPublish(), actor=self.actor)
+            self.assertEqual(published['recordId'], draft['recordId'])
         await self.denied_at_write(require)
 
     async def test_step_up_expiry_without_revision_change_refuses_activation(self):
