@@ -1,0 +1,21 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Synthetic runner header layout</title>
+<link rel="stylesheet" href="/static/design_tokens.css"><link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/mobile_responsive.css">
+<aside class="sidebar">Synthetic layout fixture · no live runner</aside>
+<main class="main"><header class="topbar">
+  <div class="thread-heading"><h1>codex-web development governor</h1><p id="thread-meta">01a14127-d4f0-70e3-b9b0-ccc5ee653d4f · Synthetic observation <span data-runner-indicator></span></p></div>
+  <div class="codex-status idle">Waiting for Codex</div>
+  <div class="controls"><button>Inbox</button><button>Approvals</button><button>Organization</button><button>Executive</button><button>Operating view</button><button>API</button><button aria-label="Toggle theme">◐</button><button>Thread settings</button></div>
+</header><div class="messages">Synthetic content for bounded layout verification.</div></main>
+<script type="module">
+const query=new URLSearchParams(location.search);
+document.documentElement.dataset.theme=query.get('theme')||'light';
+const {applyRunner,runnerBadgeHtml}=await import('/static/thread_runner_ui.js');
+const now=Date.now()/1000,state=query.get('state')||'active';
+applyRunner({id:'fixture',runner:{schemaVersion:'1.0',assignmentId:'synthetic-assignment',fence:1,
+  observedAt:now,assignmentCreatedAt:now-10,updatedAt:now,state:'running',live:true,processRunning:true,
+  leaseValid:true,leaseExpiresAt:now+120,validationCustodyState:'registered'},
+  activity:{source:'current_turn',state,turnId:state==='active'?'synthetic-current-turn':null}});
+document.querySelector('[data-runner-indicator]').innerHTML=runnerBadgeHtml('fixture');
+document.body.dataset.ready='true';
+</script></html>

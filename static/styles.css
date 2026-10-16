@@ -802,7 +802,7 @@ select:focus,
 }
 
 .thread-heading {
-  min-width: 0;
+  min-width: min(100%, 20rem);
   flex: 1;
 }
 
