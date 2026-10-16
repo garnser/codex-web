@@ -131,6 +131,10 @@ observed evidence, per-source coverage, exact revisions, provenance, expiry and
 blockers. Expiry visibly marks retained evidence stale without polling the provider;
 selection and Project changes fence late results. Provider text is escaped and PR
 links require a matching configured HTTPS provider authority.
+Each read carries a metadata-only correlation ID shared by its returned scope and
+the existing SecretBroker audit, with assignment/execution/Project/fence, requester,
+inspection kind and exact Definition record. No provider bodies or credential
+material enter that audit context.
 
 This is an additive runtime/read contract, with no persisted requirements store or
 database migration. The standalone projection rejects versions other than `1.0`.

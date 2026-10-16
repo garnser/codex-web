@@ -33,7 +33,7 @@ export function mergeRequirementsHtml(response, projectId, now = Date.now() / 10
   const stale = !Number.isFinite(fact.expires_at) || fact.expires_at <= now;
   return `<div class="comm-entry"><strong>Merge requirements · ${stale ? 'stale' : fact.changed ? 'changed during read' : fact.complete ? 'complete observation' : 'partial / unknown observation'}</strong>
     <small>${referenceLink('resource', fact.resource_id, {projectId})} · ${esc(fact.provider_type)} / ${esc(fact.provider_instance)} · ${pullRequestLink(fact)} · target ${esc(fact.target_branch)}</small>
-    <small>Assignment ${referenceLink('assignment', response.scope?.assignment_id, {projectId})} · execution ${esc(response.scope?.execution_id)} · fence ${esc(response.scope?.fence)}</small>
+    <small>Assignment ${referenceLink('assignment', response.scope?.assignment_id, {projectId})} · execution ${esc(response.scope?.execution_id)} · fence ${esc(response.scope?.fence)} · read correlation ${esc(response.scope?.read_id || 'unavailable')}</small>
     <small>Head ${esc(fact.head_revision)} · base ${esc(fact.base_revision)}</small>
     <small>Observed ${esc(new Date(fact.observed_at * 1000).toISOString())} · expires ${esc(new Date(fact.expires_at * 1000).toISOString())}</small>
     <small>Read principal ${esc(response.scope?.inspecting_identity_id)} · requester ${esc(response.scope?.requester_identity_id)} · ${esc(response.scope?.inspection_kind)} inspection</small>

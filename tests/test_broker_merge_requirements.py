@@ -130,6 +130,9 @@ class BrokerMergeRequirementsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['scope']['definition'], self.reference.model_dump(mode='json'))
         self.assertNotIn('fixture-token', json.dumps(result))
         self.assertNotIn('lease-token-that-is-never-exposed', json.dumps(result))
+        uses = [item for item in self.env.secret.store.load().audit if item.action == 'use']
+        self.assertEqual(uses[-1].context['read_id'], result['scope']['read_id'])
+        self.assertEqual(uses[-1].context['assignment_id'], self.assignment.id)
 
     async def test_composed_effective_rules_require_reviews_conversations_and_attributed_checks(self):
         self.env.server.rules = [self.env.server.rule()]
@@ -198,6 +201,17 @@ class BrokerMergeRequirementsTests(unittest.IsolatedAsyncioTestCase):
                 self.env.during_status(lambda values=values: setattr(self, 'current', original.model_copy(update=values)))
                 with self.assertRaises(ControlPlaneBrokerDeniedError):
                     await self.read()
+
+    async def test_worker_membership_revocation_during_http_prevents_return(self):
+        memberships = [item for item in self.env.identity.store.load().memberships
+                       if item.identity_id == self.env.worker.identity_id]
+        self.assertTrue(memberships)
+        def revoke():
+            for membership in memberships:
+                self.env.identity.revoke_membership(membership.id, actor=self.env.admin)
+        self.env.during_status(revoke)
+        with self.assertRaises(ControlPlaneBrokerDeniedError):
+            await self.read()
 
     async def test_disabled_or_ambiguous_binding_is_not_selected(self):
         self.change_binding(enabled=False)

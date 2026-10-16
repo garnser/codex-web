@@ -1,5 +1,6 @@
 """Assignment-bound admission for the existing CodeHost read projection."""
 import asyncio
+import uuid
 
 from codex_web.services.control_plane_broker import ControlPlaneBrokerDeniedError, ControlPlaneBrokerRequestError
 
@@ -46,6 +47,7 @@ async def read_merge_requirements(broker, assignment, worker_actor, resolved, va
 
     original = await asyncio.to_thread(scope)
     latest = [original]
+    read_id = uuid.uuid4().hex
 
     async def checkpoint():
         current = await asyncio.to_thread(scope)
@@ -54,13 +56,19 @@ async def read_merge_requirements(broker, assignment, worker_actor, resolved, va
         latest[0] = current
 
     item = await broker.code_hosts.merge_requirements(original[3], original[4], resolved.target_ref,
-                                                      actor=original[1], checkpoint=checkpoint)
+        actor=original[1], checkpoint=checkpoint, audit_context={
+            'assignment_id': assignment.id, 'execution_id': assignment.execution_id,
+            'project_id': assignment.project_id, 'fence': assignment.fence,
+            'requester_identity_id': original[2].identity_id, 'inspection_kind': inspection_kind,
+            'read_id': read_id, 'external_id': resolved.target_ref,
+            'definition_record_id': assignment.execution_profile_definition.record_id})
     await checkpoint()
     current, actor, requester = latest[0][:3]
     return {'item': item.model_dump(mode='json'), 'scope': {
         'organization_id': current.organization_id, 'workspace_id': current.workspace_id,
         'project_id': current.project_id, 'repository_id': original[4],
         'assignment_id': current.id, 'execution_id': current.execution_id, 'fence': current.fence,
+        'read_id': read_id,
         'lease_expires_at': current.lease.expires_at,
         'requester_identity_id': requester.identity_id,
         'inspection_kind': inspection_kind, 'inspecting_identity_id': actor.identity_id,

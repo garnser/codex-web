@@ -9,7 +9,12 @@ from codex_web.secrets import SecretStatus
 from codex_web.services.secrets import SecretUseDeniedError
 
 
-async def read_merge_requirements(service, binding_id, resource_id, external_id, *, actor, checkpoint=None):
+async def read_merge_requirements(service, binding_id, resource_id, external_id, *, actor, checkpoint=None, audit_context=None):
+    context = dict(audit_context or {})
+    if (set(context) - {'assignment_id', 'execution_id', 'project_id', 'fence', 'requester_identity_id',
+                        'inspection_kind', 'read_id', 'external_id', 'definition_record_id'}
+            or any(type(value) not in {str, int} or len(str(value)) > 1024 for value in context.values())):
+        raise CodeHostError('Merge-requirement audit accepts only bounded canonical scope metadata')
     def scope():
         binding, provider = service.registry.resolve(binding_id, actor=actor)
         service._require_capability(binding, provider, CodeHostCapability.MERGE_REQUIREMENTS_READ)
@@ -51,7 +56,7 @@ async def read_merge_requirements(service, binding_id, resource_id, external_id,
         return result
 
     result = await service._with_credential(binding, actor=current_actor, resource=resource,
-        operation='code-host.pull-request.merge-requirements.read', callback=consume)
+        operation='code-host.pull-request.merge-requirements.read', callback=consume, audit_context=context)
     await check()
     if not isinstance(result, CodeHostMergeRequirementsFact) or (
             result.resource_id, result.binding_id, result.provider_type, result.provider_instance, result.external_id
