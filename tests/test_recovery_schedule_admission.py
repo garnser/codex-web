@@ -161,7 +161,7 @@ class RecoveryScheduleAdmissionTests(unittest.IsolatedAsyncioTestCase):
         for version in ("1.0", "1.1"):
             legacy = {"schema_version": version, "policy": self.service.policy().model_dump(mode="json")}
             upgraded = RecoveryStore._decode(legacy)
-            self.assertEqual(upgraded.schema_version, "1.2")
+            self.assertEqual(upgraded.schema_version, "1.3")
             self.assertFalse(upgraded.scheduled_firings)
             self.assertEqual(upgraded.policy, self.service.policy())
         with self.assertRaises(ContractCompatibilityError):

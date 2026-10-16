@@ -9,6 +9,7 @@ from codex_web.compatibility import MigrationRegistry
 RECOVERY_STATE_MIGRATIONS = MigrationRegistry("recovery-state")
 RECOVERY_STATE_MIGRATIONS.register("1.0", "1.1", lambda payload: {**payload, "schema_version": "1.1"})
 RECOVERY_STATE_MIGRATIONS.register("1.1", "1.2", lambda payload: {**payload, "schema_version": "1.2"})
+RECOVERY_STATE_MIGRATIONS.register("1.2", "1.3", lambda payload: {**payload, "schema_version": "1.3", "reconciliations": {}})
 from codex_web.storage.state_store import StateStore
 
 

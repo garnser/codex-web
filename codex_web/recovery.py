@@ -5,7 +5,7 @@ import json
 import time
 import uuid
 from enum import StrEnum
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -13,7 +13,7 @@ from codex_web.crypto import EncryptedEnvelope, KeyManifestEntry
 from codex_web.compatibility import ContractSpec
 
 
-RECOVERY_STATE_CONTRACT = ContractSpec("recovery-state", "1.2", ("1.2",))
+RECOVERY_STATE_CONTRACT = ContractSpec("recovery-state", "1.3", ("1.3",))
 
 
 class RecoveryDeploymentMode(StrEnum):
@@ -205,6 +205,30 @@ class RecoveryFiring(BaseModel):
     error_code: str | None = None
 
 
+class RecoveryReconcileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    event_id: str = Field(min_length=1, max_length=200)
+    expected_firing_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_schedule_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_policy_fingerprint: str = Field(min_length=1)
+    evidence_id: str = Field(min_length=1)
+    verification_id: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+class RecoveryFiringReconciliation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    original: RecoveryFiring
+    outcome: Literal["succeeded", "failed"]
+    evidence_id: str
+    verification_id: str
+    actor_id: str
+    reconciled_at: float
+    request: RecoveryReconcileRequest
+    request_sha256: str
+    idempotency_key: str
+
+
 class RecoveryFiringWatermark(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -225,6 +249,7 @@ class RecoveryState(BaseModel):
     backup_schedule_id: str | None = None
     verification_schedule_id: str | None = None
     scheduled_firings: dict[str, RecoveryFiring] = Field(default_factory=dict, max_length=128)
+    reconciliations: dict[str, RecoveryFiringReconciliation] = Field(default_factory=dict, max_length=128)
     scheduled_watermarks: dict[str, RecoveryFiringWatermark] = Field(default_factory=dict, max_length=2)
 
 

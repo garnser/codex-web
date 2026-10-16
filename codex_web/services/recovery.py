@@ -800,7 +800,8 @@ class RecoveryService:
         blockers = []
         scoped_firings = [item for item in state.scheduled_firings.values()
                           if (item.organization_id, item.workspace_id) == (actor.organization_id, actor.workspace_id)]
-        if any(item.status == "unknown" for item in scoped_firings):
+        from codex_web.services.recovery_reconciliation import unresolved_unknown
+        if unresolved_unknown(self, state, actor, latest_backup, latest_verify):
             blockers.append("scheduled_recovery_requires_reconciliation")
         if any(item.status == "running" and (item.owner_id != self._scheduled_admission.owner_id
                 or not self._scheduled_executor.status()["inflight_work"]) for item in scoped_firings):

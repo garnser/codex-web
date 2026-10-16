@@ -332,3 +332,65 @@ revocations are refused while such consumers remain; this is positive protection
 not an executed revocation attack. Final frozen-requirement validation remains
 defense in depth. Policy/schedule admission is independently rechecked at the
 Evidence/verification success transaction.
+
+### Explicit scheduled-owner reconciliation
+
+Recovery state `1.3` extends `1.2` with at most 128 immutable reconciliation
+records bound to retained firing identities. The migration preserves prior
+records/watermarks. A `1.2` writer must refuse `1.3`; drain all older writers
+before the first write. There is no source-only rollback after activation.
+
+The opt-in `recovery.scheduled-firing.reconcile` ActionProvider invokes the same
+Recovery service and transaction. It does not register/activate itself or grant
+its capability. Existing canonical ActionIntent authority, security, procedure,
+lease and actor admission remain required. The provider's actor resolver must
+use current canonical identity/session/authority state, never caller metadata or
+a cached actor. The service repeats operator admin/MFA (or recovery:admin service
+scope) checks at transaction admission and checks exact tenant, firing digest,
+current policy fingerprint, schedule digest and canonical independent Evidence.
+Proof requires the exact owner/event/effect snapshot, genuine writer quiescence,
+terminal effects/retention and a known succeeded/failed outcome. Current local
+executor zero and elapsed time are insufficient. Unknown/incomplete/foreign or
+invalidated proof refuses settlement. The operator must independently establish
+that original owner and every actual writer are terminated/fenced; the service
+cannot manufacture this proof from its process-local executor.
+
+No backup, verification, retention or original effect is replayed. The original
+receipt remains in the reconciliation record. Proven terminal failure leaves the
+firing diagnostic status `unknown`; it is never rewritten as success. Even after
+valid reconciliation, health stays unqualified until a distinct new backup and
+PASS isolated restore, both later than reconciliation and on the current policy,
+satisfy the normal RPO/RTO/freshness gates. Invalidated/expired evidence remains a
+blocker. Lost response is read-only receipt reconciliation using the same stable
+key; conflicting keys/snapshots and late original settlement are refused.
+
+The executor exposes two bounded terminal observations (event ID/error class,
+not exception payload or effect success), distinguishing a terminal failed future
+from unobserved actual effects. The demonstrated synthetic path is a settlement
+write failure after real admitted work; that is not a diagnosis of the historical
+production firing. Existing Recovery status/UI includes original identity,
+operator disposition, Evidence/verification references and the next guarded
+operator action; a reconcile receipt alone is not a qualified installation.
+
+#### Bootstrap before installation
+
+This source does not solve activation by calling a new service against live data.
+The installed `2cd` Recovery API has no reconcile operation or supported dynamic
+provider registration route in the Developer broker. The new provider is opt-in;
+its source existence is not executable operator authority. Root must identify an
+existing approved canonical provider/artifact/procedure activation contract, or
+review the minimal typed activation integration before any production invocation.
+A generic worker executable with database access or an ad-hoc Python import is
+not such a contract.
+
+The bootstrap capsule must pin reviewed source/artifact digest, exact live and
+candidate versions, current canonical actor/capability, protected store and
+Evidence generations, expected firing/owner/effect/policy/schedule digests and a
+stable ActionIntent key. Independently qualify the exact shared-service action
+against isolated backup/restore/preservation fixtures. Drain/fence all old
+writers before any `1.3` write; declare that one-way boundary in the qualified
+operator plan. The admitted canonical provider then uses actual terminal-owner
+and effect Evidence, records a verified receipt, and performs a distinct fresh
+backup/isolated restore through existing controls. Only those real qualification
+results can permit full installation. No health-gate waiver, raw store edit,
+separate recovery engine or assumed rollback is authorized by this source.

@@ -131,6 +131,10 @@ def build_recovery_router(service: RecoveryService, projects=None) -> APIRouter:
                     (item for item in state.scheduled_firings.values()
                      if (item.organization_id, item.workspace_id) == (actor.organization_id, actor.workspace_id)),
                     key=lambda item: (item.admitted_at, item.event_id), reverse=True)],
+                "reconciliations": [item.model_dump(mode="json") for item in state.reconciliations.values()
+                    if (item.original.organization_id, item.original.workspace_id) == (actor.organization_id, actor.workspace_id)],
+                "reconciliation_action": "recovery.scheduled-firing.reconcile",
+                "reconciliation_availability": "Not reported here; inspect admitted canonical provider binding and current authority. Source declaration grants no execution permission.",
                 "local_executor": service._scheduled_executor.status(),
             },
             "backups": backups,
@@ -138,6 +142,15 @@ def build_recovery_router(service: RecoveryService, projects=None) -> APIRouter:
             "backup_schedule_id": state.backup_schedule_id,
             "verification_schedule_id": state.verification_schedule_id,
         }
+
+    @router.get("/scheduled-firings/{event_id}/reconciliation-preview")
+    async def reconciliation_preview(event_id: str, request: Request) -> dict[str, Any]:
+        from codex_web.services.recovery_reconciliation import RecoveryReconciliationService
+        actor = admin(request)
+        try:
+            return RecoveryReconciliationService(service, lambda identity: admin(request)).preview(event_id,actor=actor)
+        except (RecoveryError, AuthorizationError, CryptoKeyError) as exc:
+            raise error(exc) from exc
 
     @router.put("/policy")
     async def configure(
