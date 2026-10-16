@@ -503,66 +503,69 @@ test('a canonical Session deep link focuses the requested session without mutati
 // oversized grid track while still being clipped by the session list.
 for (const width of [390, 1440]) {
   for (const theme of ['light', 'dark']) {
-    test(`Operations session trace fits its visible ancestors at ${width}px in ${theme}`, async ({ page }) => {
-      await page.setViewportSize({ width, height: 1000 });
-      await installRoutes(page);
-      const sessionId = 'agent-session-793df6cc28ef4216a09e141d3b18ae6e';
-      await page.route('**/api/agent-sessions', route => route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({ items: [{
-          id: sessionId, provider_id: 'openai', runtime_id: 'codex', status: 'ready',
-          provider_native_session_id: '01a14127-d4f0-70e3-b9b0-ccc5ee653d4f',
-          capability_snapshot: ['agent_execution', 'interrupt_cancel', 'native_context_compaction'],
-        }] }),
-      }));
-      const custody = {
-        assignment_id: 'assignment-d24aad4e1f2b49708b1706bd17b1ab0c',
-        execution_id: 'thread-bootstrap-107637cab32243a7b8499fb19451188f',
-        execution_workspace_id: 'execws-a7684b7e1ce349d40938',
-      };
-      await page.route('**/api/agent-sessions/*/trace', route => route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({ trace: {
-          agent_session: custody,
-          runtime_events: [
-            { id: 'current', ...custody, terminal_outcome: 'succeeded', telemetry_completeness: 'partial' },
-            { id: 'historical', assignment_id: 'assignment-0a617509df654be797dd31eb54597538',
-              execution_id: 'thread-bootstrap-07f73f92717c49f99abb69faa7772ca1',
-              execution_workspace_id: 'execws-8a4f38a3645a38c119aa',
-              terminal_outcome: 'succeeded', telemetry_completeness: 'partial' },
-          ],
-        } }),
-      }));
-      await page.goto('http://127.0.0.1:18766/tests/browser/agent_provider_operations_fixture.html');
-      const card = page.locator('#agent-provider-card');
-      await expect(card).toBeAttached();
-      // product_workspaces adopts this existing card into Operations.
-      await page.evaluate(theme => {
-        document.documentElement.dataset.theme = theme;
-        const card = document.getElementById('agent-provider-card');
-        card.classList.add('product-adopted-card');
-        document.querySelector('.product-workspace-host').append(card);
-      }, theme);
-      await card.locator('.agent-provider-refresh').click();
-      const session = card.locator(`[data-reference-id="${sessionId}"]`);
-      await session.locator('.agent-session-trace summary').click();
-      await expect(session.locator('[data-runtime-event-id="current"]')).toContainText('Current custody');
-      await expect(session.locator('[data-runtime-event-id="historical"]')).toContainText('Recorded under another assignment');
-      await session.locator('[data-runtime-event-id="historical"]').scrollIntoViewIfNeeded();
-      const geometry = await session.evaluate(item => {
-        const list = item.closest('.agent-session-list');
-        const bounds = list.getBoundingClientRect();
-        const elements = [item, ...item.querySelectorAll('.agent-runtime-event, .cw-identity-chip, button')];
-        return {
-          overflow: list.scrollWidth - list.clientWidth,
-          outside: elements.filter(element => {
-            const rect = element.getBoundingClientRect();
-            return rect.left < Math.max(0, bounds.left) - 1 ||
-              rect.right > Math.min(window.innerWidth, bounds.right) + 1;
-          }).map(element => element.className),
+    for (const font of ['default', 'monospace']) {
+      test(`Operations session trace fits its visible ancestors at ${width}px in ${theme} with ${font} font`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 1000 });
+        await installRoutes(page);
+        const sessionId = 'agent-session-793df6cc28ef4216a09e141d3b18ae6e';
+        await page.route('**/api/agent-sessions', route => route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify({ items: [{
+            id: sessionId, provider_id: 'openai', runtime_id: 'codex', status: 'ready',
+            provider_native_session_id: '01a14127-d4f0-70e3-b9b0-ccc5ee653d4f',
+            capability_snapshot: ['agent_execution', 'interrupt_cancel', 'native_context_compaction'],
+          }] }),
+        }));
+        const custody = {
+          assignment_id: 'assignment-d24aad4e1f2b49708b1706bd17b1ab0c',
+          execution_id: 'thread-bootstrap-107637cab32243a7b8499fb19451188f',
+          execution_workspace_id: 'execws-a7684b7e1ce349d40938',
         };
+        await page.route('**/api/agent-sessions/*/trace', route => route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify({ trace: {
+            agent_session: custody,
+            runtime_events: [
+              { id: 'current', ...custody, terminal_outcome: 'succeeded', telemetry_completeness: 'partial' },
+              { id: 'historical', assignment_id: 'assignment-0a617509df654be797dd31eb54597538',
+                execution_id: 'thread-bootstrap-07f73f92717c49f99abb69faa7772ca1',
+                execution_workspace_id: 'execws-8a4f38a3645a38c119aa',
+                terminal_outcome: 'succeeded', telemetry_completeness: 'partial' },
+            ],
+          } }),
+        }));
+        await page.goto('http://127.0.0.1:18766/tests/browser/agent_provider_operations_fixture.html');
+        const card = page.locator('#agent-provider-card');
+        await expect(card).toBeAttached();
+        // product_workspaces adopts this existing card into Operations.
+        await page.evaluate(theme => {
+          document.documentElement.dataset.theme = theme;
+          const card = document.getElementById('agent-provider-card');
+          card.classList.add('product-adopted-card');
+          document.querySelector('.product-workspace-host').append(card);
+        }, theme);
+        if (font !== 'default') await page.addStyleTag({ content: ':root { --cw-font-sans: monospace; }' });
+        await card.locator('.agent-provider-refresh').click();
+        const session = card.locator(`[data-reference-id="${sessionId}"]`);
+        await session.locator('.agent-session-trace summary').click();
+        await expect(session.locator('[data-runtime-event-id="current"]')).toContainText('Current custody');
+        await expect(session.locator('[data-runtime-event-id="historical"]')).toContainText('Recorded under another assignment');
+        await session.locator('[data-runtime-event-id="historical"]').scrollIntoViewIfNeeded();
+        const geometry = await session.evaluate(item => {
+          const list = item.closest('.agent-session-list');
+          const bounds = list.getBoundingClientRect();
+          const elements = [item, ...item.querySelectorAll('.agent-runtime-event, .cw-identity-chip, .cw-status-badge, button')];
+          return {
+            overflow: list.scrollWidth - list.clientWidth,
+            outside: elements.filter(element => {
+              const rect = element.getBoundingClientRect();
+              return rect.left < Math.max(0, bounds.left) - 1 ||
+                rect.right > Math.min(window.innerWidth, bounds.right) + 1;
+            }).map(element => element.className),
+          };
+        });
+        expect(geometry).toEqual({ overflow: 0, outside: [] });
       });
-      expect(geometry).toEqual({ overflow: 0, outside: [] });
-    });
+    }
   }
 }
