@@ -19,6 +19,49 @@ def install_skill_scanner_configuration(service):
 SCANNER_RUNTIME_BASE = '/opt/codex-skill-runtimes'
 
 
+def _public_ca_bundle(path):
+    """Recognize bounded public trust-anchor data, never private credentials.
+
+    SkillSpector's Python dependencies load their bundled CA certificates even
+    for offline imports. A filename alone cannot exempt a PEM from the runtime
+    credential filter; every block must decode to an X.509 CA certificate.
+    """
+    import re
+    from cryptography import x509
+
+    if path.name != 'cacert.pem' or path.is_symlink() or not path.is_file():
+        return False
+    try:
+        with path.open('rb') as stream:
+            data = stream.read(512_001)
+        if len(data) > 512_000:
+            return False
+        blocks = list(re.finditer(
+            rb'-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----', data))
+        if not blocks or len(blocks) > 512:
+            return False
+        remainder = re.sub(
+            rb'-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----', b'', data)
+        if any(line.strip() and not line.lstrip().startswith(b'#') for line in remainder.splitlines()):
+            return False
+        if b'PRIVATE KEY' in data:
+            return False
+        for block in blocks:
+            certificate = x509.load_pem_x509_certificate(block.group())
+            try:
+                if not certificate.extensions.get_extension_for_class(x509.BasicConstraints).value.ca:
+                    return False
+            except x509.ExtensionNotFound:
+                # Legacy public root bundles also contain X.509 v1 roots,
+                # which predate Basic Constraints. This checks public data type,
+                # not TLS trust or signature-policy eligibility for that root.
+                if certificate.version != x509.Version.v1 or certificate.issuer != certificate.subject:
+                    return False
+        return True
+    except (OSError, ValueError, x509.ExtensionNotFound, x509.DuplicateExtension):
+        return False
+
+
 def validate_scanner_runtime(value):
     from pathlib import Path
     import os
@@ -37,7 +80,9 @@ def validate_scanner_runtime(value):
         for name in (*dirs, *files):
             count += 1
             path = Path(directory) / name
-            if count > 100_000 or name.startswith('.') or name.lower().endswith(('.pem', '.key', '.p12', '.pfx', '.keystore')):
+            credential_file = name.lower().endswith(('.pem', '.key', '.p12', '.pfx', '.keystore'))
+            if (count > 100_000 or name.startswith('.')
+                    or (credential_file and not _public_ca_bundle(path))):
                 raise SkillScannerError('Scanner runtime contains a forbidden credential/hidden path or exceeds its inventory bound.')
             if path.is_symlink():
                 target = path.resolve()

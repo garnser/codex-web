@@ -162,3 +162,16 @@ Live canonical worker identity/membership, compatibility and leases are checked
 before launch, after command preparation immediately before spawn, during polling
 and before accepting terminal output. Worker completion independently checks live
 identity, including an immediate-exit process that skipped the polling loop.
+
+Dedicated Python runtime preparation must preserve the public CA bundles used
+by dependencies during offline imports. A regular `cacert.pem` is admitted only
+when it is at most 512,000 bytes and contains one to 512 parseable X.509
+certificates with CA Basic Constraints, or legacy self-issued v1 roots that
+predate extensions. Separators may contain only blank lines or comments.
+Mixed/private key material, malformed certificates, leaf certificates, hidden
+files and certificate symlinks remain refused. Other credential filenames retain
+their prohibition. This checks public data type, not certificate trust or TLS
+signature eligibility. Bundles grant no worker network access or control-plane
+trust and never enter the application's certificate store. Standard virtualenv
+packaging entries outside the dedicated-runtime contract still require explicit
+preparation; admitting certificates does not admit an arbitrary environment.

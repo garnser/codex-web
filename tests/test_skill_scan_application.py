@@ -361,6 +361,27 @@ print(json.dumps({'risk_assessment':{'score':0,'severity':'LOW','recommendation'
                 with self.assertRaises(SkillScannerError): validate_scanner_runtime(self.scanner_root)
             finally: path.unlink()
 
+    def test_public_ca_bundle_required_at_import_survives_isolated_dispatch(self):
+        from pathlib import Path
+        # Real SkillSpector imports LangChain, which creates an SSL context with
+        # certifi's public bundle even when --no-llm and networking are disabled.
+        bundle = self.scanner_root/'lib'/'python3.14'/'site-packages'/'certifi'/'cacert.pem'
+        bundle.parent.mkdir(parents=True)
+        bundle.write_bytes((Path(__file__).with_name('fixtures')/'skill_scanner_legacy_ca.pem').read_bytes())
+        self.scanner.write_text(self.scanner.read_text().replace(
+            'import json, os, pathlib, sys',
+            'import json, os, pathlib, sys\nimport ssl\nssl.create_default_context(cafile=' + repr(str(bundle)) + ')'))
+        readiness = self.provider.inspect(actor=self.actor)['readiness']
+        self.assertTrue(readiness['ready'], readiness)
+        result = self.scan()
+        self.assertEqual(result['status'], 'passed', result)
+        proof = result['scan']['execution_attribution']
+        assignment = self.workers.store.assignment(proof['assignment_id'])
+        self.assertEqual(assignment.status, 'succeeded')
+        self.assertFalse(assignment.network.enabled)
+        self.assertEqual(assignment.secret_refs, ())
+        self.assertTrue(result['scan']['report_artifact_id'])
+
     def scan(self):
         from codex_web.skill_security import SkillScanRequest
         return self.application.skill_security_service.scan(self.view, SkillScanRequest(), actor=self.actor)
