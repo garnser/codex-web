@@ -113,6 +113,18 @@ class RecoveryActionIntentTests(unittest.IsolatedAsyncioTestCase):
         return unknown
 
     async def test_committed_domain_receipt_settles_existing_intent_without_execute(self):
+        from codex_web.services.action_providers import ActionRequirementError
+        before=self.recovery.store.load()
+        binding=self.registry.binding(self.recovery_binding.id,self.actor)
+        request=ActionRequest(action_id='recovery.scheduled-firing.reconcile',
+            organization_id=self.actor.organization_id,workspace_id=self.actor.workspace_id,
+            requested_by=self.actor.identity_id,idempotency_key=self.payload.idempotency_key,
+            parameters=self.payload.model_dump(mode='json'))
+        with self.assertRaisesRegex(ActionRequirementError,'Canonical Recovery mutation executor unavailable'):
+            await self.provider.execute(request,binding=binding)
+        self.assertEqual(self.recovery.store.load(),before)
+        # Positive execution goes through the actual canonical worker and
+        # ActionIntent service, never a fabricated process-local context.
         intent=await self.lose_response()
         committed=self.recovery.store.load()
         evidence_before=self.artifacts.store.load()
