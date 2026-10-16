@@ -579,6 +579,14 @@ concurrent future during cancellation and ActionIntent timeout. Stop closes
 admission and joins that future. Readback remains receipt-only and never calls
 the mutation worker again.
 
+Each observer owns one non-failing completion notification for the real worker
+future. Worker exceptions are retrieved from the terminal concurrent future,
+not copied into repeatedly cancelled asyncio proxies. After observing caller
+cancellation, joining shields the existing ASGI cancellation scope so level
+cancellation cannot spin or multiply callbacks/logged exceptions. The original
+caller cancellation is propagated only after the worker has actually ended;
+without cancellation, the actual worker result or failure is propagated.
+
 For operator/provider first state1.3 persistence, the existing canonical record_mutate_many
 transaction acquires the globally sorted shared admission and Recovery/key/
 Evidence/Scheduler locks together. It pins/rechecks current HTTP authentication,

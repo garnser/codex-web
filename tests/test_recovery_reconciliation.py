@@ -76,7 +76,8 @@ class RecoveryReconciliationTests(unittest.IsolatedAsyncioTestCase):
         second.crypto=copy.copy(self.crypto);second.crypto.store=CryptoKeyStore(connection)
         second.evidence=ArtifactEvidenceService(ArtifactEvidenceStore(connection))
         second.scheduler=copy.copy(self.scheduler);second.scheduler.store=SchedulerStore(connection)
-        self.addCleanup(connection.close)
+        # SQLiteStateStore owns and closes each operation's connection; unlike
+        # PostgresStateStore it has no store-level close lifecycle.
         return second
 
     async def test_known_failed_orphan_preserves_identity_and_needs_actual_fresh_restore(self):

@@ -5,6 +5,7 @@ Durable firing admission belongs to RecoveryState, not this executor.
 import asyncio
 import contextvars
 import threading
+from anyio import CancelScope
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 
@@ -29,16 +30,29 @@ class RecoveryExecutor:
 
     @staticmethod
     async def _settle(future):
+        # One non-failing completion waiter per observer. Wrapping the worker
+        # future on each cancellation adds callbacks/proxies whose exceptions
+        # can be logged even though the actual thread remains correctly owned.
+        loop = asyncio.get_running_loop()
+        completion = loop.create_future()
+        def notify():
+            if not completion.done():
+                completion.set_result(None)
+        future.add_done_callback(lambda _: loop.call_soon_threadsafe(notify))
         cancelled = False
-        while not future.done():
-            try:
-                await asyncio.shield(asyncio.wrap_future(future))
-            except asyncio.CancelledError:
-                cancelled = True
-            except Exception:
-                if future.done():
-                    break
-                raise
+        try:
+            await asyncio.shield(completion)
+        except asyncio.CancelledError:
+            cancelled = True
+            # ASGI task groups use level cancellation. Shield its cancelled
+            # scope while joining so checkpoints do not spin; explicit repeated
+            # asyncio.Task.cancel() still cannot abandon the actual thread.
+            with CancelScope(shield=True):
+                while not completion.done():
+                    try:
+                        await asyncio.shield(completion)
+                    except asyncio.CancelledError:
+                        cancelled = True
         # Retrieve a terminal exception even when the observing task was
         # cancelled. Neither a cancelled wrapper nor a lost observer stops work.
         error = future.exception()
