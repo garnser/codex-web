@@ -86,7 +86,9 @@ class RecoveryPolicyTests(unittest.TestCase):
         self.assertEqual(calls, [])
         scheduler.resume(current.id, actor_id=self.actor.identity_id)
         asyncio.run(self.service._handle_schedule_event(NS(tenant_id=self.actor.organization_id, workspace_id=self.actor.workspace_id, payload={'trigger_type': self.service.BACKUP_TRIGGER, 'schedule_id': current.id, 'payload': current.payload})))
-        self.assertEqual(calls, ['backup'])
+        # A matching prose payload is insufficient: admission now requires the
+        # actual persisted Scheduler envelope. Composed tests exercise success.
+        self.assertEqual(calls, [])
 
     def test_legacy_scope_is_derived_from_key_and_future_schema_is_rejected(self):
         raw = self.service.store.load().model_dump(mode='json')
@@ -96,7 +98,7 @@ class RecoveryPolicyTests(unittest.TestCase):
         self.state.update('recovery', lambda _: raw, default={})
         self.control.require_scope(self.service.store.load(), self.actor)
         self.service.configure(self.policy, actor=self.actor)
-        self.assertEqual(self.service.store.load().schema_version, '1.1')
+        self.assertEqual(self.service.store.load().schema_version, '1.2')
         self.assertEqual(self.service.store.load().policy_organization_id, self.actor.organization_id)
         with self.assertRaises(ContractCompatibilityError):
             RecoveryStore._decode({'schema_version': '9.0'})

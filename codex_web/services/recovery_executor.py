@@ -17,11 +17,8 @@ class RecoveryExecutorClosed(RuntimeError):
 
 class RecoveryExecutor:
     def __init__(self):
-        self._serial = asyncio.Lock()
         self._pool = None
-        self._future = None
-        self._key = None
-        self._waiting = 0
+        self._futures = {}
         self._closed = False
 
     @staticmethod
@@ -48,52 +45,55 @@ class RecoveryExecutor:
     async def run(self, key, operation):
         if self._closed:
             raise RecoveryExecutorClosed('scheduled recovery executor is closing')
-        if self._key == key and self._future is not None and not self._future.done():
-            return await self._settle(self._future)
-        # One running operation and one waiting operation; no unbounded pool
-        # submission queue. The two canonical recovery schedules can serialize.
-        if self._waiting >= 2:
+        if key in self._futures:
+            return await self._settle(self._futures[key])
+        # Own a bounded submitted future for BOTH accepted jobs, including the
+        # queued job. An asyncio waiter cancelled before acquiring a serial
+        # lock would otherwise silently discard an already committed event.
+        if len(self._futures) >= 2:
             raise RecoveryExecutorBusy('scheduled recovery executor is at capacity')
-        self._waiting += 1
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='recovery-scheduled')
+        context = contextvars.copy_context()
+        future = self._pool.submit(context.run, operation)
+        self._futures[key] = future
         try:
-            async with self._serial:
-                if self._closed:
-                    raise RecoveryExecutorClosed('scheduled recovery executor is closing')
-                if self._pool is None:
-                    self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='recovery-scheduled')
-                context = contextvars.copy_context()
-                self._key = key
-                self._future = self._pool.submit(context.run, operation)
-                try:
-                    return await self._settle(self._future)
-                finally:
-                    if self._future.done():
-                        # A failed serialization can retain the complete
-                        # snapshot in its traceback. Terminal custody need not
-                        # keep that future alive until the next scheduled run.
-                        self._key = None
-                        self._future = None
+            return await self._settle(future)
         finally:
-            self._waiting -= 1
+            if future.done() and self._futures.get(key) is future:
+                # Failed serialization can retain a complete snapshot through
+                # its traceback; release terminal futures promptly.
+                del self._futures[key]
 
     def close_admission(self):
         self._closed = True
 
     async def stop(self):
         self.close_admission()
+        cancelled = False
+        error = None
         try:
-            if self._future is not None:
+            for future in list(self._futures.values()):
                 try:
-                    await self._settle(self._future)
+                    await self._settle(future)
+                except asyncio.CancelledError:
+                    cancelled = True
                 except Exception:
                     # The operation's caller owns its recorded failure. A
                     # completed failure must not abort application shutdown.
                     pass
+                except BaseException as exc:
+                    error = exc
         finally:
             if self._pool is not None:
                 self._pool.shutdown(wait=True, cancel_futures=False)
                 self._pool = None
+            self._futures.clear()
+        if cancelled:
+            raise asyncio.CancelledError
+        if error is not None:
+            raise error
 
     def status(self):
-        return {'accepting': not self._closed, 'waiting_or_running': self._waiting,
-                'inflight_work': int(self._future is not None and not self._future.done())}
+        return {'accepting': not self._closed, 'waiting_or_running': len(self._futures),
+                'inflight_work': sum(not future.done() for future in self._futures.values())}

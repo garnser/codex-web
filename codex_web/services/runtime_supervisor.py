@@ -524,6 +524,9 @@ class RuntimeSupervisor:
     async def start(self) -> None:
         if self.started:
             return
+        recovery = getattr(self.app.state, "recovery_service", None)
+        if recovery is not None:
+            recovery.start()
         self.started = True
         self.native_recovery.set_shutting_down(False)
         if hasattr(self.host, "IS_SHUTTING_DOWN"):
@@ -719,21 +722,29 @@ class RuntimeSupervisor:
             self.host.IS_SHUTTING_DOWN = True
         self.sd_notify("STOPPING=1\nSTATUS=codex-web stopping")
 
-        tasks = list(self.tasks.values())
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        self.tasks.clear()
-        for legacy_attr in self.LEGACY_TASK_ATTRS.values():
-            setattr(self.host, legacy_attr, None)
+        recovery = getattr(self.app.state, "recovery_service", None)
+        if recovery is not None:
+            recovery.close_scheduled_admission()
 
-        startup_tasks = list(self.startup_tasks)
-        for task in startup_tasks:
-            task.cancel()
-        if startup_tasks:
-            await asyncio.gather(*startup_tasks, return_exceptions=True)
-        self.startup_tasks.clear()
+        try:
+            tasks = list(self.tasks.values())
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            self.tasks.clear()
+            for legacy_attr in self.LEGACY_TASK_ATTRS.values():
+                setattr(self.host, legacy_attr, None)
+
+            startup_tasks = list(self.startup_tasks)
+            for task in startup_tasks:
+                task.cancel()
+            if startup_tasks:
+                await asyncio.gather(*startup_tasks, return_exceptions=True)
+            self.startup_tasks.clear()
+        finally:
+            if recovery is not None:
+                await recovery.stop()
 
         slack_provider = getattr(
             self.app.state,

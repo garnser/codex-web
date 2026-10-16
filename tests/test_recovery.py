@@ -378,10 +378,13 @@ class RecoveryTests(unittest.TestCase):
 
 
 class ScheduledRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncTearDown(self):
+        await self.service.stop()
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
-        self.state = SQLiteStateStore(root / "state.sqlite3")
+        self.state = getattr(self, "state_store_factory", SQLiteStateStore)(root / "state.sqlite3")
         self.clock = _Clock(1000.0)
         self.actor = AuthenticationActor(
             identity_id="recovery-service",

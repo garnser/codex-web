@@ -48,23 +48,28 @@ class RecoveryExecutorTests(unittest.IsolatedAsyncioTestCase):
             release.wait(5)
         first = asyncio.create_task(executor.run('a', work))
         self.assertTrue(await asyncio.to_thread(entered.wait, 2))
-        second = asyncio.create_task(executor.run('b', lambda: self.fail('queued work ran during shutdown')))
+        queued_ran = threading.Event()
+        second = asyncio.create_task(executor.run('b', queued_ran.set))
         await asyncio.sleep(0)
         with self.assertRaises(RecoveryExecutorBusy):
             await executor.run('c', lambda: None)
         stopping = asyncio.create_task(executor.stop())
         await asyncio.sleep(0)
+        second.cancel()
         stopping.cancel()
         stopping.cancel()
         await asyncio.sleep(0)
         self.assertFalse(stopping.done())
         release.set()
         await first
-        with self.assertRaises(RecoveryExecutorClosed):
+        with self.assertRaises(asyncio.CancelledError):
             await second
         with self.assertRaises(asyncio.CancelledError):
             await stopping
         self.assertEqual(executor.status()['inflight_work'], 0)
+        self.assertTrue(queued_ran.is_set(), 'already accepted work was discarded')
+        with self.assertRaises(RecoveryExecutorClosed):
+            await executor.run('after-close', lambda: None)
 
     async def test_actor_context_and_failed_work_do_not_leak_pool_custody(self):
         executor = RecoveryExecutor()
