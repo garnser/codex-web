@@ -43,7 +43,7 @@ for(const theme of ['light','dark']) test(`runner indicators retain visible cont
   await page.goto(`${base}/tests/browser/runner_status_contrast_fixture.html?theme=${theme}`);
   await expect(page.locator('body')).toHaveAttribute('data-ready','true');
   const expected={active:'active',idle:'idle',waiting:'waiting',queued:'idle',recovering:'recovering',
-    stopped:'stopped',lost:'lost',failed:'failed',unknown:'unknown',expired:'unknown',stale:'unknown',retained:'unknown'};
+    stopped:'stopped',lost:'lost',failed:'failed',unknown:'unknown',expired:'unknown',stale:'unknown',retained:'unknown','unowned-active':'unknown'};
   for(const [id,status] of Object.entries(expected)){
     const rows=page.locator(`[data-case="${id}"]`);
     await expect(rows.filter({has:page.locator(`[data-runner-state="${status}"]`)})).toHaveCount(2);

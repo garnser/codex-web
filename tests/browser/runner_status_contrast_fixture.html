@@ -9,7 +9,7 @@ document.documentElement.dataset.theme=query.get('theme') || 'light';
 const before=query.has('before');
 const ui=await import((before?'/baseline':'')+'/static/thread_runner_ui.js');
 const now=Date.now()/1000;
-const states=['active','idle','waiting','queued','recovering','stopped','lost','failed','unknown','expired','stale','retained'];
+const states=['active','idle','waiting','queued','recovering','stopped','lost','failed','unknown','expired','stale','retained','unowned-active'];
 const state={projectId:'fixture',threadId:'active',threads:[],queuedDepthByThread:new Map([['queued',2]]),activeTurnsByThread:new Map()};
 const baselineBadge=id=>`<span class="thread-state">${ui.runnerLabel(id)}</span>`;
 const badge=id=>before?baselineBadge(id):ui.runnerBadgeHtml(id,{queued:state.queuedDepthByThread.get(id)||0});
@@ -23,7 +23,7 @@ const control=ui.createThreadRunnerUI({state,api:async()=>{throw Error('No backe
 for(const id of states){
   const live=['active','idle','queued','expired','stale','retained'].includes(id);
   const runner={schemaVersion:'1.0',assignmentId:id,fence:2,assignmentCreatedAt:now-10,updatedAt:now,
-    observedAt:id==='stale'?now-61:now,state:live?'running':id,live,processRunning:live,
+    observedAt:id==='stale'?now-61:now,state:live?'running':id==='unowned-active'?'active':id,live,processRunning:live,
     leaseValid:live,leaseExpiresAt:id==='expired'?now-1:now+3600};
   const activity={source:'current_turn',state:id==='active'?'active':'idle',turnId:id==='active'?'exact-current-turn':null};
   if(id==='retained') activity.state='unknown';
