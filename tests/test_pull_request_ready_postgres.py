@@ -11,6 +11,9 @@ from tests import test_autonomy_append_scaling as postgres_fixtures
 
 @unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'), 'isolated PostgreSQL test DSN required')
 class PostgresPullRequestReadyTests(ready.PullRequestReadyTests):
+    # Inherits the configured SecurityBoundaryService ALLOW-vs-DENY races,
+    # normal/lost-response no-replay checks, and exact admitted-snapshot guards.
+    # They execute real PostgreSQL intent-row writes, not SQLite substitutes.
     postgres_pool_max_size = 1
 
     async def asyncSetUp(self):

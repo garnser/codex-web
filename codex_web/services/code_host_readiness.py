@@ -21,6 +21,7 @@ class ReadyExecution:
     request_identity: str
     checkpoint: Callable[[], Awaitable[None]]
     settlement_guard: Callable[[object], dict] | None = None
+    admitted_intent: Callable[[], object] | None = None
 
 
 _current: ContextVar[ReadyExecution | None] = ContextVar("code_host_ready_execution", default=None)

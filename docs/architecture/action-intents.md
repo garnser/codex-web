@@ -162,6 +162,13 @@ fence when security enforcement is configured; absent collections are locked
 without creating them. Shared-namespace changes conservatively require read-only
 reconciliation, even when a change ultimately concerns another object.
 
+Security refresh evaluates a specific observed intent security snapshot. Its
+conditional write compares that exact policy and decision under the intent row
+lock; an intervening observation wins, including a newer denial. A successful
+checkpoint carries its exact admitted security snapshot through verification,
+Work Item and terminal guards. Security fields are not bookkeeping exclusions.
+Conflicts retain the newer observation and require read-only reconciliation.
+
 Time-based expiry needs no persisted revision change. Inside each settlement
 transaction the engine therefore also repeats read-only credential-status,
 current requester authority, selected procedure validity and originating lease

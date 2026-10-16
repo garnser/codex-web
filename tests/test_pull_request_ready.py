@@ -433,7 +433,7 @@ class PullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
                 'project_id': 'project-a', 'resource_ids': [self.target.id], 'idempotency_key': key,
                 'parameters': {'pull_request_number': 7, 'expected_head_sha': HEAD,
                     'expected_base_sha': BASE, 'expected_base_ref': 'main'}},
-            'policy_decision': {'decision_id': 'fixture', 'source': 'fixture:readiness',
+            'policy_decision': {'decision_id': 'fixture', 'source': 'canonical:readiness-fixture',
                 'outcome': 'allow', 'reason': 'explicit offline fixture'}}
         if verification is not None:
             payload['verification_required'] = verification
@@ -535,8 +535,11 @@ class PullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
     async def test_persisted_optional_verification_requires_current_definition(self):
         await self.optional_settlement_denied('definition')
 
-    async def evidence_settlement(self, change=None, *, lost=False, optional=False, boundary='evidence'):
+    async def evidence_settlement(self, change=None, *, lost=False, optional=False, boundary='evidence',
+                                  configured_security=False):
         """Park real evidence AFTER real GitHub verification, never fake either result."""
+        if configured_security:
+            self.configure_security_boundary()
         import time
         from types import SimpleNamespace
         from unittest.mock import patch
@@ -619,6 +622,22 @@ class PullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
                 clock = patch('codex_web.secrets.time', SimpleNamespace(time=lambda: credential_deadline + 1))
                 clock.start()
                 self.addCleanup(clock.stop)
+            elif change=='configured-security-refresh':
+                current = self.intents.get(intent_id, self.admin)
+                refreshed, error = self.intents._refresh_security(current, actor=self.admin,
+                    authority_decision=current.authority_recheck or current.authority_decision)
+                self.assertIsNone(error)
+                self.assertIsNotNone(refreshed)
+                self.assertNotEqual(refreshed.security_decision.id, current.security_decision.id)
+            elif change=='configured-security':
+                current = self.intents.get(intent_id, self.admin)
+                from codex_web.action_intents import ActionDecisionOutcome
+                denied = current.authority_decision.model_copy(update={'outcome': ActionDecisionOutcome.DENY})
+                refreshed, error = self.intents._refresh_security(current, actor=self.admin,
+                    authority_decision=denied)
+                self.assertIsNone(refreshed)
+                self.assertIn('denied', error)
+                self.assertEqual(self.intents.get(intent_id, self.admin).security_decision.outcome.value, 'deny')
             elif change=='security':
                 from codex_web.security import SecurityDecisionOutcome
                 self.intents.store.update(lambda state: state.model_copy(update={'intents': [
@@ -648,7 +667,27 @@ class PullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
                 return await self.intents.reconcile(intent_id,
                     ActionIntentReconcileRequest(retry_if_idempotent=False),actor=self.worker_actor)
             return await execute()
-        if boundary=='evidence':
+        if boundary == 'security-refresh':
+            evaluate_security = self.intents.security_boundary.evaluate_action
+            def stale_allow(**kwargs):
+                decision = evaluate_security(**kwargs)
+                if observations and decision.outcome.value == 'allow' and not entered.is_set():
+                    entered.set()
+                    if not release.wait(10):
+                        raise AssertionError('Security refresh gate was not released')
+                return decision
+            with patch.object(self.intents.execution, 'verify', observe), patch.object(
+                    self.intents.security_boundary, 'evaluate_action', stale_allow):
+                task = asyncio.create_task(settle())
+                try:
+                    gate_entered = await asyncio.to_thread(entered.wait, 10)
+                    if gate_entered:
+                        await asyncio.to_thread(mutate)
+                finally:
+                    release.set()
+                    settled = await task
+                self.assertTrue(gate_entered, settled.model_dump(mode='json'))
+        elif boundary=='evidence':
             with patch.object(self.intents.execution,'verify',observe), patch.object(artifacts,'evaluate',gated_evaluate):
                 task=asyncio.create_task(self.intents.reconcile(intent_id,
                     ActionIntentReconcileRequest(retry_if_idempotent=False),actor=self.worker_actor) if lost else execute())
@@ -690,6 +729,10 @@ class PullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
                     return real_set(intent_id,status,**kwargs)
                 with patch.object(self.intents,'_set_status',status): settled=await settle()
         history=self.intents.history(intent_id,self.admin)
+        if change == 'configured-security':
+            self.assertEqual(self.intents.get(intent_id, self.admin).security_decision.outcome.value, 'deny')
+            self.assertTrue(any('denied' in reason for reason in
+                self.intents.get(intent_id, self.admin).security_decision.reasons))
         self.assertEqual(sum(method=='POST' for method,_ in self.calls),1)
         if lost: self.assertTrue(all(method=='GET' for method,_ in self.calls[count:]))
         verification=history['verifications'][-1]
@@ -697,7 +740,7 @@ class PullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(verification['evidence_satisfied'],verification)
         if change:
             self.assertEqual(settled.status.value,'requires_reconciliation',history)
-            if boundary in {'evidence','verification'}:
+            if boundary in {'evidence','verification','security-refresh'}:
                 self.assertFalse(any(v['verified'] for v in history['verifications']))
             if boundary!='terminal': self.assertEqual(repository.get(work.ref).current_stage,'implementation_active')
         else:
@@ -837,3 +880,59 @@ class PullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, 'unsupported action intent records schema'):
             restarted.get(intent_id)
         self.assertEqual(self.sqlite.namespace_revision(store.records_namespace), revision)
+
+    def configure_security_boundary(self):
+        from codex_web.security import ExecutionSecurityPolicy, NetworkEgressPolicy
+        from codex_web.services.security_boundary import SecurityBoundaryService
+        from codex_web.storage.security_events import SecurityEventStore
+        policy = ExecutionSecurityPolicy(network=NetworkEgressPolicy(enabled=True))
+        self.intents.execution.registry.store.update(lambda state: state.model_copy(update={
+            'bindings': [binding.model_copy(update={'security_policy': policy})
+                         if binding.id == self.binding.id else binding for binding in state.bindings]}))
+        self.intents.security_boundary = SecurityBoundaryService(SecurityEventStore(self.sqlite))
+
+    async def test_configured_security_stale_allow_cannot_overwrite_denial_normal(self):
+        await self.evidence_settlement('configured-security', boundary='security-refresh', configured_security=True)
+
+    async def test_configured_security_stale_allow_cannot_overwrite_denial_lost(self):
+        await self.evidence_settlement('configured-security', lost=True,
+            boundary='security-refresh', configured_security=True)
+
+    async def test_configured_security_current_admission_advances_normal(self):
+        await self.evidence_settlement(configured_security=True)
+
+    async def test_configured_security_current_admission_advances_lost(self):
+        await self.evidence_settlement(lost=True, configured_security=True)
+
+    async def test_configured_security_verification_denial_normal(self):
+        await self.evidence_settlement('configured-security', boundary='verification', configured_security=True)
+
+    async def test_configured_security_verification_denial_lost(self):
+        await self.evidence_settlement('configured-security', lost=True,
+            boundary='verification', configured_security=True)
+
+    async def test_configured_security_work_item_denial_normal(self):
+        await self.evidence_settlement('configured-security', boundary='work-item', configured_security=True)
+
+    async def test_configured_security_work_item_denial_lost(self):
+        await self.evidence_settlement('configured-security', lost=True,
+            boundary='work-item', configured_security=True)
+
+    async def test_configured_security_terminal_denial_normal(self):
+        await self.evidence_settlement('configured-security', boundary='terminal', configured_security=True)
+
+    async def test_configured_security_terminal_denial_lost(self):
+        await self.evidence_settlement('configured-security', lost=True,
+            boundary='terminal', configured_security=True)
+
+    async def test_configured_security_verification_requires_exact_allow_snapshot(self):
+        await self.evidence_settlement('configured-security-refresh',
+            boundary='verification', configured_security=True)
+
+    async def test_configured_security_work_item_requires_exact_allow_snapshot(self):
+        await self.evidence_settlement('configured-security-refresh',
+            boundary='work-item', configured_security=True)
+
+    async def test_configured_security_lost_terminal_requires_exact_allow_snapshot(self):
+        await self.evidence_settlement('configured-security-refresh', lost=True,
+            boundary='terminal', configured_security=True)

@@ -504,6 +504,17 @@ class ActionIntentService:
         actor: AuthenticationActor,
         authority_decision: ActionDecisionSnapshot,
     ) -> tuple[bool, str | None]:
+        # Each caller starts a new observation. The refresh itself must still
+        # compare that observation under the intent writer lock.
+        current = self._intent(intent.id, actor)
+        refreshed, error = self._refresh_security(current, actor=actor,
+            authority_decision=authority_decision)
+        return refreshed is not None, error
+
+    def _refresh_security(
+        self, intent: ActionIntent, *, actor: AuthenticationActor,
+        authority_decision: ActionDecisionSnapshot,
+    ) -> tuple[ActionIntent | None, str | None]:
         binding, _, definition, request = self.execution.resolve_contract(
             intent.binding_id,
             intent.request,
@@ -511,7 +522,7 @@ class ActionIntentService:
         )
         if self.security_boundary is None:
             return (
-                intent.security_decision.outcome == SecurityDecisionOutcome.ALLOW,
+                intent if intent.security_decision.outcome == SecurityDecisionOutcome.ALLOW else None,
                 "persisted security trust decision denied action"
                 if intent.security_decision.outcome != SecurityDecisionOutcome.ALLOW
                 else None,
@@ -530,23 +541,32 @@ class ActionIntentService:
             execution_id=intent.execution_id,
         )
 
+        refreshed = None
         def apply(state):
+            nonlocal refreshed
+            refreshed = None
             for index, item in enumerate(state.intents):
                 if item.id == intent.id:
-                    state.intents[index] = item.model_copy(
+                    if (item.security_policy != intent.security_policy
+                            or item.security_decision != intent.security_decision):
+                        break  # A newer observation wins, including a denial.
+                    refreshed = item.model_copy(
                         update={
                             "security_policy": binding.security_policy,
                             "security_decision": decision,
                             "updated_at": time.time(),
                         }
                     )
+                    state.intents[index] = refreshed
                     break
             return state
 
         self.store.update(apply, intent_ids=(intent.id,))
+        if refreshed is None:
+            return None, "security observation changed during refresh; reconcile read-only"
         if decision.outcome != SecurityDecisionOutcome.ALLOW:
-            return False, "; ".join(decision.reasons) or "security trust boundary denied action"
-        return True, None
+            return None, "; ".join(decision.reasons) or "security trust boundary denied action"
+        return refreshed, None
 
     def _validate_execution_repository_scope(
         self,
@@ -1712,10 +1732,9 @@ class ActionIntentService:
 
     @staticmethod
     def _check_ready_intent(current, expected):
-        # Admission itself refreshes security observations and procedure
-        # discovery history. Every other field must remain the exact snapshot
-        # being settled, including future contract fields added to the model.
-        refreshed = {"updated_at", "security_policy", "security_decision", "procedure_discoveries"}
+        # Only bookkeeping may differ. Security is the exact observation
+        # admitted by this invocation, including its decision identity/time.
+        refreshed = {"updated_at", "procedure_discoveries"}
         if (current is None or current.status not in {ActionIntentStatus.EXECUTING,
                 ActionIntentStatus.UNCERTAIN, ActionIntentStatus.REQUIRES_RECONCILIATION}
                 or current.model_dump(exclude=refreshed) != expected.model_dump(exclude=refreshed)
@@ -1836,8 +1855,13 @@ class ActionIntentService:
                 or result.idempotency_key != intent.idempotency_key
                 or any(result.output.get(key) != value for key, value in parameters.items())):
             raise ActionRequirementError("Readiness verification has no exact originating target proof")
+        admitted = intent
         def validate():
-            self._check_ready_intent(self._intent(intent.id, actor), intent)
+            nonlocal admitted
+            current = self._intent(intent.id, actor)
+            self._check_ready_intent(current, admitted)
+            if current.security_decision.outcome != SecurityDecisionOutcome.ALLOW:
+                raise ActionRequirementError("Readiness current security observation denied")
             requester = self._requester_actor(intent)
             self.identity.actor_for_identity(actor.identity_id, scope=actor.tenant)
             assignment = self._ready_assignment(intent.execution_id, intent.request, requester, origin.assignment_id)
@@ -1858,9 +1882,10 @@ class ActionIntentService:
             if (decision.outcome != ActionDecisionOutcome.ALLOW
                     or decision.definition_refs != (intent.authority_recheck or intent.authority_decision).definition_refs):
                 raise ActionRequirementError("Readiness verification current authority denied or Definition changed")
-            allowed, _ = self._recheck_security(intent, authority_decision=decision, actor=requester)
-            if not allowed:
-                raise ActionRequirementError("Readiness verification current security policy denied")
+            refreshed, error = self._refresh_security(current, authority_decision=decision, actor=requester)
+            if refreshed is None:
+                raise ActionRequirementError(error or "Readiness verification current security policy denied")
+            admitted = refreshed
             if request.credential_ref and self.execution.secret_broker.metadata(
                     request.credential_ref, actor=actor, require_use=True).status().value != "active":
                 raise ActionRequirementError("Readiness verification credential is inactive")
@@ -1884,8 +1909,14 @@ class ActionIntentService:
                 raise ActionRequirementError("Readiness admission changed during checkpoint")
             admission_pins.clear()
             admission_pins.update(before)
+        def settlement_guard(current):
+            # Preserve the caller's receipt/status snapshot while pinning the
+            # exact security observation produced by this admission checkpoint.
+            expected = current.model_copy(update={"security_policy": admitted.security_policy,
+                "security_decision": admitted.security_decision})
+            return self._ready_settlement_guard(expected, actor, dict(admission_pins))
         return ReadyExecution(intent.binding_id, request_identity(intent.request), checkpoint,
-            lambda current: self._ready_settlement_guard(current, actor, dict(admission_pins)))
+            settlement_guard, lambda: admitted)
 
     async def _verify_completion(
         self,
@@ -1893,7 +1924,7 @@ class ActionIntentService:
         result: ActionResult,
         *,
         actor: AuthenticationActor,
-    ) -> bool | ActionIntentVerificationReceipt:
+    ) -> bool | tuple[ActionIntentVerificationReceipt, ActionIntent]:
         provider_verification = None
         findings: list[str] = []
         provider_ok = True
@@ -1956,9 +1987,13 @@ class ActionIntentService:
             await asyncio.to_thread(self._append_verification, intent,
                 provider_verification=provider_verification, evidence_evaluation=evidence_evaluation,
                 verified=False, findings=tuple(findings))
-        return receipt if verified and intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID else verified
+        return ((receipt, ready_context.admitted_intent())
+                if verified and intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID else verified)
 
     async def _finish_ready(self, intent, result, actor, verification):
+        verification, admitted = verification
+        intent = intent.model_copy(update={"security_policy": admitted.security_policy,
+            "security_decision": admitted.security_decision})
         try:
             # A verification/receipt write and every later await can race origin
             # revocation. Retain the real observation; never repeat the POST.
