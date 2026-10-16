@@ -64,12 +64,22 @@ class GitHubBoundedReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.reason, 'content_length')
 
     async def test_invalid_ambiguous_and_non_container_json_cannot_be_empty_facts(self):
-        bodies = [b'{', b'{"count":2,"count":0}', b'{"count":NaN}', b'{"count":Infinity}',
+        bodies = [b'{', b'{"count":2,"count":0}', b'{"count":NaN}', b'{"count":Infinity}', b'{"count":1e9999}',
                   b'null', b'false', b'0', b'"empty"', b'\xff', b'[' * 2000 + b']' * 2000]
         for body in bodies:
             with self.subTest(body_prefix=body[:16]):
                 with self.assertRaises(GitHubReadIncompleteError):
                     await self.read(httpx.Response(200, content=body, headers={'content-type': 'application/json'}))
+
+    async def test_depth_bound_counts_containers_without_parsing_text_as_structure(self):
+        await self.read(httpx.Response(200, content=b'[' * 64 + b']' * 64,
+                                      headers={'content-type': 'application/json'}))
+        with self.assertRaises(GitHubReadIncompleteError) as raised:
+            await self.read(httpx.Response(200, content=b'[' * 65 + b']' * 65,
+                                          headers={'content-type': 'application/json'}))
+        self.assertEqual(raised.exception.reason, 'json_depth')
+        value = {'text': '[' * 100, 'nested': []}
+        self.assertEqual(await self.read(httpx.Response(200, json=value)), value)
 
     async def test_redirect_does_not_follow_to_another_route_or_send_credentials(self):
         calls = []

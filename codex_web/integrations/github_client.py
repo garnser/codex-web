@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 from urllib.parse import quote
 
@@ -88,14 +89,21 @@ class GitHubClient:
         def invalid_constant(_value):
             raise ValueError("non-JSON numeric constant")
 
+        def finite_float(text):
+            number = float(text)
+            if not math.isfinite(number):
+                raise ValueError("JSON number exceeds finite range")
+            return number
+
         try:
-            value = json.loads(content, object_pairs_hook=unique_object, parse_constant=invalid_constant)
+            value = json.loads(content, object_pairs_hook=unique_object,
+                               parse_constant=invalid_constant, parse_float=finite_float)
         except (ValueError, UnicodeError, RecursionError):
             raise GitHubReadIncompleteError("invalid_json") from None
         if not isinstance(value, (dict, list)):
             raise GitHubReadIncompleteError("json_shape")
 
-        def bounded_depth(item, depth=0):
+        def bounded_depth(item, depth=1):
             if depth > 64:
                 raise GitHubReadIncompleteError("json_depth")
             children = item.values() if isinstance(item, dict) else item

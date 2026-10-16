@@ -46,6 +46,23 @@ HTTP denial and absence retain their original status codes. Endpoint schemas,
 pagination completeness, scope and authority remain the adapter/service caller's
 responsibility; this internal transport grants no provider capability by itself.
 
+The `code-host-merge-requirements` projection contract is version `1.0` and
+rejects unknown versions. It identifies the canonical repository/binding, provider
+instance, exact head/base/target branch, observation time and finite freshness
+window. Each source separately records complete, established absence, denied,
+unsupported, truncated, unknown or changed availability. Only legacy protection
+can have established absence; a completely read empty rules/check/review/thread
+collection is a different observation. Unknown counts and applicability remain
+null, rather than becoming zero or false. Boolean and count fields reject coercion.
+
+A complete observation requires all six distinct sources (PR, legacy protection,
+effective rules, checks, reviews and conversations), a requirements fingerprint,
+and explicit counts/applicability. Changed, uninterpreted or incomplete sources
+cannot claim completeness. Check requirements distinguish an explicit any-app
+requirement from observations with unknown publisher attribution. This projection
+is an expiring read fact, not a persisted requirements catalog or permission to
+merge; mutation-time authority and provider enforcement still apply.
+
 ## Read-only by construction
 
 `CodeHostService` exposes read/discovery and webhook-normalization operations only.
