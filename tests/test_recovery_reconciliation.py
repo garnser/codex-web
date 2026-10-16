@@ -30,11 +30,15 @@ class RecoveryReconciliationTests(unittest.IsolatedAsyncioTestCase):
         # Actual admission/effect path. Only the known I/O or settlement failure
         # is injected; no raw receipt insert or safety predicate is bypassed.
         with patch.object(self.service._scheduled_admission,'finish',side_effect=OSError('settlement unavailable')):
-            if failed:
-                with patch.object(destination,'put',side_effect=OSError('fixture destination failure')):
+            # Scheduler awaits the admitted executor and propagates its terminal
+            # failure. Assert that exact failure before inspecting retained state;
+            # swallowing arbitrary exceptions would hide a broken admission path.
+            with self.assertRaisesRegex(OSError, '^settlement unavailable$'):
+                if failed:
+                    with patch.object(destination,'put',side_effect=OSError('fixture destination failure')):
+                        await self.scheduler.run_due()
+                else:
                     await self.scheduler.run_due()
-            else:
-                await self.scheduler.run_due()
         state=self.service.store.load()
         firing=next(iter(state.scheduled_firings.values()))
         self.assertEqual(firing.status,'running')
