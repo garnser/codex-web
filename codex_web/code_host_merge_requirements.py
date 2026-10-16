@@ -73,6 +73,7 @@ class CodeHostMergeCheckFact(_Fact):
     kind: Literal["check", "status", "pipeline"]
     state: Literal["success", "failure", "pending", "unknown"]
     provider_state: _Reference
+    provider_conclusion: _Reference | None = None
     provider_app_id: _Reference | None = None
     publisher_known: StrictBool = False
     observed_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
@@ -110,6 +111,7 @@ class CodeHostMergeRequirementsFact(_Fact):
     required_checks: tuple[CodeHostRequiredCheckFact, ...] = Field(default=(), max_length=500)
     observed_checks: tuple[CodeHostMergeCheckFact, ...] = Field(default=(), max_length=1000)
     strict_checks_required: StrictBool | None = None
+    legacy_admin_enforced: StrictBool | None = None
     reviews: CodeHostMergeReviewRequirements = Field(default_factory=CodeHostMergeReviewRequirements)
     independent_approval_count: _Count | None = None
     current_head_approval_count: _Count | None = None

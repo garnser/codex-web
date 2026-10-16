@@ -14,6 +14,7 @@ class GitHubAPIError(RuntimeError):
     def __init__(self, status_code: int) -> None:
         super().__init__(f"GitHub API returned HTTP {status_code}")
         self.status_code = status_code
+        self.provider_reason: str | None = None
 
 
 class GitHubReadIncompleteError(RuntimeError):
@@ -22,6 +23,79 @@ class GitHubReadIncompleteError(RuntimeError):
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(f"GitHub read is incomplete: {reason}")
+
+
+def _decode_bounded_json(content):
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+
+    def invalid_constant(_value):
+        raise ValueError("non-JSON numeric constant")
+
+    def finite_float(text):
+        number = float(text)
+        if not math.isfinite(number):
+            raise ValueError("JSON number exceeds finite range")
+        return number
+
+    try:
+        value = json.loads(content, object_pairs_hook=unique_object,
+                           parse_constant=invalid_constant, parse_float=finite_float)
+    except (ValueError, UnicodeError, RecursionError):
+        raise GitHubReadIncompleteError("invalid_json") from None
+    if not isinstance(value, (dict, list)):
+        raise GitHubReadIncompleteError("json_shape")
+
+    def bounded_depth(item, depth=1):
+        if depth > 64:
+            raise GitHubReadIncompleteError("json_depth")
+        if isinstance(item, dict):
+            for key in item:
+                try:
+                    key.encode('utf-8')
+                except UnicodeError:
+                    raise GitHubReadIncompleteError("invalid_unicode") from None
+        children = item.values() if isinstance(item, dict) else item
+        for child in children:
+            if isinstance(child, (dict, list)):
+                bounded_depth(child, depth + 1)
+            elif isinstance(child, str):
+                try:
+                    child.encode('utf-8')
+                except UnicodeError:
+                    raise GitHubReadIncompleteError("invalid_unicode") from None
+
+    bounded_depth(value)
+    return value
+
+
+async def _error_reason(response, max_bytes):
+    """Keep only an explicit protocol reason, never native error text."""
+    if (response.status_code != 404
+            or response.headers.get('content-type', '').split(';', 1)[0].strip().casefold()
+               not in {'application/json', 'application/vnd.github+json'}
+            or response.headers.get('content-encoding', '').strip().casefold() not in {'', 'identity'}):
+        return None
+    content = bytearray()
+    try:
+        async for chunk in response.aiter_bytes():
+            if len(content) + len(chunk) > min(max_bytes, 8192):
+                return None
+            content.extend(chunk)
+        length = response.headers.get('content-length')
+        if length is not None and int(length) != len(content):
+            return None
+        value = _decode_bounded_json(content)
+    except (GitHubReadIncompleteError, ValueError, UnicodeError, httpx.HTTPError):
+        return None
+    if isinstance(value, dict) and value.get('message') == 'Branch not protected':
+        return 'branch_not_protected'
+    return None
 
 
 class GitHubClient:
@@ -56,7 +130,9 @@ class GitHubClient:
                 if 300 <= response.status_code < 400:
                     raise GitHubReadIncompleteError("redirect")
                 if response.status_code != 200:
-                    raise GitHubAPIError(response.status_code)
+                    error = GitHubAPIError(response.status_code)
+                    error.provider_reason = await _error_reason(response, max_bytes)
+                    raise error
                 media = response.headers.get("content-type", "").split(";", 1)[0].strip().casefold()
                 if media not in {"application/json", "application/vnd.github+json"}:
                     raise GitHubReadIncompleteError("media_type")
@@ -78,41 +154,7 @@ class GitHubClient:
                     if expected_length != len(content):
                         raise GitHubReadIncompleteError("content_length")
 
-        def unique_object(pairs):
-            result = {}
-            for key, value in pairs:
-                if key in result:
-                    raise ValueError("duplicate JSON key")
-                result[key] = value
-            return result
-
-        def invalid_constant(_value):
-            raise ValueError("non-JSON numeric constant")
-
-        def finite_float(text):
-            number = float(text)
-            if not math.isfinite(number):
-                raise ValueError("JSON number exceeds finite range")
-            return number
-
-        try:
-            value = json.loads(content, object_pairs_hook=unique_object,
-                               parse_constant=invalid_constant, parse_float=finite_float)
-        except (ValueError, UnicodeError, RecursionError):
-            raise GitHubReadIncompleteError("invalid_json") from None
-        if not isinstance(value, (dict, list)):
-            raise GitHubReadIncompleteError("json_shape")
-
-        def bounded_depth(item, depth=1):
-            if depth > 64:
-                raise GitHubReadIncompleteError("json_depth")
-            children = item.values() if isinstance(item, dict) else item
-            for child in children:
-                if isinstance(child, (dict, list)):
-                    bounded_depth(child, depth + 1)
-
-        bounded_depth(value)
-        return value
+        return _decode_bounded_json(content)
 
     async def get_json(self, api_base: str, path: str, *, token: str | None,
                        params: dict[str, Any] | None = None) -> Any:

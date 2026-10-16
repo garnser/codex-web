@@ -32,6 +32,7 @@ from codex_web.code_hosts import (
     CodeHostWebhookFact,
 )
 from codex_web.integrations.github_client import GitHubClient
+from codex_web.code_host_merge_requirements import CodeHostMergeRequirementsFact
 from codex_web.resources import Resource
 
 
@@ -234,6 +235,12 @@ class GitHubCodeHostProvider:
             draft=bool(data.get("draft")),
             merge_revision=data.get("merge_commit_sha"),
         )
+
+    async def merge_requirements(self, binding: CodeHostProviderBinding, resource: Resource,
+                                 external_id: str, *, credential: str | None, checkpoint=None) -> CodeHostMergeRequirementsFact:
+        from codex_web.services.github_merge_requirements import GitHubMergeRequirementsReader
+        return await GitHubMergeRequirementsReader(self.client, binding, resource,
+            _repository_name(resource), credential, checkpoint=checkpoint).read(external_id)
 
     async def pull_requests(
         self,

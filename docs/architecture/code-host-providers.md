@@ -63,6 +63,38 @@ requirement from observations with unknown publisher attribution. This projectio
 is an expiring read fact, not a persisted requirements catalog or permission to
 merge; mutation-time authority and provider enforcement still apply.
 
+The GitHub normalization engine reads classic protection and all effective
+repository/organization rules independently, combining approval minima with
+`max`, required checks by context/app and restrictive flags with `or`. A generic
+404 remains unknown. Established legacy absence requires the explicit bounded
+`Branch not protected` protocol response and a matching null GraphQL protection
+rule. It never establishes absence of effective rulesets. Classic REST and
+GraphQL controls must agree, including policy flags unavailable in classic REST;
+uninterpreted constraints remain explicit blockers. See GitHub's
+[branch protection](https://docs.github.com/en/rest/branches/branch-protection),
+[effective rules](https://docs.github.com/en/rest/repos/rules#get-rules-for-a-branch)
+and [GraphQL branch](https://docs.github.com/en/graphql/reference/branches)
+contracts.
+
+Checks, independent reviews and conversations use bounded complete pagination.
+Review identity uses stable provider Node IDs rather than mutable logins; comments
+and pending reviews cannot erase an approval, while ambiguous latest opinions
+remain unknown. A status context cannot borrow a same-named check's app identity.
+Both policy sources and PR head/base/target are read again before returning;
+any detected change invalidates the observation. Completeness describes source
+coverage, and does not imply that the observed merge/review/check gates pass.
+
+Each observation owns at most 40 requests, five pages per collection, a 30-second
+whole-read deadline/freshness window and a 128 KiB projected body. Byte-budget
+omission returns explicit truncation and null requirement counts, not an empty
+complete policy. A reader instance owns one observation and cannot reuse previous
+scope/facts. An engine-supplied canonical checkpoint runs before and after each
+request, including provider errors, and before returning; its failures escape as
+denials instead of being converted to partial provider data. Cancellation closes
+the read without mutation or automatic replay. Public discovery still requires
+the separate declared CodeHost/broker capability and current canonical authority;
+these normalization primitives do not widen existing profiles or grants.
+
 ## Read-only by construction
 
 `CodeHostService` exposes read/discovery and webhook-normalization operations only.

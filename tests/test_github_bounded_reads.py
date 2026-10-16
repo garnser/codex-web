@@ -66,6 +66,7 @@ class GitHubBoundedReadTests(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_ambiguous_and_non_container_json_cannot_be_empty_facts(self):
         bodies = [b'{', b'{"count":2,"count":0}', b'{"count":NaN}', b'{"count":Infinity}', b'{"count":1e9999}',
                   b'null', b'false', b'0', b'"empty"', b'\xff', b'[' * 2000 + b']' * 2000]
+        bodies.extend([b'{"text":"\\ud800"}', b'{"\\udfff":0}'])
         for body in bodies:
             with self.subTest(body_prefix=body[:16]):
                 with self.assertRaises(GitHubReadIncompleteError):
@@ -115,3 +116,18 @@ class GitHubBoundedReadTests(unittest.IsolatedAsyncioTestCase):
         for limit in (0, 512 * 1024 + 1):
             with self.assertRaises(ValueError):
                 await self.read(httpx.Response(200, json=[]), limit=limit)
+
+    async def test_only_bounded_unambiguous_error_metadata_establishes_unprotected_branch(self):
+        with self.assertRaises(GitHubAPIError) as raised:
+            await self.read(httpx.Response(404, json={'message': 'Branch not protected'}))
+        self.assertEqual(raised.exception.provider_reason, 'branch_not_protected')
+        for body, extra in [
+            (b'{"message":"Not Found"}', {}),
+            (b'{"message":"Branch not protected","message":"Not Found"}', {}),
+            (b'{"message":"Branch not protected","count":NaN}', {}),
+            (b'{"message":"Branch not protected"}', {'content-length': '1000'}),
+            (b'{"message":"Branch not protected","extra":"' + b'x' * 9000 + b'"}', {}),
+        ]:
+            with self.subTest(prefix=body[:32]), self.assertRaises(GitHubAPIError) as raised:
+                await self.read(httpx.Response(404, content=body, headers={'content-type': 'application/json', **extra}))
+            self.assertIsNone(raised.exception.provider_reason)
