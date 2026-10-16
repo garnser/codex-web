@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from codex_web.definitions import DefinitionContext, DefinitionDraftCreate, DefinitionReference, reference_for
 from codex_web.execution_contract_seed import execution_role_catalog_seed_payload
 from codex_web.execution_contracts import install_execution_role_catalog_provider
@@ -19,8 +21,21 @@ from codex_web.services.definitions import (
 class ExecutionRoleDefinitionService:
     """Resolve the execution-role catalog exclusively from Definition Registry."""
 
-    def __init__(self, registry: DefinitionRegistryService) -> None:
+    def __init__(self, registry: DefinitionRegistryService, *, projects=None) -> None:
         self.registry = registry
+        self.projects = projects
+
+    def owner_routing(self, *, project_id: str, scope):
+        from codex_web.owner_routing import OwnerRoutingError, owner_routing_snapshot
+        if self.projects is None or not project_id:
+            raise OwnerRoutingError('owner_routing_project_unavailable')
+        project = self.projects.get(project_id, scope=scope)
+        record = self.registry.resolve(definition_id=EXECUTION_ROLE_CATALOG_ID,
+            kind=EXECUTION_ROLE_CATALOG_KIND, context=DefinitionContext(
+                organization_id=scope.organization_id, workspace_id=scope.workspace_id, project_id=project.id),
+            now=time.time())
+        return owner_routing_snapshot(record, organization_id=scope.organization_id,
+            workspace_id=scope.workspace_id, project_id=project.id)
 
     def bootstrap(self) -> None:
         self.registry.bootstrap(
@@ -75,6 +90,7 @@ class ExecutionRoleDefinitionService:
 
 def install_execution_role_definitions(
     registry: DefinitionRegistryService,
+    *, projects=None,
 ) -> ExecutionRoleDefinitionService:
     if not any(
         item["kind"] == EXECUTION_ROLE_CATALOG_KIND
@@ -88,7 +104,7 @@ def install_execution_role_definitions(
                 validate=validate_execution_role_catalog,
             )
         )
-    service = ExecutionRoleDefinitionService(registry)
+    service = ExecutionRoleDefinitionService(registry, projects=projects)
     service.bootstrap()
     install_execution_role_catalog_provider(service.catalog)
     return service
