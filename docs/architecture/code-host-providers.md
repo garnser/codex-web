@@ -95,6 +95,54 @@ the read without mutation or automatic replay. Public discovery still requires
 the separate declared CodeHost/broker capability and current canonical authority;
 these normalization primitives do not widen existing profiles or grants.
 
+### Merge-requirement admission and operator inspection
+
+The explicit CodeHost capability is `pull_request.merge_requirements.read`.
+GitHub advertises it; GitLab explicitly excludes it and reports unsupported.
+The assignment broker exposes `repository.read.merge-requirements` at
+`GET /api/repository-facts/pull-requests/{external_id}/merge-requirements`, using
+the existing canonical repository selector. The authority capability is
+`repository.pull-request.merge-requirements.read` at read level. Discovery marks
+the operation as requiring an explicit declaration; the assignment context reports
+whether its pinned execution Definition is still current and declares it.
+Discovery is metadata, not effective authorization. Existing execution/profile
+seeds and authority grants are unchanged.
+
+Every read requires a live assignment validator, exact current published execution
+Definition and operation declaration, and independent current read authority for
+the requester and inspecting principal. Selection uses the existing ActionProvider
+registry and canonical Resource; zero or multiple eligible bindings deny the read.
+The service rechecks current identity/membership, provider instance, Resource
+provenance, binding and active SecretBroker reference before and after each HTTP
+request and after scrubbing/auditing. The inspecting worker uses its own authenticated
+SecretBroker rights; a privileged requester cannot lend credential authority.
+Binding/policy changes, rotation, revocation, natural credential expiry, altered
+assignment scope/fence/worker, expired lease/deadline and superseded declarations
+prevent results from escaping. Reads accept no body, provider selector or raw URL.
+
+The existing assignment inspector consumes the same typed projection through
+`GET /api/control-plane-broker/merge-requirements`. Its authenticated operator must
+have operator admission, their own current read authority and credential-use rights.
+It loads the assignment and worker from canonical storage on every checkpoint,
+validates current custody metadata, and preserves requester, operator, worker and
+Definition attribution. It does not authenticate as the worker or synthesize worker
+token scopes. UI controls provide explicit repository/PR selection, required versus
+observed evidence, per-source coverage, exact revisions, provenance, expiry and
+blockers. Expiry visibly marks retained evidence stale without polling the provider;
+selection and Project changes fence late results. Provider text is escaped and PR
+links require a matching configured HTTPS provider authority.
+
+This is an additive runtime/read contract, with no persisted requirements store or
+database migration. The standalone projection rejects versions other than `1.0`.
+Existing bindings/profiles acquire no declarations or credential rights on upgrade;
+enabling a read requires an explicit canonical publication by an authorized operator.
+Older engines reject the unknown broker route on downgrade. They cannot consume
+the new read projection or infer a grant from a published operation string. Custom
+adapters must enumerate supported capabilities explicitly and implement the optional
+read before advertising it; the service denies a missing implementation before
+credential resolution. Mutation-time expected-head checks, authority, approvals and
+provider enforcement retain their existing contracts.
+
 ## Read-only by construction
 
 `CodeHostService` exposes read/discovery and webhook-normalization operations only.

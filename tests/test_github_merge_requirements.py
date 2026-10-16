@@ -34,6 +34,7 @@ class _Provider:
         self.hook = None
         self.clock = 1000
         self.gate_changes = {}
+        self.web_url = 'https://github.example/acme/widgets/pull/7'
 
     def check(self, index, context='extra'):
         return {'id': 116740899271 + index, 'name': context, 'head_sha': self.head,
@@ -115,6 +116,7 @@ class _Provider:
                                            'statuses': self.statuses[offset:offset + 100]})
         if path.endswith('/pulls/7'):
             return httpx.Response(200, json={'node_id': 'pr-node', 'number': 7, 'state': 'open', 'draft': False,
+                'html_url': self.web_url,
                 'user': {'node_id': 'author-node', 'login': 'author'}, 'head': {'sha': self.head},
                 'base': {'sha': self.base, 'ref': self.branch, 'repo': {'id': self.repository_id}}})
         if path == '/repos/acme/widgets':
@@ -137,6 +139,7 @@ class GitHubMergeRequirementsTests(unittest.IsolatedAsyncioTestCase):
         provider = _Provider()
         fact = await provider.read(adapter=True)
         self.assertTrue(fact.complete)
+        self.assertEqual(fact.web_url, provider.web_url)
         self.assertFalse(fact.blockers)
         self.assertEqual(fact.reviews.approving_count, 0)
         self.assertEqual(fact.independent_approval_count, 0)
@@ -149,6 +152,18 @@ class GitHubMergeRequirementsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sources(fact)[Source.LEGACY_PROTECTION].rule_ids, ('legacy-rule',))
         self.assertEqual(fact.observed_checks[0].provider_conclusion, 'success')
         self.assertTrue(all(request.method in {'GET', 'POST'} for request in provider.calls))
+
+    async def test_provider_links_cannot_change_authority_repository_or_pull_request(self):
+        for url in ('javascript:alert(1)', 'https://elsewhere.example/acme/widgets/pull/7',
+                    'https://user@github.example/acme/widgets/pull/7',
+                    'https://github.example/other/repo/pull/7',
+                    'https://github.example/acme/widgets/pull/8'):
+            with self.subTest(url=url):
+                provider = _Provider()
+                provider.web_url = url
+                fact = await provider.read()
+                self.assertTrue(fact.complete)
+                self.assertIsNone(fact.web_url)
 
     async def test_effective_org_rules_combine_with_legacy_and_independent_reviews(self):
         provider = _Provider()

@@ -94,6 +94,7 @@ class CodeHostMergeRequirementsFact(_Fact):
     provider_type: _Reference
     provider_instance: _Reference
     external_id: _Reference
+    web_url: str | None = Field(default=None, max_length=2048)
     head_revision: _Revision
     base_revision: _Revision
     target_branch: _Reference

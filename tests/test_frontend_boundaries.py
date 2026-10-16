@@ -271,6 +271,8 @@ class FrontendBoundaryTests(unittest.TestCase):
         self.assertIn("control_plane_broker_view.js", source)
         self.assertLessEqual((STATIC / "control_plane_broker_view.js").stat().st_size, 6_000)
         self.assertLessEqual((STATIC / "project_coordination_view.js").stat().st_size, 6_000)
+        for module in ('broker_audit_view.js', 'merge_requirements_view.js', 'merge_requirements_admin.js'):
+            self.assertLessEqual((STATIC / module).stat().st_size, 6_000)
         self.assertIn("credential_exposed", view)
         self.assertNotIn("lease_token", source)
         self.assertNotIn("capability_token", source)

@@ -18,6 +18,7 @@ from codex_web.code_hosts import (
     CodeHostCommitFact,
     CodeHostCompareFact,
     CodeHostError,
+    CodeHostUnsupportedCapabilityError,
     CodeHostJobLogFact,
     CodeHostProviderBinding,
     CodeHostPullRequestFact,
@@ -62,7 +63,13 @@ class GitLabCodeHostProvider:
         self.client = client or GitLabClient()
 
     def capabilities(self) -> frozenset[CodeHostCapability]:
-        return frozenset(CodeHostCapability)
+        return frozenset({CodeHostCapability.REPOSITORY_READ, CodeHostCapability.REFS_READ,
+            CodeHostCapability.COMMITS_READ, CodeHostCapability.PULL_REQUEST_READ, CodeHostCapability.REVIEW_READ,
+            CodeHostCapability.CHECKS_READ, CodeHostCapability.JOB_LOGS_READ, CodeHostCapability.ARTIFACTS_READ,
+            CodeHostCapability.RELEASE_READ, CodeHostCapability.COMPARE_READ, CodeHostCapability.WEBHOOK_NORMALIZE})
+
+    async def merge_requirements(self, binding, resource, external_id, *, credential, checkpoint=None):
+        raise CodeHostUnsupportedCapabilityError("GitLab merge-requirement projection is unsupported")
 
     @staticmethod
     def _classify(exc: Exception) -> CodeHostError:

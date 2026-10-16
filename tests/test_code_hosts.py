@@ -61,6 +61,9 @@ class _Provider:
     def capabilities(self):
         return frozenset(CodeHostCapability)
 
+    async def merge_requirements(self, binding, resource, external_id, *, credential, checkpoint=None):
+        raise CodeHostUnsupportedCapabilityError("Fixture does not implement merge requirements")
+
     def _credential(self, value):
         self.credentials.append(value)
 

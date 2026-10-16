@@ -19,6 +19,7 @@ from codex_web.code_hosts import (
     CodeHostCheckFact,
     CodeHostValidationRunFact,
     CodeHostJobLogFact,
+    CodeHostMergeRequirementsFact,
     CodeHostCommitFact,
     CodeHostCompareFact,
     CodeHostError,
@@ -116,12 +117,21 @@ class CodeHostService:
         *,
         secrets: SecretBroker | None = None,
         canonical_events: CanonicalEventIngestionService | None = None,
+        identity=None,
     ) -> None:
         self.registry = registry
         self.resources = resources
         self.secrets = secrets
         self.canonical_events = canonical_events
+        self.identity = identity
         self._materialization_locks: dict[str, asyncio.Lock] = {}
+
+    async def merge_requirements(self, binding_id: str, resource_id: str, external_id: str, *,
+        actor: AuthenticationActor, checkpoint: Callable[[], Awaitable[None]] | None = None,
+    ) -> CodeHostMergeRequirementsFact:
+        from codex_web.services.code_host_merge_reads import read_merge_requirements
+        return await read_merge_requirements(self, binding_id, resource_id, external_id,
+                                             actor=actor, checkpoint=checkpoint)
 
     @staticmethod
     def _require_capability(

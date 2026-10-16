@@ -1,3 +1,4 @@
+import { mergeRequirementsFormHtml } from './merge_requirements_view.js';
 import { coordinationDeclarationHtml } from './project_coordination_view.js';
 import { referenceLink, projectPath } from './reference_navigation.js';
 const esc = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;')
@@ -6,16 +7,7 @@ const link = (kind, id, projectId) => referenceLink(kind, id, {projectId});
 const definition = (ref, projectId) => ref
   ? `${link('definition', ref.record_id, projectId)} · ${esc(ref.definition_id)}@r${esc(ref.revision)}` : 'unavailable';
 
-export function brokerAuditHtml(entry, projectId) {
-  const target = entry.operation_id?.startsWith('work_item.')
-    ? link('work_item', entry.target_ref, projectId) : esc(entry.target_ref || 'not recorded');
-  return `<details class="comm-entry"><summary>${esc(entry.operation_id || entry.path)} · ${esc(entry.decision)} · HTTP ${esc(entry.response_status ?? 'unknown')}</summary>
-    <small>Recorded target: ${target} · authenticated broker actor: ${esc(entry.actor_identity_id || 'not recorded')} · worker ${link('worker', entry.worker_id, projectId)} · fence ${esc(entry.fence)}</small>
-    <small>Authority decision: ${esc(entry.authority_decision_id || 'not evaluated')} · definition ${definition(entry.authority_definition, projectId)}</small>
-    <small>Reason: ${esc(entry.denial_reason || 'No denial recorded')} · correlation ${esc(entry.correlation_id)} · causation ${esc(entry.causation_id || 'none')}</small>
-    <small>A broker admission is distinct from a provider result or recipient acknowledgement. Inspect ActionIntents for selected repository resources, receipts and verification.</small></details>`;
-}
-
+export { brokerAuditHtml } from './broker_audit_view.js';
 
 export function brokerDeclarationHtml(item, projectId) {
   const capability = item.brokered_control_plane || {};
@@ -38,5 +30,6 @@ export function brokerDeclarationHtml(item, projectId) {
     <small>Git scope: writable ${(context.declared_repository_scope?.writable_repository_ids || []).map(id => link('resource', id, projectId)).join(', ') || 'none'} · read context ${(context.declared_repository_scope?.read_only_repository_ids || []).map(id => link('resource', id, projectId)).join(', ') || 'none'}</small>
     <small>Source Work Item: ${link('work_item', item.work_item_ref, projectId)} · <a href="${esc(projectPath('work-items', {}, projectId))}#work-graph-panel" data-broker-graph>Inspect dependency graph</a> · ${item.execution_id ? `<a href="${esc(projectPath('automations', {action_execution: item.execution_id}, projectId))}">Inspect related ActionIntents and provider receipts</a>` : 'No execution correlation available'}</small>
     ${coordinationDeclarationHtml(context.project_coordination, projectId)}
+    ${mergeRequirementsFormHtml(context)}
     <button type="button" class="ghost-button" data-broker-audit>Load broker audit for ${esc(item.id)}</button><div role="status" aria-live="polite" data-broker-status>Broker audit has not been loaded.</div><div data-broker-events></div>`
 }

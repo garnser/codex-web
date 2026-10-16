@@ -79,6 +79,7 @@ class GitHubCodeHostProvider:
                 CodeHostCapability.COMMITS_READ,
                 CodeHostCapability.PULL_REQUEST_READ,
                 CodeHostCapability.REVIEW_READ,
+                CodeHostCapability.MERGE_REQUIREMENTS_READ,
                 CodeHostCapability.CHECKS_READ,
                 CodeHostCapability.JOB_LOGS_READ,
                 CodeHostCapability.ARTIFACTS_READ,

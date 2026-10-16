@@ -107,4 +107,25 @@ def build_control_plane_broker_router(
         return {**result, "operator_inspection": {"actor": actor.identity_id,
             "assignment_requester": assignment.created_by, "read_only": True}}
 
+    @router.get('/merge-requirements')
+    async def inspect_merge_requirements(request: Request, assignment_id: str, project_id: str,
+                                         repository_resource_id: str, external_id: str):
+        actor = _operator_actor(request)
+        selectors = {'assignment_id', 'project_id', 'repository_resource_id', 'external_id'}
+        if (set(request.query_params) != selectors
+                or any(len(request.query_params.getlist(key)) != 1 for key in selectors)):
+            raise HTTPException(status_code=422, detail='Use one exact canonical merge-requirement selector per field')
+        from codex_web.services.broker_merge_requirements import inspect_merge_requirements as inspect
+        from codex_web.services.control_plane_broker import ControlPlaneBrokerError
+        from codex_web.code_hosts import CodeHostError
+        from codex_web.services.secrets import SecretUseDeniedError
+        from codex_web.services.identity import IdentityError
+        try:
+            return await inspect(service, assignment_id=assignment_id, project_id=project_id,
+                repository_id=repository_resource_id, external_id=external_id, actor=actor)
+        except (ControlPlaneBrokerError, SecretUseDeniedError, IdentityError) as exc:
+            raise HTTPException(status_code=403, detail='Current merge-requirement read authority or scope denied') from exc
+        except (CodeHostError, ValueError, LookupError) as exc:
+            raise HTTPException(status_code=409, detail='Merge-requirement evidence unavailable; refresh current scope') from exc
+
     return router

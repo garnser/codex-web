@@ -1091,6 +1091,7 @@ code_host_service = CodeHostService(
     resource_catalog_service,
     secrets=secret_broker,
     canonical_events=canonical_event_ingestion,
+    identity=identity_service,
 )
 app.state.code_host_registry = code_host_registry
 app.state.code_host_service = code_host_service
@@ -2513,6 +2514,7 @@ control_plane_broker_service = ControlPlaneBrokerService(
     upgrades=upgrade_service,
     service_instance_id=instance_id,
     execution_profiles=execution_profile_definition_service,
+    execution_workers=execution_worker_service,
 )
 from codex_web.services.procedure_discovery import BrokerProcedureAdmissionService
 control_plane_broker_service.procedure_admission = BrokerProcedureAdmissionService(

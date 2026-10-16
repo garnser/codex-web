@@ -3,6 +3,7 @@
   const { request: apiRequest } = await import(`${BASE}/static/api_client.js`);
   const { brokerAuditHtml, brokerDeclarationHtml } = await import(`${BASE}/static/control_plane_broker_view.js`);
   const { coordinationResultsHtml } = await import(`${BASE}/static/project_coordination_view.js`);
+  const { mountMergeRequirements } = await import(`${BASE}/static/merge_requirements_admin.js`);
   const { currentProjectId } = await import(`${BASE}/static/project_view_scope.js`);
   let generation = 0;
   const pending = new Set();
@@ -23,8 +24,6 @@
     const fingerprint = JSON.stringify(item);
     const previous = panels.get(item.id);
     if (previous?.fingerprint === fingerprint) {
-      // Worker rendering replaces its host nodes. Reattach the same inspector
-      // only while its complete public assignment/scope snapshot is unchanged.
       const expanded = previous.panel.closest('details')?.open === true;
       host.before(previous.panel);
       if (expanded) {
@@ -42,6 +41,7 @@
     host.before(panel);
     const record = {fingerprint, panel, controller:null};
     panels.set(item.id, record);
+    mountMergeRequirements({panel, item, projectId, record, panels, pending, viewGeneration, generation:() => generation});
     const button = panel.querySelector('[data-broker-audit]');
     const status = panel.querySelector('[data-broker-status]');
     panel.querySelectorAll('[data-coordination-view]').forEach(control => control.addEventListener('click', async () => {

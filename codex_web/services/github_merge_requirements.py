@@ -152,7 +152,17 @@ class GitHubMergeRequirementsReader:
         if (type(raw.get('number')) is not int or raw['number'] != self.number
                 or native_id(object_(object_(raw.get('base')).get('repo')).get('id')) != self.repository_id):
             raise GitHubReadIncompleteError("pull_request_identity")
+        web_url = raw.get('html_url')
+        try:
+            parsed = urlsplit(web_url) if isinstance(web_url, str) and len(web_url) <= 2048 else None
+            if (parsed is None or parsed.scheme != 'https' or parsed.netloc != self.binding.provider_instance
+                    or parsed.username or parsed.password or parsed.query or parsed.fragment
+                    or parsed.path != f'/{self.repository}/pull/{self.number}'):
+                web_url = None
+        except ValueError:
+            web_url = None
         return dict(id=text(raw.get('node_id')), number=self.number,
+            web_url=web_url,
             head=_revision(object_(raw.get('head')).get('sha')),
             base=_revision(raw['base'].get('sha')), branch=text(raw['base'].get('ref')),
             state=text(raw.get('state')).upper(), draft=boolean(raw.get('draft')),
@@ -558,6 +568,7 @@ class GitHubMergeRequirementsReader:
                     and self.started <= float(self.clock()) < self.started + 30)
         return CodeHostMergeRequirementsFact(resource_id=self.resource.id, binding_id=self.binding.id,
             provider_type='github', provider_instance=self.binding.provider_instance, external_id=str(self.number),
+            web_url=self.pr.get('web_url'),
             head_revision=self.pr['head'], base_revision=self.pr['base'], target_branch=self.pr['branch'],
             observed_at=self.started, expires_at=self.started + 30,
             requirements_fingerprint=_digest({'legacy': self.legacy, 'legacy_graphql': self.initial_gate_rule,
