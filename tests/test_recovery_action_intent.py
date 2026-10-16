@@ -23,6 +23,8 @@ from codex_web.storage.canonical_events import CanonicalEventStore
 from codex_web.services.canonical_events import CanonicalEventBus, CanonicalEventIngestionService
 from codex_web.services.recovery_action_provider import RecoveryActionProvider
 from codex_web.services.action_intents import ActionIntentConflictError
+from codex_web.identity import AuthenticationAssurance
+from codex_web.services.identity import AuthenticationError
 
 
 class RecoveryActionIntentTests(unittest.IsolatedAsyncioTestCase):
@@ -45,7 +47,20 @@ class RecoveryActionIntentTests(unittest.IsolatedAsyncioTestCase):
         self.recovery.configure(RecoveryPolicy(backup_key_id=key.id,destination_id='local',
             backup_interval_seconds=60,restore_verification_interval_seconds=300,
             retention_count=5,require_audit_integrity=False),actor=self.actor)
-        self.provider=RecoveryActionProvider(self.recovery,lambda identity:self.identity.local_trusted_actor())
+        # Resolve current authenticated scope/assurance WITHOUT bootstrap/touch
+        # writes inside Recovery/ActionIntent transactions. Credentials are
+        # synthetic fixture-only and never enter requests, reports or logs.
+        credentials=self.identity.create_session(identity_id=self.actor.identity_id,
+            scope=self.actor.tenant,assurance=AuthenticationAssurance.MFA)
+        def resolve(identity_id):
+            current=self.identity.authenticate_session(credentials.session_token,touch=False).actor
+            if current.identity_id != identity_id:
+                raise AuthenticationError('fixture identity mismatch')
+            return current
+        self.provider=RecoveryActionProvider(self.recovery,resolve)
+        identity_before=self.identity.store.load()
+        self.assertEqual(resolve(self.actor.identity_id).assurance,AuthenticationAssurance.MFA)
+        self.assertEqual(self.identity.store.load(),identity_before)
         self.registry.register(self.provider)
         self.recovery_binding=self.registry.bind(ActionProviderBindingCreate(
             provider_type='recovery',provider_instance='canonical-recovery'),actor=self.actor,resources=self.resources)
@@ -77,9 +92,19 @@ class RecoveryActionIntentTests(unittest.IsolatedAsyncioTestCase):
         intent=self.intent()
         target=self.provider.reconcile if before_commit else self.provider
         method='reconcile' if before_commit else '_result'
-        with patch.object(target,method,side_effect=RuntimeError('fixture lost response')):
+        before=self.recovery.store.load()
+        with patch.object(target,method,side_effect=RuntimeError('fixture lost response')) as fault:
             unknown=await self._execute(intent)
+        self.assertEqual(fault.call_count,1,unknown.last_error)
+        self.assertEqual(unknown.attempt,1)
         self.assertIn(unknown.status,{ActionIntentStatus.UNCERTAIN,ActionIntentStatus.REQUIRES_RECONCILIATION})
+        self.assertIn('RuntimeError',unknown.last_error or '')
+        if before_commit:
+            self.assertEqual(self.recovery.store.load(),before)
+        else:
+            # A failure anywhere before this commit is NOT the lost-result
+            # scenario and must fail setup, rather than yielding vacuous tests.
+            self.assertEqual(len(self.recovery.store.load().reconciliations),1,unknown.last_error)
         return unknown
 
     async def test_committed_domain_receipt_settles_existing_intent_without_execute(self):
