@@ -1,8 +1,10 @@
 # Native Goal control dependency contract
 
 The bounded source patch under `patches/codex/goal-control-v1` targets official
-Codex commit `092d3acd6bec3e3a14bdc7e7a2810ab628ab759d`. It is not installed or
-advertised. Cargo.lock, upstream license, source hashes and public build commands
+Codex commit `83086188ae0614bd882818ff1aa23f3194962012`. It is not installed or
+advertised. Upstream 0.163.0 interrupted-turn accounting, turn-start lock ordering
+and parallel Goal GET fixes remain unchanged. The rebase preserves new state
+exports and adds only the GoalControlRequest export beside them. Cargo.lock, upstream license, source hashes and public build commands
 are pinned in UPSTREAM.json. No whole SDK is vendored.
 
 The private native Goal database gains a monotonic revision across SQL writers,
