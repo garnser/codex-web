@@ -122,3 +122,45 @@ class RecoveryActionIntentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status,ActionIntentStatus.REQUIRES_RECONCILIATION)
         self.assertEqual(len(self.recovery.store.load().reconciliations),1)
         self.assertTrue(any(r['result'] is not None for r in self.service.history(intent.id,self.actor)['receipts']))
+
+    async def test_mismatched_immutable_requests_cannot_claim_another_receipt(self):
+        await self.lose_response()
+        committed=self.recovery.store.load()
+        original_payload=self.payload
+        for index, changed in enumerate((
+            {'expected_firing_sha256':'0'*64},
+            {'expected_policy_fingerprint':'foreign-policy'},
+            {'event_id':'foreign-event'},
+            {'expected_state_sha256':'0'*64},
+        )):
+            with self.subTest(changed=changed):
+                # A separately admitted canonical intent, never a raw intent
+                # rewrite, must not adopt the prior operation's result.
+                self.payload=original_payload.model_copy(update={
+                    **changed,'idempotency_key':'different-request-'+str(index)})
+                intent=await self.lose_response(before_commit=True)
+                with patch.object(self.provider,'execute',side_effect=AssertionError('replay')):
+                    result=await self.service.reconcile(intent.id,
+                        ActionIntentReconcileRequest(retry_if_idempotent=False),actor=self.worker_actor)
+                self.assertEqual(result.status,ActionIntentStatus.REQUIRES_RECONCILIATION)
+                self.assertEqual(self.recovery.store.load(),committed)
+        self.payload=original_payload
+
+    async def test_requester_membership_revoked_during_verify_cannot_settle(self):
+        intent=await self.lose_response()
+        original=self.provider.verify
+        membership=next(m for m in self.identity.store.load().memberships
+            if m.identity_id==self.actor.identity_id and m.organization_id==self.actor.organization_id
+            and m.workspace_id==self.actor.workspace_id and m.revoked_at is None)
+        async def observe_then_revoke(result,**kwargs):
+            observed=await original(result,**kwargs)
+            self.identity.revoke_membership(membership.id,actor=self.actor)
+            return observed
+        committed=self.recovery.store.load()
+        with patch.object(self.provider,'verify',side_effect=observe_then_revoke):
+            result=await self.service.reconcile(intent.id,
+                ActionIntentReconcileRequest(retry_if_idempotent=False),actor=self.worker_actor)
+        self.assertEqual(result.status,ActionIntentStatus.REQUIRES_RECONCILIATION)
+        self.assertEqual(self.recovery.store.load(),committed)
+        self.assertTrue(any(r['result'] is not None
+            for r in self.service.history(intent.id,self.actor)['receipts']))
