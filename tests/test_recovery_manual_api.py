@@ -49,6 +49,8 @@ class ManualRecoveryApiTests(unittest.IsolatedAsyncioTestCase):
                     self.assertLess(attempt.status_code, 500, attempt.text)
                     if attempt.status_code == 200:
                         self.assertNotEqual(attempt.json()['item']['status'], 'succeeded')
+                    self.assertFalse(work.done(), 'busy refusal waited for the manual writer')
+                    self.assertEqual(self.recovery._scheduled_executor.status()['inflight_work'], 1)
                     self.assertFalse(self.recovery.store.load().reconciliations)
                 finally:
                     release.set()

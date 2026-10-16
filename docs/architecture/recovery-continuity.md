@@ -537,7 +537,11 @@ existing identity document in the shared transaction and returns its full payloa
 unchanged; its storage revision may advance, without session touch/normalization.
 
 Reconciliation holds the executor's local quiescence admission barrier across
-its complete canonical CAS. Active/queued manual or scheduled work refuses;
+its complete canonical CAS. It atomically reserves exclusive admission together
+with tracked-future submission, refusing existing work before any queue wait.
+That reservation blocks other submissions until the actual future is terminal,
+including through observer cancellation; same-key observers join that future.
+Active/queued manual or scheduled work refuses;
 manual/scheduled submissions cannot begin behind that CAS. The barrier is not a
 proof about another process, upgrade helper, direct trusted service caller,
 callback, destination writer, or the original effect. Those remain explicit
