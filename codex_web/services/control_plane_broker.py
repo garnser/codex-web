@@ -1933,6 +1933,11 @@ class ControlPlaneBrokerService:
                         "provider repository binding is outside assignment scope"
                     ) from exc
                 try:
+                    disk_used = getattr(current_workspace, "actual_disk_bytes", None)
+                    if disk_used is None:
+                        raise CodeHostError(
+                            "workspace disk usage unavailable; reconcile accounting before hydration"
+                        )
                     materialization = (
                         await self.code_hosts.materialize_default_branch_revision(
                             binding_id,
@@ -1941,7 +1946,7 @@ class ControlPlaneBrokerService:
                             checkout=Path(member.workspace_path),
                             actor=actor,
                             disk_budget_bytes=max(0, assignment.limits.disk_bytes
-                                - getattr(current_workspace, "actual_disk_bytes", 0)),
+                                - disk_used),
                             disk_quota_bytes=assignment.limits.disk_bytes,
                         )
                     )

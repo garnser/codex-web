@@ -1209,6 +1209,8 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 del actor
                 return SimpleNamespace(
                     id=workspace_id,
+                    actual_disk_bytes=0,
+                    head_revision="c" * 40,
                     execution_id="execution-broker-test",
                     project_id="project-a",
                     writable_repository_ids=("repository-a",),
@@ -1285,6 +1287,89 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             disk_quota_bytes=assignment.limits.disk_bytes,
         )
 
+    async def test_workspace_refresh_refuses_unknown_disk_usage_before_materialization(self) -> None:
+        revision = "a" * 40
+        checkout = Path(self.temp.name) / "workspace-refresh-unknown-usage"
+        checkout.mkdir()
+        calls = []
+
+        class Workspaces:
+            def get(inner, workspace_id, actor):
+                del actor
+                return SimpleNamespace(
+                    id=workspace_id,
+                    actual_disk_bytes=None,
+                    head_revision="c" * 40,
+                    execution_id="execution-broker-test",
+                    project_id="project-a",
+                    writable_repository_ids=("repository-a",),
+                    repository_members=(SimpleNamespace(
+                        resource_id="repository-a",
+                        access_mode=SimpleNamespace(value="write"),
+                        workspace_path=str(checkout),
+                    ),),
+                )
+
+            def refresh_revision(inner, workspace_id, requested, **kwargs):
+                calls.append((workspace_id, requested, kwargs))
+                if len(calls) == 1:
+                    raise ExecutionWorkspaceNotFoundError(
+                        "revision does not resolve to a commit"
+                    )
+                self.assertEqual(kwargs["materialization"].revision, revision)
+                return SimpleNamespace(model_dump=lambda mode: {
+                    "id": workspace_id, "head_revision": requested,
+                })
+
+        code_hosts = _CodeHosts()
+        code_hosts.materialize_default_branch_revision = AsyncMock(
+            return_value=CodeHostRevisionMaterializationFact(
+                resource_id="repository-a",
+                provider_type="github",
+                provider_instance="github.com",
+                repository_full_name="org/repo",
+                default_branch="main",
+                revision=revision,
+            )
+        )
+        self.service.execution_workspaces = Workspaces()
+        self.service.code_hosts = code_hosts
+        self.service.action_intents = SimpleNamespace(
+            execution=SimpleNamespace(registry=_ActionRegistry("github"))
+        )
+        self.service._authorize = lambda *args, **kwargs: SimpleNamespace(
+            id="authority-workspace-refresh-test", definition_ref=None
+        )
+        assignment = self.assignment.model_copy(update={
+            "execution_profile_id": "repository-write",
+            "execution_workspace_id": "workspace-a",
+            "resource_ids": ("repository-a",),
+            "repository_scope": RepositoryExecutionScope(
+                organization_id="local", workspace_id="default", project_id="project-a",
+                writable_repository_ids=("repository-a",),
+                source=RepositoryTargetSource.SINGLE_REPOSITORY,
+                source_ref="repository-a",
+            ),
+        })
+        validated = []
+
+        with self.assertRaises(ControlPlaneBrokerRequestError) as refused:
+            await self.service.dispatch(
+                assignment=assignment,
+                worker_actor=self.worker_actor,
+                method="POST",
+                raw_target="/api/repository-workspace/refresh",
+                body=json.dumps({"revision": revision}).encode(),
+                assignment_validator=lambda: validated.append(True) or assignment,
+            )
+
+        self.assertEqual(refused.exception.status_code, 409)
+        self.assertIn("disk usage unavailable", str(refused.exception))
+        self.assertEqual(refused.exception.history_readiness["state"], "not_ready")
+        self.assertEqual(len(calls), 1, "unknown usage must not permit a final reset")
+        code_hosts.materialize_default_branch_revision.assert_not_awaited()
+        self.assertEqual(validated, [])
+
     async def test_workspace_refresh_preserves_dirty_and_stale_fence_guards(self) -> None:
         revision = "b" * 40
         checkout = Path(self.temp.name) / "workspace-refresh-denied"
@@ -1298,6 +1383,8 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 del actor
                 return SimpleNamespace(
                     id=workspace_id,
+                    actual_disk_bytes=0,
+                    head_revision="c" * 40,
                     execution_id="execution-broker-test",
                     project_id="project-a",
                     writable_repository_ids=("repository-a",),
