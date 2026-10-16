@@ -320,3 +320,15 @@ The local Skill scanner persisted-contract transition uses the registered
 for its service drain, verified snapshot, old-worker exclusion and write gate.
 It disables rollback on earlier plans atomically and on later plans conservatively;
 a new plan cannot make retained incompatible rows safe for an old binary.
+
+## Patched native Goal control dependency
+
+`patches/codex/goal-control-v1/UPSTREAM.json` is a public-source build qualification
+input, not an enabled runtime or a Release. A runtime implementing native lifecycle
+control must enter the existing Release/UpgradePlan and compatibility flow with
+exact upstream/patch/lock/binary digests, independent build/race/transport/isolation
+Evidence and explicit native Goal database migration/rollback rules. Docker's
+existing CLI version arguments are not changed by this prerequisite. No Profile,
+Definition or grant may infer qualified support from a version string or adapter
+method. Preserve original native Goal/objective/accounting through drain, migration
+and post-verification before any separately authorised installation.

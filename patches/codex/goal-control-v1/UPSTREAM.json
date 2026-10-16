@@ -1,0 +1,75 @@
+{
+  "repository": "https://github.com/openai/codex",
+  "commit": "83086188ae0614bd882818ff1aa23f3194962012",
+  "tag": "rust-v0.163.0",
+  "archive_sha256": "7497d34682e169a46b0781065ccb562dac3ff2294a9a6655eb9aa4681931a4a7",
+  "cargo_lock_sha256": "17cdd862471774ba7aef836aaf0a0a3ed76bd23e503b1fc7278c89d1f2719d03",
+  "patch_sha256": "eee2e395564221a60a7c01ffff4b711436a5b9ad9b2f4af2324c66251277c29f",
+  "files": {
+    "codex-rs/ext/goal/src/api.rs": {
+      "base_sha256": "a08bb505652ff41540fcea628ab6bdda2fb8011c21450d10f0f240ae6ddfc157",
+      "patched_sha256": "c773e9aa8e928c428999b4eb9e50f00b9db720d7a4eebc836553328626f9b705"
+    },
+    "codex-rs/state/goals_migrations/0003_goal_control.sql": {
+      "base_sha256": null,
+      "patched_sha256": "36c6e972d11473bcbcbcbe91a929e565780575c9018bb97d091ded20eba3569b"
+    },
+    "codex-rs/state/src/lib.rs": {
+      "base_sha256": "f26a350878b5afdfbbfd890b0af013dc5dbfbbf8b3761fc57ad440961a646519",
+      "patched_sha256": "c223c09621c4ebbeafc61a1bbf89ce740c379d90a16da083bf78bc5846ccd360"
+    },
+    "codex-rs/state/src/runtime/goals/control/status.sql": {
+      "base_sha256": null,
+      "patched_sha256": "6df74cd600dbae57fc20b35b5188b9680c4d35e255dc5f27ff9f6c59fb9c598b"
+    },
+    "codex-rs/state/src/runtime/goals/control.rs": {
+      "base_sha256": null,
+      "patched_sha256": "20134db47bb2ff84f35710089df036072c06ee0599f4d133acb4cccf330c12d9"
+    },
+    "codex-rs/state/src/runtime/goals.rs": {
+      "base_sha256": "11640e2a48cbd3d109f22d31695dba2ddb11f9aff9543d774d34f261fd1f48f4",
+      "patched_sha256": "bebabdccb1661944a97239596c7c834c6b806993636b620f3e3ebc4791a36b3d"
+    },
+    "codex-rs/state/src/runtime.rs": {
+      "base_sha256": "ae2eca6aba24af65369de7cfb29ca9102a4dc92a3379a491b116d8600a7e46e8",
+      "patched_sha256": "c1fb07c809d6ddb0ccb018b466efc3faae37973a51caa75e7ef7ebe226436293"
+    }
+  },
+  "license": "LICENSE (upstream Apache-2.0)",
+  "runtime_capability_advertised": false,
+  "activation": "not wired or installed; native private-store prerequisite only",
+  "trusted_build_commands": [
+    "python3 /work/app/patches/codex/goal-control-v1/normalize_release_lock.py codex-rs/Cargo.lock /work/derived-Cargo.lock",
+    "cp /work/derived-Cargo.lock codex-rs/Cargo.lock",
+    "git apply --check /work/app/patches/codex/goal-control-v1/control.patch",
+    "git apply /work/app/patches/codex/goal-control-v1/control.patch",
+    "cd codex-rs && cargo fmt --all -- --check",
+    "cd codex-rs && cargo test --locked --offline -p codex-state atomic_receipt_fences_legacy_writers_and_preserves_accounting"
+  ],
+  "build_requirements": "Sterile exact public checkout/Cargo.lock and prequalified public toolchain+locked dependency cache, dedicated cgroup2GiB/256tasks with bounded timeout and real cleanup. No network/private cache mount/install.",
+  "fixture_schema_sha256": "b3aac485fec27eaefbdd3e68651bdf6d640908fb10226f3562cc5ffe92ca3d1f",
+  "previous_candidate": {
+    "app_commit": "96766d492a39664ab4e4d54726a0df9fd80ea554",
+    "upstream_commit": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d",
+    "tag": "rust-v0.162.1",
+    "patch_sha256": "e3ecd8899b9b8054f2f5f09ee3679d47268db8294ea604db161b3eb3ddbc1dd9"
+  },
+  "rebase": {
+    "changed_patch_bases": [
+      "codex-rs/state/src/lib.rs",
+      "codex-rs/state/src/runtime.rs"
+    ],
+    "new_base_changes": "preserve GuardianReview and thread read-state exports; add GoalControlRequest export only",
+    "goal_behavior_patch_unchanged": true,
+    "source_comparison_files_verified": 17,
+    "archive_verification": "operator provenance; archive not locally present",
+    "build_and_tests": "unexecuted; qualified dedicated cgroup still required"
+  },
+  "build_lock": {
+    "upstream_sha256": "17cdd862471774ba7aef836aaf0a0a3ed76bd23e503b1fc7278c89d1f2719d03",
+    "derived_sha256": "cae541406f7ec43a418e126be2bcd5de00b243e7bbf6382570028727d99c1069",
+    "recipe": "python3 /work/app/patches/codex/goal-control-v1/normalize_release_lock.py codex-rs/Cargo.lock /work/derived-Cargo.lock; then copy derived file to codex-rs/Cargo.lock before existing --locked --offline command",
+    "scope": "160 local package versions and explicit local dependency version references only; external package records and resolved dependency graph preserved",
+    "evidence": "Root supplied dependency fetch r2 success only; no compiler/test success inferred"
+  }
+}
