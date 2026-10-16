@@ -13,7 +13,7 @@ from codex_web.crypto import EncryptedEnvelope, KeyManifestEntry
 from codex_web.compatibility import ContractSpec
 
 
-RECOVERY_STATE_CONTRACT = ContractSpec("recovery-state", "1.1", ("1.1",))
+RECOVERY_STATE_CONTRACT = ContractSpec("recovery-state", "1.2", ("1.2",))
 
 
 class RecoveryDeploymentMode(StrEnum):
@@ -183,6 +183,35 @@ class RecoveryPolicyChange(BaseModel):
     restored_from_id: str | None = None
 
 
+class RecoveryFiring(BaseModel):
+    """An admitted schedule occurrence, never an instruction to replay work."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    event_id: str
+    schedule_id: str
+    trigger_type: str
+    scheduled_for: float = Field(allow_inf_nan=False)
+    organization_id: str
+    workspace_id: str
+    actor_id: str
+    policy_fingerprint: str
+    owner_id: str
+    effect_id: str
+    backup_id: str | None = None
+    status: str = Field(default="running", pattern="^(running|succeeded|unknown)$")
+    admitted_at: float
+    finished_at: float | None = None
+    error_code: str | None = None
+
+
+class RecoveryFiringWatermark(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schedule_id: str
+    scheduled_for: float = Field(allow_inf_nan=False)
+
+
 class RecoveryState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -195,6 +224,8 @@ class RecoveryState(BaseModel):
     verifications: dict[str, RestoreVerification] = Field(default_factory=dict)
     backup_schedule_id: str | None = None
     verification_schedule_id: str | None = None
+    scheduled_firings: dict[str, RecoveryFiring] = Field(default_factory=dict, max_length=128)
+    scheduled_watermarks: dict[str, RecoveryFiringWatermark] = Field(default_factory=dict, max_length=2)
 
 
     def model_post_init(self, __context: Any) -> None:

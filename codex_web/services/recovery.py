@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,8 @@ from codex_web.artifact_evidence import (
 from codex_web.autonomy_audit import AuditIntegrityStatus, AutonomyAuditState
 from codex_web.storage.autonomy_audit import AutonomyAuditStore
 from codex_web.canonical_events import CanonicalEventType
+from codex_web.compatibility import CanonicalEventEnvelope
+from codex_web.canonical_json import canonical_json_bytes
 from codex_web.crypto import (
     CryptoKeyState,
     EncryptedEnvelope,
@@ -144,6 +147,11 @@ class RecoveryService:
             for item in destinations
         }
         self.clock = clock
+        from codex_web.services.recovery_executor import RecoveryExecutor
+        from codex_web.services.recovery_schedules import RecoveryScheduleAdmission
+        self._scheduled_executor = RecoveryExecutor()
+        self._scheduled_admission = RecoveryScheduleAdmission(self, f"recovery-{uuid.uuid4().hex}")
+        self._scheduled_stopped = False
         self._unsubscribe = (
             canonical_events.bus.subscribe(
                 self._handle_schedule_event,
@@ -170,7 +178,7 @@ class RecoveryService:
     def policy(self) -> RecoveryPolicy | None:
         return self.store.load().policy
 
-    def _write_key_bound(self, updater, *, actor, requirements, active_key=None, scheduler_update=None):
+    def _write_key_bound(self, updater, *, actor, requirements, active_key=None, scheduler_update=None, _firing=None, evidence_update=None):
         if self.crypto.store.store is not self.store.store:
             raise RecoveryConflictError('Recovery and keys require the same canonical transactional store')
         key_namespace = self.crypto.store.namespace
@@ -187,6 +195,15 @@ class RecoveryService:
                 if entry.key_id == active_key and (key.status != KeyStatus.ACTIVE or key.purpose != KeyPurpose.BACKUP):
                     raise RecoveryConflictError('Backup policy requires an active backup key')
             current = RecoveryStore._decode(documents[self.store.namespace])
+            if _firing is not None:
+                self._scheduled_admission.validate_policy(current, keys, _firing)
+                schedules = self.scheduler.store._decode(documents[self.scheduler.store.namespace])
+                self._scheduled_admission.validate_schedule(current, schedules, _firing)
+            if evidence_update is not None:
+                evidence_store = self.evidence.store
+                documents[evidence_store.namespace] = evidence_update(
+                    evidence_store._decode(documents[evidence_store.namespace])
+                ).model_dump(mode="json")
             updated = updater(current, keys)
             if scheduler_update is not None:
                 schedules = self.scheduler.store._decode(documents[self.scheduler.store.namespace])
@@ -199,11 +216,16 @@ class RecoveryService:
             key_namespace: CryptoKeyState().model_dump(mode='json'),
             self.store.namespace: RecoveryState().model_dump(mode='json'),
         }
-        if scheduler_update is not None:
+        if scheduler_update is not None or _firing is not None:
             from codex_web.scheduler import SchedulerState
             if self.scheduler.store.store is not self.store.store:
                 raise RecoveryConflictError('Recovery schedules require the same canonical transactional store')
             defaults[self.scheduler.store.namespace] = SchedulerState().model_dump(mode='json')
+        if evidence_update is not None:
+            from codex_web.artifact_evidence import ArtifactEvidenceState
+            if self.evidence.store.store is not self.store.store:
+                raise RecoveryConflictError("Evidence and recovery require the same canonical store")
+            defaults[self.evidence.store.namespace] = ArtifactEvidenceState().model_dump(mode="json")
         result = self.store.store.update_many(defaults, apply)
         return RecoveryStore._decode(result[self.store.namespace])
 
@@ -215,11 +237,7 @@ class RecoveryService:
 
     @staticmethod
     def _canonical_bytes(value: Any) -> bytes:
-        return json.dumps(
-            value,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        return canonical_json_bytes(value)
 
     def _snapshot_documents(self) -> dict[str, Any]:
         documents = self.state_store.documents()
@@ -260,7 +278,10 @@ class RecoveryService:
         self,
         *,
         actor: AuthenticationActor,
+        _firing=None,
     ) -> BackupManifest:
+        if _firing is not None:
+            self._scheduled_admission.checkpoint(_firing)
         policy = self.policy()
         if policy is None:
             raise RecoveryConflictError("recovery policy is not configured")
@@ -280,6 +301,8 @@ class RecoveryService:
         backup_id = (
             f"backup-{hashlib.sha256(backup_material).hexdigest()[:32]}"
         )
+        if _firing is not None:
+            backup_id = _firing.effect_id
         key_manifest = self._snapshot_key_manifest(documents, actor)
         snapshot = BackupSnapshot(
             organization_id=actor.organization_id,
@@ -308,6 +331,8 @@ class RecoveryService:
         encrypted_bytes = self._canonical_bytes(
             envelope.model_dump(mode="json")
         )
+        if _firing is not None:
+            self._scheduled_admission.checkpoint(_firing)
         destination_ref = destination.put(backup_id, encrypted_bytes)
         manifest = BackupManifest(
             id=backup_id,
@@ -341,14 +366,14 @@ class RecoveryService:
             self._write_key_bound(apply, actor=actor, requirements=(
                 *manifest.key_manifest,
                 KeyManifestEntry(key_id=manifest.key_id, versions=(manifest.key_version,)),
-            ))
+            ), _firing=_firing)
         except Exception:
             try:
                 destination.delete(destination_ref)
             except Exception:
                 raise RecoveryConflictError('Key validation failed and encrypted candidate cleanup failed') from None
             raise
-        self._enforce_retention(policy, actor=actor)
+        self._enforce_retention(policy, actor=actor, _firing=_firing)
         return manifest
 
     def _enforce_retention(
@@ -356,7 +381,23 @@ class RecoveryService:
         policy: RecoveryPolicy,
         *,
         actor: AuthenticationActor,
+        _firing=None,
     ) -> None:
+        if _firing is not None:
+            def retain(current, keys):
+                rows = sorted((item for item in current.backups.values()
+                    if (item.organization_id, item.workspace_id) == (actor.organization_id, actor.workspace_id)),
+                    key=lambda item: (item.created_at, item.id), reverse=True)
+                for item in rows[policy.retention_count:]:
+                    destination = self.destinations.get(item.destination_id)
+                    if destination is not None:
+                        destination.delete(item.destination_ref)
+                    current.backups.pop(item.id)
+                return current
+            # Policy/schedule/key admission and retention share the canonical
+            # transaction. A superseded policy cannot sweep newer backups.
+            self._write_key_bound(retain, actor=actor, requirements=(), _firing=_firing)
+            return
         state = self.store.load()
         rows = sorted(
             (item for item in state.backups.values()
@@ -384,12 +425,15 @@ class RecoveryService:
         manifest: BackupManifest,
         *,
         actor: AuthenticationActor,
+        _requirements=None,
     ) -> BackupSnapshot:
         destination = self._destination(manifest.destination_id)
         encrypted = destination.get(manifest.destination_ref)
         if hashlib.sha256(encrypted).hexdigest() != manifest.envelope_sha256:
             raise RecoveryConflictError("encrypted backup checksum mismatch")
         envelope = EncryptedEnvelope.model_validate(json.loads(encrypted))
+        if _requirements is not None:
+            _requirements.append(KeyManifestEntry(key_id=envelope.key_id, versions=(envelope.key_version,)))
         context = EncryptionContext(
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
@@ -434,7 +478,10 @@ class RecoveryService:
         *,
         actor: AuthenticationActor,
         publish_evidence: bool = True,
+        _firing=None,
     ) -> RestoreVerification:
+        if _firing is not None:
+            self._scheduled_admission.checkpoint(_firing)
         state = self.store.load()
         manifest = state.backups.get(backup_id)
         if manifest is None or (
@@ -442,6 +489,7 @@ class RecoveryService:
             or manifest.workspace_id != actor.workspace_id
         ):
             raise RecoveryError("backup not found")
+        frozen_requirements = list(manifest.key_manifest)
         started = float(self.clock())
         blockers: list[str] = []
         snapshot: BackupSnapshot | None = None
@@ -454,7 +502,8 @@ class RecoveryService:
         revoked_refs: tuple[str, ...] = ()
 
         try:
-            snapshot = self._snapshot_from_backup(manifest, actor=actor)
+            snapshot = self._snapshot_from_backup(manifest, actor=actor, _requirements=frozen_requirements)
+            frozen_requirements.extend(snapshot.key_manifest)
             restored_checksum = state_documents_checksum(snapshot.documents)
             checksum_valid = (
                 restored_checksum == snapshot.documents_checksum
@@ -494,6 +543,7 @@ class RecoveryService:
 
         finished = float(self.clock())
         verification = RestoreVerification(
+            **({"id": _firing.effect_id} if _firing is not None else {}),
             backup_id=manifest.id,
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
@@ -519,7 +569,30 @@ class RecoveryService:
             verified_at=finished,
         )
 
+        def settle(evidence_update=None):
+            def persist(current, keys):
+                self._persist_verification(current, verification)
+                if _firing is not None and verification.status == RestoreVerificationStatus.PASS:
+                    current.scheduled_firings[_firing.event_id] = _firing.model_copy(update={
+                        "status": "succeeded", "finished_at": float(self.clock()), "error_code": None})
+                return current
+            self._write_key_bound(persist, actor=actor,
+                requirements=tuple(frozen_requirements) if verification.status == RestoreVerificationStatus.PASS else (),
+                _firing=_firing, evidence_update=evidence_update)
+
+        atomic_evidence = publish_evidence and hasattr(self.evidence, "store")
+        def commit_evidence(apply):
+            nonlocal verification
+            def prepare(current):
+                nonlocal verification
+                updated = apply(current)
+                verification = verification.model_copy(update={"evidence_id": updated.evidence[-1].id})
+                return updated
+            settle(prepare)
+
         if publish_evidence:
+            if _firing is not None:
+                self._scheduled_admission.checkpoint(_firing)
             evidence = self.evidence.create_evidence(
                 EvidenceCreate(
                     evidence_type=EvidenceType.POLICY_EVALUATION,
@@ -535,6 +608,8 @@ class RecoveryService:
                         f"backup={manifest.id}; documents={verification.document_count}"
                     ),
                     metadata={
+                        "verification_id": verification.id,
+                        **({"canonical_event_id": _firing.event_id} if _firing is not None else {}),
                         "backup_id": manifest.id,
                         "checksum_valid": checksum_valid,
                         "schema_compatible": schema_compatible,
@@ -546,17 +621,14 @@ class RecoveryService:
                     },
                 ),
                 actor=actor,
+                **({"_commit": commit_evidence} if atomic_evidence else {}),
             )
             verification = verification.model_copy(
                 update={"evidence_id": evidence.id}
             )
 
-        self.store.update(
-            lambda current: self._persist_verification(
-                current,
-                verification,
-            )
-        )
+        if not atomic_evidence:
+            settle()
         return verification
 
     @staticmethod
@@ -726,6 +798,13 @@ class RecoveryService:
             and latest_verify.duration_seconds <= canonical_objective.rto_seconds
         )
         blockers = []
+        scoped_firings = [item for item in state.scheduled_firings.values()
+                          if (item.organization_id, item.workspace_id) == (actor.organization_id, actor.workspace_id)]
+        if any(item.status == "unknown" for item in scoped_firings):
+            blockers.append("scheduled_recovery_requires_reconciliation")
+        if any(item.status == "running" and (item.owner_id != self._scheduled_admission.owner_id
+                or not self._scheduled_executor.status()["inflight_work"]) for item in scoped_firings):
+            blockers.append("scheduled_recovery_owner_unresolved")
         if not rpo_satisfied:
             blockers.append("rpo_not_satisfied")
         if not verify_fresh:
@@ -753,41 +832,41 @@ class RecoveryService:
         )
 
     async def _handle_schedule_event(self, event) -> None:
-        if self.service_actor is None:
+        if self.service_actor is None or not isinstance(event, CanonicalEventEnvelope):
             return
-        state = self.store.load()
-        trigger = event.payload.get("trigger_type")
-        expected_schedule = state.backup_schedule_id if trigger == self.BACKUP_TRIGGER else state.verification_schedule_id
-        if event.payload.get('schedule_id') != expected_schedule or expected_schedule is None:
+        await self._scheduled_executor.run(event.event_id, lambda: self._run_scheduled_firing(event))
+
+    def _run_scheduled_firing(self, event):
+        firing = self._scheduled_admission.admit(event)
+        if firing is None:
             return
-        if (getattr(event, 'tenant_id', None), getattr(event, 'workspace_id', None)) != (self.service_actor.organization_id, self.service_actor.workspace_id):
+        try:
+            if firing.trigger_type == self.BACKUP_TRIGGER:
+                self.create_backup(actor=self.service_actor, _firing=firing)
+            else:
+                self.verify_restore(firing.backup_id, actor=self.service_actor,
+                                    publish_evidence=True, _firing=firing)
+        except BaseException as exc:
+            self._scheduled_admission.finish(firing, succeeded=False, error_code=type(exc).__name__)
+            raise
+        self._scheduled_admission.finish(firing, succeeded=True)
+
+    def close_scheduled_admission(self):
+        self._scheduled_executor.close_admission()
+
+    def start(self):
+        if self._scheduled_executor.status()["accepting"]:
             return
-        if self.scheduler is not None:
-            from codex_web.scheduler import ScheduleStatus
-            schedule = self.scheduler.store.load().schedules.get(expected_schedule)
-            if schedule is None or schedule.status != ScheduleStatus.ACTIVE:
-                return
-        fingerprint = (event.payload.get('payload') or {}).get('policy_fingerprint')
-        if fingerprint and (state.policy is None or fingerprint != state.policy.fingerprint()):
-            return
-        if trigger == self.BACKUP_TRIGGER:
-            self.create_backup(actor=self.service_actor)
-            return
-        if trigger == self.VERIFY_TRIGGER:
-            state = self.store.load()
-            candidates = [
-                item
-                for item in state.backups.values()
-                if item.organization_id == self.service_actor.organization_id
-                and item.workspace_id == self.service_actor.workspace_id
-            ]
-            if candidates:
-                latest = max(
-                    candidates,
-                    key=lambda item: item.created_at,
-                )
-                self.verify_restore(
-                    latest.id,
-                    actor=self.service_actor,
-                    publish_evidence=True,
-                )
+        if not self._scheduled_stopped or self._scheduled_executor.status()["waiting_or_running"]:
+            raise RecoveryConflictError("Scheduled recovery must finish stopping before restart")
+        from codex_web.services.recovery_executor import RecoveryExecutor
+        from codex_web.services.recovery_schedules import RecoveryScheduleAdmission
+        self._scheduled_executor = RecoveryExecutor()
+        self._scheduled_admission = RecoveryScheduleAdmission(self, f"recovery-{uuid.uuid4().hex}")
+        self._scheduled_stopped = False
+
+    async def stop(self):
+        try:
+            await self._scheduled_executor.stop()
+        finally:
+            self._scheduled_stopped = not self._scheduled_executor.status()["inflight_work"]

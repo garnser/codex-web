@@ -37,6 +37,15 @@ Recovery policy, owner scope and policy-change history are included in the
 snapshot. Recovery's backup/verification manifest collections are excluded to
 prevent recursive backup growth.
 
+Snapshot and envelope serialization retain compact, sorted-key ASCII JSON bytes.
+Container traversal uses incremental encoding so an offloaded operation can
+yield interpreter time between chunks. StateStore checksums retain their exact
+namespace/NUL/document-digest/NUL framing and hash encoded chunks without another
+complete document buffer. Encryption still receives the complete canonical
+plaintext; key context, backup format and persisted checksums are unchanged.
+This is an encoding implementation change, not a new recovery schema or a
+different integrity algorithm.
+
 Transport/broker queues are not backed up as business truth. After restore they
 are reconstructed from canonical state/outbox semantics.
 
@@ -231,12 +240,16 @@ from the UI. Missing/revoked-key restore findings remain visible as evidence.
 ### State compatibility
 
 Recovery state `1.1` adds immutable policy-change records and policy owner scope.
-The explicit `1.0 → 1.1` migration preserves all existing policy, backup,
+State `1.2` adds scheduled firing receipts and two replay watermarks. The explicit
+`1.0 → 1.1 → 1.2` migrations preserve all existing policy, backup,
 verification and schedule data. Unknown future versions fail closed. Legacy
 ownership is adopted only from canonical key metadata, never request text. Once
-`1.1` has been persisted, application rollback requires an engine supporting
+`1.2` has been persisted, application rollback requires an engine supporting
 that contract; older binaries must not be assumed able to read the new fields.
 Policy rollback does not downgrade this state contract.
+Before the first new write, stop and drain every older recovery writer. This
+source migration does not provide mixed-version writer fencing or automatic
+downgrade, and is not evidence of an installed upgrade.
 
 Policy history survives isolated restore without recursively including old
 backup/verification manifests. New backup key requirements come from the exact
@@ -245,3 +258,77 @@ reference therefore does not make every future backup impossible. Revocation
 racing with backup creation still fails the atomic reference-creation check.
 Legacy policy adoption uses the transaction's locked key document rather than
 opening a nested StateStore connection.
+
+### Scheduled work ownership
+
+The canonical Scheduler and event bus still own firing and dispatch. Recovery
+offloads its synchronous admission, snapshot, encryption, destination I/O,
+verification, retention and result writes to one owned executor thread. The
+executor admits at most one active and one waiting operation; it does not submit
+an unbounded thread-pool queue. Request actor ContextVars cross this boundary.
+Direct synchronous recovery methods retain their existing caller-owned contract.
+
+Before effects, a transaction across RecoveryState, keys and Scheduler validates
+the actual stored canonical envelope, source, tenant/workspace, execution actor,
+current active schedule, FIRE_ONCE policy, occurrence and exact policy
+fingerprint. It reserves the backup/verification identity and, for verification,
+the exact backup. Policy, authority, keys and schedule are checked again before
+effects and under the transaction that admits the result. Scheduled retention
+uses the same locked current policy; a superseded policy cannot delete backups
+under its old retention limit.
+
+Firing receipts distinguish `running`, `succeeded` and `unknown`. Success means
+the actual operation returned and recorded its canonical result; a completed
+verification can still report FAIL. Exceptions after admission record unknown
+with the reserved identity and an error class, without snapshot or secret data.
+A cancelled asyncio observer neither cancels the worker future nor releases its
+custody. Cancellation propagates only after the actual operation terminates.
+Shutdown closes admission before cancelling Scheduler/event tasks, drains both
+already accepted jobs (including a queued verification), and then shuts down
+the executor. Cancelling a queued observer cannot discard its committed event.
+Restart of the same service object is
+allowed only after this drain.
+
+Redelivery never executes an admitted occurrence again, including after unknown
+completion or restart. Across replicas, a running receipt blocks another firing.
+A crashed owner's running receipt is not reclaimed by lease expiry or inferred
+from an existing manifest: retention/evidence may still be running. Qualified
+operator recovery must establish quiescence and reconcile the reserved effect;
+there is no automatic clear, replay or inverse operation. Terminal unknown work
+does not prevent a distinct future occurrence until the receipt bound is reached.
+
+At most 128 receipts are retained. Successful receipts can be compacted because
+the two current-schedule watermarks continue to reject their redelivery; replaced
+schedules fail current-schedule admission. FIRE_ONCE also coalesces older delayed
+occurrences behind an admitted watermark. Unknown receipts are never evicted to
+make room; exhaustion and concurrent ownership report backpressure. Shared event
+transport may retry a delivery that never admitted work. Local canonical ingress
+does not replay an already inserted event, so a failed local delivery must not
+be mistaken for a successful backup. No retry poller is added.
+Legacy schedules without an exact policy fingerprint fail admission; an explicit
+publication of the current policy repairs their timers through the existing
+policy control transaction, preserving inactive state.
+
+Snapshots preserve these bounded replay barriers, including historical running
+ownership. Isolated restore still pauses schedules and autonomous execution;
+restoring a snapshot does not confer authority to resume a lost owner's work.
+Existing recovery status and policy UI expose canonical firing scope, event,
+schedule, policy fingerprint, owner, reserved identity and uncertainty. Local
+executor status is explicitly process-local, not proof of another owner's state.
+
+### Verification settlement
+
+Restore PASS Evidence, its RecoveryState verification and scheduled firing success
+commit in one canonical multi-document transaction with the complete frozen key
+manifest and envelope versions, current policy, schedule and firing custody.
+Evidence preparation does not publish PASS. A committed success survives a lost
+observer response; an admission conflict leaves the firing unknown without replay.
+Existing Recovery/Evidence surfaces retain the canonical evidence/verification IDs
+and denied or unknown outcome; no separate dashboard or authority is introduced.
+
+Canonical KeyUsage retirement checks include every backup manifest key/version in
+the shared Key/Recovery transaction. Auxiliary-key and non-current-version
+revocations are refused while such consumers remain; this is positive protection,
+not an executed revocation attack. Final frozen-requirement validation remains
+defense in depth. Policy/schedule admission is independently rechecked at the
+Evidence/verification success transaction.

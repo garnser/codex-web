@@ -378,10 +378,13 @@ class RecoveryTests(unittest.TestCase):
 
 
 class ScheduledRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncTearDown(self):
+        await self.service.stop()
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
-        self.state = SQLiteStateStore(root / "state.sqlite3")
+        self.state = getattr(self, "state_store_factory", SQLiteStateStore)(root / "state.sqlite3")
         self.clock = _Clock(1000.0)
         self.actor = AuthenticationActor(
             identity_id="recovery-service",
@@ -411,7 +414,9 @@ class ScheduledRecoveryTests(unittest.IsolatedAsyncioTestCase):
             clock=self.clock,
             owner_id="scheduler-test",
         )
-        self.evidence = _Evidence()
+        from codex_web.services.artifact_evidence import ArtifactEvidenceService
+        from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
+        self.evidence = ArtifactEvidenceService(ArtifactEvidenceStore(self.state))
         self.service = RecoveryService(
             RecoveryStore(self.state),
             state_store=self.state,
@@ -463,8 +468,8 @@ class ScheduledRecoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(
             any(
-                item.payload.source == "recovery-restore-verification"
-                for item in self.evidence.items
+                item.source == "recovery-restore-verification"
+                for item in self.evidence.list_evidence(actor=self.actor)
             )
         )
 

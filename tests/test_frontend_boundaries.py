@@ -375,6 +375,7 @@ class FrontendBoundaryTests(unittest.TestCase):
             "page_editor.js": 5_000,
             "key_usage_ui.js": 5_000,
             "recovery_policy_ui.js": 12_000,
+            "recovery_evidence_view.js": 6_000,
             "recovery_policy_form.js": 7_000,
             "reference_links.js": 2_000,
             "bot_page_editor.js": 2_000,
