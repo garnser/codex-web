@@ -20,6 +20,7 @@ from codex_web.action_intents import (
     ActionIntentRollbackRequest,
     ActionIntentRollbackCheckpoint,
     ActionIntentStatus,
+    ReadinessExecutionOrigin,
     ActionIntentVerificationReceipt,
     TERMINAL_ACTION_INTENT_STATUSES,
 )
@@ -63,8 +64,11 @@ from codex_web.services.code_host_action_contract import (
     CODE_HOST_CHANGE_REQUEST_UPSERT_ACTION_ID,
     CODE_HOST_JOB_RERUN_ACTION_ID,
     CODE_HOST_PULL_REQUEST_MERGE_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_READY_ACTION_ID,
+    CODE_HOST_PULL_REQUEST_READY_EVIDENCE,
     CodeHostActionContract,
 )
+from codex_web.services.code_host_readiness import ReadyExecution, readiness_execution, readiness_binding_checksum
 from codex_web.services.code_host_continuation import (
     ChangeRequestContinuation, continuation_context, request_identity,
 )
@@ -84,6 +88,8 @@ from codex_web.services.execution_workers import (
 )
 from codex_web.services.security_boundary import SecurityBoundaryService
 from codex_web.storage.action_intents import ActionIntentStore
+from codex_web.definitions import DefinitionContext, reference_for
+from codex_web.services.publication_recovery import ASSIGNMENTS, WORKERS
 from codex_web.services.publication_recovery import WS, capture_scope, execution_assignment, intent_guard, scope_rows
 
 
@@ -498,6 +504,17 @@ class ActionIntentService:
         actor: AuthenticationActor,
         authority_decision: ActionDecisionSnapshot,
     ) -> tuple[bool, str | None]:
+        # Each caller starts a new observation. The refresh itself must still
+        # compare that observation under the intent writer lock.
+        current = self._intent(intent.id, actor)
+        refreshed, error = self._refresh_security(current, actor=actor,
+            authority_decision=authority_decision)
+        return refreshed is not None, error
+
+    def _refresh_security(
+        self, intent: ActionIntent, *, actor: AuthenticationActor,
+        authority_decision: ActionDecisionSnapshot,
+    ) -> tuple[ActionIntent | None, str | None]:
         binding, _, definition, request = self.execution.resolve_contract(
             intent.binding_id,
             intent.request,
@@ -505,7 +522,7 @@ class ActionIntentService:
         )
         if self.security_boundary is None:
             return (
-                intent.security_decision.outcome == SecurityDecisionOutcome.ALLOW,
+                intent if intent.security_decision.outcome == SecurityDecisionOutcome.ALLOW else None,
                 "persisted security trust decision denied action"
                 if intent.security_decision.outcome != SecurityDecisionOutcome.ALLOW
                 else None,
@@ -524,23 +541,32 @@ class ActionIntentService:
             execution_id=intent.execution_id,
         )
 
+        refreshed = None
         def apply(state):
+            nonlocal refreshed
+            refreshed = None
             for index, item in enumerate(state.intents):
                 if item.id == intent.id:
-                    state.intents[index] = item.model_copy(
+                    if (item.security_policy != intent.security_policy
+                            or item.security_decision != intent.security_decision):
+                        break  # A newer observation wins, including a denial.
+                    refreshed = item.model_copy(
                         update={
                             "security_policy": binding.security_policy,
                             "security_decision": decision,
                             "updated_at": time.time(),
                         }
                     )
+                    state.intents[index] = refreshed
                     break
             return state
 
         self.store.update(apply, intent_ids=(intent.id,))
+        if refreshed is None:
+            return None, "security observation changed during refresh; reconcile read-only"
         if decision.outcome != SecurityDecisionOutcome.ALLOW:
-            return False, "; ".join(decision.reasons) or "security trust boundary denied action"
-        return True, None
+            return None, "; ".join(decision.reasons) or "security trust boundary denied action"
+        return refreshed, None
 
     def _validate_execution_repository_scope(
         self,
@@ -549,6 +575,8 @@ class ActionIntentService:
         actor: AuthenticationActor,
         assignment_id: str | None = None,
     ) -> None:
+        if request.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            self._ready_assignment(execution_id, request, actor, assignment_id)
         if execution_id is None:
             return
 
@@ -710,6 +738,93 @@ class ActionIntentService:
             external_id=receipt.result.external_id, number=number,
         )
 
+    def _ready_assignment(self, execution_id, request, requester, assignment_id=None):
+        if not execution_id or self.execution_workers is None or self.execution_profiles is None:
+            raise ActionRequirementError("Readiness requires an explicitly declared live execution assignment")
+        assignment = execution_assignment(self.execution_workers, execution_id, requester, assignment_id)
+        profile, reference = self.execution_profiles.resolve(assignment.execution_profile_id,
+            organization_id=assignment.organization_id, workspace_id=assignment.workspace_id,
+            project_id=assignment.project_id)
+        now = time.time()
+        worker = self.execution_workers.store.worker(assignment.assigned_worker_id)
+        lease = assignment.lease
+        if ("repository.pull-request.ready" not in profile.control_plane_operations
+                or reference != assignment.execution_profile_definition
+                or assignment.status not in {"claimed", "running"}
+                or lease is None or lease.expires_at <= now
+                or lease.worker_id != assignment.assigned_worker_id or lease.fence != assignment.fence
+                or worker is None or worker.lifecycle not in {"active", "draining"}
+                or worker.organization_id != request.organization_id or worker.workspace_id != request.workspace_id
+                or assignment.organization_id != request.organization_id or assignment.workspace_id != request.workspace_id
+                or assignment.project_id != request.project_id or assignment.created_by != requester.identity_id
+                or assignment.deadline_at is not None and assignment.deadline_at <= now):
+            raise ActionRequirementError("Readiness declaration, current Definition or worker fence/lease is unavailable")
+        return assignment
+
+    async def _ready_execution_context(self, intent, actor):
+        requester = await asyncio.to_thread(self._requester_actor, intent)
+        origin = intent.readiness_origin
+        if origin is None:
+            raise ActionRequirementError("Readiness has no canonical originating assignment proof")
+        original = await asyncio.to_thread(self._ready_assignment, intent.execution_id, intent.request, requester, origin.assignment_id)
+        if (original.fence != origin.fence or original.assigned_worker_id != origin.worker_id
+                or original.execution_profile_definition != origin.execution_profile_definition):
+            raise ActionRequirementError("Readiness originating assignment proof changed")
+        original_binding, original_provider, _, _ = self.execution.resolve_contract(intent.binding_id, intent.request, actor=actor)
+        provider_pin = tuple(getattr(original_provider, field, None) for field in
+            ("provider_type", "provider_instance", "contract_version", "api_base", "web_base"))
+        resource_pins = tuple(self.execution.resources.get(resource, actor) for resource in intent.resource_ids)
+        authority_pin = (intent.authority_recheck or intent.authority_decision).definition_refs
+        pin = (original.id, original.fence, original.assigned_worker_id, original.execution_profile_definition)
+        def validate():
+            current = self._intent(intent.id, actor)
+            if (current.status != ActionIntentStatus.EXECUTING or current.attempt != intent.attempt
+                    or current.lease is None or current.lease.expires_at <= time.time()
+                    or intent.lease is None or current.lease.owner != intent.lease.owner):
+                raise ActionRequirementError("Readiness ActionIntent claim is no longer current")
+            requester = self._requester_actor(intent)
+            self.identity.actor_for_identity(actor.identity_id, scope=actor.tenant)
+            worker = self.execution_workers.store.worker(original.assigned_worker_id)
+            if worker is None or worker.service_identity_id != actor.identity_id:
+                raise ActionRequirementError("Readiness executing worker identity does not match the assignment")
+            binding, provider, definition, request = self.execution.resolve_contract(intent.binding_id, intent.request, actor=actor)
+            if (binding != original_binding or definition != intent.action_definition
+                    or readiness_binding_checksum(binding, provider) != origin.binding_checksum):
+                raise ActionRequirementError("Readiness provider binding or action Definition changed")
+            if (tuple(getattr(provider, field, None) for field in
+                    ("provider_type", "provider_instance", "contract_version", "api_base", "web_base")) != provider_pin
+                    or tuple(self.execution.resources.get(resource, actor) for resource in intent.resource_ids) != resource_pins):
+                raise ActionRequirementError("Readiness provider or canonical repository changed")
+            if provider.contract.locator_for_resource(self.execution.resources.get(request.resource_ids[0], actor)) != origin.repository:
+                raise ActionRequirementError("Readiness originating repository locator changed")
+            if request.credential_ref:
+                reference = self.execution.secret_broker.metadata(request.credential_ref, actor=actor, require_use=True)
+                if reference.status().value != "active":
+                    raise ActionRequirementError("Readiness credential reference is no longer active")
+            self._validate_execution_repository_scope(intent.execution_id, request, requester)
+            assignment = self._ready_assignment(intent.execution_id, request, requester, origin.assignment_id)
+            if (assignment.id, assignment.fence, assignment.assigned_worker_id, assignment.execution_profile_definition) != pin:
+                raise ActionRequirementError("Readiness originating assignment changed")
+            decision = self._canonical_authority_snapshot(definition=definition, request=request,
+                actor=requester, execution_id=intent.execution_id)
+            if decision.outcome != ActionDecisionOutcome.ALLOW or decision.definition_refs != authority_pin:
+                raise ActionRequirementError("Readiness current authority denied or Definition changed")
+            allowed, _ = self._recheck_security(intent, authority_decision=decision, actor=requester)
+            if not allowed:
+                raise ActionRequirementError("Readiness current security policy denied")
+            return binding, provider, definition, request
+        async def checkpoint():
+            binding, provider, definition, request = await asyncio.to_thread(validate)
+            if self.execution.procedure_admission is None:
+                raise ActionRequirementError("Readiness mandatory procedure admission is unavailable")
+            await self.execution.procedure_admission(binding, provider, definition, request, actor, "execute")
+            current = await asyncio.to_thread(self._intent, intent.id, actor)
+            if (self.procedure_execution is None and current.procedure_discoveries
+                    and current.procedure_discoveries[-1].selected):
+                raise ActionRequirementError("Readiness selected procedure requires the canonical procedure interpreter")
+            await asyncio.to_thread(validate)
+        return ReadyExecution(intent.binding_id, request_identity(intent.request), checkpoint)
+
     async def _execute_provider(self, intent: ActionIntent, *, actor: AuthenticationActor):
         proof = None
         if intent.request.parameters.get("origin_intent_id") is not None:
@@ -726,7 +841,10 @@ class ActionIntentService:
                 # never an uncertain external write requiring reconciliation.
                 raise ActionRequirementError("change request continuation proof unavailable before provider execution") from exc
         from codex_web.procedure_discovery import procedure_action_intent
-        with continuation_context(proof), procedure_action_intent(intent.id):
+        ready_context = None
+        if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            ready_context = await self._ready_execution_context(intent, actor)
+        with continuation_context(proof), procedure_action_intent(intent.id), readiness_execution(ready_context):
             return await self.execution.execute(intent.binding_id, intent.request, actor=actor)
 
     def _procedure_context(self, *, actor, request, definition, provider, policy_source, policy_allows, execution_id, assignment_id=None):
@@ -745,6 +863,13 @@ class ActionIntentService:
         def apply(state):
             for index, item in enumerate(state.intents):
                 if item.id == intent_id:
+                    # Readiness revalidates at every network boundary. Retain
+                    # changed evidence; identical decisions need only one record.
+                    if (item.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID
+                            and item.procedure_discoveries
+                            and item.procedure_discoveries[-1].model_dump(exclude={"evaluated_at"})
+                            == discovery.model_dump(exclude={"evaluated_at"})):
+                        break
                     if len(item.procedure_discoveries) >= 64:
                         raise ActionRequirementError("procedure_history_limit: create a new explicitly admitted intent")
                     state.intents[index] = item.model_copy(update={
@@ -777,8 +902,8 @@ class ActionIntentService:
             actor=requester, request=intent.request, definition=definition, provider=provider,
             policy_source=intent.policy_decision.source,
             policy_allows=intent.policy_decision.outcome != ActionDecisionOutcome.DENY, execution_id=intent.execution_id,
-            assignment_id=(intent.publication_recovery_scope.recovery.assignment_id
-                           if intent.publication_recovery_scope else None))
+            assignment_id=(intent.readiness_origin.assignment_id if intent.readiness_origin else
+                    intent.publication_recovery_scope.recovery.assignment_id if intent.publication_recovery_scope else None))
         if phase == "rollback":
             from dataclasses import replace
             context = replace(context, operation=intent.action_id + ".rollback", enforcement="canonical_rollback")
@@ -793,6 +918,7 @@ class ActionIntentService:
             try:
                 assignment = await asyncio.to_thread(execution_assignment, self.execution_workers,
                     intent.execution_id, requester,
+                    intent.readiness_origin.assignment_id if intent.readiness_origin else
                     intent.publication_recovery_scope.recovery.assignment_id if intent.publication_recovery_scope else None)
                 await asyncio.to_thread(self.execution_workers.record_procedure_discovery,
                     assignment.id, discovery, expected_fence=assignment.fence, actor=requester)
@@ -839,6 +965,9 @@ class ActionIntentService:
         ):
             raise ActionIntentConflictError("invalid separate admission idempotency key")
         request = payload.request
+        if (request.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID
+                and payload.verification_required is False):
+            raise ActionIntentConflictError("Readiness requires independent provider verification")
         recovery_admission = capture_scope(self.execution_workers, request, payload.execution_id, actor, assignment_id)
         if recovery_admission is not None:
             recovery_scope = recovery_admission[0]
@@ -1007,8 +1136,16 @@ class ActionIntentService:
             if denied
             else None
         )
+        readiness_origin = None
+        if request.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            origin = self._ready_assignment(payload.execution_id, request, actor, assignment_id)
+            readiness_origin = ReadinessExecutionOrigin(assignment_id=origin.id, fence=origin.fence,
+                worker_id=origin.assigned_worker_id, execution_profile_definition=origin.execution_profile_definition,
+                repository=provider.contract.locator_for_resource(self.execution.resources.get(request.resource_ids[0], actor)),
+                binding_checksum=readiness_binding_checksum(binding, provider))
         intent = ActionIntent(
             id=intent_id,
+            readiness_origin=readiness_origin,
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,
             project_id=request.project_id,
@@ -1514,6 +1651,7 @@ class ActionIntentService:
         evidence_evaluation: Any | None,
         verified: bool,
         findings: tuple[str, ...] = (),
+        guarded: dict | None = None,
     ) -> ActionIntentVerificationReceipt:
         receipt = ActionIntentVerificationReceipt(
             intent_id=intent.id,
@@ -1543,7 +1681,7 @@ class ActionIntentService:
                     break
             return state
 
-        self.store.update(apply, intent_ids=(intent.id,))
+        self.store.update(apply, intent_ids=(intent.id,), **(guarded or {}))
         return receipt
 
     def _set_status(
@@ -1554,6 +1692,7 @@ class ActionIntentService:
         error: str | None = None,
         failure: FailureRecord | None = None,
         clear_lease: bool = True,
+        guarded: dict | None = None,
     ) -> ActionIntent:
         now = time.time()
         completed = status in TERMINAL_ACTION_INTENT_STATUSES
@@ -1580,7 +1719,7 @@ class ActionIntentService:
                     break
             return state
 
-        updated = self.store.update(apply, intent_ids=(intent_id,))
+        updated = self.store.update(apply, intent_ids=(intent_id,), **(guarded or {}))
         result = next(item for item in updated.intents if item.id == intent_id)
         if self.status_notifier is not None:
             try:
@@ -1591,23 +1730,213 @@ class ActionIntentService:
                 pass
         return result
 
+    @staticmethod
+    def _check_ready_intent(current, expected):
+        # Only bookkeeping may differ. Security is the exact observation
+        # admitted by this invocation, including its decision identity/time.
+        refreshed = {"updated_at", "procedure_discoveries"}
+        if (current is None or current.status not in {ActionIntentStatus.EXECUTING,
+                ActionIntentStatus.UNCERTAIN, ActionIntentStatus.REQUIRES_RECONCILIATION}
+                or current.model_dump(exclude=refreshed) != expected.model_dump(exclude=refreshed)
+                or current.status == ActionIntentStatus.EXECUTING
+                and (current.lease is None or current.lease.expires_at <= time.time())):
+            raise ActionRequirementError("Readiness settlement intent changed; reconcile read-only")
+
+    def _ready_settlement_domains(self):
+        # These canonical documents own the mutable admission inputs used by
+        # verification/procedure checks. Their revisions are captured BEFORE
+        # those checks, then fenced with the actual successful write. In
+        # particular, another checkpoint outside the transaction cannot fence
+        # a binding disable, credential revoke or new mandatory procedure.
+        repositories = [self.execution.registry.store, self.execution.resources.store,
+                        self.identity.store, self.execution_profiles.registry.store]
+        if self.execution.secret_broker is not None:
+            repositories.append(self.execution.secret_broker.store)
+        if self.execution_profiles.agent_profiles is not None:
+            repositories.append(self.execution_profiles.agent_profiles.store)
+        if self.procedure_execution is not None:
+            repositories.append(self.procedure_execution.approvals.store)
+        if self.artifact_evidence is not None:
+            repositories.append(self.artifact_evidence.store)
+        if self.procedure_discovery is not None:
+            repositories.append(self.procedure_discovery.skills.definitions.store)
+        if any(repository.store is not self.store.store for repository in repositories):
+            raise ActionRequirementError("Readiness admission requires one canonical transaction store")
+        domains = {repository.namespace: (None,) for repository in repositories}
+        security = self.procedure_discovery.skills.security if self.procedure_discovery else None
+        if security is not None:
+            store = security.store
+            if store.state is not self.store.store:
+                raise ActionRequirementError("Readiness procedure security requires the canonical store")
+            names = (store.SCANS, store.OVERRIDES, store.BASELINES)
+            existing = self.store.store.record_collections_exist(names)
+            # Lock absent collections as documents without materializing them.
+            domains.update({name: () if existing[name] else (None,) for name in names})
+        return domains
+
+    def _ready_settlement_guard(self, intent, actor, admission_pins):
+        """Recheck origin and exact Definition pins under the shared writer lock.
+
+        The async admission includes policy/procedure evaluation. This final,
+        read-only guard closes the interval after its last await, and serializes
+        verification, Work Item and terminal writes with fence/Definition writes.
+        """
+        origin = intent.readiness_origin
+        if origin is None or self.execution_workers is None or self.execution_profiles is None:
+            raise ActionRequirementError("Readiness originating admission is unavailable")
+        registry = self.execution_profiles.registry
+        if (self.execution_workers.store.store is not self.store.store
+                or registry.store.store is not self.store.store
+                or self.authority is None or self.authority.registry.store.store is not self.store.store):
+            raise ActionRequirementError("Readiness settlement requires the shared canonical transaction store")
+        domains = self._ready_settlement_domains()
+        if not admission_pins or set(admission_pins) != set(domains):
+            raise ActionRequirementError("Readiness has no completed admission checkpoint")
+        def guard(documents):
+            if any(self.store.store.namespace_revision(name) != revision
+                   for name, revision in admission_pins.items()):
+                raise ActionRequirementError("Readiness admission changed at settlement; reconcile read-only")
+            raw = documents[self.store.records_namespace].get("intents:" + intent.id)
+            current = ActionIntent.model_validate(raw) if raw else None
+            self._check_ready_intent(current, intent)
+            requester = self._requester_actor(intent)
+            # Expiry can remove admission without changing a namespace revision.
+            # Re-enter read-only canonical checks under the same locks as the
+            # write, including current secret status and time-bounded authority.
+            self.identity.actor_for_identity(actor.identity_id, scope=actor.tenant)
+            # Membership refresh is credential-free; retain the authenticated
+            # worker's original service scopes for SecretBroker use checks.
+            worker_actor = actor
+            binding, provider, definition, request = self.execution.resolve_contract(
+                intent.binding_id, intent.request, actor=worker_actor)
+            if (definition != intent.action_definition
+                    or readiness_binding_checksum(binding, provider) != origin.binding_checksum
+                    or provider.contract.locator_for_resource(
+                        self.execution.resources.get(request.resource_ids[0], worker_actor)) != origin.repository):
+                raise ActionRequirementError("Readiness provider target changed at settlement")
+            if (current.security_decision.outcome != SecurityDecisionOutcome.ALLOW
+                    or current.security_policy != binding.security_policy):
+                raise ActionRequirementError("Readiness current security observation denied settlement")
+            if request.credential_ref and self.execution.secret_broker.metadata(
+                    request.credential_ref, actor=worker_actor, require_use=True).status().value != "active":
+                raise ActionRequirementError("Readiness credential expired at settlement")
+            authority = self._canonical_authority_snapshot(definition=definition,
+                request=request, actor=requester, execution_id=intent.execution_id)
+            if (authority.outcome != ActionDecisionOutcome.ALLOW
+                    or authority.definition_refs != (intent.authority_recheck or intent.authority_decision).definition_refs):
+                raise ActionRequirementError("Readiness authority expired or changed at settlement")
+            assignment = self._ready_assignment(intent.execution_id, intent.request, requester, origin.assignment_id)
+            worker = self.execution_workers.store.worker(origin.worker_id)
+            if (assignment.fence != origin.fence or assignment.assigned_worker_id != origin.worker_id
+                    or assignment.execution_profile_definition != origin.execution_profile_definition
+                    or worker is None or worker.service_identity_id != actor.identity_id):
+                raise ActionRequirementError("Readiness originating assignment changed at settlement")
+            context = DefinitionContext(organization_id=intent.organization_id,
+                workspace_id=intent.workspace_id, project_id=intent.project_id)
+            for pin in (origin.execution_profile_definition,
+                        *(intent.authority_recheck or intent.authority_decision).definition_refs,
+                        *(current.procedure_discoveries[-1].selected if current.procedure_discoveries else ())):
+                record = registry.resolve(definition_id=pin.definition_id, kind=pin.kind,
+                    context=context, now=time.time())
+                if reference_for(record) != pin:
+                    raise ActionRequirementError("Readiness pinned Definition changed at settlement")
+            if current.procedure_discoveries:
+                for pin in current.procedure_discoveries[-1].selected:
+                    self.procedure_discovery.skills.validate_reference(pin, actor=requester)
+        return {"guard_rows": {**domains, ASSIGNMENTS: (origin.assignment_id,), WORKERS: (origin.worker_id,),
+                               registry.store.namespace: (None,),
+                               self.store.records_namespace: ("intents:" + intent.id,)}, "guard": guard}
+
+    async def _ready_verification_context(self, intent, result, actor):
+        origin = intent.readiness_origin
+        parameters = CodeHostActionContract.pull_request_ready(intent.request)
+        if (origin is None or result.output.get("repository") != origin.repository
+                or result.provider_binding_id != intent.binding_id or result.action_id != intent.action_id
+                or result.idempotency_key != intent.idempotency_key
+                or any(result.output.get(key) != value for key, value in parameters.items())):
+            raise ActionRequirementError("Readiness verification has no exact originating target proof")
+        admitted = intent
+        def validate():
+            nonlocal admitted
+            current = self._intent(intent.id, actor)
+            self._check_ready_intent(current, admitted)
+            if current.security_decision.outcome != SecurityDecisionOutcome.ALLOW:
+                raise ActionRequirementError("Readiness current security observation denied")
+            requester = self._requester_actor(intent)
+            self.identity.actor_for_identity(actor.identity_id, scope=actor.tenant)
+            assignment = self._ready_assignment(intent.execution_id, intent.request, requester, origin.assignment_id)
+            worker = self.execution_workers.store.worker(origin.worker_id)
+            if (assignment.fence != origin.fence or assignment.assigned_worker_id != origin.worker_id
+                    or assignment.execution_profile_definition != origin.execution_profile_definition
+                    or worker is None or worker.service_identity_id != actor.identity_id):
+                raise ActionRequirementError("Readiness verification originating assignment changed")
+            binding, provider, definition, request = self.execution.resolve_contract(
+                intent.binding_id, intent.request, actor=actor)
+            if (definition != intent.action_definition
+                    or readiness_binding_checksum(binding, provider) != origin.binding_checksum
+                    or provider.contract.locator_for_resource(self.execution.resources.get(request.resource_ids[0], actor)) != origin.repository):
+                raise ActionRequirementError("Readiness verification binding or repository changed")
+            self._validate_execution_repository_scope(intent.execution_id, request, requester)
+            decision = self._canonical_authority_snapshot(
+                definition=definition, request=request, actor=requester, execution_id=intent.execution_id)
+            if (decision.outcome != ActionDecisionOutcome.ALLOW
+                    or decision.definition_refs != (intent.authority_recheck or intent.authority_decision).definition_refs):
+                raise ActionRequirementError("Readiness verification current authority denied or Definition changed")
+            refreshed, error = self._refresh_security(current, authority_decision=decision, actor=requester)
+            if refreshed is None:
+                raise ActionRequirementError(error or "Readiness verification current security policy denied")
+            admitted = refreshed
+            if request.credential_ref and self.execution.secret_broker.metadata(
+                    request.credential_ref, actor=actor, require_use=True).status().value != "active":
+                raise ActionRequirementError("Readiness verification credential is inactive")
+            return binding, provider, definition
+        admission_pins = {}
+        def revisions():
+            return {name: self.store.store.namespace_revision(name)
+                    for name in self._ready_settlement_domains()}
+        async def checkpoint():
+            before = await asyncio.to_thread(revisions)
+            binding, provider, definition = await asyncio.to_thread(validate)
+            if self.execution.procedure_admission is None:
+                raise ActionRequirementError("Readiness verification procedure admission is unavailable")
+            await self.execution.procedure_admission(binding, provider, definition, result, actor, "verify")
+            current = await asyncio.to_thread(self._intent, intent.id, actor)
+            if (self.procedure_execution is None and current.procedure_discoveries
+                    and current.procedure_discoveries[-1].selected):
+                raise ActionRequirementError("Readiness selected procedure requires the canonical procedure interpreter")
+            await asyncio.to_thread(validate)
+            if await asyncio.to_thread(revisions) != before:
+                raise ActionRequirementError("Readiness admission changed during checkpoint")
+            admission_pins.clear()
+            admission_pins.update(before)
+        def settlement_guard(current):
+            # Preserve the caller's receipt/status snapshot while pinning the
+            # exact security observation produced by this admission checkpoint.
+            expected = current.model_copy(update={"security_policy": admitted.security_policy,
+                "security_decision": admitted.security_decision})
+            return self._ready_settlement_guard(expected, actor, dict(admission_pins))
+        return ReadyExecution(intent.binding_id, request_identity(intent.request), checkpoint,
+            settlement_guard, lambda: admitted)
+
     async def _verify_completion(
         self,
         intent: ActionIntent,
         result: ActionResult,
         *,
         actor: AuthenticationActor,
-    ) -> bool:
+    ) -> bool | tuple[ActionIntentVerificationReceipt, ActionIntent]:
         provider_verification = None
         findings: list[str] = []
         provider_ok = True
-        if intent.verification_required:
+        # Readiness success is never caller-optional, including legacy or
+        # previously persisted records with verification_required=False.
+        if intent.verification_required or intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
             try:
-                provider_verification = await self.execution.verify(
-                    intent.binding_id,
-                    result,
-                    actor=actor,
-                )
+                ready_context = (await self._ready_verification_context(intent, result, actor)
+                                 if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID else None)
+                from codex_web.procedure_discovery import procedure_action_intent
+                with procedure_action_intent(intent.id), readiness_execution(ready_context):
+                    provider_verification = await self.execution.verify(intent.binding_id, result, actor=actor)
                 provider_ok = bool(provider_verification.verified)
                 findings.extend(provider_verification.findings)
             except Exception as exc:
@@ -1635,14 +1964,78 @@ class ActionIntentService:
                     )
 
         verified = provider_ok and evidence_ok
-        await asyncio.to_thread(self._append_verification,
-            intent,
-            provider_verification=provider_verification,
-            evidence_evaluation=evidence_evaluation,
-            verified=verified,
-            findings=tuple(findings),
-        )
-        return verified
+        guarded = None
+        if verified and intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            try:
+                # Evidence may await after the last provider observation. Re-enter
+                # canonical admission, then guard the actual successful write.
+                with procedure_action_intent(intent.id):
+                    await ready_context.checkpoint()
+                guarded = ready_context.settlement_guard(intent)
+            except Exception as exc:
+                verified = False
+                findings.append(f"readiness settlement denied: {type(exc).__name__}: {exc}")
+        try:
+            receipt = await asyncio.to_thread(self._append_verification, intent,
+                provider_verification=provider_verification, evidence_evaluation=evidence_evaluation,
+                verified=verified, findings=tuple(findings), guarded=guarded)
+        except Exception as exc:
+            if not guarded:
+                raise
+            verified = False
+            findings.append(f"readiness settlement guard denied: {type(exc).__name__}: {exc}")
+            await asyncio.to_thread(self._append_verification, intent,
+                provider_verification=provider_verification, evidence_evaluation=evidence_evaluation,
+                verified=False, findings=tuple(findings))
+        return ((receipt, ready_context.admitted_intent())
+                if verified and intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID else verified)
+
+    async def _finish_ready(self, intent, result, actor, verification):
+        verification, admitted = verification
+        intent = intent.model_copy(update={"security_policy": admitted.security_policy,
+            "security_decision": admitted.security_decision})
+        try:
+            # A verification/receipt write and every later await can race origin
+            # revocation. Retain the real observation; never repeat the POST.
+            current = await asyncio.to_thread(self._intent, intent.id, actor)
+            # Accept only the exact verification produced by this invocation.
+            self._check_ready_intent(current, intent.model_copy(update={
+                "last_verification_id": verification.id}))
+            context = await self._ready_verification_context(current, result, actor)
+            from codex_web.procedure_discovery import procedure_action_intent
+            with procedure_action_intent(intent.id):
+                await context.checkpoint()
+            if current.work_item_success is not None and current.work_item_ref is not None:
+                host = self.work_item_host
+                if host is None or not hasattr(host, "_advance_verified_action_intent"):
+                    raise ActionRequirementError("Guarded canonical Work Item advancement is unavailable")
+                await asyncio.to_thread(host._advance_verified_action_intent, current,
+                    **context.settlement_guard(current))
+            return await asyncio.to_thread(self._set_status, intent.id, ActionIntentStatus.SUCCEEDED,
+                guarded=context.settlement_guard(current))
+        except Exception as exc:
+            return await asyncio.to_thread(self._ready_reconciliation, intent.id,
+                f"Readiness settlement denied; reconcile read-only: {type(exc).__name__}: {exc}")
+
+    def _ready_reconciliation(self, intent_id, error):
+        # A concurrent terminal transition cannot be replaced by this older
+        # verifier. Keep provider observations without inventing a new outcome.
+        def apply(state):
+            for index, item in enumerate(state.intents):
+                if item.id == intent_id and item.status in {ActionIntentStatus.EXECUTING,
+                        ActionIntentStatus.UNCERTAIN, ActionIntentStatus.REQUIRES_RECONCILIATION}:
+                    state.intents[index] = item.model_copy(update={
+                        "status": ActionIntentStatus.REQUIRES_RECONCILIATION,
+                        "lease": None, "last_error": error, "updated_at": time.time()})
+            return state
+        state = self.store.update(apply, intent_ids=(intent_id,))
+        result = next(item for item in state.intents if item.id == intent_id)
+        if self.status_notifier is not None:
+            try:
+                self.status_notifier(result)
+            except Exception:
+                pass  # Same observational projection boundary as _set_status.
+        return result
 
     def _advance_work_item(self, intent: ActionIntent) -> None:
         if (
@@ -1685,6 +2078,7 @@ class ActionIntentService:
             await asyncio.to_thread(
                 self._validate_execution_repository_scope,
                 pending.execution_id, current_request, requester,
+                pending.readiness_origin.assignment_id if pending.readiness_origin else
                 pending.publication_recovery_scope.recovery.assignment_id if pending.publication_recovery_scope else None,
             )
             authority_recheck = await asyncio.to_thread(self._canonical_authority_snapshot,
@@ -1943,6 +2337,9 @@ class ActionIntentService:
 
         verified = await self._verify_completion(current, result, actor=actor)
         if not verified:
+            if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+                return await asyncio.to_thread(self._ready_reconciliation, intent.id,
+                    "required readiness provider/evidence/current-origin verification is not satisfied; reconcile read-only")
             return await asyncio.to_thread(self._set_status,
                 intent.id,
                 ActionIntentStatus.REQUIRES_RECONCILIATION,
@@ -1952,6 +2349,8 @@ class ActionIntentService:
                     FailureReason.VERIFICATION_FAILED,
                 ),
             )
+        if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            return await self._finish_ready(current, result, actor, verified)
         current = await asyncio.to_thread(self._intent, intent.id, actor)
         try:
             await asyncio.to_thread(self._advance_work_item, current)
@@ -2230,6 +2629,8 @@ class ActionIntentService:
                 actor=actor,
             )
             if verified:
+                if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+                    return await self._finish_ready(intent, latest_result, actor, verified)
                 current = await asyncio.to_thread(self._intent, intent.id, actor)
                 try:
                     await asyncio.to_thread(self._advance_work_item, current)
@@ -2240,11 +2641,20 @@ class ActionIntentService:
                         error=f"verification succeeded but canonical state advance failed: {type(exc).__name__}: {exc}",
                     )
                 return await asyncio.to_thread(self._set_status, intent.id, ActionIntentStatus.SUCCEEDED)
+            if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+                return await asyncio.to_thread(self._ready_reconciliation, intent.id,
+                    "readiness reconciliation verification is not satisfied")
             return await asyncio.to_thread(self._set_status,
                 intent.id,
                 ActionIntentStatus.REQUIRES_RECONCILIATION,
                 error="reconciliation verification is not satisfied",
             )
+
+        if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+            if payload.retry_if_idempotent:
+                raise ActionIntentConflictError("Readiness may only reconcile by read-only verification; never replay")
+            if latest_result is None and intent.attempt > 0:
+                return await self._reconcile_pull_request_ready(intent, actor=actor)
 
         # Merge actions are deliberately single-attempt mutations.  When a
         # provider response is lost after the possible write, reconstruct only
@@ -2307,6 +2717,29 @@ class ActionIntentService:
                 "no durable provider result is available; manual/provider reconciliation required"
             ),
         )
+
+    async def _reconcile_pull_request_ready(self, intent, *, actor):
+        # Reconstruct only the authorized target. No execute call and no new mutation.
+        parameters = CodeHostActionContract.pull_request_ready(intent.request)
+        preparation = await self.execution.prepare(intent.binding_id, intent.request, actor=actor)
+        if (preparation.provider_plan.get("operation") != "pull-request-ready" or intent.readiness_origin is None
+                or preparation.provider_plan.get("repository") != intent.readiness_origin.repository):
+            raise ActionIntentConflictError("Readiness reconciliation provider plan changed")
+        now = time.time()
+        result = ActionResult(provider_binding_id=intent.binding_id,
+            action_id=intent.action_id, status="succeeded", started_at=now, completed_at=now,
+            idempotency_key=intent.idempotency_key, external_id=str(parameters["pull_request_number"]),
+            output={"resource_id": intent.resource_ids[0], **parameters,
+                    "repository": preparation.provider_plan["repository"],
+                    "read_only_reconciliation": True})
+        verified = await self._verify_completion(intent, result, actor=actor)
+        if not verified:
+            return await asyncio.to_thread(self._ready_reconciliation, intent.id,
+                "Provider/evidence/current origin does not confirm exact PR repository/head/base and non-draft state")
+        receipt = await asyncio.to_thread(self._append_receipt, intent, result=result, outcome="completed",
+            details={"operation": "readiness-state-reconciliation", "provider_mutation_replayed": False})
+        return await self._finish_ready(intent.model_copy(update={"last_receipt_id": receipt.id}),
+            result, actor, verified)
 
     async def _reconcile_pull_request_merge(
         self,

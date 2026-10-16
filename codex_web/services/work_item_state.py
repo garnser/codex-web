@@ -702,6 +702,7 @@ class WorkItemStateMachine:
         event_type: str = "progress_updated",
         note: str | None = None,
         expected_handoff_requested_at: float | None = None,
+        deferred_events: list | None = None,
     ) -> WorkItemState:
         # Work on a detached candidate: a denied stale update must not mutate
         # a caller's canonical object, append success audit, or reach writeback.
@@ -893,7 +894,7 @@ class WorkItemStateMachine:
         meaningful_change = previous_evidence != work_item_progress_evidence(state)
         if meaningful_change:
             state.last_meaningful_update_at = now
-        self._append_work_item_event(
+        (self._append_work_item_event if deferred_events is None else deferred_events.append)(
             self._work_item_event(
                 state.ref,
                 event_type,
@@ -913,6 +914,30 @@ class WorkItemStateMachine:
             )
         )
         return state
+
+    def _advance_verified_action_intent(self, intent, *, guard_rows, guard):
+        """Use the canonical keyed Work Item mutation with originating guards.
+
+        Events are emitted only after the guarded write commits. No provider
+        work or independent state save may occur inside the transaction.
+        """
+        if self.dependencies.update_state is None:
+            raise ValueError("Guarded canonical Work Item updates are unavailable")
+        events = []
+        update = intent.work_item_success
+        def advance(state):
+            if state is None:
+                raise ValueError("Canonical Work Item is unavailable")
+            state = self._touch_work_item_progress(state, actor=intent.requested_by,
+                current_stage=update.current_stage, next_action=update.next_action,
+                next_owner=update.next_owner, next_owner_present=update.next_owner is not None,
+                event_type="action_intent_verified", note=update.note, deferred_events=events)
+            from codex_web.services.task_source_projection import ensure_projection
+            ensure_projection(state)
+            return state
+        self.dependencies.update_state(intent.work_item_ref, advance, guard_rows=guard_rows, guard=guard)
+        for event in events:
+            self._append_work_item_event(event)
 
     def _work_item_state(self, ref: str) -> WorkItemState:
         if self.dependencies.get_state is not None:
@@ -1319,6 +1344,7 @@ def install_work_item_state_machine(
     host._touch_work_item_progress = machine._touch_work_item_progress
     host._work_item_state = machine._work_item_state
     host._save_work_item_state = machine._save_work_item_state
+    host._advance_verified_action_intent = machine._advance_verified_action_intent
     host._structured_handoff = machine._structured_handoff
     host._structured_ack = machine._structured_ack
     host._structured_progress = machine._structured_progress

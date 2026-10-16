@@ -65,3 +65,48 @@ test('old merge records and omitted pins display missing facts without invented 
   await expect(row).toContainText('Requested merge head: not recorded');
   await expect(row).toContainText('An omitted pin has no mutation-time head guarantee');
 });
+
+for (const status of ['failed', 'uncertain', 'requires_reconciliation', 'succeeded']) {
+  test(`readiness inspector preserves ${status}, exact target and canonical verification`, async ({ page }) => {
+    const verified = status === 'succeeded';
+    const calls = [];
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route('**/ready-intent-fixture', route => route.fulfill({ contentType: 'text/html', body: fixture }));
+    await page.route('**/api/**', route => {
+      calls.push(route.request().method());
+      const path = new URL(route.request().url()).pathname;
+      if (path === '/api/identity/me') return route.fulfill({ json: { identity_id: 'operator', assurance: 'mfa' } });
+      if (path === '/api/action-intents') return route.fulfill({ json: { items: [{
+        id:'ready-1', action_id:'code-host.pull-request.ready', provider_type:'github', provider_instance:'github.com',
+        status, project_id:'project-a', resource_ids:['resource-repo'], requested_by:'operator',
+        readiness_origin:{assignment_id:'assignment-ready',fence:3,worker_id:'worker-ready',repository:'acme/app',
+          execution_profile_definition:{definition_id:'execution.profiles.ready',revision:2}},
+        request:{ parameters:{ pull_request_number:1478, expected_head_sha:A, expected_base_sha:B, expected_base_ref:'main', secret:'never-render-this' } },
+        last_error:status==='failed' ? 'Readiness is not explicitly declared by the current pinned execution profile' : null,
+        retry_policy:{ max_attempts:1 }, attempt:1,
+      }] } });
+      if (path === '/api/action-intents/ready-1/history') return route.fulfill({ json: {
+        receipts:[{outcome:verified?'completed':status==='failed'?'failed':'unknown',attempt:1,
+          result:verified?{action_id:'code-host.pull-request.ready',output:{expected_head_sha:A,draft:false,
+            read_only_reconciliation:true,secret:'never-render-this'}}:null}],
+        verifications:[{verified,provider_verification:{verified,findings:verified?[]:['Exact readiness not confirmed'],
+          evidence:[{evidence_type:'code-host-pull-request-ready',metadata:{expected_head_sha:A,
+            observed_head_sha:verified?A:C,draft:!verified}}]}}],
+      } });
+      return route.fulfill({status:404,json:{detail:'missing fixture route'}});
+    });
+    await page.goto('http://127.0.0.1:18766/ready-intent-fixture');
+    const row=page.locator('[data-action-intent-row="ready-1"]');
+    await row.locator('summary').focus(); await page.keyboard.press('Enter');
+    await expect(row).toContainText(`Ready for review · PR 1478 · expected head ${A} · expected base ${B}`);
+    await expect(row).toContainText('Repository acme/app · base ref main');
+    await expect(row).toContainText('assignment-ready · fence 3 · worker worker-ready · Definition execution.profiles.ready@2');
+    await expect(row).toContainText('Requires explicit current execution-profile declaration');
+    if (status==='failed') await expect(row).toContainText('not explicitly declared');
+    await row.getByRole('button',{name:'Load side-effect timeline'}).click();
+    await expect(row).toContainText(`Readiness verification · expected head ${A} · observed head ${verified?A:C}`);
+    await expect(row).toContainText('This does not establish merge, CI qualification or installed acceptance');
+    await expect(page.locator('body')).not.toContainText('never-render-this');
+    expect(calls.every(method=>method==='GET')).toBeTruthy();
+  });
+}

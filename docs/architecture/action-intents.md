@@ -140,6 +140,42 @@ That transition is never applied at request, claim, or provider-response time. I
 
 The verification receipt is durable before the Work Item update. If the canonical Work Item update fails, the intent remains `requires_reconciliation` instead of falsely reporting success.
 
+Ready-for-review settlement re-enters the canonical originating admission after
+all Evidence evaluation awaits. A successful verification receipt, canonical
+Work Item update and terminal success each recheck the exact current intent,
+originating assignment/worker fence and unexpired lease, and effective pinned
+Profile/Role Definitions under the shared StateStore writer transaction. The
+Definition check bypasses the resolution cache. The Work Item uses its existing
+keyed update and transition engine, deferring progress events until commit.
+Unavailable shared transaction support fails closed. Later revocation does not
+erase a provider observation or a historically admitted verification; it blocks
+the next guarded advancement. Denial retains read-only reconciliation without
+another provider POST or inverse action. A concurrent terminal intent cannot be
+overwritten by an older denied verifier.
+
+The final readiness checks also fence binding, credential metadata, identity,
+resource, Definition, Agent Profile, procedure approval and evidence admission
+documents. Revisions are captured before the last admission checkpoint and must
+remain unchanged both through the checkpoint and under the successful write's
+namespace locks. Procedure scan, override and baseline collections share that
+fence when security enforcement is configured; absent collections are locked
+without creating them. Shared-namespace changes conservatively require read-only
+reconciliation, even when a change ultimately concerns another object.
+
+Security refresh evaluates a specific observed intent security snapshot. Its
+conditional write compares that exact policy and decision under the intent row
+lock; an intervening observation wins, including a newer denial. A successful
+checkpoint carries its exact admitted security snapshot through verification,
+Work Item and terminal guards. Security fields are not bookkeeping exclusions.
+Conflicts retain the newer observation and require read-only reconciliation.
+
+Time-based expiry needs no persisted revision change. Inside each settlement
+transaction the engine therefore also repeats read-only credential-status,
+current requester authority, selected procedure validity and originating lease
+checks. Credential-free identity refresh does not mint service scopes: secret
+use retains the originally authenticated worker's scopes. These checks emit no
+new provider mutation or procedure execution from inside the transaction.
+
 This means a crash cannot leave codex-web claiming the external side effect succeeded solely because an outbound request was sent.
 
 ## Inbox and provider callbacks
@@ -352,7 +388,8 @@ blockers in the existing intent; assignment-backed actions retain fenced evidenc
 A direct provider call cannot substitute for this admission. A procedure match
 never grants authority or creates an extra confirmation requirement.
 
-The combined ActionIntent state contract is `1.5`. Migration from `1.3`/`1.4` preserves
+The procedure/recovery ActionIntent state contract introduced `1.5` (extended
+to current `1.6` below). Migration from `1.3`/`1.4` preserves
 procedure discoveries and recovery snapshots unchanged; older records receive
 empty optional histories. Readers that cannot understand both admission records
 must upgrade before consuming state written by this version.
@@ -361,3 +398,52 @@ Procedure-discovery evidence appended by these paths also uses the existing
 point assignment transaction, with live fence/lease checks. It must not scan or
 rewrite unrelated global worker/assignment records before provider execution.
 Procedure execution adds a single-attempt originating-receipt rollback checkpoint and forbids forward retry after any rollback attempt. ActionIntent document 1.5/keyed metadata 1.2 require compatible writers. See [procedure execution](procedure-execution.md) for crash, reconciliation and verification semantics.
+
+### Readiness origin and read-only reconciliation
+
+ActionIntent state **1.6** adds optional typed `readiness_origin` with exact
+assignment ID, fence, worker ID, canonical repository locator, non-secret
+binding/provider checksum and execution-profile Definition reference.
+Only the engine derives this snapshot when creating a readiness intent;
+`ActionIntentCreate` accepts no caller-provided origin. The executor compares it
+to current canonical state throughout readiness admission. The assignment broker
+requires this exact origin for readiness receipt inspection and reconciliation.
+Existing actions retain their existing control paths.
+
+Migration `1.5 → 1.6` preserves all prior intents, receipts, procedure and recovery
+history. Legacy origins remain absent; migration never invents ownership or
+authority. A missing readiness origin fails closed. Older readers/writers must
+upgrade before consuming state written as 1.6; downgrade/rollback to an engine
+that only understands 1.5 is not promised after the state transition. Keyed
+storage metadata becomes `1.3`; ActionProvider wire contract remains unchanged.
+
+The new action has one mutation attempt. When a response is lost, reconciliation
+reconstructs only the normalized target from the retained canonical request and
+provider's side-effect-free preparation, then invokes independent verification.
+It never invokes execute or fabricates a lost provider receipt. A completed
+read-only reconciliation receipt is appended alongside the retained original
+unknown receipt. If the target is still draft, changed, closed or uninspectable,
+state remains reconciliation-required. A verified current non-draft target is
+not proof of historical protection continuity or a merge/approval result.
+
+Readiness repeats current procedure discovery at network boundaries, including
+independent verification. Consecutive identical decisions (excluding evaluation
+time) share one retained history record; changed decisions and denials remain
+separate. This bounds response history without caching admission or skipping
+current checks.
+
+Readiness independent verification is mandatory: public creation explicitly
+rejects `verification_required=false`. Execution and reconciliation enforce the
+same invariant even for already persisted optional-verification records. Every
+readiness success requires current originating admission and an actual verified
+provider observation; a locally reconstructed target is never readiness proof.
+
+Keyed collection metadata **1.3** is the minimum-writer barrier for readiness
+origin records. First access atomically upgrades 1.0/1.1/1.2 metadata; record and
+history contents and indexes remain unchanged. Earlier writers reject 1.3 before
+point reads or writes. Document 1.6 alone is insufficient because point inserts
+can bypass document decoding. Drain and stop every older writer before upgrading;
+no mixed-writer window or automatic metadata downgrade is supported. Retain a
+consistent pre-upgrade snapshot for a separately qualified restore. Reverting
+only source or metadata after 1.3 writes is not rollback. Deployment/installation
+and any live migration require independent upgrade qualification and approval.

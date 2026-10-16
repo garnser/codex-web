@@ -195,7 +195,7 @@ class PublicationRecoveryHandoffTests(unittest.IsolatedAsyncioTestCase):
         raw = ActionIntentState(intents=[intent]).model_dump(mode="json")
         raw["schema_version"] = "1.3"
         migrated = self.action_store._decode(raw)
-        self.assertEqual(migrated.schema_version, "1.5")
+        self.assertEqual(migrated.schema_version, "1.6")
         self.assertEqual(migrated.intents[0], intent)
 
     async def test_success_retains_proofs_subject_expiry_and_receipts(self):
