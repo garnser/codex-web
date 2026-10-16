@@ -1,5 +1,7 @@
 """Actual HTTP identity/router/registry/ActionIntent/Recovery composition; synthetic only."""
 import asyncio
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -160,12 +162,69 @@ class RecoveryOperatorApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.artifacts.store.load().evidence, evidence.evidence)
 
     async def test_cancel_before_domain_commit_preserves_original_state(self):
+        from codex_web.action_intents import ActionIntentStatus
+        from codex_web.services.action_providers import ActionResolutionError
+        from codex_web.services import recovery_mutation_admission as admission
         async with self.client() as client:
             before = self.recovery.store.load()
-            with patch.object(self.operator.provider.reconcile, 'reconcile', side_effect=asyncio.CancelledError):
-                with self.assertRaises(asyncio.CancelledError):
-                    await client.post(self.url(), json=self.body())
+            evidence = self.artifacts.store.load().evidence
+            entered, release, exited = (threading.Event() for _ in range(3))
+            self.addCleanup(release.set)
+            original_guard = admission.mutation_guard
+            def blocked_guard(*args, **kwargs):
+                entered.set()
+                try:
+                    if not release.wait(5):
+                        raise AssertionError('precommit admission gate not released')
+                    return original_guard(*args, **kwargs)
+                finally:
+                    exited.set()
+            with patch.object(admission, 'mutation_guard', side_effect=blocked_guard), \
+                 patch.object(self.operator.provider.reconcile, 'reconcile',
+                    wraps=self.operator.provider.reconcile.reconcile) as engine:
+                work = asyncio.create_task(client.post(self.url(), json=self.body()))
+                stopping = None
+                try:
+                    self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+                    owned = self.recovery._scheduled_executor._futures
+                    self.assertEqual(len(owned), 1)
+                    key, future = next(iter(owned.items()))
+                    intent_id = key.removeprefix('reconcile:')
+                    self.assertEqual(self.service.get(intent_id, self.actor).status, ActionIntentStatus.EXECUTING)
+                    # Cancel the actual HTTP caller, not a synthetic asyncio
+                    # exception in a synchronous worker. Cancellation alone is
+                    # NOT an abort guarantee: commit a real current denial so
+                    # that the joined worker must refuse before its domain CAS.
+                    work.cancel()
+                    await asyncio.sleep(0)
+                    self.assertFalse(future.done())
+                    await asyncio.to_thread(self.registry.set_enabled,
+                        self.recovery_binding.id, False, actor=self.actor)
+                    stopping = asyncio.create_task(self.recovery.stop())
+                    await asyncio.sleep(0)
+                    self.assertFalse(stopping.done())
+                    self.assertEqual(self.recovery._scheduled_executor.status()['inflight_work'], 1)
+                finally:
+                    release.set()
+                    replies = await asyncio.gather(work, return_exceptions=True)
+                    if stopping is not None:
+                        await stopping
+                self.assertIsInstance(replies[0], asyncio.CancelledError)
+                self.assertTrue(exited.is_set())
+                self.assertTrue(future.done())
+                self.assertIsInstance(future.exception(), ActionResolutionError)
+                self.assertEqual(str(future.exception()), 'action provider binding is disabled')
+                self.assertEqual(engine.call_count, 0)
+            self.assertEqual(self.recovery._scheduled_executor.status()['waiting_or_running'], 0)
             self.assertEqual(self.recovery.store.load(), before)
+            self.assertEqual(self.artifacts.store.load().evidence, evidence)
+            # Caller cancellation does not fabricate a completed intent. Its
+            # ordinary expired lease becomes UNKNOWN, never an automatic retry.
+            self.assertEqual(self.service.get(intent_id, self.actor).status, ActionIntentStatus.EXECUTING)
+            recovered = self.service.recover_stale_claims(now=time.time() + 500,
+                organization_id=self.actor.organization_id, workspace_id=self.actor.workspace_id)
+            self.assertIn(intent_id, recovered)
+            self.assertEqual(self.service.get(intent_id, self.actor).status, ActionIntentStatus.UNCERTAIN)
 
     async def test_cookie_csrf_and_extra_authority_fields_are_not_accepted(self):
         async with self.client() as client:
