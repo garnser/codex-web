@@ -156,6 +156,9 @@ class AgentSessionTraceTests(unittest.TestCase):
         )
         usage = _Dump(
             id="usage-a",
+            assignment_id="assignment-a",
+            execution_id="exec-a",
+            execution_workspace_id="execws-a",
             provider_id="anthropic",
             runtime_id="claude-code",
             provider_native_turn_id="turn-a",
@@ -242,6 +245,29 @@ class AgentSessionTraceTests(unittest.TestCase):
         self.assertNotIn("super-secret-lease-token", serialized)
         self.assertNotIn("secret-1", serialized)
         self.assertNotIn("provider transcript", serialized)
+
+    def test_runtime_events_keep_recorded_custody_after_session_rollover(self):
+        usage = self.telemetry.list(self.actor)[0]
+        before = usage.model_dump()
+        self.session.assignment_id = "assignment-new"
+        self.session.execution_id = "exec-new"
+        self.session.execution_workspace_id = "execws-new"
+
+        trace = self.service.trace("agent-session-1", actor=self.actor)
+
+        self.assertEqual(trace["agent_session"]["assignment_id"], "assignment-new")
+        for key in ("assignment_id", "execution_id", "execution_workspace_id"):
+            self.assertEqual(trace["runtime_events"][0][key], before[key])
+        self.assertEqual(usage.model_dump(), before)
+
+    def test_runtime_events_do_not_infer_missing_custody_from_current_session(self):
+        usage = self.telemetry.list(self.actor)[0]
+        usage.assignment_id = usage.execution_id = usage.execution_workspace_id = None
+
+        trace = self.service.trace("agent-session-1", actor=self.actor)
+
+        for key in ("assignment_id", "execution_id", "execution_workspace_id"):
+            self.assertIsNone(trace["runtime_events"][0][key])
 
     def test_cross_tenant_records_are_not_joined(self):
         foreign = _Dump(

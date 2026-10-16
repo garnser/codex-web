@@ -85,6 +85,13 @@ must distinguish current custody from immutable prior execution evidence and
 expose stale-join denials. That UI and installed end-to-end qualification remain
 part of the issue's acceptance; source tests alone cannot prove them.
 
+The read-only Session trace projects each RuntimeUsage record's own assignment,
+execution and execution-workspace identifiers, including null attribution. The
+existing trace UI compares the complete recorded tuple with current session
+custody and displays each event separately. Missing identifiers remain unknown;
+they are never inferred from current custody. This additive API projection does
+not change persisted records, receipts or storage compatibility.
+
 Custody fault coverage uses the same service contract on SQLite and the isolated
 PostgreSQL CI backend. Independent connections compete from the same captured
 Session to prove a single CAS winner; a database-triggered event-write rejection

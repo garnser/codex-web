@@ -284,6 +284,9 @@ class AgentSessionTraceService:
             "runtime_events": [
                 {
                     "id": item.id,
+                    "assignment_id": item.assignment_id,
+                    "execution_id": item.execution_id,
+                    "execution_workspace_id": item.execution_workspace_id,
                     "provider_id": item.provider_id,
                     "runtime_id": item.runtime_id,
                     "provider_native_turn_id": item.provider_native_turn_id,

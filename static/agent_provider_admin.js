@@ -176,11 +176,25 @@
       traceSummaryLine('Assignment', assignment ? `${assignment.id} · ${assignment.status} · fence ${assignment.fence}` : 'none'),
       traceSummaryLine('Worker', worker ? `${worker.id} · ${worker.lifecycle} · ${worker.version}` : 'none'),
       traceSummaryLine('Workspace', workspace ? `${workspace.id} · ${workspace.status} · ${workspace.branch_name || workspace.path || 'no path'}` : 'none'),
-      traceSummaryLine('Runtime events', runtimeEvents.length ? runtimeEvents.map((item) => `${item.provider_native_turn_id || item.id}:${item.terminal_outcome}/${item.telemetry_completeness}`).join(' · ') : 'none'),
+      traceSummaryLine('Runtime events', runtimeEvents.length ? String(runtimeEvents.length) : 'none'),
       traceSummaryLine('ActionIntents', intents.length ? intents.map((item) => `${item.id}:${item.status}`).join(' · ') : 'none'),
       traceSummaryLine('Evidence', evidence.length ? evidence.map((item) => `${item.id}:${item.result}`).join(' · ') : 'none'),
       traceSummaryLine('Verification', verifications.length ? verifications.map((item) => `${item.id}:${item.result}`).join(' · ') : 'none'),
     );
+
+    for (const event of runtimeEvents) {
+      const keys = ['assignment_id', 'execution_id', 'execution_workspace_id'];
+      const complete = keys.every((key) => Boolean(event[key]));
+      const currentKnown = keys.every((key) => Boolean(trace.agent_session?.[key]));
+      const current = complete && keys.every((key) => event[key] === trace.agent_session?.[key]);
+      const custody = !complete ? 'Custody attribution unavailable'
+        : !currentKnown ? 'Recorded custody; current custody unavailable'
+          : current ? 'Current custody' : 'Recorded under another assignment';
+      const row = textNode('div', 'agent-provider-note agent-runtime-event',
+        `${event.provider_native_turn_id || event.id}:${event.terminal_outcome}/${event.telemetry_completeness} · ${custody} · assignment: ${event.assignment_id || 'unknown'} · execution: ${event.execution_id || 'unknown'} · workspace: ${event.execution_workspace_id || 'unknown'}`);
+      row.dataset.runtimeEventId = event.id;
+      host.appendChild(row);
+    }
 
     const links = document.createElement('div');
     links.className = 'agent-trace-links';
