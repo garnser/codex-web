@@ -23,9 +23,11 @@
       .agent-provider-layout{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:12px;margin-top:10px}
       .agent-provider-section{min-width:0;display:grid;gap:8px}
       .agent-provider-section>h3{margin:0;color:var(--muted,#9aa4b5);font-size:11px;text-transform:uppercase}
-      .agent-provider-list,.agent-session-list{display:grid;gap:7px;max-height:360px;overflow:auto}
-      .agent-provider-item,.agent-session-item{border:1px solid var(--border,var(--line,#313744));border-radius:8px;padding:9px;background:rgba(127,127,127,.035);display:grid;gap:6px}
+      .agent-provider-list,.agent-session-list{display:grid;grid-template-columns:minmax(0,1fr);gap:7px;max-height:360px;overflow:auto}
+      .agent-provider-item,.agent-session-item{min-width:0;grid-template-columns:minmax(0,1fr);border:1px solid var(--border,var(--line,#313744));border-radius:8px;padding:9px;background:rgba(127,127,127,.035);display:grid;gap:6px}
       .agent-provider-head,.agent-session-head{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+      .agent-provider-head>div,.agent-session-head>div{min-width:0}
+      .agent-health,.agent-session-title>.cw-status-badge{flex-shrink:0;white-space:nowrap}
       .agent-provider-title,.agent-session-title{font-size:12px;font-weight:800;overflow-wrap:anywhere}
       .agent-provider-meta,.agent-session-meta,.agent-provider-note{font-size:10px;color:var(--muted,#9aa4b5);overflow-wrap:anywhere}
       .agent-capabilities{display:flex;gap:4px;flex-wrap:wrap}
