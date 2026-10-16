@@ -26,6 +26,24 @@ back connection. Pool size one is supported without increasing acquisition or
 operational limits. This changes no persisted schema, namespace-lock ordering,
 domain authority or operator surface.
 
+PostgreSQL `documents()` exports use a transaction-local named server cursor
+and batches of at most 64 rows. A single SELECT retains one consistent query
+snapshot across FETCH operations; callbacks reuse their owning transaction and
+pool lease, including visibility of their uncommitted changes. The exporter
+never commits that transaction or publishes a partial mapping on interruption.
+Each FETCH reapplies the remaining statement timeout, and row decoding and
+final assembly check the existing cooperative operation budget. Cursor cleanup
+and the existing connection context retain rollback/lease ownership.
+
+This removes the extra complete encoded result buffered by an unnamed cursor
+and `fetchall()` alongside the decoded export. It is a row-count bound, not a
+hard byte quota: one large row and the final complete mapping still occupy
+memory. Snapshot fields, legacy-over-keyed precedence, canonical checksums,
+backup encryption/key manifests and audit/restore semantics are unchanged.
+No persisted migration or new operator surface is introduced. Synthetic
+allocation evidence does not establish the cause of a historical host OOM or
+qualify the whole backup pipeline's memory use.
+
 codex-web keeps SQLite as the default local durable store and exposes the same transactional document-store contract through an optional PostgreSQL backend for shared deployments. Local installation remains broker-free by default; shared delivery and coordination are explicit deployment choices rather than hidden requirements.
 
 A distributed deployment must preserve the same canonical-state guarantees. PostgreSQL, Redis, NATS, RabbitMQ, Kafka, or any other infrastructure component is never allowed to become an alternate source of business truth merely because it participates in storage, coordination, or event delivery.
