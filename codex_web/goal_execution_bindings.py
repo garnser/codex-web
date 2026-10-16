@@ -3,8 +3,20 @@ from __future__ import annotations
 import time
 import uuid
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class GoalExecutionMode(StrEnum):
+    APPLICATION = "application_continuation"
+    PROJECT_DELEGATION = "project_delegation"
+
+
+class ProjectDelegationAuthorization(StrEnum):
+    NONE = "none"
+    AUTHORIZED = "authorized"
+    REVOKED = "revoked"
 
 
 class GoalExecutionBindingStatus(StrEnum):
@@ -100,6 +112,9 @@ class GoalExecutionBinding(BaseModel):
     provider_native_objective_id: str | None = None
     native_objective_supported: bool = False
     capability_snapshot: tuple[str, ...] = ()
+    execution_mode: GoalExecutionMode = GoalExecutionMode.APPLICATION
+    delegation_authorization: ProjectDelegationAuthorization = ProjectDelegationAuthorization.NONE
+    delegation_revision: int = Field(default=0, ge=0)
     status: GoalExecutionBindingStatus = GoalExecutionBindingStatus.REQUESTED
     cursor_ref: str | None = None
     checkpoint_ref: str | None = None
@@ -139,6 +154,6 @@ class GoalExecutionBindingEvent(BaseModel):
 class GoalExecutionBindingState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1.0"
+    schema_version: Literal["1.1"] = "1.1"
     bindings: list[GoalExecutionBinding] = Field(default_factory=list)
     events: list[GoalExecutionBindingEvent] = Field(default_factory=list)

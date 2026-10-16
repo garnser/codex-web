@@ -439,11 +439,18 @@ function renderExecutionBindings() {
   return state.executionBindings.map((item) => {
     const status = item.status || 'unknown';
     const actions = [];
+    const projectDelegation = item.execution_mode === 'project_delegation';
+    if (!(item.work_item_refs || []).length && !['active', 'unknown', 'failed', 'completed', 'cancelled'].includes(status)) {
+      actions.push('<button type="button" class="ghost-button goal-project-delegation-authorize">Authorize Project delegation</button>');
+    }
+    if (projectDelegation && item.delegation_authorization === 'authorized') {
+      actions.push('<button type="button" class="ghost-button goal-runtime-pause">Pause delegation</button>');
+    }
     if (status === 'active') {
       actions.push('<button type="button" class="ghost-button goal-runtime-pause">Pause</button>');
       actions.push('<button type="button" class="ghost-button goal-runtime-cancel">Cancel</button>');
     } else if (
-      status === 'blocked'
+      !projectDelegation && status === 'blocked'
       && String(item.stop_reason || '').startsWith('operator paused:')
     ) {
       actions.push('<button type="button" class="primary-button goal-runtime-resume">Resume</button>');
@@ -454,7 +461,7 @@ function renderExecutionBindings() {
       actions.push('<button type="button" class="ghost-button goal-runtime-cancel">Cancel</button>');
     }
     return `
-      <div class="goal-subcard goal-execution-binding" data-binding-id="${esc(item.id)}">
+      <div class="goal-subcard goal-execution-binding" data-binding-id="${esc(item.id)}" data-binding-updated-at="${esc(item.updated_at)}" data-delegation-revision="${esc(item.delegation_revision ?? 0)}">
         <div class="goal-section-heading">
           <div>
             <strong>Runtime: ${esc(status)}</strong>
@@ -467,6 +474,7 @@ function renderExecutionBindings() {
         <small>cursor: ${esc(item.cursor_ref || '—')} · checkpoint: ${esc(item.checkpoint_ref || '—')}</small>
         <small>last turn: ${esc(item.last_turn_id || '—')} · last execution: ${esc(item.last_execution_id || '—')} · activity: ${esc(fmtTime(item.heartbeat_at || item.updated_at))}</small>
         <small>attempts: ${esc(item.recovery_attempts ?? 0)} · lease owner: ${esc(item.lease_owner_id || '—')} · lease expires: ${esc(fmtTime(item.lease_expires_at))}</small>
+        <small>execution mode: ${esc(item.execution_mode || 'application_continuation')} · Project delegation: ${esc(item.delegation_authorization || 'none')}</small>
         <small>stop/block reason: ${esc(item.stop_reason || '—')}</small>
       </div>`;
   }).join('');
@@ -717,6 +725,16 @@ function wireGoalActions() {
 
   detail.querySelectorAll('.goal-execution-binding').forEach((node) => {
     const bindingId = encodeURIComponent(node.dataset.bindingId);
+    node.querySelector('.goal-project-delegation-authorize')?.addEventListener('click', async () => {
+      const reason = window.prompt('Authorize scoped Project child delegation; no application continuation is started. Reason', 'Explicit Project delegation');
+      if (!reason) return;
+      if (!await confirmGoalAction('Authorize Project delegation', goal, context, node.dataset.bindingId)) return;
+      await mutate(
+        `/api/goals/${encodedGoal}/execution-bindings/${bindingId}/authorize-project-delegation`,
+        { reason, expected_updated_at: Number(node.dataset.bindingUpdatedAt), expected_delegation_revision: Number(node.dataset.delegationRevision) },
+        'Authorizing scoped Project delegation…',
+      );
+    });
     node.querySelector('.goal-runtime-pause')?.addEventListener('click', async () => {
       const reason = window.prompt('Pause reason', 'operator paused Goal runtime continuation');
       if (!reason) return;

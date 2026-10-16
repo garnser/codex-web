@@ -72,7 +72,8 @@ class SessionCustodyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_rollover_reassociates_and_preserves_retired_custody(self):
         child, _ = await self.create()
-        proof = ProjectCoordinationDispatch(goal_binding_id=self.goal_binding.id,
+        proof = ProjectCoordinationDispatch(schema_version="1.1",
+            delegation_revision=self.goal_binding.delegation_revision, goal_binding_id=self.goal_binding.id,
             assignment_id=self.assignment.id, fence=self.assignment.fence)
         with self.assertRaises(Exception):
             self.coordination.validate_delegation(proof, thread_id=child, project_id='home')
@@ -204,7 +205,8 @@ class SessionCustodyTests(unittest.IsolatedAsyncioTestCase):
         # This is an existing native thread being resumed after rollover, not
         # the special newly-created thread whose first input skips resume.
         self.bindings.mark_initial_turn_started('native-governor', self.actor)
-        proof = ProjectCoordinationDispatch(goal_binding_id=self.goal_binding.id,
+        proof = ProjectCoordinationDispatch(schema_version="1.1",
+            delegation_revision=self.goal_binding.delegation_revision, goal_binding_id=self.goal_binding.id,
             assignment_id=self.assignment.id, fence=self.assignment.fence)
         # Real adapter identity, not the shortened type used by the older fixture.
         baseline = self.original_session.model_copy(update={'runtime_type': CodexAgentRuntimeAdapter.runtime_type})

@@ -58,6 +58,10 @@ class ProjectDelegatedDispatchTests(unittest.IsolatedAsyncioTestCase):
             project_id='home', provider_id=session.provider_id, runtime_id=session.runtime_id,
             agent_session_id=session.id, thread_id='native-governor', execution_owner_id=self.actor.identity_id,
             reason='Explicit user project delegation'), scope=self.actor.tenant, actor_id=self.actor.identity_id)
+        self.goal_binding = self.goal_bindings.authorize_project_delegation(self.goal_binding.id,
+            actor=self.actor, expected_updated_at=self.goal_binding.updated_at,
+            expected_delegation_revision=self.goal_binding.delegation_revision,
+            reason='Explicit own-Project human delegation, no app continuation')
 
     async def message(self, thread, *, bound=True, key='input'):
         body = {'message': 'Implement the next bounded repository issue', 'idempotency_key': key}
@@ -119,7 +123,7 @@ class ProjectDelegatedDispatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_binding_stop_foreign_session_and_exclusive_lease_deny(self):
         child, _ = await self.create()
         queued, _ = await self.message(child)
-        for changes in ({'status': 'blocked'}, {'project_id': 'foreign'}, {'execution_owner_id': 'other'},
+        for changes in ({'delegation_authorization': 'revoked'}, {'project_id': 'foreign'}, {'execution_owner_id': 'other'},
                         {'thread_id': child}, {'agent_session_id': 'missing'},
                         {'lease_owner_id': 'other-continuation', 'lease_expires_at': self.service._clock()+100}):
             self.goal_bindings.store.update(lambda state: state.model_copy(update={'bindings': [self.goal_binding.model_copy(update=changes)]}))
@@ -160,7 +164,7 @@ class ProjectDelegatedDispatchTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_model_cannot_supply_source_or_server_proof(self):
         child, _ = await self.create()
-        for field in ('source', 'project_coordination_dispatch', 'actor', 'operator_admission_validator'):
+        for field in ('source', 'project_coordination_dispatch', 'delegation_revision', 'actor', 'operator_admission_validator'):
             status, _, result = await self.call('POST', f'/threads/{child}/messages', {
                 'message': 'do not acquire human privileges', 'idempotency_key': field, field: 'web'})
             self.assertEqual(status, 422, result)

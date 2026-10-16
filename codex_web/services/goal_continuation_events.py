@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from codex_web.agent_runtime import AgentRuntimeEvent, AgentSessionStatus
-from codex_web.goal_execution_bindings import GoalExecutionBindingStatus
+from codex_web.goal_execution_bindings import GoalExecutionBindingStatus, GoalExecutionMode
 from codex_web.identity import (
     AuthenticationActor,
     AuthenticationAssurance,
@@ -83,6 +83,7 @@ class GoalContinuationEventService:
             item
             for item in self.bindings.list_all(scope=scope)
             if item.agent_session_id == session.id
+            and getattr(item, "execution_mode", GoalExecutionMode.APPLICATION) == GoalExecutionMode.APPLICATION
             and item.status
             not in {
                 GoalExecutionBindingStatus.BLOCKED,

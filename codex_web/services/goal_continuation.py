@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from codex_web.agent_runtime import AgentRuntimeTurnRequest
 from codex_web.goal_execution_bindings import (
     GoalExecutionBindingStatus,
+    GoalExecutionMode,
     GoalExecutionBindingUpdate,
 )
 from codex_web.autonomy import AutonomyMode
@@ -120,7 +121,7 @@ class GoalContinuationService:
         status: GoalExecutionBindingStatus,
         reason: str,
     ) -> GoalContinuationDispatchResult:
-        self.bindings.update(
+        updated = self.bindings.update(
             binding.id,
             GoalExecutionBindingUpdate(
                 status=status,
@@ -129,7 +130,11 @@ class GoalContinuationService:
             ),
             scope=scope,
             actor_id=self.owner_id,
+            application_only=True,
         )
+        if getattr(updated, "execution_mode", GoalExecutionMode.APPLICATION) != GoalExecutionMode.APPLICATION:
+            return GoalContinuationDispatchResult(binding_id=binding.id, outcome="not_dispatched",
+                reason="explicit_project_delegation_not_application_continuation")
         return GoalContinuationDispatchResult(
             binding_id=binding.id,
             outcome=(
@@ -148,6 +153,9 @@ class GoalContinuationService:
         now: float | None = None,
     ) -> GoalContinuationDispatchResult:
         binding = self.bindings.get(binding_id, scope=scope)
+        if getattr(binding, "execution_mode", GoalExecutionMode.APPLICATION) != GoalExecutionMode.APPLICATION:
+            return GoalContinuationDispatchResult(binding_id=binding_id, outcome="not_dispatched",
+                reason="explicit_project_delegation_not_application_continuation")
         goal = self.goals.get(binding.goal_id, scope=scope)
 
         if goal.status != GoalStatus.ACTIVE:
@@ -169,6 +177,7 @@ class GoalContinuationService:
                 ),
                 scope=scope,
                 actor_id=self.owner_id,
+                application_only=True,
             )
             return GoalContinuationDispatchResult(
                 binding_id=binding_id,

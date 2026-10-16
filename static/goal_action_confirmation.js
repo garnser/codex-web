@@ -2,8 +2,10 @@ import { confirmAction } from './action_confirmation.js';
 
 // UI descriptions only; Goal APIs own authority, revisions and runtime outcomes.
 export function confirmGoalAction(action, goal, context, reference = '') {
+  const delegation = action === 'Authorize Project delegation';
   const terminal = ['Cancel Goal', 'Complete Goal'].includes(action);
   const effects = {
+    'Authorize Project delegation': 'Authorize new child input for this human-owned Goal binding within its own Project and current canonical authority. No application continuation is started; global autonomy and business pauses remain in force.',
     'Cancel Goal': 'Permanently cancel this Goal. This transition does not cancel its bound Work Items.',
     'Complete Goal': 'Permanently complete this Goal using the selected evaluation. The server rechecks current bound work and evaluation eligibility.',
     'Activate Goal': 'Activate this Goal for governed execution within its canonical budgets and approvals.',
@@ -15,8 +17,9 @@ export function confirmGoalAction(action, goal, context, reference = '') {
   return confirmAction({
     action, target: `${goal.title} · ${goal.id}@${goal.revision}${reference ? ` · ${reference}` : ''}`,
     consequence: effects[action], risk: 'high', current: context.current,
-    impact: `Known bound Projects: ${(goal.work_graph_bindings || []).map(item => item.project_id).join(', ') || 'none'}. Inspect the Work Graph and runtime bindings for their current state.`,
-    recovery: terminal ? 'This Goal lifecycle transition is terminal; there is no Undo.'
+    impact: `${delegation ? 'A new authorization generation applies only to newly admitted child input. Previously held input is not revived. ' : ''}Known bound Projects: ${(goal.work_graph_bindings || []).map(item => item.project_id).join(', ') || 'none'}. Inspect the Work Graph and runtime bindings for their current state.`,
+    recovery: delegation ? 'Pause Project delegation to revoke this generation and hold queued input. Already accepted provider work is not undone; inspect its canonical outcome before reconciliation.'
+      : terminal ? 'This Goal lifecycle transition is terminal; there is no Undo.'
       : action === 'Cancel runtime' || action === 'Reconcile runtime'
         ? 'Inspect the canonical runtime outcome before taking further action; this does not undo provider side effects.'
         : 'Pause remains available to stop further continuation; already accepted provider work may require reconciliation.',
