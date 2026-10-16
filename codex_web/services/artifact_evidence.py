@@ -646,7 +646,7 @@ class ArtifactEvidenceService:
 
     def create_evidence(self, payload: EvidenceCreate, *, actor: AuthenticationActor,
                         idempotency_key: str | None = None,
-                        source_evidence_ids: tuple[str, ...] = ()) -> Evidence:
+                        source_evidence_ids: tuple[str, ...] = (), _commit=None) -> Evidence:
         sources = self._research_sources(payload.knowledge_ids, actor=actor, project_id=payload.project_id)
         self._validate_resources(payload.resource_ids, actor)
         self._validate_work_item_ref(payload.work_item_ref, actor)
@@ -753,7 +753,9 @@ class ArtifactEvidenceService:
             returned.append(evidence)
             return current
 
-        self.store.update(apply)
+        # Internal composition seam: caller commits this prepared mutation in its
+        # existing canonical multi-document transaction; never opens a nested store.
+        (self.store.update if _commit is None else _commit)(apply)
         return returned[0]
 
     def create_verification(

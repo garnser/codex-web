@@ -3,8 +3,8 @@ import './page_editor.js';
 import { request } from './api_client.js';
 import { captureProjectView, currentProjectId } from './project_view_scope.js';
 import { esc } from './secret_reference_ui.js';
-import { keyLink } from './key_usage_ui.js';
-import { referenceAttributes, focusReference, bindWhenReady } from './reference_links.js';
+import { renderRecoveryEvidence } from './recovery_evidence_view.js';
+import { focusReference, bindWhenReady } from './reference_links.js';
 import { trackDirtyEditor, confirmDiscard } from './dirty_editor.js';
 import { formValidation } from './form_validation.js';
 import { renderPolicyForm, readPolicyForm } from './recovery_policy_form.js';
@@ -26,16 +26,7 @@ function status(text) { const host = document.getElementById('recovery-policy-st
 function impactText(impact) {
   return `<p>Changed fields: ${esc(impact.changed_fields.join(', ') || 'none')}. Shared workspace: ${esc(impact.organization_id)}/${esc(impact.workspace_id)}.</p><p>${esc(impact.retained_backup_count)} retained backups; ${esc(impact.backups_over_new_retention)} currently exceed the proposed retention count. Retention is enforced by subsequent backups.</p><p>${esc(impact.schedule_effect)}</p><p>${esc(impact.application)}</p><p>${esc(impact.rollback_limit)}</p>`;
 }
-function evidence(snapshot) {
-  const policy = snapshot.policy; const health = snapshot.health || {};
-  return `<section><h3>Runtime evidence — read-only</h3><p>Recovery qualified: ${health.recovery_qualified ? 'yes' : 'no'}. ${esc((health.blockers || []).join(' · '))}</p>
-    <p>Policy fingerprint: ${esc(snapshot.policy_control.expected_fingerprint)}. Automatic scheduler: ${snapshot.policy_control.scheduler_available ? 'attached' : 'unavailable'}.</p>
-    ${(snapshot.policy_control.schedules || []).map(item => `<p>Schedule ${esc(item.kind)}: ${esc(item.status)} · ${esc(item.id || 'none')} · revision ${esc(item.revision || 'none')} · interval ${esc(item.interval_seconds ?? 'unknown')} seconds · next run ${item.next_run_at ? esc(new Date(item.next_run_at * 1000).toISOString()) : 'not scheduled'}</p>`).join('')}
-    ${policy ? `<div ${referenceAttributes('recovery_policy', policy.id)}><strong>${esc(policy.id)} · version ${esc(policy.version)}</strong><p>Backup key: ${keyLink(policy.backup_key_id)}</p></div>` : '<p>No policy has been configured.</p>'}
-    ${(snapshot.backups || []).slice(0, 100).map(item => `<div class="comm-entry" ${referenceAttributes('backup', item.id)}><strong>${esc(item.id)} · immutable backup metadata</strong><small>Policy ${esc(item.policy_id)} / ${esc(item.policy_version)} · ${esc(item.policy_fingerprint)}</small><small>Encrypted by ${keyLink(item.key_id, item.key_version)}</small><small>Frozen restore requirements: ${(item.key_manifest || []).flatMap(entry => entry.versions.map(version => keyLink(entry.key_id, version))).join(', ') || 'none'}</small></div>`).join('') || '<p>No retained backups in this tenant.</p>'}
-    ${(snapshot.verifications || []).slice(0, 100).map(item => `<div class="comm-entry"><strong>Restore verification ${esc(item.status)} · ${esc(item.backup_id)}</strong><small>Evidence: ${esc(item.evidence_id || 'none')} · ${esc((item.blockers || []).join(' · '))}</small><small>Missing key refs: ${esc((item.key_missing_refs || []).join(', ') || 'none')} · Revoked key refs: ${esc((item.key_revoked_refs || []).join(', ') || 'none')}</small></div>`).join('')}
-    <p>Only the first 100 backups/verifications are displayed. Destination paths, encrypted envelopes and key material are never rendered.</p></section>`;
-}
+
 async function load(force = false) {
   const root = document.getElementById('recovery-policy-content'); if (!root) return;
   if (!force && !confirmDiscard(editor)) return;
@@ -46,7 +37,7 @@ async function load(force = false) {
     let keys = [];
     if (snapshot.policy_control.can_configure) keys = (await op.request('/api/crypto/keys')).items || [];
     if (!op.current()) return;
-    root.innerHTML = renderPolicyForm(snapshot, keys) + evidence(snapshot) + '<section data-recovery-history><h3>Policy change history</h3></section>';
+    root.innerHTML = renderPolicyForm(snapshot, keys) + renderRecoveryEvidence(snapshot) + '<section data-recovery-history><h3>Policy change history</h3></section>';
     const form = root.querySelector('form'); const validation = formValidation(form);
     editor = trackDirtyEditor(form, { label: 'Recovery policy' }); const ownedEditor = editor;
     const preview = form.querySelector('[data-recovery-impact]'); const save = form.querySelector('[data-recovery-save]');

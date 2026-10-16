@@ -125,6 +125,14 @@ def build_recovery_router(service: RecoveryService, projects=None) -> APIRouter:
                 else None
             ),
             "health": service.health(actor=actor).model_dump(mode="json"),
+            "scheduled_work": {
+                "source": "canonical RecoveryState",
+                "firings": [item.model_dump(mode="json") for item in sorted(
+                    (item for item in state.scheduled_firings.values()
+                     if (item.organization_id, item.workspace_id) == (actor.organization_id, actor.workspace_id)),
+                    key=lambda item: (item.admitted_at, item.event_id), reverse=True)],
+                "local_executor": service._scheduled_executor.status(),
+            },
             "backups": backups,
             "verifications": verifications,
             "backup_schedule_id": state.backup_schedule_id,

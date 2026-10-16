@@ -77,7 +77,13 @@ class RecoveryPolicyControl:
             return state
 
         def schedules(state, scheduler_state):
-            if not changed and all(record_id in scheduler_state.schedules for record_id in (state.backup_schedule_id, state.verification_schedule_id)):
+            current_records = [scheduler_state.schedules.get(record_id)
+                               for record_id in (state.backup_schedule_id, state.verification_schedule_id)]
+            if not changed and all(record is not None
+                    and (record.tenant_id, record.workspace_id) == (actor.organization_id, actor.workspace_id)
+                    and record.payload == {'policy_fingerprint': policy.fingerprint()}
+                    and record.misfire_policy == MisfirePolicy.FIRE_ONCE
+                    for record in current_records):
                 return
             for field, trigger, interval in [
                 ('backup_schedule_id', service.BACKUP_TRIGGER, policy.backup_interval_seconds),

@@ -1,5 +1,6 @@
 const { resolveAction } = require('./action_confirmation_helpers');
 const { test, expect } = require('@playwright/test');
+const origin = process.env.CODEX_WEB_BROWSER_TEST_ORIGIN || 'http://127.0.0.1:18766';
 const fs = require('node:fs'); const path = require('node:path');
 const schema = require('./recovery_policy_schema.json');
 const index = fs.readFileSync(path.join(__dirname, '../../static/index.html'), 'utf8');
@@ -7,13 +8,36 @@ const at = index.indexOf('<h2>Recovery Policy & Evidence</h2>');
 const card = index.slice(index.lastIndexOf('<div class="developer-card">', at), index.indexOf('<div class="developer-card">', at));
 const fixture = fs.readFileSync(path.join(__dirname, 'product_workspaces_fixture.html'), 'utf8').replace('<button id="sidebar-toggle" type="button">', '<button id="sidebar-toggle" class="sidebar-toggle" type="button">').replace('<link rel="stylesheet" href="/static/styles.css">', '<link rel="stylesheet" href="/static/design_tokens.css"><link rel="stylesheet" href="/static/workspace_components.css"><link rel="stylesheet" href="/static/styles.css">').replace('</body>', `${card}<script type="module" src="/static/recovery_policy_ui.js"></script></body>`);
 const policy = { id: 'recovery-policy-default', version: '1', deployment_mode: 'local', backup_key_id: 'key-backup', destination_id: 'local', backup_interval_seconds: 3600, restore_verification_interval_seconds: 86400, retention_count: 30, require_audit_integrity: true, require_key_manifest: true, allow_point_in_time_recovery: false, objectives: [{ data_class: 'canonical_state', rpo_seconds: 3600, rto_seconds: 14400 }] };
-async function mount(page, { readonly = false, intercept } = {}) {
+for (const width of [1280, 375]) {
+  test(`scheduled recovery receipts expose uncertainty safely at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const firings = ['running', 'unknown', 'succeeded'].map(status => ({
+      status, trigger_type: 'recovery.backup', event_id: `event-${status}`, schedule_id: 'schedule-one',
+      owner_id: '<img src=x onerror="window.receiptInjected=true">', actor_id: 'recovery-service',
+      organization_id: 'org', workspace_id: 'ws', policy_fingerprint: 'exact-policy-fingerprint',
+      effect_id: `backup-${status}`, error_code: 'OSError',
+    }));
+    const state = await mount(page, { readonly: true, firings });
+    const content = page.locator('#recovery-policy-content');
+    await expect(content).toContainText('Scheduled recovery unknown');
+    await expect(content).toContainText('Outcome requires reconciliation; this event will not replay. OSError');
+    await expect(content).toContainText('Actual work has not been recorded terminal.');
+    await expect(content).toContainText('Actual work completed and its canonical result was recorded.');
+    await expect(content).toContainText('event-unknown');
+    await expect(content).toContainText('exact-policy-fingerprint');
+    await expect(content).toContainText('Reserved result backup-unknown');
+    await expect(content.locator('img')).toHaveCount(0);
+    expect(await page.evaluate(() => window.receiptInjected)).toBeUndefined();
+    expect(state.writes).toEqual([]);
+  });
+}
+async function mount(page, { readonly = false, intercept, firings = [] } = {}) {
   const state = { writes: [], preview: [], current: structuredClone(policy), fail: false, failPreview: false };
   await page.route('**/projects/**', route => route.request().resourceType() === 'document' ? route.fulfill({ contentType: 'text/html', body: fixture }) : route.continue());
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url()); const method = route.request().method();
     if (intercept && await intercept(route, url)) return;
-    if (url.pathname === '/api/recovery/status') return route.fulfill({ json: { policy: state.current, policy_control: { schema, can_configure: !readonly, expected_fingerprint: 'current-fingerprint', organization_id: 'org', workspace_id: 'ws', destinations: [{ id: 'local' }], scheduler_available: true, history: [{ id: 'change-one', policy, actor_id: 'operator', occurred_at: 1 }] }, health: { recovery_qualified: false, blockers: ['Restore verification required'] }, backups: [{ id: 'backup-one', key_id: 'key-backup', key_version: 1, key_manifest: [{ key_id: 'key-backup', versions: [1] }], destination_ref: 'hidden-destination-path' }], verifications: [] } });
+    if (url.pathname === '/api/recovery/status') return route.fulfill({ json: { policy: state.current, policy_control: { schema, can_configure: !readonly, expected_fingerprint: 'current-fingerprint', organization_id: 'org', workspace_id: 'ws', destinations: [{ id: 'local' }], scheduler_available: true, history: [{ id: 'change-one', policy, actor_id: 'operator', occurred_at: 1 }] }, health: { recovery_qualified: false, blockers: ['Restore verification required'] }, backups: [{ id: 'backup-one', key_id: 'key-backup', key_version: 1, key_manifest: [{ key_id: 'key-backup', versions: [1] }], destination_ref: 'hidden-destination-path' }], verifications: [], scheduled_work: { firings } } });
     if (url.pathname === '/api/crypto/keys') return route.fulfill({ json: { items: [{ id: 'key-backup', purpose: 'backup', status: 'active', scope: {} }] } });
     if (url.pathname === '/api/recovery/policy/preview') {
       state.preview.push(route.request().postDataJSON());
@@ -27,7 +51,7 @@ async function mount(page, { readonly = false, intercept } = {}) {
     }
     return route.fulfill({ json: { items: [] } });
   });
-  await page.goto('http://127.0.0.1:18766/projects/home/operations?consumer_type=backup&consumer_id=backup-one');
+  await page.goto(`${origin}/projects/home/operations?consumer_type=backup&consumer_id=backup-one`);
   await page.locator('#refresh-recovery-policy').click();
   await expect(page.locator('[data-recovery-form]')).toBeVisible();
   return state;
