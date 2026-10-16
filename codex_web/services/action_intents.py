@@ -1924,13 +1924,14 @@ class ActionIntentService:
         result: ActionResult,
         *,
         actor: AuthenticationActor,
+        settlement_guard: dict | None = None,
     ) -> bool | tuple[ActionIntentVerificationReceipt, ActionIntent]:
         provider_verification = None
         findings: list[str] = []
         provider_ok = True
         # Readiness success is never caller-optional, including legacy or
         # previously persisted records with verification_required=False.
-        if intent.verification_required or intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
+        if intent.verification_required or intent.action_id in {CODE_HOST_PULL_REQUEST_READY_ACTION_ID, "recovery.scheduled-firing.reconcile"}:
             try:
                 ready_context = (await self._ready_verification_context(intent, result, actor)
                                  if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID else None)
@@ -1964,7 +1965,7 @@ class ActionIntentService:
                     )
 
         verified = provider_ok and evidence_ok
-        guarded = None
+        guarded = settlement_guard
         if verified and intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
             try:
                 # Evidence may await after the last provider observation. Re-enter
@@ -2399,6 +2400,8 @@ class ActionIntentService:
     ) -> ActionIntent:
         intent = self._intent(intent_id, actor)
         self._require_intent_control(intent, actor)
+        if intent.action_id == "recovery.scheduled-firing.reconcile":
+            raise ActionIntentUnsafeRetryError("Recovery custody action is single-attempt; reconcile read-only")
         if intent.rollback_checkpoint is not None:
             raise ActionIntentUnsafeRetryError("an attempted rollback cannot replay the forward mutation")
         if intent.attempt >= intent.retry_policy.max_attempts:
@@ -2606,6 +2609,13 @@ class ActionIntentService:
             if receipt.intent_id == intent.id and receipt.result is not None
         ]
         latest_result = results[-1] if results else None
+        if intent.action_id == "recovery.scheduled-firing.reconcile":
+            if payload.retry_if_idempotent:
+                raise ActionIntentConflictError("Recovery reconciliation is read-only; never retry execute")
+            if intent.status in {ActionIntentStatus.UNCERTAIN, ActionIntentStatus.REQUIRES_RECONCILIATION} and intent.attempt > 0:
+                from codex_web.services.recovery_intent_reconciliation import reconcile_recovery_intent
+                return await reconcile_recovery_intent(self, intent, actor=actor)
+            return intent  # no attempted unknown operation: do not invent one
         if intent.rollback_checkpoint is not None:
             rollback_receipt = next((r for r in state.receipts if r.id == intent.rollback_checkpoint.receipt_id), None)
             if rollback_receipt is None:

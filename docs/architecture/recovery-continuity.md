@@ -332,3 +332,178 @@ revocations are refused while such consumers remain; this is positive protection
 not an executed revocation attack. Final frozen-requirement validation remains
 defense in depth. Policy/schedule admission is independently rechecked at the
 Evidence/verification success transaction.
+
+### Explicit scheduled-owner reconciliation
+
+Recovery state `1.3` extends `1.2` with at most 128 immutable reconciliation
+records bound to retained firing identities. Explicit activation preserves prior
+records/watermarks. A `1.2` writer must refuse `1.3`; drain all older writers
+before the first write. There is no source-only rollback after activation.
+
+The opt-in `recovery.scheduled-firing.reconcile` ActionProvider invokes the same
+Recovery service and transaction. It does not register/activate itself or grant
+its capability. Existing canonical ActionIntent authority, security, procedure,
+lease and actor admission remain required. The provider's actor resolver must
+use current canonical identity/session/authority state, never caller metadata or
+a cached actor. The service repeats operator admin/MFA (or recovery:admin service
+scope) checks at transaction admission and checks exact tenant, firing digest,
+current policy fingerprint, schedule digest and canonical independent Evidence.
+Proof requires the exact owner/event/effect snapshot, genuine writer quiescence,
+quiescent effect/retention writers and the truthful succeeded/failed/unknown outcome. Current local
+executor zero and elapsed time are insufficient. Incomplete/foreign or invalidated proof refuses custody release. The operator must independently establish
+that original owner and every actual writer are terminated/fenced; the service
+cannot manufacture this proof from its process-local executor.
+
+No backup, verification, retention or original effect is replayed. The original
+receipt remains in the reconciliation record. Proven terminal failure leaves the
+firing diagnostic status `unknown`; it is never rewritten as success. Even after
+valid reconciliation, health stays unqualified until a distinct new backup and
+PASS isolated restore, both later than reconciliation and on the current policy,
+satisfy the normal RPO/RTO/freshness gates. Invalidated/expired evidence remains a
+blocker. Lost response is read-only receipt reconciliation using the same stable
+key; conflicting keys/snapshots and late original settlement are refused.
+
+The executor exposes two bounded terminal observations (event ID/error class,
+not exception payload or effect success), distinguishing a terminal failed future
+from unobserved actual effects. The demonstrated synthetic path is a settlement
+write failure after real admitted work; that is not a diagnosis of the historical
+production firing. Existing Recovery status/UI includes original identity,
+operator disposition, Evidence/verification references and the next guarded
+operator action; a reconcile receipt alone is not a qualified installation.
+
+#### Bootstrap before installation: executable integration is BLOCKED
+
+The installed code cannot load this provider. Registry `register` is an internal
+composition call; `bind` resolves an already registered runtime. Neither an
+artifact upload, a procedure dispatch, nor an extension wrapper loads trusted
+code. Upgrade preflight requires qualified Recovery and execute_step requires a
+satisfied preflight. Therefore the new provider/API **does not close the bootstrap
+cycle**, and this source must not be reported delivery-complete or activated.
+A privileged shell import, store edit, false effect outcome, or disabling the
+Recovery gate is not an alternative.
+
+The following is the precise proposed missing integration contract, **not an
+implemented/advertised route or an instruction to invoke it**. The owning
+operator/platform must supply a canonically admitted trusted maintenance adapter
+before this source can execute preinstall. There is no generic code-upload or
+arbitrary executable argument. Proposed action
+`recovery.bridge.activate.v1` has only these typed inputs:
+
+- canonical reviewed Artifact ID + SHA256, immutable source revision and provider
+  protocol `recovery-owner-disposition.v2`;
+- expected installed application revision, exact tenant/resource, protected
+  Recovery/Scheduler/Evidence snapshot digests and maintenance generation;
+- exact original firing/owner/effect and a `RecoveryReconcileRequest`;
+- canonical independently VERIFIED Evidence IDs for complete writer-incarnation
+  inventory/fencing, private-free restore of the protected backup, preservation
+  comparison, and exact-artifact codec/older-writer qualification;
+- stable ActionIntent key and expected unactivated/activated bridge generation.
+
+The adapter must be part of the trusted installed maintenance composition and
+existing provider/ActionIntent machinery; it cannot be registered by a worker
+or loaded from caller-selected Python. Registration is separate from a
+scope-limited enabled binding, existing capability/role/procedure admission,
+credential/security checks and operator admin/MFA authorization. None is granted
+by this proposal. Its only callable runtime is the reviewed Recovery service
+behind `RecoveryActionProvider`, with its canonical actor resolver. No second
+StateStore, executor, timer or reconciliation engine is permitted.
+
+Required phases and refusal boundaries:
+
+1. Resolve canonical actor/tenant/resource/current policy and verify exact
+   artifact provenance, immutable source and version compatibility. Acquire the
+   existing maintenance/drain guard; reject unknown writer incarnations.
+2. Before any persisted1.3 state, qualify the actual protected backup through an
+   independent isolated restore/integrity/preservation comparison under existing
+   authority, with all side effects disabled. This is required evidence, **not**
+   a waiver or a claim that Recovery health is already qualified. Refuse if the
+   installed maintenance adapter cannot validate this proof independently of
+   the blocked ordinary upgrade preflight.
+3. Fence all original/older writers, recheck complete inventory and current
+   store/firing/policy/schedule/Evidence generations. Admit exactly the pinned
+   action through existing ActionIntent/provider/procedure checks. First1.3
+   persistence and custody release share the canonical transaction/CAS. Until
+   then reads and ordinary writes preserve1.2. Unknown effect stays unknown.
+4. Verify the durable receipt after any lost response; never replay the original
+   effect. Distinct new backup and isolated PASS restore must then satisfy normal
+   Recovery health before the ordinary full UpgradePlan may pass preflight.
+5. Preserve the original backup, generations, claims and history. Once1.3 is
+   persisted, a1.2 process refuses; source-only rollback is unavailable. Recovery
+   requires the independently verified protected restore under its actual guarded
+   restore contract, not an automatic inverse operation.
+
+**Exact next operator input:** the actual installed maintenance-adapter operation
+and typed contract implementing phases1–3, including its current authority and
+qualification-evidence admission. No such operation is advertised or implemented
+in the inspected installed code. If unavailable, the platform integration itself
+must be delivered/reviewed before production activation; this draft is not that
+executable bridge. Also required are genuine complete original-writer fencing
+and effect proof. Manifest/destination absence cannot establish failure.
+
+#### Unknown outcome and explicit codec activation
+
+`recovery-owner-disposition.v2` separates custody release from original effect
+outcome. Independent Evidence binds the full Recovery state digest, original
+firing, policy, schedule, all-writer inventory/fence-proof digests, actual
+quiescence of effect/retention writers and original-owner fencing. Known success
+additionally requires the reserved scoped canonical result. Proven failure must
+be based on the original operation, not absence. `unknown` is accepted only with
+the same complete quiescence/fencing proof; the original receipt/effect remain
+unchanged in history, current firing stays `unknown`, and no effect is replayed.
+New independent backup/restore is eligible only after that release; qualification
+remains blocked until both are genuinely fresh and PASS on current policy.
+Evidence invalidation/expiration blocks qualification again. Local queue0,
+elapsed time, an absent manifest or a post-purge missing file supplies no proof.
+
+The1.2-to1.3 automatic migration has been removed. Loading1.2 or starting the
+service never persists a normalization. Ordinary updates encode1.2 without the
+new field, remaining readable/writable by the frozen5db1.2 codec. Only explicit
+`activate_state_1_3=true` with the independently verified activation and
+backup/restore proof may perform the first1.3 write, in the same transaction as
+full-state/firing/policy/schedule CAS and reconciliation. Failed proof/CAS leaves
+all documents at1.2. After activation the codec refuses downgrades with retained
+records; frozen original1.2 load/update must refuse without mutation. This is a
+one-way persisted boundary, not a configuration flag or startup migration.
+
+#### Provider receipt loss (source contract; activation remains blocked)
+
+The provider uses canonical `ActionEvidence.evidence_type`, `reference` and
+scalar metadata. The reference identifies the existing canonical disposition
+Evidence; metadata binds event/owner/effect/verification/request digest. Stable
+execution identity and observed timestamps derive from the single persisted
+domain receipt. `readback` validates current actor, exact immutable request and
+independent proof, then reconstructs that typed result without invoking the
+engine, generating Evidence or executing any backup/restore/retention effect.
+`prepare` exposes the same read-only observed result if one exists. Missing
+receipt is **unknown execution**, never evidence of no effect or permission to
+retry. Verification compares the complete canonical typed result, including
+Evidence references, rather than accepting caller-altered Evidence.
+
+The source now adds Recovery handling to the EXISTING ActionIntent reconcile
+operation with `retry_if_idempotent=false`. It resolves the current registered
+provider/binding, observes its `prepare` readback, verifies the exact typed
+receipt and persists observation, verification and terminal status through the
+canonical store. Missing domain receipt remains unknown. Explicit retry and
+automatic repeated attempts are disallowed. No separate mutation route or
+provider execution is used for reconciliation, and no Work Item success is
+advanced by this custody-only action.
+
+Current requester authority/security, provider/Definition, independent proof and
+all canonical admission stores are rechecked; shared namespace revision guards
+fence verification and terminal writes against intervening revocation. Observed
+results are retained if subsequent verification/admission is denied. Configured
+procedure admission is invoked for verification under the existing ActionIntent
+context. Production must have its actual registered procedure/profile controls;
+a standalone synthetic test configuration is not a production grant.
+
+This source is NOT installed or provider-activated. The discovered existing
+per-plan `require_recovery_qualification=false` upgrade option is a potential
+operator route to install qualified source without first falsifying aggregate
+Recovery health. It needs independent policy/runbook approval and real fresh
+backup/PASS isolated restore, protected baseline, drain, exact plan CAS, guarded
+helper and postverification. The interrupted plan was CANCELLED; no install or
+pre-upgrade backup is inferred. This option does not release original custody,
+change the UNKNOWN outcome, activate state1.3 or authorize this provider. A
+separate reviewed composition/binding/procedure activation with actual current
+operator session/assurance remains required before repair; resolving an identity
+ID alone cannot manufacture MFA. Do not run a source service against live state.

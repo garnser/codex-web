@@ -20,6 +20,7 @@ class RecoveryExecutor:
         self._pool = None
         self._futures = {}
         self._closed = False
+        self._terminal_observations = {}
 
     @staticmethod
     async def _settle(future):
@@ -63,6 +64,12 @@ class RecoveryExecutor:
             if future.done() and self._futures.get(key) is future:
                 # Failed serialization can retain a complete snapshot through
                 # its traceback; release terminal futures promptly.
+                error = future.exception()
+                self._terminal_observations[key] = {"event_id":key,
+                    "error_class":type(error).__name__ if error is not None else None,
+                    "future_terminal":True,"effect_outcome":"not inferred"}
+                while len(self._terminal_observations) > 2:
+                    del self._terminal_observations[next(iter(self._terminal_observations))]
                 del self._futures[key]
 
     def close_admission(self):
@@ -96,4 +103,6 @@ class RecoveryExecutor:
 
     def status(self):
         return {'accepting': not self._closed, 'waiting_or_running': len(self._futures),
-                'inflight_work': sum(not future.done() for future in self._futures.values())}
+                'inflight_work': sum(not future.done() for future in self._futures.values()),
+                'terminal_observations': list(self._terminal_observations.values()),
+                'observation_scope': 'process-local; not proof of another owner or effect'}

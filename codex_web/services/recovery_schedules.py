@@ -167,6 +167,8 @@ class RecoveryScheduleAdmission:
 
         def apply(state):
             current = state.scheduled_firings.get(firing.event_id)
+            if firing.event_id in state.reconciliations:
+                raise RecoveryConflictError("Operator reconciliation fenced this firing")
             # Atomic verification/Evidence settlement may have committed before
             # the observer lost its response. Never overwrite that terminal fact.
             if current is not None and current.status == "succeeded" and current.model_copy(
