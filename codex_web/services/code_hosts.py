@@ -681,6 +681,16 @@ class CodeHostService:
                 if objects.is_symlink() or pack_dir.is_symlink() or not objects.is_dir():
                     raise CodeHostError("unsupported destination object directory")
                 pack_dir.mkdir(exist_ok=True)
+                # A previous process may have died before finally/cleanup. Do
+                # not guess ownership, garbage collect, or resume its mutation.
+                # An active concurrent attempt is likewise retained, not deleted.
+                from codex_web.storage.state_store import check_operation_budget
+                for candidate in pack_dir.iterdir():
+                    check_operation_budget()
+                    if time.monotonic() >= deadline:
+                        raise CodeHostError("history materialization time bound exceeded")
+                    if candidate.name.startswith(".codex-import-"):
+                        raise CodeHostError("incomplete or active import retained; reconcile owned import custody before retry")
                 def used_bytes(path):
                     from codex_web.storage.state_store import check_operation_budget
                     total = 0

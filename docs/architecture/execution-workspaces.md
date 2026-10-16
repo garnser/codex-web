@@ -359,3 +359,13 @@ existing audit inspector, including bounds and next action; missing observations
 are unknown, never inferred ready. No new store, permission or polling loop is
 introduced. Rendered fixture and installed inspector acceptance remain delivery
 gates, distinct from source implementation.
+
+After abrupt process/host loss, attempt staging can remain because no finally
+handler ran. Admission refuses any retained or active `.codex-import-*` entry
+with an explicit custody-reconciliation next action. It never deletes another
+attempt, guesses a former owner, retries its mutation or claims atomic checkout
+rollback after host loss. Orphan public object packs remain quota-accounted.
+The existing operator workspace/recovery inspection must establish ownership,
+terminal execution and retained source custody before manual supported recovery.
+Mixed/older inspector observations lacking exact complete/ready state remain
+unknown/not-ready; unknown extension fields do not grant readiness.

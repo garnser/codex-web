@@ -13,3 +13,16 @@ test('canonical history observations expose target/local bounds refusal and prov
   await expect(root.locator('script,img')).toHaveCount(0);
   await expect(root).toContainText('<img src=x onerror=alert(1)>');
 });
+
+test('existing audit renderer keeps old malformed and future observations unqualified', async ({page}) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/source_history_readiness_fixture.html');
+  const root=page.locator('aside[aria-label="Mixed reader audit"]');
+  await expect(root.locator('details')).toHaveCount(5);
+  await expect(root).toContainText('older plain refusal');
+  await expect(root).toContainText('future-schema · not ready');
+  await expect(root).not.toContainText('future-schema · ready');
+  await expect(root).toContainText('inspect incompatible observation');
+  await expect(root.locator('script,img')).toHaveCount(0);
+  await root.locator('summary').first().focus();await page.keyboard.press('Enter');
+  await expect(root.locator('details').first()).toHaveAttribute('open','');
+});

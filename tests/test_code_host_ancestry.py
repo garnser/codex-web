@@ -239,3 +239,72 @@ class MaterializationAncestryTests(unittest.TestCase):
         self.git('-C',str(normal),'replace',self.tip,replacement)
         self.git('-C',str(normal),'rev-list','--objects','--quiet',self.tip)
         self.assertFalse(CodeHostService._git_has_complete_history(normal,self.tip))
+
+    def test_first_pack_link_rollback_preserves_preexisting_identical_objects(self):
+        for shared in (False, True):
+            with self.subTest(preexisting_identical_pack=shared):
+                checkout=self.broken_checkout()
+                if shared:
+                    self.materialize(checkout=checkout)
+                    # Retain an identical shared pack, lacking only its index.
+                    packs=checkout/'.git/objects/pack'
+                    for idx in packs.glob('*.idx'):
+                        # Delete only fixture-owned index for the full graph pack.
+                        if subprocess.run(['git','verify-pack','-v',str(idx)],capture_output=True,text=True).stdout.count('commit')>1:
+                            idx.unlink()
+                before={str(p.relative_to(checkout)):p.read_bytes() for p in checkout.rglob('*') if p.is_file()}
+                real_link=os.link
+                linked=[]
+                def link(source,destination,*args,**kwargs):
+                    if str(destination).endswith('.idx'):
+                        raise OSError('controlled first-pack-before-index failure')
+                    result=real_link(source,destination,*args,**kwargs)
+                    linked.append((Path(destination),Path(destination).stat().st_ino))
+                    return result
+                with patch('codex_web.services.code_hosts.os.link',side_effect=link):
+                    with self.assertRaises(CodeHostError):self.materialize(checkout=checkout)
+                after={str(p.relative_to(checkout)):p.read_bytes() for p in checkout.rglob('*') if p.is_file()}
+                for name,value in before.items():self.assertEqual(after[name],value)
+                self.assertEqual(set(after)-set(before),{'.git/objects/pack/.codex-materialize.lock'} if '.git/objects/pack/.codex-materialize.lock' not in before else set())
+                self.assertEqual(len(linked), 0 if shared else 1)
+                for path,inode in linked:self.assertFalse(path.exists())
+                self.assertFalse(list((checkout/'.git/objects/pack').glob('.codex-import-*')))
+
+    def test_abrupt_import_loss_retains_custody_and_next_attempt_refuses(self):
+        checkout=self.broken_checkout()
+        before={str(p.relative_to(checkout)):p.read_bytes() for p in checkout.rglob('*') if p.is_file()}
+        script="""
+import os,sys
+from pathlib import Path
+from unittest.mock import patch
+from tests.test_code_host_ancestry import MaterializationAncestryTests
+fixture=MaterializationAncestryTests()
+fixture.repo=Path(sys.argv[1]);fixture.tip=sys.argv[2]
+real_link=os.link
+def link(source,destination,*args,**kwargs):
+    if str(destination).endswith('.idx'):os._exit(73)
+    return real_link(source,destination,*args,**kwargs)
+with patch('codex_web.services.code_hosts.os.link',side_effect=link):
+    fixture.materialize(checkout=Path(sys.argv[3]))
+"""
+        # Abrupt primary loss, not a claim to emulate whole-host persistence or
+        # restore a partially reset working tree. No reset runs in this fixture.
+        scratch=self.root/'loss-scratch';scratch.mkdir()
+        child=subprocess.Popen([sys.executable,'-c',script,str(self.repo),self.tip,str(checkout)],env=dict(os.environ,TMPDIR=str(scratch)),start_new_session=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        try:self.assertEqual(child.wait(timeout=20),73)
+        finally:
+            if child.poll() is None:
+                os.killpg(child.pid,9);child.wait()
+        self.assertIsNotNone(child.returncode)
+        with self.assertRaises(ProcessLookupError):os.killpg(child.pid,0)
+        for name,value in before.items():self.assertEqual((checkout/name).read_bytes(),value)
+        scratch_snapshot={str(p):p.stat().st_size for p in scratch.rglob('*') if p.is_file()}
+        self.assertTrue(scratch_snapshot)
+        self.assertLess(sum(scratch_snapshot.values()),128*1024*1024)
+        retained=list((checkout/'.git/objects/pack').glob('.codex-import-*'))
+        self.assertEqual(len(retained),1)
+        pack_snapshot={str(p):p.stat().st_size for p in (checkout/'.git/objects/pack').rglob('*') if p.is_file()}
+        with self.assertRaisesRegex(CodeHostError,'import retained; reconcile owned import custody'):
+            self.materialize(checkout=checkout)
+        self.assertEqual(pack_snapshot,{str(p):p.stat().st_size for p in (checkout/'.git/objects/pack').rglob('*') if p.is_file()})
+        self.assertEqual(scratch_snapshot,{str(p):p.stat().st_size for p in scratch.rglob('*') if p.is_file()})

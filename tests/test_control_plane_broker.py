@@ -1352,18 +1352,33 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             ),
         })
 
-        with self.assertRaisesRegex(ControlPlaneBrokerDeniedError, "stale"):
-            await self.service.dispatch(
-                assignment=assignment,
-                worker_actor=self.worker_actor,
-                method="POST",
-                raw_target="/api/repository-workspace/refresh",
-                body=json.dumps({"revision": revision}).encode(),
-                assignment_validator=lambda: (_ for _ in ()).throw(
-                    ControlPlaneBrokerDeniedError("assignment lease is stale")
-                ),
-            )
-        self.assertEqual(workspaces.calls, 1)
+        # Actual mutable admitted assignment facts change while the awaited
+        # materializer runs. The post-await validator must reject both cases
+        # before reset; credential/provider/Resource cases live in facade tests.
+        for invalidation in ("fence", "lease"):
+            with self.subTest(invalidation=invalidation):
+                workspaces.calls = 0
+                current = assignment.model_copy(deep=True)
+                async def materialize(*args, **kwargs):
+                    nonlocal current
+                    if invalidation == "fence":
+                        current = current.model_copy(update={"fence": assignment.fence + 1})
+                    else:
+                        current = current.model_copy(update={"lease": current.lease.model_copy(update={"expires_at": time.time() - 1})})
+                    return CodeHostRevisionMaterializationFact(resource_id="repository-a",provider_type="github",
+                        provider_instance="github.com",repository_full_name="org/repo",default_branch="main",revision=revision)
+                # Reuse the real broker snapshot/fence/lease validator rather
+                # than a test-specific permission predicate.
+                def validate():
+                    with (patch.object(self.broker, "validator", return_value=current),
+                            patch.object(self.broker, "snapshot", assignment)):
+                        return self.broker._validate_current()
+                code_hosts.materialize_default_branch_revision.side_effect = materialize
+                with self.assertRaisesRegex(ControlPlaneBrokerDeniedError, "fence|lease"):
+                    await self.service.dispatch(assignment=assignment,worker_actor=self.worker_actor,
+                        method="POST",raw_target="/api/repository-workspace/refresh",
+                        body=json.dumps({"revision": revision}).encode(),assignment_validator=validate)
+                self.assertEqual(workspaces.calls, 1)
 
         workspaces.conflict = True
         observed_materializations = code_hosts.materialize_default_branch_revision.await_count
