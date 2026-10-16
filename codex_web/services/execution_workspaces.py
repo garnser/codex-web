@@ -505,6 +505,10 @@ class ExecutionWorkspaceService:
             if result.returncode != 0:
                 raise ExecutionWorkspaceNotFoundError("revision does not resolve to a commit")
             resolved = result.stdout.strip()
+        from codex_web.services.code_hosts import CodeHostService
+        if not CodeHostService._git_has_complete_history(checkout, resolved):
+            raise ExecutionWorkspaceNotFoundError(
+                "revision ancestry is incomplete; complete public history is required")
         git("reset", "--hard", resolved)
         observed = git("rev-parse", "HEAD").stdout.strip()
         if observed != resolved:

@@ -332,7 +332,7 @@ class CodeHostService:
                     raise CodeHostError("provider commit attestation changed")
                 remote = self._verified_remote_url(binding, repository)
                 already_present = await asyncio.to_thread(
-                    self._git_has_commit, checkout, requested
+                    self._git_has_complete_history, checkout, requested
                 )
                 if not already_present:
                     await asyncio.to_thread(
@@ -463,6 +463,28 @@ class CodeHostService:
         return result.returncode == 0
 
     @staticmethod
+    def _git_has_complete_history(checkout: Path, revision: str) -> bool:
+        """Require connected objects, with no shallow/replace/promisor shortcuts."""
+        if not re.fullmatch(r"[0-9a-f]{40}", revision):
+            return False
+        environment = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL") if key in os.environ}
+        environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                           GIT_NO_LAZY_FETCH="1", GIT_NO_REPLACE_OBJECTS="1")
+        command = ["git", "-C", str(checkout), "-c", "core.hooksPath=/dev/null",
+                   "-c", "protocol.allow=never", "--no-replace-objects"]
+        try:
+            shallow = subprocess.run(command + ["rev-parse", "--is-shallow-repository"],
+                env=environment, capture_output=True, text=True, timeout=30)
+            if shallow.returncode or shallow.stdout.strip() != "false":
+                return False
+            connected = subprocess.run(command + ["rev-list", "--objects", "--quiet",
+                "--missing=error", revision, "--"], env=environment,
+                capture_output=True, text=True, timeout=30)
+            return connected.returncode == 0
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise CodeHostTransientError("execution workspace ancestry inspection failed") from exc
+
+    @staticmethod
     def _materialize_git_sync(
         checkout: Path,
         remote: str,
@@ -551,6 +573,10 @@ class CodeHostService:
                 ).stdout.strip().casefold()
                 if observed != revision:
                     raise CodeHostError("provider default branch changed during materialization")
+                if not CodeHostService._git_has_complete_history(isolated, revision):
+                    raise CodeHostError(
+                        "provider ancestry is incomplete within bounded snapshot fetch; "
+                        "complete public history is required before workspace refresh")
                 # Import only the verified object pack. This step has no token,
                 # network transport, reference updates or working-tree writes.
                 with (root_path / "verified.pack").open("w+b") as pack:
@@ -567,6 +593,8 @@ class CodeHostService:
                         stdin=pack, capture_output=True, env=safe_environment,
                         check=True, timeout=120,
                     )
+                if not CodeHostService._git_has_complete_history(checkout, revision):
+                    raise CodeHostError("imported provider ancestry is incomplete; workspace not refreshed")
             except (OSError, subprocess.SubprocessError) as exc:
                 raise CodeHostTransientError(
                     "provider revision materialization failed"

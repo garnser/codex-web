@@ -323,7 +323,7 @@ class CodeHostContractTests(unittest.IsolatedAsyncioTestCase):
         checkout = Path(self.temp.name) / "materialize-checkout"
         checkout.mkdir()
         with (
-            patch.object(service, "_git_has_commit", return_value=False),
+            patch.object(service, "_git_has_complete_history", return_value=False),
             patch.object(service, "_materialize_git_sync") as fetch,
         ):
             fact = await service.materialize_default_branch_revision(
@@ -397,7 +397,7 @@ class CodeHostContractTests(unittest.IsolatedAsyncioTestCase):
         checkout = Path(self.temp.name) / "concurrent-checkout"
         checkout.mkdir()
         with (
-            patch.object(service, "_git_has_commit", side_effect=[False, True]),
+            patch.object(service, "_git_has_complete_history", side_effect=[False, True]),
             patch.object(service, "_materialize_git_sync") as fetch,
         ):
             first, second = await asyncio.gather(
@@ -422,7 +422,8 @@ class CodeHostContractTests(unittest.IsolatedAsyncioTestCase):
 
         def run(command, **kwargs):
             calls.append((command, kwargs))
-            stdout = revision + "\n" if "rev-parse" in command else ""
+            stdout = ("false\n" if "--is-shallow-repository" in command
+                      else revision + "\n" if "rev-parse" in command else "")
             return subprocess.CompletedProcess(command, 0, stdout, "")
 
         checkout = Path(self.temp.name) / "git-command-checkout"

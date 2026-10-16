@@ -309,3 +309,18 @@ workspace administration to the worker identity. The two durable writes remain
 separate; a suppressed release failure still requires supported reconciliation.
 Terminal-assignment retention is not proof that an unreferenced workspace is safe
 to release, and this lifecycle repair does not retire historical orphan leases.
+
+### Complete-history refresh contract
+
+An available commit/tree is insufficient for writable source refresh. The existing
+materialization path requires a non-shallow repository with all reachable commit,
+tree and blob objects; connectivity checks disable lazy fetch and replacement
+objects. The same check applies when the exact tip already exists locally.
+
+The bounded snapshot fetch currently refuses incomplete ancestry before importing
+its pack or changing workspace HEAD, with an explicit complete-history-required
+error. It does not claim shallow source is publishable or extend fetch deadlines
+or disk limits. Complete public-history input through the canonical source
+preparation path remains valid; credentials and provider attestations stay behind
+the existing boundary. Existing workspace/broker denial diagnostics expose this
+refusal; no new inspector, store or authority is introduced.
