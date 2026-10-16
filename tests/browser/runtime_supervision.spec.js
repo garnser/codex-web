@@ -8,7 +8,8 @@ test(`runner header remains readable beside the complete toolbar (${width}, ${th
   await expect(page.locator('#thread-meta [data-runner-state]')).toHaveAttribute('data-runner-state',state);
   const layout=await page.evaluate(()=>{
     const rect=selector=>{const r=document.querySelector(selector).getBoundingClientRect();return{width:r.width,height:r.height,left:r.left,right:r.right};};
-    return{heading:rect('.thread-heading'),title:rect('h1'),badge:rect('.runner-status'),viewport:innerWidth,document:document.documentElement.scrollWidth};
+    return{heading:rect('.thread-heading'),title:rect('h1'),badge:rect('.runner-status'),viewport:innerWidth,document:document.documentElement.scrollWidth,
+      controls:[...document.querySelectorAll('.controls button')].map(n=>({text:n.textContent,content:n.scrollWidth,available:n.clientWidth}))};
   });
   if(width>900)expect(layout.heading.width).toBeGreaterThanOrEqual(320);
   expect(layout.title.height).toBeLessThanOrEqual(50);
@@ -16,6 +17,7 @@ test(`runner header remains readable beside the complete toolbar (${width}, ${th
   expect(layout.badge.left).toBeGreaterThanOrEqual(0);
   expect(layout.badge.right).toBeLessThanOrEqual(width);
   expect(layout.document).toBeLessThanOrEqual(width);
+  for(const control of layout.controls)expect(control.content,control.text).toBeLessThanOrEqual(control.available);
   await testInfo.attach('header-layout',{body:JSON.stringify(layout),contentType:'application/json'});
   if(state==='active'&&width!==1024)await page.screenshot({path:testInfo.outputPath('runner-header.png'),fullPage:true});
 });
