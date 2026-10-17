@@ -58,6 +58,8 @@ def seal_storage_snapshot(chunks, *, crypto, key_id, context, actor) -> Iterator
                   'snapshot_id':context.object_id,'key_id':key_id,'key_version':batch.key_version,
                   'context_sha256':hashlib.sha256(canonical(context.model_dump(mode='json'))).hexdigest()}
         prefix = MAGIC + _frame(header)
+        if len(prefix)>65536+len(MAGIC)+8:
+            raise StoragePreservationRefused("encrypted_header_limit")
         yield prefix
         digests = []
         count = plain_bytes = 0

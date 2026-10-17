@@ -102,6 +102,7 @@ class UsageHistoryPreservationTests(unittest.TestCase):
                 organization_id=self.actor.organization_id,workspace_id=self.actor.workspace_id,
                 provider_id='synthetic',runtime_id='fixture',runtime_type='test'))
         rows, diagnostic = self.usage.inspect_for_history(max_pages=1)
-        self.assertEqual(len(rows),100)
+        # The bounded physical page includes one collection marker.
+        self.assertEqual(len(rows),99)
         self.assertFalse(diagnostic['complete'])
         self.assertTrue(diagnostic['continuation_available'])
