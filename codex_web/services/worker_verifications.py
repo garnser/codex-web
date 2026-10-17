@@ -177,7 +177,7 @@ class WorkerVerificationAdapter:
             self.denied('Verification requires current admitted unmediated procedure scope')
         return worker, requester, decision
 
-    def guard_rows(self, assignment, ref):
+    def guard_rows(self, assignment, ref, validator):
         b, service = self.broker, self.service()
         store = service.store.store
         profiles = b.execution_profiles
@@ -185,6 +185,28 @@ class WorkerVerificationAdapter:
             self.denied('Canonical execution/profile stores unavailable')
         repositories = [b.identity.store, b.authority.registry.store, service.store,
             profiles.registry.store, b.action_intents.execution.resources.store]
+        # Application composition supplies the same SecretBroker to native
+        # delegation validation and ActionExecutionService. Serialize its actual
+        # metadata read set, just as ActionIntent settlement does; never resolve
+        # or expose credential values here. A foreign store is refused below.
+        secrets = b.action_intents.execution.secret_broker
+        if secrets is not None:
+            repositories.append(secrets.store)
+            if assignment.secret_refs:
+                # The broker's trusted callback is the actual native session
+                # validator, not request metadata. Refuse opaque/foreign-store
+                # delegation composition instead of locking a convenient but
+                # unrelated SecretBroker and claiming credential serialization.
+                bound_broker = getattr(validator, '__self__', None)
+                origin = getattr(bound_broker, 'validator', None)
+                session = getattr(origin, '__self__', None)
+                provider = getattr(session, 'credential_provider', None)
+                delegated_store = getattr(getattr(provider, 'broker', None), 'store', None)
+                if (getattr(bound_broker, 'service', None) is not b
+                        or delegated_store is not secrets.store):
+                    self.denied('Current native credential validator read set is unavailable or differs')
+        elif assignment.secret_refs:
+            self.denied('Canonical session credential metadata store unavailable')
         if profiles.agent_profiles is not None:
             repositories.append(profiles.agent_profiles.store)
         if service.governance is not None:
@@ -237,7 +259,7 @@ class WorkerVerificationAdapter:
             self.denied('Original proof exceeds bounded artifact review scope')
         request = request.model_copy(update={'execution_id': assignment.execution_id,
             'artifact_ids': artifact_ids})
-        selected = self.guard_rows(assignment, request.work_item_ref)
+        selected = self.guard_rows(assignment, request.work_item_ref, validator)
         original_worker, _, _ = self.principals(assignment, worker_actor, resolved, validator, payload)
         attribution = {}
         def commit(updater):
@@ -269,7 +291,7 @@ class WorkerVerificationAdapter:
                 if (firing is None or schedule is None or recovery.policy is None
                         or (firing.organization_id, firing.workspace_id) != tenant
                         or (recovery.policy_organization_id, recovery.policy_workspace_id) != tenant
-                        or (schedule.organization_id, schedule.workspace_id) != tenant):
+                        or (schedule.tenant_id, schedule.workspace_id) != tenant):
                     self.denied('Original Recovery firing/schedule/policy unavailable in current tenant')
                 snapshot = {'state_sha256': fingerprint(recovery), 'firing_sha256': fingerprint(firing),
                     'schedule_sha256': fingerprint(schedule),

@@ -224,3 +224,15 @@ original effect, changes Recovery health, or authorizes an operator migration.
 Existing Verification inspection is the UI surface; it exposes actual producer,
 verifier, independence, references, result and findings. Recovery operational
 acceptance remains separate from source delivery.
+
+The append read set includes `secret_metadata`, shared by the application's native
+credential delegation and ActionExecutionService SecretBroker. When an assignment
+has credential references, the adapter requires the trusted assignment-bound
+broker callback to identify that same native credential-provider store. Opaque or
+differently stored delegation composition refuses the mutation; it does not silently
+substitute an assignment-only validator. The current validator still executes before
+and after the proposed append. A separate PostgreSQL metadata revoke/rotation writer
+must commit before admission (then refuse) or serialize after the append transaction.
+Only metadata is inspected/locked; credential values never enter Verification or
+broker output. The ScheduleRecord tenant field is `tenant_id`, paired with its
+`workspace_id`; it must match the actual verifier's organization/workspace.

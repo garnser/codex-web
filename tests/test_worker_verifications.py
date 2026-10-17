@@ -188,15 +188,20 @@ class WorkerVerificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.evidence.store.load().verifications,[])
 
     async def test_current_profile_revoked_after_preflight_no_append(self):
-        original=self.service.procedure_admission.__call__
-        async def revoke(**kwargs):
-            result=await original(**kwargs)
-            self.agent_profiles.update('developer',AgentProfileUpdate(description='Changed current pin',
-                reason='Synthetic current role change'),actor=self.admin)
-            return result
-        self.service.procedure_admission=revoke
-        status,_,_=await self.post()
-        self.assertEqual(status,403)
+        fixture = self
+        admission = self.service.procedure_admission
+        class RevokeAfterPreflight(BrokerProcedureAdmissionService):
+            async def __call__(self, **kwargs):
+                result = await super().__call__(**kwargs)
+                fixture.agent_profiles.update('developer',AgentProfileUpdate(
+                    description='Changed current pin', reason='Synthetic current role change'),actor=fixture.admin)
+                return result
+        # Keep the real current inspector/read set as well as recorded preflight.
+        self.service.procedure_admission=RevokeAfterPreflight(
+            admission.discovery, admission.workers, admission.control_actor)
+        status,_,body=await self.post()
+        self.assertEqual(status,403,body)
+        self.assertIn('Pinned execution/Agent Profile no longer effective',body['error']['message'])
         self.assertEqual(self.evidence.store.load().verifications,[])
 
     async def test_revocation_at_final_append_rolls_back(self):
@@ -326,3 +331,16 @@ class WorkerVerificationTests(unittest.IsolatedAsyncioTestCase):
         direct=self.evidence.create_verification(VerificationCreate(evidence_ids=(proof.id,),
             artifact_ids=(artifact.id,),method=PROOF_CONTRACT,result='rejected'),actor=self.worker_actor)
         self.assertFalse(direct.independent)
+
+    async def test_schedule_tenant_id_must_match_actual_verifier_tenant(self):
+        # Synthetic corruption at the canonical storage boundary. Even a valid
+        # referenced ID cannot make a foreign-tenant schedule consumable.
+        def move(state):
+            schedule=state.schedules[self.firing.schedule_id]
+            state.schedules[self.firing.schedule_id]=schedule.model_copy(update={'tenant_id':'foreign-tenant'})
+            return state
+        self.scheduler.store.update(move)
+        status,_,body=await self.post()
+        self.assertEqual(status,403,body)
+        self.assertIn('Original Recovery firing/schedule/policy unavailable in current tenant',body['error']['message'])
+        self.assertEqual(self.evidence.store.load().verifications,[])
