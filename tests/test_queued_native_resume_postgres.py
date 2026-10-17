@@ -40,3 +40,33 @@ class PostgresQueuedNativeResumeTests(_PostgresFixture, ResumeCases, unittest.Is
         self.assertEqual(results[0].queued_turn_snapshot,results[1].queued_turn_snapshot)
         self.assertIsNone(self.saved().queued_start_receipt)
         self.runtime._send.assert_not_called()
+
+
+@unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'), 'isolated PostgreSQL DSN required')
+class PostgresPostStartBookkeepingTests(_PostgresFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_native_receipt_survives_post_start_bookkeeping_failure(self):
+        from tests import test_queued_preflight_retention as retention
+        from psycopg_pool import ConnectionPool
+        from codex_web.storage.postgres_state import PostgresStateStore
+        stores={}
+        def state_store(path):
+            key=str(path)
+            if key not in stores:
+                owned=self.state_store_factory(path)
+                self.addCleanup(owned.close)
+                stores[key]=(owned,self._test_schema)
+                return owned
+            owned,schema=stores[key]
+            pool=ConnectionPool(os.environ['CODEX_WEB_TEST_POSTGRES_DSN'],min_size=1,max_size=1,
+                timeout=3,kwargs={'options':f'-c search_path={schema}'})
+            self.addCleanup(pool.close)
+            reader=PostgresStateStore(os.environ['CODEX_WEB_TEST_POSTGRES_DSN'],connection_pool=pool)
+            self.addCleanup(reader.close)
+            self.assertIsNot(reader._pool,owned._pool)
+            with reader._read_connection() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute('SELECT current_schema()')
+                    self.assertEqual(cursor.fetchone()[0],schema)
+            return reader
+        with patch.object(retention,'SQLiteStateStore',side_effect=state_store):
+            await retention.QueuedAdmissionDrainTests.test_native_receipt_survives_post_start_bookkeeping_failure(self)

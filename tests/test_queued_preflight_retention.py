@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 from pathlib import Path
 
 from codex_web.models import QueuedTurn, BotReplyTarget
@@ -120,6 +120,8 @@ class QueuedAdmissionDrainTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(runtime.queued_preflight.store.for_thread('thread')[0].status, 'started')
 
     async def test_native_receipt_survives_post_start_bookkeeping_failure(self):
+        from contextlib import nullcontext
+        from tests.test_execution_preflight import actor
         from codex_web.models import Project
         from tests.test_turn_execution import TurnExecutionStartTests
         for receipt_write_fails in (False, True):
@@ -139,7 +141,14 @@ class QueuedAdmissionDrainTests(unittest.IsolatedAsyncioTestCase):
                 runtime.queued_preflight.begin_queued_start(retained.id, claim_id=claim)
                 if receipt_write_fails:
                     runtime.queued_preflight.record_queued_native_start = Mock(side_effect=RuntimeError('receipt storage unavailable'))
-                with self.assertRaises(RuntimeError):
+                # The real reader commits observation before projecting its
+                # receipt, independently of the later controller bookkeeping.
+                # A receipt-write outage must fail BOTH receipt boundaries;
+                # preserve the positive observation rather than bypass capture.
+                projection = (patch('codex_web.services.queued_native_start.reconcile_captured_start',
+                    side_effect=RuntimeError('reader receipt storage unavailable'))
+                    if receipt_write_fails else nullcontext())
+                with projection, self.assertRaises(RuntimeError):
                     await runtime.start_thread_turn_now('t1', project=project, message='original',
                         sandbox='workspace-write', approval_policy='on-request',
                         execution_id='original-execution', source='queued:web',
@@ -153,6 +162,21 @@ class QueuedAdmissionDrainTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(host.active['t1'].turn_id, 'turn-1')
                 self.assertEqual(sessions.completed, [])
                 self.assertEqual([method for method, _ in sessions.session.requests].count('turn/start'), 1)
+                self.assertIsNotNone(saved.queued_start_correlation)
+                self.assertEqual(saved.queued_start_evidence.provider_native_turn_id, 'turn-1')
+                self.assertEqual(saved.queued_turn_snapshot, retained.queued_turn_snapshot)
+                if receipt_write_fails:
+                    self.assertIsNone(saved.queued_start_receipt)
+                    admin=actor(admin=True).model_copy(update={
+                        'organization_id':project.organization_id,'workspace_id':project.workspace_id})
+                    reconciled=runtime.queued_preflight.reconcile_prestart_refusal(retained.id,actor=admin)
+                    self.assertEqual(reconciled.status,'started')
+                    self.assertEqual(reconciled.queued_start_receipt.provider_native_turn_id,'turn-1')
+                    self.assertEqual(reconciled.queued_start_evidence,saved.queued_start_evidence)
+                    self.assertEqual(runtime.queued_preflight.reconcile_prestart_refusal(retained.id,actor=admin),
+                        reconciled)
+                    self.assertEqual([method for method, _ in sessions.session.requests].count('turn/start'),1)
+                    self.assertEqual(sessions.completed,[])
 
     async def test_restored_queue_copy_is_reconciled_only_with_actual_start_receipt(self):
         from codex_web.models import Project, QueuedNativeStartReceipt
