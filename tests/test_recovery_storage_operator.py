@@ -359,7 +359,6 @@ class FullShapeEncryptedStorageTests(PostgresStorageOperatorTests):
     """Select ONLY this method in the separate full-scale request."""
     async def test_full_current_shape_governed_encrypted_capture_and_isolated_verify(self):
         import itertools
-        from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
         count,total,largest=118389,294508748,12373762
         ordinary,remainder=divmod(total-largest-6906,count-2)
         def rows():
@@ -392,4 +391,34 @@ class FullShapeEncryptedStorageTests(PostgresStorageOperatorTests):
         verified=self.artifacts.create_verification(VerificationCreate(evidence_ids=(proof.id,),
             method='Private current full-scale admission',result=VerificationResult.VERIFIED),actor=self.independent)
         self.payload=self.payload.model_copy(update={'capacity_evidence_id':proof.id,'capacity_verification_id':verified.id})
-        await self.test_capture_verify_same_backend_once_preserves_invalid_rows_without_health_pass()
+        async with self.client() as client:
+            item=await self.capture(client)
+            captured=await client.get('/api/recovery/storage-preservation/receipts/'+item['id'])
+            self.assertEqual(captured.status_code,200,captured.text)
+            report=captured.json()['report']
+            self.assertGreaterEqual(report['rows'],count)
+            self.assertEqual(report['semantic_status'],'invalid')
+            # Full-size encryption may legitimately consume the original
+            # admission's start-freshness window. Verification is a NEW scoped
+            # operation and receives genuinely fresh independent proof.
+            current=self.artifacts.create_evidence(EvidenceCreate(evidence_type=proof.evidence_type,
+                resource_ids=proof.resource_ids,source=proof.source,result=proof.result,summary=proof.summary,
+                metadata={**proof.metadata,'expires_at':time.time()+300}),actor=self.actor)
+            verification=self.artifacts.create_verification(VerificationCreate(evidence_ids=(current.id,),
+                method='Fresh private isolated-verify resource admission',result=VerificationResult.VERIFIED),actor=self.independent)
+            payload=self.payload.model_copy(update={'operation_id':'verify-scale','idempotency_key':'verify-scale',
+                'artifact_id':captured.json()['artifact_ids'][0],
+                'capacity_evidence_id':current.id,'capacity_verification_id':verification.id})
+            response=await client.post('/api/recovery/storage-preservation/operations',json=self.body(VERIFY,payload))
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(response.json()['item']['status'],'succeeded',response.text)
+            isolated=await client.get('/api/recovery/storage-preservation/receipts/'+response.json()['item']['id'])
+            self.assertEqual(isolated.status_code,200,isolated.text)
+            restored=isolated.json()['report']
+            self.assertTrue(restored['isolated_restore_verified'])
+            self.assertFalse(restored['semantic_recovery_qualified'])
+            self.assertEqual(restored['raw_stream_sha256'],report['raw_stream_sha256'])
+            print(json.dumps({'scale_rows':count,'scale_payload_bytes':total,'largest_value_bytes':largest,
+                'snapshot_rows':report['rows'],'snapshot_sha256':report['raw_stream_sha256'],
+                'semantic_status':restored['semantic_status'],'isolated_restore_verified':True}))
+        self.assert_original()
