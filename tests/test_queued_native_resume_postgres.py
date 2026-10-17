@@ -20,7 +20,18 @@ class PostgresQueuedNativeResumeTests(_PostgresFixture, ResumeCases, unittest.Is
 
     async def test_separate_connection_duplicate_reconciliation_is_same_fact(self):
         c=self.prepare();self.capture.observe(c,generation='generation',message=self.negative())
-        other_store=self.second_store();self.addCleanup(other_store.close)
+        from psycopg_pool import ConnectionPool
+        from codex_web.storage.postgres_state import PostgresStateStore
+        pool=ConnectionPool(os.environ['CODEX_WEB_TEST_POSTGRES_DSN'],min_size=1,max_size=1,
+            timeout=3,kwargs={'options':f'-c search_path={self._test_schema}'})
+        self.addCleanup(pool.close)
+        other_store=PostgresStateStore(os.environ['CODEX_WEB_TEST_POSTGRES_DSN'],connection_pool=pool)
+        self.addCleanup(other_store.close)
+        self.assertIsNot(other_store._pool,self.service.store.store._pool)
+        with other_store._read_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT current_schema()')
+                self.assertEqual(cursor.fetchone()[0],self._test_schema)
         other=ExecutionPreflightService(ExecutionPreflightStore(other_store))
         results=await asyncio.gather(*[asyncio.to_thread(service.reconcile_prestart_refusal,
             self.f.attempt.id,actor=actor(admin=True)) for service in [self.service,other]])
