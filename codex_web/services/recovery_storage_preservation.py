@@ -61,10 +61,10 @@ def _blocks(chunks):
         yield bytes(pending)
 
 
-def seal_storage_snapshot(chunks, *, crypto, key_id, context, actor) -> Iterator[bytes]:
+def seal_storage_snapshot(chunks, *, crypto, key_id, context, actor, key_version=None) -> Iterator[bytes]:
     # Enter before advancing the source snapshot iterator: pin KMS outside its
     # owning transaction. Its final audited recheck occurs after cursor close.
-    with crypto.envelope_batch(key_id,context,actor=actor,operation='encrypt') as batch:
+    with crypto.envelope_batch(key_id,context,actor=actor,operation='encrypt',key_version=key_version) as batch:
         header = {'kind':'encrypted-state-storage-preservation','format_version':'1.0',
                   'snapshot_id':context.object_id,'key_id':key_id,'key_version':batch.key_version,
                   'context_sha256':hashlib.sha256(canonical(context.model_dump(mode='json'))).hexdigest()}

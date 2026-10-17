@@ -19,7 +19,7 @@ from codex_web.artifact_evidence import (ArtifactCreate, ArtifactType, ArtifactD
 from codex_web.artifact_content import ArtifactContentScope, ArtifactContentPointer
 from codex_web.crypto import EncryptionContext
 from codex_web.data_governance import DataClassification
-from codex_web.recovery_preservation import SOURCE, CAPACITY_CONTRACT, CAPTURE, VERIFY, StoragePreservationReportV1
+from codex_web.recovery_preservation import SOURCE, CAPACITY_CONTRACT, CAPTURE, VERIFY, StoragePreservationReportV1, StorageInventoryV1
 from codex_web.resources import ResourceType, ResourceLifecycle
 from codex_web.services.recovery import RecoveryConflictError
 from codex_web.services.recovery_policy import RecoveryPolicyControl
@@ -184,12 +184,56 @@ class StoragePreservationOperations:
                 if wal.exists():stats['physical_database_bytes']+=wal.stat().st_size
             return stats
 
+    def captured_inventory(self,payload,actor):
+        """Use a canonical immutable producer receipt, never a caller's sizing.
+
+        Capture's private deterministic Evidence id is not assignable through
+        public Evidence APIs. Inventory and content pointer commit together.
+        Older captures without this contract refuse rather than guess capacity.
+        """
+        artifact=self.recovery.evidence.get_artifact(payload.artifact_id,actor=actor)
+        if (artifact.source!=SOURCE or artifact.content is None or artifact.digest is None
+            or artifact.content.state!='available' or artifact.resource_ids!=(payload.resource_id,)):
+            raise RecoveryConflictError('Exact scoped preservation capture required')
+        receipt=self.recovery.evidence.get_evidence(artifact.metadata.get('capture_evidence_id',''),actor=actor)
+        scoped='\0'.join((artifact.organization_id,artifact.workspace_id,artifact.producer_identity_id,
+                           SOURCE,artifact.metadata.get('preservation_intent_id','')))
+        expected_id='evidence-'+hashlib.sha256(scoped.encode()).hexdigest()
+        if (receipt.id!=expected_id or receipt.source!=SOURCE or receipt.lifecycle!=EvidenceLifecycle.VALID
+            or receipt.result!=EvidenceResult.WARN
+            or receipt.producer_identity_id!=artifact.producer_identity_id
+            or receipt.artifact_ids!=(artifact.id,) or receipt.resource_ids!=(payload.resource_id,)
+            or receipt.metadata.get('action_id')!=CAPTURE
+            or receipt.metadata.get('intent_id')!=artifact.metadata.get('preservation_intent_id')
+            or receipt.metadata.get('request_sha256')!=artifact.metadata.get('request_sha256')):
+            raise RecoveryConflictError('Authenticated capture inventory receipt required')
+        report=StoragePreservationReportV1.model_validate_json(receipt.metadata.get('report_json',''))
+        if report.inventory.rows!=report.rows:
+            raise RecoveryConflictError('Capture inventory count mismatch')
+        return artifact,report.inventory.model_dump()
+
+    @staticmethod
+    def effective_limits(inventory):
+        # The source metadata scan runs before selecting payload TEXT. Apply
+        # the same admitted row/stream ceilings to capture, assessment and
+        # target restore, including a later growing source snapshot.
+        base=StorageSnapshotLimits()
+        return StorageSnapshotLimits(
+            max_rows=inventory['_row_bound'],max_payload_bytes=inventory['_payload_bound'],
+            max_value_bytes=inventory['_value_bound'],max_plaintext_bytes=inventory['_raw_bound'],
+            max_record_bytes=min(base.max_record_bytes,
+                max(1024,4*((inventory['_value_bound']+2)//3)+base.max_key_bytes*6+1024)))
+
     @contextmanager
     def reservation(self,payload,actor,config,pins,backend,filesystem):
         from codex_web.services.local_artifact_content import LocalArtifactContentStore
         if not isinstance(backend,LocalArtifactContentStore):
             raise RecoveryConflictError('Current preservation requires local protected content disk admission')
-        stats=self.inventory()
+        capture=None
+        if payload.artifact_id is not None:
+            capture,stats=self.captured_inventory(payload,actor)
+        else:
+            stats=self.inventory()
         limits=StorageSnapshotLimits()
         if stats['rows']>limits.max_rows or stats['max_value_bytes']>limits.max_value_bytes or stats['payload_bytes']>limits.max_payload_bytes:
             raise RecoveryConflictError('Current storage exceeds preservation format')
@@ -201,9 +245,16 @@ class StoragePreservationOperations:
         raw_bound=min(limits.max_plaintext_bytes,stats['framed_bytes']*105//100+65536)
         from codex_web.services.recovery_storage_preservation import CHUNK_BYTES,MAX_ENVELOPE,MAX_MANIFEST
         cipher_bound=((raw_bound+CHUNK_BYTES-1)//CHUNK_BYTES)*MAX_ENVELOPE+2*MAX_MANIFEST+65536
-        target_bound=max(stats['payload_bytes']*3+stats['key_bytes']*4+stats['rows']*512,
-                         stats['physical_database_bytes']*2+stats['payload_bytes']+stats['rows']*512)
-        memory_bound=stats['max_value_bytes']*12+96*1024**2
+        # Reserve growth for capture's own later snapshot, including its new
+        # canonical reservation/audit rows. VERIFY uses exact capture maxima;
+        # today's shrunken live table is never a capacity substitute.
+        row_bound=min(limits.max_rows,stats['rows']+64) if capture is None else max(1,stats['rows'])
+        payload_bound=min(limits.max_payload_bytes,stats['payload_bytes']*105//100+65536) if capture is None else max(1,stats['payload_bytes'])
+        value_bound=min(limits.max_value_bytes,stats['max_value_bytes']*105//100+65536) if capture is None else max(1,stats['max_value_bytes'])
+        # Structural target overhead and admitted source growth, not current
+        # live relation sizes. A permitted large row is charged before fetch.
+        target_bound=payload_bound*4+stats['key_bytes']*8+row_bound*1024+1024**2
+        memory_bound=value_bound*12+96*1024**2
         if memory_bound>config['memory_bytes']:
             raise RecoveryConflictError('Current maximum row exceeds admitted memory estimate')
         proof=self.capacity(payload,actor,config,pins)
@@ -224,7 +275,8 @@ class StoragePreservationOperations:
         if not hasattr(self.recovery.state_store,'dsn'):
             actual=self.recovery.state_store.path.parent.resolve(strict=True)
         else:
-            actual=Path(stats['_database_directory']).resolve(strict=True)
+            with self.recovery.state_store._connection() as connection:
+                actual=Path(connection.execute('SHOW data_directory').fetchone()[0]).resolve(strict=True)
         if actual!=database or actual.stat().st_dev!=reservation.stat().st_dev:
             raise RecoveryConflictError('Database reservation filesystem mapping changed')
         permitted=[Path(root).resolve(strict=True) for root in filesystem.allowed_write_roots]
@@ -254,7 +306,9 @@ class StoragePreservationOperations:
                 os.posix_fallocate(fd,0,amount)
                 os.fsync(fd)
             yield {**stats,'_raw_bound':raw_bound,'_cipher_bound':cipher_bound,
-                   '_target_bound':target_bound,'reserved_peak_bytes':charged,
+                   '_target_bound':target_bound,'_row_bound':row_bound,
+                   '_payload_bound':payload_bound,'_value_bound':value_bound,
+                   '_capture_artifact':capture,'reserved_peak_bytes':charged,
                    'memory_estimate_bytes':memory_bound}
         finally:
             for fd,path in files:
@@ -305,15 +359,19 @@ class StoragePreservationOperations:
         return EncryptionContext(organization_id=actor.organization_id,workspace_id=actor.workspace_id,
             object_type='recovery_storage_preservation',object_id=payload.operation_id,resource_id=payload.resource_id)
 
-    def _assess(self,chunks,source_backend):
-        invalid=[];count=invalid_count=0
+    def _assess(self,chunks,source_backend,limits=None):
+        invalid=[];count=invalid_count=payload_bytes=key_bytes=max_value_bytes=framed_bytes=0
         digest=hashlib.sha256()
         def observed():
+            nonlocal framed_bytes
             for chunk in chunks:
+                framed_bytes+=len(chunk)
                 digest.update(chunk);yield chunk
         for table,key,value,timestamp in import_rows(observed(),backend=source_backend,
-                schema_version=self.recovery.state_store.SCHEMA_VERSION,limits=StorageSnapshotLimits()):
+                schema_version=self.recovery.state_store.SCHEMA_VERSION,limits=limits or StorageSnapshotLimits()):
             check_operation_budget();count+=1
+            size=len(value.encode('utf8'));payload_bytes+=size
+            max_value_bytes=max(max_value_bytes,size);key_bytes+=len(key.encode('utf8'))
             if table=='documents':
                 try:
                     json.loads(value)
@@ -323,7 +381,9 @@ class StoragePreservationOperations:
                         raw=value.encode('utf8')
                         invalid.append({'reference':'storage-key-sha256:'+hashlib.sha256(key.encode('utf8')).hexdigest(),'bytes':len(raw),
                             'sha256':hashlib.sha256(raw).hexdigest(),'error_code':'json_decode_error'})
-        return {'rows':count,'raw_stream_sha256':digest.hexdigest(),
+        return {'rows':count,'inventory':StorageInventoryV1(rows=count,payload_bytes=payload_bytes,
+                    max_value_bytes=max_value_bytes,key_bytes=key_bytes,framed_bytes=framed_bytes).model_dump(),
+                'raw_stream_sha256':digest.hexdigest(),
                 'semantic_status':'invalid' if invalid_count else 'unknown',
                 'invalid_json_rows':invalid_count,'diagnostics':invalid,
                 'diagnostics_bounded':True,'diagnostics_truncated':invalid_count>len(invalid)}
@@ -345,16 +405,31 @@ class StoragePreservationOperations:
         backend_id=evidence_service._content_backend_id(actor,None)
         backend=content.backend(backend_id)
         with self.reservation(payload,actor,config,pins,backend,filesystem) as inventory:
+            limits=self.effective_limits(inventory)
             if action_id==CAPTURE:
+                def reserve(updater):
+                    domains={**admission['guard_rows'],store.namespace:(None,),
+                             service.crypto.store.namespace:(None,),service.store.namespace:(None,),
+                             self.configuration.store.namespace:(None,)}
+                    def apply(rows):
+                        admission['guard'](None)
+                        _,now_config,now_pins,now_key=self.current(payload,actor,capacity=False)
+                        if now_config!=config or now_pins!=pins or now_key!=key:
+                            raise RecoveryConflictError('Capture key/configuration changed before reservation')
+                        current=updater(store._decode(rows[store.namespace][None]))
+                        admission['guard'](None)
+                        return {store.namespace:{None:current.model_dump(mode='json')}}
+                    service.state_store.record_mutate_many(domains,apply)
                 artifact=evidence_service.create_artifact(ArtifactCreate(artifact_type=ArtifactType.REPORT,
                     name='Opaque StateStore preservation',resource_ids=(payload.resource_id,),source=SOURCE,
                     external_id=intent_id,classification=DataClassification.RESTRICTED,deny_model_context=True,
                     metadata={'preservation_intent_id':intent_id,'request_sha256':fingerprint(payload),
                               'operation_id':payload.operation_id,'resource_id':payload.resource_id,
-                              'state':'reserved_unknown_until_verified'}),actor=actor)
+                              'preservation_key_id':key.id,'preservation_key_version':key.current_version,
+                              'state':'reserved_unknown_until_verified'}),actor=actor,_commit=reserve)
                 def bounded_source():
                     consumed=0
-                    source=service.state_store.iter_storage_snapshot()
+                    source=service.state_store.iter_storage_snapshot(limits=limits)
                     try:
                         for chunk in source:
                             consumed+=len(chunk)
@@ -363,7 +438,7 @@ class StoragePreservationOperations:
                             yield chunk
                     finally:source.close()
                 encrypted=seal_storage_snapshot(bounded_source(),crypto=service.crypto,
-                    key_id=key.id,context=self._context(payload,actor),actor=actor)
+                    key_id=key.id,key_version=key.current_version,context=self._context(payload,actor),actor=actor)
                 result=content.put(ArtifactContentScope(organization_id=actor.organization_id,workspace_id=actor.workspace_id),
                     encrypted,backend_id=backend_id,media_type='application/vnd.codex.state-storage-preservation')
                 pointer=ArtifactContentPointer(backend_id=result.backend_id,locator=result.locator,
@@ -389,11 +464,13 @@ class StoragePreservationOperations:
                 capture_context=self._context(payload,actor)
                 content_sha=result.sha256
             else:
-                artifact=evidence_service.get_artifact(payload.artifact_id,actor=actor)
+                artifact=inventory['_capture_artifact']
                 if (artifact.source!=SOURCE or artifact.content is None or artifact.digest is None
                     or artifact.resource_ids!=(payload.resource_id,)):
                     raise RecoveryConflictError('Exact scoped preservation Artifact required')
                 pointer=artifact.content;content_sha=artifact.digest.value
+                if pointer.size_bytes>inventory['_cipher_bound']:
+                    raise RecoveryConflictError('Capture exceeds admitted encrypted stream bound')
                 if pointer.backend_id!=backend_id:
                     raise RecoveryConflictError('Preservation content backend differs from admitted disk')
                 capture_sha=artifact.metadata['request_sha256']
@@ -417,10 +494,10 @@ class StoragePreservationOperations:
                 return open_storage_snapshot(ciphertext(),crypto=service.crypto,context=capture_context,actor=actor)
             # Authenticate/count/diagnose separately; no payload normalized and
             # no valid JSON alone is labelled a usable domain restore.
-            report=self._assess(opened(),'postgres' if hasattr(service.state_store,'dsn') else 'sqlite')
+            report=self._assess(opened(),'postgres' if hasattr(service.state_store,'dsn') else 'sqlite',limits)
             if action_id==VERIFY:
                 with self.isolated_target(intent_id,backend.root) as target:
-                    target.restore_storage_snapshot(opened())
+                    target.restore_storage_snapshot(opened(),limits=limits,max_target_bytes=inventory['_target_bound'])
                     restored=hashlib.sha256()
                     for chunk in target.iter_storage_snapshot(): restored.update(chunk)
                     if restored.hexdigest()!=report['raw_stream_sha256']:
@@ -458,7 +535,8 @@ class StoragePreservationOperations:
                         raise RecoveryConflictError('Preservation Artifact changed before commit')
                     if action_id==CAPTURE:
                         changed=artifact.model_copy(update={'content':pointer,'digest':ArtifactDigest(value=content_sha),
-                            'metadata':{k:v for k,v in {**artifact.metadata,'state':'verified_storage_only'}.items()
+                            'metadata':{k:v for k,v in {**artifact.metadata,'state':'verified_storage_only',
+                                'capture_evidence_id':evidence_service._idempotent_evidence_id(actor,SOURCE,intent_id)}.items()
                                         if not k.startswith('pending_content_')}})
                         current.artifacts=[changed if a.id==artifact.id else a for a in current.artifacts]
                     current=updater(current)

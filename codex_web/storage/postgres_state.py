@@ -1112,12 +1112,12 @@ class PostgresStateStore:
             finally:
                 rows.close()
 
-    def restore_storage_snapshot(self, chunks, *, limits=None):
+    def restore_storage_snapshot(self, chunks, *, limits=None, max_target_bytes=None):
         from codex_web.storage.storage_preservation import StorageSnapshotLimits, restore_database_rows
         with self._connection() as connection:
             restore_database_rows(connection, chunks, backend="postgres",
                                   schema_version=self.SCHEMA_VERSION,
-                                  limits=limits or StorageSnapshotLimits())
+                                  limits=limits or StorageSnapshotLimits(),max_target_bytes=max_target_bytes)
 
     def documents(self) -> dict[str, Any]:
         documents: dict[str, Any] = {}

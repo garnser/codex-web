@@ -14,7 +14,7 @@ class KeyUsageService:
         self.recovery = RecoveryStore(store)
         self.store = store
 
-    def snapshot(self, key, actor, *, version=None, recovery=None, conversations=None):
+    def snapshot(self, key, actor, *, version=None, recovery=None, conversations=None, artifacts=None):
         state = recovery if recovery is not None else self.recovery.load()
         rows = []
         scanned = 0
@@ -63,10 +63,32 @@ class KeyUsageService:
             if envelope is not None and envelope.key_id == key.id:
                 add('conversation_ingress', receipt.canonical_event_id, 'Protected retained conversation input',
                     (envelope.key_version,), 'encrypted_content')
+        from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
+        from codex_web.recovery_preservation import SOURCE
+        artifact_state = artifacts if artifacts is not None else ArtifactEvidenceStore(self.store).load()
+        for artifact in artifact_state.artifacts:
+            charge()
+            if (artifact.organization_id, artifact.workspace_id) != (actor.organization_id, actor.workspace_id):
+                continue
+            if artifact.source != SOURCE:
+                continue
+            # Expiry/invalidation/supersession is not physical destruction.
+            # UNKNOWN reservation/pending content is protected too. Only the
+            # existing verified content tombstone ends this dependency.
+            if (artifact.content is not None and artifact.content.state == 'tombstoned'
+                    and not artifact.metadata.get('pending_content_json')):
+                continue
+            reference = artifact.metadata.get('preservation_key_id')
+            number = artifact.metadata.get('preservation_key_version')
+            if not isinstance(reference, str) or not reference or type(number) is not int or number < 1:
+                raise ValueError('Preservation key dependency unavailable')
+            if reference == key.id:
+                add('storage_preservation', artifact.id, 'Retained opaque storage preservation',
+                    (number,), 'encrypted_or_unknown_custody')
         return {'schema_version': '1.0', 'available': True, 'key_id': key.id,
                 'version': version, 'count': len(rows), 'blocking_count': len(rows),
                 'items': rows[:self.MAX_DISPLAY], 'truncated': len(rows) > self.MAX_DISPLAY,
-                'coverage': ['recovery_policy', 'backup_envelopes', 'backup_key_manifests', 'conversation_ingress'],
+                'coverage': ['recovery_policy', 'backup_envelopes', 'backup_key_manifests', 'conversation_ingress', 'storage_preservation'],
                 'limitations': [
                     'The frozen backup key manifest is a restore requirement, not proof that every key encrypted snapshot content.',
                     'External copies and unregistered encrypted domains cannot be enumerated here.',

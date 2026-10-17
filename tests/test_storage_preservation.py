@@ -259,6 +259,14 @@ class _StorageCases:
         self.target.restore_storage_snapshot([wire])
         self.assertEqual(self.sql_digest(self.target),source_before)
 
+    def test_isolated_target_growth_limit_rolls_back_real_bounded_insert(self):
+        self.insert(self.source, [('growth-target','{"unchanged":true}',9.5)])
+        source_before=self.sql_digest(self.source);target_before=self.sql_digest(self.target)
+        with self.assertRaisesRegex(StoragePreservationRefused,'^isolated_target_growth_limit$'):
+            self.target.restore_storage_snapshot(self.source.iter_storage_snapshot(),max_target_bytes=1)
+        self.assertEqual(self.sql_digest(self.target),target_before)
+        self.assertEqual(self.sql_digest(self.source),source_before)
+
     @unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_PRESERVATION_SCALE') == '1', 'explicit serialized full-shape operator job')
     def test_full_current_shape_crosses_old_row_and_value_limits(self):
         import time
@@ -317,6 +325,17 @@ class SQLiteStoragePreservationTests(_StorageCases, unittest.TestCase):
         self.source = SQLiteStateStore(root/'source.db')
         self.writer = SQLiteStateStore(root/'source.db')
         self.target = SQLiteStateStore(root/'target.db')
+
+    def test_unrelated_sqlite_failure_is_not_relabelled_as_budget_cancel(self):
+        import sqlite3
+        before=self.sql_digest(self.target)
+        def invalid_sql():
+            with self.source._connection() as connection:
+                connection.execute('SELECT impossible FROM fixture_table_does_not_exist')
+            yield b'unreachable'
+        with self.assertRaisesRegex(sqlite3.OperationalError,'no such table'):
+            self.target.restore_storage_snapshot(invalid_sql())
+        self.assertEqual(self.sql_digest(self.target),before)
 
 
 @unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'), 'isolated PostgreSQL DSN required')

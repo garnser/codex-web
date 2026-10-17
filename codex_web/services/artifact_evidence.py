@@ -532,7 +532,7 @@ class ArtifactEvidenceService:
 
     def create_artifact(self, payload: ArtifactCreate, *, actor: AuthenticationActor,
                         source_artifact_ids: tuple[str, ...] = (),
-                        source_evidence_ids: tuple[str, ...] = ()) -> Artifact:
+                        source_evidence_ids: tuple[str, ...] = (), _commit=None) -> Artifact:
         sources = self._research_sources(payload.knowledge_ids, actor=actor, project_id=payload.project_id)
         self._validate_resources(payload.resource_ids, actor)
         self._validate_work_item_ref(payload.work_item_ref, actor)
@@ -629,7 +629,7 @@ class ArtifactEvidenceService:
             current.artifacts.append(artifact)
             return current
 
-        self.store.update(apply)
+        (_commit or self.store.update)(apply)
         return artifact
 
     @staticmethod

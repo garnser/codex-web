@@ -314,7 +314,7 @@ def database_rows(connection, *, backend, limits, deadline=lambda: None):
             last = page[-1][0]
 
 
-def restore_database_rows(connection, chunks, *, backend, schema_version, limits):
+def restore_database_rows(connection, chunks, *, backend, schema_version, limits, max_target_bytes=None):
     """Low-level atomic import. Never called on a live target by Recovery API."""
     pg = backend == "postgres"
     documents = "codex_state_documents" if pg else "state_documents"
@@ -344,6 +344,17 @@ def restore_database_rows(connection, chunks, *, backend, schema_version, limits
             # escape; SQLite uses its existing bounded executemany primitive.
             cursor.executemany(f"INSERT INTO {target}({column},{payload},updated_at) VALUES ({bind},{bind},{bind})",batch)
             check_operation_budget()
+            if max_target_bytes is not None:
+                # Cooperative growth accounting on the owning target transaction,
+                # after each bounded batch; not an OS/filesystem hard quota.
+                if pg:
+                    cursor.execute("SELECT pg_total_relation_size('codex_state_documents')+pg_total_relation_size('codex_state_metadata')")
+                    physical=int(cursor.fetchone()[0])
+                else:
+                    cursor.execute('PRAGMA page_count');pages=int(cursor.fetchone()[0])
+                    cursor.execute('PRAGMA page_size');physical=pages*int(cursor.fetchone()[0])
+                if physical>max_target_bytes:
+                    raise StoragePreservationRefused('isolated_target_growth_limit')
             batch=[];batch_bytes=0
         for table, key, value, timestamp in import_rows(chunks, backend=backend, schema_version=schema_version, limits=limits):
             check_operation_budget()

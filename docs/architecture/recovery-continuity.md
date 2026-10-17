@@ -819,3 +819,54 @@ introduced. Independent tests compare actual SQL TEXT and timestamps (including
 metadata) and the literal seeded full-scale rows; matching encoder digests alone
 are not preservation proof. Full-scale phase timing/actual admitted resource
 qualification remains required before any performance claim.
+
+
+#### Capture-sized admission and retained encryption consumers
+
+Storage report1.0 includes a strict inventory of the authenticated capture:
+row count, payload/key bytes, maximum row bytes and framed bytes. VERIFY obtains
+it from the capture's canonical, private-idempotency Evidence identity, checks
+its producer/intent/resource/request/Artifact binding, and reserves for that
+capture even if the current live database has shrunk. Captures without that
+inventory/referral refuse; the current live database is never substituted.
+Before any new isolated target exists, the captured maximum row must fit the
+admitted memory estimate and actual disk reservations. Capture growth is limited
+by row/payload/max-row/framing ceilings passed into the source's consistent SQL
+metadata preflight **before payload selection**, not just a final byte counter.
+Both assessment and restore enforce the same effective limits. Each bounded
+restore batch also checks actual target relation/page growth on its owning
+transaction and rolls back on excess. These are cooperative growth checks;
+filesystem reservations and a real aggregate job memory bound remain necessary.
+The operation makes no hard disk-quota or whole-backup heap guarantee.
+
+Before encryption, CAPTURE reserves the exact `preservation_key_id` and integer
+`preservation_key_version` on its existing restricted Artifact. This reservation
+locks the Artifact and CryptoKey documents together with the normal admission
+read set and checks the selected current key before appending. KMS encryption
+pins this exact version and final publication rechecks current key/configuration.
+CryptoKey retirement reads preservation Artifacts in the same sorted shared
+transaction as Recovery/conversation consumers. An earlier retained reservation
+therefore prevents revocation; earlier rotation/revocation prevents capture
+publication. No semantic BackupManifest or additional consumer store is created.
+UNKNOWN reservation, pending content, invalidation, supersession and expiry do
+not retire the dependency. Only the existing physical content-delete procedure's
+verified TOMBSTONED pointer, with no pending content, releases it. Missing key
+metadata on a retained preservation Artifact makes impact unavailable rather
+than guessing that revocation is safe. Tenant and exact key/version filtering
+remain enforced, and existing key impact UI renders the canonical consumer.
+
+**Deployment boundary:** these new Artifacts must not be created while an older
+key-retirement implementation remains an authorized writer. Registration alone
+does not enable this action: an operator must qualify all key-writer binaries,
+drain old writers, retain backup/isolated-restore proof and enable the existing
+binding/configuration only after that check. The existing crypto-state1.0 schema
+does not fence an old binary; no automatic old-writer refusal or safe source-only
+rollback after the first retained preservation consumer is claimed. Returning
+to an older implementation requires a separately qualified compatibility plan
+which preserves/protects all retained and UNKNOWN key dependencies. Source
+publication does not authorize production binding/activation or rollback.
+
+SQLite's real progress-handler SQLITE_INTERRUPT is normalized to the existing
+StorageOperationBudget TimeoutError only when that budget actually cancelled or
+expired, after the transaction context has rolled back. Unrelated SQLite errors
+retain their original refusal; cancellation never means partial restore success.

@@ -30,10 +30,21 @@ class StorageDiagnosticV1(BaseModel):
     error_code: Literal['json_decode_error']
 
 
+class StorageInventoryV1(BaseModel):
+    """Authenticated capture counts, not the later live database's size."""
+    model_config = ConfigDict(extra='forbid', frozen=True, strict=True)
+    rows: int = Field(ge=0, le=1_000_000)
+    payload_bytes: int = Field(ge=0, le=2*1024**3)
+    max_value_bytes: int = Field(ge=0, le=32*1024**2)
+    key_bytes: int = Field(ge=0)
+    framed_bytes: int = Field(ge=0, le=4*1024**3)
+
+
 class StoragePreservationReportV1(BaseModel):
     """Operator-only storage result; no semantic recovery/upgrade attestation."""
     model_config = ConfigDict(extra='forbid',frozen=True)
     schema_version: Literal['1.0'] = '1.0'
+    inventory: StorageInventoryV1
     rows: int = Field(ge=0)
     raw_stream_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
     semantic_status: Literal['invalid','unknown']

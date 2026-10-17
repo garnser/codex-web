@@ -76,6 +76,9 @@ class CryptoKeyService:
     def _retire(self, key_id, version, actor, updater):
         from codex_web.storage.conversation_channels import ConversationChannelStore
         from codex_web.conversation_channels import ConversationChannelState
+        from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
+        from codex_web.artifact_evidence import ArtifactEvidenceState
+        artifacts = ArtifactEvidenceStore(self.store.store)
         conversations = ConversationChannelStore(self.store.store)
         # The same cross-domain transaction used by Recovery when adding key
         # references prevents a backup/revocation time-of-check race.
@@ -91,6 +94,7 @@ class CryptoKeyService:
                     key, actor, version=version,
                     recovery=RecoveryStore._decode(documents[RecoveryStore.namespace]),
                     conversations=conversations._decode(documents[conversations.namespace]),
+                    artifacts=artifacts._decode(documents[artifacts.namespace]),
                 )
             except (ValueError, TypeError, AttributeError):
                 raise CryptoKeyImpactUnavailableError('Key dependency impact is unavailable') from None
@@ -103,6 +107,7 @@ class CryptoKeyService:
             self.store.namespace: CryptoKeyState().model_dump(mode='json'),
             RecoveryStore.namespace: RecoveryState().model_dump(mode='json'),
             conversations.namespace: ConversationChannelState().model_dump(mode='json'),
+            artifacts.namespace: ArtifactEvidenceState().model_dump(mode='json'),
         }, apply)
 
     @staticmethod

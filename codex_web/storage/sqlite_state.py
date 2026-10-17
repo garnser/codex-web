@@ -980,13 +980,21 @@ class SQLiteStateStore:
             finally:
                 rows.close()
 
-    def restore_storage_snapshot(self, chunks, *, limits=None):
+    def restore_storage_snapshot(self, chunks, *, limits=None, max_target_bytes=None):
         from codex_web.storage.storage_preservation import StorageSnapshotLimits, restore_database_rows
-        with self._write_connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            restore_database_rows(connection, chunks, backend="sqlite",
-                                  schema_version=self.SCHEMA_VERSION,
-                                  limits=limits or StorageSnapshotLimits())
+        try:
+            with self._write_connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                restore_database_rows(connection, chunks, backend="sqlite",
+                                      schema_version=self.SCHEMA_VERSION,
+                                      limits=limits or StorageSnapshotLimits(),max_target_bytes=max_target_bytes)
+        except sqlite3.OperationalError as error:
+            # The connection context has already rolled back every batch.
+            # Only our real deadline/cancellation interrupt becomes the public
+            # budget exception; unrelated SQLite failures keep their contract.
+            if getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_INTERRUPT:
+                check_operation_budget()
+            raise
 
     def documents(self) -> dict[str, Any]:
         with self._connection() as connection:

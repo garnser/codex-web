@@ -312,6 +312,213 @@ class StorageOperatorTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.committed(),[record])
         self.assert_original()
 
+    def preservation_writer(self):
+        from codex_web.services.crypto_keys import CryptoKeyService
+        from codex_web.storage.crypto_keys import CryptoKeyStore
+        if hasattr(self.sqlite,'dsn'):
+            state=self.writer_store()
+        else:
+            from codex_web.storage.sqlite_state import SQLiteStateStore
+            state=SQLiteStateStore(self.sqlite.path)
+        self.assertIsNot(state,self.sqlite)
+        return CryptoKeyService(CryptoKeyStore(state),self.recovery.crypto.backends)
+
+    def reissue_capacity(self,**changes):
+        for suffix,value in changes.items():self.publish(suffix,value)
+        config,pins=preservation_configuration(self.configuration)
+        old=self.artifacts.get_evidence(self.payload.capacity_evidence_id,actor=self.actor)
+        evidence=self.artifacts.create_evidence(EvidenceCreate(evidence_type=old.evidence_type,
+            resource_ids=old.resource_ids,source=old.source,result=old.result,summary=old.summary,
+            metadata={**old.metadata,'configuration_sha256':hashlib.sha256(canonical(pins)).hexdigest(),
+                'memory_max_bytes':config['memory_bytes'],'memory_bytes':config['memory_bytes'],
+                'disk_bytes':config['disk_bytes'],'wall_seconds':config['wall_seconds'],
+                'expires_at':time.time()+300}),actor=self.actor)
+        proof=self.artifacts.create_verification(VerificationCreate(evidence_ids=(evidence.id,),
+            method='Fresh private current effective budget',result=VerificationResult.VERIFIED),actor=self.independent)
+        self.payload=self.payload.model_copy(update={'capacity_evidence_id':evidence.id,'capacity_verification_id':proof.id})
+
+    def shape_row(self,*,remove=False,size=2*1024**2):
+        pg=hasattr(self.sqlite,'dsn');table='codex_state_documents' if pg else 'state_documents';mark='%s' if pg else '?'
+        with self.sqlite._connection() as connection:
+            if remove:connection.execute(f"DELETE FROM {table} WHERE namespace='synthetic-large-shape'")
+            else:connection.execute(f'INSERT INTO {table}(namespace,payload,updated_at) VALUES ({mark},{mark},{mark})',
+                ('synthetic-large-shape','"'+'Z'*(size-2)+'"',7.125))
+
+    async def test_old_capture_sizes_verify_after_live_shrink_before_any_target_write(self):
+        self.shape_row()
+        operations=self.operator.storage_provider.operations
+        async with self.client() as client:
+            item=await self.capture(client)
+            receipt=(await client.get('/api/recovery/storage-preservation/receipts/'+item['id'])).json()
+            self.assertGreaterEqual(receipt['report']['inventory']['max_value_bytes'],2*1024**2)
+            artifact_id=receipt['artifact_ids'][0]
+            self.shape_row(remove=True)
+            # Both budgets cover the now-small live fixture; neither covers
+            # this authentic immutable larger capture. No isolated target may
+            # even be opened, and no verification receipt may be published.
+            for name,limits in [('memory',{'memory_bytes':110*1024**2,'disk_bytes':512*1024**2}),
+                                ('disk',{'memory_bytes':512*1024**2,'disk_bytes':32*1024**2})]:
+                self.reissue_capacity(**limits)
+                payload=self.payload.model_copy(update={'operation_id':'small-'+name,'idempotency_key':'small-'+name,'artifact_id':artifact_id})
+                with patch.object(operations,'isolated_target',side_effect=AssertionError('unadmitted target creation')):
+                    response=await client.post('/api/recovery/storage-preservation/operations',json=self.body(VERIFY,payload))
+                self.assertEqual(response.status_code,200,response.text)
+                self.assertNotEqual(response.json()['item']['status'],'succeeded',response.text)
+                self.assertEqual(len(self.committed()),1)
+            self.reissue_capacity(memory_bytes=512*1024**2,disk_bytes=512*1024**2)
+            payload=self.payload.model_copy(update={'operation_id':'adequate-old','idempotency_key':'adequate-old','artifact_id':artifact_id})
+            response=await client.post('/api/recovery/storage-preservation/operations',json=self.body(VERIFY,payload))
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(response.json()['item']['status'],'succeeded',response.text)
+            result=(await client.get('/api/recovery/storage-preservation/receipts/'+response.json()['item']['id'])).json()
+            self.assertEqual(result['report']['raw_stream_sha256'],receipt['report']['raw_stream_sha256'])
+            self.assertEqual(result['report']['inventory'],receipt['report']['inventory'])
+        self.assert_original()
+
+    async def test_capture_growth_refuses_unadmitted_row_before_payload_fetch(self):
+        self.reissue_capacity(memory_bytes=128*1024**2)
+        operations=self.operator.storage_provider.operations;real=operations.inventory
+        def growing():
+            stats=real()
+            self.assertLess(stats['max_value_bytes'],1024**2)
+            self.shape_row(size=4*1024**2)
+            return stats
+        from codex_web.storage import storage_preservation as wire
+        export=wire.export_rows;selected=[]
+        def inspect_rows(header,rows,limits):
+            def seen():
+                for row in rows:
+                    selected.append(row[1]);yield row
+            yield from export(header,seen(),limits)
+        async with self.client() as client:
+            with patch.object(operations,'inventory',side_effect=growing), patch.object(wire,'export_rows',side_effect=inspect_rows):
+                response=await client.post('/api/recovery/storage-preservation/operations',json=self.body())
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertNotEqual(response.json()['item']['status'],'succeeded',response.text)
+        self.assertEqual(selected,[],'metadata refusal must precede every payload row fetch')
+        self.assertFalse(self.committed())
+        artifacts=[a for a in self.artifacts.store.load().artifacts if a.source==SOURCE]
+        self.assertEqual(len(artifacts),1);self.assertIsNone(artifacts[0].content)
+        self.assertEqual(artifacts[0].metadata['state'],'reserved_unknown_until_verified')
+        # The actual metadata preflight refuses before selecting large TEXT;
+        # the growing source row remains byte-exact, not deleted as cleanup.
+        pg=hasattr(self.sqlite,'dsn');table='codex_state_documents' if pg else 'state_documents'
+        with self.sqlite._connection() as connection:
+            value,ts=connection.execute(f"SELECT payload,updated_at FROM {table} WHERE namespace='synthetic-large-shape'").fetchone()
+        self.assertEqual(value,'"'+'Z'*(4*1024**2-2)+'"');self.assertEqual(ts,7.125)
+        self.assert_original()
+
+    async def test_retained_capture_blocks_actual_old_version_revoke_and_decrypts(self):
+        from codex_web.services.crypto_keys import CryptoKeyConflictError
+        key_id=self.recovery.policy().backup_key_id;writer=self.preservation_writer()
+        self.assertFalse(self.recovery.store.load().backups)
+        async with self.client() as client:
+            item=await self.capture(client)
+            receipt=(await client.get('/api/recovery/storage-preservation/receipts/'+item['id'])).json()
+            artifact=self.artifacts.get_artifact(receipt['artifact_ids'][0],actor=self.actor)
+            self.assertEqual(artifact.metadata['preservation_key_id'],key_id)
+            self.assertEqual(artifact.metadata['preservation_key_version'],1)
+            writer.rotate(key_id,actor=self.actor)
+            impact=writer.usage(key_id,self.actor,version=1)
+            consumer=[x for x in impact['items'] if x['object_type']=='storage_preservation']
+            self.assertEqual([x['object_id'] for x in consumer],[artifact.id])
+            self.assertEqual(consumer[0]['versions'],[1])
+            with self.assertRaises(CryptoKeyConflictError):writer.revoke_version(key_id,1,'retained synthetic capture',actor=self.actor)
+            payload=self.payload.model_copy(update={'operation_id':'old-key-verify','idempotency_key':'old-key-verify','artifact_id':artifact.id})
+            response=await client.post('/api/recovery/storage-preservation/operations',json=self.body(VERIFY,payload))
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(response.json()['item']['status'],'succeeded',response.text)
+            observed=(await client.get('/api/recovery/storage-preservation/receipts/'+response.json()['item']['id'])).json()
+            self.assertEqual(observed['report']['raw_stream_sha256'],receipt['report']['raw_stream_sha256'])
+            # Genuine verified content destruction is the existing owning
+            # lifecycle, not expiry/invalidation or a fabricated manifest.
+            self.artifacts.delete_artifact_content(artifact.id,actor=self.actor)
+            writer.revoke_version(key_id,1,'content genuinely tombstoned',actor=self.actor)
+        self.assert_original()
+
+    async def test_unknown_pending_capture_protects_version_despite_lifecycle_invalidation(self):
+        from codex_web.services.crypto_keys import CryptoKeyConflictError
+        from codex_web.crypto import KeyPurpose,ManagedKeyCreate
+        key_id=self.recovery.policy().backup_key_id;writer=self.preservation_writer()
+        async with self.client() as client:
+            with patch.object(self.operator.storage_provider.operations,'_assess',side_effect=RuntimeError('after encrypted write')):
+                response=await client.post('/api/recovery/storage-preservation/operations',json=self.body())
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertNotEqual(response.json()['item']['status'],'succeeded',response.text)
+        self.assertFalse(self.committed())
+        artifact=next(a for a in self.artifacts.store.load().artifacts if a.source==SOURCE)
+        self.assertIsNone(artifact.content);self.assertIn('pending_content_json',artifact.metadata)
+        self.artifacts.invalidate_artifact(artifact.id,'synthetic invalid observer',actor=self.actor)
+        writer.rotate(key_id,actor=self.actor)
+        with self.assertRaises(CryptoKeyConflictError):writer.revoke_version(key_id,1,'pending unknown',actor=self.actor)
+        # Unrelated key retirement is not blocked by another key's consumer.
+        other=writer.create_key(ManagedKeyCreate(purpose=KeyPurpose.BACKUP,backend_type='local'),actor=self.actor)
+        writer.rotate(other.id,actor=self.actor)
+        writer.revoke_version(other.id,1,'unrelated key',actor=self.actor)
+        # Same id in a different tenant is never projected as a consumer.
+        foreign=self.actor.model_copy(update={'organization_id':'foreign-synthetic'})
+        projection=writer.usage_service.snapshot(writer.get_key(key_id,self.actor),foreign,version=1)
+        self.assertFalse([r for r in projection['items'] if r['object_type']=='storage_preservation'])
+        self.assert_original()
+
+    async def test_prior_separate_rotation_and_revocation_refuses_capture_reservation(self):
+        writer=self.preservation_writer();key_id=self.recovery.policy().backup_key_id
+        real=self.artifacts.create_artifact
+        def revoke_first(*args,**kwargs):
+            writer.rotate(key_id,actor=self.actor)
+            writer.revoke_version(key_id,1,'before canonical reservation',actor=self.actor)
+            return real(*args,**kwargs)
+        async with self.client() as client:
+            with patch.object(self.artifacts,'create_artifact',side_effect=revoke_first), \
+                 patch.object(self.local_content,'put',side_effect=AssertionError('revoked capture write')):
+                response=await client.post('/api/recovery/storage-preservation/operations',json=self.body())
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertNotEqual(response.json()['item']['status'],'succeeded',response.text)
+        self.assertFalse(self.committed())
+        self.assertFalse([a for a in self.artifacts.store.load().artifacts if a.source==SOURCE])
+        self.assert_original()
+
+    async def test_key_writer_serializes_after_capture_reservation_and_protects_unknown(self):
+        from codex_web.services.crypto_keys import CryptoKeyConflictError
+        writer=self.preservation_writer();key_id=self.recovery.policy().backup_key_id
+        real=self.artifacts.create_artifact;threads=[];entered=threading.Event();finished=threading.Event();outcomes=[]
+        def wrapped(*args,**kwargs):
+            reserve=kwargs['_commit']
+            def guarded(updater):
+                def while_locked(state):
+                    result=updater(state)
+                    def retire():
+                        try:
+                            entered.set();writer.rotate(key_id,actor=self.actor)
+                            writer.revoke_version(key_id,1,'after actual reservation',actor=self.actor)
+                        except CryptoKeyConflictError:outcomes.append('protected')
+                        finally:finished.set()
+                    thread=threading.Thread(target=retire);threads.append(thread);thread.start()
+                    self.assertTrue(entered.wait(2))
+                    self.assertFalse(finished.wait(.05),'retirement crossed locked capture reservation')
+                    return result
+                return reserve(while_locked)
+            kwargs['_commit']=guarded
+            return real(*args,**kwargs)
+        async with self.client() as client:
+            try:
+                with patch.object(self.artifacts,'create_artifact',side_effect=wrapped):
+                    response=await client.post('/api/recovery/storage-preservation/operations',json=self.body())
+            finally:
+                for thread in threads:
+                    await asyncio.to_thread(thread.join,3)
+                    self.assertFalse(thread.is_alive())
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(outcomes,['protected']);self.assertTrue(finished.is_set())
+        artifacts=[a for a in self.artifacts.store.load().artifacts if a.source==SOURCE]
+        self.assertEqual(len(artifacts),1);self.assertEqual(artifacts[0].metadata['preservation_key_version'],1)
+        # A racing key rotation may refuse capture's final current-key check;
+        # it must never make this original retained dependency disappear.
+        self.assertEqual([r['object_id'] for r in writer.usage(key_id,self.actor,version=1)['items']
+                          if r['object_type']=='storage_preservation'],[artifacts[0].id])
+        self.assert_original()
+
+
 
 @unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'),'isolated private PostgreSQL DSN required')
 class PostgresStorageOperatorTests(_PostgresFixture,StorageOperatorTests):
