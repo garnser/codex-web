@@ -870,3 +870,42 @@ the existing cooperative operation budget within each directory entry and before
 returning; cancellation cannot produce a partial-byte success or refresh the disk
 cache. These diagnostics do not extend the supervision deadline or establish the
 cause of a previously aggregated timeout.
+
+### Pre-turn archived resume evidence
+
+The retained-request preflight domain also admits a distinct version-1
+`queued_resume_correlation`/`queued_resume_evidence` pair. Its assignment-bound
+transport prepares before `thread/resume`, runs the existing current
+worker/identity/lease/fence and admission guards inside the native write lock,
+and observes only that process generation's matching response ID. The runtime
+version comes from the same process's initialize `userAgent`; only the qualified
+`codex_cli_rs/0.160.0` version is accepted. An unknown version refuses captured
+resume before send, not permission to guess a newer error contract.
+
+Only the exact qualified `-32600` archived-session response for that native
+session and method is negative proof. The same error text from another RPC,
+partial/mixed/foreign results, missing responses, transport failure and timeout
+remain unknown. Positive resume proves no turn was started; a later captured
+`turn/start` requires a matching positive resume observation. No raw response
+text is persisted. The original queue snapshot, actor/profile/resource scope,
+claim, execution, assignment and fence remain pinned separately from the native
+session and transport generation.
+
+The trusted reader stores the observation without automatically reconciling or
+retrying. The existing authenticated admin/MFA `reconcile-prestart` inspector
+consumes a current exact archived refusal with no positive/start/retirement
+conflict, atomically blocking the retained request. It makes no provider call.
+An explicit later retry uses the existing verified replacement graph and current
+admission, retaining up to eight complete prior resume observations; exhausted
+history refuses another send. Legacy uncertain attempts have no new proof and
+are never retroactively classified from strings or current archive flags.
+
+Absent resume fields serialize in the old shape. First capture persists the
+new typed fields; old strict readers/writers reject those records rather than
+silently discarding their safety evidence. A source-only rollback after capture
+is not claimed compatible. Observation schema/runtime versions fail visibly.
+The existing preflight inspector renders generation/RPC/assignment/fence/session
+and snapshot digest, distinguishing archived refusal, successful resume and
+unknown outcome. Its buttons consume canonical eligibility; display text grants
+no retry or authority. This source slice does not recover historical routing
+without original authoritative replacement evidence or prove original delivery.

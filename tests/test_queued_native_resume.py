@@ -1,0 +1,169 @@
+"""Synthetic pre-turn capture; never invokes the installed SDK or live queue."""
+import asyncio
+import copy
+import os
+import unittest
+from unittest.mock import AsyncMock, patch
+
+from fastapi import HTTPException
+from pydantic import ValidationError, create_model
+from codex_web.models import ExecutionPreflightAttempt
+from codex_web.services.queued_native_resume import QueuedNativeResumeCapture
+from codex_web.services.execution_preflight import ExecutionPreflightService
+from codex_web.storage.execution_preflight import ExecutionPreflightStore
+from tests import test_queued_native_start as fixtures
+from tests.test_execution_preflight import actor
+
+
+class ResumeCases:
+    def setUp(self):
+        self.f = fixtures.QueuedNativeStartTests()
+        self.f.setUp()
+        self.addCleanup(self.f.doCleanups)
+        self.service = self.f.service
+        self.capture = QueuedNativeResumeCapture(self.service, self.f.attempt.id, self.f.claim,
+            'requested', 'thread', 'admin').bind_assignment(self.f.assignment, worker_id='worker',
+                fence=7, validator=lambda:self.f.assignment)
+        self.runtime = self.f.runtime
+        self.runtime.native_runtime_version = '0.160.0'
+
+    def saved(self):
+        return self.service.store.get(self.f.attempt.id)
+
+    def prepare(self):
+        return self.capture.prepare(generation='generation', rpc_request_id='resume-original',
+            native_session_id='thread', runtime_version='0.160.0')
+
+    def negative(self):
+        return {'id':'resume-original', 'error':{'code':-32600,
+            'message':'session thread is archived. Run `codex unarchive thread` to unarchive it first.'}}
+
+    async def test_exact_negative_survives_restart_and_explicit_mfa_consumption(self):
+        before = copy.deepcopy(self.saved().queued_turn_snapshot)
+        c = self.prepare()
+        self.assertTrue(self.capture.observe(c, generation='generation', message=self.negative()))
+        self.assertEqual(self.saved().status, 'reconciliation_required')
+        restarted = ExecutionPreflightService(ExecutionPreflightStore(self.service.store.store))
+        result = restarted.reconcile_prestart_refusal(self.f.attempt.id, actor=actor(admin=True))
+        self.assertEqual(result.status, 'blocked')
+        self.assertEqual(result.queued_resume_evidence.outcome, 'archived_refusal')
+        self.assertEqual(result.queued_turn_snapshot, before)
+        self.assertIsNone(result.queued_start_receipt)
+        self.assertEqual(restarted.reconcile_prestart_refusal(result.id, actor=actor(admin=True)), result)
+        self.assertTrue(restarted.recorded_prestart_refusal(result))
+        self.runtime._send.assert_not_called()
+
+    async def test_unknown_absent_error_generation_id_version_remain_unknown(self):
+        c=self.prepare()
+        variants=[{'id':'resume-original'}, {'id':'resume-original','error':{'code':-32600,'message':'other'}},
+            {**self.negative(),'result':{'thread':{'id':'thread'}}},
+            {'id':'wrong','error':self.negative()['error']},
+            {'id':'resume-original','error':{**self.negative()['error'],'message':self.negative()['error']['message'].replace('thread','foreign')}}]
+        for message in variants:
+            self.assertFalse(self.capture.observe(c, generation='generation', message=message))
+        self.assertFalse(self.capture.observe(c,generation='old',message=self.negative()))
+        with self.assertRaises(HTTPException):
+            self.service.reconcile_prestart_refusal(self.f.attempt.id,actor=actor(admin=True))
+        self.assertEqual(self.saved().status,'reconciliation_required')
+        self.assertIsNone(self.saved().queued_resume_evidence)
+
+    async def test_changed_snapshot_refuses_observation(self):
+        c=self.prepare()
+        self.service.store.update(self.f.attempt.id,lambda x:x.model_copy(update={
+            'queued_turn_snapshot':{**x.queued_turn_snapshot,'message':'changed'}}))
+        with self.assertRaises(ValueError):
+            self.capture.observe(c,generation='generation',message=self.negative())
+        self.assertIsNone(self.saved().queued_resume_evidence)
+
+    async def test_transport_reader_observes_negative_before_error_caller(self):
+        self.runtime.generation='generation'
+        async def send(message,**kwargs):
+            kwargs['start_guard']()
+            await self.runtime._dispatch_message({**self.negative(),'id':message['id']},generation='generation')
+        self.runtime._send=AsyncMock(side_effect=send)
+        with self.assertRaises(RuntimeError):
+            await self.runtime.request('thread/resume',{'threadId':'thread'},start_capture=self.capture)
+        self.assertEqual(self.saved().queued_resume_evidence.outcome,'archived_refusal')
+        self.assertEqual(self.saved().queued_resume_correlation.rpc_method,'thread/resume')
+        self.assertFalse(self.runtime._start_captures)
+
+    async def test_positive_resume_allows_one_start_and_blocks_refusal_consumption(self):
+        c=self.prepare()
+        self.assertTrue(self.capture.observe(c,generation='generation',message={
+            'id':'resume-original','result':{'thread':{'id':'thread'}}}))
+        self.f.capture.prepare(generation='generation',rpc_request_id='start',native_session_id='thread')
+        with self.assertRaises(HTTPException):
+            self.service.reconcile_prestart_refusal(self.f.attempt.id,actor=actor(admin=True))
+        self.assertIsNone(self.saved().queued_start_receipt)
+
+    async def test_refusal_never_allows_start_before_explicit_recovery(self):
+        c=self.prepare();self.capture.observe(c,generation='generation',message=self.negative())
+        with self.assertRaises(ValueError):
+            self.f.capture.prepare(generation='generation',rpc_request_id='start',native_session_id='thread')
+        self.assertIsNone(self.saved().queued_start_correlation)
+
+    async def test_changed_send_fence_and_unsupported_version_never_send(self):
+        with self.assertRaises(ValueError):
+            self.capture.prepare(generation='generation',rpc_request_id='wrong-version',
+                native_session_id='thread',runtime_version='0.161.0')
+        self.assertIsNone(self.saved().queued_resume_correlation)
+        c=self.prepare()
+        self.f.assignment=self.f.assignment.model_copy(update={'fence':8})
+        with self.assertRaises(ValueError):self.capture.validate_before_send(c)
+        self.runtime._send.assert_not_called()
+
+    async def test_old_reader_refuses_new_capture_and_unknown_version(self):
+        old_fields={name:(field.annotation,field) for name,field in ExecutionPreflightAttempt.model_fields.items()
+            if not name.startswith('queued_resume_')}
+        old=create_model('BeforeResumeCapture',__config__={'extra':'forbid'},**old_fields)
+        old.model_validate(self.saved().model_dump(mode='json'))
+        self.prepare();payload=self.saved().model_dump(mode='json')
+        with self.assertRaises(ValidationError):old.model_validate(payload)
+        payload['queued_resume_correlation']['runtime_version']='future'
+        with self.assertRaises(ValidationError):ExecutionPreflightAttempt.model_validate(payload)
+
+    async def test_lost_response_before_explicit_consumption_and_cas_race(self):
+        c=self.prepare()
+        self.capture.observe(c,generation='generation',message=self.negative())
+        # Response/projection loss changes no provider operation: a new service
+        # consumes the committed observation, never a reconstructed error string.
+        restarted=ExecutionPreflightService(ExecutionPreflightStore(self.service.store.store))
+        with patch.object(restarted.store,'update',side_effect=RuntimeError('store unavailable')):
+            with self.assertRaisesRegex(RuntimeError,'store unavailable'):
+                restarted.reconcile_prestart_refusal(self.f.attempt.id,actor=actor(admin=True))
+        self.assertEqual(self.saved().status,'reconciliation_required')
+        restarted.store.update(self.f.attempt.id,lambda x:x.model_copy(update={
+            'queued_admission_claim_id':'changed-claim'}))
+        with self.assertRaises(HTTPException):
+            restarted.reconcile_prestart_refusal(self.f.attempt.id,actor=actor(admin=True))
+        self.runtime._send.assert_not_called()
+
+    async def test_member_cannot_consume_and_prior_unknown_does_not_become_proof(self):
+        c=self.prepare();self.capture.observe(c,generation='generation',message=self.negative())
+        with self.assertRaises(HTTPException):
+            self.service.reconcile_prestart_refusal(self.f.attempt.id,actor=actor(admin=False))
+        self.assertEqual(self.saved().status,'reconciliation_required')
+        self.assertIsNone(self.saved().queued_start_receipt)
+
+    async def test_explicit_new_claim_preserves_consumed_resume_history(self):
+        c=self.prepare();self.capture.observe(c,generation='generation',message=self.negative())
+        self.service.reconcile_prestart_refusal(self.f.attempt.id,actor=actor(admin=True))
+        # Simulate only the already-tested queue retry/admission state transition;
+        # no old provider request is retried by this capture test.
+        self.service.store.update(self.f.attempt.id,lambda x:x.model_copy(update={
+            'status':'reconciliation_required','queued_admission_claim_id':'new-claim'}))
+        capture=QueuedNativeResumeCapture(self.service,self.f.attempt.id,'new-claim',
+            'requested','thread','admin').bind_assignment(self.f.assignment,worker_id='worker',
+                fence=7,validator=lambda:self.f.assignment)
+        capture.prepare(generation='new-generation',rpc_request_id='new-rpc',
+            native_session_id='thread',runtime_version='0.160.0')
+        saved=self.saved()
+        self.assertEqual(saved.queued_resume_history[0].correlation,c)
+        self.assertEqual(saved.queued_resume_history[0].evidence.outcome,'archived_refusal')
+        self.assertEqual(saved.queued_resume_correlation.admission_claim_id,'new-claim')
+        self.assertIsNone(saved.queued_resume_evidence)
+        self.runtime._send.assert_not_called()
+
+
+class QueuedNativeResumeTests(ResumeCases,unittest.IsolatedAsyncioTestCase):
+    pass

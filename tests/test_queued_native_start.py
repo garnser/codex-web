@@ -66,6 +66,7 @@ class QueuedNativeStartTests(unittest.IsolatedAsyncioTestCase):
             'requested', 'thread', 'admin').bind_assignment(self.assignment, worker_id='worker', fence=7,
                                                           validator=lambda:self.assignment)
         self.runtime = CodexRuntime(_Host(), restart_on_timeout=False)
+        self.runtime.native_runtime_version = "0.160.0"
         self.runtime.ensure_started = AsyncMock()
         self.runtime._send = AsyncMock()
 

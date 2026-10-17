@@ -3151,9 +3151,24 @@ class TurnExecutionService:
                         custody_before = await self._settle_custody_call(self.session_custody.capture,
                             thread_id, runtime_adapter, session, runtime_session_request, fence,
                             work_owner=session)
+                    resume_options = {}
+                    if (queued_admission_attempt_id and queued_admission_claim_id
+                            and self.queued_preflight is not None
+                            and isinstance(runtime_adapter, CodexAgentRuntimeAdapter)):
+                        from codex_web.services.queued_native_resume import QueuedNativeResumeCapture
+                        def validate_resume_admission():
+                            if operator_admission_validator is not None:
+                                operator_admission_validator()
+                            owner_admission_validator()
+                        resume_options['resume_capture'] = QueuedNativeResumeCapture(
+                            self.queued_preflight, queued_admission_attempt_id,
+                            queued_admission_claim_id, requested_execution_id, thread_id,
+                            actor.identity_id if actor is not None else agent_profile_actor_id,
+                            admission_validator=validate_resume_admission, require_send_guard=True)
                     resumed = await runtime_adapter.resume_session(
                         native_session_id,
                         runtime_session_request,
+                        **resume_options,
                     )
                     if custody_before is not None:
                         await self._settle_custody_call(self.session_custody.complete,

@@ -570,6 +570,31 @@ class QueuedNativeStartEvidence(BaseModel):
     observed_at: float
 
 
+class QueuedNativeResumeCorrelation(QueuedNativeStartCorrelation):
+    """One pre-turn resume request; never interchangeable with turn/start."""
+
+    rpc_method: Literal["thread/resume"] = "thread/resume"
+    runtime_version: Literal["0.160.0"]
+
+
+class QueuedNativeResumeEvidence(BaseModel):
+    """Reader-observed allowlisted resume disposition; no raw provider text."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["1.0"] = "1.0"
+    runtime_generation: str = Field(min_length=1, max_length=128)
+    rpc_request_id: str = Field(min_length=1, max_length=128)
+    provider_native_session_id: str = Field(min_length=1, max_length=256)
+    outcome: Literal["resumed", "archived_refusal"]
+    observed_at: float
+
+
+class QueuedNativeResumeObservation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    correlation: QueuedNativeResumeCorrelation
+    evidence: QueuedNativeResumeEvidence
+
+
 class QueuedNativeStartReceipt(BaseModel):
     """Actual provider start response, recorded before later bookkeeping."""
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -695,6 +720,9 @@ class ExecutionPreflightAttempt(BaseModel):
     queued_start_receipt: QueuedNativeStartReceipt | None = None
     queued_start_correlation: QueuedNativeStartCorrelation | None = None
     queued_start_evidence: QueuedNativeStartEvidence | None = None
+    queued_resume_correlation: QueuedNativeResumeCorrelation | None = None
+    queued_resume_evidence: QueuedNativeResumeEvidence | None = None
+    queued_resume_history: tuple[QueuedNativeResumeObservation, ...] = Field(default=(), max_length=8)
     notification_batch_id: str | None = None
     scheduling_retirement: QueuedSchedulingRetirement | None = None
     bootstrap_recovery: QueuedBootstrapRecovery | None = None
@@ -725,9 +753,12 @@ class ExecutionPreflightAttempt(BaseModel):
     @model_serializer(mode="wrap")
     def serialize_recovery_fields(self, handler):
         result = handler(self)
-        for name in ('queued_start_correlation', 'queued_start_evidence'):
+        for name in ('queued_start_correlation', 'queued_start_evidence',
+                     'queued_resume_correlation', 'queued_resume_evidence'):
             if getattr(self, name) is None:
                 result.pop(name, None)
+        if not self.queued_resume_history:
+            result.pop("queued_resume_history", None)
         if self.operator_admission is None:
             result.pop("operator_admission", None)
         if self.bootstrap_recovery is None:

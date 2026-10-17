@@ -73,6 +73,13 @@
       attempts[0].queued_turn_snapshot = {id:'original-queue-id', work_item_ref:'group/repo#78'};
       attempts[0].agent_profile_id = 'original-profile';
       attempts[0].agent_profile_revision = 6;
+      if (new URLSearchParams(location.search).has('resumeRefusal')) {
+        attempts[0].queued_resume_correlation = {runtime_version:'0.160.0', runtime_generation:'fixture-generation', rpc_request_id:'resume-rpc', assignment_id:'assignment-1', worker_id:'worker-1', fence:7, provider_native_session_id:'thread-1', snapshot_sha256:'fixture-digest'};
+        attempts[0].queued_resume_evidence = {outcome:'archived_refusal'};
+        attempts[0].can_retry = false;
+        attempts[0].can_reconcile_prestart = true;
+        attempts[0].reconcile_prestart_href = '/api/threads/thread-1/preflight-attempts/preflight-thread-turn-1/reconcile-prestart';
+      }
       if (new URLSearchParams(location.search).has('knownRefusal')) {
         attempts[0].can_reconcile_prestart = true;
         attempts[0].reconcile_prestart_href = '/api/threads/thread-1/preflight-attempts/preflight-thread-turn-1/reconcile-prestart';

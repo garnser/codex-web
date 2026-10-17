@@ -1229,8 +1229,8 @@ class AssignmentBoundAgentProcessSession:
         return await self._request(method, params)
 
     async def request_with_start_capture(self, method: str, params: Any, capture) -> dict[str, Any]:
-        if method != 'turn/start':
-            raise ValueError('native start capture requires turn/start')
+        if method not in {'turn/start', 'thread/resume'} or method != capture.rpc_method:
+            raise ValueError('native capture method does not match its typed contract')
         return await self._request(method, params, start_capture=capture)
 
     async def _request(self, method: str, params: Any, *, start_capture=None) -> dict[str, Any]:
