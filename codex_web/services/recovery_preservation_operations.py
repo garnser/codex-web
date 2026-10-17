@@ -5,6 +5,7 @@ unknown custody, never permission to execute a second time.
 """
 import hashlib
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -62,11 +63,12 @@ class StoragePreservationOperations:
         state = self.recovery.evidence.store.load()
         proof = next((v for v in state.verifications if v.id==payload.capacity_verification_id),None)
         now = time.time()
-        if (evidence.lifecycle!=EvidenceLifecycle.VALID or proof is None
+        if (evidence.lifecycle!=EvidenceLifecycle.VALID or evidence.result!=EvidenceResult.PASS or proof is None
             or proof.organization_id!=actor.organization_id or proof.workspace_id!=actor.workspace_id
             or proof.result!=VerificationResult.VERIFIED or not proof.independent
             or proof.verifier_identity_id==evidence.producer_identity_id
             or evidence.id not in proof.evidence_ids or proof.verified_at<evidence.observed_at
+            or not math.isfinite(evidence.observed_at) or not math.isfinite(proof.verified_at)
             or evidence.observed_at>now or proof.verified_at>now
             or now-evidence.observed_at>(60 if starting else config['wall_seconds']+60)
             or evidence.retention_expires_at is not None and evidence.retention_expires_at<=now
@@ -77,7 +79,7 @@ class StoragePreservationOperations:
                   'configuration_sha256':hashlib.sha256(canonical(pins)).hexdigest()}
         if any(type(m.get(k)) is not type(v) or m.get(k)!=v for k,v in expected.items()):
             raise RecoveryConflictError('Capacity proof does not bind current Resource/configuration')
-        if type(m.get('expires_at')) not in (int,float) or m['expires_at'] < now+(config['wall_seconds'] if starting else 0):
+        if type(m.get('expires_at')) not in (int,float) or not math.isfinite(m['expires_at']) or m['expires_at'] < now+(config['wall_seconds'] if starting else 0):
             raise RecoveryConflictError('Capacity reservation proof expires before operation budget')
         for name in ('memory_bytes','disk_bytes','wall_seconds'):
             if type(m.get(name)) is not int or m[name]<config[name]:
