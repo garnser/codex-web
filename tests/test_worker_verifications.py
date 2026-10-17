@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 from codex_web.authority import AUTHORITY_ROLE_CATALOG_ID, AUTHORITY_ROLE_CATALOG_KIND
 from codex_web.agent_profiles import AgentProfileCreate, AgentProfileExecutionBinding, AgentProfileUpdate
-from codex_web.artifact_evidence import EvidenceCreate
+from codex_web.artifact_evidence import ArtifactCreate, EvidenceCreate, VerificationCreate
 from codex_web.crypto import KeyPurpose, ManagedKeyCreate
 from codex_web.execution_workers import (AssignmentCancelRequest, ExecutionAssignmentCreate,
     AssignmentClaimRequest, AssignmentStartRequest, WorkerCapability)
@@ -300,3 +300,18 @@ class WorkerVerificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body['items'],[])
         self.assertEqual(self.evidence.store.load().verifications,[])
         self.assertEqual(self.recovery.store.load(),self.original_state)
+
+    async def test_omitting_b_produced_linked_artifact_cannot_manufacture_independence(self):
+        artifact=self.evidence.create_artifact(ArtifactCreate(artifact_type='report',name='Synthetic worker review',
+            work_item_ref=self.ref,project_id='project-a',resource_ids=(self.target.id,)),actor=self.worker_actor)
+        proof=self.evidence.create_evidence(EvidenceCreate(evidence_type='runtime_result',result='pass',
+            work_item_ref=self.ref,project_id='project-a',resource_ids=(self.target.id,),
+            artifact_ids=(artifact.id,),metadata=self.original.metadata),actor=self.admin)
+        status,_,_=await self.post(dict(self.request,evidence_ids=[proof.id],artifact_ids=[]))
+        self.assertEqual(status,403)
+        self.assertEqual(self.evidence.store.load().verifications,[])
+        # The underlying canonical service likewise derives (never overrides)
+        # independence for the actual producer/verifier identity.
+        direct=self.evidence.create_verification(VerificationCreate(evidence_ids=(proof.id,),
+            artifact_ids=(artifact.id,),method=PROOF_CONTRACT,result='rejected'),actor=self.worker_actor)
+        self.assertFalse(direct.independent)
