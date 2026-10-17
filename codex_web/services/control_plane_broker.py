@@ -95,6 +95,11 @@ from codex_web.services.project_coordination import (
     PREFIX as COORDINATION_PREFIX, PROJECT_COORDINATION_OPERATIONS, resolve_operation,
 )
 
+from codex_web.services.worker_verifications import (
+    OPERATIONS as VERIFICATION_OPERATIONS, resolve as resolve_verification_operation,
+    WorkerVerificationAdapter,
+)
+
 
 class ControlPlaneBrokerError(RuntimeError):
     pass
@@ -134,6 +139,7 @@ class _ResolvedOperation:
 
 OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
     *PROJECT_COORDINATION_OPERATIONS,
+    *VERIFICATION_OPERATIONS,
     ControlPlaneBrokerOperation(
         id="work_graph.edge.create", method="POST", path_template="/api/work-graph/edges",
         capability="work_graph.manage", authority_level=AuthorityLevel.EXECUTE,
@@ -526,6 +532,19 @@ class ControlPlaneBrokerService:
             "capability": item.capability,
             "authority_level": item.authority_level.value,
         }
+        if item.id.startswith("verification."):
+            result["scope"] = "Current assignment Work Item and writable repository only"
+            result["authorizer"] = "Current assignment requester, exact API capability"
+            result["verifier"] = "Actual authenticated registered worker; no identity overrides"
+            result["response_loss"] = "Read-only exact execution/method/source lookup; never blind POST retry"
+            result["bounds"] = {"content_bytes": 262144, "lookup_records": 32}
+            if item.id == "verification.create":
+                result["request_body"] = {"schema": "VerificationCreate",
+                    "method": "recovery-owner-disposition.v2",
+                    "source": "sha256:<review digest>", "original_evidence_count": 1,
+                    "max_artifacts": 8, "identity_and_independence_overrides": False}
+            if item.id == "verification.read":
+                result["required_query_parameters"] = ["work_item_ref", "source"]
         if item.id.startswith("repository.read."):
             result["optional_query_parameters"] = ["repository_resource_id"]
         if item.id == "repository.read.artifact-download":
@@ -842,6 +861,11 @@ class ControlPlaneBrokerService:
                 "absolute-form/control-plane proxy targets are not allowed"
             )
         path = parsed.path
+        verification_operation = resolve_verification_operation(method, path)
+        if verification_operation is not None:
+            operation, target = verification_operation
+            return _ResolvedOperation(operation=operation, target_ref=target,
+                query=parse_qs(parsed.query, keep_blank_values=True))
         query = parse_qs(parsed.query, keep_blank_values=False)
         if path == COORDINATION_PREFIX or path.startswith(COORDINATION_PREFIX + "/"):
             operation, target_ref = resolve_operation(method, path)
@@ -1679,12 +1703,13 @@ class ControlPlaneBrokerService:
             or operation.id.startswith("deployment.local.")
             or operation.id == "control_plane.operations.list"
             or operation.id.startswith("project.")
+            or operation.id.startswith("verification.")
             else actor
         )
         authority_actor = actor if repository_read else requester_actor
         state = None
         resource_ids: tuple[str, ...] = ()
-        if operation.id.startswith("project."):
+        if operation.id.startswith("project.") or operation.id.startswith("verification."):
             resource_ids = (self._writable_repository_id(assignment),)
         elif (
             operation.id.startswith("repository.")
@@ -1821,7 +1846,19 @@ class ControlPlaneBrokerService:
                     raise ControlPlaneBrokerDeniedError("administrative coordination must use its own agent Role attribution")
                 payload[attributed_field] = own_role
 
-        if operation.id.startswith("project."):
+        if operation.id.startswith("verification."):
+            adapter = WorkerVerificationAdapter(self)
+            if operation.id == 'verification.create':
+                if resolved.query:
+                    raise ControlPlaneBrokerRequestError('Verification write does not accept query parameters')
+                result = await asyncio.to_thread(adapter.create, assignment, worker_actor,
+                    resolved, payload, assignment_validator)
+            else:
+                if payload:
+                    raise ControlPlaneBrokerRequestError('Verification read does not accept a request body')
+                result = await asyncio.to_thread(adapter.read, assignment, worker_actor,
+                    resolved, assignment_validator)
+        elif operation.id.startswith("project."):
             result = await self.project_coordination.dispatch(assignment, operation,
                 resolved.target_ref, resolved.query, payload, assignment_validator, actor)
         elif operation.id == "work_graph.edge.create":

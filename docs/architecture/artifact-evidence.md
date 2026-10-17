@@ -181,3 +181,58 @@ Retention:
 - `POST /api/artifact-evidence/expire-retention`
 
 #141 should project these records in Operations UI. UI status chips such as "tests passed" or "verified" must derive from canonical evidence/gate evaluation rather than terminal text.
+
+### Assignment-bound owner-proof verification
+
+The worker broker exposes the existing Verification service for
+`recovery-owner-disposition.v2`, without creating another receipt or proof store.
+This operation explicitly separates the current assignment requester A, whose
+current Role must allow the exact `api.verifications.write` capability for the
+Project/repository, from authenticated registered worker B, who records the
+Verification. B must independently review A's original canonical Evidence and
+all linked artifacts. The canonical service computes independence from actual
+producer/verifier identities; no caller field overrides identity or independence.
+A service-channel API policy check for B is additional to A's operational
+authority, not a grant of A's identity or scopes to B.
+
+The adapter requires a live assignment/fence, pinned current AgentProfile and
+execution profile, writable workspace lease, current Work Item ownership, tenant,
+Project/resource visibility, current procedure/security admission and current
+original firing/schedule/policy/state digests. Reference validation and Verification
+append use the existing shared StateStore transaction with those canonical
+admission records locked. Required mediated procedures refuse this direct adapter;
+publication of this code does not bypass them or widen an execution profile.
+Original records and Recovery state are never rewritten by verification.
+
+Evidence/artifact metadata and managed content reads use existing record visibility
+and governance. Content is limited to 256 KiB before opening and verified against
+its canonical size/digest after reading. Artifact count is limited to eight,
+including artifacts linked by the original Evidence. Only one original Evidence
+is accepted. A missing original, changed snapshot, invalid record, expired lease,
+revoked principal/authority or unavailable canonical admission refuses the append.
+The adapter validates proof structure/current digests, not factual writer death:
+B remains responsible for genuine independent review of the original inventory
+and fence evidence. Missing files, age and an empty local queue are not proof.
+
+A review is identified by its `sha256:<digest>` source, actual execution, Work Item
+and method. Existing VerificationCreate has no retry-safe operation key. On response
+loss, retain unknown outcome and use the bounded read-only exact lookup (32 records
+maximum); one matching immutable record identifies the result, multiple or absent
+records remain unknown. Never automatically replay POST or rotate the review digest.
+This adapter neither creates Evidence nor activates RecoveryState 1.3, disposes an
+original effect, changes Recovery health, or authorizes an operator migration.
+Existing Verification inspection is the UI surface; it exposes actual producer,
+verifier, independence, references, result and findings. Recovery operational
+acceptance remains separate from source delivery.
+
+The append read set includes `secret_metadata`, shared by the application's native
+credential delegation and ActionExecutionService SecretBroker. When an assignment
+has credential references, the adapter requires the trusted assignment-bound
+broker callback to identify that same native credential-provider store. Opaque or
+differently stored delegation composition refuses the mutation; it does not silently
+substitute an assignment-only validator. The current validator still executes before
+and after the proposed append. A separate PostgreSQL metadata revoke/rotation writer
+must commit before admission (then refuse) or serialize after the append transaction.
+Only metadata is inspected/locked; credential values never enter Verification or
+broker output. The ScheduleRecord tenant field is `tenant_id`, paired with its
+`workspace_id`; it must match the actual verifier's organization/workspace.

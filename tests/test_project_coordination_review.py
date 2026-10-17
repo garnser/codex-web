@@ -88,6 +88,18 @@ class PendingPhaseSynchronizationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ReviewCorrectionsTests(ProjectCoordinationBrokerTests):
+    async def parked_create(self, payload):
+        # This client intentionally spans four fixture phases: pending admission,
+        # a competing ordinary request, explicit owned cleanup, and final reply.
+        # Use an explicit bounded 8s total lifetime only for this held request,
+        # rather than one ordinary reply budget for the entire scenario.
+        # Other clients keep the shared 2s default; no production
+        # timeout or fixture-wide limit changes. wait_for_pending_phase still
+        # detects early producer completion and bounds admission independently.
+        holder = SimpleNamespace(broker=self.broker, broker_response_timeout=8)
+        path = '/api/project-coordination/threads?project_id=home&repository_resource_id=' + self.f.repository.id
+        return await self._request.__func__(holder, 'POST', path, payload=payload)
+
     async def test_F4_coordination_and_codehost_bindings_compose(self):
         from codex_web.action_providers import ActionProviderBindingCreate
         from codex_web.services.github_action_provider import GitHubActionProvider
@@ -420,14 +432,18 @@ class ReviewCorrectionsTests(ProjectCoordinationBrokerTests):
         from codex_web.execution_workers import AssignmentCancelRequest
         from codex_web.services.execution_workers import WorkerConflictError
         original_start=self.manager.start
-        pending_seen=asyncio.Event();proceed=asyncio.Event();pending=[]
+        pending_seen=asyncio.Event();proceed=asyncio.Event();finished=asyncio.Event();pending=[]
         async def hold_start(assignment_id):
             pending.append(self.f.workers.store.assignment(assignment_id))
-            pending_seen.set();await proceed.wait()
-            return await original_start(assignment_id)
+            pending_seen.set()
+            try:
+                await proceed.wait()
+                return await original_start(assignment_id)
+            finally:
+                finished.set()
         self.manager.start=hold_start
         payload=dict(profile_id='engineer',profile_revision=1,idempotency_key='pending-reservation')
-        creating=asyncio.create_task(self.call('POST','/threads',payload))
+        creating=asyncio.create_task(self.parked_create(payload))
         try:
             await wait_for_pending_phase(pending_seen, creating)
             self.assertEqual(pending[0].status,'pending')
@@ -445,8 +461,13 @@ class ReviewCorrectionsTests(ProjectCoordinationBrokerTests):
             self.assertTrue(__import__('pathlib').Path(self.f.workspaces.store.workspace(claimed.execution_workspace_id).path).exists())
         finally:
             proceed.set()
-            await creating
-        self.manager.start=original_start
+            try:
+                await creating
+            finally:
+                self.manager.start=original_start
+        self.assertTrue(creating.done())
+        self.assertTrue(finished.is_set(), 'owned parked start must exit before successor admission')
+        self.assertEqual(self.manager.starts,0)
         await self.create('engineer','after-cleanup')
         self.assertEqual(self.manager.starts,1)
 
@@ -467,14 +488,18 @@ class ReviewCorrectionsTests(ProjectCoordinationBrokerTests):
         from codex_web.execution_workers import AssignmentCancelRequest
         second=await self.second_instance()
         original_start=self.manager.start
-        seen=asyncio.Event();proceed=asyncio.Event();pending=[]
+        seen=asyncio.Event();proceed=asyncio.Event();finished=asyncio.Event();pending=[]
         async def parked(assignment_id):
             pending.append(self.f.workers.store.assignment(assignment_id))
-            seen.set();await proceed.wait()
-            return await original_start(assignment_id)
+            seen.set()
+            try:
+                await proceed.wait()
+                return await original_start(assignment_id)
+            finally:
+                finished.set()
         self.manager.start=parked
         payload=dict(profile_id='engineer',profile_revision=1,idempotency_key='lost-origin')
-        creating=asyncio.create_task(self.call('POST','/threads',payload))
+        creating=asyncio.create_task(self.parked_create(payload))
         path='/api/project-coordination/threads?project_id=home&repository_resource_id='+self.f.repository.id
         try:
             await wait_for_pending_phase(seen, creating)
@@ -486,8 +511,13 @@ class ReviewCorrectionsTests(ProjectCoordinationBrokerTests):
             self.f.workers.cancel_bootstrap(pending[0].id,AssignmentCancelRequest(expected_fence=0,reason='explicit fenced abandoned reservation cleanup'),actor=self.actor)
         finally:
             proceed.set()
-            await creating
-            self.manager.start=original_start
+            try:
+                await creating
+            finally:
+                self.manager.start=original_start
+        self.assertTrue(creating.done())
+        self.assertTrue(finished.is_set(), 'owned parked start must exit before successor admission')
+        self.assertEqual(self.manager.starts,0)
         status,_,value=await self._request.__func__(second,'POST',path,payload=dict(payload,idempotency_key='successor-after-cleanup'))
         self.assertEqual(status,200,value)
         self.assertEqual(value['intent']['status'],'succeeded',value)

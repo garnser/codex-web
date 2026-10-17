@@ -530,24 +530,25 @@ class BrokerProcedureAdmissionService:
         self.workers = workers
         self.control_actor = control_actor
 
-    async def __call__(self, *, assignment, actor, operation, resource_ids, payload):
-        import asyncio
+    def inspect_current(self, *, assignment, actor, operation, resource_ids, payload):
         from types import SimpleNamespace
-        from dataclasses import replace
         from codex_web.action_providers import ActionRequest
-        from codex_web.services.control_plane_broker import ControlPlaneBrokerRequestError
-        # This request is an internal typed context projection, never an intent
-        # or a provider invocation. Existing broker authority already resolved
-        # actor/Project/targets; inputs cannot grant additional capabilities.
-        context = await asyncio.to_thread(self.discovery.action_context, actor=actor,
+        context = self.discovery.action_context(actor=actor,
             request=ActionRequest(action_id=operation.id, organization_id=actor.organization_id,
                 workspace_id=actor.workspace_id, project_id=assignment.project_id,
                 resource_ids=resource_ids, parameters=payload),
             definition=SimpleNamespace(required_authority=(operation.capability,)),
             provider=SimpleNamespace(provider_type=None, provider_instance=None, contract_version=None),
             policy_source="policy:assignment-control-plane", policy_allows=True)
-        context = await asyncio.to_thread(self.discovery.assignment_context, context, assignment, actor=actor)
-        discovery, _ = await asyncio.to_thread(self.discovery.discover, context)
+        context = self.discovery.assignment_context(context, assignment, actor=actor)
+        discovered, _ = self.discovery.discover(context)
+        return discovered
+
+    async def __call__(self, *, assignment, actor, operation, resource_ids, payload):
+        import asyncio
+        from codex_web.services.control_plane_broker import ControlPlaneBrokerRequestError
+        discovery = await asyncio.to_thread(self.inspect_current, assignment=assignment,
+            actor=actor, operation=operation, resource_ids=resource_ids, payload=payload)
         await asyncio.to_thread(self.workers.record_procedure_discovery, assignment.id, discovery,
             expected_fence=assignment.fence, actor=self.control_actor)
         if not discovery.admitted:

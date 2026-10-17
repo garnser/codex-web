@@ -763,56 +763,60 @@ class ArtifactEvidenceService:
         payload: VerificationCreate,
         *,
         actor: AuthenticationActor,
+        _commit=None,
     ) -> Verification:
-        if payload.method == OBSERVED_RESEARCH_METHOD and actor.principal_kind != PrincipalKind.HUMAN:
-            raise AuthorizationError("observed-user research verification requires a human actor")
-        self._validate_work_item_ref(payload.work_item_ref, actor)
-        state = self.store.load()
-        artifacts = [self._artifact(state, artifact_id, actor) for artifact_id in payload.artifact_ids]
-        evidence = [self._evidence(state, evidence_id, actor) for evidence_id in payload.evidence_ids]
-        if any(item.lifecycle != ArtifactLifecycle.ACTIVE for item in artifacts):
-            raise ArtifactEvidenceConflictError("verification cannot reference inactive artifacts")
-        if any(item.lifecycle != EvidenceLifecycle.VALID for item in evidence):
-            raise ArtifactEvidenceConflictError("verification cannot reference invalid evidence")
-        producers = {item.producer_identity_id for item in artifacts}
-        producers.update(item.producer_identity_id for item in evidence)
-        independent = bool(producers) and actor.identity_id not in producers
-        work_item_ref = payload.work_item_ref
-        refs = {
-            item.work_item_ref
-            for item in [*artifacts, *evidence]
-            if item.work_item_ref
-        }
-        if work_item_ref is not None and refs and refs != {work_item_ref}:
-            raise ArtifactEvidenceConflictError(
-                "verification work item does not match referenced records"
+        returned = []
+        def apply(state: ArtifactEvidenceState) -> ArtifactEvidenceState:
+            if payload.method == OBSERVED_RESEARCH_METHOD and actor.principal_kind != PrincipalKind.HUMAN:
+                raise AuthorizationError("observed-user research verification requires a human actor")
+            self._validate_work_item_ref(payload.work_item_ref, actor)
+            artifacts = [self._artifact(state, artifact_id, actor) for artifact_id in payload.artifact_ids]
+            evidence = [self._evidence(state, evidence_id, actor) for evidence_id in payload.evidence_ids]
+            if any(item.lifecycle != ArtifactLifecycle.ACTIVE for item in artifacts):
+                raise ArtifactEvidenceConflictError("verification cannot reference inactive artifacts")
+            if any(item.lifecycle != EvidenceLifecycle.VALID for item in evidence):
+                raise ArtifactEvidenceConflictError("verification cannot reference invalid evidence")
+            producers = {item.producer_identity_id for item in artifacts}
+            producers.update(item.producer_identity_id for item in evidence)
+            independent = bool(producers) and actor.identity_id not in producers
+            work_item_ref = payload.work_item_ref
+            refs = {
+                item.work_item_ref
+                for item in [*artifacts, *evidence]
+                if item.work_item_ref
+            }
+            if work_item_ref is not None and refs and refs != {work_item_ref}:
+                raise ArtifactEvidenceConflictError(
+                    "verification work item does not match referenced records"
+                )
+            if work_item_ref is None and len(refs) == 1:
+                work_item_ref = next(iter(refs))
+            verification = Verification(
+                organization_id=actor.organization_id,
+                workspace_id=actor.workspace_id,
+                verifier_identity_id=actor.identity_id,
+                verifier_principal_kind=actor.principal_kind,
+                independent=independent,
+                work_item_ref=work_item_ref,
+                execution_id=payload.execution_id,
+                artifact_ids=payload.artifact_ids,
+                evidence_ids=payload.evidence_ids,
+                method=payload.method,
+                result=payload.result,
+                findings=payload.findings,
+                provider=payload.provider,
+                source=payload.source,
+                deep_link=payload.deep_link,
             )
-        if work_item_ref is None and len(refs) == 1:
-            work_item_ref = next(iter(refs))
-        verification = Verification(
-            organization_id=actor.organization_id,
-            workspace_id=actor.workspace_id,
-            verifier_identity_id=actor.identity_id,
-            verifier_principal_kind=actor.principal_kind,
-            independent=independent,
-            work_item_ref=work_item_ref,
-            execution_id=payload.execution_id,
-            artifact_ids=payload.artifact_ids,
-            evidence_ids=payload.evidence_ids,
-            method=payload.method,
-            result=payload.result,
-            findings=payload.findings,
-            provider=payload.provider,
-            source=payload.source,
-            deep_link=payload.deep_link,
-        )
+            state.verifications.append(verification)
+            returned.append(verification)
+            return state
 
-        def apply(current: ArtifactEvidenceState) -> ArtifactEvidenceState:
-            current.verifications.append(verification)
-            return current
-
-        self.store.update(apply)
-        return verification
+        # Internal composition seam, matching create_evidence: referenced
+        # lifecycle/provenance and append share the caller's canonical transaction.
+        # No public payload field can supply this callback or verifier identity.
+        (self.store.update if _commit is None else _commit)(apply)
+        return returned[0]
 
     def sync_governance_records(
         self,

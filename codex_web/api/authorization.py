@@ -465,28 +465,35 @@ class ApiAuthorizationService:
             )
         request.state.api_authorization_policy = policy
 
+        decision = self.authorize_operation(request.method, route.path, actor)
+        if decision is not None:
+            request.state.api_authorization_decision = decision
+        return policy
+
+    def authorize_operation(self, method: str, path: str, actor: AuthenticationActor | None):
+        """Use the same API policy for an authenticated canonical service channel.
+
+        No synthetic Request/session or caller-selected policy/identity is used.
+        Broker operational authority remains an additional, separate check.
+        """
+        policy = policy_for_operation(method, path)
+        if policy is None:
+            raise ApiAuthorizationError(f"API authorization policy missing for {method} {path}")
         if policy.public:
-            return policy
+            return None
         if actor is None:
             raise ApiAuthorizationError("authentication required", status_code=401)
         if policy.access == ApiAccessMode.AUTHENTICATED:
-            return policy
+            return None
         if policy.access == ApiAccessMode.ADMIN:
             _admin_actor(policy, actor)
-            return policy
+            return None
         if policy.access == ApiAccessMode.AUTHORITY:
-            decision = self.authority.evaluate(
-                AuthorityEvaluationRequest(
-                    capability=policy.capability,
-                    level=policy.level,
-                ),
-                actor=actor,
-            )
-            request.state.api_authorization_decision = decision
+            decision = self.authority.evaluate(AuthorityEvaluationRequest(
+                capability=policy.capability, level=policy.level), actor=actor)
             if decision.outcome != AuthorityDecisionOutcome.ALLOW:
-                reason = "; ".join(decision.reasons) or "operational authority denied"
-                raise ApiAuthorizationError(reason)
-            return policy
+                raise ApiAuthorizationError("; ".join(decision.reasons) or "operational authority denied")
+            return decision
         raise ApiAuthorizationError("unsupported API authorization policy")
 
     @staticmethod
