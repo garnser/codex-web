@@ -215,3 +215,48 @@ test('operator reconciliation missing binding or authority stays visibly unavail
   await expect(page.getByRole('form', { name: 'Evidence-bound Recovery reconciliation' })).toHaveCount(0);
   await expect(page.locator('#recovery-policy-content')).toContainText('No binding, authority or activation is created here');
 });
+
+for (const width of [1280, 375]) {
+  test(`opaque storage uses canonical preview, single submission and observe-only at ${width}`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const writes = []; const observations = [];
+    await mount(page, { intercept: async (route, url) => {
+      if (!url.pathname.includes('/storage-preservation/')) return false;
+      if (url.pathname.endsWith('/status')) await route.fulfill({ json: { schema_version: '1.0', registered: true, blockers: [], bindings: [{ id: 'binding-storage' }], configuration: { resource_id: 'database-whole', memory_bytes: 536870912, disk_bytes: 8589934592, wall_seconds: 85 }, boundary: 'Independent current capacity and authority required.' } });
+      else if (url.pathname.endsWith('/preview')) await route.fulfill({ json: { schema_version: '1.0', scope: 'whole-StateStore', inventory: { rows: 118389, payload_bytes: 294508748 }, semantic_recovery_qualified: false, mutated: false } });
+      else if (url.pathname.endsWith('/operations')) { writes.push(route.request().postDataJSON()); await route.fulfill({ json: { item: { id: 'intent-storage', status: 'uncertain', last_receipt_id: null, last_verification_id: null } } }); }
+      else if (url.pathname.endsWith('/observe')) { observations.push(url.pathname); await route.fulfill({ json: { item: { id: 'intent-storage', status: 'succeeded', last_receipt_id: 'receipt-storage', last_verification_id: 'verification-storage' } } }); }
+      else await route.fulfill({ json: { outcome: 'storage_verified', evidence_id: 'evidence-storage', artifact_ids: ['artifact-storage'], report: { integrity_status: 'verified', semantic_status: 'invalid', semantic_recovery_qualified: false, diagnostics: [{ reference: '<img src=x onerror="window.storageInjected=true">', bytes: 6906, error_code: 'json_decode_error' }] } } });
+      return true;
+    } });
+    const form = page.getByRole('form', { name: 'Opaque storage preservation' });
+    await expect(form).toBeVisible();
+    const submit = form.getByRole('button', { name: 'Submit once through canonical ActionIntent' });
+    await expect(submit).toBeDisabled();
+    for (const [name, value] of [['operation', 'one-capture'], ['key', 'stable-capture'], ['evidence', 'capacity-one'], ['verification', 'independent-one']]) await form.locator(`[name=${name}]`).fill(value);
+    await form.getByRole('button', { name: 'Review current scope and budget' }).click();
+    await expect(form.locator('[data-storage-impact]')).toContainText('118389');
+    await submit.click(); await resolveAction(page);
+    await expect(form.locator('[data-storage-result]')).toContainText('uncertain');
+    expect(writes).toHaveLength(1); expect(writes[0].request.resource_id).toBe('database-whole');
+    await expect(submit).toBeDisabled();
+    await form.getByRole('button', { name: 'Observe existing intent without replay' }).click();
+    await expect(form.locator('[data-storage-result]')).toContainText('storage_verified');
+    await expect(form.locator('[data-storage-result]')).toContainText('invalid');
+    expect(observations).toHaveLength(1); expect(writes).toHaveLength(1);
+    expect(await page.evaluate(() => !!window.storageInjected)).toBe(false);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  });
+}
+
+test('opaque storage unavailable and ordinary-reader states expose no mutation controls', async ({ page }) => {
+  await mount(page, { readonly: true });
+  await expect(page.locator('#recovery-policy-content')).toContainText('Detailed storage diagnostics and actions require');
+  await expect(page.getByRole('form', { name: 'Opaque storage preservation' })).toHaveCount(0);
+  await mount(page, { intercept: async (route, url) => {
+    if (!url.pathname.endsWith('/storage-preservation/status')) return false;
+    await route.fulfill({ json: { schema_version: '1.0', registered: true, blockers: ['Published deployment Resource/memory/disk/wall configuration required'], bindings: [] } }); return true;
+  } });
+  await expect(page.locator('#recovery-policy-content')).toContainText('Published deployment Resource/memory/disk/wall');
+  await expect(page.getByRole('form', { name: 'Opaque storage preservation' })).toHaveCount(0);
+});

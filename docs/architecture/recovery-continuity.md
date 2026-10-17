@@ -671,3 +671,116 @@ foreign identifiers, row counts, digests or parser excerpts to an ordinary
 WorkItem caller. Strict accounting reads/writes remain fail-closed. Existing
 operator history renders the generic incomplete status; detailed storage
 inspection requires independent whole-store authority.
+
+### Governed opaque-preservation operations
+
+`recovery.storage-preservation.capture` and
+`recovery.storage-preservation.verify` are additive, single-attempt, high-impact
+canonical ActionProvider operations. The application registers their trusted
+implementation, **not** a binding, authority grant, deployment value or an
+operation. No startup migration or RecoveryState1.3 activation occurs. Existing
+RecoveryState1.2/1.3, scheduled firing/effect identity, semantic backup/restore,
+RPO and health rules remain authoritative and unchanged.
+
+The existing Recovery operator page previews the exact whole-StateStore Resource
+and effective budget, requires high-impact confirmation, and exposes canonical
+ActionIntent, receipt, verification, Artifact and Evidence references. Unknown
+transport or missing domain receipt offers read-only observation, never another
+capture. Ordinary usage history has only typed incomplete/null-total diagnostics;
+operator storage reports contain bounded opaque key references, byte lengths,
+digests and fixed error codes, never payload excerpts. Valid JSON by itself is
+not a semantic domain validation. Successful storage operations consequently
+produce WARN Evidence with `semantic_recovery_qualified=false` and do not advance
+a Work Item or satisfy release/recovery qualification automatically.
+
+Deployment administration must publish the following existing Configuration
+Registry keys before availability can be asserted:
+
+- `recovery.preservation.resource_id`: the explicitly authorized whole-StateStore
+  DATABASE Resource. A requester cannot select another source or filesystem.
+- `recovery.preservation.memory_bytes`, `disk_bytes`, `wall_seconds`: effective
+  admitted budgets, with wall10..300 seconds intersecting the existing runtime
+  allowance. These configuration values grant neither capacity nor authority.
+
+An explicitly enabled `recovery-storage` / `canonical-state-preservation`
+binding must target exactly that Resource and authorize the actual content and
+database-reservation directories through its existing filesystem policy. Current
+requester tenant, administrator/MFA session, action capability/role, Resource,
+provider/binding/Definition, execution assignment/fence/lease, procedure/security,
+quota and worker identity remain canonical admission requirements. The existing
+mutation guard locks/rechecks their shared transaction read set immediately
+around irreversible Artifact/Evidence publication; configuration, policy, key
+and capacity Evidence are also read under their shared canonical locks. A
+revocation committed before the final locked read prohibits publication. A
+writer arriving after that read serializes behind the transaction. No serialized
+caller parameter can install the internal worker context or lend worker scopes
+to a human.
+
+The independent capacity prerequisite uses existing canonical Evidence and
+Verification, not a new registry or caller assertion. Evidence metadata contract
+`recovery-storage-capacity.v1` binds `resource_id`, the SHA256 of canonical JSON
+configuration pins `{name:[record_id,revision]}`, integer `memory_bytes`,
+`disk_bytes`, `wall_seconds`, numeric `expires_at`, and absolute
+`database_directory` / `database_reservation_directory`. An independent VERIFIED
+record must reference this current, valid, retained, same-tenant Evidence. Start
+freshness is60seconds, expiry covers the operation wall budget; commit rechecks
+expiry, validity and the original admitted pins. The directory mapping must
+match the actual configured database and reservation device. Symlinked mappings
+are refused. Evidence must describe **actual external enforcement** where
+required: neither RLIMIT_AS nor cooperative row estimates establish a job cgroup.
+No API call here provisions a cgroup, raises a quota, invents independent proof or
+creates any production binding/configuration.
+
+Before reading payloads, a consistent key/length-only snapshot computes exact
+base64 row-frame sizes using a bounded PG server cursor. Reservation includes
+explicit bounded growth headroom, encrypted-frame maxima, content overlap and
+same-backend target/index/WAL allowance. The source capture is a distinct single
+consistent snapshot; its emitted bytes must fit the reserved bound, or capture
+refuses. Disk reservations use owned private allocated files on the actual
+filesystems and remain held until real I/O joins. Configured charge covers both
+reservation and writes, with current free-space checks. This is cooperative
+operation accounting, not a hard quota or a promise that the complete backup
+workflow has a fixed heap footprint. Changed source size, unavailable filesystem,
+insufficient resource proof or exhausted bounds produces refusal, not truncation.
+
+Capture reserves a restricted `deny_model_context` Artifact with UNKNOWN custody,
+streams encrypted content through existing ArtifactContent/KMS, authenticates the
+entire terminal manifest and checks content length/digest. A completed encrypted
+object reference is retained as protected pending metadata before final
+admission. Pending metadata does not make content available or claim integrity.
+A crash between a filesystem write and that custody append remains UNKNOWN;
+there is no atomic filesystem/database guarantee, orphan adoption or replay.
+Only the shared Artifact/Evidence transaction attaches the immutable available
+pointer and appends its idempotent storage-integrity receipt. Repeated canonical
+requests/readbacks preserve the same intent/Artifact/Evidence; loss after commit
+settles through existing read-only ActionIntent reconciliation, not engine
+execution. Later authority denial can retain an observation without successful
+settlement. Distinct verification attempts remain canonical and auditable.
+
+Verification decrypts the original immutable capture and writes only an owned
+new SQLite file or newly generated PG schema through the same raw restore
+contract. No application starts on it, no side effects run, and no live target or
+existing schema can be adopted. The isolated transaction exhausts authenticated
+input before committing; the resulting full raw stream digest must match before
+owned cleanup and Evidence publication. Cleanup failure prevents successful
+verification and retains unknown operation custody. PG verification uses its
+own connections and never steals the source callback/pool1 transaction.
+
+Cancellation signals the existing cooperative StorageOperationBudget and joins
+the actual bounded Recovery executor future. It cannot abandon a writer or make
+drain report zero before the thread terminates. Content and target writes must
+finish/refuse before reservations release. Timeouts do not permit automatic
+retry. This API performs no live import, record repair, semantic normalization,
+original firing disposition or accounting reinterpretation.
+
+The versioned storage format and protected Artifact are separate from legacy
+BackupSnapshot1.0. Existing semantic readers must refuse this format; storage
+integrity/isolated physical restore is not a semantic RestoreVerification PASS.
+The operator bootstrap must independently retain an authenticated complete
+backup and isolated restore proof accepted by the reviewed deployment contract,
+plus drain, exact-source/CAS, preservation and postverification gates. This
+source integration neither waives those gates nor authorizes installation,
+RecoveryState1.3 activation, old-writer handover or binary rollback after an
+irreversible contract transition. Full-current-shape encrypted qualification is
+separate from focused small fixtures and must use real admitted aggregate
+memory/disk/CPU/process/time enforcement with all clients/servers reaped.

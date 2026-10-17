@@ -845,7 +845,7 @@ class ActionIntentService:
         if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID:
             ready_context = await self._ready_execution_context(intent, actor)
         with continuation_context(proof), procedure_action_intent(intent.id), readiness_execution(ready_context):
-            if intent.action_id == 'recovery.scheduled-firing.reconcile':
+            if intent.action_id in {'recovery.scheduled-firing.reconcile', 'recovery.storage-preservation.capture', 'recovery.storage-preservation.verify'}:
                 from codex_web.services.recovery_mutation_admission import recovery_mutation_executor
                 with recovery_mutation_executor(self, intent.id, actor):
                     return await self.execution.execute(intent.binding_id, intent.request, actor=actor)
@@ -1004,6 +1004,8 @@ class ActionIntentService:
             request, binding_id=binding.id, execution_id=payload.execution_id,
             work_item_ref=payload.work_item_ref, actor=actor,
         )
+        if request.action_id in {"recovery.storage-preservation.capture", "recovery.storage-preservation.verify"} and payload.work_item_success is not None:
+            raise ActionIntentConflictError("Storage-only preservation cannot advance Work Item success")
         if payload.work_item_success is not None and payload.work_item_ref is None:
             raise ActionIntentConflictError(
                 "work_item_success requires work_item_ref"
@@ -1935,7 +1937,7 @@ class ActionIntentService:
         provider_ok = True
         # Readiness success is never caller-optional, including legacy or
         # previously persisted records with verification_required=False.
-        if intent.verification_required or intent.action_id in {CODE_HOST_PULL_REQUEST_READY_ACTION_ID, "recovery.scheduled-firing.reconcile"}:
+        if intent.verification_required or intent.action_id in {CODE_HOST_PULL_REQUEST_READY_ACTION_ID, "recovery.scheduled-firing.reconcile", "recovery.storage-preservation.capture", "recovery.storage-preservation.verify"}:
             try:
                 ready_context = (await self._ready_verification_context(intent, result, actor)
                                  if intent.action_id == CODE_HOST_PULL_REQUEST_READY_ACTION_ID else None)
@@ -2404,7 +2406,7 @@ class ActionIntentService:
     ) -> ActionIntent:
         intent = self._intent(intent_id, actor)
         self._require_intent_control(intent, actor)
-        if intent.action_id == "recovery.scheduled-firing.reconcile":
+        if intent.action_id in {"recovery.scheduled-firing.reconcile", "recovery.storage-preservation.capture", "recovery.storage-preservation.verify"}:
             raise ActionIntentUnsafeRetryError("Recovery custody action is single-attempt; reconcile read-only")
         if intent.rollback_checkpoint is not None:
             raise ActionIntentUnsafeRetryError("an attempted rollback cannot replay the forward mutation")
@@ -2613,7 +2615,7 @@ class ActionIntentService:
             if receipt.intent_id == intent.id and receipt.result is not None
         ]
         latest_result = results[-1] if results else None
-        if intent.action_id == "recovery.scheduled-firing.reconcile":
+        if intent.action_id in {"recovery.scheduled-firing.reconcile", "recovery.storage-preservation.capture", "recovery.storage-preservation.verify"}:
             if payload.retry_if_idempotent:
                 raise ActionIntentConflictError("Recovery reconciliation is read-only; never retry execute")
             if intent.status in {ActionIntentStatus.UNCERTAIN, ActionIntentStatus.REQUIRES_RECONCILIATION} and intent.attempt > 0:

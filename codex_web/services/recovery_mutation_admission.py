@@ -63,7 +63,9 @@ def mutation_guard(provider, binding, request):
             exists = recovery.store.store.record_collections_exist(names)
             domains.update({n: () if exists[n] else (None,) for n in names})
     initial = service._intent(intent_id, worker)
-    if initial.request != request or initial.binding_id != binding.id or initial.action_id != 'recovery.scheduled-firing.reconcile':
+    from codex_web.recovery_preservation import ACTIONS as PRESERVATION_ACTIONS
+    allowed = PRESERVATION_ACTIONS | {'recovery.scheduled-firing.reconcile'}
+    if initial.request != request or initial.binding_id != binding.id or initial.action_id not in allowed or initial.action_id != request.action_id:
         raise ActionRequirementError('Recovery originating intent/request mismatch')
     if initial.execution_id is not None:
         from codex_web.storage.execution_workers import ASSIGNMENTS, WORKERS

@@ -19,18 +19,27 @@ async def reconcile_recovery_intent(service, intent, *, actor):
     A lost receipt or missing domain record never permits an execute retry.
     No Work Item success is supported by this custody-only action.
     """
+    from codex_web.recovery_preservation import ACTIONS as STORAGE_ACTIONS
+    storage = intent.action_id in STORAGE_ACTIONS
+    action_id = intent.action_id
     try:
         if service.identity is None or service.authority is None or intent.work_item_success is not None:
             raise ActionRequirementError("Recovery settlement requires canonical identity/authority and no Work Item advance")
         binding, provider, definition, request = service.execution.resolve_contract(
             intent.binding_id, intent.request, actor=actor)
         from codex_web.services.recovery_action_provider import RecoveryActionProvider
-        if not isinstance(provider, RecoveryActionProvider) or definition != intent.action_definition:
+        from codex_web.services.recovery_preservation_provider import RecoveryPreservationProvider
+        expected_provider = RecoveryPreservationProvider if storage else RecoveryActionProvider
+        if not isinstance(provider, expected_provider) or definition != intent.action_definition:
             raise ActionRequirementError("Recovery provider/Definition changed")
         recovery = provider.recovery
         repositories = [service.execution.registry.store, service.execution.resources.store,
             service.identity.store, service.authority.registry.store, recovery.store,
-            recovery.crypto.store, recovery.evidence.store, recovery.scheduler.store]
+            recovery.crypto.store, recovery.evidence.store]
+        if recovery.scheduler is not None:
+            repositories.append(recovery.scheduler.store)
+        if storage:
+            repositories.append(provider.operations.configuration.store)
         if service.artifact_evidence is not None:
             repositories.append(service.artifact_evidence.store)
         if service.execution_profiles is not None:
@@ -66,12 +75,19 @@ async def reconcile_recovery_intent(service, intent, *, actor):
             raise ActionRequirementError(error or "Current security admission denied")
         preparation = await service.execution.prepare(intent.binding_id, request, actor=actor)
         plan = preparation.provider_plan
-        if plan.get("operation") != "recovery-scheduled-firing-reconciliation" or plan.get("observed_result") is None:
-            raise ActionRequirementError("Original Recovery outcome is not observed; never replay")
-        result = ActionResult.model_validate(plan["observed_result"])
-        if (result.action_id != ACTION or result.provider_binding_id != intent.binding_id
+        if storage:
+            if plan.get("operation") != provider.observation_operation:
+                raise ActionRequirementError("Storage provider observation contract changed")
+            result = await provider.readback(request,binding=binding,intent_id=intent.id)
+            if result is None:
+                raise ActionRequirementError("Storage outcome unknown; never replay")
+        else:
+            if plan.get("operation") != "recovery-scheduled-firing-reconciliation" or plan.get("observed_result") is None:
+                raise ActionRequirementError("Original Recovery outcome is not observed; never replay")
+            result = ActionResult.model_validate(plan["observed_result"])
+        if (result.action_id != action_id or result.provider_binding_id != intent.binding_id
                 or result.idempotency_key != intent.idempotency_key
-                or result.external_id != request.parameters.get("event_id")):
+                or result.external_id != request.parameters.get("operation_id" if storage else "event_id")):
             raise ActionRequirementError("Observed Recovery receipt does not bind this intent")
         if service.execution.procedure_admission is not None:
             from codex_web.procedure_discovery import procedure_action_intent
@@ -107,11 +123,16 @@ async def reconcile_recovery_intent(service, intent, *, actor):
                     action_intent_id=intent.id,work_item_ref=intent.work_item_ref,execution_id=intent.execution_id)
                 if decision.outcome != SecurityDecisionOutcome.ALLOW:
                     raise ActionRequirementError("Current Recovery security denied settlement")
-            record = provider.reconcile.inspect(result.external_id, actor=provider.resolve_actor(request.requested_by))
-            if record is None or record.model_dump(mode="json") != result.output.get("record"):
-                raise ActionRequirementError("Recovery disposition changed")
-            validate_proof(recovery.evidence.store.load(),record.request,record.original,
-                current_requester,float(recovery.clock()))
+            if storage:
+                record = provider.inspect_committed(request,binding,intent_id=intent.id)
+                if record is None or provider._result(record,binding=binding) != result:
+                    raise ActionRequirementError("Storage receipt changed")
+            else:
+                record = provider.reconcile.inspect(result.external_id, actor=provider.resolve_actor(request.requested_by))
+                if record is None or record.model_dump(mode="json") != result.output.get("record"):
+                    raise ActionRequirementError("Recovery disposition changed")
+                validate_proof(recovery.evidence.store.load(),record.request,record.original,
+                    current_requester,float(recovery.clock()))
         guarded = {"guard_rows": domains, "guard": guard}
         # Persist the actual observation first. If later admission is revoked,
         # it remains available; no successful status or effect is manufactured.
