@@ -220,6 +220,81 @@ class ResumeCases:
             await CodexAgentRuntimeAdapter(transport).resume_session('thread',request,resume_capture=self.capture)
         transport.request.assert_not_awaited()
 
+    def refusing_capture(self):
+        from dataclasses import replace
+        from codex_web.services.queued_operator_admission import OperatorAdmissionPrestartRefusal
+        def refuse():
+            raise OperatorAdmissionPrestartRefusal(status_code=409,detail={
+                'code':'operator_admission_refused','message':'synthetic current authority changed'})
+        return replace(self.capture,admission_validator=refuse)
+
+    async def test_resume_writer_refusal_commits_exact_no_write_witness(self):
+        from codex_web.services.queued_native_start import NativeStartAdmissionRefused
+        from codex_web.services.queued_operator_admission import OperatorAdmissionPrestartRefusal
+        capture=self.refusing_capture()
+        c=capture.prepare(generation='generation',rpc_request_id='resume-original',
+            native_session_id='thread',runtime_version='0.160.0')
+        before=copy.deepcopy(self.saved().queued_turn_snapshot)
+        with self.assertRaises(NativeStartAdmissionRefused) as caught:
+            capture.validate_before_send(c)
+        self.assertEqual(caught.exception.correlation,c)
+        self.assertIsInstance(caught.exception.__cause__,OperatorAdmissionPrestartRefusal)
+        confirmed=capture.confirm_prewrite_refusal(c)
+        self.assertEqual(confirmed.status,'queued')
+        self.assertEqual(confirmed.queued_turn_snapshot,before)
+        self.assertIsNone(confirmed.queued_resume_correlation)
+        self.assertIsNone(confirmed.queued_resume_evidence)
+        self.assertIsNone(confirmed.queued_start_receipt)
+        self.assertEqual(confirmed.blocker_history[-1].blockers[0].model_dump(mode='json')['correlation'],
+            c.model_dump(mode='json'))
+        with self.assertRaises(ValueError):
+            capture.confirm_prewrite_refusal(c.model_copy(update={'rpc_request_id':'foreign'}))
+        self.runtime._send.assert_not_called()
+
+    async def test_failed_prewrite_bookkeeping_retains_unknown_and_emits_no_witness(self):
+        capture=self.refusing_capture()
+        c=capture.prepare(generation='generation',rpc_request_id='resume-original',
+            native_session_id='thread',runtime_version='0.160.0')
+        update=self.service.store.update
+        def failing(attempt_id,callback):
+            if callback.__name__=='refuse':
+                raise RuntimeError('synthetic no-write bookkeeping unavailable')
+            return update(attempt_id,callback)
+        with patch.object(self.service.store,'update',side_effect=failing):
+            with self.assertRaisesRegex(RuntimeError,'synthetic no-write bookkeeping unavailable'):
+                capture.validate_before_send(c)
+        self.assertEqual(self.saved().status,'reconciliation_required')
+        self.assertEqual(self.saved().queued_resume_correlation,c)
+        with self.assertRaises(ValueError):capture.confirm_prewrite_refusal(c)
+        self.assertIsNone(self.saved().queued_start_receipt)
+        self.runtime._send.assert_not_called()
+
+    async def test_possible_turn_and_positive_start_win_over_earlier_local_no_write_witness(self):
+        from codex_web.services.queued_native_start import NativeStartAdmissionRefused
+        from codex_web.models import QueuedNativeStartCorrelation
+        capture=self.refusing_capture()
+        c=capture.prepare(generation='generation',rpc_request_id='resume-original',
+            native_session_id='thread',runtime_version='0.160.0')
+        with self.assertRaises(NativeStartAdmissionRefused):capture.validate_before_send(c)
+        # A conflicting canonical possible-input reservation must win even over
+        # an earlier actual local witness. Its subsequent reader result is owned.
+        start=QueuedNativeStartCorrelation.model_validate({
+            **c.model_dump(exclude={'rpc_method','runtime_version'}),'rpc_request_id':'possible-turn-rpc'})
+        self.service.store.update(self.f.attempt.id,lambda x:x.model_copy(update={
+            'queued_start_correlation':start,'status':'reconciliation_required'}))
+        with self.assertRaises(ValueError):capture.confirm_prewrite_refusal(c)
+        unknown=self.service.queued_disposition(self.f.attempt.id,status='blocked',
+            claim_id=self.f.claim,preinput_refusal=True)
+        self.assertEqual(unknown.status,'reconciliation_required')
+        self.assertEqual(unknown.queued_start_correlation,start)
+        self.assertTrue(self.f.capture.observe(start,generation='generation',message={
+            'id':'possible-turn-rpc','result':{'turn':{'id':'actual-positive','threadId':'thread'}}}))
+        result=self.service.queued_disposition(self.f.attempt.id,status='blocked',
+            claim_id=self.f.claim,preinput_refusal=True)
+        self.assertEqual(result.status,'started')
+        self.assertEqual(result.queued_start_receipt.provider_native_turn_id,'actual-positive')
+        self.runtime._send.assert_not_called()
+
 
 class QueuedNativeResumeTests(ResumeCases,unittest.IsolatedAsyncioTestCase):
     pass

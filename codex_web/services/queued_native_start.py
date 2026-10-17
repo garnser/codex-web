@@ -13,6 +13,12 @@ from codex_web.models import (
 class NativeStartAdmissionRefused(RuntimeError):
     """Server witness: an admission guard refused before the native write."""
 
+    def __init__(self, message, *, correlation=None):
+        super().__init__(message)
+        # Set only after the trusted writer commits its no-write bookkeeping.
+        # Transport errors and caller-selected provider text carry no witness.
+        self.correlation = correlation
+
 
 def validate_attribution(service, current, correlation):
     snapshot = current.queued_turn_snapshot
@@ -145,7 +151,10 @@ class QueuedNativeStartCapture:
                             or current.queued_start_receipt is not None
                             or getattr(current, self.evidence_field) is not None
                             or current.started_at is not None
-                            or current.scheduling_retirement is not None):
+                            or current.scheduling_retirement is not None
+                            or (self.rpc_method == 'thread/resume' and (
+                                current.queued_start_correlation is not None
+                                or current.queued_start_evidence is not None))):
                         raise ValueError('native refusal reservation changed')
                     blocker = ExecutionPreflightBlocker(code='native_preinput_admission_refused',
                         message='Live admission refused before native write',
@@ -156,7 +165,8 @@ class QueuedNativeStartCapture:
                         'blockers':(blocker,), 'blocker_history':(*current.blocker_history, history)[-self.service.MAX_HISTORY:],
                         'updated_at':float(self.service.clock())})
                 self.service.store.update(self.attempt_id, refuse)
-                raise NativeStartAdmissionRefused("Live admission refused before native write") from exc
+                raise NativeStartAdmissionRefused("Live admission refused before native write",
+                    correlation=correlation) from exc
 
     def prepare(self, *, generation, rpc_request_id, native_session_id, runtime_version=None):
         """Commit before _send; a storage error forbids this native RPC."""

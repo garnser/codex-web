@@ -83,6 +83,30 @@ class QueuedNativeResumeCapture(QueuedNativeStartCapture):
         return super().prepare(generation=generation, rpc_request_id=rpc_request_id,
             native_session_id=native_session_id, runtime_version=runtime_version)
 
+    def confirm_prewrite_refusal(self, correlation):
+        """Read-only atomic validation of a committed trusted no-write witness.
+
+        This is not a provider negative or a general absence-of-receipt test.
+        A failed bookkeeping transaction must never become replay permission.
+        """
+        if (not isinstance(correlation, QueuedNativeResumeCorrelation)
+                or correlation.rpc_method != 'thread/resume'
+                or correlation.runtime_version != '0.160.0'):
+            raise ValueError('resume prewrite witness unavailable')
+        def confirm(current):
+            validate_attribution(self.service, current, correlation)
+            if (current.status != 'queued' or current.queued_resume_correlation is not None
+                    or current.queued_resume_evidence is not None
+                    or current.queued_start_correlation is not None or current.queued_start_evidence is not None
+                    or current.queued_start_receipt is not None or current.started_at is not None
+                    or current.scheduling_retirement is not None
+                    or not any(blocker.code == 'native_preinput_admission_refused'
+                        and blocker.model_dump(mode='json').get('correlation') == correlation.model_dump(mode='json')
+                        for blocker in current.blockers)):
+                raise ValueError('resume prewrite witness changed or possible input is owned')
+            return current
+        return self.service.store.update(self.attempt_id, confirm)
+
     def observe(self, correlation, *, generation, message):
         if (generation != correlation.runtime_generation or message.get('id') != correlation.rpc_request_id
                 or 'method' in message or correlation.runtime_version != '0.160.0'):

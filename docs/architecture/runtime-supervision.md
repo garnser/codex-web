@@ -922,3 +922,16 @@ claims and exhausted history retain reconciliation-required custody. Actual
 provider failures after send remain unknown even when their text matches a
 controller refusal code. No replay or permission is conferred by the fixture or
 this retained local-witness history.
+
+When the resume writer's admission guard itself refuses before `stdin.write`, it
+commits the exact no-write blocker/correlation before emitting the internal
+`NativeStartAdmissionRefused` witness. The earlier resume exception boundary
+validates that committed witness atomically against the same original/claim,
+SDK method/version/generation/session/fence and no possible user-input proof,
+then propagates only the typed local controller cause to the ordinary drain.
+It does not manufacture a provider resume result. Failed bookkeeping, missing or
+conflicting witness, any possible input reservation or positive receipt remains
+owned; no absence-only or provider-text inference releases custody. Queue
+restoration uses the committed disposition/claim, so a concurrent positive
+start, changed claim or retirement wins over the earlier exception. Original
+snapshot, queue position and retry counter remain unchanged on known refusal.
