@@ -545,6 +545,147 @@ class StorageOperatorTests(unittest.IsolatedAsyncioTestCase):
                 self.fail('revoked old version admitted')
         self.assertFalse(self.committed());self.assert_original()
 
+    async def test_verify_reuses_bound_capture_report_but_authenticates_content_once(self):
+        operations=self.operator.storage_provider.operations
+        async with self.client() as client:
+            item=await self.capture(client)
+            receipt=(await client.get('/api/recovery/storage-preservation/receipts/'+item['id'])).json()
+            payload=self.payload.model_copy(update={'operation_id':'single-pass','idempotency_key':'single-pass','artifact_id':receipt['artifact_ids'][0]})
+            content=self.artifacts.content
+            with patch.object(operations,'_assess',side_effect=AssertionError('VERIFY reassessment forbidden')), \
+                 patch.object(content,'open',wraps=content.open) as opened:
+                response=await client.post('/api/recovery/storage-preservation/operations',json=self.body(VERIFY,payload))
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(response.json()['item']['status'],'succeeded',response.text)
+            self.assertEqual(opened.call_count,1)
+            observed=(await client.get('/api/recovery/storage-preservation/receipts/'+response.json()['item']['id'])).json()['report']
+            for field in ('inventory','rows','raw_stream_sha256','semantic_status','invalid_json_rows',
+                          'diagnostics','diagnostics_bounded','diagnostics_truncated'):
+                self.assertEqual(observed[field],receipt['report'][field],field)
+            self.assertTrue(observed['isolated_restore_verified'])
+            self.assertFalse(observed['semantic_recovery_qualified'])
+        self.assert_original()
+
+    async def test_verify_rejects_public_receipt_and_changed_content_binding_before_target(self):
+        operations=self.operator.storage_provider.operations
+        async with self.client() as client:
+            item=await self.capture(client);record=self.committed()[0]
+            artifact=self.artifacts.get_artifact(record.artifact_ids[0],actor=self.actor)
+            # A public Evidence producer cannot choose the private idempotent
+            # receipt identity, even with copied source/report metadata.
+            copied=self.artifacts.create_evidence(EvidenceCreate(evidence_type=record.evidence_type,
+                artifact_ids=record.artifact_ids,resource_ids=record.resource_ids,source=SOURCE,
+                result=record.result,summary='Synthetic public receipt clone',metadata=record.metadata),actor=self.actor)
+            variants=[artifact.model_copy(update={'metadata':{**artifact.metadata,'capture_evidence_id':copied.id}}),
+                      artifact.model_copy(update={'digest':artifact.digest.model_copy(update={'value':'0'*64})}),
+                      artifact.model_copy(update={'content':artifact.content.model_copy(update={'size_bytes':artifact.content.size_bytes+1})})]
+            for index,changed in enumerate(variants):
+                def replace(state):
+                    state.artifacts=[changed if a.id==artifact.id else a for a in state.artifacts];return state
+                self.artifacts.store.update(replace)
+                payload=self.payload.model_copy(update={'operation_id':'bad-binding-'+str(index),'idempotency_key':'bad-binding-'+str(index),'artifact_id':artifact.id})
+                with patch.object(operations,'isolated_target',side_effect=AssertionError('untrusted report must not create target')):
+                    response=await client.post('/api/recovery/storage-preservation/operations',json=self.body(VERIFY,payload))
+                self.assertEqual(response.status_code,200,response.text)
+                self.assertNotEqual(response.json()['item']['status'],'succeeded',response.text)
+            self.assertEqual(self.committed(),[record,copied])
+        self.assert_original()
+
+    async def test_verify_target_hash_is_checked_against_trusted_report_after_full_restore(self):
+        from contextlib import contextmanager
+        operations=self.operator.storage_provider.operations
+        async with self.client() as client:
+            await self.capture(client);record=self.committed()[0]
+            # Simulate bounded canonical report corruption. Even this exact
+            # private receipt ID cannot replace actual target readback proof.
+            report=json.loads(record.metadata['report_json']);report['raw_stream_sha256']='0'*64
+            changed=record.model_copy(update={'metadata':{**record.metadata,'report_json':json.dumps(report)}})
+            def corrupt(state):
+                state.evidence=[changed if e.id==record.id else e for e in state.evidence];return state
+            self.artifacts.store.update(corrupt)
+            original=operations.isolated_target;restored=[];cleaned=[]
+            @contextmanager
+            def inspected(*args,**kwargs):
+                try:
+                    with original(*args,**kwargs) as target:
+                        real=target.restore_storage_snapshot
+                        def restore(*a,**k):
+                            result=real(*a,**k);restored.append(True);return result
+                        with patch.object(target,'restore_storage_snapshot',side_effect=restore):yield target
+                finally:cleaned.append(True)
+            payload=self.payload.model_copy(update={'operation_id':'hash-mismatch','idempotency_key':'hash-mismatch','artifact_id':record.artifact_ids[0]})
+            with patch.object(operations,'isolated_target',side_effect=inspected):
+                response=await client.post('/api/recovery/storage-preservation/operations',json=self.body(VERIFY,payload))
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertNotEqual(response.json()['item']['status'],'succeeded',response.text)
+            self.assertEqual(restored,[True]);self.assertEqual(cleaned,[True])
+            self.assertIn('Isolated storage row digest mismatch',response.json()['item']['last_error'])
+            self.assertEqual(self.committed(),[changed])
+        self.assert_original()
+
+    async def test_separate_capture_receipt_invalidation_after_readback_denies_commit(self):
+        from contextlib import contextmanager
+        from codex_web.services.artifact_evidence import ArtifactEvidenceService
+        from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
+        from codex_web.artifact_evidence import EvidenceLifecycle
+        operations=self.operator.storage_provider.operations
+        writer=ArtifactEvidenceService(ArtifactEvidenceStore(self.preservation_writer().store.store))
+        async with self.client() as client:
+            await self.capture(client);record=self.committed()[0]
+            original=operations.isolated_target;post_hash=[]
+            @contextmanager
+            def invalidate_after_hash(*args,**kwargs):
+                with original(*args,**kwargs) as target:
+                    yield target
+                    post_hash.append(True)
+                    writer.invalidate_evidence(record.id,'separate writer after target hash',actor=self.actor)
+            payload=self.payload.model_copy(update={'operation_id':'late-receipt','idempotency_key':'late-receipt','artifact_id':record.artifact_ids[0]})
+            with patch.object(operations,'isolated_target',side_effect=invalidate_after_hash):
+                response=await client.post('/api/recovery/storage-preservation/operations',json=self.body(VERIFY,payload))
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertNotEqual(response.json()['item']['status'],'succeeded',response.text)
+            self.assertEqual(post_hash,[True])
+            self.assertIn('Capture receipt changed before verification commit',response.json()['item']['last_error'])
+            self.assertEqual(len(self.committed()),1)
+            self.assertEqual(self.committed()[0].lifecycle,EvidenceLifecycle.INVALIDATED)
+        self.assert_original()
+
+
+    async def test_single_pass_truncated_encrypted_footer_rolls_back_target_and_refuses_receipt(self):
+        from contextlib import contextmanager
+        from codex_web.artifact_content import ArtifactContentScope
+        operations=self.operator.storage_provider.operations
+        async with self.client() as client:
+            await self.capture(client);record=self.committed()[0]
+            artifact=self.artifacts.get_artifact(record.artifact_ids[0],actor=self.actor)
+            scope=ArtifactContentScope(organization_id=self.actor.organization_id,workspace_id=self.actor.workspace_id)
+            path=self.local_content._resolve(scope,artifact.content.locator)
+            path.write_bytes(path.read_bytes()[:-1])  # synthetic content corruption ONLY
+            original=operations.isolated_target;rollback=[]
+            @contextmanager
+            def checked(*args,**kwargs):
+                with original(*args,**kwargs) as target:
+                    prefix='codex_' if hasattr(target,'dsn') else ''
+                    def physical():
+                        with target._connection() as connection:
+                            rows=connection.execute('SELECT COUNT(*) FROM '+prefix+'state_documents').fetchone()[0]
+                            metadata=connection.execute('SELECT key,value,updated_at FROM '+prefix+'state_metadata ORDER BY key').fetchall()
+                            return rows,metadata
+                    before=physical();real=target.restore_storage_snapshot
+                    def restore(*a,**k):
+                        try:return real(*a,**k)
+                        finally:
+                            self.assertEqual(physical(),before)
+                            rollback.append(True)
+                    with patch.object(target,'restore_storage_snapshot',side_effect=restore):yield target
+            payload=self.payload.model_copy(update={'operation_id':'truncated-verify','idempotency_key':'truncated-verify','artifact_id':artifact.id})
+            with patch.object(operations,'isolated_target',side_effect=checked):
+                response=await client.post('/api/recovery/storage-preservation/operations',json=self.body(VERIFY,payload))
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertNotEqual(response.json()['item']['status'],'succeeded',response.text)
+            self.assertEqual(rollback,[True]);self.assertEqual(self.committed(),[record])
+        self.assert_original()
+
 
 @unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'),'isolated private PostgreSQL DSN required')
 class PostgresStorageOperatorTests(_PostgresFixture,StorageOperatorTests):
@@ -677,10 +818,16 @@ class FullShapeEncryptedStorageTests(PostgresStorageOperatorTests):
             from contextlib import contextmanager
             original=self.operator.storage_provider.operations.isolated_target
             sql_oracle=[]
+            progress={'target_entered':False,'restore_completed':False,'target_hash_completed':False,'literal_sql_completed':False}
             @contextmanager
             def checked_target(*args,**kwargs):
                 with original(*args,**kwargs) as target:
-                    yield target
+                    progress['target_entered']=True
+                    restore=target.restore_storage_snapshot
+                    def traced_restore(*a,**k):
+                        result=restore(*a,**k);progress['restore_completed']=True;return result
+                    with patch.object(target,'restore_storage_snapshot',side_effect=traced_restore):yield target
+                    progress['target_hash_completed']=True
                     # Existing target transaction has committed an authenticated
                     # stream, but custody is still held and cleanup has not run.
                     # Independently read literal expected seed values via SQL.
@@ -704,12 +851,14 @@ class FullShapeEncryptedStorageTests(PostgresStorageOperatorTests):
                             self.assertEqual(seen,count)
                         literal=connection.execute("SELECT payload,updated_at FROM codex_state_documents WHERE namespace='synthetic-malformed-usage'").fetchone()
                         self.assertEqual(literal,(self.opaque,1.125))
-                    sql_oracle.append(True)
+                    sql_oracle.append(True);progress['literal_sql_completed']=True
             phase=time.perf_counter()
             with patch.object(self.operator.storage_provider.operations,'isolated_target',side_effect=checked_target):
                 response=await client.post('/api/recovery/storage-preservation/operations',json=self.body(VERIFY,payload))
+            print(json.dumps({'phase':'verify_response','http_status':response.status_code,
+                'intent_status':response.json().get('item',{}).get('status'),
+                'progress':progress,'full_encrypted_verify_and_independent_sql_seconds':time.perf_counter()-phase}),flush=True)
             self.assertEqual(sql_oracle,[True])
-            print(json.dumps({'full_encrypted_verify_and_independent_sql_seconds':time.perf_counter()-phase}))
             self.assertEqual(response.status_code,200,response.text)
             self.assertEqual(response.json()['item']['status'],'succeeded',response.text)
             isolated=await client.get('/api/recovery/storage-preservation/receipts/'+response.json()['item']['id'])

@@ -19,7 +19,7 @@ from codex_web.artifact_evidence import (ArtifactCreate, ArtifactType, ArtifactD
 from codex_web.artifact_content import ArtifactContentScope, ArtifactContentPointer
 from codex_web.crypto import EncryptionContext
 from codex_web.data_governance import DataClassification
-from codex_web.recovery_preservation import SOURCE, CAPACITY_CONTRACT, CAPTURE, VERIFY, StoragePreservationReportV1, StorageInventoryV1
+from codex_web.recovery_preservation import SOURCE, CAPACITY_CONTRACT, CAPTURE, VERIFY, StoragePreservationReportV1, StorageInventoryV1, StoragePreservationRequest
 from codex_web.resources import ResourceType, ResourceLifecycle
 from codex_web.services.recovery import RecoveryConflictError
 from codex_web.services.recovery_policy import RecoveryPolicyControl
@@ -205,12 +205,21 @@ class StoragePreservationOperations:
             or receipt.artifact_ids!=(artifact.id,) or receipt.resource_ids!=(payload.resource_id,)
             or receipt.metadata.get('action_id')!=CAPTURE
             or receipt.metadata.get('intent_id')!=artifact.metadata.get('preservation_intent_id')
-            or receipt.metadata.get('request_sha256')!=artifact.metadata.get('request_sha256')):
+            or receipt.metadata.get('request_sha256')!=artifact.metadata.get('request_sha256')
+            or receipt.metadata.get('content_sha256')!=artifact.digest.value
+            or receipt.metadata.get('content_size_bytes')!=artifact.content.size_bytes
+            or receipt.metadata.get('capture_key_id')!=artifact.metadata.get('preservation_key_id')
+            or receipt.metadata.get('capture_key_version')!=artifact.metadata.get('preservation_key_version')):
             raise RecoveryConflictError('Authenticated capture inventory receipt required')
         report=StoragePreservationReportV1.model_validate_json(receipt.metadata.get('report_json',''))
-        if report.inventory.rows!=report.rows:
-            raise RecoveryConflictError('Capture inventory count mismatch')
-        return artifact,report.inventory.model_dump()
+        original=StoragePreservationRequest.model_validate_json(receipt.metadata.get('request_json',''))
+        if (fingerprint(original)!=artifact.metadata.get('request_sha256')
+            or original.artifact_id is not None or original.resource_id!=payload.resource_id
+            or original.operation_id!=artifact.metadata.get('operation_id')
+            or receipt.metadata.get('idempotency_key')!=original.idempotency_key
+            or report.inventory.rows!=report.rows or report.isolated_restore_verified):
+            raise RecoveryConflictError('Capture inventory/request mismatch')
+        return artifact,receipt,report
 
     @staticmethod
     def effective_limits(inventory):
@@ -229,9 +238,10 @@ class StoragePreservationOperations:
         from codex_web.services.local_artifact_content import LocalArtifactContentStore
         if not isinstance(backend,LocalArtifactContentStore):
             raise RecoveryConflictError('Current preservation requires local protected content disk admission')
-        capture=None
+        capture=capture_receipt=capture_report=None
         if payload.artifact_id is not None:
-            capture,stats=self.captured_inventory(payload,actor)
+            capture,capture_receipt,capture_report=self.captured_inventory(payload,actor)
+            stats=capture_report.inventory.model_dump()
         else:
             stats=self.inventory()
         limits=StorageSnapshotLimits()
@@ -308,7 +318,8 @@ class StoragePreservationOperations:
             yield {**stats,'_raw_bound':raw_bound,'_cipher_bound':cipher_bound,
                    '_target_bound':target_bound,'_row_bound':row_bound,
                    '_payload_bound':payload_bound,'_value_bound':value_bound,
-                   '_capture_artifact':capture,'reserved_peak_bytes':charged,
+                   '_capture_artifact':capture,'_capture_receipt':capture_receipt,
+                   '_capture_report':capture_report,'reserved_peak_bytes':charged,
                    'memory_estimate_bytes':memory_bound}
         finally:
             for fd,path in files:
@@ -492,18 +503,24 @@ class StoragePreservationOperations:
                         close=getattr(stream,'close',None)
                         if callable(close):close()
                 return open_storage_snapshot(ciphertext(),crypto=service.crypto,context=capture_context,actor=actor)
-            # Authenticate/count/diagnose separately; no payload normalized and
-            # no valid JSON alone is labelled a usable domain restore.
-            report=self._assess(opened(),'postgres' if hasattr(service.state_store,'dsn') else 'sqlite',limits)
             if action_id==VERIFY:
+                # The private canonical CAPTURE receipt already authenticated
+                # and assessed this exact immutable content. Reuse its report,
+                # not a caller/live-database assertion. Still authenticate every
+                # encrypted byte/footer/EOF during the ONE isolated restore;
+                # then hash every physical target row against the trusted hash.
+                report=inventory['_capture_report'].model_dump(mode='json')
                 with self.isolated_target(intent_id,backend.root) as target:
                     target.restore_storage_snapshot(opened(),limits=limits,max_target_bytes=inventory['_target_bound'])
                     restored=hashlib.sha256()
-                    for chunk in target.iter_storage_snapshot(): restored.update(chunk)
+                    for chunk in target.iter_storage_snapshot(limits=limits): restored.update(chunk)
                     if restored.hexdigest()!=report['raw_stream_sha256']:
                         raise RecoveryConflictError('Isolated storage row digest mismatch')
                 report['isolated_restore_verified']=True
             else:
+                # CAPTURE alone computes semantic-invalid diagnostics. Valid
+                # JSON is never labelled a usable semantic domain restore.
+                report=self._assess(opened(),'postgres' if hasattr(service.state_store,'dsn') else 'sqlite',limits)
                 report['isolated_restore_verified']=False
             report.update(integrity_status='verified',semantic_recovery_qualified=False,
                 source_snapshot_rows_preserved=True,source_crypto_audit_appends=True,
@@ -515,6 +532,9 @@ class StoragePreservationOperations:
                 'request_sha256':fingerprint(payload),'capture_request_sha256':capture_sha,
                 'idempotency_key':payload.idempotency_key,'request_json':payload.model_dump_json(),
                 'operation_id':payload.operation_id,'resource_id':payload.resource_id,
+                'content_sha256':content_sha,'content_size_bytes':pointer.size_bytes,
+                'capture_key_id':artifact.metadata['preservation_key_id'],
+                'capture_key_version':artifact.metadata['preservation_key_version'],
                 'integrity_status':'verified','semantic_status':report['semantic_status'],
                 'report_json':json.dumps(report,sort_keys=True,separators=(',',':'))}
             domains={**admission['guard_rows'],store.namespace:(None,),service.store.namespace:(None,),
@@ -533,6 +553,11 @@ class StoragePreservationOperations:
                     selected=next((a for a in current.artifacts if a.id==artifact.id),None)
                     if selected!=artifact:
                         raise RecoveryConflictError('Preservation Artifact changed before commit')
+                    if action_id==VERIFY:
+                        capture_receipt=inventory['_capture_receipt']
+                        live_receipt=next((e for e in current.evidence if e.id==capture_receipt.id),None)
+                        if live_receipt!=capture_receipt or live_receipt.lifecycle!=EvidenceLifecycle.VALID:
+                            raise RecoveryConflictError('Capture receipt changed before verification commit')
                     if action_id==CAPTURE:
                         changed=artifact.model_copy(update={'content':pointer,'digest':ArtifactDigest(value=content_sha),
                             'metadata':{k:v for k,v in {**artifact.metadata,'state':'verified_storage_only',

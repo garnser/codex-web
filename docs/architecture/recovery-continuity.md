@@ -880,3 +880,25 @@ refuses completion. Rotation alone can retain decrypt-only access. New batch
 encryption still requires the current ACTIVE version at entry and completion;
 retained decrypt-only material never authorizes new encryption. Scope, context,
 AAD authentication and closed-batch lifetime checks are unchanged.
+
+
+VERIFY reuses only the canonical CAPTURE producer's immutable assessment rather
+than decrypting the same content twice. The private idempotent receipt identity,
+actual producer/tenant/resource/action/original request, Artifact pointer digest
+and byte length, frozen key id/version and strict report inventory must agree.
+Missing old receipt fields or a public Evidence clone refuse before any target
+creation. CAPTURE atomically publishes those content bindings with its report
+and Artifact pointer; this is additive unreleased preservation metadata, not a
+semantic Recovery backup or normalization of original records.
+
+Reuse does not establish verification by itself. The actual encrypted stream
+must still be fully decrypted/authenticated, including KMS final current-version
+checks, manifest, digest/length, row bounds, footer and EOF inside the isolated
+restore transaction. Every restored physical target row is independently read
+back through the bounded raw exporter and hashed against the bound capture
+report. The isolated target is cleaned before successful Evidence publication.
+The final shared transaction also requires the exact capture receipt to remain
+unchanged and VALID along with Artifact/current authority/policy/key/capacity.
+Late invalidation refuses publication. No target authentication, raw hash,
+cancellation, cleanup, independent qualification SQL oracle or semantic-health
+gate is skipped. Per-operation budgets, format and dataset limits are unchanged.
