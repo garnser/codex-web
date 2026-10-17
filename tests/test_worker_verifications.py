@@ -39,18 +39,18 @@ from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore
 from codex_web.storage.recovery import RecoveryStore
 from codex_web.storage.runtime_state import ModelMapRepository
 from codex_web.storage.scheduler import SchedulerStore
-from tests.test_administrative_broker_runtime import AdministrativeBrokerRuntimeTests
+from tests import test_administrative_broker_runtime as admin_fixtures
 from tests.test_execution_workspaces import _FakeBackend
 
 
 class WorkerVerificationTests(unittest.IsolatedAsyncioTestCase):
-    _assignment = staticmethod(AdministrativeBrokerRuntimeTests._assignment)
-    _publish_worker_authority = AdministrativeBrokerRuntimeTests._publish_worker_authority
-    _request = AdministrativeBrokerRuntimeTests._request
-    _publish_profile = AdministrativeBrokerRuntimeTests._publish_profile
+    _assignment = staticmethod(admin_fixtures.AdministrativeBrokerRuntimeTests._assignment)
+    _publish_worker_authority = admin_fixtures.AdministrativeBrokerRuntimeTests._publish_worker_authority
+    _request = admin_fixtures.AdministrativeBrokerRuntimeTests._request
+    _publish_profile = admin_fixtures.AdministrativeBrokerRuntimeTests._publish_profile
 
     async def asyncSetUp(self):
-        await AdministrativeBrokerRuntimeTests.asyncSetUp(self)
+        await admin_fixtures.AdministrativeBrokerRuntimeTests.asyncSetUp(self)
         await self.broker.stop()
         self.workers.cancel_bootstrap(self.assignment.id, AssignmentCancelRequest(
             expected_fence=self.assignment.fence, reason='Synthetic fixture changes work package'), actor=self.admin)
@@ -143,7 +143,7 @@ class WorkerVerificationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         if hasattr(self,'recovery'):
             await self.recovery.stop()
-        await AdministrativeBrokerRuntimeTests.asyncTearDown(self)
+        await admin_fixtures.AdministrativeBrokerRuntimeTests.asyncTearDown(self)
 
     async def post(self, request=None):
         return await self._request('POST','/api/verifications',payload=request or self.request)
