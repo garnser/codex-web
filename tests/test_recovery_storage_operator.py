@@ -519,6 +519,32 @@ class StorageOperatorTests(unittest.IsolatedAsyncioTestCase):
         self.assert_original()
 
 
+    async def test_separate_revocation_during_old_batch_decrypt_refuses_terminal_authentication(self):
+        from codex_web.crypto import KeyPurpose,ManagedKeyCreate
+        from codex_web.services.crypto_keys import CryptoKeyConflictError
+        crypto=self.recovery.crypto;writer=self.preservation_writer()
+        key=crypto.create_key(ManagedKeyCreate(purpose=KeyPurpose.BACKUP,backend_type='local'),actor=self.actor)
+        context=self.operator.storage_provider.operations._context(self.payload,self.actor)
+        chunk=context.model_copy(update={'object_id':context.object_id+':synthetic'})
+        with crypto.envelope_batch(key.id,context,actor=self.actor,operation='encrypt') as batch:
+            envelope=batch.apply(b'synthetic-old-version',chunk)
+        writer.rotate(key.id,actor=self.actor)
+        audits=lambda:[e.id for e in crypto.store.load().events if e.operation=='decrypt_batch' and e.key_id==key.id]
+        before=audits()
+        with self.assertRaises(CryptoKeyConflictError):
+            with crypto.envelope_batch(key.id,context,actor=self.actor,operation='decrypt',key_version=1) as batch:
+                self.assertEqual(batch.apply(envelope,chunk),b'synthetic-old-version')
+                # Real separate owning connection/pool commits revocation
+                # before the original batch's final locked recheck. No fake
+                # store mutation or relaxed protected-consumer check.
+                writer.revoke_version(key.id,1,'separate writer during decrypt',actor=self.actor)
+        self.assertEqual(audits(),before)
+        with self.assertRaisesRegex(CryptoKeyConflictError,'closed'):batch.apply(envelope,chunk)
+        with self.assertRaises(CryptoKeyConflictError):
+            with crypto.envelope_batch(key.id,context,actor=self.actor,operation='decrypt',key_version=1):
+                self.fail('revoked old version admitted')
+        self.assertFalse(self.committed());self.assert_original()
+
 
 @unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'),'isolated private PostgreSQL DSN required')
 class PostgresStorageOperatorTests(_PostgresFixture,StorageOperatorTests):

@@ -504,7 +504,12 @@ class CryptoKeyService:
         self._ensure_key_context(key, context)
         selected = key.current_version if key_version is None else key_version
         version = self._version(key, selected)
-        if key.status != KeyStatus.ACTIVE or version.status != KeyVersionStatus.ACTIVE:
+        # Rotation retains DECRYPT_ONLY material for existing envelopes, just
+        # as individual decrypt does. Encryption still requires ACTIVE and
+        # the current version. Recheck the same rule at the terminal audit.
+        usable_statuses = ((KeyVersionStatus.ACTIVE,) if operation == "encrypt"
+                           else (KeyVersionStatus.ACTIVE, KeyVersionStatus.DECRYPT_ONLY))
+        if key.status != KeyStatus.ACTIVE or version.status not in usable_statuses:
             raise CryptoKeyConflictError("batch key is revoked")
         if operation == "encrypt" and selected != key.current_version:
             raise CryptoKeyConflictError("batch encryption requires current key")
@@ -558,7 +563,7 @@ class CryptoKeyService:
             def audit(current):
                 persisted = self._key(current, key.id, actor)
                 live_version = self._version(persisted, selected)
-                if (persisted.status != KeyStatus.ACTIVE or live_version.status != KeyVersionStatus.ACTIVE
+                if (persisted.status != KeyStatus.ACTIVE or live_version.status not in usable_statuses
                     or live_version.backend_ref != version.backend_ref
                     or (operation == "encrypt" and persisted.current_version != selected)):
                     raise CryptoKeyConflictError("batch key changed before completion")

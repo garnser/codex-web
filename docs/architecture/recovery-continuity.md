@@ -870,3 +870,13 @@ SQLite's real progress-handler SQLITE_INTERRUPT is normalized to the existing
 StorageOperationBudget TimeoutError only when that budget actually cancelled or
 expired, after the transaction context has rolled back. Unrelated SQLite errors
 retain their original refusal; cancellation never means partial restore success.
+
+
+Envelope batch decryption accepts the selected ACTIVE or DECRYPT_ONLY version
+under an ACTIVE key, matching individual KMS decryption of retained envelopes.
+The same rule is checked again at the terminal audit under the canonical key
+transaction: concurrent key/version revocation or changed backend reference
+refuses completion. Rotation alone can retain decrypt-only access. New batch
+encryption still requires the current ACTIVE version at entry and completion;
+retained decrypt-only material never authorizes new encryption. Scope, context,
+AAD authentication and closed-batch lifetime checks are unchanged.
