@@ -203,6 +203,7 @@ class CodexAgentRuntimeAdapter:
         self,
         provider_native_session_id: str,
         request: AgentRuntimeSessionRequest,
+        *, resume_capture=None,
     ) -> AgentRuntimeResult:
         params: dict[str, Any] = {"threadId": provider_native_session_id}
         if request.workspace_cwd:
@@ -219,7 +220,13 @@ class CodexAgentRuntimeAdapter:
             params["model"] = request.model
         if request.developer_instructions:
             params["developerInstructions"] = request.developer_instructions
-        response = await self.transport.request("thread/resume", params)
+        if resume_capture is not None:
+            capture_request = getattr(self.transport, "request_with_start_capture", None)
+            if not callable(capture_request):
+                raise RuntimeError("Assignment-bound resume capture transport unavailable")
+            response = await capture_request("thread/resume", params, resume_capture)
+        else:
+            response = await self.transport.request("thread/resume", params)
         result = self._result(response)
         if result.provider_native_session_id is None:
             result = result.model_copy(

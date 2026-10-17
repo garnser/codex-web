@@ -199,8 +199,13 @@ class ExecutionPreflightService:
 
     def queued_disposition(self, attempt_id: str, *, status: str,
                            detail: dict[str, Any] | None = None,
-                           claim_id: str | None = None) -> ExecutionPreflightAttempt:
-        """Internal runtime outcome; unknown native starts remain non-retryable."""
+                           claim_id: str | None = None,
+                           preinput_refusal: bool = False) -> ExecutionPreflightAttempt:
+        """Internal runtime outcome; unknown native starts remain non-retryable.
+
+        preinput_refusal is supplied only by the controller's typed local
+        pre-write exception boundary, never an HTTP/provider detail code.
+        """
         if status not in {'queued', 'blocked', 'started', 'reconciliation_required'}:
             raise ValueError('invalid queued admission disposition')
         now = float(self.clock())
@@ -213,7 +218,29 @@ class ExecutionPreflightService:
                 return current
             if claim_id is not None and current.queued_admission_claim_id != claim_id:
                 return current
-            disposition = 'reconciliation_required' if current.queued_start_correlation is not None else status
+            if (preinput_refusal and claim_id is not None
+                    and current.status == 'reconciliation_required' and status in {'queued', 'blocked'}
+                    and current.queued_resume_correlation is not None
+                    and current.queued_start_correlation is None
+                    and current.queued_start_evidence is None and current.queued_start_receipt is None
+                    and current.started_at is None and len(current.queued_resume_history) < 8):
+                from codex_web.services.queued_native_resume import validate_resume_observation
+                from codex_web.models import QueuedNativeResumeObservation
+                try:
+                    correlation, observed = validate_resume_observation(self, current)
+                except ValueError:
+                    pass  # Invalid/partial observation cannot release custody.
+                else:
+                    if observed.outcome == 'resumed':
+                        # A local controller witness proves no subsequent input
+                        # was sent. Preserve successful resume as history; it is
+                        # not itself a nonstart proof or permission to replay.
+                        history = QueuedNativeResumeObservation(correlation=correlation,evidence=observed)
+                        current = current.model_copy(update={'queued_resume_correlation':None,
+                            'queued_resume_evidence':None,
+                            'queued_resume_history':(*current.queued_resume_history,history)})
+            disposition = 'reconciliation_required' if (current.queued_start_correlation is not None
+                or current.queued_resume_correlation is not None) else status
             return current.model_copy(update={
                 'status':disposition, 'updated_at':now,
                 'started_at':now if disposition == 'started' else None,
@@ -226,6 +253,7 @@ class ExecutionPreflightService:
     def recorded_profile_refusal(attempt: ExecutionPreflightAttempt) -> bool:
         if (attempt.queued_turn_snapshot is None or attempt.queued_start_receipt is not None
                 or attempt.queued_start_correlation is not None
+                or attempt.queued_resume_correlation is not None
                 or attempt.started_at is not None or not attempt.agent_profile_id
                 or attempt.agent_profile_revision is None):
             return False
@@ -255,6 +283,7 @@ class ExecutionPreflightService:
         snapshot = attempt.queued_turn_snapshot
         if (snapshot is None or attempt.queued_start_receipt is not None
                 or attempt.queued_start_correlation is not None
+                or attempt.queued_resume_correlation is not None
                 or attempt.started_at is not None
                 or snapshot.get('thread_id') != attempt.thread_id):
             return False
@@ -267,9 +296,18 @@ class ExecutionPreflightService:
                    and blocker.model_dump(mode='json').get('threadId') == target
                    for blocker in attempt.blockers)
 
-    @classmethod
-    def recorded_prestart_refusal(cls, attempt: ExecutionPreflightAttempt) -> bool:
-        return cls.recorded_profile_refusal(attempt) or cls.recorded_maintenance_refusal(attempt)
+    def recorded_prestart_refusal(self, attempt: ExecutionPreflightAttempt) -> bool:
+        if attempt.queued_resume_evidence is not None:
+            from codex_web.services.queued_native_resume import validate_resume_observation
+            try:
+                _, evidence = validate_resume_observation(self, attempt)
+                return (evidence.outcome == 'archived_refusal' and attempt.status == 'blocked'
+                    and attempt.queued_start_correlation is None and attempt.queued_start_receipt is None
+                    and attempt.queued_start_evidence is None and attempt.started_at is None
+                    and attempt.scheduling_retirement is None)
+            except ValueError:
+                return False
+        return self.recorded_profile_refusal(attempt) or self.recorded_maintenance_refusal(attempt)
 
     def reconcile_prestart_refusal(self, attempt_id: str, *, actor: AuthenticationActor) -> ExecutionPreflightAttempt:
         initial = self.get(attempt_id, actor=actor)
@@ -290,6 +328,19 @@ class ExecutionPreflightService:
                 raise HTTPException(status_code=409, detail={
                     'code':'native_start_evidence_conflict',
                     'message':'Stored native start attribution no longer matches the original.'}) from exc
+        if initial.queued_resume_evidence is not None:
+            if actor.principal_kind == PrincipalKind.HUMAN:
+                try:
+                    IdentityService.require_assurance(actor, AuthenticationAssurance.MFA)
+                except RuntimeError as exc:
+                    raise HTTPException(status_code=403, detail=str(exc)) from exc
+            from codex_web.services.queued_native_resume import reconcile_captured_resume
+            try:
+                return reconcile_captured_resume(self, attempt_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail={
+                    'code':'native_resume_evidence_conflict',
+                    'message':'Stored resume refusal does not prove this retained request unstarted.'}) from exc
         def update(current):
             # The recorded controller refusal occurs before native turn/start.
             # Absence, timeout, active markers and expired claims prove nothing.
@@ -919,7 +970,9 @@ class ExecutionPreflightService:
             f'/api/threads/{attempt.replacement_thread_id or attempt.thread_id}/preflight-attempts/'
             f'{attempt.id}/bootstrap-recovery')
         payload['can_reconcile_prestart'] = (self.can_retry(actor)
-            and ((attempt.status == 'reconciliation_required' and attempt.queued_start_evidence is not None)
+            and ((attempt.status == 'reconciliation_required' and (attempt.queued_start_evidence is not None
+                    or (attempt.queued_resume_evidence is not None
+                        and attempt.queued_resume_evidence.outcome == 'archived_refusal')))
                  or (attempt.scheduling_retirement is None and (
                      (attempt.status == 'reconciliation_required' and self.recorded_prestart_refusal(attempt))
                      or (attempt.status == 'queued' and self.recorded_maintenance_refusal(attempt))))))

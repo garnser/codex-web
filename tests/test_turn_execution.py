@@ -12,7 +12,8 @@ from fastapi import FastAPI, HTTPException
 
 from codex_web.agent_runtime import AgentRuntimeResult
 from codex_web.agent_profiles import AgentProfileExecutionBinding
-from codex_web.execution_workers import AssignmentStatus, ExecutionRuntimeBinding
+from codex_web.execution_workers import (AssignmentStatus, ExecutionRuntimeBinding,
+    ExecutionAssignment, AssignmentLease, NetworkPolicy, WorkerResourceLimits)
 from codex_web.models import (
     ActiveThreadTurn,
     Project,
@@ -20,7 +21,7 @@ from codex_web.models import (
     TurnCreate,
     WorkItemState,
 )
-from codex_web.resources import RepositoryTargetSource
+from codex_web.resources import RepositoryTargetSource, RepositoryExecutionScope
 from codex_web.runtime.execution import (
     TurnExecutionService,
     _turn_failure_text,
@@ -825,9 +826,12 @@ class TurnExecutionRestartRecoveryTests(unittest.IsolatedAsyncioTestCase):
 class _BindingService:
     def __init__(self) -> None:
         self.calls = []
+        self.session = None
 
     def prepare(self, **kwargs):
         self.calls.append(kwargs)
+        if self.session is not None:
+            self.session.configure_assignment(**kwargs)
         return SimpleNamespace(
             assignment_id="assignment-1",
             workspace_id="workspace-1",
@@ -875,28 +879,80 @@ class _Session:
         self.workspace_path = Path("/isolated/workspace")
         self.requests = []
         self.work_item_ref = None
+        self.assignment = ExecutionAssignment(id='assignment-1',
+            organization_id='local', workspace_id='default',
+            subject={'kind':'thread_bootstrap','ref':'fixture-bootstrap'},
+            execution_id='bootstrap-exec', execution_workspace_id='workspace-1',
+            project_id='p1', resource_ids=(), execution_contract_version='1.0',
+            required_capabilities=(), sandbox='workspace-write', approval_policy='on-request',
+            network=NetworkPolicy(), limits=WorkerResourceLimits(), created_by='control',
+            assigned_worker_id='worker-1', fence=7,
+            lease=AssignmentLease(worker_id='worker-1',fence=7,lease_token='synthetic-fixture-lease-token-only',
+                acquired_at=1,expires_at=10**12))
+        self.capture_runtime = None
+
+    def configure_assignment(self, **kwargs):
+        # The synthetic binding service supplies the same independently selected
+        # scope/profile inputs as production; never derive them from capture proof.
+        assignment = self.assignment
+        for name in ('execution_id','project_id','sandbox','approval_policy','agent_profile','execution_profile_id'):
+            if name in kwargs:
+                setattr(assignment,name,kwargs[name])
+        writable=tuple(kwargs.get('writable_repository_ids') or ())
+        readonly=tuple(kwargs.get('read_only_repository_ids') or ())
+        explicit=kwargs.get('explicit_repository_id')
+        if explicit and not writable:
+            writable=(explicit,)
+        assignment.resource_ids=tuple(dict.fromkeys((*writable,*readonly)))
+        assignment.repository_scope=RepositoryExecutionScope(organization_id='local',workspace_id='default',
+            project_id=assignment.project_id,
+            source=RepositoryTargetSource.EXPLICIT if writable else RepositoryTargetSource.ORCHESTRATION_ONLY,
+            write_mode='coordinated' if len(writable)>1 else 'single',
+            writable_repository_ids=writable,read_only_repository_ids=readonly)
+        actor=kwargs.get('actor')
+        if actor is not None:
+            assignment.created_by=actor.identity_id
 
     def status(self):
         return SimpleNamespace(worker_id="worker-1", fence=7)
 
     def validate_current(self):
-        return SimpleNamespace(
-            id="assignment-1",
-            execution_id="bootstrap-exec",
-            execution_workspace_id="workspace-1",
-            project_id="p1",
-            sandbox="workspace-write",
-            approval_policy="on-request",
-            work_item_ref=self.work_item_ref,
-        )
+        self.assignment.work_item_ref=self.work_item_ref
+        return self.assignment
 
     async def request(self, method, params=None):
         self.requests.append((method, params))
         if method == "thread/resume":
-            return {"thread": {"id": "t1"}}
+            return {"thread": {"id": params['threadId']}}
         if method == "turn/start":
             return {"turn": {"id": "turn-1"}}
         return {"ok": True}
+
+
+    async def request_with_start_capture(self, method, params, capture):
+        # Real preparation, send guard and reader dispatch; only native I/O is
+        # synthetic. Existing tests can still lose/refuse the actual RPC through
+        # their request seam, with no invented response or success evidence.
+        from codex_web.runtime.codex import CodexRuntime
+        from tests.test_codex_runtime import _Host as NativeHost
+        if self.capture_runtime is None:
+            self.capture_runtime=CodexRuntime(NativeHost(),restart_on_timeout=False)
+            self.capture_runtime.ensure_started=AsyncMock()
+            self.capture_runtime.native_runtime_version='0.160.0'
+        runtime=self.capture_runtime
+        assignment=self.validate_current()
+        status=self.status()
+        bound=capture.bind_assignment(assignment,worker_id=status.worker_id,fence=status.fence,
+            validator=self.validate_current)
+        async def send(message,**options):
+            if options['expected_generation'] != runtime.generation:
+                raise RuntimeError('synthetic process generation changed')
+            options['start_guard']()
+            result=await self.request(message['method'],message['params'])
+            await runtime._dispatch_message({'id':message['id'],'result':result},
+                generation=runtime.generation)
+        runtime._send=send
+        return await runtime.request(method,params,start_capture=bound)
 
 
 class _StaleSession(_Session):
@@ -1235,6 +1291,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
         host = _Host()
         binding = _BindingService()
         sessions = _SessionManager()
+        binding.session = sessions.session
         service = TurnExecutionService(
             host,
             binding_service=binding,

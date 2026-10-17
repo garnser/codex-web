@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, ClassVar
 
 from codex_web.models import (
     QueuedNativeStartCorrelation, QueuedNativeStartEvidence, QueuedNativeStartReceipt, QueuedTurn,
@@ -12,6 +12,12 @@ from codex_web.models import (
 
 class NativeStartAdmissionRefused(RuntimeError):
     """Server witness: an admission guard refused before the native write."""
+
+    def __init__(self, message, *, correlation=None):
+        super().__init__(message)
+        # Set only after the trusted writer commits its no-write bookkeeping.
+        # Transport errors and caller-selected provider text carry no witness.
+        self.correlation = correlation
 
 
 def validate_attribution(service, current, correlation):
@@ -73,6 +79,11 @@ def reconcile_captured_start(service, attempt_id):
 
 @dataclass(frozen=True)
 class QueuedNativeStartCapture:
+    rpc_method: ClassVar[str] = "turn/start"
+    correlation_field: ClassVar[str] = "queued_start_correlation"
+    evidence_field: ClassVar[str] = "queued_start_evidence"
+    correlation_type: ClassVar[Any] = QueuedNativeStartCorrelation
+
     service: Any
     attempt_id: str
     claim_id: str
@@ -113,10 +124,15 @@ class QueuedNativeStartCapture:
             raise ValueError('native start assignment changed during preparation')
         def guard(current):
             validate_attribution(self.service, current, correlation)
-            if (current.queued_start_correlation != correlation
+            if self.rpc_method == 'turn/start' and current.queued_resume_correlation is not None:
+                from codex_web.services.queued_native_resume import validate_resume_observation
+                _, observed = validate_resume_observation(self.service, current)
+                if observed.outcome != 'resumed':
+                    raise ValueError('resume observation changed before turn/start')
+            if (getattr(current, self.correlation_field) != correlation
                     or current.status != 'reconciliation_required'
                     or current.queued_start_receipt is not None
-                    or current.queued_start_evidence is not None
+                    or getattr(current, self.evidence_field) is not None
                     or current.scheduling_retirement is not None):
                 raise ValueError('native start reservation changed before send')
             return current
@@ -130,25 +146,29 @@ class QueuedNativeStartCapture:
                 # prepared correlation; an absent/failed RPC response cannot.
                 def refuse(current):
                     validate_attribution(self.service, current, correlation)
-                    if (current.queued_start_correlation != correlation
+                    if (getattr(current, self.correlation_field) != correlation
                             or current.status != 'reconciliation_required'
                             or current.queued_start_receipt is not None
-                            or current.queued_start_evidence is not None
+                            or getattr(current, self.evidence_field) is not None
                             or current.started_at is not None
-                            or current.scheduling_retirement is not None):
+                            or current.scheduling_retirement is not None
+                            or (self.rpc_method == 'thread/resume' and (
+                                current.queued_start_correlation is not None
+                                or current.queued_start_evidence is not None))):
                         raise ValueError('native refusal reservation changed')
                     blocker = ExecutionPreflightBlocker(code='native_preinput_admission_refused',
                         message='Live admission refused before native write',
                         correlation=correlation.model_dump(mode='json'))
                     history = ExecutionPreflightBlockerSnapshot(blockers=(blocker,),
                         recorded_at=float(self.service.clock()), attempt_number=current.attempt_number)
-                    return current.model_copy(update={'status':'queued', 'queued_start_correlation':None,
+                    return current.model_copy(update={'status':'queued', self.correlation_field:None,
                         'blockers':(blocker,), 'blocker_history':(*current.blocker_history, history)[-self.service.MAX_HISTORY:],
                         'updated_at':float(self.service.clock())})
                 self.service.store.update(self.attempt_id, refuse)
-                raise NativeStartAdmissionRefused("Live admission refused before native write") from exc
+                raise NativeStartAdmissionRefused("Live admission refused before native write",
+                    correlation=correlation) from exc
 
-    def prepare(self, *, generation, rpc_request_id, native_session_id):
+    def prepare(self, *, generation, rpc_request_id, native_session_id, runtime_version=None):
         """Commit before _send; a storage error forbids this native RPC."""
         assignment = self.assignment
         if assignment is None:
@@ -160,9 +180,14 @@ class QueuedNativeStartCapture:
         def prepare(current):
             nonlocal correlation
             profile, scope = assignment.agent_profile, assignment.repository_scope
+            if self.rpc_method == 'turn/start' and current.queued_resume_correlation is not None:
+                from codex_web.services.queued_native_resume import validate_resume_observation
+                _, resumed = validate_resume_observation(self.service, current)
+                if resumed.outcome != 'resumed':
+                    raise ValueError('turn/start requires a successful captured resume')
             if (current.status != 'reconciliation_required'
                     or current.queued_start_receipt is not None
-                    or current.queued_start_evidence is not None
+                    or getattr(current, self.evidence_field) is not None
                     or current.scheduling_retirement is not None
                     or current.notification_batch_id is not None
                     or current.execution_id != self.requested_execution_id
@@ -184,7 +209,8 @@ class QueuedNativeStartCapture:
                     or (current.read_only_repository_resource_ids and (scope is None
                         or set(current.read_only_repository_resource_ids) != set(scope.read_only_repository_ids)))):
                 raise ValueError('native start assignment does not match the retained admission')
-            correlation = QueuedNativeStartCorrelation(
+            correlation = self.correlation_type(
+                **({"runtime_version": runtime_version} if self.rpc_method == "thread/resume" else {}),
                 **{name:getattr(current, name) for name in (
                     'organization_id', 'workspace_id', 'project_id', 'agent_profile_actor_id',
                     'agent_profile_id', 'agent_profile_revision', 'execution_profile_id',
@@ -199,10 +225,10 @@ class QueuedNativeStartCapture:
                 runtime_generation=generation, rpc_request_id=rpc_request_id,
                 prepared_at=float(self.service.clock()))
             validate_attribution(self.service, current, correlation)
-            if current.queued_start_correlation is not None:
+            if getattr(current, self.correlation_field) is not None:
                 # An uncertain original must never acquire another native request.
                 raise ValueError('native start correlation is already reserved')
-            return current.model_copy(update={'queued_start_correlation':correlation})
+            return current.model_copy(update={self.correlation_field:correlation})
         self.service.store.update(self.attempt_id, prepare)
         return correlation
 

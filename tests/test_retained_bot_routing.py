@@ -289,6 +289,7 @@ class RetainedBotRoutingTests(unittest.IsolatedAsyncioTestCase):
         binding.execution_profiles = SimpleNamespace(resolve=lambda *args,**kwargs:(None,definition))
         execution.binding_service = binding
         sessions = _SessionManager()
+        binding.session = sessions.session
         execution.session_manager = sessions
         execution.session_managers[("openai","codex")] = sessions
         execution.control_actor = f.admin

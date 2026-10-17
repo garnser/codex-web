@@ -141,6 +141,16 @@ export function createExecutionPreflightUi({
             ? (attempt.queued_start_receipt ? 'Exact positive evidence reconciled; no replay is permitted.'
               : attempt.queued_start_evidence ? 'Authoritative positive response captured; receipt projection pending. This grants no execution authority.'
                 : 'Pre-send attribution retained; native outcome remains unknown without an exact positive response.') : '',
+          attempt.queued_resume_correlation
+            ? `Resume thread/resume · SDK ${attempt.queued_resume_correlation.runtime_version} · generation ${attempt.queued_resume_correlation.runtime_generation} · RPC ${attempt.queued_resume_correlation.rpc_request_id}` : '',
+          attempt.queued_resume_correlation
+            ? `Resume assignment ${attempt.queued_resume_correlation.assignment_id} · worker ${attempt.queued_resume_correlation.worker_id} · fence ${attempt.queued_resume_correlation.fence} · session ${attempt.queued_resume_correlation.provider_native_session_id} · original SHA256 ${attempt.queued_resume_correlation.snapshot_sha256}` : '',
+          attempt.queued_resume_correlation
+            ? (attempt.queued_resume_evidence?.outcome === 'archived_refusal'
+              ? 'Exact pre-turn archived refusal observed; explicit authorized reconciliation is required. No automatic retry.'
+              : attempt.queued_resume_evidence?.outcome === 'resumed'
+                ? 'Resume succeeded; this is not turn/start evidence.'
+                : 'Resume outcome unknown; missing responses and timeouts do not prove nonstart.') : '',
           attempt.replacement_thread_id
             ? `Original thread: ${attempt.thread_id}; current thread: ${attempt.replacement_thread_id}`
             : "",

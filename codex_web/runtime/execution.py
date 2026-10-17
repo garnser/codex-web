@@ -3145,15 +3145,30 @@ class TurnExecutionService:
                 and getattr(bootstrap, "initial_turn_pending", False)
             )
             if not initial_turn_pending:
+                resume_options = {}
                 try:
                     custody_before = None
                     if self.session_custody is not None and bootstrap is not None and not trusted_local_codex_session:
                         custody_before = await self._settle_custody_call(self.session_custody.capture,
                             thread_id, runtime_adapter, session, runtime_session_request, fence,
                             work_owner=session)
+                    if (queued_admission_attempt_id and queued_admission_claim_id
+                            and self.queued_preflight is not None
+                            and isinstance(runtime_adapter, CodexAgentRuntimeAdapter)):
+                        from codex_web.services.queued_native_resume import QueuedNativeResumeCapture
+                        def validate_resume_admission():
+                            if operator_admission_validator is not None:
+                                operator_admission_validator()
+                            owner_admission_validator()
+                        resume_options['resume_capture'] = QueuedNativeResumeCapture(
+                            self.queued_preflight, queued_admission_attempt_id,
+                            queued_admission_claim_id, requested_execution_id, thread_id,
+                            actor.identity_id if actor is not None else agent_profile_actor_id,
+                            admission_validator=validate_resume_admission, require_send_guard=True)
                     resumed = await runtime_adapter.resume_session(
                         native_session_id,
                         runtime_session_request,
+                        **resume_options,
                     )
                     if custody_before is not None:
                         await self._settle_custody_call(self.session_custody.complete,
@@ -3179,6 +3194,19 @@ class TurnExecutionService:
                                 ),
                                 failure_message=str(exc)[:500],
                             )
+                    from codex_web.services.queued_native_start import NativeStartAdmissionRefused
+                    capture = resume_options.get('resume_capture')
+                    if (isinstance(exc, NativeStartAdmissionRefused) and capture is not None
+                            and exc.correlation is not None):
+                        # Resume precedes the turn-input try/except below. Carry
+                        # only the committed writer-lock no-write fact through
+                        # this earlier boundary; never classify provider errors.
+                        await asyncio.to_thread(capture.confirm_prewrite_refusal, exc.correlation)
+                        from codex_web.services.queued_operator_admission import OperatorAdmissionPrestartRefusal
+                        cause = exc.__cause__
+                        if isinstance(cause, (OperatorAdmissionPrestartRefusal,
+                                              ExecutionPrestartRefusal, AutomatedAdmissionPaused)):
+                            raise type(cause)(status_code=cause.status_code, detail=cause.detail) from exc
                     raise
 
             if (
@@ -4044,7 +4072,8 @@ class TurnExecutionService:
                     'upgrade_maintenance_active', 'upgrade_maintenance', 'upgrade_turn_scope_unknown'})
             if retained_attempt is not None and deferred_admission:
                 await asyncio.to_thread(self.queued_preflight.queued_disposition,
-                    retained_attempt.id, status='queued', detail=detail, claim_id=admission_claim_id)
+                    retained_attempt.id, status='queued', detail=detail, claim_id=admission_claim_id,
+                    preinput_refusal=isinstance(exc, (AutomatedAdmissionPaused, ExecutionPrestartRefusal)))
             if isinstance(exc, AutomatedAdmissionPaused):
                 reschedule_queue = False
                 if retained_attempt is not None:
@@ -4064,12 +4093,20 @@ class TurnExecutionService:
                 known_unstarted = bool(isinstance(exc,
                     (OperatorAdmissionPrestartRefusal, ExecutionPrestartRefusal))
                     and not self.thread_is_active(thread_id))
-                await asyncio.to_thread(self.queued_preflight.queued_disposition,
+                disposition = await asyncio.to_thread(self.queued_preflight.queued_disposition,
                     retained_attempt.id,
                     status='blocked' if known_unstarted else 'reconciliation_required',
                     detail=detail or {'message':str(exc),'code':'native_start_outcome_unknown'},
-                    claim_id=admission_claim_id,
+                    claim_id=admission_claim_id, preinput_refusal=known_unstarted,
                 )
+                # A concurrent positive, possible turn, retirement or changed
+                # claim wins over this local exception's earlier observation.
+                known_unstarted = bool(known_unstarted and disposition.status == 'blocked'
+                    and disposition.queued_admission_claim_id == admission_claim_id
+                    and disposition.queued_start_correlation is None
+                    and disposition.queued_start_evidence is None
+                    and disposition.queued_start_receipt is None and disposition.started_at is None
+                    and disposition.scheduling_retirement is None)
                 if operator_original is not None and known_unstarted:
                     restore_original_position()
                 # The complete request now belongs to the existing durable

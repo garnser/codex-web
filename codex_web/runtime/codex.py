@@ -206,6 +206,7 @@ class CodexRuntime:
         self.next_id = 1
         self.pending: dict[int | str, asyncio.Future[dict[str, Any]]] = {}
         self.generation = uuid.uuid4().hex
+        self.native_runtime_version: str | None = None
         self._start_captures: dict[str, tuple[float, Any, Any]] = {}
         self._start_capture_lock = asyncio.Lock()
         self.pending_approvals: dict[int | str, dict[str, Any]] = {}
@@ -343,6 +344,11 @@ class CodexRuntime:
                     ),
                     timeout=15,
                 )
+                # Version comes only from this process generation's initialize response.
+                import re
+                agent = init.get("userAgent") if isinstance(init, dict) else None
+                match = re.match(r"^codex_cli_rs/(0\.160\.0)(?:\s|$)", agent) if isinstance(agent, str) else None
+                self.native_runtime_version = match.group(1) if match else None
                 await self.notify("initialized", {})
                 self.ready.set()
                 if self.metrics:
@@ -437,6 +443,7 @@ class CodexRuntime:
                 failed += 1
         self.pending.clear()
         self._start_captures.clear()
+        self.native_runtime_version = None
         if self.metrics and failed:
             self.metrics.increment("codex.pending_requests_failed", failed)
 
@@ -758,8 +765,8 @@ class CodexRuntime:
         message_id = self.next_id
         self.next_id += 1
         if start_capture is not None:
-            if method != 'turn/start' or not isinstance(params, dict):
-                raise ValueError('native start capture is only valid for turn/start')
+            if method not in {'turn/start', 'thread/resume'} or method != start_capture.rpc_method or not isinstance(params, dict):
+                raise ValueError('native capture method does not match its typed contract')
             async with self._start_capture_lock:
                 self._prune_start_captures()
                 if len(self._start_captures) >= self.START_CAPTURE_MAX_SLOTS:
@@ -770,7 +777,8 @@ class CodexRuntime:
                 generation = self.generation
                 correlation = await asyncio.to_thread(start_capture.prepare,
                     generation=generation, rpc_request_id=message_id,
-                    native_session_id=params.get('threadId'))
+                    native_session_id=params.get('threadId'),
+                    **({'runtime_version':self.native_runtime_version} if method == 'thread/resume' else {}))
                 if generation != self.generation:
                     raise RuntimeError('native start transport generation changed during preparation')
                 self._start_captures[message_id] = (

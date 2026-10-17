@@ -215,3 +215,14 @@ test('existing retained inspector attaches reviewed single-original admission', 
   await expect(page.getByRole('button', {name:'Admit this original once'})).toBeDisabled();
   expect(await page.evaluate(() => window.__apiCalls.filter(call => call.method === 'POST').length)).toBe(0);
 });
+
+test('captured archived resume exposes provenance and explicit reconciliation without retry', async ({page}) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?disposition=reconciliation_required&resumeRefusal');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+  const card=page.locator('.message.tool');
+  await expect(card).toContainText('Resume thread/resume · SDK 0.160.0');
+  await expect(card).toContainText('resume-rpc');
+  await expect(card).toContainText('explicit authorized reconciliation is required');
+  await expect(page.getByRole('button',{name:'Retry',exact:true})).toHaveCount(0);
+  expect(await page.evaluate(() => window.__apiCalls.filter(x => x.method==='POST'))).toEqual([]);
+});
