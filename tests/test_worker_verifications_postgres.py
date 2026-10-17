@@ -17,7 +17,6 @@ class PostgresWorkerVerificationTests(_PostgresFixture, verification_fixtures.Wo
     async def asyncSetUp(self):
         with patch.object(broker_fixtures,'SQLiteStateStore',self.state_store_factory):
             await super().asyncSetUp()
-        self.addCleanup(self.sqlite.close)
 
     def writer_identity(self):
         from psycopg_pool import ConnectionPool

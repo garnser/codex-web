@@ -51,6 +51,13 @@ class WorkerVerificationTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         await admin_fixtures.AdministrativeBrokerRuntimeTests.asyncSetUp(self)
+        # unittest does not call asyncTearDown when asyncSetUp fails. Register
+        # cleanup now, including the broker that a later setup step replaces.
+        close = getattr(self.sqlite, 'close', None)
+        if close is not None:
+            self.addCleanup(close)
+        self.addCleanup(self.temp.cleanup)
+        self.addAsyncCleanup(self._stop_services)
         await self.broker.stop()
         self.workers.cancel_bootstrap(self.assignment.id, AssignmentCancelRequest(
             expected_fence=self.assignment.fence, reason='Synthetic fixture changes work package'), actor=self.admin)
@@ -59,8 +66,12 @@ class WorkerVerificationTests(unittest.IsolatedAsyncioTestCase):
         # exposes that same bound reader to the existing broker state machine.
         self.items = ModelMapRepository(self.sqlite, namespace='work_item_states',
             legacy_path=root/'never-created-mirror.json', model=WorkItemState)
-        item = self.states[self.ref].model_copy(update={'resource_ids':(self.target.id,),
-            'current_owner':'developer'})
+        now = time.time()
+        item = WorkItemState(ref=self.ref, organization_id='local', workspace_id='default',
+            project_id='project-a', project_path='group/app', resource_ids=[self.target.id],
+            current_owner='developer', current_stage='implementation_active',
+            last_meaningful_update_at=now, updated_at=now, created_at=now)
+        self.states[self.ref] = item
         self.items.put(self.ref, item)
         self.work_items.state_machine._work_item_state = self.items.get
         self.work_items.state_machine.dependencies = SimpleNamespace(get_state=self.items.get)
@@ -73,7 +84,7 @@ class WorkerVerificationTests(unittest.IsolatedAsyncioTestCase):
             repository_resource_id=self.target.id), actor=self.admin)
         self.workers.workspaces=self.workspaces
         profile = self.agent_profiles.create(AgentProfileCreate(profile_id='developer',
-            name='Synthetic Developer',role_id='developer',authority_role_id='local-admin',
+            name='Synthetic Developer',role_id='james',authority_role_id='local-admin',
             execution_profile_id='repository-write'),actor=self.admin)
         _, definition = self.profiles.resolve('repository-write', project_id='project-a')
         pin = AgentProfileExecutionBinding(profile_id=profile.profile_id, profile_revision=profile.revision,
@@ -140,10 +151,10 @@ class WorkerVerificationTests(unittest.IsolatedAsyncioTestCase):
             'method':PROOF_CONTRACT,'result':'verified','source':'sha256:'+hashlib.sha256(b'actual synthetic B review').hexdigest()}
         self.original_state=self.recovery.store.load()
 
-    async def asyncTearDown(self):
+    async def _stop_services(self):
         if hasattr(self,'recovery'):
             await self.recovery.stop()
-        await admin_fixtures.AdministrativeBrokerRuntimeTests.asyncTearDown(self)
+        await self.broker.stop()
 
     async def post(self, request=None):
         return await self._request('POST','/api/verifications',payload=request or self.request)
