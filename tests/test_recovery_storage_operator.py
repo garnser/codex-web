@@ -593,7 +593,15 @@ class StorageOperatorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_verify_target_hash_is_checked_against_trusted_report_after_full_restore(self):
         from contextlib import contextmanager
+        from codex_web.services.recovery import RecoveryConflictError
         operations=self.operator.storage_provider.operations
+        execute=operations.execute;private_refusals=[]
+        def observed_execute(*args,**kwargs):
+            try:
+                return execute(*args,**kwargs)
+            except RecoveryConflictError as error:
+                private_refusals.append((type(error),str(error)))
+                raise  # preserve the same refusal and canonical public redaction
         async with self.client() as client:
             await self.capture(client);record=self.committed()[0]
             # Simulate bounded canonical report corruption. Even this exact
@@ -614,12 +622,20 @@ class StorageOperatorTests(unittest.IsolatedAsyncioTestCase):
                         with patch.object(target,'restore_storage_snapshot',side_effect=restore):yield target
                 finally:cleaned.append(True)
             payload=self.payload.model_copy(update={'operation_id':'hash-mismatch','idempotency_key':'hash-mismatch','artifact_id':record.artifact_ids[0]})
-            with patch.object(operations,'isolated_target',side_effect=inspected):
+            with patch.object(operations,'isolated_target',side_effect=inspected), patch.object(operations,'execute',side_effect=observed_execute):
                 response=await client.post('/api/recovery/storage-preservation/operations',json=self.body(VERIFY,payload))
             self.assertEqual(response.status_code,200,response.text)
             self.assertNotEqual(response.json()['item']['status'],'succeeded',response.text)
             self.assertEqual(restored,[True]);self.assertEqual(cleaned,[True])
-            self.assertIn('Isolated storage row digest mismatch',response.json()['item']['last_error'])
+            self.assertEqual(private_refusals,[(RecoveryConflictError,'Isolated storage row digest mismatch')])
+            item=response.json()['item']
+            self.assertEqual(item['status'],'uncertain')
+            self.assertEqual(item['failure']['source_native_code'],'RecoveryConflictError')
+            self.assertEqual(item['failure']['source_subsystem'],'action_intent')
+            self.assertEqual(item['failure']['reason_code'],'unknown_outcome')
+            self.assertEqual(item['failure']['outcome'],'unknown')
+            self.assertEqual(item['last_error'],'provider execution raised RecoveryConflictError; external outcome unknown')
+            self.assertNotIn('Isolated storage row digest mismatch',response.text)
             self.assertEqual(self.committed(),[changed])
         self.assert_original()
 
@@ -628,7 +644,15 @@ class StorageOperatorTests(unittest.IsolatedAsyncioTestCase):
         from codex_web.services.artifact_evidence import ArtifactEvidenceService
         from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
         from codex_web.artifact_evidence import EvidenceLifecycle
+        from codex_web.services.recovery import RecoveryConflictError
         operations=self.operator.storage_provider.operations
+        execute=operations.execute;private_refusals=[]
+        def observed_execute(*args,**kwargs):
+            try:
+                return execute(*args,**kwargs)
+            except RecoveryConflictError as error:
+                private_refusals.append((type(error),str(error)))
+                raise  # preserve the same refusal and canonical public redaction
         writer=ArtifactEvidenceService(ArtifactEvidenceStore(self.preservation_writer().store.store))
         async with self.client() as client:
             await self.capture(client);record=self.committed()[0]
@@ -640,12 +664,20 @@ class StorageOperatorTests(unittest.IsolatedAsyncioTestCase):
                     post_hash.append(True)
                     writer.invalidate_evidence(record.id,'separate writer after target hash',actor=self.actor)
             payload=self.payload.model_copy(update={'operation_id':'late-receipt','idempotency_key':'late-receipt','artifact_id':record.artifact_ids[0]})
-            with patch.object(operations,'isolated_target',side_effect=invalidate_after_hash):
+            with patch.object(operations,'isolated_target',side_effect=invalidate_after_hash), patch.object(operations,'execute',side_effect=observed_execute):
                 response=await client.post('/api/recovery/storage-preservation/operations',json=self.body(VERIFY,payload))
             self.assertEqual(response.status_code,200,response.text)
             self.assertNotEqual(response.json()['item']['status'],'succeeded',response.text)
             self.assertEqual(post_hash,[True])
-            self.assertIn('Capture receipt changed before verification commit',response.json()['item']['last_error'])
+            self.assertEqual(private_refusals,[(RecoveryConflictError,'Capture receipt changed before verification commit')])
+            item=response.json()['item']
+            self.assertEqual(item['status'],'uncertain')
+            self.assertEqual(item['failure']['source_native_code'],'RecoveryConflictError')
+            self.assertEqual(item['failure']['source_subsystem'],'action_intent')
+            self.assertEqual(item['failure']['reason_code'],'unknown_outcome')
+            self.assertEqual(item['failure']['outcome'],'unknown')
+            self.assertEqual(item['last_error'],'provider execution raised RecoveryConflictError; external outcome unknown')
+            self.assertNotIn('Capture receipt changed before verification commit',response.text)
             self.assertEqual(len(self.committed()),1)
             self.assertEqual(self.committed()[0].lifecycle,EvidenceLifecycle.INVALIDATED)
         self.assert_original()
