@@ -4059,7 +4059,8 @@ class TurnExecutionService:
                     'upgrade_maintenance_active', 'upgrade_maintenance', 'upgrade_turn_scope_unknown'})
             if retained_attempt is not None and deferred_admission:
                 await asyncio.to_thread(self.queued_preflight.queued_disposition,
-                    retained_attempt.id, status='queued', detail=detail, claim_id=admission_claim_id)
+                    retained_attempt.id, status='queued', detail=detail, claim_id=admission_claim_id,
+                    preinput_refusal=isinstance(exc, (AutomatedAdmissionPaused, ExecutionPrestartRefusal)))
             if isinstance(exc, AutomatedAdmissionPaused):
                 reschedule_queue = False
                 if retained_attempt is not None:
@@ -4083,7 +4084,7 @@ class TurnExecutionService:
                     retained_attempt.id,
                     status='blocked' if known_unstarted else 'reconciliation_required',
                     detail=detail or {'message':str(exc),'code':'native_start_outcome_unknown'},
-                    claim_id=admission_claim_id,
+                    claim_id=admission_claim_id, preinput_refusal=known_unstarted,
                 )
                 if operator_original is not None and known_unstarted:
                     restore_original_position()

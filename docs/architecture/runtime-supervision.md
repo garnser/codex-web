@@ -909,3 +909,16 @@ and snapshot digest, distinguishing archived refusal, successful resume and
 unknown outcome. Its buttons consume canonical eligibility; display text grants
 no retry or authority. This source slice does not recover historical routing
 without original authoritative replacement evidence or prove original delivery.
+
+A successful correlated resume may precede a typed local controller refusal
+before input. Only that existing local exception boundary supplies the internal
+pre-input witness; provider HTTP detail codes cannot supply it. With the exact
+claim/snapshot and complete successful resume observation, and no prepared
+turn/start, the disposition transaction moves the resume observation into its
+bounded history before preserving the controller's queued/blocked state. It
+never discards evidence or infers nonstart from absence alone. Missing, archived,
+foreign, incomplete or uncertain resume results, any prepared turn/start, stale
+claims and exhausted history retain reconciliation-required custody. Actual
+provider failures after send remain unknown even when their text matches a
+controller refusal code. No replay or permission is conferred by the fixture or
+this retained local-witness history.

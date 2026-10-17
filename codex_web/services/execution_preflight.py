@@ -199,8 +199,13 @@ class ExecutionPreflightService:
 
     def queued_disposition(self, attempt_id: str, *, status: str,
                            detail: dict[str, Any] | None = None,
-                           claim_id: str | None = None) -> ExecutionPreflightAttempt:
-        """Internal runtime outcome; unknown native starts remain non-retryable."""
+                           claim_id: str | None = None,
+                           preinput_refusal: bool = False) -> ExecutionPreflightAttempt:
+        """Internal runtime outcome; unknown native starts remain non-retryable.
+
+        preinput_refusal is supplied only by the controller's typed local
+        pre-write exception boundary, never an HTTP/provider detail code.
+        """
         if status not in {'queued', 'blocked', 'started', 'reconciliation_required'}:
             raise ValueError('invalid queued admission disposition')
         now = float(self.clock())
@@ -213,6 +218,27 @@ class ExecutionPreflightService:
                 return current
             if claim_id is not None and current.queued_admission_claim_id != claim_id:
                 return current
+            if (preinput_refusal and claim_id is not None
+                    and current.status == 'reconciliation_required' and status in {'queued', 'blocked'}
+                    and current.queued_resume_correlation is not None
+                    and current.queued_start_correlation is None
+                    and current.queued_start_evidence is None and current.queued_start_receipt is None
+                    and current.started_at is None and len(current.queued_resume_history) < 8):
+                from codex_web.services.queued_native_resume import validate_resume_observation
+                from codex_web.models import QueuedNativeResumeObservation
+                try:
+                    correlation, observed = validate_resume_observation(self, current)
+                except ValueError:
+                    pass  # Invalid/partial observation cannot release custody.
+                else:
+                    if observed.outcome == 'resumed':
+                        # A local controller witness proves no subsequent input
+                        # was sent. Preserve successful resume as history; it is
+                        # not itself a nonstart proof or permission to replay.
+                        history = QueuedNativeResumeObservation(correlation=correlation,evidence=observed)
+                        current = current.model_copy(update={'queued_resume_correlation':None,
+                            'queued_resume_evidence':None,
+                            'queued_resume_history':(*current.queued_resume_history,history)})
             disposition = 'reconciliation_required' if (current.queued_start_correlation is not None
                 or current.queued_resume_correlation is not None) else status
             return current.model_copy(update={

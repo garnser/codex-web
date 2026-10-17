@@ -164,6 +164,62 @@ class ResumeCases:
         self.assertIsNone(saved.queued_resume_evidence)
         self.runtime._send.assert_not_called()
 
+    async def test_positive_resume_only_local_controller_witness_releases_preinput(self):
+        c=self.prepare();self.capture.observe(c,generation='generation',message={
+            'id':'resume-original','result':{'thread':{'id':'thread'}}})
+        unknown=self.service.queued_disposition(self.f.attempt.id,status='blocked',
+            claim_id=self.f.claim,detail={'code':'project_delegation_preinput_refused'})
+        self.assertEqual(unknown.status,'reconciliation_required')
+        self.assertEqual(unknown.queued_resume_correlation,c)
+        refused=self.service.queued_disposition(self.f.attempt.id,status='blocked',
+            claim_id=self.f.claim,preinput_refusal=True)
+        self.assertEqual(refused.status,'blocked')
+        self.assertIsNone(refused.queued_resume_correlation)
+        self.assertEqual(refused.queued_resume_history[0].correlation,c)
+        self.assertEqual(refused.queued_resume_history[0].evidence.outcome,'resumed')
+        self.assertEqual(refused.queued_turn_snapshot,unknown.queued_turn_snapshot)
+        self.runtime._send.assert_not_called()
+
+    async def test_local_witness_cannot_release_uncertain_resume_or_prepared_turn(self):
+        c=self.prepare()
+        unknown=self.service.queued_disposition(self.f.attempt.id,status='queued',
+            claim_id=self.f.claim,preinput_refusal=True)
+        self.assertEqual(unknown.status,'reconciliation_required')
+        self.capture.observe(c,generation='generation',message={
+            'id':'resume-original','result':{'thread':{'id':'thread'}}})
+        start=self.f.capture.prepare(generation='generation',rpc_request_id='start',native_session_id='thread')
+        unknown=self.service.queued_disposition(self.f.attempt.id,status='blocked',
+            claim_id=self.f.claim,preinput_refusal=True)
+        self.assertEqual(unknown.status,'reconciliation_required')
+        self.assertEqual(unknown.queued_start_correlation,start)
+        self.assertFalse(unknown.queued_resume_history)
+
+    async def test_shared_controlled_session_captures_real_positive_reader_observation(self):
+        from tests import test_turn_execution as turn_fixtures
+        from types import SimpleNamespace
+        session=turn_fixtures._Session()
+        session.assignment=self.f.assignment
+        session.status=lambda:SimpleNamespace(worker_id='worker',fence=7)
+        response=await session.request_with_start_capture('thread/resume',{'threadId':'thread'},self.capture)
+        self.assertEqual(response['thread']['id'],'thread')
+        saved=self.saved()
+        self.assertEqual(saved.queued_resume_evidence.outcome,'resumed')
+        self.assertEqual(saved.queued_resume_correlation.runtime_generation,session.capture_runtime.generation)
+        self.assertEqual(saved.queued_resume_evidence.rpc_request_id,saved.queued_resume_correlation.rpc_request_id)
+        self.assertEqual(session.requests,[('thread/resume',{'threadId':'thread'})])
+        self.assertEqual(saved.status,'reconciliation_required')
+        self.assertIsNone(saved.queued_start_receipt)
+
+    async def test_adapter_without_capture_transport_still_refuses_before_native_request(self):
+        from types import SimpleNamespace
+        from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
+        transport=SimpleNamespace(request=AsyncMock())
+        request=SimpleNamespace(workspace_cwd=None,sandbox=None,sandbox_policy=None,
+            approval_policy=None,approval_reviewer=None,model=None,developer_instructions=None)
+        with self.assertRaisesRegex(RuntimeError,'Assignment-bound resume capture transport unavailable'):
+            await CodexAgentRuntimeAdapter(transport).resume_session('thread',request,resume_capture=self.capture)
+        transport.request.assert_not_awaited()
+
 
 class QueuedNativeResumeTests(ResumeCases,unittest.IsolatedAsyncioTestCase):
     pass
