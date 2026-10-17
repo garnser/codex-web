@@ -91,8 +91,9 @@ class ReviewCorrectionsTests(ProjectCoordinationBrokerTests):
     async def parked_create(self, payload):
         # This client intentionally spans four fixture phases: pending admission,
         # a competing ordinary request, explicit owned cleanup, and final reply.
-        # Give each phase the ordinary 2s budget (8s total), only on this held
-        # request. Other clients keep the shared 2s default; no production
+        # Use an explicit bounded 8s total lifetime only for this held request,
+        # rather than one ordinary reply budget for the entire scenario.
+        # Other clients keep the shared 2s default; no production
         # timeout or fixture-wide limit changes. wait_for_pending_phase still
         # detects early producer completion and bounds admission independently.
         holder = SimpleNamespace(broker=self.broker, broker_response_timeout=8)
