@@ -282,6 +282,36 @@ class StorageOperatorTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.artifacts.store.load(),before)
         self.assert_original()
 
+    async def test_tampered_envelope_public_operation_reports_no_untrusted_payload(self):
+        from codex_web.services.recovery_storage_preservation import MAGIC,_frame
+        import struct
+        async with self.client() as client:
+            item=await self.capture(client)
+            record=self.committed()[0]
+            artifact=self.artifacts.get_artifact(record.artifact_ids[0],actor=self.actor)
+            from codex_web.artifact_content import ArtifactContentScope
+            scope=ArtifactContentScope(organization_id=self.actor.organization_id,workspace_id=self.actor.workspace_id)
+            path=self.local_content._resolve(scope,artifact.content.locator)
+            wire=path.read_bytes();frames=[];offset=len(MAGIC)
+            while offset<len(wire):
+                size=struct.unpack('>Q',wire[offset:offset+8])[0]
+                frames.append(json.loads(wire[offset+8:offset+8+size]));offset+=8+size
+            sentinel='SYNTHETIC_PRIVATE_PUBLIC_BOUNDARY_SENTINEL'
+            next(f for f in frames if f.get('kind')=='chunk')['envelope']={'extra':sentinel}
+            # Physical corruption is injected ONLY into this synthetic private
+            # fixture. Canonical immutable Artifact/receipt metadata is intact.
+            path.write_bytes(MAGIC+b''.join(_frame(f) for f in frames))
+            payload=self.payload.model_copy(update={'operation_id':'tamper-verify','idempotency_key':'tamper-verify',
+                'artifact_id':artifact.id})
+            response=await client.post('/api/recovery/storage-preservation/operations',json=self.body(VERIFY,payload))
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertNotEqual(response.json()['item']['status'],'succeeded')
+            self.assertNotIn(sentinel,response.text)
+            history=self.service.history(response.json()['item']['id'],self.actor)
+            self.assertNotIn(sentinel,json.dumps(history))
+            self.assertEqual(self.committed(),[record])
+        self.assert_original()
+
 
 @unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'),'isolated private PostgreSQL DSN required')
 class PostgresStorageOperatorTests(_PostgresFixture,StorageOperatorTests):
@@ -392,7 +422,9 @@ class FullShapeEncryptedStorageTests(PostgresStorageOperatorTests):
             method='Private current full-scale admission',result=VerificationResult.VERIFIED),actor=self.independent)
         self.payload=self.payload.model_copy(update={'capacity_evidence_id':proof.id,'capacity_verification_id':verified.id})
         async with self.client() as client:
+            capture_started=time.perf_counter()
             item=await self.capture(client)
+            print(json.dumps({'phase':'governed_encrypted_capture','seconds':time.perf_counter()-capture_started}),flush=True)
             captured=await client.get('/api/recovery/storage-preservation/receipts/'+item['id'])
             self.assertEqual(captured.status_code,200,captured.text)
             report=captured.json()['report']
@@ -409,7 +441,42 @@ class FullShapeEncryptedStorageTests(PostgresStorageOperatorTests):
             payload=self.payload.model_copy(update={'operation_id':'verify-scale','idempotency_key':'verify-scale',
                 'artifact_id':captured.json()['artifact_ids'][0],
                 'capacity_evidence_id':current.id,'capacity_verification_id':verification.id})
-            response=await client.post('/api/recovery/storage-preservation/operations',json=self.body(VERIFY,payload))
+            from contextlib import contextmanager
+            original=self.operator.storage_provider.operations.isolated_target
+            sql_oracle=[]
+            @contextmanager
+            def checked_target(*args,**kwargs):
+                with original(*args,**kwargs) as target:
+                    yield target
+                    # Existing target transaction has committed an authenticated
+                    # stream, but custody is still held and cleanup has not run.
+                    # Independently read literal expected seed values via SQL.
+                    with target._connection(read_only_snapshot=True) as connection:
+                        with connection.cursor(name='scale_oracle') as cursor:
+                            cursor.execute("SELECT namespace,payload,updated_at FROM codex_state_documents WHERE namespace LIKE 'scale:%' ORDER BY namespace COLLATE \"C\"")
+                            seen=0
+                            while True:
+                                batch=cursor.fetchmany(64)
+                                if not batch:break
+                                for k,v,t in batch:
+                                    self.assertEqual(k,f'scale:{seen:06}')
+                                    if seen==0:expected='"'+'A'*(largest-2)+'"'
+                                    elif seen==1:expected='{'+'?'*6905
+                                    else:
+                                        size=ordinary+(seen-2<remainder)
+                                        expected='"'+'b'*(size-2)+'"'
+                                    self.assertEqual(v,expected)
+                                    self.assertEqual(t,float(seen+1))
+                                    seen+=1
+                            self.assertEqual(seen,count)
+                        literal=connection.execute("SELECT payload,updated_at FROM codex_state_documents WHERE namespace='synthetic-malformed-usage'").fetchone()
+                        self.assertEqual(literal,(self.opaque,1.125))
+                    sql_oracle.append(True)
+            phase=time.perf_counter()
+            with patch.object(self.operator.storage_provider.operations,'isolated_target',side_effect=checked_target):
+                response=await client.post('/api/recovery/storage-preservation/operations',json=self.body(VERIFY,payload))
+            self.assertEqual(sql_oracle,[True])
+            print(json.dumps({'full_encrypted_verify_and_independent_sql_seconds':time.perf_counter()-phase}))
             self.assertEqual(response.status_code,200,response.text)
             self.assertEqual(response.json()['item']['status'],'succeeded',response.text)
             isolated=await client.get('/api/recovery/storage-preservation/receipts/'+response.json()['item']['id'])

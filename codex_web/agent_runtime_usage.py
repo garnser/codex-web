@@ -17,6 +17,13 @@ AGENT_RUNTIME_USAGE_STATE_CONTRACT = ContractSpec(
 )
 
 
+class RuntimeUsageMetricCompletenessV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    tokens: bool
+    costUsd: bool
+    records: bool
+
+
 class RuntimeUsageDiagnosticsV1(BaseModel):
     """Public completeness only; never a global corruption inventory."""
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -24,11 +31,21 @@ class RuntimeUsageDiagnosticsV1(BaseModel):
     complete: bool
     reason: Literal["complete", "usage_unavailable"]
     continuation_available: bool = False
+    storage_complete: bool | None = None
+    metric_completeness: dict[Literal["coordinator", "workers"], RuntimeUsageMetricCompletenessV1] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def consistent(self):
         if self.complete != (self.reason == "complete") or (self.complete and self.continuation_available):
             raise ValueError("inconsistent usage completeness")
+        if self.storage_complete is False and self.complete:
+            raise ValueError("inconsistent storage completeness")
+        if self.metric_completeness:
+            if self.storage_complete is None or set(self.metric_completeness)!={"coordinator","workers"}:
+                raise ValueError("metric completeness requires scoped storage observation")
+            measured=all(all((m.tokens,m.costUsd,m.records)) for m in self.metric_completeness.values())
+            if self.complete!=(self.storage_complete and measured):
+                raise ValueError("inconsistent scoped metric completeness")
         return self
 
 

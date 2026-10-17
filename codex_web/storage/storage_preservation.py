@@ -332,17 +332,35 @@ def restore_database_rows(connection, chunks, *, backend, schema_version, limits
             raise StoragePreservationRefused("isolated_target_metadata_not_seed")
         cursor.execute(f"DELETE FROM {metadata} WHERE key={bind}", ("schema_version",))
         seen_schema = False
+        batch=[];batch_bytes=0;batch_table=None
+        def flush():
+            nonlocal batch,batch_bytes
+            if not batch:return
+            check_operation_budget()
+            target,column,payload = ((documents,"namespace","payload") if batch_table=="documents"
+                                     else (metadata,"key","value"))
+            # psycopg's executemany pipelines bounded rows on the SAME owning
+            # connection/transaction. No per-row network roundtrip or COPY
+            # escape; SQLite uses its existing bounded executemany primitive.
+            cursor.executemany(f"INSERT INTO {target}({column},{payload},updated_at) VALUES ({bind},{bind},{bind})",batch)
+            check_operation_budget()
+            batch=[];batch_bytes=0
         for table, key, value, timestamp in import_rows(chunks, backend=backend, schema_version=schema_version, limits=limits):
             check_operation_budget()
-            if table == "documents":
-                target, column, payload = documents, "namespace", "payload"
-            else:
-                target, column, payload = metadata, "key", "value"
+            if table == "metadata":
                 if key == "schema_version":
                     if value != str(schema_version):
                         raise StoragePreservationRefused("storage_schema_mismatch")
                     seen_schema = True
-            cursor.execute(f"INSERT INTO {target}({column},{payload},updated_at) VALUES ({bind},{bind},{bind})", (key,value,timestamp))
+            size=len(key.encode('utf8'))+len(value.encode('utf8'))+8
+            if batch and (table!=batch_table or len(batch)>=256 or batch_bytes+size>4*1024**2):
+                flush()
+            batch_table=table
+            batch.append((key,value,timestamp));batch_bytes+=size
+            if batch_bytes>=4*1024**2:flush()
+        # import_rows must have exhausted authenticated footer and EOF before
+        # the final flush; any exception rolls back earlier bounded batches.
+        flush()
         if not seen_schema:
             raise StoragePreservationRefused("missing_storage_schema")
         check_operation_budget()

@@ -31,8 +31,10 @@ class UsageHistoryPreservationTests(unittest.TestCase):
         self.usage = AgentRuntimeUsageStore(self.sqlite)
         definitions = DefinitionRegistryService(DefinitionRegistryStore(self.sqlite))
         profiles = AgentProfileService(AgentProfileStore(self.sqlite),definitions=definitions)
+        self.profiles=profiles
         teams = AgentTeamService(AgentTeamStore(self.sqlite),profiles=profiles,
                                  definitions=definitions,runtime_usage_store=self.usage)
+        self.teams=teams
         app = FastAPI()
         @app.middleware('http')
         async def identity(request, call_next):
@@ -49,11 +51,81 @@ class UsageHistoryPreservationTests(unittest.TestCase):
                 (state_record_storage_key('agent_runtime_usage',key),raw,123.0))
 
     def snapshot(self):
-        import hashlib
-        digest = hashlib.sha256()
-        for chunk in self.sqlite.iter_storage_snapshot():
-            digest.update(chunk)
+        import hashlib,json,struct
+        digest=hashlib.sha256()
+        with self.sqlite._connection() as connection:
+            for table,key,value in [('state_documents','namespace','payload'),('state_metadata','key','value')]:
+                for k,v,t in connection.execute(f'SELECT {key},{value},updated_at FROM {table} ORDER BY {key} COLLATE BINARY'):
+                    digest.update(json.dumps([table,k,v],ensure_ascii=True).encode())
+                    digest.update(struct.pack('>d',t))
         return digest.hexdigest()
+
+    def joined(self):
+        from codex_web.agent_profiles import AgentProfileCreate
+        from codex_web.agent_teams import AgentTeamCreate,AgentTeamMember,AgentTeamDelegationRecord
+        for name in ('leader','worker'):
+            self.profiles.create(AgentProfileCreate(profile_id=name,name=name),actor=self.actor)
+        team=self.teams.create(AgentTeamCreate(team_id='visible-team',name='Visible team',
+            leader_profile_id='leader',members=(AgentTeamMember(profile_id='worker',role='developer'),)),actor=self.actor)
+        self.teams.store.append_delegation(AgentTeamDelegationRecord(
+            organization_id=self.actor.organization_id,workspace_id=self.actor.workspace_id,
+            team_id=team.team_id,team_revision=team.revision,work_item_id='acme/app#42',
+            event_type='execution_linked',mode='linked',reason='Synthetic real canonical execution join',
+            dedupe_key='visible-link',coordinator_execution_id='leader-exec',
+            member_execution_ids={'worker':'worker-exec'}))
+
+    def measured(self,name,**values):
+        self.usage.upsert(AgentRuntimeUsage(id=name,organization_id=self.actor.organization_id,
+            workspace_id=self.actor.workspace_id,provider_id='synthetic',runtime_id=name,runtime_type='test',
+            work_item_ref='acme/app#42',execution_id='leader-exec',**values))
+
+    def assert_http_metrics(self,tokens,cost,records,*,complete):
+        before=self.snapshot()
+        for suffix in ('history','operator'):
+            response=self.history_client.get('/api/work-items/acme/app%2342/'+suffix)
+            self.assertEqual(response.status_code,200,response.text)
+            body=response.json();history=body if suffix=='history' else body['history']
+            team=history['teamDelegations']
+            self.assertEqual(team['count'],1)
+            self.assertEqual(team['usage']['coordinator'],{'tokens':tokens,'costUsd':cost,'records':records})
+            self.assertEqual(team['usage']['workers'],{'tokens':0,'costUsd':0.0,'records':0})
+            diagnostic=team['usage_diagnostics']
+            self.assertEqual(diagnostic['complete'],complete)
+            self.assertTrue(diagnostic['storage_complete'])
+            self.assertEqual(diagnostic['metric_completeness']['coordinator'],
+                {'tokens':tokens is not None,'costUsd':cost is not None,'records':True})
+            self.assertNotIn('foreign-private',response.text)
+        self.assertEqual(self.snapshot(),before)
+
+    def test_joined_valid_missing_both_metrics_are_unknown_not_zero(self):
+        self.joined();self.measured('unknown')
+        self.assert_http_metrics(None,None,1,complete=False)
+
+    def test_joined_known_tokens_missing_cost_preserves_metric_completeness(self):
+        self.joined();self.measured('tokens-only',total_tokens=17)
+        self.assert_http_metrics(17,None,1,complete=False)
+
+    def test_joined_known_cost_missing_tokens_preserves_metric_completeness(self):
+        self.joined();self.measured('cost-only',cost_usd=1.25)
+        self.assert_http_metrics(None,1.25,1,complete=False)
+
+    def test_joined_explicit_observed_zero_is_complete_zero(self):
+        self.joined();self.measured('zero',total_tokens=0,cost_usd=0.0)
+        self.assert_http_metrics(0,0.0,1,complete=True)
+
+    def test_joined_known_and_unknown_records_do_not_claim_partial_sum_complete(self):
+        self.joined();self.measured('known',total_tokens=17,cost_usd=1.25);self.measured('unknown',cost_usd=0.0)
+        self.assert_http_metrics(None,1.25,2,complete=False)
+
+    def test_valid_foreign_and_unjoined_missing_metrics_do_not_degrade_visible_totals(self):
+        self.joined();self.measured('known',total_tokens=17,cost_usd=1.25)
+        self.usage.upsert(AgentRuntimeUsage(id='foreign-private',organization_id='foreign-private-org',
+            workspace_id='foreign-private-ws',provider_id='synthetic',runtime_id='foreign-private',runtime_type='test',
+            work_item_ref='acme/app#42',execution_id='leader-exec'))
+        self.usage.upsert(AgentRuntimeUsage(id='unjoined',organization_id=self.actor.organization_id,
+            workspace_id=self.actor.workspace_id,provider_id='synthetic',runtime_id='unjoined',runtime_type='test',
+            work_item_ref='acme/app#42',execution_id='not-a-visible-execution'))
+        self.assert_http_metrics(17,1.25,1,complete=True)
 
     def test_malformed_foreign_unknown_scope_keeps_history_and_null_totals_without_write(self):
         self.inject('foreign-private-reference','{private-unknown-tenant')

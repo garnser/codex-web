@@ -789,3 +789,33 @@ RecoveryState1.3 activation, old-writer handover or binary rollback after an
 irreversible contract transition. Full-current-shape encrypted qualification is
 separate from focused small fixtures and must use real admitted aggregate
 memory/disk/CPU/process/time enforcement with all clients/servers reaped.
+
+
+#### Review corrections: scoped metrics and independent preservation oracle
+
+History storage inspection completeness is separate from completeness of each
+visible joined execution metric. Missing `total_tokens` or `cost_usd` on an
+otherwise valid authorized record makes only that role/metric total unknown;
+observed zero remains zero and a known record count remains known. Team/work-item,
+tenant and visible-execution joins happen before metric completeness is derived.
+A valid foreign or unrelated record cannot alter those scoped totals. Typed
+`storage_complete` and per-role `metric_completeness` explain partial observations
+without disclosing foreign record identities. Unknown-scope malformed storage
+still produces generic incomplete/null totals, with no immutable accounting write.
+
+Chunk and terminal-manifest envelope schema failures use the same fixed
+`invalid_encrypted_envelope` refusal. The decoder raises outside the Pydantic
+handler, without attaching its untrusted input exception as context; public
+operations retain only sanitized errors and no successful verification receipt.
+
+Isolated raw restore batches at most256 rows or4MiB of UTF8 key/value bytes per
+`executemany` call (one permitted large row is flushed by itself). PostgreSQL
+uses its existing same-connection pipelined executemany, retaining one exclusive
+atomic transaction. Budget/cancellation checks bracket batches and remain per
+row. Earlier inserts are never a partial result: authenticated footer/EOF,
+schema/count/order/digest and final budget checks still precede commit; any
+failure rolls back all batches. No source write or second execution engine is
+introduced. Independent tests compare actual SQL TEXT and timestamps (including
+metadata) and the literal seeded full-scale rows; matching encoder digests alone
+are not preservation proof. Full-scale phase timing/actual admitted resource
+qualification remains required before any performance claim.

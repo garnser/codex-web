@@ -1037,6 +1037,9 @@ class AgentTeamService:
             observed_usage, usage_diagnostics = self.runtime_usage_store.inspect_for_history()
             from codex_web.agent_runtime_usage import RuntimeUsageDiagnosticsV1
             usage_diagnostics = RuntimeUsageDiagnosticsV1.model_validate(usage_diagnostics).model_dump(mode="json")
+            storage_complete = usage_diagnostics["complete"]
+            metric_complete = {role:{name:storage_complete for name in ("tokens","costUsd","records")}
+                               for role in totals}
             for item in observed_usage:
                 if (
                     item.organization_id != actor.organization_id
@@ -1051,12 +1054,23 @@ class AgentTeamService:
                 bucket["records"] += 1
                 if item.total_tokens is not None:
                     bucket["tokens"] += item.total_tokens
+                else:
+                    metric_complete[role]["tokens"] = False
                 if item.cost_usd is not None:
                     bucket["costUsd"] += item.cost_usd
-            usage = totals if usage_diagnostics["complete"] else {
-                role:{"tokens":None, "costUsd":None, "records":None}
-                for role in ("coordinator", "workers")
-            }
+                else:
+                    metric_complete[role]["costUsd"] = False
+            # Derive metric completeness ONLY after authorized WorkItem and
+            # visible execution joins. Valid foreign/unrelated missing metrics
+            # must neither leak nor poison this scope's observed totals.
+            complete = all(all(values.values()) for values in metric_complete.values())
+            usage_diagnostics.update(storage_complete=storage_complete,
+                metric_completeness=metric_complete,complete=complete,
+                reason="complete" if complete else "usage_unavailable")
+            usage_diagnostics = RuntimeUsageDiagnosticsV1.model_validate(usage_diagnostics).model_dump(mode="json")
+            usage = {role:{name:value if metric_complete[role][name] else None
+                           for name,value in values.items()} for role,values in totals.items()}
+
 
         active_member_ids: set[str] = set()
         if self.assignment_loader is not None:

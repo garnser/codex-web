@@ -12,6 +12,7 @@ import json
 import struct
 from collections.abc import Iterator
 
+from pydantic import ValidationError
 from codex_web.crypto import EncryptedEnvelope
 from codex_web.storage.storage_preservation import (
     StoragePreservationRefused, StorageSnapshotLimits, _Reader, canonical,
@@ -24,6 +25,16 @@ MAX_CONTAINER = 6 * 1024**3
 MAX_ENVELOPE = 400 * 1024
 MAX_MANIFEST = 8 * 1024**2
 MAX_CHUNKS = (4*1024**3 + CHUNK_BYTES-1)//CHUNK_BYTES
+
+
+def _envelope(payload):
+    # Raise outside the validation exception handler: neither the displayed
+    # exception chain nor __context__ retains Pydantic's untrusted input.
+    try:
+        return EncryptedEnvelope.model_validate(payload)
+    except ValidationError:
+        pass
+    raise StoragePreservationRefused('invalid_encrypted_envelope') from None
 
 
 def _frame(item):
@@ -135,7 +146,7 @@ def open_storage_snapshot(chunks, *, crypto, context, actor) -> Iterator[bytes]:
             if item.get('kind')=='manifest':
                 if set(item)!={'kind','envelope'}:
                     raise StoragePreservationRefused('invalid_manifest_record')
-                envelope = EncryptedEnvelope.model_validate(item['envelope'])
+                envelope = _envelope(item['envelope'])
                 manifest_raw = batch.apply(envelope,context.model_copy(update={'object_id':context.object_id+':manifest'}))
                 if len(manifest_raw)>MAX_MANIFEST:
                     raise StoragePreservationRefused('manifest_plaintext_limit')
@@ -150,7 +161,7 @@ def open_storage_snapshot(chunks, *, crypto, context, actor) -> Iterator[bytes]:
                 or type(item.get('index')) is not int or item['index']!=count
                 or len(framed)>MAX_ENVELOPE or count>=MAX_CHUNKS):
                 raise StoragePreservationRefused('encrypted_chunk_order_or_limit')
-            envelope = EncryptedEnvelope.model_validate(item['envelope'])
+            envelope = _envelope(item['envelope'])
             block = batch.apply(envelope,context.model_copy(update={'object_id':context.object_id+':chunk:'+str(count)}))
             if not 0<len(block)<=CHUNK_BYTES:
                 raise StoragePreservationRefused('decrypted_chunk_limit')
