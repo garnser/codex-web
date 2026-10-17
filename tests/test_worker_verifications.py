@@ -339,8 +339,22 @@ class WorkerVerificationTests(unittest.IsolatedAsyncioTestCase):
             schedule=state.schedules[self.firing.schedule_id]
             state.schedules[self.firing.schedule_id]=schedule.model_copy(update={'tenant_id':'foreign-tenant'})
             return state
-        self.scheduler.store.update(move)
-        status,_,body=await self.post()
+        self.scheduler.store._update(move)
+        schedule=self.scheduler.store.get(self.firing.schedule_id)
+        self.assertEqual(schedule.tenant_id,'foreign-tenant')
+        metadata=dict(self.original.metadata,schedule_sha256=fingerprint(schedule))
+        proof=self.evidence.create_evidence(EvidenceCreate(work_item_ref=self.ref,
+            project_id='project-a',resource_ids=(self.target.id,),evidence_type='runtime_result',result='pass',
+            observed_at=time.time(),metadata=metadata),actor=self.admin)
+        # All current snapshot bindings match. Only the schedule's tenant is
+        # foreign, so stale-proof rejection cannot satisfy this regression.
+        recovery=self.recovery.store.load()
+        self.assertEqual(proof.metadata['schedule_sha256'],fingerprint(schedule))
+        self.assertEqual(proof.metadata['firing_sha256'],fingerprint(recovery.scheduled_firings[self.firing.event_id]))
+        self.assertEqual(proof.metadata['state_sha256'],fingerprint(recovery))
+        self.assertEqual(proof.metadata['policy_fingerprint'],recovery.policy.fingerprint())
+        status,_,body=await self.post(dict(self.request,evidence_ids=[proof.id]))
         self.assertEqual(status,403,body)
         self.assertIn('Original Recovery firing/schedule/policy unavailable in current tenant',body['error']['message'])
         self.assertEqual(self.evidence.store.load().verifications,[])
+        self.assertEqual(self.evidence.get_evidence(self.original.id,actor=self.admin),self.original)
