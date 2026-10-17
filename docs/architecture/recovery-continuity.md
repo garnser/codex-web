@@ -721,7 +721,12 @@ Verification, not a new registry or caller assertion. Evidence metadata contract
 `recovery-storage-capacity.v1` binds `resource_id`, the SHA256 of canonical JSON
 configuration pins `{name:[record_id,revision]}`, integer `memory_bytes`,
 `disk_bytes`, `wall_seconds`, numeric `expires_at`, and absolute
-`database_directory` / `database_reservation_directory`. An independent VERIFIED
+`database_directory` / `database_reservation_directory`. It must also bind the
+current `recovery_executor_owner_id`, `memory_enforcement=kernel-cgroup-aggregate`,
+`memory_max_bytes` equal to the admitted memory budget and
+`memory_swap_max_bytes=0`. A restarted runtime cannot adopt an old incarnation's
+proof, and a larger global memory cap is not evidence of a smaller operation cap.
+An independent VERIFIED
 record must reference this current, valid, retained, same-tenant Evidence. Start
 freshness is60seconds, expiry covers the operation wall budget; commit rechecks
 expiry, validity and the original admitted pins. The directory mapping must

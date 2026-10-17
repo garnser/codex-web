@@ -74,6 +74,9 @@ class StorageOperatorTests(unittest.IsolatedAsyncioTestCase):
             resource_ids=(self.database.id,),source='fixture-private-resource-admission',
             result=EvidenceResult.PASS,summary='Synthetic private sandbox capacity',metadata={
                 'contract':CAPACITY_CONTRACT,'resource_id':self.database.id,
+                'recovery_executor_owner_id':self.recovery._scheduled_admission.owner_id,
+                'memory_enforcement':'kernel-cgroup-aggregate','memory_max_bytes':512*1024**2,
+                'memory_swap_max_bytes':0,
                 'configuration_sha256':hashlib.sha256(canonical(pins)).hexdigest(),
                 'memory_bytes':512*1024**2,'disk_bytes':512*1024**2,'wall_seconds':60,
                 'expires_at':time.time()+300,'database_directory':str(database_directory),

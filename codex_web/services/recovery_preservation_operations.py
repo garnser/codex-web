@@ -76,6 +76,9 @@ class StoragePreservationOperations:
             raise RecoveryConflictError('Fresh independently verified resource capacity Evidence required')
         m=evidence.metadata
         expected={'contract':CAPACITY_CONTRACT,'resource_id':payload.resource_id,
+                  'recovery_executor_owner_id':self.recovery._scheduled_admission.owner_id,
+                  'memory_enforcement':'kernel-cgroup-aggregate',
+                  'memory_max_bytes':config['memory_bytes'],'memory_swap_max_bytes':0,
                   'configuration_sha256':hashlib.sha256(canonical(pins)).hexdigest()}
         if any(type(m.get(k)) is not type(v) or m.get(k)!=v for k,v in expected.items()):
             raise RecoveryConflictError('Capacity proof does not bind current Resource/configuration')
