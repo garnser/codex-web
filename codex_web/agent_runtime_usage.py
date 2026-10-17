@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 import uuid
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -15,6 +15,21 @@ AGENT_RUNTIME_USAGE_STATE_CONTRACT = ContractSpec(
     "1.1",
     ("1.0", "1.1"),
 )
+
+
+class RuntimeUsageDiagnosticsV1(BaseModel):
+    """Public completeness only; never a global corruption inventory."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["1.0"] = "1.0"
+    complete: bool
+    reason: Literal["complete", "usage_unavailable"]
+    continuation_available: bool = False
+
+    @model_validator(mode="after")
+    def consistent(self):
+        if self.complete != (self.reason == "complete") or (self.complete and self.continuation_available):
+            raise ValueError("inconsistent usage completeness")
+        return self
 
 
 class RuntimeTelemetryCompleteness(StrEnum):

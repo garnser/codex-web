@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import threading
+import json
+from contextlib import closing
 from typing import Any, Callable
 
 from codex_web.agent_runtime_usage import (
@@ -135,6 +137,61 @@ class AgentRuntimeUsageStore:
         with self._lock:
             self._ensure_records()
             return self.store.namespace_revision(self.namespace)
+
+    def inspect_for_history(self, *, max_pages=10):
+        """Bounded projection, never accounting truth or a read-triggered migration.
+
+        Unknown-scope corruption produces ONLY a generic completeness flag. No
+        foreign row IDs, digests, parser messages or global counts leave here.
+        """
+        from codex_web.storage.state_store import parse_state_record_storage_key
+        from codex_web.storage.storage_preservation import StoragePreservationRefused
+        if not 1 <= max_pages <= 10:
+            raise ValueError("invalid usage inspection page bound")
+        reader = getattr(self.store, "inspect_storage_pages", None)
+        if not callable(reader):
+            return [], {"schema_version":"1.0", "complete":False,
+                        "reason":"usage_unavailable", "continuation_available":False}
+        records = {}
+        legacy = {}
+        cursor = None
+        complete = True
+        continuation = False
+        try:
+            with closing(reader(self.namespace, max_pages=max_pages)) as pages:
+                for rows, cursor in pages:
+                    for key, payload in rows:
+                        try:
+                            parsed = parse_state_record_storage_key(key)
+                            value = json.loads(payload)
+                            if parsed is None:
+                                state = self._decode(value)
+                                if len(state.records) > 1000:
+                                    raise ValueError("legacy inspection bound")
+                                legacy.update({r.id:r for r in state.records})
+                            elif parsed[1] is None:
+                                continue
+                            elif parsed[1] in {"schema_version", "records"}:
+                                complete = False
+                            else:
+                                record = AgentRuntimeUsage.model_validate(value)
+                                if record.id != parsed[1]:
+                                    raise ValueError("usage record key mismatch")
+                                records[record.id] = record
+                        except (ValueError, TypeError):
+                            complete = False
+                if cursor is not None:
+                    continuation = True
+                    complete = False
+        except StoragePreservationRefused:
+            complete = False
+        # Match strict migration's legacy precedence without performing it.
+        records.update(legacy)
+        return list(records.values()), {
+            "schema_version":"1.0", "complete":complete,
+            "reason":"complete" if complete else "usage_unavailable",
+            "continuation_available":continuation,
+        }
 
     def list(self) -> list[AgentRuntimeUsage]:
         return sorted(

@@ -1027,12 +1027,17 @@ class AgentTeamService:
                 execution_roles[execution_id] = "workers"
 
         usage = {"coordinator": {}, "workers": {}}
+        usage_diagnostics = {"schema_version":"1.0", "complete":False,
+                             "reason":"usage_unavailable", "continuation_available":False}
         if self.runtime_usage_store is not None:
             totals = {
                 "coordinator": {"tokens": 0, "costUsd": 0.0, "records": 0},
                 "workers": {"tokens": 0, "costUsd": 0.0, "records": 0},
             }
-            for item in self.runtime_usage_store.list():
+            observed_usage, usage_diagnostics = self.runtime_usage_store.inspect_for_history()
+            from codex_web.agent_runtime_usage import RuntimeUsageDiagnosticsV1
+            usage_diagnostics = RuntimeUsageDiagnosticsV1.model_validate(usage_diagnostics).model_dump(mode="json")
+            for item in observed_usage:
                 if (
                     item.organization_id != actor.organization_id
                     or item.workspace_id != actor.workspace_id
@@ -1048,7 +1053,10 @@ class AgentTeamService:
                     bucket["tokens"] += item.total_tokens
                 if item.cost_usd is not None:
                     bucket["costUsd"] += item.cost_usd
-            usage = totals
+            usage = totals if usage_diagnostics["complete"] else {
+                role:{"tokens":None, "costUsd":None, "records":None}
+                for role in ("coordinator", "workers")
+            }
 
         active_member_ids: set[str] = set()
         if self.assignment_loader is not None:
@@ -1072,6 +1080,7 @@ class AgentTeamService:
             "count": len(visible),
             "activeMemberProfileIds": sorted(active_member_ids),
             "usage": usage,
+            "usage_diagnostics": usage_diagnostics,
             "blockers": [
                 {
                     "recordId": item.id,

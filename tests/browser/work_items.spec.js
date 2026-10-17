@@ -689,3 +689,22 @@ test('GitHub TaskSource edits explicit role mappings through canonical Project c
     kind: 'github', schema_version: '1.0', assignee_mapping: { 'vp-engineering': 'reviewed-user', cto: 'reviewed-cto' },
   } });
 });
+
+test('incomplete usage retains canonical history and never renders unknown totals as zero', async ({ page }) => {
+  const payload = operatorPayload();
+  payload.history.teamDelegations = {
+    usage: { coordinator: { tokens: null, costUsd: null, records: null }, workers: { tokens: null, costUsd: null, records: null } },
+    usage_diagnostics: { schema_version: '1.0', complete: false, reason: 'usage_unavailable', continuation_available: false },
+  };
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await mockOperatorApis(page, [], payload);
+  await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html`);
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
+  const dialog = page.locator('#work-items-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('status').filter({ hasText: 'Usage accounting is incomplete' })).toBeVisible();
+  await expect(dialog).toContainText('Totals are unknown');
+  await expect(dialog).toContainText('Chronological history');
+  expect(errors).toEqual([]);
+});

@@ -345,7 +345,11 @@ def build_work_items_router(
     @router.get("/api/work-items/{ref:path}/operator")
     async def get_work_item_operator_detail(ref: str, request: Request) -> dict[str, Any]:
         require_item_scope(ref, request)
-        return operator.detail(ref)
+        payload = operator.detail(ref)
+        if agent_teams is not None:
+            payload["history"]["teamDelegations"] = agent_teams.work_item_history(
+                ref, actor=request.state.identity_actor)
+        return payload
 
     @router.post("/api/work-items/{ref:path}/retry")
     async def retry_work_item(

@@ -120,7 +120,7 @@ class PostgresStateStore:
             self._pool.close()
 
     @contextmanager
-    def _connection(self) -> Iterator[Any]:
+    def _connection(self, *, read_only_snapshot=False) -> Iterator[Any]:
         check_operation_budget()
         if getattr(self._callback_reads, "connection", None) is not None:
             raise RuntimeError("nested mutation inside a canonical state callback is unsupported")
@@ -132,6 +132,8 @@ class PostgresStateStore:
             budget = storage_operation_budget.get()
             checkout = self._pool.connection(timeout=budget.remaining()) if budget else self._pool.connection()
             with checkout as connection:
+                if read_only_snapshot:
+                    connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 self._operation_deadline(connection)
                 yield connection
                 check_operation_budget()
@@ -139,6 +141,8 @@ class PostgresStateStore:
         connection = self._connect()
         try:
             with connection:
+                if read_only_snapshot:
+                    connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 self._operation_deadline(connection)
                 yield connection
                 check_operation_budget()
@@ -1061,6 +1065,59 @@ class PostgresStateStore:
                     (prefix, prefix + "\uffff"),
                 )
                 return bool(direct_count or cursor.rowcount)
+
+    def inspect_storage_pages(self, namespace, *, max_pages=10):
+        from codex_web.storage.storage_preservation import inspect_database_page, StoragePreservationRefused
+        if not 1 <= max_pages <= 10:
+            raise StoragePreservationRefused("invalid_inspection_page_bound")
+        if getattr(self._callback_reads, "connection", None) is not None:
+            raise StoragePreservationRefused("inspection_requires_own_transaction")
+        with self._connection(read_only_snapshot=True) as connection:
+            after = None
+            for _ in range(max_pages):
+                rows, after = inspect_database_page(connection, namespace=namespace,
+                    after=after, limit=100, backend="postgres")
+                yield rows, after
+                if after is None:
+                    return
+
+    def inspect_storage_page(self, namespace, *, after=None, limit=100):
+        from codex_web.storage.storage_preservation import inspect_database_page
+        with self._read_connection() as connection:
+            return inspect_database_page(connection, namespace=namespace, after=after,
+                                         limit=limit, backend="postgres")
+
+    def iter_storage_snapshot(self, *, limits=None):
+        from codex_web.storage.storage_preservation import (
+            StateStorageSnapshotV1, StorageSnapshotLimits, StoragePreservationRefused,
+            database_rows, export_rows,
+        )
+        limits = limits or StorageSnapshotLimits()
+        # A callback may already have issued READ COMMITTED queries. Promoting
+        # its isolation here is unsafe; refuse before any nested pool checkout.
+        if getattr(self._callback_reads, "connection", None) is not None:
+            raise StoragePreservationRefused("raw_snapshot_requires_own_transaction")
+        with self._connection(read_only_snapshot=True) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SHOW server_encoding")
+                if cursor.fetchone()[0] != "UTF8":
+                    raise StoragePreservationRefused("unsupported_database_encoding")
+                cursor.execute("SELECT value FROM codex_state_metadata WHERE key='schema_version'")
+                if cursor.fetchone() != (str(self.SCHEMA_VERSION),):
+                    raise StoragePreservationRefused("unsupported_storage_schema")
+            rows = database_rows(connection, backend="postgres", limits=limits,
+                                 deadline=lambda: self._operation_deadline(connection))
+            try:
+                yield from export_rows(StateStorageSnapshotV1(backend="postgres", storage_schema_version=self.SCHEMA_VERSION), rows, limits)
+            finally:
+                rows.close()
+
+    def restore_storage_snapshot(self, chunks, *, limits=None):
+        from codex_web.storage.storage_preservation import StorageSnapshotLimits, restore_database_rows
+        with self._connection() as connection:
+            restore_database_rows(connection, chunks, backend="postgres",
+                                  schema_version=self.SCHEMA_VERSION,
+                                  limits=limits or StorageSnapshotLimits())
 
     def documents(self) -> dict[str, Any]:
         documents: dict[str, Any] = {}

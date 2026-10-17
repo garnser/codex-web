@@ -85,7 +85,7 @@ class RecoveryPolicy(BaseModel):
 class BackupSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    format_version: str = "1.0"
+    format_version: Literal["1.0"] = "1.0"
     organization_id: str
     workspace_id: str
     state_backend: str

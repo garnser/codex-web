@@ -603,3 +603,71 @@ backup/restore/drain remain mandatory and are not produced by these guards.
 Manual HTTP offload is retained source awaiting the explicit bounded follow-up
 tracking decision under stabilization/#1489 provenance; it is not silently
 accepted as extra scope or published while that tracking remains pending.
+
+## Lossless StateStore preservation format
+
+`state-storage-preservation@1.0` is an additive opaque storage format, separate
+from semantic `BackupSnapshot@1.0`. It is not recorded in RecoveryState's backup
+or verification collections and cannot advance RPO/RTO or Recovery health.
+Semantic backup decoding accepts exactly format 1.0; a preservation header lacks
+`documents` and is rejected by older strict semantic readers as well.
+
+The raw snapshot includes both physical StateStore tables, legacy documents,
+keyed collection markers and rows, and metadata. It preserves UTF-8 TEXT bytes
+without interpreting payload JSON, and pins backend/schema/encoding. Records
+are ordered by table and UTF-8 key bytes. Canonical ASCII JSON records encode
+payload bytes with base64 and timestamps as big-endian IEEE754 binary64.
+Unsigned 64-bit frame lengths, ordered SHA256 and exact counts bind the header,
+rows and terminal footer. Unsupported types, schemas, versions, ordering,
+nonfinite timestamps, duplicates, incomplete input or resource limits refuse.
+The promise is logical storage equality, not database-file or heap-page equality.
+
+PostgreSQL export owns one REPEATABLE READ READ ONLY transaction across both
+tables and sizes before fetching payloads. At most 64 key/length entries are
+paged; payload groups total at most 8 MiB, except one large row alone. SQLite
+uses one explicit read transaction. The defensive parser accommodates up to one
+million rows, 32 MiB values, 64 KiB keys, 2 GiB aggregate payload and 4 GiB framed
+plaintext. These are format ceilings, not runtime grants. Effective deadline,
+CPU, memory and disk admission must independently authorize an operation. An
+active PostgreSQL callback cannot be silently promoted from READ COMMITTED;
+raw export refuses before trying a nested pool checkout.
+
+Raw import is same-backend only, into an independently isolated, non-running
+empty target. The storage primitive takes a target write transaction and checks
+that it contains no document rows and only its recognized schema seed. It
+replaces that seed with exact exported metadata and commits only after complete
+footer validation. Every error or cancellation rolls back that transaction.
+The primitive does not authorize startup or prove deployment isolation; the
+operator/action boundary must independently verify the actual target resource.
+It is not exposed as an overwrite-live-store endpoint.
+
+The encrypted container composes existing CryptoKeyService envelopes in 256 KiB
+plaintext chunks, with snapshot/scope/index-bound contexts and a separately
+authenticated manifest binding the header, ordered encrypted chunk hashes and
+counts. Missing, foreign, duplicated, reordered or truncated content refuses.
+A consumer must exhaust authentication before committing a target. The batch
+key is resolved before opening the source snapshot, then rechecked and audited
+after source cursor closure, before the terminal encrypted manifest can be
+published. This avoids auditing through a read-only owning transaction or a
+nested checkout of a one-connection pool. A raw snapshot preserves its original
+rows; mandatory subsequent crypto audit appends are separately acknowledged and
+must not be represented as zero source activity. Source and isolated target
+connection custody must remain independent when decoding into a transaction.
+
+These low-level primitives and codecs do not create authority, a trusted action
+binding, an Artifact receipt or an installation approval. Governed capture must
+still perform exact whole-store resource authorization/current identity/policy/
+key admission, actual resource reservation, tracked executor custody, immutable
+Artifact publication, independent verification and loss-response reconciliation.
+No RecoveryState 1.3 activation or persisted reconciliation migration follows
+from using this additive format.
+
+Usage history is a distinct read-only projection. Bounded inspection uses a
+consistent snapshot and never calls usage migration or replaces retained rows.
+It preserves authorized WorkItem history even when usage cannot be completely
+interpreted. `usage_diagnostics@1.0` reports incomplete/unavailable separately
+from zero; incomplete totals are null. Unknown-scope corruption never supplies
+foreign identifiers, row counts, digests or parser excerpts to an ordinary
+WorkItem caller. Strict accounting reads/writes remain fail-closed. Existing
+operator history renders the generic incomplete status; detailed storage
+inspection requires independent whole-store authority.
