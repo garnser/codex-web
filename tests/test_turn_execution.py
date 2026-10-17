@@ -887,7 +887,7 @@ class _Session:
             required_capabilities=(), sandbox='workspace-write', approval_policy='on-request',
             network=NetworkPolicy(), limits=WorkerResourceLimits(), created_by='control',
             assigned_worker_id='worker-1', fence=7,
-            lease=AssignmentLease(worker_id='worker-1',fence=7,lease_token='synthetic-only',
+            lease=AssignmentLease(worker_id='worker-1',fence=7,lease_token='synthetic-fixture-lease-token-only',
                 acquired_at=1,expires_at=10**12))
         self.capture_runtime = None
 
@@ -905,8 +905,10 @@ class _Session:
             writable=(explicit,)
         assignment.resource_ids=tuple(dict.fromkeys((*writable,*readonly)))
         assignment.repository_scope=RepositoryExecutionScope(organization_id='local',workspace_id='default',
-            project_id=assignment.project_id,source='explicit',writable_repository_ids=writable,
-            read_only_repository_ids=readonly)
+            project_id=assignment.project_id,
+            source=RepositoryTargetSource.EXPLICIT if writable else RepositoryTargetSource.ORCHESTRATION_ONLY,
+            write_mode='coordinated' if len(writable)>1 else 'single',
+            writable_repository_ids=writable,read_only_repository_ids=readonly)
         actor=kwargs.get('actor')
         if actor is not None:
             assignment.created_by=actor.identity_id
