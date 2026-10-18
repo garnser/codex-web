@@ -10,6 +10,7 @@ import httpx
 from fastapi import FastAPI,HTTPException
 import json
 import os
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -313,6 +314,87 @@ class FreshPublicReadContextTests(unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'),'isolated PostgreSQL DSN required')
 class PostgresFreshPublicReadContextTests(_PostgresFixture,FreshPublicReadContextTests):
+    def setUp(self):
+        with patch.object(binding_fixture,'SQLiteStateStore',self.state_store_factory):
+            super().setUp()
+
+
+class RetainedNullContextSteerTests(unittest.IsolatedAsyncioTestCase):
+    setUp=fixtures.ReadOnlyResourceContextTests.setUp
+    _setup_source=ReconciledReadContextTests._setup_source
+
+    async def _repo_harness(self):
+        from tests.read_only_resource_context_harness import NativeContextHarness,create_requester
+        self._setup_source();f=self.f;f.database=self.database
+        requester=create_requester(self,f.identity,f.execution_profiles.registry,f.actor,f.project,
+            (f.repository.id,self.database.id))
+        harness=NativeContextHarness(self,f,items=self.items,profiles=self.profiles,pin=self.pin,
+            bindings=self.bindings,requester=requester,worker_actor=self.worker_actor,ref=self.ref)
+        binding=f.service.prepare_bootstrap(bootstrap_id='null-steer-repo',execution_id='null-steer-repo-exec',
+            project_id=f.project.id,sandbox='workspace-write',approval_policy='on-request',
+            explicit_repository_id=f.repository.id,agent_profile=self.pin)
+        self.bindings.bind(bootstrap_id='null-steer-repo',thread_id='same-thread',execution_id=binding.execution_id,
+            assignment_id=binding.assignment_id,execution_workspace_id=binding.workspace_id,actor=f.actor)
+        session=await harness.manager.start(binding.assignment_id)
+        self.assertIsNone(session.validate_current().resource_context)
+        return harness,session,requester
+
+    def _retained(self,harness,requester,*,context=None):
+        from codex_web.models import QueuedTurn
+        original=QueuedTurn(id='same-thread-original',thread_id='same-thread',project_id=self.f.project.id,
+            message='Original frozen input',created_at=time.time(),attempts=3,source='web',
+            execution_id='original-retained-execution',resource_context=context,
+            repository_resource_id=self.f.repository.id,sandbox='workspace-write',approval_policy='on-request',
+            agent_profile_id=self.pin.profile_id,agent_profile_revision=self.pin.profile_revision,
+            agent_profile_actor_id=requester.identity_id)
+        tail=original.model_copy(update={'id':'same-thread-tail','message':'Retained tail','execution_id':'retained-tail'})
+        harness.host.queues['same-thread']=[original,tail]
+        harness.host._remember_thread_run_settings('same-thread',resource_context=self.context,
+            resource_context_supplied=True)
+        self.assertIsNone(original.work_item_ref)
+        self.assertIsNone(original.owner_routing_pin)
+        return original,tail
+
+    async def test_old_null_steer_does_not_inherit_new_same_thread_settings(self):
+        harness,session,requester=await self._repo_harness()
+        original,tail=self._retained(harness,requester)
+        before=original.model_dump(mode='json');tail_before=tail.model_dump(mode='json')
+        result=await harness.web.steer('same-thread',original.id)
+        self.assertTrue(result['ok'])
+        self.assertEqual(original.model_dump(mode='json'),before)
+        self.assertEqual([q.model_dump(mode='json') for q in harness.host._thread_queue('same-thread')],[tail_before])
+        starts=[params for method,params in session.requests if method=='turn/start']
+        self.assertEqual(len(starts),1)
+        active=harness.host.active['same-thread']
+        self.assertIsNone(active.resource_context)
+        self.assertEqual(active.execution_id,original.execution_id)
+        self.assertEqual(active.reply_target,original.reply_target)
+        self.assertEqual(active.agent_profile.profile_id,original.agent_profile_id)
+        self.assertEqual(active.agent_profile.profile_revision,original.agent_profile_revision)
+        self.assertEqual(active.agent_profile_actor_id,original.agent_profile_actor_id)
+        self.assertTrue(any(part.get("text")==original.message for part in starts[0]["input"]))
+        self.assertIsNone(session.validate_current().resource_context)
+        self.assertNotIn(self.database.id,session.validate_current().resource_ids)
+        self.assertEqual(harness.host._thread_run_settings('same-thread').resource_context,self.context)
+        self.assertEqual(harness.host.queues['held-thread'][0].model_dump(mode='json'),harness.held)
+
+    async def test_nonempty_retained_steer_still_requires_current_requester(self):
+        harness,session,requester=await self._repo_harness()
+        original,tail=self._retained(harness,requester,context=self.context)
+        before=[q.model_dump(mode='json') for q in harness.host._thread_queue('same-thread')]
+        with self.assertRaises(HTTPException) as denied:
+            await harness.web.steer('same-thread',original.id)
+        self.assertEqual(denied.exception.status_code,403)
+        self.assertEqual(denied.exception.detail['code'],'resource_context_current_requester_required')
+        self.assertEqual([q.model_dump(mode='json') for q in harness.host._thread_queue('same-thread')],before)
+        self.assertEqual([p for m,p in session.requests if m=='turn/start'],[])
+        self.assertIsNone(session.validate_current().resource_context)
+        self.assertEqual(harness.host._thread_run_settings('same-thread').resource_context,self.context)
+        self.assertEqual(harness.host.queues['held-thread'][0].model_dump(mode='json'),harness.held)
+
+
+@unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'),'isolated PostgreSQL DSN required')
+class PostgresRetainedNullContextSteerTests(_PostgresFixture,RetainedNullContextSteerTests):
     def setUp(self):
         with patch.object(binding_fixture,'SQLiteStateStore',self.state_store_factory):
             super().setUp()

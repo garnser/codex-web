@@ -1115,7 +1115,8 @@ class TurnService:
                 read_only_repository_resource_ids=(
                     queued.read_only_repository_resource_ids
                 ),
-                **({"resource_context":queued.resource_context} if queued.resource_context else {}),
+                resource_context=queued.resource_context,
+                resource_context_supplied=True,
                 execution_profile_id=queued.execution_profile_id,
                 agent_profile_id=queued.agent_profile_id,
                 agent_profile_revision=queued.agent_profile_revision,

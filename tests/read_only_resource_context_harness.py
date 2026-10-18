@@ -109,6 +109,7 @@ class NativeContextHarness:
             queue_policy=SimpleNamespace(depth=lambda t:len(host._thread_queue(t))),execution=runtime,
             event_sink=host._append_bot_event,truncate_text=lambda value,limit:value[:limit],
             binding_public=lambda x:x.model_dump(),preflight=preflight,agent_profiles=profiles)
+        self.web=service
         sessions=AgentSessionService(AgentSessionStore(f.sqlite),AgentRuntimeRegistry())
         self.native_session=sessions.store.upsert(AgentSession(organization_id=f.project.organization_id,
             workspace_id=f.project.workspace_id,project_id=f.project.id,provider_id='openai',runtime_id='codex',
