@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any
 
@@ -147,10 +148,12 @@ def install_identity_middleware(app: Any, service: IdentityService) -> None:
         actor = None
         used_cookie_session = False
 
+        # Authentication updates canonical identity state. Database waits must
+        # leave the shared native lease-observation loop runnable.
         try:
             if session_token:
                 used_cookie_session = True
-                authenticated = service.authenticate_session(
+                authenticated = await asyncio.to_thread(service.authenticate_session,
                     session_token,
                     csrf_token=request.headers.get(CSRF_HEADER),
                     require_csrf=request.method.upper() not in SAFE_METHODS,
@@ -158,14 +161,14 @@ def install_identity_middleware(app: Any, service: IdentityService) -> None:
                 actor = authenticated.actor
             elif bearer:
                 try:
-                    actor = service.authenticate_session(
+                    actor = (await asyncio.to_thread(service.authenticate_session,
                         bearer,
                         require_csrf=False,
-                    ).actor
+                    )).actor
                 except AuthenticationError:
-                    actor = service.authenticate_service_token(bearer)
+                    actor = await asyncio.to_thread(service.authenticate_service_token, bearer)
             elif mode == "local-trusted":
-                actor = service.local_trusted_actor()
+                actor = await asyncio.to_thread(service.local_trusted_actor)
             elif request.url.path in {"/api/livez", "/api/auth-verifier"}:
                 actor = None
             else:
@@ -189,7 +192,7 @@ def install_identity_middleware(app: Any, service: IdentityService) -> None:
             )
             if api_authorization is not None:
                 try:
-                    api_authorization.authorize_request(request, actor)
+                    await asyncio.to_thread(api_authorization.authorize_request, request, actor)
                 except Exception as exc:
                     from codex_web.api.authorization import ApiAuthorizationError
                     if isinstance(exc, ApiAuthorizationError):
