@@ -43,7 +43,7 @@ class ReadOnlyResourceContextTests(unittest.IsolatedAsyncioTestCase):
         f.service._clock=time.time
         self.f=f
         f._publish_secret()
-        self.authority=install_authority_roles(f.execution_profiles.registry)
+        self.authority=install_authority_roles(f.execution_profiles.registry,f.resources)
         self.profiles=AgentProfileService(AgentProfileStore(f.sqlite),definitions=f.execution_profiles.registry,
             authority=self.authority,execution_profiles=f.execution_profiles)
         self.profile=self.profiles.create(AgentProfileCreate(profile_id='context-reviewer',name='Context reviewer',
