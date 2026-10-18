@@ -66,6 +66,11 @@ resource bounds before renewal. Each validation and renewal wait is bounded by
 the lesser of ten seconds and the remaining last validated lease. There is no
 lease extension for delayed validation and no cached resource-limit bypass.
 Default-executor browser projections cannot occupy these supervision slots.
+Workspace and lease point reads use canonical committed records without the
+compatibility workspace catalog writer mutex. An unrelated workspace creation or
+cleanup must not block resource supervision behind catalog serialization. Legacy
+record migration remains serialized and rechecks its state after taking that
+mutex; point reads retain schema validation and service tenant/owner checks.
 Queue, validation/identity/resource, renewal and total wait timings distinguish
 executor admission delay from work duration; they do not diagnose historical
 CPU, GIL, OOM or database corruption without evidence.

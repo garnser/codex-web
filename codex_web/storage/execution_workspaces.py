@@ -244,6 +244,17 @@ class ExecutionWorkspaceStateStore:
         legacy_payload = self.store.get(self.namespace)
         if all(collection_exists.values()) and legacy_payload is None:
             return
+        # Point readers use independent canonical record reads once migration is
+        # complete. Only migration needs the compatibility catalog writer lock.
+        with self._lock:
+            self._migrate_records(namespaces)
+
+    def _migrate_records(self, namespaces) -> None:
+        # Another reader/writer may have completed migration while we waited.
+        collection_exists = self.store.record_collections_exist(namespaces)
+        legacy_payload = self.store.get(self.namespace)
+        if all(collection_exists.values()) and legacy_payload is None:
+            return
         state = self._decode(legacy_payload)
         records = {
             self.workspace_namespace: {
@@ -318,21 +329,19 @@ class ExecutionWorkspaceStateStore:
 
     def workspace(self, workspace_id: str) -> ExecutionWorkspace | None:
         """Read one canonical workspace without decoding lease or event history."""
-        with self._lock:
-            self._ensure_records()
-            raw = self.store.record_get(self.workspace_namespace, workspace_id)
-            if raw is None:
-                return None
-            workspace = ExecutionWorkspace.model_validate(raw)
-            if workspace.id != workspace_id:
-                raise ValueError("execution workspace record key does not match its id")
-            return workspace
+        self._ensure_records()
+        raw = self.store.record_get(self.workspace_namespace, workspace_id)
+        if raw is None:
+            return None
+        workspace = ExecutionWorkspace.model_validate(raw)
+        if workspace.id != workspace_id:
+            raise ValueError("execution workspace record key does not match its id")
+        return workspace
 
     def lease(self, lease_id: str) -> ExecutionWorkspaceLease | None:
-        with self._lock:
-            self._ensure_records()
-            raw = self.store.record_get(self.lease_namespace, lease_id)
-            return ExecutionWorkspaceLease.model_validate(raw) if raw is not None else None
+        self._ensure_records()
+        raw = self.store.record_get(self.lease_namespace, lease_id)
+        return ExecutionWorkspaceLease.model_validate(raw) if raw is not None else None
 
 
     def _apply_records(
