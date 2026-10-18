@@ -89,9 +89,12 @@ def build_execution_workers_router(
 
     @router.get("")
     async def list_workers(request: Request) -> dict[str, Any]:
-        try:
-            items = service.list_workers(request_actor(request))
+        actor = request_actor(request)
+        def project():
+            items = service.list_workers(actor)
             return {"items": [item.model_dump(mode="json") for item in items]}
+        try:
+            return await asyncio.to_thread(project)
         except Exception as exc:
             if isinstance(exc, (ExecutionWorkerError, AuthorizationError)):
                 raise _error(exc) from exc
@@ -155,8 +158,9 @@ def build_execution_workers_router(
 
     @router.get("/enrollments")
     async def list_enrollments(request: Request) -> dict[str, Any]:
-        try:
-            items = service.list_enrollments(_control_actor(request))
+        actor = _control_actor(request)
+        def project():
+            items = service.list_enrollments(actor)
             return {
                 "items": [
                     {
@@ -167,6 +171,8 @@ def build_execution_workers_router(
                     for item in items
                 ]
             }
+        try:
+            return await asyncio.to_thread(project)
         except Exception as exc:
             if isinstance(exc, (ExecutionWorkerError, AuthorizationError)):
                 raise _error(exc) from exc
@@ -308,9 +314,10 @@ def build_execution_workers_router(
         request: Request,
         worker_id: str | None = None,
     ) -> dict[str, Any]:
-        try:
+        actor = request_actor(request)
+        def project():
             items = service.list_assignments(
-                request_actor(request),
+                actor,
                 worker_id=worker_id,
             )
             return {
@@ -319,6 +326,8 @@ def build_execution_workers_router(
                     for item in items
                 ]
             }
+        try:
+            return await asyncio.to_thread(project)
         except Exception as exc:
             if isinstance(exc, (ExecutionWorkerError, AuthorizationError)):
                 raise _error(exc) from exc
@@ -472,9 +481,12 @@ def build_execution_workers_router(
 
     @router.get("/events")
     async def events(request: Request) -> dict[str, Any]:
-        try:
-            items = service.events(request_actor(request))
+        actor = request_actor(request)
+        def project():
+            items = service.events(actor)
             return {"items": [item.model_dump(mode="json") for item in items]}
+        try:
+            return await asyncio.to_thread(project)
         except Exception as exc:
             if isinstance(exc, (ExecutionWorkerError, AuthorizationError)):
                 raise _error(exc) from exc

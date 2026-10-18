@@ -12,6 +12,9 @@ from codex_web.execution_workers import AssignmentRenewRequest, AssignmentStartR
 from codex_web.execution_workspaces import ExecutionWorkspaceStatus
 from codex_web.services.runtime_supervisor import RuntimeSupervisor
 from codex_web.services.identity import AuthorizationError
+from codex_web.services.execution_workers import ExecutionWorkerService
+from codex_web.storage.execution_workers import ExecutionWorkerStore
+from codex_web.storage.sqlite_state import SQLiteStateStore
 from tests import test_bootstrap_cancellation as fixtures
 
 
@@ -85,16 +88,20 @@ class ExpiredAssignmentRecoveryTests(unittest.TestCase):
     def test_candidate_renewed_before_atomic_recheck_is_not_lost(self):
         _, running = self.running()
         store = self.f.workers.store
-        original = store.update
+        original = store.transition_assignment
+        competing = ExecutionWorkerService(
+            ExecutionWorkerStore(SQLiteStateStore(store.store.path)),
+            identity=self.f.workers.identity,
+        )
         renewed = []
-        def renew_then_update(updater):
-            renewed.append(self.f.workers.renew(
+        def renew_then_update(worker_id, assignment_id, updater, **kwargs):
+            renewed.append(competing.renew(
                 self.f.worker.id, running.id,
                 AssignmentRenewRequest(fence=running.fence, lease_token=running.lease.lease_token, lease_seconds=1200),
                 actor=self.fixture.worker_actor,
             ))
-            return original(updater)
-        with patch.object(store, 'update', side_effect=renew_then_update):
+            return original(worker_id, assignment_id, updater, **kwargs)
+        with patch.object(store, 'transition_assignment', side_effect=renew_then_update):
             self.assertEqual(self.f.workers.recover_expired(actor=self.f.actor, now=running.lease.expires_at + 1), [])
         self.assertEqual(store.assignment(running.id), renewed[0])
         self.assertEqual(self.f.workspaces.get(running.execution_workspace_id, self.f.actor).status, ExecutionWorkspaceStatus.ACTIVE)
