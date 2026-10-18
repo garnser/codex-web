@@ -1,10 +1,13 @@
 """Fixed public setting refusal and real restricted PostgreSQL preview."""
 import os
+import importlib.util
 import unittest
 from contextlib import contextmanager
 from unittest.mock import Mock, patch
 
-from psycopg.errors import InsufficientPrivilege
+PSYCOPG_AVAILABLE = importlib.util.find_spec('psycopg') is not None
+if PSYCOPG_AVAILABLE:
+    from psycopg.errors import InsufficientPrivilege
 
 from codex_web.services.recovery_preservation_operations import (
     PreservationDatabaseSettingDenied, preservation_database_directory)
@@ -13,6 +16,7 @@ from tests import test_action_intents as intent_fixture
 from tests.test_recovery_scheduled_postgres import _PostgresFixture
 
 
+@unittest.skipUnless(PSYCOPG_AVAILABLE, 'PostgreSQL driver extras required; selected by distributed-backends CI')
 class SettingReadTests(unittest.TestCase):
     def test_denied_setting_uses_fixed_payload_free_error(self):
         connection = Mock()
@@ -40,6 +44,7 @@ class SettingReadTests(unittest.TestCase):
         connection.execute.assert_called_once_with('SHOW data_directory')
 
 
+@unittest.skipUnless(PSYCOPG_AVAILABLE, 'PostgreSQL driver extras required; selected by distributed-backends CI')
 class PreviewSettingRefusalTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = existing.StorageOperatorTests.asyncSetUp
     asyncTearDown = existing.StorageOperatorTests.asyncTearDown
