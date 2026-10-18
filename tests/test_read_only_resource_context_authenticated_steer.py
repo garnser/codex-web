@@ -51,6 +51,7 @@ class AuthenticatedSteerTests(unittest.IsolatedAsyncioTestCase):
         self.bindings.bind(bootstrap_id='steer-vp-old', thread_id='same-thread',
             execution_id=reviewer.execution_id, assignment_id=vp.id,
             execution_workspace_id=reviewer.workspace_id, actor=f.actor)
+        self.bindings.mark_initial_turn_started('same-thread', f.actor)
         f.workers.cancel_bootstrap(vp.id, AssignmentCancelRequest(expected_fence=vp.fence,
             reason='Private terminal repo-only rollover'), actor=f.actor)
         harness = NativeContextHarness(self, f, items=self.items, profiles=self.profiles,

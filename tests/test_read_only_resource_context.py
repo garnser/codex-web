@@ -184,6 +184,7 @@ class ReadOnlyResourceContextTests(unittest.IsolatedAsyncioTestCase):
             async def _supervise(self,phase,fn,**kwargs):return await asyncio.to_thread(fn)
             def status(self):return SimpleNamespace(worker_id=f.worker.id,fence=assignment.fence)
         session=Session()
+        await session.create_initial_native_session('same-thread')
         class Manager:
             def get(self, assignment_id):return session if assignment_id==binding.assignment_id else None
             async def start(self, assignment_id):return session

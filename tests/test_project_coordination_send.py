@@ -15,6 +15,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from codex_web.runtime.codex import CodexRuntime
+from codex_web.agent_runtime import AgentRuntimeSessionRequest
+from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
 from codex_web.services.agent_process_session import AssignmentBoundAgentProcessSession
 from codex_web.services.local_execution_worker import LocalExecutionWorkerRuntime
 from codex_web.services.queued_native_start import QueuedNativeStartCapture
@@ -95,6 +97,10 @@ class ProjectSendBoundaryTests(unittest.IsolatedAsyncioTestCase):
             if message['method'] == 'turn/start' and self.positive_then_error:
                 raise RuntimeError('synthetic caller loss after positive reader evidence')
         native._send = wire_reply
+        # Attest creation through this exact synthetic process/reader before
+        # testing its first delegated Turn and writer revocation races.
+        await CodexAgentRuntimeAdapter(session).create_session(
+            AgentRuntimeSessionRequest(project_id=assignment.project_id))
         return thread
 
     def starts(self, thread):
