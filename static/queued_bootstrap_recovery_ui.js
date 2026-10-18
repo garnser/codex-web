@@ -16,6 +16,7 @@ export function createQueuedBootstrapRecoveryUi({api, loadThread, scheduleRefres
         if (!current()) return;
         const details = document.createElement('pre');
         details.textContent = `Original request: ${preview.queued_turn_id}\nProject: ${preview.project_id}\n`
+          + `Recovery source: ${preview.source_thread_id || preview.original_thread_id}\n`
           + `Actor: ${preview.original_actor_id}\nProfile: ${preview.agent_profile_id} revision ${preview.agent_profile_revision}\n`
           + `Execution profile: ${preview.execution_profile_id}\nWritable repositories: ${preview.writable_repository_resource_ids.join(', ')}\n`
           + `Read-only repositories: ${preview.read_only_repository_resource_ids.join(', ')}\nBootstrap state: ${preview.state}`;
@@ -41,7 +42,8 @@ export function createQueuedBootstrapRecoveryUi({api, loadThread, scheduleRefres
           submitted = true; submit.disabled = true; status.textContent = 'Recovering bootstrap…';
           try {
             const result = await api(attempt.bootstrap_recovery_href, {method:'POST',
-              body:JSON.stringify({expected_snapshot_sha256:preview.snapshot_sha256, reason:reason.value.trim()})});
+              body:JSON.stringify({expected_snapshot_sha256:preview.snapshot_sha256, reason:reason.value.trim(),
+                ...(preview.source_thread_id ? {expected_source_thread_id:preview.source_thread_id} : {})})});
             if (!current()) return;
             status.textContent = 'Fresh bootstrap verified. The original request remains blocked until Retry.';
             await loadThread(result.threadId);

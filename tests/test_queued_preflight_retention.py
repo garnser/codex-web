@@ -128,6 +128,7 @@ class QueuedAdmissionDrainTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(receipt_write_fails=receipt_write_fails), tempfile.TemporaryDirectory() as directory:
                 host, binding, sessions, runtime = TurnExecutionStartTests()._service(bootstrap_thread_id='t1')
                 runtime.bootstrap_bindings.initial_turn_pending = True
+                await sessions.session.create_initial_native_session('t1')
                 runtime.bootstrap_bindings.mark_initial_turn_started = Mock(side_effect=RuntimeError('bookkeeping unavailable'))
                 project = Project(id='p1', name='Project', path='/workspace/project',
                     sandbox='workspace-write', approval_policy='on-request')

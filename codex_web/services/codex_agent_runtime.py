@@ -179,6 +179,11 @@ class CodexAgentRuntimeAdapter:
             payload=response if isinstance(response, dict) else {},
         )
 
+    def initial_session_is_live(self, native_id: str) -> bool:
+        runtime = getattr(self.transport, "runtime", self.transport)
+        generation = getattr(runtime, "generation", None)
+        return bool(generation and getattr(runtime, "_initial_session_created", None) == (generation, native_id))
+
     async def create_session(
         self,
         request: AgentRuntimeSessionRequest,
@@ -196,8 +201,15 @@ class CodexAgentRuntimeAdapter:
             params["approvalsReviewer"] = request.approval_reviewer
         if request.model:
             params["model"] = request.model
+        runtime = getattr(self.transport, "runtime", self.transport)
+        generation = getattr(runtime, "generation", None)
         response = await self.transport.request("thread/start", params)
-        return self._result(response)
+        result = self._result(response)
+        # Codex has not written a rollout until the first turn. This local
+        # optimization is valid only in the process that actually created it.
+        if generation and generation == getattr(runtime, "generation", None) and result.provider_native_session_id:
+            runtime._initial_session_created = (generation, result.provider_native_session_id)
+        return result
 
     async def resume_session(
         self,

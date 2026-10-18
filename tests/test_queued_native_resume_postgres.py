@@ -70,3 +70,33 @@ class PostgresPostStartBookkeepingTests(_PostgresFixture, unittest.IsolatedAsync
             return reader
         with patch.object(retention,'SQLiteStateStore',side_effect=state_store):
             await retention.QueuedAdmissionDrainTests.test_native_receipt_survives_post_start_bookkeeping_failure(self)
+
+
+from tests import test_queued_bootstrap_runtime as bootstrap_runtime
+
+
+@unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'), 'isolated PostgreSQL DSN required')
+class PostgresPendingBootstrapRecoveryTests(_PostgresFixture, bootstrap_runtime.QueuedBootstrapRuntimeTests):
+    def setUp(self):
+        self.path_schemas = {}
+        super().setUp()
+
+    def reopen(self):
+        return ExecutionPreflightService(ExecutionPreflightStore(self.store_for_path(self.path)),
+            clock=lambda:self.now)
+
+    def store_for_path(self, path):
+        key = str(path)
+        if key not in self.path_schemas:
+            store = _PostgresFixture.state_store_factory(self, path)
+            self.path_schemas[key] = self._test_schema
+            self.addCleanup(store.close)
+            return store
+        from psycopg_pool import ConnectionPool
+        from codex_web.storage.postgres_state import PostgresStateStore
+        pool = ConnectionPool(os.environ['CODEX_WEB_TEST_POSTGRES_DSN'], min_size=1, max_size=1,
+            timeout=3, kwargs={'options':f'-c search_path={self.path_schemas[key]}'})
+        self.addCleanup(pool.close)
+        store = PostgresStateStore(os.environ['CODEX_WEB_TEST_POSTGRES_DSN'], connection_pool=pool)
+        self.addCleanup(store.close)
+        return store

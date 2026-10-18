@@ -992,6 +992,37 @@ restores its exact queue copy after routing is verified, and ordinary admission
 still rechecks actor/profile authority and records actual native start receipts.
 Viewing or inspecting this workflow invokes no model and submits no native Turn.
 
+A pending first Turn is not proof that its native thread exists in a replacement
+process. The Codex adapter retains a process-local witness only after successful
+`thread/start` in the same unchanged generation. Loss of that witness refuses
+before resume or Turn input and completes/fences the idle assignment. For a queued
+original, the controller refusal binds its snapshot, admission claim, Thread,
+bootstrap and assignment. Generic provider errors and existing unknown starts do
+not gain this proof and remain nonretryable.
+
+An explicit fresh-bootstrap recovery can append a successor after an existing
+pending initial destination only when its canonical worker is terminal with no
+lease, its tenant/Project match, and the original is proven unstarted. The preview
+shows `source_thread_id`; creation through that successor path requires the exact
+`expected_source_thread_id` in addition to the immutable original digest. A stale
+route refuses before creation. The existing replacement graph retains its prior
+edges. The preflight reservation pins the source in its existing internal route
+projection; final route publication and the preflight transition commit together
+and reject changed sources or late native receipts. Recovery reuses the original
+and successor source queues' ordinary local admission locks and renewed ownership
+fences; final publication checks both fences. A previously created recovery
+can renew only after its exact controller pre-input refusal; the existing bounded
+recovery history retains the previous creation. Pending/unknown creation is never
+repeated. No native Turn follows bootstrap creation without separate admission.
+
+These changes add no persisted fields, schema migration or outcome backfill.
+The native witness is disposable and conveys no authority. Existing preflight,
+recovery-history and replacement-graph readers retain their supported shapes;
+older servers reject the new request field visibly. Deploy all source writers
+under the existing upgrade drain. Source rollback retains the original outcomes
+and graph, but reintroduces the older recovery limitation; the notification-batch
+and other existing post-write rollback restrictions remain in force.
+
 
 ### Project-scoped administrative target declarations
 
