@@ -4,6 +4,13 @@ The v0.2.0 recovery line replaces the v0.1.0 emergency deployment pattern where 
 
 A qualified v0.2.0 deployment must run the application code contained in the immutable image. Application Python files are not supported as production compatibility bind mounts.
 
+The runtime base and application image must contain Codex `0.160.0`, matching
+the version qualified by the native resume handshake. Rebuild and publish the
+runtime base before building an application candidate with this pin. Earlier
+candidates containing Codex `0.154.0` do not qualify for native resume; retain
+their evidence, but qualify a new candidate digest after rebuilding. Updating
+only the application image's version argument does not upgrade its base image.
+
 ## Release model
 
 Release publication is intentionally two phase.

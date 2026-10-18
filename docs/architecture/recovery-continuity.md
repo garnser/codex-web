@@ -1027,3 +1027,26 @@ absent from the flat Work Item list, and repeat current Project binding, READ
 authority, owner, context, lease and fence checks at the shared append transaction.
 These are source qualification requirements, not assertions of live admission
 or capacity verification.
+
+
+#### Authenticated retained steering and PostgreSQL setting refusal
+
+Both ordinary HTTP queue-steering endpoints forward only the authenticated
+request actor through TurnService to native admission. A nonempty retained
+Resource context requires the same current requester before dequeue, steering
+rate accounting, handoff or interruption; native admission repeats the check
+and its existing authority/lease/fence validation. Stored requester/profile
+fields and HTTP body actor fields cannot authenticate a caller. No-actor direct
+service calls remain denied for nonempty context. Explicit old null context
+remains null and never inherits newer thread settings.
+
+Storage-preservation inventory and reservation mapping both read the actual
+PostgreSQL `data_directory`. Insufficient setting-read privilege refuses with
+`preservation_database_setting_read_denied`; the admin preview returns409 with
+fixed operator guidance and `capacity_verified=false`. Driver errors, DSNs and
+host paths are excluded. The existing Recovery UI displays that fixed guidance
+as text. Other database errors are not reclassified. The operator must review
+the database identity's setting-read permission through existing database
+administration; this source change grants no role (including
+`pg_read_all_settings`), uses no privileged fallback and fabricates no directory.
+No capacity or preservation acceptance follows from a successful setting read.

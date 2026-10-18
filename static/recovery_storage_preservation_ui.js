@@ -68,7 +68,7 @@ export function bindStoragePreservation(root, snapshot, op, status) {
           if (!current() || frozen !== JSON.stringify(payload())) return;
           form.querySelector('[data-storage-impact]').textContent = JSON.stringify(value, null, 2);
           reviewed = frozen; submit.disabled = false;
-        } catch (error) { if (current()) result.textContent = error.message; }
+        } catch (error) { if (current()) result.textContent = error.detail?.message || error.message; }
         finally { busy = false; }
       };
       form.onsubmit = async event => {

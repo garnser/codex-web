@@ -87,7 +87,7 @@ class AdmittedContextCapacityTests(unittest.IsolatedAsyncioTestCase):
         # A-allowlisted invocation policy instead of elevating A or spoofing C.
         inherited_pin=self.assignment.agent_profile
         roles_before=self.authority.role_ids_for_actor(self.requester,project_id=project.id)
-        self.assertIn('private-context-requester',roles_before)
+        self.assertIn('private-context-requester-'+self.requester.identity_id,roles_before)
         self.assertNotIn('local-admin',roles_before)
         with self.assertRaises(AgentProfileAccessDenied):
             self.agent_profiles.resolve_for_execution(inherited_pin.profile_id,
@@ -206,7 +206,7 @@ class AdmittedContextCapacityTests(unittest.IsolatedAsyncioTestCase):
             active=registry.resolve(definition_id=AUTHORITY_ROLE_CATALOG_ID,kind=AUTHORITY_ROLE_CATALOG_KIND)
             catalog=AuthorityRoleCatalogDefinition.model_validate(active.payload)
             roles=tuple(role.model_copy(update={'grants':tuple(g for g in role.grants if g.capability!='resource.read')})
-                if role.id=='private-context-requester' else role for role in catalog.roles)
+                if role.id=='private-context-requester-'+self.requester.identity_id else role for role in catalog.roles)
             draft=registry.create_draft(DefinitionDraftCreate(definition_id=AUTHORITY_ROLE_CATALOG_ID,
                 kind=AUTHORITY_ROLE_CATALOG_KIND,definition_schema_version='1.0',
                 payload=catalog.model_copy(update={'roles':roles}).model_dump(mode='json'),actor=self.admin.identity_id,

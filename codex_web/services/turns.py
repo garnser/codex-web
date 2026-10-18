@@ -975,34 +975,57 @@ class TurnService:
             ],
         }
 
-    async def steer_latest(self, thread_id: str) -> dict[str, Any]:
+    @staticmethod
+    def _require_steer_requester(queued: QueuedTurn, actor: AuthenticationActor | None) -> None:
+        # Check before dequeue/rate accounting/handoff/interrupt. The retained
+        # requester is a comparison target, never an authenticated actor source.
+        if queued.resource_context is None:
+            return
+        if actor is None:
+            raise HTTPException(status_code=403, detail={
+                'code': 'resource_context_current_requester_required'})
+        if actor.identity_id != queued.resource_context.requester_identity_id:
+            raise HTTPException(status_code=403, detail={
+                'code': 'resource_context_requester_changed'})
+
+    async def steer_latest(self, thread_id: str, *, actor: AuthenticationActor | None = None) -> dict[str, Any]:
         self.recovery.raise_if_thread_replaced(thread_id)
+        items = self.queue_policy.queue(thread_id)
+        if items:
+            self._require_steer_requester(items[-1], actor)
         queued = self.execution.pop_latest_queued_turn(thread_id)
         if not queued:
             raise HTTPException(
                 status_code=404,
                 detail="No queued message for this thread",
             )
-        return await self._steer(thread_id, queued)
+        return await self._steer(thread_id, queued, actor=actor)
 
     async def steer(
         self,
         thread_id: str,
         queued_id: str,
+        *,
+        actor: AuthenticationActor | None = None,
     ) -> dict[str, Any]:
         self.recovery.raise_if_thread_replaced(thread_id)
+        selected = next((item for item in self.queue_policy.queue(thread_id) if item.id == queued_id), None)
+        if selected is not None:
+            self._require_steer_requester(selected, actor)
         queued = self.execution.pop_queued_turn(thread_id, queued_id)
         if not queued:
             raise HTTPException(
                 status_code=404,
                 detail="Queued message not found for this thread",
             )
-        return await self._steer(thread_id, queued)
+        return await self._steer(thread_id, queued, actor=actor)
 
     async def _steer(
         self,
         thread_id: str,
         queued: QueuedTurn,
+        *,
+        actor: AuthenticationActor | None = None,
     ) -> dict[str, Any]:
         if queued.owner_routing_pin is not None:
             # Direct steering has no retained native-admission claim. Preserve
@@ -1117,6 +1140,7 @@ class TurnService:
                 ),
                 resource_context=queued.resource_context,
                 resource_context_supplied=True,
+                actor=actor,
                 execution_profile_id=queued.execution_profile_id,
                 agent_profile_id=queued.agent_profile_id,
                 agent_profile_revision=queued.agent_profile_revision,

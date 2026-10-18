@@ -793,30 +793,65 @@ class AssignmentBoundAgentProcessSession:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime session exceeded wall_seconds"
             )
-        now_monotonic = self._monotonic()
-        with contextlib.ExitStack() as stack:
-            with self._resource_timing("resource_disk_lock_seconds"):
-                stack.enter_context(operation_lock(self._disk_validation_lock))
-            if (
+        lock_seconds = 0.0
+
+        @contextlib.contextmanager
+        def disk_state_lock():
+            nonlocal lock_seconds
+            with contextlib.ExitStack() as stack:
+                started = time.monotonic()
+                try:
+                    stack.enter_context(operation_lock(self._disk_validation_lock))
+                finally:
+                    lock_seconds += time.monotonic() - started
+                    self._supervision_timings["resource_disk_lock_seconds"] = round(lock_seconds, 6)
+                yield
+
+        with disk_state_lock():
+            measurement_started = self._monotonic()
+            refresh = (
                 self.last_disk_validation_monotonic is None
-                or now_monotonic - self.last_disk_validation_monotonic
+                or measurement_started - self.last_disk_validation_monotonic
                 >= self.disk_validation_interval_seconds
-            ):
-                with self._resource_timing("resource_disk_seconds"):
-                    disk_bytes = self.local_worker.backend.execution_disk_usage(
-                        self.workspace_path,
-                        self.git_metadata_path,
-                    )
-                with self._resource_timing("resource_readonly_seconds"):
-                    readonly_disk_bytes = getattr(
-                        self.local_worker,
-                        "readonly_disk_bytes",
-                        lambda _assignment: 0,
-                    )(assignment)
-                check_operation_budget()
-                self.last_disk_bytes = disk_bytes + readonly_disk_bytes
-                self.last_disk_validation_monotonic = now_monotonic
+            )
             disk_bytes = self.last_disk_bytes
+        if refresh:
+            # Workspace metadata may wait on storage. Do not hold the disk
+            # cache lock across that I/O: an independent validator can resolve
+            # its own current metadata and complete within its existing budget.
+            with self._resource_timing("resource_readonly_seconds"):
+                readonly_disk_bytes = getattr(
+                    self.local_worker,
+                    "readonly_disk_bytes",
+                    lambda _assignment: 0,
+                )(assignment)
+            check_operation_budget()
+            with disk_state_lock():
+                # Another validator may have completed the same refresh while
+                # this call was resolving metadata. Reuse only a fresh complete
+                # measurement; never overwrite it with the older observation.
+                now_monotonic = self._monotonic()
+                refresh = (
+                    self.last_disk_validation_monotonic is None
+                    or now_monotonic - self.last_disk_validation_monotonic
+                    >= self.disk_validation_interval_seconds
+                )
+                if refresh:
+                    if now_monotonic - measurement_started >= self.disk_validation_interval_seconds:
+                        raise TimeoutError("disk validation metadata observation expired")
+                    with self._resource_timing("resource_disk_seconds"):
+                        disk_bytes = self.local_worker.backend.execution_disk_usage(
+                            self.workspace_path,
+                            self.git_metadata_path,
+                        )
+                    check_operation_budget()
+                    if self._monotonic() - measurement_started >= self.disk_validation_interval_seconds:
+                        raise TimeoutError("disk validation filesystem observation expired")
+                    self.last_disk_bytes = disk_bytes + readonly_disk_bytes
+                    # Freshness starts before either observation, never after
+                    # a slow lookup or scan. The existing interval is unchanged.
+                    self.last_disk_validation_monotonic = measurement_started
+                disk_bytes = self.last_disk_bytes
         if disk_bytes is None:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime disk usage is unavailable"
