@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import tempfile
 import threading
 import time
@@ -464,6 +465,53 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         await self._assert_stop_retires_incomplete_client(
             b"POST /v1/execute HTTP/1.1\r\nContent-Length: 2\r\n\r\n{"
         )
+
+    async def test_stop_aborts_buffered_response_already_waiting_for_close(self) -> None:
+        closing = asyncio.Event()
+        accepted = []
+        reader, client = await asyncio.open_unix_connection(str(self.broker.socket_path))
+        client.transport.pause_reading()
+        with ExitStack() as patches:
+            async def buffered_response(writer, *args, **kwargs):
+                accepted.append(writer)
+                writer.get_extra_info("socket").setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+                writer.transport.set_write_buffer_limits(high=2 * 1024 * 1024)
+                wait_closed = writer.wait_closed
+
+                async def observed_close():
+                    closing.set()
+                    await wait_closed()
+
+                patches.enter_context(patch.object(writer, "wait_closed", side_effect=observed_close))
+                patches.enter_context(patch.object(writer.transport, "abort", wraps=writer.transport.abort))
+                writer.write(b"x" * (1024 * 1024))
+                await writer.drain()
+
+            patches.enter_context(patch.object(self.broker, "_write", side_effect=buffered_response))
+            client.write(b"GET /api/work-items/group%2Fapp%2342 HTTP/1.1\r\n\r\n")
+            await client.drain()
+            handlers = []
+            try:
+                await asyncio.wait_for(closing.wait(), 1.0)
+                writer = accepted[0]
+                handlers = list(self.broker._handler_tasks)
+                self.assertTrue(writer.is_closing())
+                self.assertGreater(writer.transport.get_write_buffer_size(), 0)
+                self.assertIn(writer, self.broker._client_writers)
+                await asyncio.wait_for(self.broker.stop(), 1.0)
+                await asyncio.wait_for(asyncio.gather(*handlers), 1.0)
+                writer.transport.abort.assert_called_once()
+                self.assertNotIn(writer, self.broker._client_writers)
+                await asyncio.sleep(0)  # Run the completed task's ownership callback.
+                self.assertFalse(self.broker._handler_tasks)
+            finally:
+                for writer in accepted:
+                    writer.transport.abort()
+                client.close()
+                with suppress(ConnectionResetError):
+                    await client.wait_closed()
+                if handlers:
+                    await asyncio.wait_for(asyncio.gather(*handlers), 1.0)
 
     async def test_stop_does_not_cancel_or_repeat_an_inflight_dispatch(self) -> None:
         entered, release = asyncio.Event(), asyncio.Event()

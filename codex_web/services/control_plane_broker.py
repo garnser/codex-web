@@ -2981,11 +2981,18 @@ class AssignmentBoundControlPlaneBroker:
                         )
             if counted:
                 self._active_requests = max(0, self._active_requests - 1)
-            self._client_writers.discard(writer)
-            if not writer.is_closing():
-                writer.close()
+            try:
+                if not writer.is_closing():
+                    writer.close()
+                # close() can still be flushing buffered output. Keep this
+                # transport owned until closure so stop() can abort it too.
                 with contextlib.suppress(Exception):
                     await writer.wait_closed()
+            except BaseException:
+                writer.transport.abort()
+                raise
+            finally:
+                self._client_writers.discard(writer)
 
     async def stop(self) -> None:
         self._stopping = True
