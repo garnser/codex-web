@@ -78,6 +78,12 @@ compatibility workspace catalog writer mutex. An unrelated workspace creation or
 cleanup must not block resource supervision behind catalog serialization. Legacy
 record migration remains serialized and rechecks its state after taking that
 mutex; point reads retain schema validation and service tenant/owner checks.
+The disk cache mutex does not cover workspace metadata I/O. After resolving
+metadata, a validator rechecks the complete cache under the mutex before scanning
+files; a concurrent completed measurement wins over an older pending lookup.
+Cache freshness starts before both observations. Expired observations and
+cancelled or incomplete scans cannot publish a complete cache entry. The cache
+interval, resource limits, authority checks and supervision deadline are unchanged.
 Queue, validation/identity/resource, renewal and total wait timings distinguish
 executor admission delay from work duration; they do not diagnose historical
 CPU, GIL, OOM or database corruption without evidence.
@@ -101,6 +107,16 @@ observed lease expiry, process ID/exit code and measured phase timings. Raw
 exception/log bodies, credentials and assignment tokens are excluded; Evidence
 is denied model context and uses canonical governance/retention. Failed runtime
 Evidence is not successful test Evidence.
+
+The assignment's control-plane broker registers accepted client transports
+before scheduling their handlers. Stop closes its listener and aborts those
+transports before waiting for server closure, so incomplete input or an unread
+response cannot retain the worker's teardown and admission locks. Requests still
+awaiting assignment validation, body input or actor resolution refuse dispatch
+after stop. An operation already dispatched retains its existing canonical
+ActionIntent execution and reconciliation ownership; transport shutdown neither
+cancels that operation nor proves its outcome or authorizes replay. No lease,
+fence, validation deadline, resource bound or authority is extended.
 
 An original worker may append an observation only with retained original claim
 provenance. The observation explicitly separates observed and current fences and
