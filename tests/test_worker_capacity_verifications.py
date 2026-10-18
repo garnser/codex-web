@@ -131,17 +131,55 @@ class CapacityWorkerVerificationTests(unittest.IsolatedAsyncioTestCase):
                 {'verifier_identity_id':self.admin.identity_id}):
             await self.assert_denied(dict(self.request,**change))
 
-    async def test_capacity_mismatch_stale_or_insufficient_kernel_and_path_refuse(self):
-        for change in ({'recovery_executor_owner_id':'historical-owner'},
-                {'configuration_sha256':'0'*64},{'memory_enforcement':'RLIMIT_AS'},
-                {'memory_max_bytes':1024**3},{'memory_swap_max_bytes':1},
-                {'disk_bytes':1},{'wall_seconds':1},{'expires_at':time.time()+1},
-                {'database_directory':'relative'},{'database_reservation_directory':'relative'}):
-            proof=self.capacity_evidence(dict(self.capacity_metadata,**change))
-            await self.assert_denied(dict(self.request,evidence_ids=[proof.id]))
-        for stamp in (time.time()-61,time.time()+10):
-            proof=self.capacity_evidence(observed_at=stamp)
-            await self.assert_denied(dict(self.request,evidence_ids=[proof.id]))
+    # Each variant gets normal unittest setup/admission and its own broker.
+    # Do not reset the real rate ledger or treat its429 as capacity refusal.
+    async def test_capacity_refuses_historical_owner(self):
+        proof=self.capacity_evidence(dict(self.capacity_metadata,**{'recovery_executor_owner_id':'historical-owner'}))
+        await self.assert_denied(dict(self.request,evidence_ids=[proof.id]))
+
+    async def test_capacity_refuses_configuration_digest(self):
+        proof=self.capacity_evidence(dict(self.capacity_metadata,**{'configuration_sha256':'0'*64}))
+        await self.assert_denied(dict(self.request,evidence_ids=[proof.id]))
+
+    async def test_capacity_refuses_nonkernel_enforcement(self):
+        proof=self.capacity_evidence(dict(self.capacity_metadata,**{'memory_enforcement':'RLIMIT_AS'}))
+        await self.assert_denied(dict(self.request,evidence_ids=[proof.id]))
+
+    async def test_capacity_refuses_memory_max(self):
+        proof=self.capacity_evidence(dict(self.capacity_metadata,**{'memory_max_bytes':1024**3}))
+        await self.assert_denied(dict(self.request,evidence_ids=[proof.id]))
+
+    async def test_capacity_refuses_swap(self):
+        proof=self.capacity_evidence(dict(self.capacity_metadata,**{'memory_swap_max_bytes':1}))
+        await self.assert_denied(dict(self.request,evidence_ids=[proof.id]))
+
+    async def test_capacity_refuses_disk(self):
+        proof=self.capacity_evidence(dict(self.capacity_metadata,**{'disk_bytes':1}))
+        await self.assert_denied(dict(self.request,evidence_ids=[proof.id]))
+
+    async def test_capacity_refuses_wall(self):
+        proof=self.capacity_evidence(dict(self.capacity_metadata,**{'wall_seconds':1}))
+        await self.assert_denied(dict(self.request,evidence_ids=[proof.id]))
+
+    async def test_capacity_refuses_expiry(self):
+        proof=self.capacity_evidence(dict(self.capacity_metadata,**{'expires_at':time.time()+1}))
+        await self.assert_denied(dict(self.request,evidence_ids=[proof.id]))
+
+    async def test_capacity_refuses_database_path(self):
+        proof=self.capacity_evidence(dict(self.capacity_metadata,**{'database_directory':'relative'}))
+        await self.assert_denied(dict(self.request,evidence_ids=[proof.id]))
+
+    async def test_capacity_refuses_reservation_path(self):
+        proof=self.capacity_evidence(dict(self.capacity_metadata,**{'database_reservation_directory':'relative'}))
+        await self.assert_denied(dict(self.request,evidence_ids=[proof.id]))
+
+    async def test_capacity_refuses_stale_observation(self):
+        proof=self.capacity_evidence(observed_at=time.time()-61)
+        await self.assert_denied(dict(self.request,evidence_ids=[proof.id]))
+
+    async def test_capacity_refuses_future_observation(self):
+        proof=self.capacity_evidence(observed_at=time.time()+10)
+        await self.assert_denied(dict(self.request,evidence_ids=[proof.id]))
 
     async def test_current_runtime_restart_refuses_old_capacity_owner(self):
         replacement=RecoveryService(self.recovery.store,state_store=self.sqlite,crypto=self.recovery.crypto,
@@ -235,7 +273,9 @@ class PostgresCapacityWorkerVerificationTests(_PostgresFixture,CapacityWorkerVer
         self.addCleanup(pool.close)
         store=PostgresStateStore(os.environ['CODEX_WEB_TEST_POSTGRES_DSN'],connection_pool=pool)
         self.addCleanup(store.close)
-        return ConfigurationService(ConfigurationRegistryStore(store))
+        service=ConfigurationService(ConfigurationRegistryStore(store))
+        install_preservation_configuration(service)
+        return service
 
     async def test_separate_configuration_writer_before_append_refuses(self):
         import asyncio
