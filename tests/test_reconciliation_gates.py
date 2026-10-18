@@ -270,6 +270,8 @@ class ReconciliationReadinessActorTests(unittest.TestCase):
                 'service_scopes': kwargs['service_scopes']})
         def evaluate(project_id, *, actor, record):
             ExecutionWorkerService._require_admin(actor)
+            from codex_web.services.secrets import SecretBroker
+            self.assertTrue(SecretBroker._admin(actor))
             self.assertFalse(record)
             self.assertEqual(project_id, 'project-a')
             return SimpleNamespace(model_dump=lambda **kwargs: {'execution_ready': True})

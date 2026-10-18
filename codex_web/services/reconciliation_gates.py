@@ -28,7 +28,9 @@ def project_reconciliation_readiness(project_id, actor, *, projects, identity, r
     projects.get(project_id, actor.tenant)
     control_actor = identity.bootstrap_service_actor(
         identity_id="reconciliation-gate-runtime", name="Reconciliation Gate Runtime",
-        scope=actor.tenant, service_scopes=("identity:admin", "execution-worker:admin"),
+        scope=actor.tenant, # Readiness checks canonical credential metadata as well as workers;
+        # this principal stays inside the probe and never returns secret values.
+        service_scopes=("identity:admin", "execution-worker:admin", "secret:admin"),
     )
     return readiness.evaluate(project_id, actor=control_actor, record=False).model_dump(mode="json")
 

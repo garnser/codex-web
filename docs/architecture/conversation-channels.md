@@ -380,5 +380,5 @@ assignment's workspace using its existing internal control actor, then checks th
 workspace tenant, execution, subject, resources and live lease. This inspection
 does not grant the Slack service workspace administration or relax procedure
 requirements. Project reconciliation readiness similarly validates tenant scope
-before using an internal principal with the worker inspection scope required by
+before using an internal principal with the worker and secret-metadata inspection scopes required by
 the readiness service; caller permissions and backfill approval remain unchanged.
