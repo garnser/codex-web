@@ -90,12 +90,21 @@ class AutonomyService:
         cycle_key: str,
         payload: dict[str, Any],
         work_item: Any | None = None,
+        recovery_reason: str | None = None,
+        queue_limit: int = 1,
+        allow_active: bool = False,
+        clear_stale_active: bool = False,
     ) -> dict[str, Any]:
         """Route watchdog reasoning through canonical event + autonomy controls."""
 
         dispatch_context = {}
         if work_item is not None:
             primary, writable = work_item_repository_scope(work_item)
+            payload = {**payload, "resource_ids": list(dict.fromkeys(
+                [*getattr(work_item, "resource_ids", ()), *writable]
+            ))}
+            if getattr(work_item, "goal_id", None):
+                payload["goal_id"] = work_item.goal_id
             dispatch_context = {
                 "work_item_ref": work_item.ref,
                 "repository_resource_id": primary,
@@ -104,8 +113,51 @@ class AutonomyService:
             }
             if work_item.handoff is not None and work_item.handoff.status == "pending":
                 dispatch_context["handoff_requested_at"] = work_item.handoff.requested_at
+
+        recovery_attempted = False
+        recovered_binding = None
+        recovery_error = None
+
+        async def dispatch_admitted() -> dict[str, Any]:
+            nonlocal recovery_attempted, recovered_binding, recovery_error
+            # Worker recovery is an execution side effect. It belongs INSIDE
+            # the controller's admitted reasoner. A reasoning retry must reuse
+            # this same preparation outcome, never start another worker after
+            # an uncertain or failed replacement.
+            prepared = binding
+            if recovery_reason is not None:
+                if not recovery_attempted:
+                    recovery_attempted = True
+                    try:
+                        if clear_stale_active:
+                            # This collaborator schedules reconciliation on this loop.
+                            self.runtime.release_stale_active_turn(prepared.thread_id, recovery_reason)
+                        if not await asyncio.to_thread(self._watchdog_lane_busy, prepared,
+                                                       queue_limit, allow_active):
+                            recovered_binding = await self.runtime.replace_nonperforming_thread(
+                                prepared, recovery_reason)
+                    except Exception as error:
+                        recovery_error = error
+                        raise
+                elif recovery_error is not None:
+                    raise recovery_error
+                if recovered_binding is None:
+                    return {"ok": True, "ignored": True, "reason": "owner_lane_busy",
+                            "threadId": binding.thread_id}
+                prepared = recovered_binding
+                # Recovery can await provider/storage IO. Re-read the actual
+                # successor; an earlier idle snapshot cannot authorize another
+                # owner turn. Canonical dispatch also requires idle admission.
+                if await asyncio.to_thread(self._watchdog_lane_busy, prepared,
+                                           queue_limit, allow_active):
+                    return {"ok": True, "ignored": True, "reason": "owner_lane_busy",
+                            "threadId": prepared.thread_id}
+                self.runtime.record_watchdog_dispatch(cycle_key)
+            result = await self.runtime.dispatch_event(prepared, text, source, **dispatch_context)
+            return {**result, "threadId": prepared.thread_id}
+
         if self.controller is None or self.canonical_events is None:
-            return await self.runtime.dispatch_event(binding, text, source, **dispatch_context)
+            return await dispatch_admitted()
 
         # Project scope may read canonical PostgreSQL state. Resolve it before
         # ingestion without blocking runtime RPC or changing the scoped result.
@@ -146,10 +198,12 @@ class AutonomyService:
 
         async def reasoner(*_args) -> AutonomyReasoningResult:
             dispatched.update(
-                await self.runtime.dispatch_event(binding, text, source, **dispatch_context)
+                await dispatch_admitted()
             )
             return AutonomyReasoningResult(
-                summary=f"{source} dispatched through bounded autonomy"
+                summary=(f"{source}: owner lane is already active or queued"
+                         if dispatched.get("reason") == "owner_lane_busy"
+                         else f"{source} dispatched through bounded autonomy")
             )
 
         cycle = await self.controller.process(
@@ -176,6 +230,18 @@ class AutonomyService:
             "autonomyCycleId": cycle.id,
             "canonicalEventId": delivery.event.event_id,
         }
+
+    def _watchdog_lane_busy(
+        self, binding: Any, queue_limit: int = 1, allow_active: bool = False,
+        include_recent: bool = False,
+    ) -> bool:
+        """Blocking canonical reads; callers keep them off the observer loop."""
+        d = self.runtime
+        return (
+            (not allow_active and d.thread_is_active(binding.thread_id))
+            or d.thread_queue_depth(binding.thread_id) >= queue_limit
+            or (include_recent and d.thread_recently_active(binding.thread_id))
+        )
 
     async def execute_external_action(
         self,
@@ -217,7 +283,7 @@ class AutonomyService:
 
     async def run_owner_work_cycle(self) -> None:
         d = self.runtime
-        settings = d.load_gitlab_routing_settings()
+        settings = await asyncio.to_thread(d.load_gitlab_routing_settings)
         if not settings.enabled:
             return
         # The canonical snapshot can require database IO and full catalog decoding.
@@ -254,7 +320,7 @@ class AutonomyService:
                         state.ref,
                     )
                 )
-                binding = d.binding_for_agent(
+                binding = await asyncio.to_thread(d.binding_for_agent,
                     owner,
                     project_id,
                     preferred_conversation_id=d.handoff_coordination_channel,
@@ -284,11 +350,7 @@ class AutonomyService:
                     ]
                 if not missing_state_refs and not canonical_items:
                     continue
-                binding = await d.replace_nonperforming_thread(binding, "owner-work-watchdog")
                 dispatch_key = f"owner-work:{project_id}:{binding.thread_id}:{owner}"
-                d.release_stale_active_turn(binding.thread_id, "owner-work-watchdog")
-                if d.thread_is_active(binding.thread_id) or d.thread_queue_depth(binding.thread_id):
-                    continue
                 # Active/queued state is the duplicate guard. An earlier
                 # failed dispatch must not leave either canonical work or a
                 # GitLab-only owned issue without a live owner turn.
@@ -327,11 +389,12 @@ class AutonomyService:
                 dispatch_window = int(
                     time.time() // self.OWNER_DISPATCH_WINDOW_SECONDS
                 )
-                d.record_watchdog_dispatch(dispatch_key)
                 result = await self._bounded_reasoning_dispatch(
                     binding,
                     text,
                     "owner-work-watchdog",
+                    recovery_reason="owner-work-watchdog",
+                    clear_stale_active=True,
                     cycle_key=dispatch_key,
                     work_item=selected,
                     payload={
@@ -355,7 +418,7 @@ class AutonomyService:
                         "type": "owner_work_watchdog_dispatched",
                         "project_id": project_id,
                         "agent": owner,
-                        "thread_id": binding.thread_id,
+                        "thread_id": result.get("threadId", binding.thread_id),
                         "issue_count": (
                             len(missing_state_refs)
                             or len(canonical_items)
@@ -370,7 +433,7 @@ class AutonomyService:
 
     async def run_release_gate_cycle(self) -> None:
         d = self.runtime
-        settings = d.load_gitlab_routing_settings()
+        settings = await asyncio.to_thread(d.load_gitlab_routing_settings)
         if not settings.enabled:
             return
         states = await asyncio.to_thread(d.load_work_item_states)
@@ -378,7 +441,7 @@ class AutonomyService:
         for project_id, project_settings in settings.projects.items():
             if not project_settings.enabled:
                 continue
-            binding = d.binding_for_agent("release manager", project_id)
+            binding = await asyncio.to_thread(d.binding_for_agent, "release manager", project_id)
             if not binding:
                 continue
             p1_issues = d.gitlab_group_issues(
@@ -400,14 +463,10 @@ class AutonomyService:
             ]
             if not stale_release_states:
                 continue
-            binding = await d.replace_nonperforming_thread(binding, "release-gate-watchdog")
             dispatch_key = f"release-gate:{project_id}:{binding.thread_id}"
             if not d.watchdog_dispatch_allowed(dispatch_key):
                 continue
-            d.release_stale_active_turn(binding.thread_id, "release-gate-watchdog")
-            if d.thread_is_active(binding.thread_id) or d.thread_queue_depth(binding.thread_id):
-                continue
-            if d.thread_recently_active(binding.thread_id):
+            if await asyncio.to_thread(d.thread_recently_active, binding.thread_id):
                 continue
             refs = ", ".join(state.ref for state in stale_release_states[:8])
             extra = f", plus {len(stale_release_states) - 8} more" if len(stale_release_states) > 8 else ""
@@ -417,11 +476,12 @@ class AutonomyService:
                 "Resume the exact deploy/verify/E2E next action or state one exact blocker in the configured "
                 "handoff coordination channel. Reconcile the affected work item in codex-web before ending the turn."
             )
-            d.record_watchdog_dispatch(dispatch_key)
             result = await self._bounded_reasoning_dispatch(
                 binding,
                 text,
                 "release-gate-watchdog",
+                recovery_reason="release-gate-watchdog",
+                clear_stale_active=True,
                 cycle_key=dispatch_key,
                 payload={
                     "project_id": project_id,
@@ -432,36 +492,36 @@ class AutonomyService:
                 {
                     "type": "release_gate_watchdog_dispatched",
                     "project_id": project_id,
-                    "thread_id": binding.thread_id,
+                    "thread_id": result.get("threadId", binding.thread_id),
                     "result": result,
                 }
             )
 
     async def run_orchestrator_cycle(self) -> None:
         d = self.runtime
-        settings = d.load_gitlab_routing_settings()
+        settings = await asyncio.to_thread(d.load_gitlab_routing_settings)
         if not settings.enabled:
             return
         for project_id, project_settings in settings.projects.items():
             if not project_settings.enabled:
                 continue
-            binding = d.orchestrator_binding(project_id)
+            binding = await asyncio.to_thread(d.orchestrator_binding, project_id)
             if not binding:
                 continue
             items = await asyncio.to_thread(d.orchestrator_watchdog_candidates, project_id)
             if not items:
                 continue
-            binding = await d.replace_nonperforming_thread(binding, "orchestrator-watchdog")
-            if d.thread_queue_depth(binding.thread_id) >= 3:
+            if await asyncio.to_thread(self._watchdog_lane_busy, binding, 3, True):
                 continue
             dispatch_key = f"orchestrator-watchdog:{project_id}:{binding.thread_id}"
             if not d.watchdog_dispatch_allowed(dispatch_key):
                 continue
-            d.record_watchdog_dispatch(dispatch_key)
             result = await self._bounded_reasoning_dispatch(
                 binding,
                 d.format_orchestrator_watchdog_prompt(project_id, items),
                 "orchestrator-watchdog",
+                recovery_reason="orchestrator-watchdog",
+                queue_limit=3, allow_active=True,
                 cycle_key=dispatch_key,
                 payload={
                     "project_id": project_id,
@@ -472,7 +532,7 @@ class AutonomyService:
                 {
                     "type": "orchestrator_watchdog_dispatched",
                     "project_id": project_id,
-                    "thread_id": binding.thread_id,
+                    "thread_id": result.get("threadId", binding.thread_id),
                     "item_refs": [state.ref for _, state, _ in items[:8]],
                     "count": len(items),
                     "result": result,
@@ -481,29 +541,29 @@ class AutonomyService:
 
     async def run_split_brain_cycle(self) -> None:
         d = self.runtime
-        settings = d.load_gitlab_routing_settings()
+        settings = await asyncio.to_thread(d.load_gitlab_routing_settings)
         if not settings.enabled:
             return
         for project_id, project_settings in settings.projects.items():
             if not project_settings.enabled:
                 continue
-            binding = d.orchestrator_binding(project_id)
+            binding = await asyncio.to_thread(d.orchestrator_binding, project_id)
             if not binding:
                 continue
             items = await asyncio.to_thread(d.split_brain_watchdog_candidates, project_id)
             if not items:
                 continue
-            binding = await d.replace_nonperforming_thread(binding, "split-brain-watchdog")
-            if d.thread_queue_depth(binding.thread_id) >= 3 or d.thread_is_active(binding.thread_id):
+            if await asyncio.to_thread(self._watchdog_lane_busy, binding, 3):
                 continue
             dispatch_key = f"split-brain-watchdog:{project_id}:{binding.thread_id}"
             if not d.watchdog_dispatch_allowed(dispatch_key):
                 continue
-            d.record_watchdog_dispatch(dispatch_key)
             result = await self._bounded_reasoning_dispatch(
                 binding,
                 d.format_split_brain_watchdog_prompt(project_id, items),
                 "split-brain-watchdog",
+                recovery_reason="split-brain-watchdog",
+                queue_limit=3,
                 cycle_key=dispatch_key,
                 payload={
                     "project_id": project_id,
@@ -514,7 +574,7 @@ class AutonomyService:
                 {
                     "type": "split_brain_watchdog_dispatched",
                     "project_id": project_id,
-                    "thread_id": binding.thread_id,
+                    "thread_id": result.get("threadId", binding.thread_id),
                     "item_refs": [state.ref for state, _ in items[:8]],
                     "count": len(items),
                     "result": result,
@@ -590,7 +650,7 @@ class AutonomyService:
                     await asyncio.to_thread(d.update_work_item_state, ref, expire_current)
                     if not expired:
                         continue
-                    d.append_work_item_event(
+                    await asyncio.to_thread(d.append_work_item_event,
                         d.work_item_event(
                             ref,
                             expiry_reason,
@@ -606,20 +666,19 @@ class AutonomyService:
                         # bounded provider-neutral writeback coordinator.
                         d.schedule_current_work_item_writeback(ref)
                 elif recipient:
-                    binding = d.binding_for_agent(
+                    binding = await asyncio.to_thread(d.binding_for_agent,
                         recipient,
                         state.project_id,
                         preferred_conversation_id=d.handoff_coordination_channel,
                     )
-                    if binding and not d.thread_is_active(binding.thread_id) and not d.thread_queue_depth(binding.thread_id):
+                    if binding and not await asyncio.to_thread(self._watchdog_lane_busy, binding):
                         dispatch_key = f"work-item-handoff:{ref}:{binding.thread_id}:{recipient}"
-                        if d.watchdog_dispatch_allowed(dispatch_key) and not d.thread_recently_active(binding.thread_id):
-                            binding = await d.replace_nonperforming_thread(binding, "work-item-handoff")
-                            d.record_watchdog_dispatch(dispatch_key)
+                        if d.watchdog_dispatch_allowed(dispatch_key) and not await asyncio.to_thread(d.thread_recently_active, binding.thread_id):
                             result = await self._bounded_reasoning_dispatch(
                                 binding,
                                 d.work_item_dispatch_text(state),
                                 "work-item-sla",
+                                recovery_reason="work-item-handoff",
                                 cycle_key=dispatch_key,
                                 work_item=state,
                                 payload={
@@ -634,7 +693,7 @@ class AutonomyService:
                                 {
                                     "type": "work_item_handoff_watchdog_dispatched",
                                     "ref": ref,
-                                    "thread_id": binding.thread_id,
+                                    "thread_id": result.get("threadId", binding.thread_id),
                                     "agent": recipient,
                                     "result": result,
                                 }
@@ -648,24 +707,24 @@ class AutonomyService:
             threshold = d.work_item_sla_threshold_seconds(state)
             if age < threshold:
                 continue
-            binding = d.binding_for_agent(
+            binding = await asyncio.to_thread(d.binding_for_agent,
                 owner,
                 state.project_id,
                 preferred_conversation_id=d.handoff_coordination_channel,
             )
             if not binding:
                 continue
-            if d.thread_is_active(binding.thread_id) or d.thread_queue_depth(binding.thread_id) or d.thread_recently_active(binding.thread_id):
+            if await asyncio.to_thread(self._watchdog_lane_busy, binding, 1, False, True):
                 continue
-            binding = await d.replace_nonperforming_thread(binding, "work-item-sla")
             dispatch_key = f"work-item-sla:{ref}:{binding.thread_id}:{owner}:{state.current_stage}"
             if not d.watchdog_dispatch_allowed(dispatch_key):
                 continue
-            d.record_watchdog_dispatch(dispatch_key)
             result = await self._bounded_reasoning_dispatch(
                 binding,
                 d.work_item_dispatch_text(state),
                 "work-item-sla",
+                recovery_reason="work-item-sla",
+                work_item=state,
                 cycle_key=dispatch_key,
                 payload={
                     "project_id": state.project_id,
@@ -678,7 +737,7 @@ class AutonomyService:
                 {
                     "type": "work_item_sla_dispatched",
                     "ref": ref,
-                    "thread_id": binding.thread_id,
+                    "thread_id": result.get("threadId", binding.thread_id),
                     "agent": owner,
                     "current_stage": state.current_stage,
                     "age_seconds": age,

@@ -868,7 +868,8 @@ class WatchdogCandidateResponsivenessTests(unittest.IsolatedAsyncioTestCase):
                     append_bot_event=lambda _: None,
                 )
                 service = AutonomyService(runtime=runtime)
-                service._bounded_reasoning_dispatch = AsyncMock(return_value={"ok": True})
+                runtime.dispatch_event = AsyncMock(return_value={"ok": True})
+                service._bounded_reasoning_dispatch = AsyncMock(wraps=service._bounded_reasoning_dispatch)
                 cycle = getattr(service, "run_" + kind + "_cycle")
                 task = asyncio.create_task(cycle())
                 try:
