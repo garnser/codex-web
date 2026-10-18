@@ -253,7 +253,9 @@ class AdmittedContextCapacityTests(unittest.IsolatedAsyncioTestCase):
             AssignmentCancelRequest(expected_fence=self.assignment.fence,reason='Private current fence revocation'),actor=self.admin))
 
     async def test_mismatched_reference_cannot_use_admitted_context(self):
-        self.request=dict(self.request,work_item_ref='unrelated/repo#1')
+        other_ref='unrelated/repo#1'
+        self.items.put(other_ref,self.items.get(self.ref).model_copy(update={'ref':other_ref}))
+        self.request=dict(self.request,work_item_ref=other_ref)
         await self.assert_no_append()
 
 
