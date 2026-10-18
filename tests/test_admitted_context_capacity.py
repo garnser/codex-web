@@ -206,7 +206,7 @@ class AdmittedContextCapacityTests(unittest.IsolatedAsyncioTestCase):
             active=registry.resolve(definition_id=AUTHORITY_ROLE_CATALOG_ID,kind=AUTHORITY_ROLE_CATALOG_KIND)
             catalog=AuthorityRoleCatalogDefinition.model_validate(active.payload)
             roles=tuple(role.model_copy(update={'grants':tuple(g for g in role.grants if g.capability!='resource.read')})
-                if role.id=='private-context-requester' else role for role in catalog.roles)
+                if role.id=='private-context-requester-'+self.requester.identity_id else role for role in catalog.roles)
             draft=registry.create_draft(DefinitionDraftCreate(definition_id=AUTHORITY_ROLE_CATALOG_ID,
                 kind=AUTHORITY_ROLE_CATALOG_KIND,definition_schema_version='1.0',
                 payload=catalog.model_copy(update={'roles':roles}).model_dump(mode='json'),actor=self.admin.identity_id,
