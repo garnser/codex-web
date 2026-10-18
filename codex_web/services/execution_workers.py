@@ -371,7 +371,7 @@ class ExecutionWorkerService:
     ) -> ExecutionAssignment:
         matches = [
             item
-            for item in self.store.load().assignments
+            for item in self.store.list_assignments()
             if self._same_scope(item, actor)
             and item.execution_id == execution_id
         ]
@@ -412,7 +412,7 @@ class ExecutionWorkerService:
     def list_workers(self, actor: AuthenticationActor) -> list[ExecutionWorker]:
         self._require_admin(actor)
         return sorted(
-            [item for item in self.store.load().workers if self._same_scope(item, actor)],
+            [item for item in self.store.list_workers() if self._same_scope(item, actor)],
             key=lambda item: (item.registered_at, item.id),
             reverse=True,
         )
@@ -425,7 +425,7 @@ class ExecutionWorkerService:
         return sorted(
             [
                 item
-                for item in self.store.load().enrollments
+                for item in self.store.list_enrollments()
                 if self._same_scope(item, actor)
             ],
             key=lambda item: (item.created_at, item.id),
@@ -714,7 +714,7 @@ class ExecutionWorkerService:
         existing = next(
             (
                 item
-                for item in self.store.load().workers
+                for item in self.store.list_workers()
                 if self._same_scope(item, actor)
                 and item.service_identity_id == service_identity_id
                 and item.pool == "local"
@@ -1161,7 +1161,7 @@ class ExecutionWorkerService:
     ) -> list[ExecutionAssignment]:
         self._require_admin(actor)
         items = [
-            item for item in self.store.load().assignments if self._same_scope(item, actor)
+            item for item in self.store.list_assignments() if self._same_scope(item, actor)
         ]
         if worker_id is not None:
             items = [item for item in items if item.assigned_worker_id == worker_id]
@@ -1328,12 +1328,15 @@ class ExecutionWorkerService:
                    "resource_disk_lock_seconds", "resource_disk_seconds",
                    "resource_readonly_seconds", "resource_rss_seconds",
                    "validation_wait_seconds", "renewal_wait_seconds"}
+        allowed.update(f"{phase}_authority_{suffix}" for phase in ("validation", "renewal")
+                       for suffix in ("seconds", "queue_seconds", "wait_seconds"))
         if failure_code not in {"agent_runtime_validation_failed", "resource_limit", "execution_timeout",
                                 "agent_runtime_process_exited", "agent_runtime_rpc_timeout"}:
             raise WorkerConflictError("unsupported runtime observation")
         if set(timings) - allowed or any(not isinstance(v, (int, float)) or not 0 <= v < 86400 for v in timings.values()):
             raise WorkerConflictError("invalid runtime timing")
-        if (phase not in {None, "process", "validation", "renewal", "lease", "request"}
+        if (phase not in {None, "process", "validation", "renewal", "lease", "request",
+                          "validation_authority", "renewal_authority"}
                 or cleanup_state not in {None, "pending", "stopped", "unavailable"}
                 or validation_custody_state not in {None, "registered", "captured", "unavailable"}
                 or (cleanup_seconds is not None and
@@ -1342,6 +1345,17 @@ class ExecutionWorkerService:
         observation = {key: value for key, value in {"phase": phase, "cleanup_state": cleanup_state,
             "validation_custody_state": validation_custody_state, "cleanup_seconds": cleanup_seconds}.items()
             if value is not None}
+        worker = self.store.worker(worker_id)
+        assignment = self.store.assignment(assignment_id)
+        snapshot = ExecutionWorkerState(workers=[worker] if worker else [],
+            assignments=[assignment] if assignment else [])
+        worker = self._worker(snapshot, worker_id, actor)
+        assignment = self._assignment(snapshot, assignment_id, actor)
+        if actor.identity_id != worker.service_identity_id or observed_fence < 1 or observed_fence > assignment.fence:
+            raise AuthorizationError("runtime observation requires the original worker principal")
+        claim = self.store.original_claim_event(worker_id, assignment_id, observed_fence)
+        if claim is None:
+            raise AuthorizationError("original fenced claim evidence is unavailable")
         def apply(state):
             worker = self._worker(state, worker_id, actor)
             assignment = self._assignment(state, assignment_id, actor)
@@ -1349,6 +1363,8 @@ class ExecutionWorkerService:
                 raise AuthorizationError("runtime observation requires the original worker principal")
             if not any(event.event_type == "assignment_claimed" and event.assignment_id == assignment_id
                        and event.worker_id == worker_id and event.details.get("fence") == observed_fence
+                       and (event.organization_id, event.workspace_id)
+                           == (assignment.organization_id, assignment.workspace_id)
                        for event in state.events):
                 raise AuthorizationError("original fenced claim evidence is unavailable")
             self._event(state, actor=actor, event_type="agent_runtime_supervision_failed",
@@ -1358,7 +1374,7 @@ class ExecutionWorkerService:
                          "evidence_id": evidence_id, "evidence_state": "recorded" if evidence_id else "unavailable",
                          "completion_asserted": False, **timings, **observation})
             return state
-        self.store.update(apply)
+        self.store.transition_assignment(worker_id, assignment_id, apply, retained_event_ids=(claim.id,))
 
     def renew(
         self,
@@ -1597,7 +1613,10 @@ class ExecutionWorkerService:
             updated.append(replacement)
             return state
 
-        self.store.update(apply)
+        current = self.store.assignment(assignment_id)
+        if current is None:
+            raise AssignmentNotFoundError("execution assignment not found")
+        self.store.transition_assignment(current.assigned_worker_id or "", assignment_id, apply)
         result = updated[0]
         self._notify_assignment(result, "assignment_cancelled")
         if result.execution_workspace_id and self.workspaces is not None:
@@ -1652,25 +1671,23 @@ class ExecutionWorkerService:
     ) -> list[str]:
         self._require_admin(actor)
         current = time.time() if now is None else now
-        # Periodic recovery must not rewrite retained state when nothing has
-        # expired. The atomic update below rechecks the authoritative current
-        # lease/status after this bounded read-only prefilter.
+        # Find candidates without holding the shared mutation lock. Each point
+        # transition below rechecks its current lease/status under the writer.
+        candidates: list[ExecutionAssignment] = []
         cursor = None
         while True:
             assignments, cursor = self.store.assignment_page(after=cursor)
-            expired = any(
+            candidates.extend(item for item in assignments if
                 self._same_scope(item, actor) and (
                     (item.status == AssignmentStatus.PENDING
                      and item.deadline_at is not None and item.deadline_at <= current)
                     or (item.status in {AssignmentStatus.CLAIMED, AssignmentStatus.RUNNING}
                         and item.lease is not None and item.lease.expires_at <= current)
-                )
-                for item in assignments
-            )
-            if expired:
-                break
+                ))
             if cursor is None:
-                return []
+                break
+        if not candidates:
+            return []
         lost: list[str] = []
         expired_workspace_ids: list[str] = []
 
@@ -1764,33 +1781,28 @@ class ExecutionWorkerService:
                 )
             return state
 
-        self.store.update(apply)
-        # Workspace release owns a separate durable state document and starts
-        # its own write transaction. Perform it only after the assignment
-        # transition commits; nesting it inside ``store.update`` makes the
-        # second SQLite writer wait on this method's own lock. Preserve dirty
-        # workspaces for audit instead of discarding potentially uncommitted
-        # agent changes when a lease expires unexpectedly.
-        for workspace_id in dict.fromkeys(expired_workspace_ids):
-            if self.workspaces is None:  # pragma: no cover - defensive race
-                break
-            with contextlib.suppress(Exception):
-                self.workspaces.release(
-                    workspace_id,
-                    ExecutionWorkspaceRelease(
-                        discard=False,
-                        reason="worker lease expired",
-                    ),
-                    actor=actor,
-                    preserve_files=True,
-                )
-        if lost:
-            current = self.store.load()
-            by_id = {item.id: item for item in current.assignments}
-            for assignment_id in lost:
-                item = by_id.get(assignment_id)
-                if item is not None:
-                    self._notify_assignment(item, "assignment_lost")
+        for candidate in sorted(candidates, key=lambda item: (item.created_at, item.id)):
+            previous_lost = len(lost)
+            previous_workspaces = len(expired_workspace_ids)
+            def recover_one(state, target_id=candidate.id):
+                self._assignment(state, target_id, actor)
+                return apply(state)
+            try:
+                result = self.store.transition_assignment(
+                    candidate.assigned_worker_id or "", candidate.id, recover_one)
+            except AssignmentNotFoundError:
+                # A concurrent terminal-retention pass may have removed it.
+                continue
+            # Each committed target owns its post-commit cleanup; a later
+            # candidate failure must not strand an earlier release/notification.
+            for workspace_id in dict.fromkeys(expired_workspace_ids[previous_workspaces:]):
+                if self.workspaces is not None:
+                    with contextlib.suppress(Exception):
+                        self.workspaces.release(workspace_id,
+                            ExecutionWorkspaceRelease(discard=False, reason="worker lease expired"),
+                            actor=actor, preserve_files=True)
+            if len(lost) > previous_lost:
+                self._notify_assignment(result.assignments[0], "assignment_lost")
         return lost
 
     def retry_lost(
@@ -1864,7 +1876,7 @@ class ExecutionWorkerService:
         return sorted(
             [
                 item
-                for item in self.store.load().events
+                for item in self.store.list_events()
                 if item.organization_id == actor.organization_id
                 and item.workspace_id == actor.workspace_id
             ],
