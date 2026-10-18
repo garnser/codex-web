@@ -108,6 +108,16 @@ exception/log bodies, credentials and assignment tokens are excluded; Evidence
 is denied model context and uses canonical governance/retention. Failed runtime
 Evidence is not successful test Evidence.
 
+The assignment's control-plane broker registers accepted client transports
+before scheduling their handlers. Stop closes its listener and aborts those
+transports before waiting for server closure, so incomplete input or an unread
+response cannot retain the worker's teardown and admission locks. Requests still
+awaiting assignment validation, body input or actor resolution refuse dispatch
+after stop. An operation already dispatched retains its existing canonical
+ActionIntent execution and reconciliation ownership; transport shutdown neither
+cancels that operation nor proves its outcome or authorizes replay. No lease,
+fence, validation deadline, resource bound or authority is extended.
+
 An original worker may append an observation only with retained original claim
 provenance. The observation explicitly separates observed and current fences and
 does not assert completion. A failed completion still requires the exact original

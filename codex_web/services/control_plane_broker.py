@@ -2624,6 +2624,9 @@ class AssignmentBoundControlPlaneBroker:
         self.server: asyncio.AbstractServer | None = None
         self._request_times: deque[float] = deque()
         self._active_requests = 0
+        self._stopping = False
+        self._client_writers: set[asyncio.StreamWriter] = set()
+        self._handler_tasks: set[asyncio.Task[None]] = set()
 
     @property
     def mount_source(self) -> Path:
@@ -2645,11 +2648,22 @@ class AssignmentBoundControlPlaneBroker:
         if self.server is not None:
             return self
         self.server = await asyncio.start_unix_server(
-            self._handle,
+            self._accept_client,
             path=str(self.socket_path),
         )
         os.chmod(self.socket_path, 0o600)
         return self
+
+    def _accept_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        # Register synchronously, before the handler's first scheduled step, so
+        # shutdown also owns clients accepted immediately before close().
+        if self._stopping:
+            writer.transport.abort()
+            return
+        self._client_writers.add(writer)
+        task = asyncio.create_task(self._handle(reader, writer))
+        self._handler_tasks.add(task)
+        task.add_done_callback(self._handler_tasks.discard)
 
     def _validate_current(self) -> ExecutionAssignment:
         try:
@@ -2844,6 +2858,8 @@ class AssignmentBoundControlPlaneBroker:
                 if content_length
                 else b""
             )
+            if self._stopping:
+                raise ControlPlaneBrokerDeniedError("control-plane broker is stopping")
             resolved = self.service._resolve_operation(method, target)
             operation = resolved.operation
             target_ref = resolved.target_ref
@@ -2851,6 +2867,8 @@ class AssignmentBoundControlPlaneBroker:
                 self.service._actor, assignment, self.worker_actor
             )
             actor_identity_id = actor.identity_id
+            if self._stopping:
+                raise ControlPlaneBrokerDeniedError("control-plane broker is stopping")
 
             status, payload, operation, target_ref, authority_decision = (
                 await self.service.dispatch(
@@ -2963,17 +2981,28 @@ class AssignmentBoundControlPlaneBroker:
                         )
             if counted:
                 self._active_requests = max(0, self._active_requests - 1)
+            self._client_writers.discard(writer)
             if not writer.is_closing():
                 writer.close()
                 with contextlib.suppress(Exception):
                     await writer.wait_closed()
 
     async def stop(self) -> None:
+        self._stopping = True
         server = self.server
         self.server = None
         if server is not None:
             server.close()
+        # wait_closed() includes accepted connections on current Python. An
+        # incomplete request or a peer not reading its response must not keep
+        # a fenced worker's teardown and subsequent admission locked forever.
+        # Only retire transports: existing ActionIntent outcomes remain owned
+        # by their canonical execution/reconciliation paths.
+        for writer in tuple(self._client_writers):
+            writer.transport.abort()
+        if server is not None:
             await server.wait_closed()
+        self._client_writers.clear()
         with contextlib.suppress(FileNotFoundError):
             self.socket_path.unlink()
         shutil.rmtree(self._root, ignore_errors=True)

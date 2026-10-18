@@ -8,7 +8,7 @@ import time
 import unittest
 import base64
 import httpx
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
@@ -437,6 +437,113 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
             validator=lambda: self.current_assignment,
         )
         await self.broker.start()
+
+    async def _assert_stop_retires_incomplete_client(self, request: bytes) -> None:
+        reader, writer = await asyncio.open_unix_connection(str(self.broker.socket_path))
+        writer.write(request)
+        await writer.drain()
+        await asyncio.sleep(0)
+        shutdown = asyncio.create_task(self.broker.stop())
+        try:
+            await asyncio.wait_for(asyncio.shield(shutdown), 1.0)
+            with suppress(ConnectionResetError):
+                self.assertEqual(await asyncio.wait_for(reader.read(1), 1.0), b"")
+            self.assertFalse(self.broker.socket_path.exists())
+            self.assertFalse(self.broker.mount_source.exists())
+            await self.broker.stop()  # Repeated cleanup owns no new operation.
+        finally:
+            writer.close()
+            with suppress(ConnectionResetError):
+                await writer.wait_closed()
+            await asyncio.wait_for(shutdown, 1.0)
+
+    async def test_stop_retires_client_waiting_for_headers(self) -> None:
+        await self._assert_stop_retires_incomplete_client(b"GET /")
+
+    async def test_stop_retires_client_waiting_for_request_body(self) -> None:
+        await self._assert_stop_retires_incomplete_client(
+            b"POST /v1/execute HTTP/1.1\r\nContent-Length: 2\r\n\r\n{"
+        )
+
+    async def test_stop_does_not_cancel_or_repeat_an_inflight_dispatch(self) -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+        dispatch = self.service.dispatch
+        handlers = []
+
+        async def blocked_dispatch(**kwargs):
+            handlers.append(asyncio.current_task())
+            entered.set()
+            await release.wait()
+            return await dispatch(**kwargs)
+
+        with patch.object(self.service, "dispatch", side_effect=blocked_dispatch) as called:
+            reader, writer = await asyncio.open_unix_connection(str(self.broker.socket_path))
+            writer.write(b"GET /api/work-items/group%2Fapp%2342 HTTP/1.1\r\n\r\n")
+            await writer.drain()
+            try:
+                await asyncio.wait_for(entered.wait(), 1.0)
+                await asyncio.wait_for(self.broker.stop(), 1.0)
+                with suppress(ConnectionResetError):
+                    self.assertEqual(await asyncio.wait_for(reader.read(1), 1.0), b"")
+                self.assertFalse(handlers[0].done())
+                self.assertIn(handlers[0], self.broker._handler_tasks)
+                called.assert_awaited_once()
+            finally:
+                release.set()
+                writer.close()
+                with suppress(ConnectionResetError):
+                    await writer.wait_closed()
+                await asyncio.wait_for(handlers[0], 1.0)
+            self.assertFalse(self.broker._handler_tasks)
+            called.assert_awaited_once()
+
+    async def _assert_stop_refuses_before_dispatch(self, gate_owner, gate_name) -> None:
+        entered, release = threading.Event(), threading.Event()
+        audited = asyncio.Event()
+        validate, audit = getattr(gate_owner, gate_name), self.service._audit
+
+        def blocked_validator(*args, **kwargs):
+            entered.set()
+            if not release.wait(3.0):
+                raise TimeoutError("test validator was not released")
+            return validate(*args, **kwargs)
+
+        def observed_audit(**kwargs):
+            try:
+                return audit(**kwargs)
+            finally:
+                audited.set()
+
+        setattr(gate_owner, gate_name, blocked_validator)
+        with (
+            patch.object(self.service, "dispatch", wraps=self.service.dispatch) as called,
+            patch.object(self.service, "_audit", side_effect=observed_audit),
+        ):
+            _reader, writer = await asyncio.open_unix_connection(str(self.broker.socket_path))
+            writer.write(b"GET /api/work-items/group%2Fapp%2342 HTTP/1.1\r\n\r\n")
+            await writer.drain()
+            shutdown = None
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 1.0))
+                shutdown = asyncio.create_task(self.broker.stop())
+                await asyncio.wait_for(asyncio.shield(shutdown), 1.0)
+                release.set()
+                await asyncio.wait_for(audited.wait(), 1.0)
+                called.assert_not_awaited()
+            finally:
+                release.set()
+                writer.close()
+                with suppress(ConnectionResetError):
+                    await writer.wait_closed()
+                await asyncio.wait_for(audited.wait(), 1.0)
+                if shutdown is not None:
+                    await asyncio.wait_for(shutdown, 1.0)
+
+    async def test_stop_refuses_accepted_request_in_assignment_validation(self) -> None:
+        await self._assert_stop_refuses_before_dispatch(self.broker, "validator")
+
+    async def test_stop_refuses_accepted_request_in_actor_resolution(self) -> None:
+        await self._assert_stop_refuses_before_dispatch(self.service, "_actor")
 
     async def test_administrative_issue_creation_requires_published_target_and_preserves_execution(self):
         from codex_web.execution_profile_seed import execution_profile_catalog_seed_payload
