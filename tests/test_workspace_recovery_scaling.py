@@ -5,7 +5,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from codex_web.execution_workspaces import ExecutionWorkspaceLease, LeaseMode
 from codex_web.identity import TenantScope
@@ -77,7 +77,11 @@ class RecoveryProbeContract:
         with patch.object(self.backend, "record_collections_exist", wraps=self.backend.record_collections_exist) as batch, \
              patch.object(self.backend, "record_collection_exists", side_effect=AssertionError("individual marker read")):
             self.assertTrue(store.has_expired_leases(now=20))
-            batch.assert_called_once_with((store.workspace_namespace, store.lease_namespace, store.event_namespace))
+            markers = (store.workspace_namespace, store.lease_namespace, store.event_namespace)
+            # Migration rechecks after taking its mutex: a concurrent point
+            # reader may already have migrated the legacy document. Both
+            # checks remain batched rather than reading individual markers.
+            self.assertEqual(batch.call_args_list, [call(markers), call(markers)])
         self.assertEqual(store.load().leases[0].id, "lease")
         self.assertIsNone(self.backend.get(store.namespace))
 
