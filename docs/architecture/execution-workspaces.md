@@ -309,6 +309,12 @@ quotas atomically and reports the effective limit and observed count (or request
 resource/disk amount) on refusal. A refused acquisition preserves existing records
 and files; quota pressure does not authorize orphan deletion or wider limits.
 
+Bot activity callbacks retain the current canonical binding's execution controls
+when an earlier binding snapshot arrives after an awaited dispatch. Updating
+activity cannot revert a committed sandbox/approval-policy change. Explicit
+binding and thread-settings controls retain their existing mutation paths; this
+does not rewrite settings captured by an already-retained request.
+
 Native process failure and session completion retain worker authority for the
 fenced assignment transition. Workspace reservation release then uses the existing
 owner-side control actor, with retained-files semantics: tracked, untracked and

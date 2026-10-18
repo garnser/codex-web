@@ -146,3 +146,9 @@ class ExistingBindingRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.sandbox, "workspace-write")
         self.assertEqual(len(stored), 1)
         name.assert_not_awaited()
+        # A callback captured before start() must not undo that explicit update.
+        original.updated_at = result.updated_at + 1
+        late = service.upsert(original)
+        self.assertEqual(late.sandbox, 'workspace-write')
+        self.assertEqual(late.approval_policy, 'never')
+        self.assertEqual(stored[0].sandbox, 'workspace-write')

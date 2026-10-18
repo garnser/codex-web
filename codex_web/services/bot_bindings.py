@@ -46,7 +46,9 @@ class BotBindingLifecycleService:
         bindings = self.load_bindings()
         # Runtime/event callbacks can hold a binding across an awaited RPC.
         # A completed owner recovery may have moved that same binding meanwhile.
-        # Updating its activity must not restore the old native thread.
+        # Updating its activity must not restore the old native thread or undo
+        # execution controls committed while that callback awaited IO. Explicit
+        # start() updates build a fresh binding and use the target-match below.
         current = next((item for item in bindings if item.id == new_binding.id), None)
         if current is not None and (
             current.provider == new_binding.provider
@@ -54,6 +56,8 @@ class BotBindingLifecycleService:
             and current.external_conversation_id == new_binding.external_conversation_id
         ):
             new_binding.thread_id = current.thread_id
+            new_binding.sandbox = current.sandbox
+            new_binding.approval_policy = current.approval_policy
         updated = False
         for index, binding in enumerate(bindings):
             if (

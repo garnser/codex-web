@@ -92,6 +92,23 @@ class BotBindingChangeEventTests(unittest.TestCase):
         self.assertEqual(stored[0].thread_id, "recovered-thread")
         self.assertEqual(events[-1]["threadId"], "recovered-thread")
 
+    def test_stale_activity_does_not_reverse_persisted_execution_controls(self) -> None:
+        service, stored, _events = self._service()
+        stale = _binding()
+        service.upsert(stale.model_copy(deep=True))
+        # A canonical settings update committed while inbound delivery awaited IO.
+        stored[0].sandbox = 'danger-full-access'
+        stored[0].approval_policy = 'never'
+        stale.updated_at = 10.0
+
+        result = service.upsert(stale)
+
+        self.assertEqual(result.sandbox, 'danger-full-access')
+        self.assertEqual(result.approval_policy, 'never')
+        self.assertEqual(stored[0].sandbox, 'danger-full-access')
+        self.assertEqual(stored[0].approval_policy, 'never')
+        self.assertEqual(stored[0].updated_at, 10.0)
+
 
 
 class BotBindingDeleteTests(unittest.IsolatedAsyncioTestCase):
