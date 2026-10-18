@@ -956,7 +956,10 @@ Older retained inputs are not upgraded from today's settings. Current owner/
 recipient, Project/tenant, active Resource, pinned profile and original requester's
 actual `resource.read` authority must all hold. Project association and internal
 control actors cannot grant this access. The exact associated Work Item is retained
-in the context; it need not rewrite an imported issue's repository resource list.
+in the context and must also contain every admitted Resource in its canonical
+`resource_ids`. The selector and Project association cannot substitute for that
+membership. Existing per-item authoritative reconciliation obtains active bound
+Project Resources; no new membership mutation API is introduced.
 
 Canonical workspace resource modes classify context as READ and repository as
 WRITE; generic context is not a repository member, credential, network permission
@@ -981,9 +984,33 @@ installation contract before enabling this path. Source publication does not
 activate it, manufacture a worker's independence or qualify host capacity.
 
 The capacity Verification adapter can recognize this genuinely admitted READ
-context as the exact Work Item/Resource association. Current original-record
+context as an exact READ-lease association in addition to canonical Work Item
+Resource membership. Current original-record
 visibility/governance, current requester API read/write authority on that DATABASE,
 actual authenticated verifier identity, same-tenant Project binding, exact config,
 runtime owner and independent capacity Evidence remain separately mandatory.
 The production app/PG resource measurements and enforcement are operator facts;
 source/test fixture metadata is never substitute capacity proof.
+
+
+For an existing imported issue, the operator first reads exact canonical source
+identity, owner/handoff and active Project Resource bindings, then uses ordinary
+`POST /api/work-items/{ref}/reconcile`. This operation rereads the authoritative
+source and can reconcile ownership/labels/relations as well as Resource scope;
+it is not a membership-only CAS. Pin source/custody before it and read them back
+immediately afterwards. No current assignment scope changes as a side effect.
+For reviewer ownership, ordinary permitted Developer-to-current-reviewer-profile
+handoff and genuine recipient ACK are separate. An awaiting handoff does not
+satisfy the admission owner check, nor does `quinn` identify the VP profile.
+A repository-only reviewer can ACK first, followed by supported terminal custody,
+fencing and fresh SAME-thread READ-context admission once membership is current.
+The composed synthetic regression uses the actual GitHub adapter/projector,
+per-item reconcile, canonical WorkItem handoff/ACK, worker principal/authority,
+and native admission. Only GitHub/native I/O and dispatch delivery are synthetic.
+
+Legacy `ThreadRunSettings` and `QueuedTurn` readers default to ignoring unknown
+fields. The regression explicitly demonstrates that their old field sets can
+drop this context. A versioned input route, strict new context schema and 1.1
+worker contract do not make those old persisted readers safe. First nonempty
+input/settings/snapshot persistence therefore requires the declared coordinated
+old-writer drain/fence and is an unsafe old-binary rollback boundary.

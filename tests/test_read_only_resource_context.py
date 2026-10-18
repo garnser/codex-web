@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 from codex_web.agent_profiles import AgentProfileCreate,AgentProfileExecutionBinding
-from codex_web.execution_workers import (ExecutionWorkerRegister,AssignmentClaimRequest,
+from codex_web.execution_workers import (AssignmentClaimRequest,
     AssignmentStartRequest,AssignmentCancelRequest)
 from codex_web.models import Project,TurnCreate,ThreadRunSettings,WorkItemState,QueuedTurn
 from codex_web.resource_context import ReadOnlyResourceContext
@@ -59,16 +59,22 @@ class ReadOnlyResourceContextTests(unittest.IsolatedAsyncioTestCase):
         now=time.time()
         self.items.put(self.ref,WorkItemState(ref=self.ref,project_id=f.project.id,project_path='fixture/source',
             organization_id=f.project.organization_id,workspace_id=f.project.workspace_id,
-            current_owner=self.profile.profile_id,current_stage='implementation_active',resource_ids=[f.repository.id],
+            current_owner=self.profile.profile_id,current_stage='implementation_active',resource_ids=[f.repository.id,self.database.id],
             created_at=now,updated_at=now,last_meaningful_update_at=now))
         f.service.resource_context_admission=ReadOnlyResourceContextAdmission(f.identity,self.authority,
             f.resources,self.items.get,self.profiles)
         self.context=ReadOnlyResourceContext(schema_version='1.0',read_only_resource_ids=(self.database.id,),
             requester_identity_id=f.actor.identity_id,work_item_ref=self.ref)
-        f.worker=f.workers.register(ExecutionWorkerRegister(service_identity_id=f.worker.service_identity_id,
-            pool=f.worker.pool,version=f.worker.version,capabilities=f.worker.capabilities,
+        worker_before=f.worker
+        f.worker=f.workers.ensure_local_worker(service_identity_id=worker_before.service_identity_id,
+            version=worker_before.version,capabilities=worker_before.capabilities,
             supported_execution_contract_versions=('1.0','thread-turn/1.0','thread-bootstrap/1.0',
-                'thread-turn/1.1','thread-bootstrap/1.1')),actor=f.actor)
+                'thread-turn/1.1','thread-bootstrap/1.1'),max_concurrency=worker_before.max_concurrency,
+            supported_sandbox_profiles=worker_before.supported_sandbox_profiles,actor=f.actor)
+        self.assertEqual(f.worker.id,worker_before.id)
+        self.assertEqual(f.worker.pool,worker_before.pool)
+        self.assertCountEqual(f.worker.capabilities,worker_before.capabilities)
+        self.assertEqual(f.worker.max_concurrency,worker_before.max_concurrency)
         self.bindings=ThreadBootstrapBindingService(ThreadBootstrapBindingStore(f.sqlite))
         self.bindings.assignment_store=f.workers.store
 
@@ -154,10 +160,11 @@ class ReadOnlyResourceContextTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_turn_queue_preflight_and_canonical_native_assignment_scope(self):
         f=self.f
-        binding=self.prepare()
-        self.bindings.bind(bootstrap_id='bootstrap-context-execution',thread_id='same-thread',
-            execution_id=binding.execution_id,assignment_id=binding.assignment_id,
-            execution_workspace_id=binding.workspace_id,actor=f.actor)
+        binding=getattr(self,'composed_binding',None) or self.prepare()
+        if getattr(self,'composed_binding',None) is None:
+            self.bindings.bind(bootstrap_id='bootstrap-context-execution',thread_id='same-thread',
+                execution_id=binding.execution_id,assignment_id=binding.assignment_id,
+                execution_workspace_id=binding.workspace_id,actor=f.actor)
         worker_actor=f.identity.bootstrap_service_actor(identity_id=f.worker.service_identity_id,
             name='Private synthetic worker',scope=f.actor.tenant,service_scopes=('execution-worker:run',))
         claimed=f.workers.claim(f.worker.id,AssignmentClaimRequest(),actor=worker_actor,assignment_id=binding.assignment_id)
@@ -426,3 +433,35 @@ class ReadOnlyResourceContextTests(unittest.IsolatedAsyncioTestCase):
         absent=context.model_copy(update={'requester_identity_id':'no-such-current-identity'})
         with self.assertRaises(ControlPlaneBrokerDeniedError):
             adapter.context_requester(value.model_copy(update={'resource_context':absent}))
+
+
+    async def test_project_binding_without_work_item_membership_refuses(self):
+        item=self.items.get(self.ref)
+        self.items.put(self.ref,item.model_copy(update={'resource_ids':[self.f.repository.id]}))
+        self.assertIn(self.database.id,self.f.resources.resource_ids_for_project(self.f.project))
+        with self.assertRaises(TurnExecutionBindingError):self.prepare()
+        self.assertEqual(self.f.workspaces.list(self.f.actor),[])
+
+    async def test_legacy_ignoring_readers_are_not_claimed_safe_for_rollback(self):
+        from pydantic import BaseModel,create_model
+        from copy import deepcopy
+        # These two persisted legacy models really use extra=ignore. Recreate
+        # their pre-context field sets, and prove the unsafe information loss.
+        # No automatic conversion or old-reader refusal is promised by rollout.
+        for model,values in ((ThreadRunSettings,{}),(QueuedTurn,dict(id='old',thread_id='same-thread',
+                project_id=self.f.project.id,message='original',created_at=1.))):
+            legacy=create_model('Legacy'+model.__name__,__base__=BaseModel,
+                **{name:(field.annotation,deepcopy(field)) for name,field in model.model_fields.items() if name!='resource_context'})
+            encoded=model(**values,resource_context=self.context).model_dump(mode='json')
+            self.assertNotIn('resource_context',legacy.model_validate(encoded).model_dump())
+            self.assertEqual(model.model_validate(encoded).resource_context,self.context)
+
+
+    async def test_membership_removed_after_admission_denies_current_session_scope(self):
+        binding=self.prepare()
+        assignment=self.f.workers.store.assignment(binding.assignment_id)
+        item=self.items.get(self.ref)
+        self.items.put(self.ref,item.model_copy(update={'resource_ids':[self.f.repository.id]}))
+        with self.assertRaises(TurnExecutionBindingError):
+            self.f.service.validate_assignment_resource_context(assignment)
+        self.assertEqual(self.f.workers.store.assignment(binding.assignment_id).resource_context,self.context)

@@ -300,7 +300,7 @@ class WorkerVerificationAdapter:
             and resource_id in context.read_only_resource_ids)
         if (evidence.resource_ids != (resource_id,) or evidence.project_id != assignment.project_id
                 or resource_id not in assignment.resource_ids
-                or (resource_id not in item.resource_ids and not native_context_member)):
+                or resource_id not in item.resource_ids):
             self.denied('Capacity DATABASE requires exact current Work Item/assignment Resource admission')
         if native_context_member:
             workspace=self.broker.execution_workspaces.get(assignment.execution_workspace_id,self.broker._requester_actor(assignment))
