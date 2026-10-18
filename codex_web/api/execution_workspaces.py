@@ -73,6 +73,7 @@ def build_execution_workspaces_router(service: ExecutionWorkspaceService) -> API
         return {
             "items": [item.model_dump(mode="json") for item in items],
             "count": len(items),
+            "quota": service.quota.model_dump(mode="json"),
         }
 
     @router.post("/api/execution-workspaces")

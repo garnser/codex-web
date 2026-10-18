@@ -7,7 +7,8 @@
   let inspections = [];
   let projects = [];
   let resources = [];
-  const {createWorkspacePresenters} = await import(`${BASE}/static/execution_workspace_presenters.js`);
+  let quota = null;
+  const {createWorkspacePresenters, workspaceQuotaText} = await import(`${BASE}/static/execution_workspace_presenters.js`);
   const {integrationHtml, repositoryMembersHtml} = createWorkspacePresenters({escapeHtml, resourceNames, timeText, bytes});
   const {createPublicationRecoveryUI} = await import(`${BASE}/static/publication_recovery_handoff.js`);
   const {render: recoveryHtml, submit: handoff} = createPublicationRecoveryUI({
@@ -168,7 +169,7 @@
     const active = inspections.filter((item) => item.lease_active).length;
     const expired = inspections.filter((item) => item.lease_expired).length;
     const conflicted = inspections.filter((item) => item.workspace.status === "conflicted").length;
-    setStatus(`${inspections.length} workspace(s) · ${active} active lease(s) · ${expired} expired/unrecovered lease(s) · ${conflicted} conflicted. Workspace/lease state is canonical execution isolation state, not inferred from agent prose.`);
+    setStatus(`${inspections.length} workspace(s) · ${active} active lease(s) · ${expired} expired/unrecovered lease(s) · ${conflicted} conflicted. ${workspaceQuotaText(quota)} Workspace/lease state is canonical execution isolation state, not inferred from agent prose.`);
   }
 
   async function loadEvents(button) {
@@ -267,12 +268,14 @@
           .catch(() => { resources = []; }),
       ]);
       inspections = inspectionResponse.items || [];
+      quota = inspectionResponse.quota || null;
       actor = me;
       const recover = document.getElementById("recover-execution-workspaces");
       if (recover) recover.disabled = !canRecover();
       render();
     } catch (error) {
       inspections = [];
+      quota = null;
       setStatus(`Execution workspace inspection unavailable: ${error.message}`);
       render();
     }

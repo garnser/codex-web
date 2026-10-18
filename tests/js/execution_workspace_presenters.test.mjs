@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {createWorkspacePresenters} from '../../static/execution_workspace_presenters.js';
+import {createWorkspacePresenters, workspaceQuotaText} from '../../static/execution_workspace_presenters.js';
+
+test('quota diagnostics use supplied effective limits, including configured values above eight', () => {
+  assert.equal(workspaceQuotaText({max_active_per_identity:32, max_active_per_tenant:64,
+    max_resources_per_workspace:16, max_requested_disk_bytes:1024}),
+  'Effective limits: 32 active per identity · 64 active per tenant · 16 resources per workspace · 1024 requested bytes per workspace.');
+  assert.equal(workspaceQuotaText(null), 'Effective workspace limits unavailable.');
+  assert.match(workspaceQuotaText({max_active_per_identity:'<untrusted>'}), /unknown active per identity/);
+});
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g,
   character => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[character]));

@@ -1158,11 +1158,13 @@ class ExecutionWorkspaceService:
         )
         if len(request.resource_ids) > self.quota.max_resources_per_workspace:
             raise ExecutionWorkspaceQuotaError(
-                "execution workspace resource quota exceeded"
+                "execution workspace resource quota exceeded "
+                f"(requested={len(request.resource_ids)}, limit={self.quota.max_resources_per_workspace})"
             )
         if request.requested_disk_bytes > self.quota.max_requested_disk_bytes:
             raise ExecutionWorkspaceQuotaError(
-                "execution workspace requested disk quota exceeded"
+                "execution workspace requested disk quota exceeded "
+                f"(requested_bytes={request.requested_disk_bytes}, limit_bytes={self.quota.max_requested_disk_bytes})"
             )
 
         resource_modes = {
@@ -1256,7 +1258,8 @@ class ExecutionWorkspaceService:
             ]
             if len(active_leases) >= self.quota.max_active_per_tenant:
                 raise ExecutionWorkspaceQuotaError(
-                    "tenant active execution workspace quota exceeded"
+                    "tenant active execution workspace quota exceeded "
+                    f"(active={len(active_leases)}, limit={self.quota.max_active_per_tenant})"
                 )
             owner_active = [
                 item
@@ -1265,7 +1268,8 @@ class ExecutionWorkspaceService:
             ]
             if len(owner_active) >= self.quota.max_active_per_identity:
                 raise ExecutionWorkspaceQuotaError(
-                    "identity active execution workspace quota exceeded"
+                    "identity active execution workspace quota exceeded "
+                    f"(active={len(owner_active)}, limit={self.quota.max_active_per_identity})"
                 )
             requested = set(request.resource_ids)
             workspaces_by_id = {item.id: item for item in state.workspaces}

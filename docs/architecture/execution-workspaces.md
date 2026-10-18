@@ -301,6 +301,14 @@ rather than disabling enforcement. An explicitly supplied service quota takes
 precedence. These limits bound retained isolated sessions as well as active turns;
 operators must account for all owner sessions when choosing deployment capacity.
 
+The workspace inspector returns the effective service `quota`, including configured
+identity and tenant active-workspace limits, and renders those limits beside the
+scoped workspace list. The displayed active count covers visible leases; it is not
+an estimate of another identity's or tenant's quota usage. Acquisition enforces
+quotas atomically and reports the effective limit and observed count (or requested
+resource/disk amount) on refusal. A refused acquisition preserves existing records
+and files; quota pressure does not authorize orphan deletion or wider limits.
+
 Native process failure and session completion retain worker authority for the
 fenced assignment transition. Workspace reservation release then uses the existing
 owner-side control actor, with retained-files semantics: tracked, untracked and
