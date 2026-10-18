@@ -556,6 +556,15 @@ separate assignment-bound broker:
   process launch, watchdog validation, and runtime request admission run
   blocking catalog/filesystem work outside the control-plane event loop,
   including assignment-session resolution and thread-list session adoption;
+- watchdog routing, binding and active/queued/recent-state reads, including each
+  item in an SLA sweep, also run outside the observer event loop. Snapshot
+  loading alone does not make the remaining per-item database reads nonblocking;
+- watchdog worker replacement and stale-active reconciliation enter through the
+  existing bounded autonomy controller's admitted reasoner. Paused, killed,
+  scoped-paused, observe-only, dry-run and simulated cycles cannot prepare a
+  replacement before their eventual dispatch is denied. A recovered successor
+  is checked again for active/queued work, and ordinary SLA dispatch retains its
+  Work Item repository scope and canonical idle-admission guard;
 - stale-thread replacement is serialized and coalesced per recovery service so
   concurrent watchdogs cannot amplify workspace/assignment catalog mutations;
 - a tiny loopback relay inside the private network namespace bridges only the
