@@ -12,6 +12,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from codex_web.agent_profiles import AgentProfileAccessPolicy,AgentProfileExecutionBinding,AgentProfileUpdate
+from codex_web.services.agent_profiles import AgentProfileAccessDenied
 from codex_web.artifact_evidence import ArtifactCreate,EvidenceCreate
 from codex_web.execution_workers import AssignmentCancelRequest,AssignmentCompleteRequest,ExecutionRuntimeBinding,WorkerCapability
 from codex_web.execution_workspaces import ExecutionWorkspaceRelease
@@ -80,7 +82,34 @@ class AdmittedContextCapacityTests(unittest.IsolatedAsyncioTestCase):
             temp=self.temp,sqlite=self.sqlite,worker=self.worker,service=binding_service)
         bindings=ThreadBootstrapBindingService(ThreadBootstrapBindingStore(self.sqlite));bindings.assignment_store=self.workers.store
         self.requester=create_requester(self,self.identity,self.registry,self.admin,project,(self.target.id,self.database.id))
-        self.profile_pin=self.assignment.agent_profile
+        # The inherited profile intentionally requires local-admin for the
+        # older fixture. A is not that principal. Publish a private, explicitly
+        # A-allowlisted invocation policy instead of elevating A or spoofing C.
+        inherited_pin=self.assignment.agent_profile
+        roles_before=self.authority.role_ids_for_actor(self.requester,project_id=project.id)
+        self.assertIn('private-context-requester',roles_before)
+        self.assertNotIn('local-admin',roles_before)
+        with self.assertRaises(AgentProfileAccessDenied):
+            self.agent_profiles.resolve_for_execution(inherited_pin.profile_id,
+                actor=self.requester,project_id=project.id)
+        profile=self.agent_profiles.update(inherited_pin.profile_id,AgentProfileUpdate(
+            access=AgentProfileAccessPolicy(mode='allowlist',identity_ids=(self.requester.identity_id,)),
+            authority_role_id=None,authority_definition_ref=None,
+            reason='Private bounded requester invocation; retain independent worker authority'),actor=self.admin)
+        resolved,decision=self.agent_profiles.resolve_for_execution(profile.profile_id,
+            actor=self.requester,project_id=project.id)
+        self.assertTrue(decision.allowed)
+        self.assertEqual(resolved.record_id,profile.record_id)
+        self.assertEqual(self.authority.role_ids_for_actor(self.requester,project_id=project.id),roles_before)
+        self.assertEqual(profile.access.identity_ids,(self.requester.identity_id,))
+        self.assertIsNone(profile.authority_role_id)
+        self.assertGreater(profile.revision,inherited_pin.profile_revision)
+        self.profile_pin=AgentProfileExecutionBinding(profile_id=profile.profile_id,
+            profile_revision=profile.revision,profile_record_id=profile.record_id,
+            role_id=profile.role_id,role_definition_ref=profile.role_definition_ref,
+            authority_role_id=profile.authority_role_id,authority_definition_ref=profile.authority_definition_ref,
+            execution_profile_id=profile.execution_profile_id)
+        self.assertEqual(self.items.get(self.ref).current_owner,self.profile_pin.profile_id)
         # Retain a real repo-only same-thread binding to be normally superseded;
         # no assignment containing the DB is prebuilt for the positive path.
         # Harness publishes a real private credential reference first.
