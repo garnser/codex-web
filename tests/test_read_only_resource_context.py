@@ -406,7 +406,7 @@ class ReadOnlyResourceContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_existing_write_reservation_blocks_new_read_context(self):
         from codex_web.execution_workspaces import ExecutionWorkspaceAcquire
         writer=self.f.workspaces.acquire(ExecutionWorkspaceAcquire(execution_id='synthetic-database-writer',
-            project_id=self.f.project.id,resource_ids=(self.f.repository.id,self.database.id),
+            work_item_ref=self.ref,project_id=self.f.project.id,resource_ids=(self.f.repository.id,self.database.id),
             repository_resource_id=self.f.repository.id,lease_mode='write'),actor=self.f.actor)
         with self.assertRaises(TurnExecutionBindingError):self.prepare()
         lease=self.f.workspaces.store.lease(writer.lease_id)
