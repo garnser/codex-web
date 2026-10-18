@@ -173,6 +173,51 @@ class BotStateRepositoriesTests(unittest.TestCase):
         self.assertEqual(set(rows), {"binding-a", "binding-b"})
         self.assertEqual(rows["binding-a"].thread_name, "renamed")
 
+    def test_activity_and_control_updates_to_same_binding_merge_in_both_orders(self) -> None:
+        for settings_first in [True, False]:
+            with self.subTest(settings_first=settings_first):
+                binding = BotBinding(id='same', provider='slack', external_conversation_id='C1',
+                    thread_id='old', created_at=1, updated_at=1)
+                self.state.bindings.save([binding])
+                activity = self.state.bindings.load()
+                settings = self.state.bindings.load()
+                activity[0].updated_at = 30
+                settings[0].sandbox = 'danger-full-access'
+                settings[0].approval_policy = 'never'
+                settings[0].thread_id = 'recovered'
+                settings[0].route_prefix = 'James'
+                settings[0].updated_at = 20
+                for values in ([settings, activity] if settings_first else [activity, settings]):
+                    self.state.bindings.save(values)
+                result = self.state.bindings.load()[0]
+                self.assertEqual(result.sandbox, 'danger-full-access')
+                self.assertEqual(result.approval_policy, 'never')
+                self.assertEqual(result.thread_id, 'recovered')
+                self.assertEqual(result.route_prefix, 'James')
+                self.assertEqual(result.updated_at, 30)
+
+    def test_legacy_default_fields_do_not_overwrite_concurrent_explicit_controls(self) -> None:
+        self.store.put('bot_bindings', [{'id':'legacy', 'provider':'slack',
+            'external_conversation_id':'C1', 'thread_id':'thread', 'created_at':1, 'updated_at':'1'}])
+        activity = self.state.bindings.load()
+        settings = self.state.bindings.load()
+        settings[0].sandbox = 'danger-full-access'
+        self.state.bindings.save(settings)
+        activity[0].updated_at = 2
+        self.state.bindings.save(activity)
+        self.assertEqual(self.state.bindings.load()[0].sandbox, 'danger-full-access')
+
+    def test_snapshot_update_cannot_resurrect_concurrently_deleted_binding(self) -> None:
+        self.state.bindings.save([BotBinding(id='deleted', provider='slack',
+            external_conversation_id='C1', thread_id='thread', created_at=1, updated_at=1)])
+        activity = self.state.bindings.load()
+        deletion = self.state.bindings.load()
+        deletion.clear()
+        self.state.bindings.save(deletion)
+        activity[0].updated_at = 2
+        self.state.bindings.save(activity)
+        self.assertEqual(self.state.bindings.load(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

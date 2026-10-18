@@ -314,6 +314,12 @@ when an earlier binding snapshot arrives after an awaited dispatch. Updating
 activity cannot revert a committed sandbox/approval-policy change. Explicit
 binding and thread-settings controls retain their existing mutation paths; this
 does not rewrite settings captured by an already-retained request.
+Binding snapshot saves also merge only changed fields inside the existing
+canonical storage transaction. Concurrent activity cannot replace a newer
+routing/settings row, move its update time backwards, or restore a binding
+deleted after that snapshot was read. Legacy omitted defaults are normalized
+before computing changes. Other model-list storage retains its existing merge
+semantics; no schema, role, grant or queued-request migration is involved.
 
 Native process failure and session completion retain worker authority for the
 fenced assignment transition. Workspace reservation release then uses the existing

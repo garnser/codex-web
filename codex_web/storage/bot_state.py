@@ -97,7 +97,23 @@ class ModelListRepository(Generic[T]):
                 latest_by_id = self._by_id(latest)
                 for key in deleted:
                     latest_by_id.pop(key, None)
-                latest_by_id.update(changed)
+                for key, value in changed.items():
+                    if self.model is BotBinding and key in base_by_id:
+                        # Activity and explicit routing/settings updates can
+                        # overlap on one binding. Merge the caller's actual
+                        # field changes under the canonical store transaction,
+                        # rather than restoring its entire earlier row.
+                        if key not in latest_by_id:
+                            continue  # A concurrent deletion must stay deleted.
+                        baseline = BotBinding.model_validate(base_by_id[key]).model_dump(mode="json")
+                        delta = {field: item for field, item in value.items()
+                                 if baseline.get(field) != item}
+                        current_binding = latest_by_id[key]
+                        current_updated_at = BotBinding.model_validate(current_binding).updated_at
+                        latest_by_id[key] = {**current_binding, **delta,
+                            "updated_at": max(current_updated_at, value["updated_at"])}
+                    else:
+                        latest_by_id[key] = value
 
                 requested_order = [
                     item["id"]
