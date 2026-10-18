@@ -73,6 +73,23 @@ Set CODEX_WEB_IMAGE to garnser/codex-web:sha-<qualified-commit>, set CODEX_WORKS
 
 The recovery overlay disables application image building, requires an explicit image reference, removes direct host publication of the application container, publishes nginx instead, mounts only the tracked nginx configuration, and does not mount application Python modules.
 
+The application service declares the same liveness healthcheck as the Dockerfile
+explicitly in Compose. This lets nginx's `service_healthy` dependency work when
+the published OCI image or runtime does not retain the image healthcheck metadata.
+
+Rootless Podman uses an external Compose provider. Select one that supports the
+tracked recovery overlay's `!reset` tags. Podman documents Docker Compose as a
+supported provider and permits a per-command `PODMAN_COMPOSE_PROVIDER` override:
+
+    PODMAN_COMPOSE_PROVIDER=/absolute/path/to/docker-compose podman compose -f compose.yaml -f compose.recovery.yaml config
+    PODMAN_COMPOSE_PROVIDER=/absolute/path/to/docker-compose podman compose -f compose.yaml -f compose.recovery.yaml up -d --no-build
+
+Replace the provider path with the operator's verified executable. This does not
+change global Podman configuration. Operator qualification observed the official
+Docker Compose v5.6.0 provider rendering these tracked files; Python
+podman-compose 1.5.0 rejected `ResetTag`. These observations do not establish a
+minimum supported provider version. See the [Podman Compose manual](https://docs.podman.io/en/latest/markdown/podman-compose.1.html).
+
 Production TLS/authentication can remain in the operator's outer nginx/load-balancer boundary; the checked-in recovery nginx file defines the qualified reverse-proxy/WebSocket behavior.
 
 ## Upgrade from the v0.1.0 emergency recovery
