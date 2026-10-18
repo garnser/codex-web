@@ -201,7 +201,8 @@ class AdmittedContextCapacityTests(unittest.IsolatedAsyncioTestCase):
         from codex_web.services.definitions import DefinitionRegistryService
         from codex_web.storage.definition_registry import DefinitionRegistryStore
         def revoke(store):
-            registry=DefinitionRegistryService(DefinitionRegistryStore(store))
+            registry=DefinitionRegistryService(DefinitionRegistryStore(store),
+                schemas=self.registry.schemas,engine_version=self.registry.engine_version)
             active=registry.resolve(definition_id=AUTHORITY_ROLE_CATALOG_ID,kind=AUTHORITY_ROLE_CATALOG_KIND)
             catalog=AuthorityRoleCatalogDefinition.model_validate(active.payload)
             roles=tuple(role.model_copy(update={'grants':tuple(g for g in role.grants if g.capability!='resource.read')})
