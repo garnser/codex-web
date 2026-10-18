@@ -163,6 +163,7 @@ class ReconciledReadContextTests(unittest.IsolatedAsyncioTestCase):
         pending=self.items.get(self.ref)
         self.assertEqual(pending.current_owner,'context-developer')
         self.assertEqual(pending.handoff.status,'pending')
+        self.assertEqual(pending.source_projection.status,'succeeded')
         with self.assertRaises(TurnExecutionBindingError):self.prepare()
         f.workers.cancel_bootstrap(developer.assignment_id,AssignmentCancelRequest(
             expected_fence=developer_assignment.fence,reason='Private terminal sender custody'),actor=f.actor)
@@ -184,6 +185,7 @@ class ReconciledReadContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(accepted.current_owner,self.profile.profile_id)
         self.assertEqual(accepted.validation_owner,'quinn')
         self.assertEqual(accepted.handoff.status,'accepted')
+        self.assertEqual(accepted.source_projection.status,'succeeded')
         # A real Project binding is necessary but not yet WorkItem membership.
         f.resources.bind_project(project=f.project,resource_id=self.database.id,actor=f.actor)
         self.assertNotIn(self.database.id,self.items.get(self.ref).resource_ids)
