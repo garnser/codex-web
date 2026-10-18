@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import time
+from contextlib import contextmanager
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -75,6 +76,9 @@ class CryptoKeyService:
     def _retire(self, key_id, version, actor, updater):
         from codex_web.storage.conversation_channels import ConversationChannelStore
         from codex_web.conversation_channels import ConversationChannelState
+        from codex_web.storage.artifact_evidence import ArtifactEvidenceStore
+        from codex_web.artifact_evidence import ArtifactEvidenceState
+        artifacts = ArtifactEvidenceStore(self.store.store)
         conversations = ConversationChannelStore(self.store.store)
         # The same cross-domain transaction used by Recovery when adding key
         # references prevents a backup/revocation time-of-check race.
@@ -90,6 +94,7 @@ class CryptoKeyService:
                     key, actor, version=version,
                     recovery=RecoveryStore._decode(documents[RecoveryStore.namespace]),
                     conversations=conversations._decode(documents[conversations.namespace]),
+                    artifacts=artifacts._decode(documents[artifacts.namespace]),
                 )
             except (ValueError, TypeError, AttributeError):
                 raise CryptoKeyImpactUnavailableError('Key dependency impact is unavailable') from None
@@ -102,6 +107,7 @@ class CryptoKeyService:
             self.store.namespace: CryptoKeyState().model_dump(mode='json'),
             RecoveryStore.namespace: RecoveryState().model_dump(mode='json'),
             conversations.namespace: ConversationChannelState().model_dump(mode='json'),
+            artifacts.namespace: ArtifactEvidenceState().model_dump(mode='json'),
         }, apply)
 
     @staticmethod
@@ -479,6 +485,97 @@ class CryptoKeyService:
 
         self._retire(key_id, None, actor, apply)
         return updated[0]
+
+    @contextmanager
+    def envelope_batch(self, key_id, context, *, actor, operation, key_version=None):
+        """Bounded envelope composition under the existing KMS boundary.
+
+        Pin material BEFORE a StateStore snapshot; do no key-store I/O while
+        its cursor is owned. One current-key check + canonical batch audit is
+        committed AFTER cursor close, before the authenticated stream footer.
+        This changes neither the cipher nor the existing envelope/AAD format.
+        The yielded object never exposes raw key material and expires on exit.
+        """
+        if operation not in {"encrypt", "decrypt"}:
+            raise ValueError("unsupported envelope batch operation")
+        self._ensure_context_scope(context, actor)
+        state = self.store.load()
+        key = self._key(state, key_id, actor)
+        self._ensure_key_context(key, context)
+        selected = key.current_version if key_version is None else key_version
+        version = self._version(key, selected)
+        # Rotation retains DECRYPT_ONLY material for existing envelopes, just
+        # as individual decrypt does. Encryption still requires ACTIVE and
+        # the current version. Recheck the same rule at the terminal audit.
+        usable_statuses = ((KeyVersionStatus.ACTIVE,) if operation == "encrypt"
+                           else (KeyVersionStatus.ACTIVE, KeyVersionStatus.DECRYPT_ONLY))
+        if key.status != KeyStatus.ACTIVE or version.status not in usable_statuses:
+            raise CryptoKeyConflictError("batch key is revoked")
+        if operation == "encrypt" and selected != key.current_version:
+            raise CryptoKeyConflictError("batch encryption requires current key")
+        backend = self._backend(key.backend_type)
+        kek = backend.get(version.backend_ref)
+        service = self
+        active = True
+        count = 0
+
+        class Batch:
+            key_version = selected
+
+            def apply(inner, value, chunk_context):
+                nonlocal count
+                if not active:
+                    raise CryptoKeyConflictError("batch is closed")
+                service._ensure_context_scope(chunk_context, actor)
+                service._ensure_key_context(key, chunk_context)
+                if (chunk_context.organization_id != context.organization_id
+                    or chunk_context.workspace_id != context.workspace_id
+                    or chunk_context.resource_id != context.resource_id
+                    or chunk_context.project_id != context.project_id
+                    or chunk_context.object_type != context.object_type
+                    or not chunk_context.object_id.startswith(context.object_id + ":")):
+                    raise CryptoKeyConflictError("foreign envelope batch context")
+                count += 1
+                if operation == "encrypt":
+                    dek, wrap_nonce, data_nonce = os.urandom(32), os.urandom(12), os.urandom(12)
+                    wrapped = AESGCM(kek).encrypt(wrap_nonce, dek, service._wrap_aad(chunk_context, key.id, selected))
+                    ciphertext = AESGCM(dek).encrypt(data_nonce, value, service._data_aad(chunk_context))
+                    return EncryptedEnvelope(key_id=key.id, key_version=selected,
+                        wrap_nonce_b64=base64.b64encode(wrap_nonce).decode("ascii"),
+                        wrapped_data_key_b64=base64.b64encode(wrapped).decode("ascii"),
+                        data_nonce_b64=base64.b64encode(data_nonce).decode("ascii"),
+                        ciphertext_b64=base64.b64encode(ciphertext).decode("ascii"),
+                        context_digest=service._context_digest(chunk_context))
+                envelope = value
+                if (envelope.format_version != "1.0" or envelope.key_id != key.id or envelope.key_version != selected
+                    or envelope.context_digest != service._context_digest(chunk_context)):
+                    raise CryptoDecryptError("batch envelope scope/key mismatch")
+                try:
+                    dek = AESGCM(kek).decrypt(base64.b64decode(envelope.wrap_nonce_b64, validate=True),
+                        base64.b64decode(envelope.wrapped_data_key_b64, validate=True),
+                        service._wrap_aad(chunk_context, key.id, selected))
+                    return AESGCM(dek).decrypt(base64.b64decode(envelope.data_nonce_b64, validate=True),
+                        base64.b64decode(envelope.ciphertext_b64, validate=True), service._data_aad(chunk_context))
+                except (ValueError, InvalidTag):
+                    raise CryptoDecryptError("batch envelope authentication failed") from None
+        try:
+            yield Batch()
+            def audit(current):
+                persisted = self._key(current, key.id, actor)
+                live_version = self._version(persisted, selected)
+                if (persisted.status != KeyStatus.ACTIVE or live_version.status not in usable_statuses
+                    or live_version.backend_ref != version.backend_ref
+                    or (operation == "encrypt" and persisted.current_version != selected)):
+                    raise CryptoKeyConflictError("batch key changed before completion")
+                self._ensure_key_context(persisted, context)
+                self._audit(current, actor=actor, operation=operation+"_batch",
+                    outcome="success", key=persisted, version=selected, context=context)
+                return current
+            if count:
+                self.store.update(audit)
+        finally:
+            active = False
+            kek = None
 
     def encrypt(
         self,

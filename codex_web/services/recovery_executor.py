@@ -29,7 +29,7 @@ class RecoveryExecutor:
         self._terminal_observations = {}
 
     @staticmethod
-    async def _settle(future):
+    async def _settle(future, on_cancel=None):
         # One non-failing completion waiter per observer. Wrapping the worker
         # future on each cancellation adds callbacks/proxies whose exceptions
         # can be logged even though the actual thread remains correctly owned.
@@ -44,6 +44,8 @@ class RecoveryExecutor:
             await asyncio.shield(completion)
         except asyncio.CancelledError:
             cancelled = True
+            if on_cancel is not None:
+                on_cancel()
             # ASGI task groups use level cancellation. Shield its cancelled
             # scope while joining so checkpoints do not spin; explicit repeated
             # asyncio.Task.cancel() still cannot abandon the actual thread.
@@ -62,7 +64,7 @@ class RecoveryExecutor:
             raise error
         return future.result()
 
-    async def run(self, key, operation):
+    async def run(self, key, operation, *, on_cancel=None):
         with self._admission_lock:
             if self._closed or self._quiescing:
                 raise RecoveryExecutorClosed('recovery admission is closed or settling a quiescent snapshot')
@@ -82,7 +84,7 @@ class RecoveryExecutor:
                 future = self._pool.submit(context.run, owned)
                 self._futures[key] = future
         try:
-            return await self._settle(future)
+            return await self._settle(future, on_cancel=on_cancel)
         finally:
             with self._admission_lock:
                 self._retire(key, future)

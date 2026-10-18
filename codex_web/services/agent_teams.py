@@ -1027,12 +1027,20 @@ class AgentTeamService:
                 execution_roles[execution_id] = "workers"
 
         usage = {"coordinator": {}, "workers": {}}
+        usage_diagnostics = {"schema_version":"1.0", "complete":False,
+                             "reason":"usage_unavailable", "continuation_available":False}
         if self.runtime_usage_store is not None:
             totals = {
                 "coordinator": {"tokens": 0, "costUsd": 0.0, "records": 0},
                 "workers": {"tokens": 0, "costUsd": 0.0, "records": 0},
             }
-            for item in self.runtime_usage_store.list():
+            observed_usage, usage_diagnostics = self.runtime_usage_store.inspect_for_history()
+            from codex_web.agent_runtime_usage import RuntimeUsageDiagnosticsV1
+            usage_diagnostics = RuntimeUsageDiagnosticsV1.model_validate(usage_diagnostics).model_dump(mode="json")
+            storage_complete = usage_diagnostics["complete"]
+            metric_complete = {role:{name:storage_complete for name in ("tokens","costUsd","records")}
+                               for role in totals}
+            for item in observed_usage:
                 if (
                     item.organization_id != actor.organization_id
                     or item.workspace_id != actor.workspace_id
@@ -1046,9 +1054,23 @@ class AgentTeamService:
                 bucket["records"] += 1
                 if item.total_tokens is not None:
                     bucket["tokens"] += item.total_tokens
+                else:
+                    metric_complete[role]["tokens"] = False
                 if item.cost_usd is not None:
                     bucket["costUsd"] += item.cost_usd
-            usage = totals
+                else:
+                    metric_complete[role]["costUsd"] = False
+            # Derive metric completeness ONLY after authorized WorkItem and
+            # visible execution joins. Valid foreign/unrelated missing metrics
+            # must neither leak nor poison this scope's observed totals.
+            complete = all(all(values.values()) for values in metric_complete.values())
+            usage_diagnostics.update(storage_complete=storage_complete,
+                metric_completeness=metric_complete,complete=complete,
+                reason="complete" if complete else "usage_unavailable")
+            usage_diagnostics = RuntimeUsageDiagnosticsV1.model_validate(usage_diagnostics).model_dump(mode="json")
+            usage = {role:{name:value if metric_complete[role][name] else None
+                           for name,value in values.items()} for role,values in totals.items()}
+
 
         active_member_ids: set[str] = set()
         if self.assignment_loader is not None:
@@ -1072,6 +1094,7 @@ class AgentTeamService:
             "count": len(visible),
             "activeMemberProfileIds": sorted(active_member_ids),
             "usage": usage,
+            "usage_diagnostics": usage_diagnostics,
             "blockers": [
                 {
                     "recordId": item.id,

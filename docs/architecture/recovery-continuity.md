@@ -603,3 +603,302 @@ backup/restore/drain remain mandatory and are not produced by these guards.
 Manual HTTP offload is retained source awaiting the explicit bounded follow-up
 tracking decision under stabilization/#1489 provenance; it is not silently
 accepted as extra scope or published while that tracking remains pending.
+
+## Lossless StateStore preservation format
+
+`state-storage-preservation@1.0` is an additive opaque storage format, separate
+from semantic `BackupSnapshot@1.0`. It is not recorded in RecoveryState's backup
+or verification collections and cannot advance RPO/RTO or Recovery health.
+Semantic backup decoding accepts exactly format 1.0; a preservation header lacks
+`documents` and is rejected by older strict semantic readers as well.
+
+The raw snapshot includes both physical StateStore tables, legacy documents,
+keyed collection markers and rows, and metadata. It preserves UTF-8 TEXT bytes
+without interpreting payload JSON, and pins backend/schema/encoding. Records
+are ordered by table and UTF-8 key bytes. Canonical ASCII JSON records encode
+payload bytes with base64 and timestamps as big-endian IEEE754 binary64.
+Unsigned 64-bit frame lengths, ordered SHA256 and exact counts bind the header,
+rows and terminal footer. Unsupported types, schemas, versions, ordering,
+nonfinite timestamps, duplicates, incomplete input or resource limits refuse.
+The promise is logical storage equality, not database-file or heap-page equality.
+
+PostgreSQL export owns one REPEATABLE READ READ ONLY transaction across both
+tables and sizes before fetching payloads. At most 64 key/length entries are
+paged; payload groups total at most 8 MiB, except one large row alone. SQLite
+uses one explicit read transaction. The defensive parser accommodates up to one
+million rows, 32 MiB values, 64 KiB keys, 2 GiB aggregate payload and 4 GiB framed
+plaintext. These are format ceilings, not runtime grants. Effective deadline,
+CPU, memory and disk admission must independently authorize an operation. An
+active PostgreSQL callback cannot be silently promoted from READ COMMITTED;
+raw export refuses before trying a nested pool checkout.
+
+Raw import is same-backend only, into an independently isolated, non-running
+empty target. The storage primitive takes a target write transaction and checks
+that it contains no document rows and only its recognized schema seed. It
+replaces that seed with exact exported metadata and commits only after complete
+footer validation. Every error or cancellation rolls back that transaction.
+The primitive does not authorize startup or prove deployment isolation; the
+operator/action boundary must independently verify the actual target resource.
+It is not exposed as an overwrite-live-store endpoint.
+
+The encrypted container composes existing CryptoKeyService envelopes in 256 KiB
+plaintext chunks, with snapshot/scope/index-bound contexts and a separately
+authenticated manifest binding the header, ordered encrypted chunk hashes and
+counts. Missing, foreign, duplicated, reordered or truncated content refuses.
+A consumer must exhaust authentication before committing a target. The batch
+key is resolved before opening the source snapshot, then rechecked and audited
+after source cursor closure, before the terminal encrypted manifest can be
+published. This avoids auditing through a read-only owning transaction or a
+nested checkout of a one-connection pool. A raw snapshot preserves its original
+rows; mandatory subsequent crypto audit appends are separately acknowledged and
+must not be represented as zero source activity. Source and isolated target
+connection custody must remain independent when decoding into a transaction.
+
+These low-level primitives and codecs do not create authority, a trusted action
+binding, an Artifact receipt or an installation approval. Governed capture must
+still perform exact whole-store resource authorization/current identity/policy/
+key admission, actual resource reservation, tracked executor custody, immutable
+Artifact publication, independent verification and loss-response reconciliation.
+No RecoveryState 1.3 activation or persisted reconciliation migration follows
+from using this additive format.
+
+Usage history is a distinct read-only projection. Bounded inspection uses a
+consistent snapshot and never calls usage migration or replaces retained rows.
+It preserves authorized WorkItem history even when usage cannot be completely
+interpreted. `usage_diagnostics@1.0` reports incomplete/unavailable separately
+from zero; incomplete totals are null. Unknown-scope corruption never supplies
+foreign identifiers, row counts, digests or parser excerpts to an ordinary
+WorkItem caller. Strict accounting reads/writes remain fail-closed. Existing
+operator history renders the generic incomplete status; detailed storage
+inspection requires independent whole-store authority.
+
+### Governed opaque-preservation operations
+
+`recovery.storage-preservation.capture` and
+`recovery.storage-preservation.verify` are additive, single-attempt, high-impact
+canonical ActionProvider operations. The application registers their trusted
+implementation, **not** a binding, authority grant, deployment value or an
+operation. No startup migration or RecoveryState1.3 activation occurs. Existing
+RecoveryState1.2/1.3, scheduled firing/effect identity, semantic backup/restore,
+RPO and health rules remain authoritative and unchanged.
+
+The existing Recovery operator page previews the exact whole-StateStore Resource
+and effective budget, requires high-impact confirmation, and exposes canonical
+ActionIntent, receipt, verification, Artifact and Evidence references. Unknown
+transport or missing domain receipt offers read-only observation, never another
+capture. Ordinary usage history has only typed incomplete/null-total diagnostics;
+operator storage reports contain bounded opaque key references, byte lengths,
+digests and fixed error codes, never payload excerpts. Valid JSON by itself is
+not a semantic domain validation. Successful storage operations consequently
+produce WARN Evidence with `semantic_recovery_qualified=false` and do not advance
+a Work Item or satisfy release/recovery qualification automatically.
+
+Deployment administration must publish the following existing Configuration
+Registry keys before availability can be asserted:
+
+- `recovery.preservation.resource_id`: the explicitly authorized whole-StateStore
+  DATABASE Resource. A requester cannot select another source or filesystem.
+- `recovery.preservation.memory_bytes`, `disk_bytes`, `wall_seconds`: effective
+  admitted budgets, with wall10..300 seconds intersecting the existing runtime
+  allowance. These configuration values grant neither capacity nor authority.
+
+An explicitly enabled `recovery-storage` / `canonical-state-preservation`
+binding must target exactly that Resource and authorize the actual content and
+database-reservation directories through its existing filesystem policy. Current
+requester tenant, administrator/MFA session, action capability/role, Resource,
+provider/binding/Definition, execution assignment/fence/lease, procedure/security,
+quota and worker identity remain canonical admission requirements. The existing
+mutation guard locks/rechecks their shared transaction read set immediately
+around irreversible Artifact/Evidence publication; configuration, policy, key
+and capacity Evidence are also read under their shared canonical locks. A
+revocation committed before the final locked read prohibits publication. A
+writer arriving after that read serializes behind the transaction. No serialized
+caller parameter can install the internal worker context or lend worker scopes
+to a human.
+
+The independent capacity prerequisite uses existing canonical Evidence and
+Verification, not a new registry or caller assertion. Evidence metadata contract
+`recovery-storage-capacity.v1` binds `resource_id`, the SHA256 of canonical JSON
+configuration pins `{name:[record_id,revision]}`, integer `memory_bytes`,
+`disk_bytes`, `wall_seconds`, numeric `expires_at`, and absolute
+`database_directory` / `database_reservation_directory`. It must also bind the
+current `recovery_executor_owner_id`, `memory_enforcement=kernel-cgroup-aggregate`,
+`memory_max_bytes` equal to the admitted memory budget and
+`memory_swap_max_bytes=0`. A restarted runtime cannot adopt an old incarnation's
+proof, and a larger global memory cap is not evidence of a smaller operation cap.
+An independent VERIFIED
+record must reference this current, valid, retained, same-tenant Evidence. Start
+freshness is60seconds, expiry covers the operation wall budget; commit rechecks
+expiry, validity and the original admitted pins. The directory mapping must
+match the actual configured database and reservation device. Symlinked mappings
+are refused. Evidence must describe **actual external enforcement** where
+required: neither RLIMIT_AS nor cooperative row estimates establish a job cgroup.
+No API call here provisions a cgroup, raises a quota, invents independent proof or
+creates any production binding/configuration.
+
+Before reading payloads, a consistent key/length-only snapshot computes exact
+base64 row-frame sizes using a bounded PG server cursor. Reservation includes
+explicit bounded growth headroom, encrypted-frame maxima, content overlap and
+same-backend target/index/WAL allowance. The source capture is a distinct single
+consistent snapshot; its emitted bytes must fit the reserved bound, or capture
+refuses. Disk reservations use owned private allocated files on the actual
+filesystems and remain held until real I/O joins. Configured charge covers both
+reservation and writes, with current free-space checks. This is cooperative
+operation accounting, not a hard quota or a promise that the complete backup
+workflow has a fixed heap footprint. Changed source size, unavailable filesystem,
+insufficient resource proof or exhausted bounds produces refusal, not truncation.
+
+Capture reserves a restricted `deny_model_context` Artifact with UNKNOWN custody,
+streams encrypted content through existing ArtifactContent/KMS, authenticates the
+entire terminal manifest and checks content length/digest. A completed encrypted
+object reference is retained as protected pending metadata before final
+admission. Pending metadata does not make content available or claim integrity.
+A crash between a filesystem write and that custody append remains UNKNOWN;
+there is no atomic filesystem/database guarantee, orphan adoption or replay.
+Only the shared Artifact/Evidence transaction attaches the immutable available
+pointer and appends its idempotent storage-integrity receipt. Repeated canonical
+requests/readbacks preserve the same intent/Artifact/Evidence; loss after commit
+settles through existing read-only ActionIntent reconciliation, not engine
+execution. Later authority denial can retain an observation without successful
+settlement. Distinct verification attempts remain canonical and auditable.
+
+Verification decrypts the original immutable capture and writes only an owned
+new SQLite file or newly generated PG schema through the same raw restore
+contract. No application starts on it, no side effects run, and no live target or
+existing schema can be adopted. The isolated transaction exhausts authenticated
+input before committing; the resulting full raw stream digest must match before
+owned cleanup and Evidence publication. Cleanup failure prevents successful
+verification and retains unknown operation custody. PG verification uses its
+own connections and never steals the source callback/pool1 transaction.
+
+Cancellation signals the existing cooperative StorageOperationBudget and joins
+the actual bounded Recovery executor future. It cannot abandon a writer or make
+drain report zero before the thread terminates. Content and target writes must
+finish/refuse before reservations release. Timeouts do not permit automatic
+retry. This API performs no live import, record repair, semantic normalization,
+original firing disposition or accounting reinterpretation.
+
+The versioned storage format and protected Artifact are separate from legacy
+BackupSnapshot1.0. Existing semantic readers must refuse this format; storage
+integrity/isolated physical restore is not a semantic RestoreVerification PASS.
+The operator bootstrap must independently retain an authenticated complete
+backup and isolated restore proof accepted by the reviewed deployment contract,
+plus drain, exact-source/CAS, preservation and postverification gates. This
+source integration neither waives those gates nor authorizes installation,
+RecoveryState1.3 activation, old-writer handover or binary rollback after an
+irreversible contract transition. Full-current-shape encrypted qualification is
+separate from focused small fixtures and must use real admitted aggregate
+memory/disk/CPU/process/time enforcement with all clients/servers reaped.
+
+
+#### Review corrections: scoped metrics and independent preservation oracle
+
+History storage inspection completeness is separate from completeness of each
+visible joined execution metric. Missing `total_tokens` or `cost_usd` on an
+otherwise valid authorized record makes only that role/metric total unknown;
+observed zero remains zero and a known record count remains known. Team/work-item,
+tenant and visible-execution joins happen before metric completeness is derived.
+A valid foreign or unrelated record cannot alter those scoped totals. Typed
+`storage_complete` and per-role `metric_completeness` explain partial observations
+without disclosing foreign record identities. Unknown-scope malformed storage
+still produces generic incomplete/null totals, with no immutable accounting write.
+
+Chunk and terminal-manifest envelope schema failures use the same fixed
+`invalid_encrypted_envelope` refusal. The decoder raises outside the Pydantic
+handler, without attaching its untrusted input exception as context; public
+operations retain only sanitized errors and no successful verification receipt.
+
+Isolated raw restore batches at most256 rows or4MiB of UTF8 key/value bytes per
+`executemany` call (one permitted large row is flushed by itself). PostgreSQL
+uses its existing same-connection pipelined executemany, retaining one exclusive
+atomic transaction. Budget/cancellation checks bracket batches and remain per
+row. Earlier inserts are never a partial result: authenticated footer/EOF,
+schema/count/order/digest and final budget checks still precede commit; any
+failure rolls back all batches. No source write or second execution engine is
+introduced. Independent tests compare actual SQL TEXT and timestamps (including
+metadata) and the literal seeded full-scale rows; matching encoder digests alone
+are not preservation proof. Full-scale phase timing/actual admitted resource
+qualification remains required before any performance claim.
+
+
+#### Capture-sized admission and retained encryption consumers
+
+Storage report1.0 includes a strict inventory of the authenticated capture:
+row count, payload/key bytes, maximum row bytes and framed bytes. VERIFY obtains
+it from the capture's canonical, private-idempotency Evidence identity, checks
+its producer/intent/resource/request/Artifact binding, and reserves for that
+capture even if the current live database has shrunk. Captures without that
+inventory/referral refuse; the current live database is never substituted.
+Before any new isolated target exists, the captured maximum row must fit the
+admitted memory estimate and actual disk reservations. Capture growth is limited
+by row/payload/max-row/framing ceilings passed into the source's consistent SQL
+metadata preflight **before payload selection**, not just a final byte counter.
+Both assessment and restore enforce the same effective limits. Each bounded
+restore batch also checks actual target relation/page growth on its owning
+transaction and rolls back on excess. These are cooperative growth checks;
+filesystem reservations and a real aggregate job memory bound remain necessary.
+The operation makes no hard disk-quota or whole-backup heap guarantee.
+
+Before encryption, CAPTURE reserves the exact `preservation_key_id` and integer
+`preservation_key_version` on its existing restricted Artifact. This reservation
+locks the Artifact and CryptoKey documents together with the normal admission
+read set and checks the selected current key before appending. KMS encryption
+pins this exact version and final publication rechecks current key/configuration.
+CryptoKey retirement reads preservation Artifacts in the same sorted shared
+transaction as Recovery/conversation consumers. An earlier retained reservation
+therefore prevents revocation; earlier rotation/revocation prevents capture
+publication. No semantic BackupManifest or additional consumer store is created.
+UNKNOWN reservation, pending content, invalidation, supersession and expiry do
+not retire the dependency. Only the existing physical content-delete procedure's
+verified TOMBSTONED pointer, with no pending content, releases it. Missing key
+metadata on a retained preservation Artifact makes impact unavailable rather
+than guessing that revocation is safe. Tenant and exact key/version filtering
+remain enforced, and existing key impact UI renders the canonical consumer.
+
+**Deployment boundary:** these new Artifacts must not be created while an older
+key-retirement implementation remains an authorized writer. Registration alone
+does not enable this action: an operator must qualify all key-writer binaries,
+drain old writers, retain backup/isolated-restore proof and enable the existing
+binding/configuration only after that check. The existing crypto-state1.0 schema
+does not fence an old binary; no automatic old-writer refusal or safe source-only
+rollback after the first retained preservation consumer is claimed. Returning
+to an older implementation requires a separately qualified compatibility plan
+which preserves/protects all retained and UNKNOWN key dependencies. Source
+publication does not authorize production binding/activation or rollback.
+
+SQLite's real progress-handler SQLITE_INTERRUPT is normalized to the existing
+StorageOperationBudget TimeoutError only when that budget actually cancelled or
+expired, after the transaction context has rolled back. Unrelated SQLite errors
+retain their original refusal; cancellation never means partial restore success.
+
+
+Envelope batch decryption accepts the selected ACTIVE or DECRYPT_ONLY version
+under an ACTIVE key, matching individual KMS decryption of retained envelopes.
+The same rule is checked again at the terminal audit under the canonical key
+transaction: concurrent key/version revocation or changed backend reference
+refuses completion. Rotation alone can retain decrypt-only access. New batch
+encryption still requires the current ACTIVE version at entry and completion;
+retained decrypt-only material never authorizes new encryption. Scope, context,
+AAD authentication and closed-batch lifetime checks are unchanged.
+
+
+VERIFY reuses only the canonical CAPTURE producer's immutable assessment rather
+than decrypting the same content twice. The private idempotent receipt identity,
+actual producer/tenant/resource/action/original request, Artifact pointer digest
+and byte length, frozen key id/version and strict report inventory must agree.
+Missing old receipt fields or a public Evidence clone refuse before any target
+creation. CAPTURE atomically publishes those content bindings with its report
+and Artifact pointer; this is additive unreleased preservation metadata, not a
+semantic Recovery backup or normalization of original records.
+
+Reuse does not establish verification by itself. The actual encrypted stream
+must still be fully decrypted/authenticated, including KMS final current-version
+checks, manifest, digest/length, row bounds, footer and EOF inside the isolated
+restore transaction. Every restored physical target row is independently read
+back through the bounded raw exporter and hashed against the bound capture
+report. The isolated target is cleaned before successful Evidence publication.
+The final shared transaction also requires the exact capture receipt to remain
+unchanged and VALID along with Artifact/current authority/policy/key/capacity.
+Late invalidation refuses publication. No target authentication, raw hash,
+cancellation, cleanup, independent qualification SQL oracle or semantic-health
+gate is skipped. Per-operation budgets, format and dataset limits are unchanged.

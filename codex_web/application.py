@@ -2232,7 +2232,7 @@ app.state.recovery_store = recovery_store
 app.state.recovery_service = recovery_service
 app.state.local_backup_destination = local_backup_destination
 from codex_web.services.recovery_operator import RecoveryOperatorActions
-recovery_operator_actions = RecoveryOperatorActions(recovery_service, action_intent_service, local_worker_actor)
+recovery_operator_actions = RecoveryOperatorActions(recovery_service, action_intent_service, local_worker_actor, configuration=configuration_service)
 app.state.recovery_operator_actions = recovery_operator_actions
 app.include_router(build_recovery_router(recovery_service, project_service,
     actions=recovery_operator_actions, identity=identity_service))

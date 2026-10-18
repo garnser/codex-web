@@ -487,6 +487,10 @@ class AgentTeamServiceTests(unittest.TestCase):
 
     def test_work_item_history_links_executions_and_splits_usage(self) -> None:
         class _UsageStore:
+            def inspect_for_history(self):
+                return self.list(), {"schema_version":"1.0", "complete":True,
+                                     "reason":"complete", "continuation_available":False}
+
             def list(self):
                 def usage(execution_id, tokens, cost):
                     return type(

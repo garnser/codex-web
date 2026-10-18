@@ -525,6 +525,8 @@ function renderDetail(payload) {
     </section>
     <section class="work-detail-card">
       <h4>Chronological history</h4>
+      ${payload.history?.teamDelegations?.usage_diagnostics?.complete === false
+        ? '<p class="work-item-warning" role="status">Usage accounting is incomplete or unavailable. Totals are unknown where metrics are incomplete; observed totals and canonical history remain available.</p>' : ''}
       <div class="work-history">${history.length ? history.slice().reverse().map((event) => `
         <div class="work-history-event">
           <strong>${esc(event.event_type)}</strong>

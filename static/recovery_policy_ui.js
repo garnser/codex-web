@@ -4,6 +4,7 @@ import { request } from './api_client.js';
 import { captureProjectView, currentProjectId } from './project_view_scope.js';
 import { esc } from './secret_reference_ui.js';
 import { renderRecoveryEvidence } from './recovery_evidence_view.js';
+import { bindStoragePreservation } from './recovery_storage_preservation_ui.js';
 import { bindRecoveryReconciliation } from './recovery_reconciliation_ui.js';
 import { focusReference, bindWhenReady } from './reference_links.js';
 import { trackDirtyEditor, confirmDiscard } from './dirty_editor.js';
@@ -12,7 +13,7 @@ import { renderPolicyForm, readPolicyForm } from './recovery_policy_form.js';
 
 const style = document.createElement('link'); style.rel = 'stylesheet'; style.href = new URL('./recovery_policy.css', import.meta.url).href; document.head.appendChild(style);
 
-let editor = null; let reconciliationEditor = null; let generation = 0;
+let editor = null; let reconciliationEditor = null; let storageEditor = null; let generation = 0;
 function operation() {
   const view = captureProjectView(); const project = currentProjectId(); const opened = generation;
   const current = () => view.current() && opened === generation;
@@ -30,8 +31,8 @@ function impactText(impact) {
 
 async function load(force = false) {
   const root = document.getElementById('recovery-policy-content'); if (!root) return;
-  if (!force && (!confirmDiscard(editor) || !confirmDiscard(reconciliationEditor))) return;
-  generation++; editor?.dispose(); reconciliationEditor?.dispose(); editor = null; reconciliationEditor = null; root.replaceChildren(); status('Loading canonical recovery policy…');
+  if (!force && (!confirmDiscard(editor) || !confirmDiscard(reconciliationEditor) || !confirmDiscard(storageEditor))) return;
+  generation++; editor?.dispose(); reconciliationEditor?.dispose(); storageEditor?.dispose(); storageEditor = null; editor = null; reconciliationEditor = null; root.replaceChildren(); status('Loading canonical recovery policy…');
   const op = operation();
   try {
     const snapshot = await op.request('/api/recovery/status');
@@ -40,6 +41,7 @@ async function load(force = false) {
     if (!op.current()) return;
     root.innerHTML = renderPolicyForm(snapshot, keys) + renderRecoveryEvidence(snapshot) + '<section data-recovery-history><h3>Policy change history</h3></section>';
     reconciliationEditor = bindRecoveryReconciliation(root, snapshot, op, status);
+    storageEditor = bindStoragePreservation(root, snapshot, op, status);
     const form = root.querySelector('form'); const validation = formValidation(form);
     editor = trackDirtyEditor(form, { label: 'Recovery policy' }); const ownedEditor = editor;
     const preview = form.querySelector('[data-recovery-impact]'); const save = form.querySelector('[data-recovery-save]');

@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from codex_web.api.project_record_scope import ProjectRecordScope, project_record_context_parameter
+from codex_web.services.resources import ResourceCatalogError
+from codex_web.services.artifact_evidence import ArtifactEvidenceError
 from codex_web.services.crypto_keys import CryptoKeyError
 from codex_web.services.recovery_executor import RecoveryExecutorBusy, RecoveryExecutorClosed
 from codex_web.services.recovery_policy import RecoveryPolicyControl
@@ -13,6 +15,7 @@ from codex_web.services.recovery_policy import RecoveryPolicyControl
 from codex_web.api.identity import request_actor, revalidate_request_actor
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.recovery import RecoveryPolicy, RecoveryReconcileRequest
+from codex_web.recovery_preservation import StoragePreservationRequest, StoragePreservationReportV1
 from codex_web.api.action_intents import _error as action_error
 from codex_web.services.action_intents import ActionIntentError
 from codex_web.services.action_providers import ActionProviderError
@@ -33,6 +36,13 @@ class RecoveryOperatorRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     binding_id: str = Field(min_length=1, max_length=200)
     request: RecoveryReconcileRequest
+
+
+class StorageOperatorRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    binding_id: str = Field(min_length=1,max_length=200)
+    action: str
+    request: StoragePreservationRequest
 
 
 def build_recovery_router(service: RecoveryService, projects=None, *, actions=None, identity=None) -> APIRouter:
@@ -172,6 +182,72 @@ def build_recovery_router(service: RecoveryService, projects=None, *, actions=No
         if actions is None or identity is None:
             raise HTTPException(status_code=503, detail='Recovery operator integration unavailable')
         return actions
+
+    @router.get('/storage-preservation/status')
+    async def storage_status(request: Request):
+        operator=operator_actions()
+        try:
+            return operator.describe_storage(admin(request))
+        except (RecoveryError,IdentityError,ValueError,LookupError,ResourceCatalogError) as exc:
+            raise error(exc) from exc
+
+    @router.post('/storage-preservation/preview')
+    async def storage_preview(payload: StorageOperatorRequest,request: Request):
+        operator=operator_actions()
+        try:
+            with operator.request_context(lambda:revalidate_request_actor(request,identity)):
+                return await operator.preview_storage(payload.action,payload.binding_id,payload.request,actor=admin(request))
+        except (ActionIntentError,ActionProviderError) as exc:
+            raise action_error(exc) from exc
+        except (RecoveryError,IdentityError,CryptoKeyError,ValueError,ResourceCatalogError,ArtifactEvidenceError) as exc:
+            raise error(exc) from exc
+
+    @router.post('/storage-preservation/operations')
+    async def storage_submit(payload: StorageOperatorRequest,request: Request):
+        operator=operator_actions()
+        try:
+            with operator.request_context(lambda:revalidate_request_actor(request,identity)):
+                item=await operator.submit_storage(payload.action,payload.binding_id,payload.request,actor=admin(request))
+                return {'item':item.model_dump(mode='json'),
+                    'next_action':'Read canonical intent/receipt. Unknown outcome is observe-only, never replay. Storage success is not semantic Recovery qualification.'}
+        except (ActionIntentError,ActionProviderError) as exc:
+            raise action_error(exc) from exc
+        except (RecoveryError,IdentityError,CryptoKeyError,ValueError,ResourceCatalogError,ArtifactEvidenceError) as exc:
+            raise error(exc) from exc
+
+    @router.post('/storage-preservation/operations/{operation_id}/intents/{intent_id}/observe')
+    async def storage_observe(operation_id: str,intent_id: str,request: Request):
+        operator=operator_actions()
+        try:
+            with operator.request_context(lambda:revalidate_request_actor(request,identity)):
+                item=await operator.observe_storage(operation_id,intent_id,actor=admin(request))
+                return {'item':item.model_dump(mode='json')}
+        except (ActionIntentError,ActionProviderError) as exc:
+            raise action_error(exc) from exc
+        except (RecoveryError,IdentityError,CryptoKeyError,ResourceCatalogError,ArtifactEvidenceError) as exc:
+            raise error(exc) from exc
+
+    @router.get('/storage-preservation/receipts/{intent_id}')
+    async def storage_receipt(intent_id: str,request: Request):
+        operator=operator_actions()
+        try:
+            with operator.request_context(lambda:revalidate_request_actor(request,identity)):
+                actor=admin(request)
+                intent=operator.intents.get(intent_id,actor)
+                if operator.storage_provider is None:
+                    raise RecoveryConflictError('Preservation runtime unavailable')
+                binding=operator.intents.execution.registry.binding(intent.binding_id,actor)
+                record=await service._scheduled_executor.run('storage-receipt:'+intent.id,
+                    lambda:operator.storage_provider.inspect_committed(intent.request,binding,intent_id=intent.id))
+                if record is None:
+                    return {'schema_version':'1.0','outcome':'unknown','next_action':'Inspect retained intent/custody; never execute replay'}
+                return {'schema_version':'1.0','outcome':'storage_verified','evidence_id':record.id,
+                    'artifact_ids':list(record.artifact_ids),'report':StoragePreservationReportV1.model_validate_json(record.metadata['report_json']).model_dump(mode='json'),
+                    'semantic_recovery_qualified':False}
+        except (ActionIntentError,ActionProviderError) as exc:
+            raise action_error(exc) from exc
+        except (RecoveryError,IdentityError,CryptoKeyError,ValueError,ResourceCatalogError,ArtifactEvidenceError) as exc:
+            raise error(exc) from exc
 
     @router.post('/scheduled-firings/{event_id}/reconcile')
     async def reconcile_firing(event_id: str, payload: RecoveryOperatorRequest, request: Request):

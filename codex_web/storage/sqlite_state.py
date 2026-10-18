@@ -944,6 +944,58 @@ class SQLiteStateStore:
             )
             return bool(cursor.rowcount or record_cursor.rowcount)
 
+    def inspect_storage_pages(self, namespace, *, max_pages=10):
+        from codex_web.storage.storage_preservation import inspect_database_page, StoragePreservationRefused
+        if not 1 <= max_pages <= 10:
+            raise StoragePreservationRefused("invalid_inspection_page_bound")
+        with self._connection() as connection:
+            connection.execute("BEGIN")
+            after = None
+            for _ in range(max_pages):
+                rows, after = inspect_database_page(connection, namespace=namespace,
+                    after=after, limit=100, backend="sqlite")
+                yield rows, after
+                if after is None:
+                    return
+
+    def inspect_storage_page(self, namespace, *, after=None, limit=100):
+        from codex_web.storage.storage_preservation import inspect_database_page
+        with self._connection() as connection:
+            return inspect_database_page(connection, namespace=namespace, after=after,
+                                         limit=limit, backend="sqlite")
+
+    def iter_storage_snapshot(self, *, limits=None):
+        from codex_web.storage.storage_preservation import (
+            StateStorageSnapshotV1, StorageSnapshotLimits, database_rows, export_rows,
+        )
+        limits = limits or StorageSnapshotLimits()
+        with self._connection() as connection:
+            connection.execute("BEGIN")
+            from codex_web.storage.storage_preservation import StoragePreservationRefused
+            if connection.execute("SELECT value FROM state_metadata WHERE key='schema_version'").fetchone() != (str(self.SCHEMA_VERSION),):
+                raise StoragePreservationRefused("unsupported_storage_schema")
+            rows = database_rows(connection, backend="sqlite", limits=limits)
+            try:
+                yield from export_rows(StateStorageSnapshotV1(backend="sqlite", storage_schema_version=self.SCHEMA_VERSION), rows, limits)
+            finally:
+                rows.close()
+
+    def restore_storage_snapshot(self, chunks, *, limits=None, max_target_bytes=None):
+        from codex_web.storage.storage_preservation import StorageSnapshotLimits, restore_database_rows
+        try:
+            with self._write_connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                restore_database_rows(connection, chunks, backend="sqlite",
+                                      schema_version=self.SCHEMA_VERSION,
+                                      limits=limits or StorageSnapshotLimits(),max_target_bytes=max_target_bytes)
+        except sqlite3.OperationalError as error:
+            # The connection context has already rolled back every batch.
+            # Only our real deadline/cancellation interrupt becomes the public
+            # budget exception; unrelated SQLite failures keep their contract.
+            if getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_INTERRUPT:
+                check_operation_budget()
+            raise
+
     def documents(self) -> dict[str, Any]:
         with self._connection() as connection:
             rows = connection.execute(
