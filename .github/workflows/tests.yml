@@ -240,6 +240,12 @@ jobs:
           POSTGRES_USER: codex
           POSTGRES_PASSWORD: codex
           POSTGRES_DB: codex
+          PGDATA: /tmp/codex-web-ci-postgres/data
+        volumes:
+          # Real synthetic server files at the SAME absolute runner path.
+          # Docker creates the parent before the service starts; do not create
+          # a dummy client PGDATA or relax the server's data permissions.
+          - /tmp/codex-web-ci-postgres:/tmp/codex-web-ci-postgres
         ports:
           - 5432:5432
         options: --health-cmd "pg_isready -U codex -d codex" --health-interval 2s --health-timeout 5s --health-retries 15
@@ -250,6 +256,8 @@ jobs:
         options: --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 5s --health-retries 15
     env:
       CODEX_WEB_TEST_POSTGRES_DSN: postgresql://codex:codex@127.0.0.1:5432/codex
+      CODEX_WEB_TEST_POSTGRES_DATA_DIRECTORY: /tmp/codex-web-ci-postgres/data
+      CODEX_WEB_TEST_PRESERVATION_RESERVATION_DIR: /tmp/codex-web-ci-postgres-reservations
       CODEX_WEB_TEST_REDIS_URL: redis://127.0.0.1:6379/15
     steps:
       - name: Check out repository
@@ -282,6 +290,35 @@ jobs:
         run: |
           python -m pip install -r requirements.lock
           python -m pip install -r requirements-distributed.txt
+        if: ${{ needs.changes.outputs.full == 'true' }}
+      - name: Verify real PostgreSQL storage fixture topology
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CODEX_WEB_TEST_PRESERVATION_RESERVATION_DIR"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import psycopg
+
+          # SHOW is the actual server path, not an alias or a dummy directory.
+          with psycopg.connect(os.environ['CODEX_WEB_TEST_POSTGRES_DSN']) as connection:
+              database = Path(connection.execute('SHOW data_directory').fetchone()[0])
+          expected = Path(os.environ['CODEX_WEB_TEST_POSTGRES_DATA_DIRECTORY'])
+          reservation = Path(os.environ['CODEX_WEB_TEST_PRESERVATION_RESERVATION_DIR'])
+          if database != expected or not database.is_absolute():
+              raise SystemExit('postgres_fixture_data_directory_mismatch')
+          for directory in (database, reservation):
+              if any(p.is_symlink() for p in (directory, *directory.parents)):
+                  raise SystemExit('postgres_fixture_symlink_refused')
+              if not directory.resolve(strict=True).is_dir():
+                  raise SystemExit('postgres_fixture_directory_unavailable')
+          if database.stat().st_dev != reservation.stat().st_dev:
+              raise SystemExit('postgres_fixture_reservation_device_mismatch')
+          if not os.access(reservation, os.W_OK | os.X_OK):
+              raise SystemExit('postgres_fixture_reservation_not_writable')
+          print('Actual server PGDATA and writable reservations share the admitted runner filesystem')
+          PY
         if: ${{ needs.changes.outputs.full == 'true' }}
       - name: Exercise PostgreSQL and Redis replicated semantics
         run: python -m unittest tests.test_distributed_backends tests.test_keyed_revisions tests.test_postgres_collection_ranges tests.test_postgres_documents_streaming tests.test_storage_preservation tests.test_recovery_storage_operator
