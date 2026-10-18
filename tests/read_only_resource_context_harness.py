@@ -175,8 +175,8 @@ def create_requester(case,identity,registry,admin,project,resource_ids):
     catalog=AuthorityRoleCatalogDefinition.model_validate(active.payload)
     role=AuthorityRoleDefinition(id='private-context-requester-'+actor.identity_id,name='Private scoped requester',
         description='Private fixture requester authority for admitted inputs and original capacity evidence.',
-        grants=(AuthorityGrant(id='requester.thread-input',capability='api.threads.write',level='execute',
-            project_ids=(project.id,)),*tuple(AuthorityGrant(id='requester.'+str(i),capability=capability,level=level,
+        grants=(AuthorityGrant(id='requester.thread-input.'+actor.identity_id,capability='api.threads.write',level='execute',
+            project_ids=(project.id,)),*tuple(AuthorityGrant(id='requester.'+actor.identity_id+'.'+str(i),capability=capability,level=level,
             project_ids=(project.id,),resource_ids=tuple(resource_ids)) for i,(capability,level) in enumerate((
                 ('resource.read','read'),('api.verifications.write','execute'),('api.verifications.read','read'),
                 ('api.evidence.read','read'),('api.artifacts.read','read'))))))
