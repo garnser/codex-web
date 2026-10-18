@@ -11,6 +11,7 @@ from codex_web.execution_workers import (
     ExecutionAssignment,
     ExecutionWorker,
     ExecutionWorkerState,
+    WorkerEvent,
 )
 from codex_web.storage.sqlite_state import SQLiteStateStore
 from codex_web.storage.state_store import operation_lock
@@ -305,6 +306,18 @@ class ExecutionWorkerStore:
         )
         return [ExecutionAssignment.model_validate(raw) for raw in records.values()], cursor
 
+    def list_assignments(self) -> list[ExecutionAssignment]:
+        """Inspect the assignment collection without taking the mutation lock."""
+        self._ensure_records()
+        return [ExecutionAssignment.model_validate(raw)
+                for raw in self.store.record_items(self.assignment_namespace).values()]
+
+    def list_events(self) -> list[WorkerEvent]:
+        """Historical inspection must not block current lease transactions."""
+        self._ensure_records()
+        return [WorkerEvent.model_validate(raw)
+                for raw in self.store.record_items(self.event_namespace).values()]
+
     def worker(self, worker_id: str) -> ExecutionWorker | None:
         self._ensure_records()
         payload = self.store.record_get(self.worker_namespace, worker_id)
@@ -337,7 +350,7 @@ class ExecutionWorkerStore:
             self.store.record_update(self.worker_namespace, worker_id, apply, default=None)
             return result[0]
 
-    def transition_assignment(self, worker_id, assignment_id, updater):
+    def transition_assignment(self, worker_id, assignment_id, updater, *, retained_event_ids=()):
         """Read actor/assignment and append transition events in one transaction.
 
         A repository lock alone does not fence a second store facade or an SQL
@@ -351,16 +364,49 @@ class ExecutionWorkerStore:
                 raw_assignment = rows[self.assignment_namespace][assignment_id]
                 workers = [ExecutionWorker.model_validate(raw_worker)] if raw_worker else []
                 assignments = [ExecutionAssignment.model_validate(raw_assignment)] if raw_assignment else []
-                state = updater(ExecutionWorkerState(workers=workers, assignments=assignments))
+                before_assignment = assignments[0].model_dump(mode="json") if assignments else None
+                retained = {key: WorkerEvent.model_validate(raw) for key, raw in rows[self.event_namespace].items()
+                            if raw is not None}
+                if any(event.id != key for key, event in retained.items()):
+                    raise ValueError("retained event identity differs from its canonical key")
+                before_events = {key: event.model_dump(mode="json") for key, event in retained.items()}
+                state = updater(ExecutionWorkerState(workers=workers, assignments=assignments,
+                    events=list(retained.values())))
                 if (len(state.assignments) != 1 or state.assignments[0].id != assignment_id
                         or state.workers != workers or state.enrollments):
                     raise ValueError("assignment transition may only change its target and append events")
                 result.append(state)
-                return {self.assignment_namespace: {assignment_id: state.assignments[0].model_dump(mode="json")},
-                        self.event_namespace: {event.id: event.model_dump(mode="json") for event in state.events}}
+                after_events = {event.id: event.model_dump(mode="json") for event in state.events}
+                if any(after_events.get(key) != value for key, value in before_events.items()):
+                    raise ValueError("assignment transition must preserve retained evidence")
+                after_assignment = state.assignments[0].model_dump(mode="json")
+                return {self.assignment_namespace: ({assignment_id: after_assignment}
+                            if after_assignment != before_assignment else {}),
+                        self.event_namespace: {key: value for key, value in after_events.items()
+                                               if key not in before_events}}
             self.store.record_mutate_many({self.worker_namespace: (worker_id,),
-                self.assignment_namespace: (assignment_id,), self.event_namespace: ()}, apply)
+                self.assignment_namespace: (assignment_id,),
+                self.event_namespace: tuple(retained_event_ids)}, apply)
             return result[0]
+
+    def original_claim_event(self, worker_id, assignment_id, fence):
+        """Find retained evidence without monopolizing the worker mutation lock.
+
+        The caller must select this exact event again in its writer transaction;
+        this read alone grants no observation or execution authority.
+        """
+        self._ensure_records()
+        cursor = None
+        while True:
+            records, cursor = self.store.record_page(self.event_namespace, after=cursor, limit=100)
+            for raw in records.values():
+                if (raw.get("event_type") == "assignment_claimed"
+                        and raw.get("worker_id") == worker_id
+                        and raw.get("assignment_id") == assignment_id
+                        and (raw.get("details") or {}).get("fence") == fence):
+                    return WorkerEvent.model_validate(raw)
+            if cursor is None:
+                return None
 
     def update_assignment(
         self,

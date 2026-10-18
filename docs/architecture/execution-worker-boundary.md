@@ -850,6 +850,21 @@ These scheduling boundaries retain the same actor, CSRF, assurance, tenant,
 authority and audit arguments and denial behavior; they grant no authority,
 cache no authorization decision and do not extend supervision deadlines.
 
+Retained worker history must not monopolize the lock used by current heartbeat
+and lease transactions. Bootstrap cancellation selects its current assignment
+and rechecks the observed fence in the canonical writer transaction. Expiry
+recovery scans bounded candidate pages, then rechecks each current lease/status
+in a point transition; each committed target owns its subsequent preserved-file
+workspace release and notification. A concurrent renewal is retained.
+Failure observation finds original claim evidence outside the mutation lock,
+then selects and verifies that exact retained event with the current worker and
+assignment before appending the observation. Missing/pruned claims fail closed;
+retained evidence is immutable and observation does not change lease authority.
+Late validation/renewal authority phases and their bounded timings use the
+existing failure projection. Assignment/event inspectors read their respective
+canonical collections without the mutation lock and project them off-loop,
+retaining tenant/administrator checks, ordering and response contracts.
+
 ### Current migration boundary
 
 This backend is the concrete execution primitive for local worker command
