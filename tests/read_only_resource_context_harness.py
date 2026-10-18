@@ -173,7 +173,7 @@ def create_requester(case,identity,registry,admin,project,resource_ids):
     actor=identity.actor_for_identity(human.id,scope=admin.tenant)
     active=registry.resolve(definition_id=AUTHORITY_ROLE_CATALOG_ID,kind=AUTHORITY_ROLE_CATALOG_KIND)
     catalog=AuthorityRoleCatalogDefinition.model_validate(active.payload)
-    role=AuthorityRoleDefinition(id='private-context-requester',name='Private scoped requester',
+    role=AuthorityRoleDefinition(id='private-context-requester-'+actor.identity_id,name='Private scoped requester',
         description='Private fixture requester authority for admitted inputs and original capacity evidence.',
         grants=(AuthorityGrant(id='requester.thread-input',capability='api.threads.write',level='execute',
             project_ids=(project.id,)),*tuple(AuthorityGrant(id='requester.'+str(i),capability=capability,level=level,
@@ -181,7 +181,7 @@ def create_requester(case,identity,registry,admin,project,resource_ids):
                 ('resource.read','read'),('api.verifications.write','execute'),('api.verifications.read','read'),
                 ('api.evidence.read','read'),('api.artifacts.read','read'))))))
     catalog=catalog.model_copy(update={'roles':(*catalog.roles,role),'bindings':(*catalog.bindings,
-        AuthorityRoleBinding(id='private-context-requester-binding',role_id=role.id,subject_kind='identity',
+        AuthorityRoleBinding(id='private-context-requester-binding-'+actor.identity_id,role_id=role.id,subject_kind='identity',
             subject_id=actor.identity_id,organization_id=admin.organization_id,workspace_id=admin.workspace_id))})
     draft=registry.create_draft(DefinitionDraftCreate(definition_id=AUTHORITY_ROLE_CATALOG_ID,kind=AUTHORITY_ROLE_CATALOG_KIND,
         definition_schema_version='1.0',payload=catalog.model_dump(mode='json'),actor=admin.identity_id,
