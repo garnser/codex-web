@@ -3616,6 +3616,7 @@ core._capture_notification_terminal = lambda message: _capture_notification_resu
 notification_batch_inspection = NotificationBatchInspection(
     execution_preflight_store,
     outcomes=NotificationOutcomeInspection(artifact_evidence_service),
+    queues=turn_queue_repository,
 )
 notification_batch_controls = NotificationBatchRuntimeControls(configuration=configuration_service,
     projects=project_service,profiles=agent_profile_service,execution_profiles=execution_profile_definition_service,

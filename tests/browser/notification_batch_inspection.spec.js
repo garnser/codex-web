@@ -1,5 +1,16 @@
 const { test, expect } = require('@playwright/test');
 
+test('pending queue remains visible without admission history or invented throughput', async ({ page }) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?batchQueue');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+  const queue = page.locator('.message.tool').filter({hasText:'Retained notification queue'});
+  await expect(queue).toContainText('6 queued originals; 1 carry provider-event pins; 5 have no provider-event pin.');
+  await expect(queue).toContainText('Oldest queued original: 7200 seconds.');
+  await expect(queue).toContainText('it is not oldest actionable notification age');
+  await expect(queue).toContainText('does not measure useful throughput');
+  expect(await page.evaluate(() => window.__apiCalls.every(call=>call.method==='GET'))).toBe(true);
+});
+
 for (const phase of ['prepared','prestart_refused','native_outcome_unknown','native_input_started','released']) {
   test(`batch ${phase} exposes originals and uncertainty without individual replay`, async ({ page }) => {
     await page.goto(`http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?disposition=reconciliation_required&batch=${phase}`);

@@ -23,6 +23,8 @@ from codex_web.services.execution_preflight import ExecutionPreflightService
 from codex_web.services.notification_batch_inspection import NotificationBatchInspection
 from codex_web.storage.execution_preflight import ExecutionPreflightStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.storage.turn_queue import TurnQueueRepository
+from codex_web.notification_provenance import ProviderNotificationPin
 
 
 class NotificationBatchInspectionTests(unittest.TestCase):
@@ -140,6 +142,42 @@ class NotificationBatchInspectionTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as error:
             self.history(after="bt/another-scope/entry")
         self.assertEqual(error.exception.status_code, 422)
+
+    def test_queue_visibility_preserves_duplicates_and_separates_pins_from_eligibility(self):
+        queue = TurnQueueRepository(self.state, Path(self.temp.name) / "queue.json")
+        original = self.items[0]
+        pinned = self.items[1].model_copy(update={"provider_notification_pin": ProviderNotificationPin(
+            event_id="missing-event", event_sha256="a" * 64, event_source="gitlab",
+            source_origin="gitlab", provider_event_kind="issue", organization_id="local",
+            workspace_id="default", project_id=self.project.id, work_item_ref="fixture/repo#2",
+            message_sha256="b" * 64)})
+        foreign = original.model_copy(update={"project_id": "foreign", "created_at": -100})
+        queue.put("thread-a", [original, original, pinned, foreign])
+        self.inspector.queues = queue
+        before = queue.get("thread-a")
+        revision = self.state.namespace_revision(self.store.NAMESPACE)
+        result = self.history()["queue"]
+        self.assertEqual(result["original_count"], 3)
+        self.assertEqual(result["provider_pinned_count"], 1)
+        self.assertEqual(result["without_provider_pin_count"], 2)
+        self.assertEqual(result["oldest_age_seconds"], 99)
+        self.assertEqual(result["eligibility"], "requires_current_provenance_authority_and_compatibility_checks")
+        self.assertEqual(queue.get("thread-a"), before)
+        self.assertEqual(self.state.namespace_revision(self.store.NAMESPACE), revision)
+        # Unknown event pins must never become an assertion of actionable work.
+        self.assertNotIn("eligible_count", result)
+
+    def test_empty_queue_is_distinct_from_unavailable_and_foreign_scope_does_not_read_queue(self):
+        self.assertIsNone(self.history()["queue"])
+        calls = []
+        self.inspector.queues = SimpleNamespace(get=lambda thread_id: calls.append(thread_id) or [])
+        result = self.history()["queue"]
+        self.assertEqual(result["original_count"], 0)
+        self.assertIsNone(result["oldest_created_at"])
+        self.assertIsNone(result["oldest_age_seconds"])
+        with self.assertRaises(HTTPException):
+            self.history(actor=self.actor.model_copy(update={"workspace_id": "foreign"}))
+        self.assertEqual(calls, ["thread-a"])
 
     def test_released_history_survives_restart_without_member_pointer(self):
         self.store.transition_notification_batch(

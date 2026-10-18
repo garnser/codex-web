@@ -304,6 +304,19 @@ requirements; this read-only view cannot fulfill them by itself.
 
 ## Structured native result capture
 
+The admission-history response also includes an optional read-only `queue`
+projection of the canonical thread queue, filtered to the authorized Project.
+It counts original entries (including duplicate IDs), provider pins and entries
+without pins, and reports the oldest retained queue timestamp/age. An empty queue
+has null age; unavailable queue inspection has a null projection. This age includes
+human requests and handoffs and must not be presented as oldest actionable
+notification age. A pin count does not attest current source validity, authority
+or batch compatibility. The existing inspector displays these distinctions even
+when no admission history exists. Reading does not retain preflight attempts,
+claim members, backfill pins, submit input or process originals. This additive API
+projection changes no persisted schema or migration/rollback boundary. It does
+not supply the real useful-throughput qualification required by #1307.
+
 New canonically controlled plans use schema1.2 and pin `result_contract_version`
 to1.0. Their native input includes a bounded machine-readable result contract and
 each original's immutable snapshot digest. It does not duplicate original bodies.
