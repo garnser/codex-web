@@ -104,6 +104,13 @@ class WorkerVerificationAdapter:
         if (getattr(record, 'project_id', None) not in (None, assignment.project_id)
                 or not set(record.resource_ids).issubset(set(assignment.resource_ids))):
             self.denied('Original record is outside assignment Project/resource scope')
+        if any(r != self.broker._writable_repository_id(assignment) for r in record.resource_ids):
+            # Resource admission is not requester authority. Evaluate the exact
+            # record read as well as the broker's repository envelope.
+            operation = next(o for o in OPERATIONS if o.id == (
+                'verification.evidence.read' if hasattr(record, 'evidence_type') else 'verification.artifact.read'))
+            self.broker._authorize(assignment, operation,
+                actor=self.broker._requester_actor(assignment), resource_ids=tuple(record.resource_ids))
         if record.retention_expires_at is not None and record.retention_expires_at <= self.broker._clock():
             self.denied('Original record has expired')
         if record.governance_record_id is not None:
@@ -271,6 +278,8 @@ class WorkerVerificationAdapter:
         if (evidence.resource_ids != (resource_id,) or evidence.project_id != assignment.project_id
                 or resource_id not in assignment.resource_ids or resource_id not in item.resource_ids):
             self.denied('Capacity DATABASE requires exact current Work Item/assignment Resource admission')
+        self.broker._authorize(assignment, next(o for o in OPERATIONS if o.id == 'verification.create'),
+            actor=requester, resource_ids=(resource_id,))
         resources = self.broker.action_intents.execution.resources
         resource = resources.get(resource_id, worker)
         catalog = resources.store.load()

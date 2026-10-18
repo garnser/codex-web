@@ -113,6 +113,19 @@ class CapacityWorkerVerificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.evidence.get_evidence(self.original.id,actor=self.admin),self.original)
         self.assertEqual(self.recovery.store.load(),self.original_state)
 
+    async def test_current_requester_authority_evaluated_for_exact_database(self):
+        with patch.object(self.service,'_authorize',wraps=self.service._authorize) as authorize:
+            status,_,body=await self.post()
+        self.assertEqual(status,200,body)
+        calls=[call for call in authorize.call_args_list
+            if call.kwargs.get('resource_ids')==(self.database.id,)]
+        self.assertTrue(calls,'repository authority alone must never authorize capacity Verification')
+        self.assertTrue(any(call.args[1].id=='verification.create' for call in calls))
+        self.assertTrue(any(call.args[1].id=='verification.evidence.read' for call in calls))
+        for call in calls:
+            self.assertEqual(call.kwargs['actor'].identity_id,self.admin.identity_id)
+        self.assertEqual(body['item']['verifier_identity_id'],self.worker_actor.identity_id)
+
     async def test_only_two_supported_methods_no_independence_or_identity_override(self):
         for change in ({'method':'arbitrary-verification'},{'independent':True},
                 {'verifier_identity_id':self.admin.identity_id}):
