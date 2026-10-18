@@ -179,6 +179,38 @@ class ProductionNativeProcedureAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(d.admitted and d.outcome == 'no_match' for d in evidence))
         self.assertTrue(all(d.policy_source.startswith('definition:') for d in evidence))
 
+    async def test_slack_service_admission_keeps_ingress_actor_without_workspace_admin(self):
+        from codex_web.identity import AuthenticationActor, AuthenticationAssurance, PrincipalKind
+        from codex_web.services.identity import AuthorizationError
+        ingress = AuthenticationActor(identity_id='system-bot-runtime', principal_kind=PrincipalKind.SERVICE,
+            organization_id=self.actor.organization_id, workspace_id=self.actor.workspace_id,
+            assurance=AuthenticationAssurance.SERVICE_TOKEN, service_scopes=('secret:use',))
+        with self.assertRaises(AuthorizationError):
+            self.workspaces.get(self.workspace.id, ingress)
+        admission = NativeProcedureAdmissionService(self.discovery, self.workers, self.history,
+            self.actor, self.profiles)
+        for source in ('slack', 'queued:slack', 'work-item-handoff'):
+            discovery, _ = await admission(project=self.project, actor=ingress, thread_id='slack-thread',
+                execution_id=self.native_assignment.execution_id, assignment_id=self.native_assignment.id,
+                sandbox='workspace-write', source=source)
+            self.assertTrue(discovery.admitted)
+            self.assertEqual(discovery.actor_identity_id, ingress.identity_id)
+            self.assertEqual(discovery.policy_source.split(':')[0], 'definition')
+        # Internal inspection must not extend the caller's public authority.
+        with self.assertRaises(AuthorizationError):
+            self.workspaces.get(self.workspace.id, ingress)
+
+    async def test_internal_workspace_read_rejects_foreign_tenant_metadata(self):
+        from unittest.mock import patch
+        workspace = self.workspace.model_copy(update={'organization_id': 'foreign'})
+        admission = NativeProcedureAdmissionService(self.discovery, self.workers, self.history,
+            self.actor, self.profiles)
+        with patch.object(self.workspaces, 'get', return_value=workspace):
+            with self.assertRaises(ExecutionPrestartRefusal):
+                await admission(project=self.project, actor=self.actor, thread_id='foreign-workspace',
+                    execution_id=self.native_assignment.execution_id, assignment_id=self.native_assignment.id,
+                    sandbox='workspace-write', source='slack')
+
     async def test_message_api_retains_original_when_assignment_history_is_exhausted(self):
         import httpx
         from fastapi import FastAPI

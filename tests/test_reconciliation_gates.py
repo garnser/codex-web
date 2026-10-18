@@ -253,3 +253,43 @@ class ReconciliationGateServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReconciliationReadinessActorTests(unittest.TestCase):
+    def test_runtime_probe_satisfies_real_worker_admin_check_without_elevating_caller(self):
+        from types import SimpleNamespace
+        from codex_web.services.reconciliation_gates import project_reconciliation_readiness
+        from codex_web.services.execution_workers import ExecutionWorkerService
+        from codex_web.services.identity import AuthorizationError
+        actor = _actor().model_copy(update={'identity_id': 'system-bot-runtime',
+            'principal_kind': PrincipalKind.SERVICE, 'service_scopes': ('secret:use',)})
+        scopes = []
+        def bootstrap(**kwargs):
+            scopes.append(kwargs['scope'])
+            return actor.model_copy(update={'identity_id': kwargs['identity_id'],
+                'service_scopes': kwargs['service_scopes']})
+        def evaluate(project_id, *, actor, record):
+            ExecutionWorkerService._require_admin(actor)
+            self.assertFalse(record)
+            self.assertEqual(project_id, 'project-a')
+            return SimpleNamespace(model_dump=lambda **kwargs: {'execution_ready': True})
+        result = project_reconciliation_readiness('project-a', actor,
+            projects=SimpleNamespace(get=lambda project_id, scope: self.assertEqual(scope, actor.tenant)),
+            identity=SimpleNamespace(bootstrap_service_actor=bootstrap),
+            readiness=SimpleNamespace(evaluate=evaluate))
+        self.assertTrue(result['execution_ready'])
+        self.assertEqual(scopes, [actor.tenant])
+        with self.assertRaises(AuthorizationError):
+            ExecutionWorkerService._require_admin(actor)
+
+    def test_foreign_project_refused_before_internal_actor_is_created(self):
+        from types import SimpleNamespace
+        from codex_web.services.reconciliation_gates import project_reconciliation_readiness
+        def denied(*args):
+            raise LookupError('Project not found')
+        def unexpected(**kwargs):
+            self.fail('unscoped internal principal created')
+        with self.assertRaises(LookupError):
+            project_reconciliation_readiness('foreign', _actor(),
+                projects=SimpleNamespace(get=denied),
+                identity=SimpleNamespace(bootstrap_service_actor=unexpected), readiness=None)

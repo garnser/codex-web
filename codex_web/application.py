@@ -1464,21 +1464,9 @@ app.include_router(
 
 
 def _reconciliation_readiness(project_id, actor):
-    # First validate that the requesting/runtime actor belongs to the Project
-    # scope. Readiness itself contains administrative worker/secret checks, so
-    # evaluate it through a narrowly scoped internal control-plane principal.
-    project_service.get(project_id, actor.tenant)
-    control_actor = identity_service.bootstrap_service_actor(
-        identity_id="reconciliation-gate-runtime",
-        name="Reconciliation Gate Runtime",
-        scope=actor.tenant,
-        service_scopes=("identity:admin",),
-    )
-    return project_readiness_service.evaluate(
-        project_id,
-        actor=control_actor,
-        record=False,
-    ).model_dump(mode="json")
+    from codex_web.services.reconciliation_gates import project_reconciliation_readiness
+    return project_reconciliation_readiness(project_id, actor, projects=project_service,
+        identity=identity_service, readiness=project_readiness_service)
 
 
 reconciliation_gate_service = ReconciliationGateService(

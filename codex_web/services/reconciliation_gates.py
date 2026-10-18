@@ -23,6 +23,16 @@ from codex_web.storage.state_store import StateStore
 ReadinessProbe = Callable[[str, AuthenticationActor], dict[str, Any]]
 
 
+def project_reconciliation_readiness(project_id, actor, *, projects, identity, readiness):
+    """Inspect one validated tenant's readiness without elevating ingress callers."""
+    projects.get(project_id, actor.tenant)
+    control_actor = identity.bootstrap_service_actor(
+        identity_id="reconciliation-gate-runtime", name="Reconciliation Gate Runtime",
+        scope=actor.tenant, service_scopes=("identity:admin", "execution-worker:admin"),
+    )
+    return readiness.evaluate(project_id, actor=control_actor, record=False).model_dump(mode="json")
+
+
 class ReconciliationGateError(RuntimeError):
     pass
 
