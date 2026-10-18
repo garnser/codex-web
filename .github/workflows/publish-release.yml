@@ -265,7 +265,7 @@ jobs:
             -p codex-web-recovery \
             -f compose.yaml \
             -f compose.recovery.yaml \
-            restart codex-web
+            restart codex-web nginx
 
           BASE_URL="$BASE_URL" \
             bash scripts/qualify-clean-install-onboarding.sh verify-restart \

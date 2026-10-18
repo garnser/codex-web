@@ -27,7 +27,7 @@ After the repository tests workflow succeeds on main, the release workflow:
 6. executes the Slack Socket Mode, stale-turn recovery, runtime-health hot-path and journal-lifecycle regression suites inside the exact candidate image;
 7. launches the candidate through repository-controlled compose.yaml + compose.recovery.yaml + nginx;
 8. reuses the clean-install onboarding qualification through nginx;
-9. verifies restart persistence and repeated health/status latency;
+9. restarts the application and nginx together, then verifies persistence and repeated health/status latency;
 10. pushes only the immutable sha-<commit> candidate with BuildKit SBOM and mode=max provenance attestations;
 11. uploads sanitized candidate evidence.
 
@@ -89,6 +89,20 @@ change global Podman configuration. Operator qualification observed the official
 Docker Compose v5.6.0 provider rendering these tracked files; Python
 podman-compose 1.5.0 rejected `ResetTag`. These observations do not establish a
 minimum supported provider version. See the [Podman Compose manual](https://docs.podman.io/en/latest/markdown/podman-compose.1.html).
+
+For a supported recovery restart, restart both services:
+
+    docker compose -f compose.yaml -f compose.recovery.yaml restart codex-web nginx
+
+With rootless Podman, use the same verified provider selection:
+
+    PODMAN_COMPOSE_PROVIDER=/absolute/path/to/docker-compose podman compose -f compose.yaml -f compose.recovery.yaml restart codex-web nginx
+
+An app-only restart on Podman may change the application's IP while nginx keeps
+its startup-resolved address, returning 502 even when the app is directly ready.
+It does not qualify as recovered until nginx is also restarted and the existing
+onboarding restart and recovery checks pass through nginx. The release workflow
+qualifies this app-and-nginx restart; transparent app-only restart is not claimed.
 
 Production TLS/authentication can remain in the operator's outer nginx/load-balancer boundary; the checked-in recovery nginx file defines the qualified reverse-proxy/WebSocket behavior.
 
