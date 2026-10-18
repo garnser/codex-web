@@ -1,5 +1,7 @@
 """Bounded recovery with actual canonical rows and concurrent facade races."""
 import unittest
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -13,6 +15,7 @@ from codex_web.services.identity import AuthorizationError
 from codex_web.storage.execution_workers import ExecutionWorkerStore
 from tests import test_execution_workers as worker_fixtures
 from codex_web.storage.sqlite_state import SQLiteStateStore
+from codex_web.storage.state_store import StorageOperationBudget, storage_operation_budget
 
 
 class BoundedWorkerRecoveryTests(unittest.TestCase):
@@ -146,5 +149,36 @@ class BoundedWorkerRecoveryTests(unittest.TestCase):
         with patch.object(self.f.service.store, '_load_unlocked', side_effect=AssertionError('inspection held mutation lock')):
             assignments = self.f.service.list_assignments(self.f.admin, worker_id=self.f.worker.id)
             events = self.f.service.events(self.f.admin)
+            workers = self.f.service.list_workers(self.f.admin)
+            enrollments = self.f.service.list_enrollments(self.f.admin)
+            resolved = self.f.service.assignment_for_execution(a.execution_id, actor=self.f.admin)
+        self.assertEqual(workers, before.workers)
+        self.assertEqual(enrollments, before.enrollments)
+        self.assertEqual(resolved.id, a.id)
         self.assertEqual(assignments, before.assignments)
         self.assertEqual(events, sorted(before.events, key=lambda e: (e.occurred_at, e.id), reverse=True))
+
+    def test_slow_retained_snapshot_cannot_starve_current_worker_heartbeat(self):
+        self.f._assignment()
+        entered = threading.Event(); release = threading.Event()
+        original = self.f.service.store._load_unlocked
+        def slow_history(**kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError('snapshot did not release')
+            return original(**kwargs)
+        with patch.object(self.f.service.store, '_load_unlocked', side_effect=slow_history):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                reader = pool.submit(self.f.service.store.load)
+                try:
+                    self.assertTrue(entered.wait(2))
+                    token = storage_operation_budget.set(StorageOperationBudget(1))
+                    try:
+                        current = self.f.service.heartbeat(self.f.worker.id,
+                            WorkerHeartbeatRequest(version='renewal-probe'), actor=self.f.worker_actor)
+                    finally:
+                        storage_operation_budget.reset(token)
+                    self.assertEqual(current.version, 'renewal-probe')
+                    self.assertFalse(reader.done(), 'heartbeat must run while history is still busy')
+                finally:
+                    release.set(); reader.result(timeout=5)

@@ -111,14 +111,14 @@ class OperatorHttpResponsivenessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_worker_assignment_and_event_inspection_leave_observer_runnable(self):
         from codex_web.api.execution_workers import build_execution_workers_router
-        for view in ('assignments', 'events'):
+        for view in ('workers', 'assignments', 'events', 'enrollments'):
             with self.subTest(view=view):
                 gate = self.lease_callback_gate([])
-                service = SimpleNamespace(list_assignments=gate, events=gate)
+                service = SimpleNamespace(list_workers=gate, list_assignments=gate, events=gate, list_enrollments=gate)
                 app = FastAPI(); app.include_router(build_execution_workers_router(service))
                 with patch('codex_web.api.execution_workers.request_actor', return_value=self.actor):
                     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
-                        response = await client.get('/api/execution-workers/' + view,
+                        response = await client.get('/api/execution-workers' + ('' if view == 'workers' else '/' + view),
                             params={'worker_id': 'exact-worker'} if view == 'assignments' else {})
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.json(), {'items': []})

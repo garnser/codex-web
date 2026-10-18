@@ -371,7 +371,7 @@ class ExecutionWorkerService:
     ) -> ExecutionAssignment:
         matches = [
             item
-            for item in self.store.load().assignments
+            for item in self.store.list_assignments()
             if self._same_scope(item, actor)
             and item.execution_id == execution_id
         ]
@@ -412,7 +412,7 @@ class ExecutionWorkerService:
     def list_workers(self, actor: AuthenticationActor) -> list[ExecutionWorker]:
         self._require_admin(actor)
         return sorted(
-            [item for item in self.store.load().workers if self._same_scope(item, actor)],
+            [item for item in self.store.list_workers() if self._same_scope(item, actor)],
             key=lambda item: (item.registered_at, item.id),
             reverse=True,
         )
@@ -425,7 +425,7 @@ class ExecutionWorkerService:
         return sorted(
             [
                 item
-                for item in self.store.load().enrollments
+                for item in self.store.list_enrollments()
                 if self._same_scope(item, actor)
             ],
             key=lambda item: (item.created_at, item.id),
@@ -714,7 +714,7 @@ class ExecutionWorkerService:
         existing = next(
             (
                 item
-                for item in self.store.load().workers
+                for item in self.store.list_workers()
                 if self._same_scope(item, actor)
                 and item.service_identity_id == service_identity_id
                 and item.pool == "local"

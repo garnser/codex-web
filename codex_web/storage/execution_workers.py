@@ -11,6 +11,7 @@ from codex_web.execution_workers import (
     ExecutionAssignment,
     ExecutionWorker,
     ExecutionWorkerState,
+    ExecutionWorkerEnrollmentGrant,
     WorkerEvent,
 )
 from codex_web.storage.sqlite_state import SQLiteStateStore
@@ -262,8 +263,10 @@ class ExecutionWorkerStore:
         )
 
     def load(self) -> ExecutionWorkerState:
-        with operation_lock(self._lock):
-            return self._load_unlocked()
+        # Read-only projections cannot monopolize the mutation lock while
+        # decoding retained history. Authority-changing operations recheck
+        # their current rows under the canonical database writer.
+        return self._load_unlocked()
 
     def load_execution_state(self) -> ExecutionWorkerState:
         """Read fresh validated workers/assignments without retained history.
@@ -271,21 +274,19 @@ class ExecutionWorkerStore:
         Recovery uses ownership, lifecycle, lease and fence state; event and
         enrollment catalogs remain available through the full load method.
         """
-        with operation_lock(self._lock):
-            return self._load_unlocked(include_history=False)
+        return self._load_unlocked(include_history=False)
 
     def list_workers(self) -> list[ExecutionWorker]:
         """Read fresh validated workers without assignments or history."""
-        with operation_lock(self._lock):
-            self._ensure_records()
-            records = self.store.record_items(self.worker_namespace)
-            return [
-                ExecutionWorker.model_validate(payload)
-                for payload in sorted(
-                    records.values(),
-                    key=lambda item: (item.get("registered_at", 0), item.get("id", "")),
-                )
-            ]
+        self._ensure_records()
+        records = self.store.record_items(self.worker_namespace)
+        return [
+            ExecutionWorker.model_validate(payload)
+            for payload in sorted(
+                records.values(),
+                key=lambda item: (item.get("registered_at", 0), item.get("id", "")),
+            )
+        ]
 
     def assignment(self, assignment_id: str) -> ExecutionAssignment | None:
         self._ensure_records()
@@ -317,6 +318,11 @@ class ExecutionWorkerStore:
         self._ensure_records()
         return [WorkerEvent.model_validate(raw)
                 for raw in self.store.record_items(self.event_namespace).values()]
+
+    def list_enrollments(self) -> list[ExecutionWorkerEnrollmentGrant]:
+        self._ensure_records()
+        return [ExecutionWorkerEnrollmentGrant.model_validate(raw)
+                for raw in self.store.record_items(self.enrollment_namespace).values()]
 
     def worker(self, worker_id: str) -> ExecutionWorker | None:
         self._ensure_records()
