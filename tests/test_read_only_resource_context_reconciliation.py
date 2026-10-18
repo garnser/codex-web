@@ -367,7 +367,18 @@ class RetainedNullContextSteerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(starts),1)
         active=harness.host.active['same-thread']
         self.assertIsNone(active.resource_context)
-        self.assertEqual(active.execution_id,original.execution_id)
+        # Existing bootstrap owns execution custody; this retained input has a
+        # separate request identity. Verify both instead of conflating them.
+        assignment=session.validate_current()
+        self.assertEqual(active.execution_id,assignment.execution_id)
+        self.assertEqual(active.assignment_id,assignment.id)
+        self.assertEqual(active.fence,assignment.fence)
+        self.assertNotEqual(active.execution_id,original.execution_id)
+        recorded=harness.runtime.last_inputs['same-thread']
+        self.assertEqual(recorded['execution_id'],assignment.execution_id)
+        self.assertEqual(recorded['requested_execution_id'],original.execution_id)
+        self.assertEqual(recorded['assignment_id'],assignment.id)
+        self.assertEqual(recorded['fence'],assignment.fence)
         self.assertEqual(active.reply_target,original.reply_target)
         self.assertEqual(active.agent_profile.profile_id,original.agent_profile_id)
         self.assertEqual(active.agent_profile.profile_revision,original.agent_profile_revision)
