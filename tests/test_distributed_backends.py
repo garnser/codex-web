@@ -25,6 +25,39 @@ POSTGRES_DSN = os.environ.get("CODEX_WEB_TEST_POSTGRES_DSN")
 REDIS_URL = os.environ.get("CODEX_WEB_TEST_REDIS_URL")
 
 
+@unittest.skipUnless(POSTGRES_DSN, "real PostgreSQL is required")
+class PostgresBotBindingMergeTests(unittest.TestCase):
+    def test_same_binding_activity_and_controls_merge_across_connections(self):
+        from codex_web.models import BotBinding
+        from codex_web.storage.bot_state import ModelListRepository
+
+        with tempfile.TemporaryDirectory() as directory:
+            namespace = 'binding-merge-' + uuid.uuid4().hex
+            repositories = []
+            for number in range(2):
+                store = PostgresStateStore(POSTGRES_DSN)
+                self.addCleanup(store.close)
+                repositories.append(ModelListRepository(store, namespace=namespace,
+                    legacy_path=Path(directory) / f'bindings-{number}.json', model=BotBinding))
+            first, second = repositories
+            first.save([BotBinding(id='shared', provider='slack', external_conversation_id='C1',
+                thread_id='original', created_at=1, updated_at=1)])
+            activity = first.load()
+            controls = second.load()
+            controls[0].sandbox = 'danger-full-access'
+            controls[0].approval_policy = 'never'
+            controls[0].thread_id = 'recovered'
+            controls[0].updated_at = 20
+            second.save(controls)
+            activity[0].updated_at = 30
+            first.save(activity)
+            result = second.load()[0]
+            self.assertEqual(result.sandbox, 'danger-full-access')
+            self.assertEqual(result.approval_policy, 'never')
+            self.assertEqual(result.thread_id, 'recovered')
+            self.assertEqual(result.updated_at, 30)
+
+
 @unittest.skipUnless(
     POSTGRES_DSN and REDIS_URL,
     "real distributed backends are only exercised when CI supplies PostgreSQL and Redis",

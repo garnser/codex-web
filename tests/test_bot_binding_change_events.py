@@ -99,6 +99,12 @@ class BotBindingChangeEventTests(unittest.TestCase):
         # A canonical settings update committed while inbound delivery awaited IO.
         stored[0].sandbox = 'danger-full-access'
         stored[0].approval_policy = 'never'
+        stored[0].route_prefix = 'Current owner'
+        stored[0].thread_name = 'Current name'
+        stored[0].is_master = True
+        stored[0].is_primary_channel = True
+        stored[0].post_in_thread = True
+        stored[0].connection_id = 'current-connection'
         stale.updated_at = 10.0
 
         result = service.upsert(stale)
@@ -107,6 +113,12 @@ class BotBindingChangeEventTests(unittest.TestCase):
         self.assertEqual(result.approval_policy, 'never')
         self.assertEqual(stored[0].sandbox, 'danger-full-access')
         self.assertEqual(stored[0].approval_policy, 'never')
+        self.assertEqual(result.route_prefix, 'Current owner')
+        self.assertEqual(result.thread_name, 'Current name')
+        self.assertTrue(result.is_master)
+        self.assertTrue(result.is_primary_channel)
+        self.assertTrue(result.post_in_thread)
+        self.assertEqual(result.connection_id, 'current-connection')
         self.assertEqual(stored[0].updated_at, 10.0)
 
 
