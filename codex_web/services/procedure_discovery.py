@@ -427,9 +427,15 @@ class NativeProcedureAdmissionService:
                 return "native_tools", source
             if not assignment.execution_workspace_id or self.workers.workspaces is None:
                 return "native_tools", source
-            workspace = self.workers.workspaces.get(assignment.execution_workspace_id, actor)
+            # The ingress actor (for example Slack's service principal) is not
+            # the workspace owner. Inspect only this canonical assignment's
+            # workspace through the existing control-plane read boundary;
+            # retain the requesting actor for discovery and all decisions.
+            workspace = self.workers.workspaces.get(assignment.execution_workspace_id, self.control_actor)
             lease = self.workers.workspaces.store.lease(workspace.lease_id)
-            if (workspace.status != "active" or workspace.execution_id != assignment.execution_id
+            if ((workspace.organization_id, workspace.workspace_id) !=
+                    (actor.organization_id, actor.workspace_id)
+                or workspace.status != "active" or workspace.execution_id != assignment.execution_id
                 or workspace.project_id != project.id or workspace.subject != assignment.subject
                 or set(assignment.resource_ids) - set(workspace.resource_ids)
                 or lease is None or lease.released_at is not None or lease.expires_at <= observed

@@ -372,3 +372,13 @@ retained or acknowledged. Rotating a credential in place cannot make an old
 socket inherit a new account's canonical provenance. Source drift closes the
 old socket through the existing bounded authentication/reconnect lifecycle;
 it produces neither ACK nor routing under the changed source.
+
+
+Native admission retains the canonical ingress service actor for Skill discovery
+and attribution. The preflight engine inspects only the already selected
+assignment's workspace using its existing internal control actor, then checks the
+workspace tenant, execution, subject, resources and live lease. This inspection
+does not grant the Slack service workspace administration or relax procedure
+requirements. Project reconciliation readiness similarly validates tenant scope
+before using an internal principal with the worker and secret-metadata inspection scopes required by
+the readiness service; caller permissions and backfill approval remain unchanged.
