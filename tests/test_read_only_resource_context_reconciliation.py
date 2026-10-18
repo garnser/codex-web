@@ -118,6 +118,7 @@ class ReconciledReadContextTests(unittest.IsolatedAsyncioTestCase):
         active=f.execution_profiles.registry.resolve(definition_id=AUTHORITY_ROLE_CATALOG_ID,kind=AUTHORITY_ROLE_CATALOG_KIND)
         catalog=AuthorityRoleCatalogDefinition.model_validate(active.payload)
         role=AuthorityRoleDefinition(id='synthetic-context-coordination',name='Synthetic context coordination',
+            description='Private fixture authority for canonical handoff and acknowledgement.',
             grants=tuple(AuthorityGrant(id='context.'+name,capability='work_item.'+name,level='execute',
                 project_ids=(project.id,)) for name in ('handoff','acknowledge')))
         catalog=catalog.model_copy(update={'roles':(*catalog.roles,role),'bindings':(*catalog.bindings,
