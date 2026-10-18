@@ -70,6 +70,7 @@ class ReconciledReadContextTests(unittest.IsolatedAsyncioTestCase):
             'authoritative_task_source':TaskSourceConfiguration(source_type='github',
                 source_instance='https://api.github.com',scope='fixture/reconciled')})
         f.project=project;f.projects.project=project
+        f._publish_secret(scope_id=project.id)
         f.resources.bind_project(project=project,resource_id=f.repository.id,actor=f.actor)
         reviewer=self.profiles.create(AgentProfileCreate(profile_id='codex-web-vp-engineering',name='Synthetic current VP',
             execution_profile_id='repository-write'),actor=f.actor)
