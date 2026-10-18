@@ -435,9 +435,9 @@ class ReadOnlyResourceContextTests(unittest.IsolatedAsyncioTestCase):
             adapter.context_requester(value.model_copy(update={'resource_context':absent}))
 
 
-    async def test_project_binding_without_work_item_membership_refuses(self):
+    async def test_selector_without_current_owner_does_not_grant_context(self):
         item=self.items.get(self.ref)
-        self.items.put(self.ref,item.model_copy(update={'resource_ids':[self.f.repository.id]}))
+        self.items.put(self.ref,item.model_copy(update={'resource_ids':[self.f.repository.id],'current_owner':'foreign-owner'}))
         self.assertIn(self.database.id,self.f.resources.resource_ids_for_project(self.f.project))
         with self.assertRaises(TurnExecutionBindingError):self.prepare()
         self.assertEqual(self.f.workspaces.list(self.f.actor),[])
@@ -457,11 +457,13 @@ class ReadOnlyResourceContextTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(model.model_validate(encoded).resource_context,self.context)
 
 
-    async def test_membership_removed_after_admission_denies_current_session_scope(self):
+    async def test_project_binding_removed_after_admission_denies_current_session_scope(self):
         binding=self.prepare()
         assignment=self.f.workers.store.assignment(binding.assignment_id)
-        item=self.items.get(self.ref)
-        self.items.put(self.ref,item.model_copy(update={'resource_ids':[self.f.repository.id]}))
+        def unbind(state):
+            state.project_bindings=[binding for binding in state.project_bindings if binding.resource_id!=self.database.id]
+            return state
+        self.f.resources.store.update(unbind)
         with self.assertRaises(TurnExecutionBindingError):
             self.f.service.validate_assignment_resource_context(assignment)
         self.assertEqual(self.f.workers.store.assignment(binding.assignment_id).resource_context,self.context)

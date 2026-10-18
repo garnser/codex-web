@@ -3159,7 +3159,6 @@ class TurnExecutionService:
                 sandbox_policy=resume_params.get("sandboxPolicy"),
                 execution_id=canonical_execution_id,
                 assignment_id=assignment_id,
-                resource_context=resource_context,
                 execution_workspace_id=workspace_id,
                 worker_id=worker_id,
                 model=effective_runtime_model,

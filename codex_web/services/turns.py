@@ -398,7 +398,11 @@ class TurnService:
                 bootstrap=self.execution._bootstrap_binding_for_thread(thread_id)
                 assignment=self.execution._assignment_record(bootstrap.assignment_id) if bootstrap else None
                 current_profile=getattr(assignment,'agent_profile',None)
-            binding_service.validate_resource_context(resource_context,project,current_profile)
+            from codex_web.services.turn_execution_binding import TurnExecutionBindingError
+            try:
+                binding_service.validate_resource_context(resource_context,project,current_profile)
+            except TurnExecutionBindingError as exc:
+                raise HTTPException(status_code=409,detail=exc.public()) from None
         profile_execution_id = (
             profile.execution_profile_id
             if profile is not None

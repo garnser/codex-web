@@ -41,7 +41,7 @@ from codex_web.execution_workspaces import (
 )
 from codex_web.identity import AuthenticationActor, MembershipRole, PrincipalKind, TenantScope
 from codex_web.models import Project
-from codex_web.resources import Resource, ResourceType
+from codex_web.resources import Resource, ResourceLifecycle, ResourceType
 from codex_web.services.identity import AuthorizationError
 from codex_web.services.resources import ResourceCatalogService, ResourceNotFoundError
 from codex_web.storage.execution_workspaces import ExecutionWorkspaceStateStore

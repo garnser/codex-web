@@ -71,6 +71,11 @@ class ReconciledReadContextTests(unittest.IsolatedAsyncioTestCase):
                 source_instance='https://api.github.com',scope='fixture/reconciled')})
         f.project=project;f.projects.project=project
         f.resources.bind_project(project=project,resource_id=f.repository.id,actor=f.actor)
+        reviewer=self.profiles.create(AgentProfileCreate(profile_id='codex-web-vp-engineering',name='Synthetic current VP',
+            execution_profile_id='repository-write'),actor=f.actor)
+        self.profile=reviewer
+        self.pin=AgentProfileExecutionBinding(profile_id=reviewer.profile_id,profile_revision=reviewer.revision,
+            profile_record_id=reviewer.record_id,execution_profile_id=reviewer.execution_profile_id)
         developer=self.profiles.create(AgentProfileCreate(profile_id='context-developer',name='Synthetic Developer',
             execution_profile_id='repository-write'),actor=f.actor)
         self.developer_pin=AgentProfileExecutionBinding(profile_id=developer.profile_id,
@@ -109,7 +114,7 @@ class ReconciledReadContextTests(unittest.IsolatedAsyncioTestCase):
         # Fixture-only canonical Role publication for the real worker principal;
         # no production grant/catalog or principal mutation is performed.
         worker_actor=f.identity.bootstrap_service_actor(identity_id=f.worker.service_identity_id,
-            name='Private existing worker',scope=f.actor.tenant,service_scopes=('execution-worker:run',))
+            name='Private existing worker',scope=f.actor.tenant,service_scopes=('execution-worker:run','secret:use'))
         active=f.execution_profiles.registry.resolve(definition_id=AUTHORITY_ROLE_CATALOG_ID,kind=AUTHORITY_ROLE_CATALOG_KIND)
         catalog=AuthorityRoleCatalogDefinition.model_validate(active.payload)
         role=AuthorityRoleDefinition(id='synthetic-context-coordination',name='Synthetic context coordination',
@@ -186,10 +191,10 @@ class ReconciledReadContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(accepted.validation_owner,'quinn')
         self.assertEqual(accepted.handoff.status,'accepted')
         self.assertEqual(accepted.source_projection.status,'succeeded')
-        # A real Project binding is necessary but not yet WorkItem membership.
+        # Optional supported source reconciliation materializes flat membership too.
+        # It is not required for the independently admitted immutable context.
         f.resources.bind_project(project=f.project,resource_id=self.database.id,actor=f.actor)
         self.assertNotIn(self.database.id,self.items.get(self.ref).resource_ids)
-        with self.assertRaises(TurnExecutionBindingError):self.prepare()
         before=accepted.handoff.model_dump(mode='json')
         from codex_web.api.work_items import build_work_items_router
         from codex_web.api.authorization import install_api_authorization
@@ -241,6 +246,71 @@ class ReconciledReadContextTests(unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'),'isolated PostgreSQL DSN required')
 class PostgresReconciledReadContextTests(_PostgresFixture,ReconciledReadContextTests):
+    def setUp(self):
+        with patch.object(binding_fixture,'SQLiteStateStore',self.state_store_factory):
+            super().setUp()
+
+
+class FreshPublicReadContextTests(unittest.IsolatedAsyncioTestCase):
+    setUp=fixtures.ReadOnlyResourceContextTests.setUp
+    prepare=fixtures.ReadOnlyResourceContextTests.prepare
+    _setup_source=ReconciledReadContextTests._setup_source
+    _claim=ReconciledReadContextTests._claim
+    _dispatch=ReconciledReadContextTests._dispatch
+
+    async def test_fresh_public_route_after_genuine_ack_and_terminal_repo_binding(self):
+        from codex_web.services.turn_execution_binding import TurnExecutionBindingError
+        from tests.read_only_resource_context_harness import NativeContextHarness,create_requester
+        self._setup_source();f=self.f;f.database=self.database
+        f.resources.bind_project(project=f.project,resource_id=self.database.id,actor=f.actor)
+        requester=create_requester(self,f.identity,f.execution_profiles.registry,f.actor,f.project,
+            (f.repository.id,self.database.id))
+        developer=f.service.prepare_bootstrap(bootstrap_id='fresh-dev',execution_id='fresh-dev-exec',
+            project_id=f.project.id,sandbox='workspace-write',approval_policy='on-request',
+            explicit_repository_id=f.repository.id,agent_profile=self.developer_pin)
+        dev=self._claim(developer)
+        await self._dispatch(dev,'handoff',{'from_agent':dev.agent_profile.profile_id,
+            'to_agent':'codex-web-vp-engineering','reason':'Private actual bounded VP recipient task'})
+        pending=self.items.get(self.ref)
+        harness=NativeContextHarness(self,f,items=self.items,profiles=self.profiles,pin=self.pin,bindings=self.bindings,
+            requester=requester,worker_actor=self.worker_actor,ref=self.ref)
+        denied=await harness.submit()
+        self.assertEqual(denied.status_code,409)
+        self.assertEqual(harness.started_assignments,[])
+        self.assertEqual(harness.host._thread_queue('same-thread'),[])
+        f.workers.cancel_bootstrap(dev.id,AssignmentCancelRequest(expected_fence=dev.fence,
+            reason='Private terminal sender custody'),actor=f.actor)
+        reviewer=f.service.prepare_bootstrap(bootstrap_id='fresh-vp-old',execution_id='fresh-vp-old-exec',
+            project_id=f.project.id,sandbox='workspace-write',approval_policy='on-request',
+            explicit_repository_id=f.repository.id,agent_profile=self.pin)
+        vp=self._claim(reviewer)
+        self.assertNotIn(self.database.id,vp.resource_ids)
+        await self._dispatch(vp,'ack',{'actor':vp.agent_profile.profile_id,
+            'expected_handoff_requested_at':pending.handoff.requested_at,'accepted':True})
+        self.assertEqual(self.items.get(self.ref).current_owner,'codex-web-vp-engineering')
+        self.assertNotIn(self.database.id,self.items.get(self.ref).resource_ids)
+        self.bindings.bind(bootstrap_id='fresh-vp-old',thread_id='same-thread',execution_id=reviewer.execution_id,
+            assignment_id=reviewer.assignment_id,execution_workspace_id=reviewer.workspace_id,actor=f.actor)
+        terminal=f.workers.cancel_bootstrap(vp.id,AssignmentCancelRequest(expected_fence=vp.fence,
+            reason='Private terminal repo-only scope rollover'),actor=f.actor)
+        before=[a.id for a in f.workers.store.load().assignments if a.resource_context is not None]
+        self.assertEqual(before,[])
+        actual,session=await harness.finish_one()
+        self.assertNotEqual(actual.id,vp.id)
+        self.assertEqual(actual.resource_context.requester_identity_id,requester.identity_id)
+        self.assertEqual(actual.agent_profile.profile_id,'codex-web-vp-engineering')
+        workspace=f.workspaces.get(actual.execution_workspace_id,f.actor)
+        lease=f.workspaces.store.lease(workspace.lease_id)
+        self.assertEqual(lease.resource_modes[self.database.id],'read')
+        self.assertEqual(lease.resource_modes[f.repository.id],'write')
+        self.assertEqual(f.workers.store.assignment(vp.id).fence,terminal.fence)
+        self.assertNotIn(self.database.id,self.items.get(self.ref).resource_ids)
+        self.assertEqual(self.items.get(self.ref).validation_owner,'quinn')
+        self.assertEqual(session.validate_current(),actual)
+
+
+@unittest.skipUnless(os.environ.get('CODEX_WEB_TEST_POSTGRES_DSN'),'isolated PostgreSQL DSN required')
+class PostgresFreshPublicReadContextTests(_PostgresFixture,FreshPublicReadContextTests):
     def setUp(self):
         with patch.object(binding_fixture,'SQLiteStateStore',self.state_store_factory):
             super().setUp()

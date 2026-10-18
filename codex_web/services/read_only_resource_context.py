@@ -29,8 +29,8 @@ class ReadOnlyResourceContextAdmission:
         for resource_id in context.read_only_resource_ids:
             resource=self.resources.get(resource_id,actor)
             if (resource.resource_type==ResourceType.REPOSITORY or resource.lifecycle!=ResourceLifecycle.ACTIVE
-                    or resource_id not in associated or resource_id not in item.resource_ids):
-                raise AuthorizationError('Active nonrepository Resource must belong to current Project and Work Item')
+                    or resource_id not in associated):
+                raise AuthorizationError('Active nonrepository Resource must belong to current Project')
             decision=self.authority.evaluate(AuthorityEvaluationRequest(capability='resource.read',
                 level=AuthorityLevel.READ,project_id=project.id,resource_ids=(resource_id,)),actor=actor)
             if decision.outcome!=AuthorityDecisionOutcome.ALLOW:
