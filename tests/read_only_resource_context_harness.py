@@ -106,7 +106,7 @@ class NativeContextHarness:
         service=TurnService(projects=f.projects,settings=settings_service,
             recovery=SimpleNamespace(raise_if_thread_replaced=lambda _:None,release_stale_active_turn=lambda *_:None),
             resume_runtime=SimpleNamespace(),bindings=SimpleNamespace(for_thread=lambda _:[]),
-            queue_policy=SimpleNamespace(depth=lambda t:len(host._thread_queue(t))),execution=runtime,
+            queue_policy=SimpleNamespace(depth=lambda t:len(host._thread_queue(t)),queue=host._thread_queue),execution=runtime,
             event_sink=host._append_bot_event,truncate_text=lambda value,limit:value[:limit],
             binding_public=lambda x:x.model_dump(),preflight=preflight,agent_profiles=profiles)
         self.web=service

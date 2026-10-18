@@ -11,6 +11,7 @@ from codex_web.services.artifact_evidence import ArtifactEvidenceError
 from codex_web.services.crypto_keys import CryptoKeyError
 from codex_web.services.recovery_executor import RecoveryExecutorBusy, RecoveryExecutorClosed
 from codex_web.services.recovery_policy import RecoveryPolicyControl
+from codex_web.services.recovery_preservation_operations import PreservationDatabaseSettingDenied
 
 from codex_web.api.identity import request_actor, revalidate_request_actor
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
@@ -69,6 +70,10 @@ def build_recovery_router(service: RecoveryService, projects=None, *, actions=No
         return actor
 
     def error(exc: Exception) -> HTTPException:
+        if isinstance(exc, PreservationDatabaseSettingDenied):
+            return HTTPException(status_code=409, detail={
+                'code': exc.code, 'message': exc.message,
+                'required_setting': 'data_directory', 'capacity_verified': False})
         if isinstance(exc, AuthenticationError):
             return HTTPException(status_code=401, detail='Current operator authentication required')
         if isinstance(exc, RecoveryConflictError):

@@ -30,6 +30,25 @@ from codex_web.storage.state_store import check_operation_budget
 from codex_web.services.recovery_storage_preservation import seal_storage_snapshot, open_storage_snapshot
 
 
+class PreservationDatabaseSettingDenied(RecoveryConflictError):
+    """Fixed public refusal; never include driver text, DSN or host path."""
+    code = 'preservation_database_setting_read_denied'
+    message = ('Current database identity cannot read data_directory. An operator must '
+               'review PostgreSQL setting-read authority before retrying preview; '
+               'no capacity verification or preservation was performed.')
+
+    def __init__(self):
+        super().__init__(self.message)
+
+
+def preservation_database_directory(connection):
+    from psycopg.errors import InsufficientPrivilege
+    try:
+        return connection.execute('SHOW data_directory').fetchone()[0]
+    except InsufficientPrivilege:
+        raise PreservationDatabaseSettingDenied() from None
+
+
 def fingerprint(request):
     return hashlib.sha256(canonical(request.model_dump(mode='json'))).hexdigest()
 
@@ -182,8 +201,7 @@ class StoragePreservationOperations:
             if pg:
                 cursor=connection.cursor()
                 try:
-                    cursor.execute('SHOW data_directory')
-                    stats['_database_directory']=cursor.fetchone()[0]
+                    stats['_database_directory']=preservation_database_directory(connection)
                     cursor.execute("SELECT pg_total_relation_size('codex_state_documents')+pg_total_relation_size('codex_state_metadata')")
                     stats['physical_database_bytes']=int(cursor.fetchone()[0])
                 finally:
@@ -298,7 +316,7 @@ class StoragePreservationOperations:
             actual=self.recovery.state_store.path.parent.resolve(strict=True)
         else:
             with self.recovery.state_store._connection() as connection:
-                actual=Path(connection.execute('SHOW data_directory').fetchone()[0]).resolve(strict=True)
+                actual=Path(preservation_database_directory(connection)).resolve(strict=True)
         if actual!=database or actual.stat().st_dev!=reservation.stat().st_dev:
             raise RecoveryConflictError('Database reservation filesystem mapping changed')
         permitted=[Path(root).resolve(strict=True) for root in filesystem.allowed_write_roots]

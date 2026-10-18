@@ -174,11 +174,11 @@ def build_turns_router(service: TurnService, scope: ThreadScopeService, order_re
                 project=request.state.thread_project, actor=request_actor(request))
 
     @router.post("/api/threads/{thread_id}/queue/steer")
-    async def steer_latest(thread_id: str) -> dict[str, Any]:
-        return await service.steer_latest(thread_id)
+    async def steer_latest(thread_id: str, request: Request) -> dict[str, Any]:
+        return await service.steer_latest(thread_id, actor=request_actor(request))
 
     @router.post("/api/threads/{thread_id}/queue/{queued_id}/steer")
-    async def steer_specific(thread_id: str, queued_id: str) -> dict[str, Any]:
-        return await service.steer(thread_id, queued_id)
+    async def steer_specific(thread_id: str, queued_id: str, request: Request) -> dict[str, Any]:
+        return await service.steer(thread_id, queued_id, actor=request_actor(request))
 
     return router
