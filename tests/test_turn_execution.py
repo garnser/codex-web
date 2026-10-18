@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+import time
 import unittest
 from collections import deque
 from pathlib import Path
@@ -3239,19 +3240,33 @@ class TurnExecutionInstallationTests(unittest.TestCase):
 
 
 class BootstrapAuthenticationEvidenceTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _previous_assignment(*,provider='openai',runtime='codex',mode='trusted_local_session'):
+        now=time.time()
+        return ExecutionAssignment(id='old',organization_id='local',workspace_id='default',
+            subject={'kind':'thread_bootstrap','ref':'old-bootstrap'},
+            execution_id='old-execution',execution_workspace_id='old-workspace',project_id='p1',
+            resource_ids=('repository',),execution_contract_version='thread-bootstrap/1.0',
+            required_capabilities=(),sandbox='danger-full-access',approval_policy='never',
+            network=NetworkPolicy(),limits=WorkerResourceLimits(),created_by='fixture-controller',
+            status=AssignmentStatus.RUNNING,assigned_worker_id='old-worker',fence=7,
+            lease=AssignmentLease(worker_id='old-worker',fence=7,
+                lease_token='synthetic-auth-evidence-lease-token',acquired_at=now,expires_at=now+120),
+            runtime_binding=ExecutionRuntimeBinding(provider_id=provider,runtime_id=runtime,
+                capability_revision=1,authentication_mode=mode))
     async def test_pruned_predecessor_recovers_but_foreign_claim_and_scope_fail_closed(self):
         for scenario in ("missing", "live", "foreign_scope", "storage_error"):
             with self.subTest(scenario=scenario):
                 service, host, manager, order, available, kwargs = await self._rebind(fresh=True)
                 manager.get = lambda assignment_id: None
-                record = None if scenario == "missing" else SimpleNamespace(
-                    id="old", organization_id="local", workspace_id="default",
-                    status=AssignmentStatus.RUNNING,
-                )
+                record = None if scenario == "missing" else self._previous_assignment()
                 def lookup(assignment_id):
                     if scenario == "storage_error":
                         raise RuntimeError("storage unavailable")
                     return record
+                # Both canonical lookup paths observe the same actual absence,
+                # live scoped record or storage error; no phantom predecessor.
+                service._assignment_record = lookup
                 worker = object.__new__(LocalExecutionWorkerRuntime)
                 worker.control_actor = SimpleNamespace(
                     organization_id="foreign" if scenario == "foreign_scope" else "local",
@@ -3281,7 +3296,7 @@ class BootstrapAuthenticationEvidenceTests(unittest.IsolatedAsyncioTestCase):
                 if scenario != "missing":
                     self.assertEqual(order, [])
 
-    async def _rebind(self, *, fresh=False, mode=None, provider="openai", runtime="codex", read_error=None):
+    async def _rebind(self, *, fresh=False, mode=None, provider="openai", runtime="codex", read_error=None, previous_mode=None):
         host = _Host()
         order = []
         available = [fresh]
@@ -3297,8 +3312,13 @@ class BootstrapAuthenticationEvidenceTests(unittest.IsolatedAsyncioTestCase):
         host.codex.request = AsyncMock(side_effect=read)
         manager = SimpleNamespace(get=lambda assignment_id: object())
 
-        async def complete(*args, **kwargs):
+        records={'old':self._previous_assignment(provider=provider,runtime=runtime,
+            mode=previous_mode or mode or 'trusted_local_session')}
+        async def complete(assignment_id, **kwargs):
             order.append(("cleanup",))
+            previous=records[assignment_id]
+            records[assignment_id]=previous.model_copy(update={
+                'status':AssignmentStatus.FAILED,'lease':None,'completed_at':time.time()})
 
         manager.complete = AsyncMock(side_effect=complete)
         binding_service = SimpleNamespace()
@@ -3312,9 +3332,7 @@ class BootstrapAuthenticationEvidenceTests(unittest.IsolatedAsyncioTestCase):
         service = TurnExecutionService(host, binding_service=binding_service, bootstrap_bindings=bindings,
                                        session_managers={(provider, runtime): manager})
         service._bootstrap_binding_for_thread = lambda thread_id: SimpleNamespace(assignment_id="new")
-        service._assignment_record = lambda assignment_id: SimpleNamespace(runtime_binding=ExecutionRuntimeBinding(
-            provider_id=provider, runtime_id=runtime, capability_revision=1,
-            authentication_mode=mode or "trusted_local_session"))
+        service._assignment_record = records.get
         binding = ExecutionRuntimeBinding(provider_id=provider, runtime_id=runtime, capability_revision=1,
                                           authentication_mode=mode)
         kwargs = dict(thread_id="t1", project=Project(id="p1", name="P", path="/workspace/project"),
@@ -3332,8 +3350,9 @@ class BootstrapAuthenticationEvidenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_cleanup_expiration_is_checked_at_preparation_boundary(self):
         service, host, manager, order, available, kwargs = await self._rebind(fresh=True)
 
+        original_complete=manager.complete.side_effect
         async def expire(*args, **kwargs):
-            order.append(("cleanup",))
+            await original_complete(*args, **kwargs)
             available[0] = False
 
         manager.complete.side_effect = expire
@@ -3367,9 +3386,7 @@ class BootstrapAuthenticationEvidenceTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_mode_omitted_for_repository_drift_preserves_api_authentication(self):
-        service, host, manager, order, available, kwargs = await self._rebind()
-        service._assignment_record = lambda assignment_id: SimpleNamespace(runtime_binding=ExecutionRuntimeBinding(
-            provider_id="openai", runtime_id="codex", capability_revision=1, authentication_mode="api_key"))
+        service, host, manager, order, available, kwargs = await self._rebind(previous_mode="api_key")
         await service._supersede_thread_bootstrap(**kwargs)
         host.codex.request.assert_not_awaited()
 
