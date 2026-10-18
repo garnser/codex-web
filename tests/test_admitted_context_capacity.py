@@ -13,7 +13,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from codex_web.artifact_evidence import ArtifactCreate,EvidenceCreate
-from codex_web.execution_workers import AssignmentCancelRequest,ExecutionRuntimeBinding,WorkerCapability
+from codex_web.execution_workers import AssignmentCancelRequest,AssignmentCompleteRequest,ExecutionRuntimeBinding,WorkerCapability
+from codex_web.execution_workspaces import ExecutionWorkspaceRelease
 from codex_web.models import Project
 from codex_web.services.control_plane_broker import AssignmentBoundControlPlaneBroker
 from codex_web.services.read_only_resource_context import ReadOnlyResourceContextAdmission
@@ -39,8 +40,23 @@ class AdmittedContextCapacityTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         await capacities.CapacityWorkerVerificationTests.asyncSetUp(self)
         await self.broker.stop()
-        self.workers.cancel_bootstrap(self.assignment.id,AssignmentCancelRequest(expected_fence=self.assignment.fence,
-            reason='Private terminal prior verification fixture'),actor=self.admin)
+        # The inherited verification assignment is a generic WorkItem subject,
+        # not a thread bootstrap. Settle its actual worker lease through the
+        # generic lifecycle, then release only its owned workspace, keeping files.
+        previous=self.assignment
+        terminal=self.workers.complete(self.worker.id,previous.id,AssignmentCompleteRequest(
+            fence=previous.fence,lease_token=previous.lease.lease_token,succeeded=False,
+            failure_code='cancelled',failure_message='Private fixture ends prior verification custody'),
+            actor=self.worker_actor)
+        self.assertEqual(terminal.status,'failed')
+        self.assertEqual(terminal.fence,previous.fence)
+        self.assertIsNone(terminal.lease)
+        self.assertIsNotNone(terminal.completed_at)
+        workspace=self.workspaces.release(previous.execution_workspace_id,ExecutionWorkspaceRelease(
+            reason='Private terminal verification custody'),actor=self.admin,preserve_files=True)
+        self.assertEqual(workspace.status,'released')
+        self.assertIsNotNone(self.workspaces.store.lease(workspace.lease_id).released_at)
+        self.assertEqual(self.workers.store.assignment(previous.id),terminal)
         root=Path(self.temp.name)
         project=Project(id='project-a',name='Private native context',path=str(root/'repo'))
         self.resources.bind_project(project=project,resource_id=self.target.id,actor=self.admin)
