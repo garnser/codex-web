@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from codex_web.resource_context import ReadOnlyResourceContext
+
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Mapping
@@ -114,9 +116,11 @@ class TurnExecutionBinding:
     agent_profile: AgentProfileExecutionBinding | None = None
     skill_refs: tuple[DefinitionReference, ...] = ()
     skill_assignment_sources: dict[str, str] = field(default_factory=dict)
+    resource_context: ReadOnlyResourceContext | None = None
 
     def public(self) -> dict[str, object]:
         return {
+            **({"resource_context":self.resource_context.model_dump(mode="json")} if self.resource_context else {}),
             "thread_id": self.thread_id,
             "execution_id": self.execution_id,
             "project_id": self.project_id,
@@ -193,6 +197,7 @@ class TurnExecutionBindingService:
         self.workspaces = workspaces
         self.workers = workers
         self.control_actor = control_actor
+        self.resource_context_admission = None
         self.runtime_binding = runtime_binding
         self.execution_profiles = execution_profiles
         self.control_plane_available = control_plane_available or (lambda: True)
@@ -205,6 +210,36 @@ class TurnExecutionBindingService:
         self.secrets = secrets
         self.local_session_probe = local_session_probe
         self._clock = clock
+
+    def validate_resource_context(self, context, project, profile):
+        if context is None:
+            return
+        if self.resource_context_admission is None:
+            raise TurnExecutionBindingError('Current requester Resource READ admission unavailable',code='resource_context_unavailable')
+        try:
+            self.resource_context_admission(context,project,profile)
+        except Exception as exc:
+            from codex_web.services.identity import IdentityError
+            from codex_web.services.agent_profiles import AgentProfileError
+            from codex_web.services.resources import ResourceCatalogError
+            if isinstance(exc,(IdentityError,AgentProfileError,ResourceCatalogError,ValueError,LookupError)):
+                raise TurnExecutionBindingError('Current read-only Resource context admission refused',code='resource_context_denied') from None
+            raise
+
+    def validate_assignment_resource_context(self, assignment):
+        context=getattr(assignment,'resource_context',None)
+        if context is None:
+            return
+        project=self._project(assignment.project_id)
+        self.validate_resource_context(context,project,assignment.agent_profile)
+        workspace=self.workspaces.get(assignment.execution_workspace_id,self.control_actor)
+        lease=self.workspaces.store.lease(workspace.lease_id)
+        ids=context.read_only_resource_ids
+        if (workspace.resource_context!=context or set(ids)!=set(workspace.read_only_resource_ids)
+                or not set(ids).issubset(set(assignment.resource_ids)) or lease is None
+                or lease.released_at is not None or lease.expires_at<=self._clock()
+                or any(lease.resource_modes.get(i)!=LeaseMode.READ for i in ids)):
+            raise TurnExecutionBindingError('Current Resource READ lease/context changed',code='resource_context_lease_changed')
 
     @staticmethod
     def _subject(thread_id: str) -> ExecutionSubject:
@@ -806,6 +841,7 @@ class TurnExecutionBindingService:
             workspace_id=workspace.id,
             assignment_id=assignment.id,
             resource_ids=assignment.resource_ids,
+            resource_context=getattr(assignment,'resource_context',None),
             repository_resource_id=workspace.repository_resource_id,
             repository_target=assignment.repository_target or repository_target,
             repository_scope=assignment.repository_scope or repository_scope,
@@ -900,6 +936,7 @@ class TurnExecutionBindingService:
         agent_profile: AgentProfileExecutionBinding | None = None,
         skill_refs: tuple[DefinitionReference, ...] = (),
         assignment_admission=None,
+        resource_context: ReadOnlyResourceContext | None = None,
     ) -> TurnExecutionBinding:
         normalized_execution_id = str(execution_id or "").strip()
         if not normalized_execution_id:
@@ -911,6 +948,7 @@ class TurnExecutionBindingService:
             )
 
         project = self._project(project_id)
+        self.validate_resource_context(resource_context,project,agent_profile)
         effective_runtime_binding = runtime_binding or self.runtime_binding
         execution_profile, execution_profile_definition = self._execution_profile(
             project,
@@ -1093,6 +1131,8 @@ class TurnExecutionBindingService:
                 orchestration_only=effective_orchestration_only,
             )
             repository_scope = RepositoryExecutionScope.from_target(repository_target)
+        if resource_context is not None:
+            execution_contract_version=execution_contract_version.replace("/1.0","/1.1")
         self._require_project_readiness(
             project,
             execution_contract_version,
@@ -1117,6 +1157,9 @@ class TurnExecutionBindingService:
             execution_profile.id if execution_profile is not None else None
         )
         if existing is not None:
+            if getattr(existing,'resource_context',None) != resource_context:
+                raise TurnExecutionBindingError('Immutable assignment Resource context differs; terminal custody and fresh bootstrap required',code='resource_context_rollover_required')
+            self.validate_assignment_resource_context(existing)
             return self._binding_from_existing(
                 existing,
                 subject=subject,
@@ -1260,6 +1303,9 @@ class TurnExecutionBindingService:
             wall_seconds=session_seconds
         )
         deadline_at = self._clock() + session_seconds
+        context_ids=resource_context.read_only_resource_ids if resource_context else ()
+        if context_ids and effective_orchestration_only:
+            raise TurnExecutionBindingError("Repository-free profile cannot admit Resource context",code="resource_context_profile_denied")
 
         try:
             if effective_orchestration_only:
@@ -1305,7 +1351,10 @@ class TurnExecutionBindingService:
                             resource_ids=(
                                 *writable_ids,
                                 *repository_scope.read_only_repository_ids,
+                                *context_ids,
                             ),
+                            resource_context=resource_context,
+                            read_only_resource_ids=context_ids,
                             repository_resource_id=repository_target.mutable_repository_id,
                             writable_repository_ids=writable_ids,
                             read_only_repository_ids=(
@@ -1342,7 +1391,10 @@ class TurnExecutionBindingService:
                             resource_ids=(
                                 *writable_ids,
                                 *repository_scope.read_only_repository_ids,
+                                *context_ids,
                             ),
+                            resource_context=resource_context,
+                            read_only_resource_ids=context_ids,
                             repository_resource_id=repository_target.mutable_repository_id,
                             writable_repository_ids=writable_ids,
                             read_only_repository_ids=(
@@ -1404,9 +1456,11 @@ class TurnExecutionBindingService:
 
         try:
             try:
+                self.validate_resource_context(resource_context,project,agent_profile)
                 assignment = self.workers.create_assignment(
                     ExecutionAssignmentCreate(
                         subject=subject,
+                        resource_context=resource_context,
                         execution_id=normalized_execution_id,
                         project_id=project.id,
                         resource_ids=workspace.resource_ids,
@@ -1475,6 +1529,14 @@ class TurnExecutionBindingService:
             ) from exc
 
 
+        if resource_context is not None:
+            try:
+                self.validate_assignment_resource_context(assignment)
+            except Exception:
+                from codex_web.execution_workers import AssignmentCancelRequest
+                self.workers.cancel_bootstrap(assignment.id,AssignmentCancelRequest(
+                    expected_fence=0,reason='Resource context admission changed during preparation'),actor=self.control_actor)
+                raise
         return TurnExecutionBinding(
             thread_id=thread_id,
             execution_id=normalized_execution_id,
@@ -1483,6 +1545,7 @@ class TurnExecutionBindingService:
             workspace_id=workspace.id,
             assignment_id=assignment.id,
             resource_ids=assignment.resource_ids,
+            resource_context=getattr(assignment,'resource_context',None),
             repository_resource_id=workspace.repository_resource_id,
             repository_target=repository_target,
             repository_scope=repository_scope,
@@ -1522,6 +1585,7 @@ class TurnExecutionBindingService:
         execution_profile_id: str | None = None,
         agent_profile: AgentProfileExecutionBinding | None = None,
         skill_refs: tuple[DefinitionReference, ...] = (),
+        resource_context: ReadOnlyResourceContext | None = None,
     ) -> TurnExecutionBinding:
         subject = self._subject(thread_id)
         return self._prepare_subject(
@@ -1548,6 +1612,7 @@ class TurnExecutionBindingService:
             execution_profile_id=execution_profile_id,
             agent_profile=agent_profile,
             skill_refs=skill_refs,
+            resource_context=resource_context,
         )
 
     def prepare_bootstrap(
@@ -1569,6 +1634,7 @@ class TurnExecutionBindingService:
         execution_profile_id: str | None = None,
         agent_profile: AgentProfileExecutionBinding | None = None,
         assignment_admission=None,
+        resource_context: ReadOnlyResourceContext | None = None,
     ) -> TurnExecutionBinding:
         subject = self._bootstrap_subject(bootstrap_id)
         if (
@@ -1603,4 +1669,5 @@ class TurnExecutionBindingService:
             execution_profile_id=execution_profile_id,
             agent_profile=agent_profile,
             assignment_admission=assignment_admission,
+            resource_context=resource_context,
         )

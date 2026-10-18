@@ -282,6 +282,46 @@ class StorageOperatorTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.artifacts.store.load(),before)
         self.assert_original()
 
+    async def test_current_incarnation_is_not_exposed_without_current_mfa(self):
+        credentials=self.credentials
+        self.credentials=self.identity.create_session(identity_id=self.actor.identity_id,
+            scope=self.actor.tenant,assurance=AuthenticationAssurance.PRIMARY)
+        try:
+            async with self.client() as client:
+                for response in (await client.get('/api/recovery/storage-preservation/status'),
+                        await client.post('/api/recovery/storage-preservation/preview',json=self.body())):
+                    self.assertEqual(response.status_code,403,response.text)
+                    self.assertNotIn(self.recovery._scheduled_admission.owner_id,response.text)
+        finally:
+            self.credentials=credentials
+
+    async def test_current_incarnation_status_preview_restart_are_read_only(self):
+        from codex_web.services.recovery import RecoveryService
+        before = self.recovery.store.load()
+        evidence_before = self.artifacts.store.load()
+        async with self.client() as client:
+            status = (await client.get('/api/recovery/storage-preservation/status')).json()
+            preview = (await client.post('/api/recovery/storage-preservation/preview',json=self.body())).json()
+        owner = self.recovery._scheduled_admission.owner_id
+        for value in (status, preview):
+            self.assertEqual(value['recovery_executor_owner_id'], owner)
+            self.assertEqual(value['incarnation_provenance']['source'], 'current_runtime.recovery_schedule_admission')
+            self.assertTrue(value['incarnation_provenance']['restart_invalidates_capacity_evidence'])
+            self.assertFalse(value['incarnation_provenance']['capacity_or_health_qualified'])
+        await self.recovery.stop()
+        replacement = RecoveryService(self.recovery.store,state_store=self.sqlite,
+            crypto=self.recovery.crypto,evidence=self.artifacts,scheduler=self.scheduler,
+            service_actor=self.actor)
+        self.recovery = replacement
+        self.operator = RecoveryOperatorActions(replacement,self.service,self.worker_actor,configuration=self.configuration)
+        async with self.client() as client:
+            response = await client.get('/api/recovery/storage-preservation/status')
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(response.json()['recovery_executor_owner_id'],replacement._scheduled_admission.owner_id)
+            self.assertNotEqual(response.json()['recovery_executor_owner_id'],owner)
+        self.assertEqual(self.recovery.store.load(),before)
+        self.assertEqual(self.artifacts.store.load(),evidence_before)
+
     async def test_tampered_envelope_public_operation_reports_no_untrusted_payload(self):
         from codex_web.services.recovery_storage_preservation import MAGIC,_frame
         import struct

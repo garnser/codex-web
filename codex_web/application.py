@@ -1328,6 +1328,8 @@ local_execution_worker = execution_worker_service.ensure_local_worker(
         "1.0",
         "thread-turn/1.0",
         "thread-bootstrap/1.0",
+        "thread-turn/1.1",
+        "thread-bootstrap/1.1",
         "skill-scan/1.0",
     ),
     actor=identity_service.local_trusted_actor(),
@@ -1563,6 +1565,7 @@ thread_bootstrap_binding_service = ThreadBootstrapBindingService(
     thread_bootstrap_binding_store
 )
 app.state.thread_bootstrap_binding_store = thread_bootstrap_binding_store
+thread_bootstrap_binding_service.assignment_store=execution_worker_store
 app.state.thread_bootstrap_binding_service = thread_bootstrap_binding_service
 
 artifact_content_registry = ArtifactContentRegistry()
@@ -3310,6 +3313,11 @@ app.include_router(build_project_bootstrap_router(project_bootstrap_service))
 
 thread_transcript_service = ThreadTranscriptService(state_store)
 app.state.thread_transcript_service = thread_transcript_service
+
+from codex_web.services.read_only_resource_context import ReadOnlyResourceContextAdmission
+turn_execution_binding_service.resource_context_admission=ReadOnlyResourceContextAdmission(
+    identity_service,authority_role_service,resource_catalog_service,work_item_state_machine._work_item_state,agent_profile_service)
+execution_worker_service.resource_context_validator=turn_execution_binding_service.validate_assignment_resource_context
 
 turn_execution_service = install_turn_execution_service(
     app,

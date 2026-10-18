@@ -5,6 +5,7 @@ import uuid
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
+from codex_web.resource_context import ResourceContextModel, ReadOnlyResourceContext
 from codex_web.agent_profiles import AgentProfileExecutionBinding
 
 from codex_web.compatibility import ContractSpec
@@ -258,7 +259,8 @@ class ExecutionRuntimeBinding(BaseModel):
         return data
 
 
-class ExecutionAssignmentCreate(BaseModel):
+class ExecutionAssignmentCreate(ResourceContextModel):
+    resource_context: ReadOnlyResourceContext | None = None
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     subject: ExecutionSubject | None = None
@@ -388,7 +390,8 @@ class AssignmentLease(BaseModel):
     renewed_at: float | None = None
 
 
-class ExecutionAssignment(BaseModel):
+class ExecutionAssignment(ResourceContextModel):
+    resource_context: ReadOnlyResourceContext | None = None
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(default_factory=lambda: f"assignment-{uuid.uuid4().hex}")

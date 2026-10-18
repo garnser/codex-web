@@ -92,6 +92,7 @@ class QueuedBootstrapRecoveryService:
             'repository_resource_id':queued.repository_resource_id,
             'writable_repository_resource_ids':list(queued.writable_repository_resource_ids),
             'read_only_repository_resource_ids':list(queued.read_only_repository_resource_ids),
+            **({'resource_context':queued.resource_context.model_dump(mode='json')} if queued.resource_context else {}),
             'state':recovery.state if recovery else 'not_requested',
             'prestart_refusal':recovery.prestart_refusal.model_dump(mode='json')
                 if recovery and recovery.prestart_refusal else None,
@@ -120,6 +121,7 @@ class QueuedBootstrapRecoveryService:
                 or assignment is None or assignment.execution_id != recovery.execution_id
                 or assignment.status not in {'claimed', 'running'}
                 or assignment.organization_id != attempt.organization_id or assignment.workspace_id != attempt.workspace_id
+                or getattr(assignment,'resource_context',None)!=queued.resource_context
                 or assignment.project_id != attempt.project_id or subject is None
                 or subject.kind != 'thread_bootstrap' or subject.ref != recovery.bootstrap_id
                 or assignment.execution_workspace_id != binding.execution_workspace_id
@@ -148,6 +150,7 @@ class QueuedBootstrapRecoveryService:
                 'repository_resource_id':queued.repository_resource_id,
                 'writable_repository_resource_ids':list(queued.writable_repository_resource_ids),
                 'read_only_repository_resource_ids':list(queued.read_only_repository_resource_ids),
+            **({'resource_context':queued.resource_context.model_dump(mode='json')} if queued.resource_context else {}),
                 'fresh_bootstrap_recovery_id':recovery.id,
                 'bootstrap_id':binding.bootstrap_id, 'bootstrap_execution_id':binding.execution_id,
                 'preflight_attempt_id':attempt.id, 'requested_by':recovery.requested_by})
@@ -189,6 +192,7 @@ class QueuedBootstrapRecoveryService:
                 repository_resource_id=queued.repository_resource_id,
                 writable_repository_resource_ids=queued.writable_repository_resource_ids,
                 read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
+                **({"resource_context":queued.resource_context} if queued.resource_context else {}),
                 execution_profile_id=queued.execution_profile_id, actor=original_actor,
                 agent_profile_id=queued.agent_profile_id, agent_profile_revision=queued.agent_profile_revision,
                 bootstrap_token=attempt.bootstrap_recovery.bootstrap_id.removeprefix('bootstrap-'))

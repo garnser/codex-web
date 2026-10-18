@@ -319,6 +319,9 @@ class AssignmentBoundAgentProcessSession:
                 raise AssignmentBoundAgentProcessSessionStaleError(
                     "assignment-bound agent runtime lease/fence changed"
                 )
+        original=getattr(self,'_bound_assignment',None)
+        if original is not None and getattr(original,'resource_context',None)!=getattr(assignment,'resource_context',None):
+            raise AssignmentBoundAgentProcessSessionStaleError('Immutable Resource context changed')
         return assignment
 
     def _prepare_assignment(self) -> tuple[ExecutionAssignment, Path]:
@@ -334,6 +337,11 @@ class AssignmentBoundAgentProcessSession:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 "assignment-bound agent runtime binding is incompatible"
             )
+        if getattr(assignment,'resource_context',None) is not None:
+            guard=getattr(self.local_worker.worker_service,'resource_context_validator',None)
+            if guard is None:
+                raise AssignmentBoundAgentProcessSessionStaleError('Resource context validator unavailable')
+            guard(assignment)
         workspace_path = self.local_worker._workspace_path(assignment)
         self.local_worker.backend.validate_assignment(assignment)
 
@@ -385,6 +393,11 @@ class AssignmentBoundAgentProcessSession:
         broker: AssignmentBoundAgentModelEgressBroker | None,
         control_broker: AssignmentBoundControlPlaneBroker | None,
     ):
+        if getattr(assignment,'resource_context',None) is not None:
+            guard=getattr(self.local_worker.worker_service,'resource_context_validator',None)
+            if guard is None:
+                raise AssignmentBoundAgentProcessSessionStaleError('Resource context validator unavailable')
+            guard(assignment)
         delegation_service = self.credential_provider
         if delegation_service is None:
             raise AssignmentBoundAgentProcessSessionError(
@@ -835,6 +848,11 @@ class AssignmentBoundAgentProcessSession:
             )
         self._current_worker()
         assignment = self._current_assignment()
+        if getattr(assignment,'resource_context',None) is not None:
+            guard=getattr(self.local_worker.worker_service,'resource_context_validator',None)
+            if guard is None:
+                raise AssignmentBoundAgentProcessSessionStaleError('Resource context validator unavailable')
+            guard(assignment)
         if assignment.status != AssignmentStatus.RUNNING:
             raise AssignmentBoundAgentProcessSessionStaleError(
                 f"assignment-bound agent runtime assignment is {assignment.status.value}"

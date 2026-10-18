@@ -49,6 +49,9 @@ class WorkerVerificationTests(unittest.IsolatedAsyncioTestCase):
     _request = admin_fixtures.AdministrativeBrokerRuntimeTests._request
     _publish_profile = admin_fixtures.AdministrativeBrokerRuntimeTests._publish_profile
 
+    def verification_resources(self, root):
+        return (self.target.id,)
+
     async def asyncSetUp(self):
         await admin_fixtures.AdministrativeBrokerRuntimeTests.asyncSetUp(self)
         # unittest does not call asyncTearDown when asyncSetUp fails. Register
@@ -67,8 +70,9 @@ class WorkerVerificationTests(unittest.IsolatedAsyncioTestCase):
         self.items = ModelMapRepository(self.sqlite, namespace='work_item_states',
             legacy_path=root/'never-created-mirror.json', model=WorkItemState)
         now = time.time()
+        verification_resources = self.verification_resources(root)
         item = WorkItemState(ref=self.ref, organization_id='local', workspace_id='default',
-            project_id='project-a', project_path='group/app', resource_ids=[self.target.id],
+            project_id='project-a', project_path='group/app', resource_ids=list(verification_resources),
             current_owner='developer', current_stage='implementation_active',
             last_meaningful_update_at=now, updated_at=now, created_at=now)
         self.states[self.ref] = item
@@ -80,7 +84,7 @@ class WorkerVerificationTests(unittest.IsolatedAsyncioTestCase):
         self.workspaces = ExecutionWorkspaceService(ExecutionWorkspaceStateStore(self.sqlite),
             _FakeBackend(root/'workspaces'), self.resources, lambda _:project)
         workspace = self.workspaces.acquire(ExecutionWorkspaceAcquire(work_item_ref=self.ref,
-            execution_id='verification-execution', project_id='project-a', resource_ids=(self.target.id,),
+            execution_id='verification-execution', project_id='project-a', resource_ids=verification_resources,
             repository_resource_id=self.target.id), actor=self.admin)
         self.workers.workspaces=self.workspaces
         profile = self.agent_profiles.create(AgentProfileCreate(profile_id='developer',
@@ -92,7 +96,7 @@ class WorkerVerificationTests(unittest.IsolatedAsyncioTestCase):
             execution_profile_id=profile.execution_profile_id, authority_definition_ref=profile.authority_definition_ref)
         assignment = self.workers.create_assignment(ExecutionAssignmentCreate(
             work_item_ref=self.ref, execution_id=workspace.execution_id, project_id='project-a',
-            resource_ids=(self.target.id,), execution_workspace_id=workspace.id,
+            resource_ids=verification_resources, execution_workspace_id=workspace.id,
             repository_scope=RepositoryExecutionScope(organization_id='local',workspace_id='default',
                 project_id='project-a',writable_repository_ids=(self.target.id,),source='work_item'),
             execution_contract_version='thread-bootstrap/1.0', required_capabilities=(WorkerCapability.COMMAND_EXECUTION,),

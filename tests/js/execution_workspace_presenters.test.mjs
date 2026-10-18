@@ -41,3 +41,15 @@ test('legacy empty repository projection does not call the size formatter', () =
   assert.match(repositoryMembersHtml({}), /legacy\/single-repository projection/);
   assert.match(repositoryMembersHtml({repository_members:[]}), /legacy\/single-repository projection/);
 });
+
+test('nonrepository READ context renders canonical provenance without a database mount', () => {
+  const {repositoryMembersHtml} = createWorkspacePresenters({escapeHtml, resourceNames, timeText, bytes: String});
+  const html = repositoryMembersHtml({resource_context: {schema_version:'1.0',
+    read_only_resource_ids:['database<unsafe>'],requester_identity_id:'original-requester',work_item_ref:'scope#1530'},
+    repository_members:[]});
+  assert.match(html, /database&lt;unsafe&gt;.*READ/);
+  assert.match(html, /original requester original-requester/);
+  assert.match(html, /Work Item scope#1530/);
+  assert.match(html, /no credentials, network or data mount/);
+  assert.doesNotMatch(html, /database<unsafe>/);
+});

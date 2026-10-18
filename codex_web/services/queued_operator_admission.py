@@ -71,7 +71,7 @@ class QueuedOperatorAdmissionService:
             self.refuse('The retained original requires a compatible, complete snapshot.')
         fields = ('thread_id', 'project_id', 'message', 'source', 'sandbox', 'approval_policy',
             'model', 'reasoning_effort', 'repository_resource_id', 'writable_repository_resource_ids',
-            'read_only_repository_resource_ids', 'execution_profile_id', 'agent_profile_id',
+            'read_only_repository_resource_ids', 'resource_context', 'execution_profile_id', 'agent_profile_id',
             'agent_profile_revision', 'agent_profile_actor_id')
         if any(getattr(original, field) != getattr(attempt, field) for field in fields):
             self.refuse('Retained admission metadata differs from its immutable original.')
@@ -103,6 +103,7 @@ class QueuedOperatorAdmissionService:
         attempt, queued, digest = self.context(attempt_id, thread_id=thread_id, project=project, actor=actor)
         return {'attempt_id':attempt.id, 'queued_turn_id':queued.id, 'thread_id':thread_id,
             'project_id':project.id, 'source':queued.source,
+            **({'resource_context':queued.resource_context.model_dump(mode='json')} if queued.resource_context else {}),
             'original_actor_id':queued.agent_profile_actor_id,
             'agent_profile_id':queued.agent_profile_id, 'agent_profile_revision':queued.agent_profile_revision,
             'execution_profile_id':queued.execution_profile_id,

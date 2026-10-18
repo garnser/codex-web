@@ -185,7 +185,8 @@ Retention:
 ### Assignment-bound owner-proof verification
 
 The worker broker exposes the existing Verification service for
-`recovery-owner-disposition.v2`, without creating another receipt or proof store.
+`recovery-owner-disposition.v2` and the narrowly admitted
+`recovery-storage-capacity.v1`, without creating another receipt or proof store.
 This operation explicitly separates the current assignment requester A, whose
 current Role must allow the exact `api.verifications.write` capability for the
 Project/repository, from authenticated registered worker B, who records the

@@ -330,6 +330,8 @@ def build_execution_workers_router(
         request: Request,
     ) -> dict[str, Any]:
         try:
+            if payload.resource_context is not None:
+                raise HTTPException(status_code=409,detail={'code':'resource_context_requires_versioned_turn_admission'})
             item = service.create_assignment(
                 payload,
                 actor=_control_actor(request),

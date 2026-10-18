@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from codex_web.resource_context import ReadOnlyResourceContext
+
 import asyncio
 import ast
 import contextlib
@@ -372,6 +374,35 @@ class TurnService:
             if read_only_scope_supplied
             else remembered.read_only_repository_resource_ids
         )
+        resource_context=getattr(remembered,'resource_context',None)
+        context_supplied='read_only_resource_ids' in payload.model_fields_set
+        if context_supplied:
+            resource_context=(ReadOnlyResourceContext(schema_version='1.0',
+                read_only_resource_ids=payload.read_only_resource_ids,
+                requester_identity_id=actor.identity_id,
+                work_item_ref=payload.resource_context_work_item_ref)
+                if payload.read_only_resource_ids and actor is not None and payload.resource_context_work_item_ref else None)
+            if payload.read_only_resource_ids and resource_context is None:
+                raise HTTPException(status_code=403,detail={'code':'resource_context_requester_work_item_required'})
+        if resource_context is not None:
+            if actor is None or actor.identity_id!=resource_context.requester_identity_id:
+                raise HTTPException(status_code=403,detail={'code':'resource_context_requester_changed'})
+            if work_item_ref and work_item_ref!=resource_context.work_item_ref:
+                raise HTTPException(status_code=409,detail={'code':'resource_context_work_item_changed'})
+            work_item_ref=resource_context.work_item_ref
+            binding_service=getattr(self.execution,'binding_service',None)
+            if binding_service is None:
+                raise HTTPException(status_code=409,detail={'code':'resource_context_unavailable'})
+            current_profile=profile
+            if current_profile is None:
+                bootstrap=self.execution._bootstrap_binding_for_thread(thread_id)
+                assignment=self.execution._assignment_record(bootstrap.assignment_id) if bootstrap else None
+                current_profile=getattr(assignment,'agent_profile',None)
+            from codex_web.services.turn_execution_binding import TurnExecutionBindingError
+            try:
+                binding_service.validate_resource_context(resource_context,project,current_profile)
+            except TurnExecutionBindingError as exc:
+                raise HTTPException(status_code=409,detail=exc.public()) from None
         profile_execution_id = (
             profile.execution_profile_id
             if profile is not None
@@ -399,6 +430,13 @@ class TurnService:
             or payload.execution_profile_id
             or remembered.execution_profile_id
         )
+        if resource_context is not None or context_supplied:
+            bootstrap=self.execution._bootstrap_binding_for_thread(thread_id)
+            previous=self.execution._assignment_record(bootstrap.assignment_id) if bootstrap else None
+            if (previous is not None and getattr(previous,'resource_context',None)!=resource_context
+                    and previous.status!='cancelled'):
+                raise HTTPException(status_code=409,detail={'code':'resource_context_rollover_required',
+                    'next_action':'Preserve custody and use supported terminal fence then fresh SAME-thread bootstrap.'})
         if admission_guard is not None:
             admission_guard()
         self.settings.remember(
@@ -411,9 +449,12 @@ class TurnService:
             repository_resource_id=effective_repository_resource_id,
             writable_repository_resource_ids=effective_writable_repository_ids,
             read_only_repository_resource_ids=effective_read_only_repository_ids,
+            **({"resource_context":resource_context} if resource_context is not None else {}),
             execution_profile_id=effective_execution_profile_id,
+            **({"resource_context":None,"resource_context_supplied":True} if context_supplied and resource_context is None else {}),
         )
         effective_preflight = {
+            **({"resource_context":resource_context} if resource_context else {}),
             "sandbox": effective_sandbox,
             "approval_policy": effective_approval_policy,
             "model": effective_model,
@@ -453,6 +494,7 @@ class TurnService:
                 repository_resource_id=effective_repository_resource_id,
                 writable_repository_resource_ids=effective_writable_repository_ids,
                 read_only_repository_resource_ids=effective_read_only_repository_ids,
+            **({"resource_context":resource_context} if resource_context is not None else {}),
                 execution_profile_id=effective_execution_profile_id,
                 agent_profile_id=agent_profile_id,
                 agent_profile_revision=agent_profile_revision,
@@ -546,7 +588,9 @@ class TurnService:
                 repository_resource_id=effective_repository_resource_id,
                 writable_repository_resource_ids=effective_writable_repository_ids,
                 read_only_repository_resource_ids=effective_read_only_repository_ids,
+            **({"resource_context":resource_context} if resource_context is not None else {}),
                 read_only_scope_supplied=read_only_scope_supplied,
+                **({"resource_context_supplied":True} if context_supplied else {}),
                 execution_profile_id=effective_execution_profile_id,
                 actor=actor,
                 agent_profile_id=agent_profile_id,
@@ -1071,6 +1115,8 @@ class TurnService:
                 read_only_repository_resource_ids=(
                     queued.read_only_repository_resource_ids
                 ),
+                resource_context=queued.resource_context,
+                resource_context_supplied=True,
                 execution_profile_id=queued.execution_profile_id,
                 agent_profile_id=queued.agent_profile_id,
                 agent_profile_revision=queued.agent_profile_revision,

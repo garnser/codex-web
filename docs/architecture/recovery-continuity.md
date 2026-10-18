@@ -736,6 +736,37 @@ required: neither RLIMIT_AS nor cooperative row estimates establish a job cgroup
 No API call here provisions a cgroup, raises a quota, invents independent proof or
 creates any production binding/configuration.
 
+Admin/MFA-scoped storage status and preview expose
+`recovery_executor_owner_id` from the **current** Recovery schedule-admission
+instance, with `incarnation_provenance.source=current_runtime.recovery_schedule_admission`.
+This is read-only process-incarnation provenance, not a capacity/health assertion
+or a historical firing owner. A restart produces a different owner and invalidates
+old capacity proof; no firing needs to run to discover it. The existing operator
+surface renders the escaped reference and restart warning.
+
+The existing assignment-bound Verification adapter additionally accepts exactly
+`recovery-storage-capacity.v1`. It retains requester API authority, actual worker
+attribution, governance, profile/lease/fence/current-owner and shared transaction
+guards. The original capacity Evidence and its artifacts must remain requester-
+produced, reviewable and independent of the actual worker. Configuration and
+provider binding records join the append read set. The currently registered
+trusted preservation provider, exact enabled DATABASE binding, published config
+pins, active Project-associated DATABASE, runtime owner and original fresh
+kernel/filesystem metadata are rechecked using the same capacity predicate as
+execution. No caller assertion establishes real enforcement.
+
+Project association does **not** grant an assignment access to that DATABASE.
+The exact DATABASE must already be admitted in both canonical Work Item and
+assignment resources, alongside the writable repository and lease. A repository-
+only thread cannot borrow its repository permission for capacity review. When
+absent, ordinary operator Work Item/resource and fresh execution/workspace
+admission is a prerequisite; publication-recovery alone does not expand it.
+No adapter fallback, Role grant or actor substitution is introduced. Verification
+only records reviewed storage capacity; CAPTURE/VERIFY still require the existing
+current admin/MFA operator and all actual execution controls. Response loss uses
+exact execution/Work Item/review-digest readback for either supported method,
+never automatic append retry. Ambiguous lookup stays unknown.
+
 Before reading payloads, a consistent key/length-only snapshot computes exact
 base64 row-frame sizes using a bounded PG server cursor. Reservation includes
 explicit bounded growth headroom, encrypted-frame maxima, content overlap and
@@ -902,3 +933,97 @@ unchanged and VALID along with Artifact/current authority/policy/key/capacity.
 Late invalidation refuses publication. No target authentication, raw hash,
 cancellation, cleanup, independent qualification SQL oracle or semantic-health
 gate is skipped. Per-operation budgets, format and dataset limits are unchanged.
+
+
+### Native same-thread read-only Resource context (1530 follow-up)
+
+Ordinary scoped input uses the versioned alias
+`POST /api/threads/{thread_id}/turns/resource-context-v1` of the existing TurnService.
+`read_only_resource_ids` is a unique bounded tuple (at most eight nonrepository
+IDs), default empty; `resource_context_work_item_ref` names the canonical Work
+Item association. An old server returns404 for this path before user input.
+The legacy turn endpoint refuses an explicit nonempty selector, rather than
+claiming an unsupported field was admitted. The authenticated API actor, never
+an actor field in input, supplies original requester provenance. Thread settings
+can inspect/preserve that context; selecting/clearing it requires versioned turn
+admission, not an unguarded settings update.
+
+The frozen `ReadOnlyResourceContext@1.0` follows the original input through
+settings, queued/preflight/native-start/resume snapshots, bootstrap, workspace,
+assignment, active session and renewal. Empty context is omitted on serialization,
+keeping old-empty snapshots equivalent; a nonempty future context version refuses.
+Older retained inputs are not upgraded from today's settings. Current owner/
+recipient, Project/tenant, active Resource, pinned profile and original requester's
+actual `resource.read` authority must all hold. Project association and internal
+control actors cannot grant this access. The exact associated Work Item is retained
+in the immutable context. This genuinely admitted context is a second canonical
+WorkItem/Resource association, independently of the imported issue's flat
+`resource_ids`. A bare selector or Project association alone is insufficient.
+Existing per-item reconciliation may instead refresh the flat resource list;
+that fallback is not mandatory for the versioned context path.
+
+Canonical workspace resource modes classify context as READ and repository as
+WRITE; generic context is not a repository member, credential, network permission
+or filesystem/data mount. Existing lease conflicts and resource/disk quotas still
+apply. Same execution reuse requires identical provenance/modes. Session/proxy
+validation rechecks actual assignment/workspace/lease and current authorization;
+new work cannot silently change a live assignment. Scope change first refuses,
+then requires supported terminal custody/fencing and fresh SAME-thread bootstrap.
+Binding replacement pins the previous assignment and retired fence in one shared
+canonical transaction, and a failed CAS cancels/releases only the new candidate.
+Renewal retains the previous context and limits, not newer settings.
+
+Nonempty contexts use code-owned `thread-turn/1.1` or `thread-bootstrap/1.1`
+execution contracts; old-empty requests keep1.0. No Profile/Role/Definition grant,
+new executor, token or adoption endpoint is added. The installed-source capability
+and supported-worker contract must be verified before sending the versioned input.
+The first persisted nonempty context (including settings or queued snapshots) is
+a compatibility boundary: old application readers/writers may omit unknown fields.
+There is **no** claim that the old binary can safely roll back after that write;
+all old application/worker writers must be drained/fenced under the reviewed
+installation contract before enabling this path. Source publication does not
+activate it, manufacture a worker's independence or qualify host capacity.
+
+The capacity Verification adapter can recognize this genuinely admitted READ
+context as an exact Work Item/Resource READ-lease association. The legacy flat
+Work Item resource membership path remains supported independently. Current original-record
+visibility/governance, current requester API read/write authority on that DATABASE,
+actual authenticated verifier identity, same-tenant Project binding, exact config,
+runtime owner and independent capacity Evidence remain separately mandatory.
+The production app/PG resource measurements and enforcement are operator facts;
+source/test fixture metadata is never substitute capacity proof.
+
+
+For an existing imported issue, the operator first reads exact canonical source
+identity, owner/handoff and active Project Resource bindings, then uses ordinary
+`POST /api/work-items/{ref}/reconcile`. This operation rereads the authoritative
+source and can reconcile ownership/labels/relations as well as Resource scope;
+it is not a membership-only CAS. Pin source/custody before it and read them back
+immediately afterwards. No current assignment scope changes as a side effect.
+For reviewer ownership, ordinary permitted Developer-to-current-reviewer-profile
+handoff and genuine recipient ACK are separate. An awaiting handoff does not
+satisfy the admission owner check, nor does `quinn` identify the VP profile.
+A repository-only reviewer can ACK first, followed by supported terminal custody,
+fencing and fresh SAME-thread READ-context admission once the current owner/Project/READ admission conditions hold.
+The composed synthetic regression uses the actual GitHub adapter/projector,
+per-item reconcile, canonical WorkItem handoff/ACK, worker principal/authority,
+and native admission. Only GitHub/native I/O and dispatch delivery are synthetic.
+
+Legacy `ThreadRunSettings` and `QueuedTurn` readers default to ignoring unknown
+fields. The regression explicitly demonstrates that their old field sets can
+drop this context. A versioned input route, strict new context schema and 1.1
+worker contract do not make those old persisted readers safe. First nonempty
+input/settings/snapshot persistence therefore requires the declared coordinated
+old-writer drain/fence and is an unsafe old-binary rollback boundary.
+
+Qualification for this path must compose the versioned public input with the
+real TurnService, retained queue/preflight and fresh canonical bootstrap; a
+prebuilt database assignment or mocked TurnService alone is insufficient. The
+requester, internal allocation controller and independently authenticated worker
+remain distinct. Pending handoff refuses; genuine recipient ACK and terminal
+repo-only binding retirement precede fresh admission. A separate capacity test
+must append the original Evidence/Artifact Verification while the database is
+absent from the flat Work Item list, and repeat current Project binding, READ
+authority, owner, context, lease and fence checks at the shared append transaction.
+These are source qualification requirements, not assertions of live admission
+or capacity verification.

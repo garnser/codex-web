@@ -533,7 +533,7 @@ class ControlPlaneBrokerService:
             "authority_level": item.authority_level.value,
         }
         if item.id.startswith("verification."):
-            result["scope"] = "Current assignment Work Item and writable repository only"
+            result["scope"] = "Current assignment Work Item and exact admitted Resources; writable repository remains required"
             result["authorizer"] = "Current assignment requester, exact API capability"
             result["verifier"] = "Actual authenticated registered worker; no identity overrides"
             result["response_loss"] = "Read-only exact execution/method/source lookup; never blind POST retry"
@@ -541,6 +541,7 @@ class ControlPlaneBrokerService:
             if item.id == "verification.create":
                 result["request_body"] = {"schema": "VerificationCreate",
                     "method": "recovery-owner-disposition.v2",
+                    "methods": ["recovery-owner-disposition.v2", "recovery-storage-capacity.v1"],
                     "source": "sha256:<review digest>", "original_evidence_count": 1,
                     "max_artifacts": 8, "identity_and_independence_overrides": False}
             if item.id == "verification.read":
@@ -2665,6 +2666,8 @@ class AssignmentBoundControlPlaneBroker:
             raise ControlPlaneBrokerDeniedError("assignment worker changed")
         if assignment.fence != self.fence:
             raise ControlPlaneBrokerDeniedError("assignment fence changed")
+        if getattr(assignment,'resource_context',None)!=getattr(self.snapshot,'resource_context',None):
+            raise ControlPlaneBrokerDeniedError('assignment immutable Resource context changed')
         if self.worker_service_identity_validator is not None:
             current_identity = self.worker_service_identity_validator()
             if current_identity != self.service_identity_id:

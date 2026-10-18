@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 import asyncio
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, HTTPException
 
 from codex_web.api.thread_scope import thread_scope_dependency
 from codex_web.services.thread_scope import ThreadScopeService
@@ -52,11 +52,20 @@ def build_turns_router(service: TurnService, scope: ThreadScopeService, order_re
         payload: TurnCreate,
         request: Request,
     ) -> dict[str, Any]:
+        if payload.read_only_resource_ids:
+            raise HTTPException(status_code=409,detail={"code":"resource_context_versioned_endpoint_required","route":"/api/threads/{thread_id}/turns/resource-context-v1"})
         return await service.start(
             thread_id,
             payload.model_copy(update={"project_id": request.state.thread_project.id}),
             actor=request_actor(request),
         )
+
+    @router.post('/api/threads/{thread_id}/turns/resource-context-v1')
+    async def start_context_turn(thread_id: str,payload: TurnCreate,request: Request):
+        # Old servers return404 before admission; no ignored-field downgrade.
+        return await service.start(thread_id,
+            payload.model_copy(update={'project_id':request.state.thread_project.id}),
+            actor=request_actor(request))
 
     @router.get("/api/threads/{thread_id}/preflight-attempts")
     async def preflight_attempts(

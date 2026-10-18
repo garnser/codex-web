@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from codex_web.resource_context import ResourceContextModel, ReadOnlyResourceIds, ReadOnlyResourceContext
+
 import hashlib
 import re
 import time
@@ -230,7 +232,9 @@ class WorkspaceIntegrationState(BaseModel):
     recorded_by: str | None = None
 
 
-class ExecutionWorkspace(BaseModel):
+class ExecutionWorkspace(ResourceContextModel):
+    resource_context: ReadOnlyResourceContext | None = None
+    read_only_resource_ids: ReadOnlyResourceIds = ()
     model_config = ConfigDict(extra="forbid")
 
     id: str
@@ -375,7 +379,9 @@ class ExecutionWorkspaceState(BaseModel):
     events: list[ExecutionWorkspaceEvent] = Field(default_factory=list)
 
 
-class ExecutionWorkspaceAcquire(BaseModel):
+class ExecutionWorkspaceAcquire(ResourceContextModel):
+    resource_context: ReadOnlyResourceContext | None = None
+    read_only_resource_ids: ReadOnlyResourceIds = ()
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     subject: ExecutionSubject | None = None
@@ -432,6 +438,12 @@ class ExecutionWorkspaceAcquire(BaseModel):
             raise ValueError("scratch execution workspace cannot reference repositories")
         if self.repository_resource_id and self.repository_resource_id not in self.resource_ids:
             raise ValueError("repository_resource_id must be included in resource_ids")
+        if set(self.read_only_resource_ids) - set(self.resource_ids):
+            raise ValueError('read-only nonrepository context must be included in resource_ids')
+        if set(self.read_only_resource_ids) & set((*self.writable_repository_ids,*self.read_only_repository_ids)):
+            raise ValueError('nonrepository context cannot masquerade as repository scope')
+        if self.resource_context is not None and self.resource_context.read_only_resource_ids != self.read_only_resource_ids:
+            raise ValueError('resource context provenance/selector mismatch')
         missing_writable = set(self.writable_repository_ids) - set(self.resource_ids)
         if missing_writable:
             raise ValueError("writable repository ids must be included in resource_ids")

@@ -987,6 +987,7 @@ class ThreadService:
         runtime_id: str | None = None,
         repository_resource_id: str | None = None,
         read_only_repository_resource_ids: tuple[str, ...] = (),
+        resource_context=None,
         execution_profile_id: str | None = None,
         actor: AuthenticationActor | None = None,
         agent_profile_id: str | None = None,
@@ -1135,6 +1136,7 @@ class ThreadService:
                 runtime_binding=runtime_binding,
                 explicit_repository_id=repository_resource_id,
                 read_only_repository_ids=read_only_repository_resource_ids,
+                **({"resource_context":resource_context} if resource_context is not None else {}),
                 execution_profile_id=effective_execution_profile_id,
                 agent_profile=agent_profile_binding,
                 **({'assignment_admission': assignment_admission} if assignment_admission is not None else {}),
@@ -1163,6 +1165,10 @@ class ThreadService:
                         reason="governor admission changed before isolated worker startup"), actor=control_actor)
                 raise
         session = await session_manager.start(binding.assignment_id)
+        if resource_context is not None:
+            binding_service.validate_resource_context(resource_context,project,agent_profile_binding)
+            await session._supervise("resource_context_authority",session._validate_current_authority,
+                seconds=session._lease_budget())
         status = session.status()
         workspace_path = session.workspace_path
         if workspace_path is None or status.fence is None:
@@ -1360,6 +1366,7 @@ class ThreadService:
             read_only_repository_resource_ids=(
                 binding.repository_target.read_only_repository_ids
             ),
+            **({"resource_context":resource_context} if resource_context is not None else {}),
             execution_profile_id=getattr(binding, "execution_profile_id", None),
         )
         self.event_sink(
@@ -1619,6 +1626,8 @@ class ThreadService:
 
     def update_settings(self, thread_id: str, payload: ThreadRunSettings) -> dict[str, Any]:
         self._recovery().raise_if_thread_replaced(thread_id)
+        if payload.resource_context is not None:
+            raise HTTPException(status_code=409,detail={'code':'resource_context_requires_versioned_turn_admission'})
         settings = self._settings().remember(
             thread_id,
             sandbox=payload.sandbox,
