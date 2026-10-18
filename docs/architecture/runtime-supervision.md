@@ -59,6 +59,13 @@ Runtime naming failures retain the canonical name and display scoped feedback.
 
 ## Bounded assignment supervision and failure custody
 
+Native resume qualification reads the current process generation's initialize
+response. The pinned CLI reports the configured `codex_web_local` client name
+in its `userAgent`; that prefix and the legacy `codex_cli_rs` prefix qualify only
+the exact `0.160.0` version. Other clients, versions, suffixes and missing or
+malformed responses remain unqualified. External version probes and earlier
+process generations cannot substitute for this handshake.
+
 Each admitted process session owns one serial supervision executor and one
 bounded diagnostic executor. These are lifecycle resources, not admission or
 scheduling authorities. The watchdog validates worker/assignment/delegation and

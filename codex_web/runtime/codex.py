@@ -347,7 +347,7 @@ class CodexRuntime:
                 # Version comes only from this process generation's initialize response.
                 import re
                 agent = init.get("userAgent") if isinstance(init, dict) else None
-                match = re.match(r"^codex_cli_rs/(0\.160\.0)(?:\s|$)", agent) if isinstance(agent, str) else None
+                match = re.match(r"^(?:codex_web_local|codex_cli_rs)/(0\.160\.0)(?:\s|$)", agent) if isinstance(agent, str) else None
                 self.native_runtime_version = match.group(1) if match else None
                 await self.notify("initialized", {})
                 self.ready.set()
