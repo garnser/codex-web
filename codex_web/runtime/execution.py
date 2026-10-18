@@ -3176,6 +3176,28 @@ class TurnExecutionService:
                 bootstrap is not None
                 and getattr(bootstrap, "initial_turn_pending", False)
             )
+            if (initial_turn_pending and isinstance(runtime_adapter, CodexAgentRuntimeAdapter)
+                    and not runtime_adapter.initial_session_is_live(native_session_id)):
+                # A durable pending flag cannot attest a thread in a new native
+                # process. Refuse before resume/turn input and fence this idle
+                # assignment; never turn a lost initial session into an unknown
+                # turn/start or an automatic replacement/replay loop.
+                retained = (await asyncio.to_thread(self.queued_preflight.store.get,
+                    queued_admission_attempt_id) if queued_admission_attempt_id and self.queued_preflight else None)
+                await session_manager.complete(assignment_id, succeeded=False,
+                    failure_code="initial_bootstrap_process_lost",
+                    failure_message="Pending initial native session belongs to a previous process")
+                raise ExecutionPrestartRefusal(status_code=409, detail={
+                    "code": "initial_bootstrap_process_lost",
+                    "message": "Recover a fresh bootstrap for this exact original; its initial native process is unavailable.",
+                    "phase": "before_turn_input", "threadId": thread_id,
+                    "bootstrap_id": bootstrap.bootstrap_id, "assignment_id": assignment_id,
+                    "preflight_attempt_id": queued_admission_attempt_id,
+                    "admission_claim_id": queued_admission_claim_id,
+                    "snapshot_sha256": self.queued_preflight.queued_snapshot_digest(retained.queued_turn_snapshot)
+                        if retained and retained.queued_turn_snapshot is not None else None,
+                    "remediation_route": "/api/threads/" + thread_id + "/preflight-attempts",
+                })
             if not initial_turn_pending:
                 resume_options = {}
                 try:

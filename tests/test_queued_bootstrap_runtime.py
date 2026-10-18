@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 from fastapi import HTTPException
 
-from codex_web.models import IndexedThread, Project, QueuedNativeStartReceipt
+from codex_web.models import IndexedThread, Project, QueuedNativeStartReceipt, ExecutionPreflightBlocker
 from codex_web.services.queued_bootstrap_recovery import QueuedBootstrapRecoveryService
 from codex_web.services.thread_bootstrap_bindings import ThreadBootstrapBindingService
 from codex_web.storage.thread_bootstrap_bindings import ThreadBootstrapBindingStore
@@ -62,6 +62,144 @@ class QueuedBootstrapRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def recover(self):
         return await self.runtime.recover(self.attempt.id, project=self.project,
             actor=self.admin, expected_snapshot_sha256=self.digest, reason='Recover the exact original')
+
+    def prior_pending_route(self, *, recovery=None):
+        self.index.upsert(IndexedThread(id='prior', name='Prior', project_id='project'))
+        self.bindings.bind(bootstrap_id=recovery.bootstrap_id if recovery else 'prior-bootstrap',
+            thread_id='prior', execution_id=recovery.execution_id if recovery else 'prior-execution',
+            assignment_id='prior-assignment', execution_workspace_id='prior-workspace', actor=self.admin)
+        self.assignments['prior-assignment'] = SimpleNamespace(status='failed', lease=None,
+            execution_id=recovery.execution_id if recovery else 'prior-execution',
+            organization_id='org', workspace_id='ws', project_id='project')
+        self.index.remember_replacement('archived', 'prior', project_id='project',
+            provenance={'organization_id':'org', 'workspace_id':'ws'})
+
+    async def recover_from_prior(self, source='prior'):
+        return await self.runtime.recover(self.attempt.id, project=self.project, actor=self.admin,
+            expected_snapshot_sha256=self.digest, reason='Recover the exact original',
+            expected_source_thread_id=source)
+
+    async def test_fenced_pending_successor_extends_history_without_rewriting_the_old_edge(self):
+        self.prior_pending_route()
+        preview = self.runtime.preview(self.attempt.id, project=self.project, actor=self.admin)
+        self.assertEqual(preview['source_thread_id'], 'prior')
+        self.assertTrue(preview['can_create'])
+        result = await self.recover_from_prior()
+        self.assertEqual(result['threadId'], 'fresh')
+        self.assertEqual(self.index.replacement_thread_id('archived'), 'fresh')
+        graph = self.service.store.store.get(self.index.REPLACEMENTS_NAMESPACE)
+        self.assertEqual(graph['edges']['archived']['new_thread_id'], 'prior')
+        self.assertEqual(graph['edges']['prior']['new_thread_id'], 'fresh')
+        retained = self.service.store.get(self.attempt.id)
+        self.assertEqual(retained.queued_turn_snapshot, self.attempt.queued_turn_snapshot)
+        self.assertIsNone(retained.queued_start_receipt)
+        self.assertEqual(self.threads.create.await_count, 1)
+
+    async def test_successor_requires_reviewed_source_and_a_fenced_same_project_worker(self):
+        self.prior_pending_route()
+        for source in (None, 'another-destination'):
+            with self.subTest(source=source), self.assertRaises(HTTPException):
+                await self.recover_from_prior(source)
+        assignment = self.assignments['prior-assignment']
+        for changes in ({'status':'running'}, {'lease':object()}, {'project_id':'foreign'}):
+            self.assignments['prior-assignment'] = SimpleNamespace(**{**vars(assignment), **changes})
+            with self.subTest(changes=changes), self.assertRaises(HTTPException):
+                await self.recover_from_prior()
+        self.threads.create.assert_not_awaited()
+        self.assertIsNone(self.service.store.get(self.attempt.id).bootstrap_recovery)
+
+    def created_initial_refusal(self):
+        reserved, _ = self.service.reserve_bootstrap_recovery(self.attempt.id, actor=self.admin,
+            expected_snapshot_sha256=self.digest, reason='Initial fixture bootstrap')
+        previous = reserved.bootstrap_recovery.model_copy(update={'state':'created', 'destination_thread_id':'prior'})
+        self.prior_pending_route(recovery=previous)
+        blocker = ExecutionPreflightBlocker(code='initial_bootstrap_process_lost', message='Controller refused before input',
+            phase='before_turn_input', threadId='prior', preflight_attempt_id=self.attempt.id,
+            admission_claim_id='claim', snapshot_sha256=self.digest,
+            bootstrap_id=previous.bootstrap_id, assignment_id='prior-assignment')
+        self.service.store.update(self.attempt.id, lambda a:a.model_copy(update={
+            'bootstrap_recovery':previous, 'replacement_thread_id':'prior',
+            'queued_admission_claim_id':'claim', 'blockers':(blocker,)}))
+        return previous
+
+    async def test_created_recovery_can_renew_only_after_its_bound_controller_preinput_refusal(self):
+        previous = self.created_initial_refusal()
+        result = await self.recover_from_prior()
+        retained = self.service.store.get(self.attempt.id)
+        self.assertEqual(result['threadId'], 'fresh')
+        self.assertEqual(retained.bootstrap_recovery_history, (previous,))
+        self.assertNotEqual(retained.bootstrap_recovery.id, previous.id)
+        self.assertEqual(retained.queued_turn_snapshot, self.attempt.queued_turn_snapshot)
+
+    async def test_unknown_successor_creation_offers_only_reconciliation_and_never_creates_again(self):
+        self.created_initial_refusal()
+        self.threads.create.side_effect = TimeoutError('Provider creation outcome unavailable')
+        with self.assertRaises(TimeoutError):
+            await self.recover_from_prior()
+        preview = self.runtime.preview(self.attempt.id, project=self.project, actor=self.admin)
+        self.assertEqual(preview['state'], 'pending')
+        self.assertFalse(preview['can_create'])
+        self.assertTrue(preview['can_reconcile'])
+        with self.assertRaises(HTTPException):
+            await self.recover_from_prior()
+        self.assertEqual(self.threads.create.await_count, 1)
+
+    async def test_route_change_during_creation_cannot_publish_a_stale_recovery_edge(self):
+        self.prior_pending_route()
+        create = self.threads.create.side_effect
+        async def raced(**values):
+            result = await create(**values)
+            self.service.store.update(self.attempt.id, lambda a:a.model_copy(update={'replacement_thread_id':'changed'}))
+            return result
+        self.threads.create.side_effect = raced
+        with self.assertRaises(HTTPException):
+            await self.recover_from_prior()
+        self.assertEqual(self.index.replacement_thread_id('archived'), 'prior')
+        self.assertEqual(self.service.store.get(self.attempt.id).bootstrap_recovery.state, 'pending')
+        self.assertEqual(self.threads.create.await_count, 1)
+
+    async def test_parent_becoming_live_during_creation_keeps_new_bootstrap_pending(self):
+        self.prior_pending_route()
+        create = self.threads.create.side_effect
+        async def raced(**values):
+            result = await create(**values)
+            self.assignments['prior-assignment'].status = 'running'
+            return result
+        self.threads.create.side_effect = raced
+        with self.assertRaises(HTTPException):
+            await self.recover_from_prior()
+        self.assertEqual(self.index.replacement_thread_id('archived'), 'prior')
+        retained = self.service.store.get(self.attempt.id)
+        self.assertEqual(retained.bootstrap_recovery.state, 'pending')
+        self.assertEqual(retained.queued_turn_snapshot, self.attempt.queued_turn_snapshot)
+
+    async def test_successor_shares_source_queue_lock_and_both_owned_fences(self):
+        from codex_web.services.coordination import StateStoreCoordinationBackend
+        from codex_web.services.replicated_ownership import ReplicatedOwnershipService
+        self.prior_pending_route()
+        self.runtime.ownership = ReplicatedOwnershipService(
+            StateStoreCoordinationBackend(self.service.store.store), instance_id='fixture-recovery')
+        locks = {name:asyncio.Lock() for name in ('archived', 'prior')}
+        self.runtime.queue_lock = locks.__getitem__
+        entered = asyncio.Event()
+        create = self.threads.create.side_effect
+        async def check_fences(**values):
+            self.runtime.ownership.require_fence('thread-queue:archived')
+            self.runtime.ownership.require_fence('thread-queue:prior')
+            entered.set()
+            return await create(**values)
+        self.threads.create.side_effect = check_fences
+        await locks['prior'].acquire()
+        task = asyncio.create_task(self.recover_from_prior())
+        try:
+            await asyncio.sleep(0.05)
+            self.assertFalse(entered.is_set())
+            self.threads.create.assert_not_awaited()
+        finally:
+            locks['prior'].release()
+        result = await asyncio.wait_for(task, 3)
+        self.assertEqual(result['threadId'], 'fresh')
+        self.assertTrue(entered.is_set())
 
     async def test_fresh_binding_routes_original_without_queue_or_turn_start(self):
         result = await self.recover()

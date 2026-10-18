@@ -705,6 +705,7 @@ class QueuedBootstrapRecovery(BaseModel):
 class QueuedBootstrapRecoveryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
     expected_snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_source_thread_id: str | None = Field(default=None, min_length=1, max_length=200)
     reason: str = Field(min_length=1, max_length=1000)
 
 

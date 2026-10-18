@@ -294,6 +294,7 @@ class FreshPublicReadContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(self.database.id,self.items.get(self.ref).resource_ids)
         self.bindings.bind(bootstrap_id='fresh-vp-old',thread_id='same-thread',execution_id=reviewer.execution_id,
             assignment_id=reviewer.assignment_id,execution_workspace_id=reviewer.workspace_id,actor=f.actor)
+        self.bindings.mark_initial_turn_started('same-thread', f.actor)
         terminal=f.workers.cancel_bootstrap(vp.id,AssignmentCancelRequest(expected_fence=vp.fence,
             reason='Private terminal repo-only scope rollover'),actor=f.actor)
         before=[a.id for a in f.workers.store.load().assignments if a.resource_context is not None]
@@ -335,6 +336,7 @@ class RetainedNullContextSteerTests(unittest.IsolatedAsyncioTestCase):
             explicit_repository_id=f.repository.id,agent_profile=self.pin)
         self.bindings.bind(bootstrap_id='null-steer-repo',thread_id='same-thread',execution_id=binding.execution_id,
             assignment_id=binding.assignment_id,execution_workspace_id=binding.workspace_id,actor=f.actor)
+        self.bindings.mark_initial_turn_started('same-thread', f.actor)
         session=await harness.manager.start(binding.assignment_id)
         self.assertIsNone(session.validate_current().resource_context)
         return harness,session,requester

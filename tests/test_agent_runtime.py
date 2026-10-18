@@ -31,6 +31,31 @@ from codex_web.storage.agent_sessions import AgentSessionStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
 
 
+class CodexInitialSessionWitnessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_only_actual_creation_in_the_same_process_can_skip_initial_resume(self):
+        runtime = SimpleNamespace(generation='process-a')
+        transport = SimpleNamespace(runtime=runtime,
+            request=AsyncMock(return_value={'thread':{'id':'native-one'}}))
+        adapter = CodexAgentRuntimeAdapter(transport)
+        self.assertFalse(adapter.initial_session_is_live('native-one'))
+        await adapter.create_session(AgentRuntimeSessionRequest(project_id='project'))
+        self.assertTrue(CodexAgentRuntimeAdapter(transport).initial_session_is_live('native-one'))
+        self.assertFalse(adapter.initial_session_is_live('another-native-session'))
+        runtime.generation = 'process-b'
+        self.assertFalse(adapter.initial_session_is_live('native-one'))
+        transport.runtime = SimpleNamespace(generation='process-a')
+        self.assertFalse(adapter.initial_session_is_live('native-one'))
+
+    async def test_process_change_during_creation_cannot_attest_the_new_process(self):
+        runtime = SimpleNamespace(generation='process-a')
+        async def create(*args):
+            runtime.generation = 'process-b'
+            return {'thread':{'id':'native-one'}}
+        adapter = CodexAgentRuntimeAdapter(SimpleNamespace(runtime=runtime, request=create))
+        await adapter.create_session(AgentRuntimeSessionRequest(project_id='project'))
+        self.assertFalse(adapter.initial_session_is_live('native-one'))
+
+
 def _actor(
     organization_id: str = "org-a",
     workspace_id: str = "workspace-a",

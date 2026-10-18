@@ -930,17 +930,32 @@ class _Session:
         return {"ok": True}
 
 
+    def native_capture_transport(self):
+        from codex_web.runtime.codex import CodexRuntime
+        from tests.test_codex_runtime import _Host as NativeHost
+        if self.capture_runtime is None:
+            self.capture_runtime = CodexRuntime(NativeHost(), restart_on_timeout=False)
+            self.capture_runtime.ensure_started = AsyncMock()
+            self.capture_runtime.native_runtime_version = '0.160.0'
+        return self.capture_runtime
+
+    async def create_initial_native_session(self, native_id):
+        from codex_web.agent_runtime import AgentRuntimeSessionRequest
+        from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
+        self.runtime = self.native_capture_transport()
+        request = self.request
+        self.request = AsyncMock(return_value={'thread':{'id':native_id}})
+        try:
+            await CodexAgentRuntimeAdapter(self).create_session(AgentRuntimeSessionRequest(project_id=self.assignment.project_id))
+        finally:
+            self.request = request
+
     async def request_with_start_capture(self, method, params, capture):
         # Real preparation, send guard and reader dispatch; only native I/O is
         # synthetic. Existing tests can still lose/refuse the actual RPC through
         # their request seam, with no invented response or success evidence.
         from codex_web.runtime.codex import CodexRuntime
-        from tests.test_codex_runtime import _Host as NativeHost
-        if self.capture_runtime is None:
-            self.capture_runtime=CodexRuntime(NativeHost(),restart_on_timeout=False)
-            self.capture_runtime.ensure_started=AsyncMock()
-            self.capture_runtime.native_runtime_version='0.160.0'
-        runtime=self.capture_runtime
+        runtime=self.native_capture_transport()
         assignment=self.validate_current()
         status=self.status()
         bound=capture.bind_assignment(assignment,worker_id=status.worker_id,fence=status.fence,
@@ -1679,6 +1694,7 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             bootstrap_bindings=bootstraps,
             control_actor=SimpleNamespace(identity_id="control"),
         )
+        await sessions.session.create_initial_native_session('t1')
         project = Project(
             id="p1",
             name="Project",
@@ -1705,6 +1721,20 @@ class TurnExecutionStartTests(unittest.IsolatedAsyncioTestCase):
             [item[0] for item in bootstraps.initial_turn_started],
             ["t1"],
         )
+
+    async def test_pending_bootstrap_in_another_process_refuses_before_native_input(self):
+        from codex_web.runtime.execution import ExecutionPrestartRefusal
+        host, binding, sessions, service = self._service(bootstrap_thread_id="t1")
+        service.bootstrap_bindings.initial_turn_pending = True
+        sessions.session.runtime = SimpleNamespace(generation="replacement-process")
+        with self.assertRaises(ExecutionPrestartRefusal) as caught:
+            await service.start_thread_turn_now(
+                "t1", project=Project(id="p1", name="Project", path="/workspace/project"),
+                message="preserve this original", sandbox="workspace-write", approval_policy="on-request")
+        self.assertEqual(caught.exception.detail["code"], "initial_bootstrap_process_lost")
+        self.assertEqual(sessions.session.requests, [])
+        self.assertEqual(sessions.completed[0][0], "assignment-1")
+        self.assertTrue(service.bootstrap_bindings.initial_turn_pending)
 
     async def test_work_item_metadata_supplies_writable_repository_scope(self) -> None:
         host, binding, _sessions, service = self._service()

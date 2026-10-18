@@ -120,6 +120,8 @@ class AdmittedContextCapacityTests(unittest.IsolatedAsyncioTestCase):
             explicit_repository_id=self.target.id,agent_profile=self.profile_pin)
         bindings.bind(bootstrap_id='capacity-repo-only',thread_id='same-thread',execution_id=prior.execution_id,
             assignment_id=prior.assignment_id,execution_workspace_id=prior.workspace_id,actor=self.admin)
+        # This rollover starts from an existing native thread with history.
+        bindings.mark_initial_turn_started('same-thread', self.admin)
         self.workers.cancel_bootstrap(prior.assignment_id,AssignmentCancelRequest(expected_fence=0,
             reason='Private terminal repo-only bootstrap'),actor=self.admin)
         self.assignment,self.native_session=await self.harness.finish_one()

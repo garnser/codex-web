@@ -2,6 +2,7 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from fastapi import HTTPException
@@ -198,6 +199,9 @@ class QueuedOperatorAdmissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_remote_profile_code_cannot_prove_input_was_unstarted(self):
         await self.assert_remote_code_remains_uncertain('thread_agent_profile_immutable')
 
+    async def test_remote_initial_process_code_cannot_prove_input_was_unstarted(self):
+        await self.assert_remote_code_remains_uncertain('initial_bootstrap_process_lost')
+
     async def test_controller_binding_failure_restores_original_without_native_input(self):
         from codex_web.services.turn_execution_binding import TurnExecutionBindingError
         before = [q.model_dump(mode='json') for q in self.queues.get('thread-a')]
@@ -219,6 +223,35 @@ class QueuedOperatorAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result['ok'])
         self.assertEqual(result['attempt']['status'], 'blocked')
         self.assertEqual(self.starts(), [])
+        self.assertEqual([q.model_dump(mode='json') for q in self.queues.get('thread-a')], before)
+
+    async def test_lost_pending_process_records_bound_controller_refusal_without_native_input(self):
+        before = [q.model_dump(mode='json') for q in self.queues.get('thread-a')]
+        self.runtime.bootstrap_bindings = turn_fixtures._BootstrapBindings('thread-a', initial_turn_pending=True)
+        self.sessions.session.configure_assignment(project_id=self.f.project.id,
+            execution_profile_id=self.attempt.execution_profile_id,
+            writable_repository_ids=self.attempt.writable_repository_resource_ids,
+            read_only_repository_ids=self.attempt.read_only_repository_resource_ids,
+            explicit_repository_id=self.attempt.repository_resource_id,
+            sandbox=self.attempt.sandbox or self.f.project.sandbox,
+            approval_policy=self.attempt.approval_policy or self.f.project.approval_policy)
+        self.sessions.session.validate_current().repository_target = SimpleNamespace(
+            mutable_repository_id=self.attempt.repository_resource_id,
+            read_only_repository_ids=self.attempt.read_only_repository_resource_ids)
+        self.sessions.session.runtime = SimpleNamespace(generation='replacement-process')
+        result = await self.admit()
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['attempt']['status'], 'blocked', result['attempt']['blockers'])
+        retained = self.f.preflight.store.get(self.attempt.id)
+        self.assertTrue(self.f.preflight.recorded_initial_process_refusal(retained))
+        self.assertFalse(self.f.preflight.recorded_initial_process_refusal(
+            retained.model_copy(update={'status':'reconciliation_required'})))
+        for field in ('admission_claim_id', 'snapshot_sha256', 'threadId', 'phase'):
+            changed = retained.blockers[0].model_copy(update={field:'foreign'})
+            self.assertFalse(self.f.preflight.recorded_initial_process_refusal(
+                retained.model_copy(update={'blockers':(changed,)})), field)
+        self.assertTrue(result['attempt']['can_recover_bootstrap'])
+        self.assertEqual(self.sessions.session.requests, [])
         self.assertEqual([q.model_dump(mode='json') for q in self.queues.get('thread-a')], before)
 
     async def test_concurrent_operator_requests_and_ordinary_drain_share_local_lock(self):

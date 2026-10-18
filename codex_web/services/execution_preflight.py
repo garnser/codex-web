@@ -297,6 +297,24 @@ class ExecutionPreflightService:
                    and blocker.model_dump(mode='json').get('threadId') == target
                    for blocker in attempt.blockers)
 
+    def recorded_initial_process_refusal(self, attempt: ExecutionPreflightAttempt) -> bool:
+        snapshot = attempt.queued_turn_snapshot
+        if (attempt.status != 'blocked' or snapshot is None or attempt.scheduling_retirement is not None
+                or attempt.queued_start_correlation is not None or attempt.queued_resume_correlation is not None
+                or attempt.queued_start_evidence is not None or attempt.queued_resume_evidence is not None
+                or attempt.queued_start_receipt is not None or attempt.started_at is not None
+                or not attempt.queued_admission_claim_id):
+            return False
+        return any(
+            row.get('code') == 'initial_bootstrap_process_lost'
+            and row.get('phase') == 'before_turn_input'
+            and row.get('preflight_attempt_id') == attempt.id
+            and row.get('admission_claim_id') == attempt.queued_admission_claim_id
+            and row.get('threadId') == (attempt.replacement_thread_id or attempt.thread_id)
+            and row.get('snapshot_sha256') == self.queued_snapshot_digest(snapshot)
+            and bool(row.get('bootstrap_id')) and bool(row.get('assignment_id'))
+            for row in (b.model_dump(mode='json') for b in attempt.blockers))
+
     def recorded_prestart_refusal(self, attempt: ExecutionPreflightAttempt) -> bool:
         if attempt.queued_resume_evidence is not None:
             from codex_web.services.queued_native_resume import validate_resume_observation
@@ -308,7 +326,8 @@ class ExecutionPreflightService:
                     and attempt.scheduling_retirement is None)
             except ValueError:
                 return False
-        return self.recorded_profile_refusal(attempt) or self.recorded_maintenance_refusal(attempt)
+        return (self.recorded_profile_refusal(attempt) or self.recorded_maintenance_refusal(attempt)
+                or self.recorded_initial_process_refusal(attempt))
 
     def reconcile_prestart_refusal(self, attempt_id: str, *, actor: AuthenticationActor) -> ExecutionPreflightAttempt:
         initial = self.get(attempt_id, actor=actor)
@@ -701,6 +720,7 @@ class ExecutionPreflightService:
     def reserve_bootstrap_recovery(
         self, attempt_id: str, *, actor: AuthenticationActor,
         expected_snapshot_sha256: str, reason: str,
+        source_thread_id: str | None = None, expected_replacement_thread_id: str | None = None,
     ) -> tuple[ExecutionPreflightAttempt, bool]:
         """Commit once before bootstrap I/O; expiration never proves its outcome."""
         initial = self.get(attempt_id, actor=actor)
@@ -721,6 +741,8 @@ class ExecutionPreflightService:
             reserved = False
             self._authorize(current, actor, require_admin=True)
             snapshot = current.queued_turn_snapshot
+            if source_thread_id is not None and current.replacement_thread_id != expected_replacement_thread_id:
+                raise HTTPException(status_code=409, detail='Bootstrap recovery route changed during review.')
             if (snapshot is None or self.queued_snapshot_digest(snapshot) != expected_snapshot_sha256):
                 raise HTTPException(status_code=409, detail={
                     'code':'bootstrap_recovery_snapshot_changed',
@@ -734,7 +756,9 @@ class ExecutionPreflightService:
                 if (current.bootstrap_recovery.queued_turn_id != snapshot['id']
                         or current.bootstrap_recovery.queued_snapshot_sha256 != expected_snapshot_sha256):
                     raise HTTPException(status_code=409, detail='Bootstrap recovery identity changed.')
-                if current.bootstrap_recovery.state != 'refused':
+                if (current.bootstrap_recovery.state != 'refused'
+                        and not (current.bootstrap_recovery.state == 'created'
+                            and self.recorded_initial_process_refusal(current))):
                     return current
                 if len(current.bootstrap_recovery_history) >= 8:
                     raise HTTPException(status_code=409, detail='Fresh bootstrap recovery limit reached.')
@@ -748,6 +772,8 @@ class ExecutionPreflightService:
                 history += (current.bootstrap_recovery,)
             return current.model_copy(update={'bootstrap_recovery':recovery,
                 'bootstrap_recovery_history':history,
+                **({'replacement_thread_id':source_thread_id} if source_thread_id
+                    and source_thread_id != current.thread_id else {}),
                 'updated_at':float(self.clock())})
         return self.store.update(attempt_id, update), reserved
 

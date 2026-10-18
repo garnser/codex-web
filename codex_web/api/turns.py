@@ -148,7 +148,8 @@ def build_turns_router(service: TurnService, scope: ThreadScopeService, order_re
                                     payload: QueuedBootstrapRecoveryRequest, request: Request):
             return await bootstrap_recovery.recover(attempt_id, thread_id=thread_id,
                 project=request.state.thread_project, actor=request_actor(request),
-                expected_snapshot_sha256=payload.expected_snapshot_sha256, reason=payload.reason)
+                expected_snapshot_sha256=payload.expected_snapshot_sha256, reason=payload.reason,
+                expected_source_thread_id=payload.expected_source_thread_id)
 
     @router.post('/api/threads/{thread_id}/preflight-attempts/{attempt_id}/retire-scheduling')
     async def retire_scheduling(thread_id: str, attempt_id: str, request: Request) -> dict[str, Any]:

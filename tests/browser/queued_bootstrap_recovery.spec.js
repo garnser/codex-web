@@ -1,6 +1,6 @@
 const {test, expect} = require('@playwright/test');
 
-async function setup(page, {pending=false, denied=false, failed=false, deferred=false}={}) {
+async function setup(page, {pending=false, denied=false, failed=false, deferred=false, successor=false}={}) {
   await page.goto('http://127.0.0.1:18766/static/queued_bootstrap_recovery_ui.js');
   await page.evaluate(async values => {
     document.body.innerHTML = '<main id="messages"></main>';
@@ -13,6 +13,7 @@ async function setup(page, {pending=false, denied=false, failed=false, deferred=
         if (!options) {
           if (values.denied) throw Error('Administrator MFA required');
           return {queued_turn_id:'original', project_id:'project', original_actor_id:'original-actor',
+            ...(values.successor ? {source_thread_id:'fenced-pending-destination'} : {}),
             agent_profile_id:'original-profile', agent_profile_revision:6,
             execution_profile_id:'repository-write', writable_repository_resource_ids:['repo'],
             read_only_repository_resource_ids:['docs'], snapshot_sha256:'a'.repeat(64),
@@ -25,8 +26,19 @@ async function setup(page, {pending=false, denied=false, failed=false, deferred=
       loadThread:async thread=>window.loads.push(thread), scheduleRefresh:()=>{}});
     ui.attach({can_recover_bootstrap:true, bootstrap_recovery_href:'/fixture/bootstrap-recovery'},
       document.querySelector('#messages'));
-  }, {pending, denied, failed, deferred});
+  }, {pending, denied, failed, deferred, successor});
 }
+
+test('successor submission pins the inspected pending destination', async({page})=>{
+  await setup(page, {successor:true});
+  await page.getByRole('button', {name:'Inspect fresh bootstrap recovery'}).click();
+  await expect(page.locator('pre')).toContainText('Recovery source: fenced-pending-destination');
+  await page.getByLabel('Fresh bootstrap recovery reason').fill('Preserve the original and append its successor');
+  await page.getByRole('button', {name:'Create fresh bootstrap', exact:true}).click();
+  const posts=await page.evaluate(()=>window.calls.filter(call=>call.options));
+  expect(posts).toHaveLength(1);
+  expect(JSON.parse(posts[0].options.body).expected_source_thread_id).toBe('fenced-pending-destination');
+});
 
 test('inspection makes no mutation and explicit submission preserves the preview guard', async({page})=>{
   await setup(page);
