@@ -463,7 +463,7 @@ for line in sys.stdin:
     async def test_real_process_group_descendants_are_retired(self):
         session, gate = await self.session()
         child_file = self.workspace_path / "child.pid"
-        process = subprocess.Popen(["/bin/bash", "-c", 'sleep 30 & echo $! > "$1"; wait', "fixture", str(child_file)], start_new_session=True)
+        process = subprocess.Popen(["/bin/bash", "-c", 'sleep 30 & echo $! > "$1.tmp"; mv -- "$1.tmp" "$1"; wait', "fixture", str(child_file)], start_new_session=True)
         session.runtime.proc = process
         self.backend.terminate_process = BubblewrapExecutionBackend._kill_process_group
         try:
