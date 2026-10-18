@@ -87,7 +87,7 @@ class AdmittedContextCapacityTests(unittest.IsolatedAsyncioTestCase):
         # A-allowlisted invocation policy instead of elevating A or spoofing C.
         inherited_pin=self.assignment.agent_profile
         roles_before=self.authority.role_ids_for_actor(self.requester,project_id=project.id)
-        self.assertIn('private-context-requester',roles_before)
+        self.assertIn('private-context-requester-'+self.requester.identity_id,roles_before)
         self.assertNotIn('local-admin',roles_before)
         with self.assertRaises(AgentProfileAccessDenied):
             self.agent_profiles.resolve_for_execution(inherited_pin.profile_id,
