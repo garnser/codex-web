@@ -840,7 +840,15 @@ budget is cancelled and its executor custody remains until the actual thread
 exits; cancelling an asyncio waiter does not assert thread termination. No
 persisted contract, grant, profile, Definition or pause state changes. Existing
 runner phase/timing/cleanup projections remain the operator inspection surface.
-The event-loop stall cause remains a separate diagnostic question.
+Blocking operator HTTP work must also stay off this supervision loop. Identity
+middleware resolves session/service-token authentication, local identity
+bootstrap and API authority through the existing thread executor. Each result
+is awaited before further request processing, retaining tenant-check and
+endpoint ordering. Broker audit
+inspection similarly loads and filters retained canonical evidence off-loop.
+These scheduling boundaries retain the same actor, CSRF, assurance, tenant,
+authority and audit arguments and denial behavior; they grant no authority,
+cache no authorization decision and do not extend supervision deadlines.
 
 ### Current migration boundary
 
