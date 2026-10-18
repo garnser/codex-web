@@ -55,9 +55,14 @@ class BotBindingLifecycleService:
             and current.project_id == new_binding.project_id
             and current.external_conversation_id == new_binding.external_conversation_id
         ):
-            new_binding.thread_id = current.thread_id
-            new_binding.sandbox = current.sandbox
-            new_binding.approval_policy = current.approval_policy
+            for field in ("thread_id", "sandbox", "approval_policy", "route_prefix",
+                          "thread_name", "external_name", "is_master",
+                          "is_primary_channel", "post_in_thread"):
+                setattr(new_binding, field, getattr(current, field))
+            # Ingress may attach an as-yet-unbound connection, but activity
+            # cannot replace a connection already selected by configuration.
+            if current.connection_id is not None:
+                new_binding.connection_id = current.connection_id
         updated = False
         for index, binding in enumerate(bindings):
             if (
