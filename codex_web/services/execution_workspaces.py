@@ -212,6 +212,10 @@ class ExecutionWorkspaceService:
             self.resources.get(resource_id, actor)
             for resource_id in request.resource_ids
         ]
+        for item in resources:
+            if item.id in request.read_only_resource_ids and (
+                    item.resource_type == ResourceType.REPOSITORY or item.lifecycle != ResourceLifecycle.ACTIVE):
+                raise ExecutionWorkspaceConflictError('READ context requires active nonrepository Resources')
         by_id = {item.id: item for item in resources}
         repository_resource_id = request.repository_resource_id
         writable_repository_ids = tuple(request.writable_repository_ids)
@@ -1117,6 +1121,8 @@ class ExecutionWorkspaceService:
         if existing is not None:
             if (
                 existing.resource_ids != request.resource_ids
+                or existing.resource_context != request.resource_context
+                or existing.read_only_resource_ids != request.read_only_resource_ids
                 or existing.repository_resource_id != repository_resource_id
                 or tuple(existing.writable_repository_ids) != writable_repository_ids
             ):
@@ -1169,7 +1175,7 @@ class ExecutionWorkspaceService:
                 if len(writable_repository_ids) > 1
                 else request.lease_mode
             )
-        for resource_id in read_only_repository_ids:
+        for resource_id in (*read_only_repository_ids, *request.read_only_resource_ids):
             resource_modes[resource_id] = LeaseMode.READ
         aggregate_mode = (
             LeaseMode.WRITE
@@ -1213,6 +1219,8 @@ class ExecutionWorkspaceService:
             expires_at=now + request.ttl_seconds,
         )
         workspace = ExecutionWorkspace(
+            read_only_resource_ids=request.read_only_resource_ids,
+            resource_context=request.resource_context,
             id=workspace_id,
             organization_id=actor.organization_id,
             workspace_id=actor.workspace_id,

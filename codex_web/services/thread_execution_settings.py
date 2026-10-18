@@ -55,6 +55,8 @@ class ThreadExecutionSettingsService:
         read_only_repository_resource_ids: tuple[str, ...] | None = None,
         execution_profile_id: str | None = None,
         skill_refs: tuple[DefinitionReference, ...] | None = None,
+        resource_context=None,
+        resource_context_supplied=False,
     ) -> ThreadRunSettings:
         all_settings = None
         current = (
@@ -62,6 +64,8 @@ class ThreadExecutionSettingsService:
             if self.get_setting is not None
             else None
         ) or ThreadRunSettings()
+        if resource_context_supplied or resource_context is not None:
+            current.resource_context=resource_context
         if sandbox is not None:
             current.sandbox = sandbox
         if approval_policy is not None:

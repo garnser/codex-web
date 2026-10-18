@@ -2666,6 +2666,8 @@ class AssignmentBoundControlPlaneBroker:
             raise ControlPlaneBrokerDeniedError("assignment worker changed")
         if assignment.fence != self.fence:
             raise ControlPlaneBrokerDeniedError("assignment fence changed")
+        if getattr(assignment,'resource_context',None)!=getattr(self.snapshot,'resource_context',None):
+            raise ControlPlaneBrokerDeniedError('assignment immutable Resource context changed')
         if self.worker_service_identity_validator is not None:
             current_identity = self.worker_service_identity_validator()
             if current_identity != self.service_identity_id:

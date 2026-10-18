@@ -877,6 +877,7 @@ class TurnExecutionService:
         repository_resource_id: str | None = None,
         writable_repository_resource_ids: tuple[str, ...] = (),
         read_only_repository_resource_ids: tuple[str, ...] = (),
+        resource_context=None,
         execution_profile_id: str | None = None,
         agent_profile_id: str | None = None,
         agent_profile_revision: int | None = None,
@@ -906,6 +907,7 @@ class TurnExecutionService:
                     and existing.repository_resource_id == repository_resource_id
                     and existing.writable_repository_resource_ids == writable_repository_resource_ids
                     and existing.read_only_repository_resource_ids == read_only_repository_resource_ids
+                    and existing.resource_context == resource_context
                     and existing.execution_profile_id == execution_profile_id
                     and existing.agent_profile_id == agent_profile_id
                     and existing.agent_profile_revision == agent_profile_revision
@@ -997,6 +999,7 @@ class TurnExecutionService:
                 read_only_repository_resource_ids=(
                     read_only_repository_resource_ids
                 ),
+                **({"resource_context":resource_context} if resource_context is not None else {}),
                 execution_profile_id=execution_profile_id,
                 agent_profile_id=agent_profile_id,
                 agent_profile_revision=agent_profile_revision,
@@ -1309,6 +1312,7 @@ class TurnExecutionService:
         fence: int | None = None,
         repository_resource_id: str | None = None,
         writable_repository_resource_ids: tuple[str, ...] = (),
+        resource_context=None,
         execution_profile_id: str | None = None,
         agent_profile: AgentProfileExecutionBinding | None = None,
         agent_profile_actor_id: str | None = None,
@@ -1322,7 +1326,9 @@ class TurnExecutionService:
         now = time.time()
         current = self._active_turn(thread_id)
         settings = h._thread_run_settings(thread_id)
+        resource_context=resource_context or (current.resource_context if current else None)
         active = ActiveThreadTurn(
+            resource_context=resource_context,
             thread_id=thread_id,
             turn_id=turn_id or (current.turn_id if current else None),
             project_id=project_id or (current.project_id if current else None),
@@ -1969,7 +1975,9 @@ class TurnExecutionService:
         repository_resource_id: str | None = None,
         writable_repository_resource_ids: tuple[str, ...] = (),
         read_only_repository_resource_ids: tuple[str, ...] = (),
+        resource_context=None,
         read_only_scope_supplied: bool = False,
+        resource_context_supplied: bool = False,
         execution_profile_id: str | None = None,
         ingress_execution_profile_definition=None,
         actor: AuthenticationActor | None = None,
@@ -2032,7 +2040,9 @@ class TurnExecutionService:
                     repository_resource_id=repository_resource_id,
                     writable_repository_resource_ids=writable_repository_resource_ids,
                     read_only_repository_resource_ids=read_only_repository_resource_ids,
+                    **({"resource_context":resource_context} if resource_context is not None else {}),
                     read_only_scope_supplied=read_only_scope_supplied,
+                    **({"resource_context_supplied":True} if resource_context_supplied else {}),
                     execution_profile_id=execution_profile_id,
                     **({"ingress_execution_profile_definition": ingress_execution_profile_definition}
                        if ingress_execution_profile_definition is not None else {}),
@@ -2065,7 +2075,9 @@ class TurnExecutionService:
             repository_resource_id=repository_resource_id,
             writable_repository_resource_ids=writable_repository_resource_ids,
             read_only_repository_resource_ids=read_only_repository_resource_ids,
+            **({"resource_context":resource_context} if resource_context is not None else {}),
             read_only_scope_supplied=read_only_scope_supplied,
+            **({"resource_context_supplied":True} if resource_context_supplied else {}),
             execution_profile_id=execution_profile_id,
                     **({"ingress_execution_profile_definition": ingress_execution_profile_definition}
                        if ingress_execution_profile_definition is not None else {}),
@@ -2101,7 +2113,9 @@ class TurnExecutionService:
         repository_resource_id: str | None = None,
         writable_repository_resource_ids: tuple[str, ...] = (),
         read_only_repository_resource_ids: tuple[str, ...] = (),
+        resource_context=None,
         read_only_scope_supplied: bool = False,
+        resource_context_supplied: bool = False,
         execution_profile_id: str | None = None,
         ingress_execution_profile_definition=None,
         actor: AuthenticationActor | None = None,
@@ -2207,6 +2221,13 @@ class TurnExecutionService:
         effective_read_only_repositories = tuple(
             read_only_repository_resource_ids if scoped_read_context else
             (read_only_repository_resource_ids or settings.read_only_repository_resource_ids))
+        resource_context=(resource_context if (resource_context_supplied or work_item_ref
+            or source.startswith('queued:') or queued_admission_attempt_id) else
+            resource_context or getattr(settings,'resource_context',None))
+        if resource_context is not None and actor is None and not source.startswith(('queued:','restart-recovery:')):
+            raise ExecutionPrestartRefusal(status_code=403,detail={'code':'resource_context_current_requester_required'})
+        if resource_context is not None and actor is not None and actor.identity_id!=resource_context.requester_identity_id:
+            raise ExecutionPrestartRefusal(status_code=403,detail={'code':'resource_context_requester_changed'})
         effective_model = model or settings.model or project.model
         effective_reasoning_effort = reasoning_effort or settings.reasoning_effort
         effective_execution_profile_id = (
@@ -2288,7 +2309,9 @@ class TurnExecutionService:
                         repository_resource_id=repository_resource_id,
                         writable_repository_resource_ids=(
                             requested_writable_repositories or None),
-                        read_only_repository_resource_ids=effective_read_only_repositories)
+                        read_only_repository_resource_ids=effective_read_only_repositories,
+                        resource_context=resource_context,
+                        resource_context_supplied=True)
             bootstrap = self._bootstrap_binding_for_thread(thread_id)
             desired_runtime = _runtime_for_model(effective_model)
             if bootstrap is None:
@@ -2306,6 +2329,7 @@ class TurnExecutionService:
                         effective_writable_repositories
                     ),
                     read_only_repository_ids=effective_read_only_repositories,
+                    **({"resource_context":resource_context} if resource_context is not None else {}),
                     trusted_local_codex_requested=trusted_local_codex_requested,
                     actor=actor,
                     agent_profile_id=agent_profile_id,
@@ -2354,6 +2378,11 @@ class TurnExecutionService:
                         if assignment is not None
                         else None
                     )
+                if (assignment is not None and getattr(assignment,'resource_context',None)!=resource_context
+                        and (assignment.status!=AssignmentStatus.CANCELLED or session is not None)):
+                    raise ExecutionPrestartRefusal(status_code=409,detail={
+                        'code':'resource_context_rollover_required',
+                        'next_action':'Preserve terminal custody, cancel/fence exact old binding, and admit fresh SAME-thread bootstrap; no live scope expansion.'})
                 # Recovery may clear the historical assignment variable after
                 # a failed start. Its immutable profile must survive that loss.
                 recovered_profile = getattr(assignment, "agent_profile", None)
@@ -2489,7 +2518,7 @@ class TurnExecutionService:
                     read_context_drift = set(effective_read_only_repositories) != set(
                         getattr(getattr(assignment, 'repository_scope', None),
                                 'read_only_repository_ids', ()))
-                    if target_drift or scope_drift or read_context_drift:
+                    if target_drift or scope_drift or read_context_drift or getattr(assignment,'resource_context',None)!=resource_context:
                         switch_needed = True
                 if switch_needed:
                     await resolve_recovery_profile()
@@ -2557,6 +2586,7 @@ class TurnExecutionService:
                             effective_writable_repositories
                         ),
                         read_only_repository_ids=effective_read_only_repositories,
+                        **({"resource_context":resource_context} if resource_context is not None else {}),
                         previous_assignment_id=bootstrap.assignment_id,
                     )
                     if not (
@@ -2651,6 +2681,7 @@ class TurnExecutionService:
                             effective_writable_repositories
                         ),
                         read_only_repository_ids=effective_read_only_repositories,
+                        **({"resource_context":resource_context} if resource_context is not None else {}),
                         previous_assignment_id=bootstrap.assignment_id,
                     )
                     session_manager = self._manager_for_binding(
@@ -2930,6 +2961,7 @@ class TurnExecutionService:
                             ),
                             writable_repository_source=writable_repository_source,
                             read_only_repository_ids=effective_read_only_repositories,
+                            **({"resource_context":resource_context} if resource_context is not None else {}),
                             work_item_ref=work_item_ref,
                             execution_profile_id=effective_execution_profile_id,
                             agent_profile=agent_profile_binding,
@@ -3127,6 +3159,7 @@ class TurnExecutionService:
                 sandbox_policy=resume_params.get("sandboxPolicy"),
                 execution_id=canonical_execution_id,
                 assignment_id=assignment_id,
+                resource_context=resource_context,
                 execution_workspace_id=workspace_id,
                 worker_id=worker_id,
                 model=effective_runtime_model,
@@ -3246,6 +3279,7 @@ class TurnExecutionService:
                     reply_target=reply_target,
                     execution_id=canonical_execution_id,
                     assignment_id=assignment_id,
+                    resource_context=resource_context,
                     execution_workspace_id=workspace_id,
                     worker_id=worker_id,
                     fence=fence,
@@ -3320,6 +3354,10 @@ class TurnExecutionService:
                 params["input"][0]["text"],
                 self.turn_source_for_relay_guard(thread_id, source),
             )
+            if resource_context is not None:
+                binding_service.validate_assignment_resource_context(assignment)
+                await session._supervise("resource_context_authority",session._validate_current_authority,
+                seconds=session._lease_budget())
             runtime_turn_request = AgentRuntimeTurnRequest(
                 message=params["input"][0]["text"],
                 model=effective_runtime_model,
@@ -3988,6 +4026,7 @@ class TurnExecutionService:
                         queued.writable_repository_resource_ids or current_settings.writable_repository_resource_ids
                     ),
                     read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
+                    **({"resource_context":queued.resource_context} if queued.resource_context is not None else {}),
                     execution_profile_id=(
                         queued.execution_profile_id
                         or current_settings.execution_profile_id
@@ -4029,6 +4068,7 @@ class TurnExecutionService:
                 repository_resource_id=queued.repository_resource_id,
                 writable_repository_resource_ids=queued.writable_repository_resource_ids,
                 read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
+                **({"resource_context":queued.resource_context} if queued.resource_context is not None else {}),
                 execution_profile_id=queued.execution_profile_id,
                 **({"ingress_execution_profile_definition": queued.ingress_execution_profile_definition}
                    if queued.ingress_execution_profile_definition is not None else {}),
@@ -4445,6 +4485,8 @@ class TurnExecutionService:
                     writable_repository_resource_ids=(
                         active.writable_repository_resource_ids
                     ),
+                    resource_context=active.resource_context,
+                    resource_context_supplied=True,
                     execution_profile_id=active.execution_profile_id,
                     **({"memory_context_binding": active.memory_context_binding} if active.memory_context_binding is not None else {}),
                     actor=(
@@ -4488,6 +4530,7 @@ class TurnExecutionService:
                         f"{active.source or 'unknown'}"
                     ),
                     reply_target=active.reply_target,
+                    resource_context=active.resource_context,
                     execution_profile_id=active.execution_profile_id,
                 )
                 h._append_bot_event(
@@ -4547,6 +4590,7 @@ class TurnExecutionService:
         explicit_repository_id: str | None,
         writable_repository_ids: tuple[str, ...] = (),
         read_only_repository_ids: tuple[str, ...] = (),
+        resource_context=None,
         previous_assignment_id: str | None,
         retirement_reason: str | None = None,
         renewal_limits=None,
@@ -4659,6 +4703,13 @@ class TurnExecutionService:
 
         token = __import__("uuid").uuid4().hex
 
+        previous_context_assignment=(self._assignment_record(previous_assignment_id)
+            if previous_assignment_id else None)
+        context_cas=(resource_context is not None or
+            getattr(previous_context_assignment,'resource_context',None) is not None)
+        if context_cas and previous_context_assignment is not None and (previous_context_assignment.status not in (AssignmentStatus.CANCELLED,AssignmentStatus.FAILED,AssignmentStatus.SUCCEEDED) or previous_context_assignment.lease is not None):
+            raise ExecutionPrestartRefusal(status_code=409,detail={'code':'resource_context_rollover_requires_terminal_fenced_assignment'})
+        previous_context_fence=previous_context_assignment.fence if previous_context_assignment is not None else None
         def prepare_and_rebind():
             binding = self.binding_service.prepare_bootstrap(
                 bootstrap_id=f"bootstrap-{token}",
@@ -4670,6 +4721,7 @@ class TurnExecutionService:
                 explicit_repository_id=explicit_repository_id,
                 writable_repository_ids=writable_repository_ids,
                 read_only_repository_ids=read_only_repository_ids,
+                **({"resource_context":resource_context} if resource_context is not None else {}),
                 execution_profile_id=execution_profile_id,
                 agent_profile=agent_profile,
                 **({'limits': renewal_limits} if retirement_reason else {}),
@@ -4682,7 +4734,9 @@ class TurnExecutionService:
                     assignment_id=binding.assignment_id,
                     execution_workspace_id=binding.workspace_id,
                     actor=self.control_actor,
-                    **({'expected_assignment_id': previous_assignment_id} if retirement_reason else {}),
+                    **({'expected_assignment_id':previous_assignment_id,
+                        'expected_assignment_fence':previous_context_fence} if context_cas and previous_assignment_id else
+                        ({'expected_assignment_id': previous_assignment_id} if retirement_reason else {})),
                 )
             except Exception:
                 self.binding_service.workers.cancel_bootstrap(
@@ -4697,7 +4751,7 @@ class TurnExecutionService:
             return self._bootstrap_binding_for_thread(thread_id)
 
         try:
-            if retirement_reason:
+            if retirement_reason or context_cas:
                 return await self._settle_custody_call(prepare_and_rebind)
             return await asyncio.to_thread(prepare_and_rebind)
         except TurnExecutionBindingError as exc:
@@ -4811,6 +4865,7 @@ class TurnExecutionService:
                     or current.id != assignment.id or current.fence != assignment.fence
                     or current.lease != assignment.lease or current.execution_profile_definition != assignment.execution_profile_definition
                     or current.repository_scope != assignment.repository_scope
+                    or current.resource_context != assignment.resource_context
                     or session.status().pending_executor_work != 0):
                 raise blocked('Assignment ownership or activity changed during renewal inspection.')
             scope = assignment.repository_scope
@@ -4820,6 +4875,7 @@ class TurnExecutionService:
                 explicit_repository_id=assignment.repository_target.mutable_repository_id if assignment.repository_target else None,
                 writable_repository_ids=tuple(scope.writable_repository_ids) if scope else (),
                 read_only_repository_ids=tuple(scope.read_only_repository_ids) if scope else (),
+                **({"resource_context":assignment.resource_context} if assignment.resource_context is not None else {}),
                 previous_assignment_id=assignment.id, retirement_reason='procedure_assignment_exhausted',
                 renewal_limits=assignment.limits)
             self.host._append_bot_event({'type': 'thread_assignment_renewed', 'thread_id': thread_id,
@@ -4838,6 +4894,7 @@ class TurnExecutionService:
         explicit_repository_id: str | None,
         writable_repository_ids: tuple[str, ...] = (),
         read_only_repository_ids: tuple[str, ...] = (),
+        resource_context=None,
         trusted_local_codex_requested: bool,
         actor: Any | None,
         agent_profile_id: str | None,
@@ -4902,6 +4959,7 @@ class TurnExecutionService:
             explicit_repository_id=explicit_repository_id,
             writable_repository_ids=writable_repository_ids,
             read_only_repository_ids=read_only_repository_ids,
+            **({"resource_context":resource_context} if resource_context is not None else {}),
             previous_assignment_id=None,
         )
 

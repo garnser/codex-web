@@ -4,6 +4,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator, model_serializer
 
+from codex_web.resource_context import ReadOnlyResourceIds, ReadOnlyResourceContext
 from codex_web.ux_briefs import UxBriefSelection, UxBriefTurnBinding
 from codex_web.notification_provenance import ProviderNotificationPin
 
@@ -257,6 +258,8 @@ class ProjectRepositorySelectionUpdate(BaseModel):
 
 
 class TurnCreate(BaseModel):
+    read_only_resource_ids: ReadOnlyResourceIds = ()
+    resource_context_work_item_ref: str | None = None
     defer_start: bool = False
     message: str = Field(min_length=1)
     project_id: str | None = None
@@ -276,6 +279,11 @@ class TurnCreate(BaseModel):
     @model_serializer(mode="wrap")
     def serialize_context(self, handler):
         result = handler(self)
+        if getattr(self, "resource_context", None) is None:
+            result.pop("resource_context", None)
+        if not getattr(self, "read_only_resource_ids", ()):
+            result.pop("read_only_resource_ids", None)
+            result.pop("resource_context_work_item_ref", None)
         if self.memory_context_selection is None:
             result.pop("memory_context_selection", None)
         return result
@@ -303,6 +311,7 @@ class ThreadPrimaryChannelUpdate(BaseModel):
 
 
 class ThreadRunSettings(BaseModel):
+    resource_context: ReadOnlyResourceContext | None = None
     sandbox: SandboxMode | None = None
     approval_policy: ApprovalPolicy | None = None
     model: str | None = None
@@ -313,6 +322,14 @@ class ThreadRunSettings(BaseModel):
     read_only_repository_resource_ids: tuple[str, ...] = ()
     execution_profile_id: str | None = None
     skill_refs: tuple[DefinitionReference, ...] | None = None
+
+
+    @model_serializer(mode="wrap")
+    def serialize_resource_context(self, handler):
+        result=handler(self)
+        if self.resource_context is None:
+            result.pop("resource_context", None)
+        return result
 
 
 class WorkItemHandoffDelivery(BaseModel):
@@ -528,6 +545,8 @@ class ExecutionPreflightBlockerSnapshot(BaseModel):
 class QueuedNativeStartCorrelation(BaseModel):
     """Metadata pinned before one assignment-bound native RPC is sent."""
 
+    resource_context: ReadOnlyResourceContext | None = None
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["1.0"] = "1.0"
     snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -556,6 +575,14 @@ class QueuedNativeStartCorrelation(BaseModel):
     runtime_generation: str = Field(min_length=1, max_length=128)
     rpc_request_id: str = Field(min_length=1, max_length=128)
     prepared_at: float
+
+
+    @model_serializer(mode="wrap")
+    def serialize_resource_context(self, handler):
+        result=handler(self)
+        if self.resource_context is None:
+            result.pop("resource_context", None)
+        return result
 
 
 class QueuedNativeStartEvidence(BaseModel):
@@ -703,6 +730,7 @@ class QueuedOperatorAdmission(BaseModel):
 
 
 class ExecutionPreflightAttempt(BaseModel):
+    resource_context: ReadOnlyResourceContext | None = None
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(min_length=1)
@@ -753,6 +781,8 @@ class ExecutionPreflightAttempt(BaseModel):
     @model_serializer(mode="wrap")
     def serialize_recovery_fields(self, handler):
         result = handler(self)
+        if getattr(self, "resource_context", None) is None:
+            result.pop("resource_context", None)
         for name in ('queued_start_correlation', 'queued_start_evidence',
                      'queued_resume_correlation', 'queued_resume_evidence'):
             if getattr(self, name) is None:
@@ -771,6 +801,7 @@ class ExecutionPreflightAttempt(BaseModel):
 
 
 class ActiveThreadTurn(BaseModel):
+    resource_context: ReadOnlyResourceContext | None = None
     thread_id: str
     turn_id: str | None = None
     project_id: str | None = None
@@ -800,6 +831,8 @@ class ActiveThreadTurn(BaseModel):
     @model_serializer(mode="wrap")
     def serialize_context(self, handler):
         result = handler(self)
+        if getattr(self, "resource_context", None) is None:
+            result.pop("resource_context", None)
         if self.memory_context_binding is None:
             result.pop("memory_context_binding", None)
         return result
@@ -817,6 +850,7 @@ class ProjectCoordinationDispatch(BaseModel):
 
 
 class QueuedTurn(BaseModel):
+    resource_context: ReadOnlyResourceContext | None = None
     canonical_ingress_id: str | None = None
     ingress_execution_profile_definition: DefinitionReference | None = None
     id: str
@@ -850,6 +884,8 @@ class QueuedTurn(BaseModel):
     @model_serializer(mode="wrap")
     def serialize_context(self, handler):
         result = handler(self)
+        if getattr(self, "resource_context", None) is None:
+            result.pop("resource_context", None)
         if self.memory_context_binding is None:
             result.pop("memory_context_binding", None)
         if self.provider_notification_pin is None:

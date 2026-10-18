@@ -99,6 +99,18 @@ class WorkerVerificationAdapter:
             self.denied('Verification Work Item is outside current assignment recovery scope')
         return state
 
+    def context_requester(self, assignment):
+        context=getattr(assignment,'resource_context',None)
+        if context is None:
+            return self.broker._requester_actor(assignment)
+        from codex_web.identity import TenantScope
+        from codex_web.services.identity import IdentityError
+        try:
+            return self.broker.identity.actor_for_identity(context.requester_identity_id,
+                scope=TenantScope(organization_id=assignment.organization_id,workspace_id=assignment.workspace_id))
+        except IdentityError:
+            self.denied('Original Resource-context requester is no longer authorized')
+
     def visible(self, record, assignment, actor):
         self.scope(assignment, record.work_item_ref)
         if (getattr(record, 'project_id', None) not in (None, assignment.project_id)
@@ -110,7 +122,7 @@ class WorkerVerificationAdapter:
             operation = next(o for o in OPERATIONS if o.id == (
                 'verification.evidence.read' if hasattr(record, 'evidence_type') else 'verification.artifact.read'))
             self.broker._authorize(assignment, operation,
-                actor=self.broker._requester_actor(assignment), resource_ids=tuple(record.resource_ids))
+                actor=self.context_requester(assignment), resource_ids=tuple(record.resource_ids))
         if record.retention_expires_at is not None and record.retention_expires_at <= self.broker._clock():
             self.denied('Original record has expired')
         if record.governance_record_id is not None:
@@ -130,7 +142,8 @@ class WorkerVerificationAdapter:
                 or current.execution_profile_definition != assignment.execution_profile_definition
                 or current.execution_profile_id != assignment.execution_profile_id
                 or current.project_id != assignment.project_id
-                or current.resource_ids != assignment.resource_ids):
+                or current.resource_ids != assignment.resource_ids
+                or current.resource_context != assignment.resource_context):
             self.denied('Verification assignment scope or pinned profiles changed')
         lease = current.lease
         if (lease is None or lease.fence != current.fence
@@ -139,6 +152,13 @@ class WorkerVerificationAdapter:
                 or current.deadline_at is not None and current.deadline_at <= self.broker._clock()):
             self.denied('Verification assignment lease or deadline expired')
         worker, requester, _, decision = self.broker._dispatch_scope(current, worker_actor, resolved)
+        if current.resource_context is not None:
+            # Allocation custody may be held by the controller, but it cannot
+            # substitute for the original context requester's current API authority.
+            requester=self.context_requester(current)
+            decision=self.broker._authorize(current,resolved.operation,actor=requester,
+                resource_ids=(self.broker._writable_repository_id(current),))
+
         if worker.service_token_id is not None:
             token = next((t for t in self.broker.identity.store.load().service_tokens
                 if t.id == worker.service_token_id), None)
@@ -275,9 +295,20 @@ class WorkerVerificationAdapter:
         # Normal source-only admission may lack the DATABASE. Fail closed and
         # require supported Resource-scoped admission; never borrow repository
         # authority for a whole-StateStore proof.
+        context=getattr(assignment,'resource_context',None)
+        native_context_member=bool(context is not None and context.work_item_ref==item.ref
+            and resource_id in context.read_only_resource_ids)
         if (evidence.resource_ids != (resource_id,) or evidence.project_id != assignment.project_id
-                or resource_id not in assignment.resource_ids or resource_id not in item.resource_ids):
+                or resource_id not in assignment.resource_ids
+                or (resource_id not in item.resource_ids and not native_context_member)):
             self.denied('Capacity DATABASE requires exact current Work Item/assignment Resource admission')
+        if native_context_member:
+            workspace=self.broker.execution_workspaces.get(assignment.execution_workspace_id,self.broker._requester_actor(assignment))
+            lease=self.broker.execution_workspaces.store.lease(workspace.lease_id)
+            if (workspace.resource_context!=context or resource_id not in workspace.read_only_resource_ids
+                    or lease is None or lease.released_at is not None or lease.expires_at<=self.broker._clock()
+                    or lease.resource_modes.get(resource_id)!='read'):
+                self.denied('Capacity proof requires current canonical READ context lease')
         self.broker._authorize(assignment, next(o for o in OPERATIONS if o.id == 'verification.create'),
             actor=requester, resource_ids=(resource_id,))
         resources = self.broker.action_intents.execution.resources

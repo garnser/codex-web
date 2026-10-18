@@ -32,7 +32,7 @@ def validate_attribution(service, current, correlation):
                 'organization_id', 'workspace_id', 'project_id', 'agent_profile_actor_id',
                 'agent_profile_id', 'agent_profile_revision', 'execution_profile_id',
                 'repository_resource_id', 'writable_repository_resource_ids',
-                'read_only_repository_resource_ids'))):
+                'read_only_repository_resource_ids', 'resource_context'))):
         raise ValueError('native start attribution does not match the retained original')
     if (original.thread_id != current.thread_id or original.project_id != current.project_id
             or original.message != current.message
@@ -40,7 +40,7 @@ def validate_attribution(service, current, correlation):
             or any(getattr(original, name) != getattr(current, name) for name in (
                 'agent_profile_actor_id', 'agent_profile_id', 'agent_profile_revision',
                 'execution_profile_id', 'repository_resource_id',
-                'writable_repository_resource_ids', 'read_only_repository_resource_ids'))):
+                'writable_repository_resource_ids', 'read_only_repository_resource_ids', 'resource_context'))):
         raise ValueError('retained admission metadata does not match its original snapshot')
 
 
@@ -200,6 +200,7 @@ class QueuedNativeStartCapture:
                     or (current.agent_profile_id is not None and (profile is None
                         or (current.agent_profile_id, current.agent_profile_revision)
                         != (profile.profile_id, profile.profile_revision)))
+                    or getattr(assignment,'resource_context',None)!=current.resource_context
                     or (current.execution_profile_id is not None
                         and current.execution_profile_id != assignment.execution_profile_id)
                     or (current.repository_resource_id is not None and (scope is None
@@ -216,6 +217,7 @@ class QueuedNativeStartCapture:
                     'agent_profile_id', 'agent_profile_revision', 'execution_profile_id',
                     'repository_resource_id', 'writable_repository_resource_ids',
                     'read_only_repository_resource_ids')},
+                **({'resource_context':current.resource_context} if current.resource_context else {}),
                 snapshot_sha256=self.service.queued_snapshot_digest(current.queued_turn_snapshot),
                 admission_claim_id=self.claim_id, requested_execution_id=self.requested_execution_id,
                 actor_identity_id=self.actor_identity_id or assignment.created_by,

@@ -933,3 +933,57 @@ unchanged and VALID along with Artifact/current authority/policy/key/capacity.
 Late invalidation refuses publication. No target authentication, raw hash,
 cancellation, cleanup, independent qualification SQL oracle or semantic-health
 gate is skipped. Per-operation budgets, format and dataset limits are unchanged.
+
+
+### Native same-thread read-only Resource context (1530 follow-up)
+
+Ordinary scoped input uses the versioned alias
+`POST /api/threads/{thread_id}/turns/resource-context-v1` of the existing TurnService.
+`read_only_resource_ids` is a unique bounded tuple (at most eight nonrepository
+IDs), default empty; `resource_context_work_item_ref` names the canonical Work
+Item association. An old server returns404 for this path before user input.
+The legacy turn endpoint refuses an explicit nonempty selector, rather than
+claiming an unsupported field was admitted. The authenticated API actor, never
+an actor field in input, supplies original requester provenance. Thread settings
+can inspect/preserve that context; selecting/clearing it requires versioned turn
+admission, not an unguarded settings update.
+
+The frozen `ReadOnlyResourceContext@1.0` follows the original input through
+settings, queued/preflight/native-start/resume snapshots, bootstrap, workspace,
+assignment, active session and renewal. Empty context is omitted on serialization,
+keeping old-empty snapshots equivalent; a nonempty future context version refuses.
+Older retained inputs are not upgraded from today's settings. Current owner/
+recipient, Project/tenant, active Resource, pinned profile and original requester's
+actual `resource.read` authority must all hold. Project association and internal
+control actors cannot grant this access. The exact associated Work Item is retained
+in the context; it need not rewrite an imported issue's repository resource list.
+
+Canonical workspace resource modes classify context as READ and repository as
+WRITE; generic context is not a repository member, credential, network permission
+or filesystem/data mount. Existing lease conflicts and resource/disk quotas still
+apply. Same execution reuse requires identical provenance/modes. Session/proxy
+validation rechecks actual assignment/workspace/lease and current authorization;
+new work cannot silently change a live assignment. Scope change first refuses,
+then requires supported terminal custody/fencing and fresh SAME-thread bootstrap.
+Binding replacement pins the previous assignment and retired fence in one shared
+canonical transaction, and a failed CAS cancels/releases only the new candidate.
+Renewal retains the previous context and limits, not newer settings.
+
+Nonempty contexts use code-owned `thread-turn/1.1` or `thread-bootstrap/1.1`
+execution contracts; old-empty requests keep1.0. No Profile/Role/Definition grant,
+new executor, token or adoption endpoint is added. The installed-source capability
+and supported-worker contract must be verified before sending the versioned input.
+The first persisted nonempty context (including settings or queued snapshots) is
+a compatibility boundary: old application readers/writers may omit unknown fields.
+There is **no** claim that the old binary can safely roll back after that write;
+all old application/worker writers must be drained/fenced under the reviewed
+installation contract before enabling this path. Source publication does not
+activate it, manufacture a worker's independence or qualify host capacity.
+
+The capacity Verification adapter can recognize this genuinely admitted READ
+context as the exact Work Item/Resource association. Current original-record
+visibility/governance, current requester API read/write authority on that DATABASE,
+actual authenticated verifier identity, same-tenant Project binding, exact config,
+runtime owner and independent capacity Evidence remain separately mandatory.
+The production app/PG resource measurements and enforcement are operator facts;
+source/test fixture metadata is never substitute capacity proof.

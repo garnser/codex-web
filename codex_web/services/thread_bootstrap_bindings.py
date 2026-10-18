@@ -27,6 +27,7 @@ class ThreadBootstrapBindingService:
 
     def __init__(self, store: ThreadBootstrapBindingStore) -> None:
         self.store = store
+        self.assignment_store = None
 
     @staticmethod
     def _value(value: str, label: str) -> str:
@@ -55,6 +56,7 @@ class ThreadBootstrapBindingService:
         execution_workspace_id: str,
         actor: AuthenticationActor,
         expected_assignment_id: str | None = None,
+        expected_assignment_fence: int | None = None,
     ) -> ThreadBootstrapBinding:
         """Bind a thread to a new bootstrap, superseding any prior binding.
 
@@ -156,7 +158,13 @@ class ThreadBootstrapBindingService:
             state.bindings.append(replacement)
             return state
 
-        self.store.update(apply)
+        if expected_assignment_fence is not None:
+            if expected_assignment_id is None or self.assignment_store is None:
+                raise ThreadBootstrapBindingConflictError('Canonical retired assignment/fence CAS unavailable')
+            self.store.update_with_assignment_fence(apply,self.assignment_store,
+                expected_assignment_id,expected_assignment_fence)
+        else:
+            self.store.update(apply)
         return next(
             item
             for item in self.store.load().bindings

@@ -81,6 +81,8 @@ def build_execution_workspaces_router(service: ExecutionWorkspaceService) -> API
         request: Request,
     ) -> dict[str, Any]:
         try:
+            if payload.resource_context is not None:
+                raise HTTPException(status_code=409,detail={'code':'resource_context_requires_versioned_turn_admission'})
             workspace = service.acquire(payload, actor=request_actor(request))
             return {"item": workspace.model_dump(mode="json")}
         except Exception as exc:

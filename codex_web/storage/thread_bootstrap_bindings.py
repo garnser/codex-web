@@ -44,3 +44,25 @@ class ThreadBootstrapBindingStore:
             default=ThreadBootstrapBindingState().model_dump(mode="json"),
         )
         return self._decode(payload)
+
+
+    def update_with_assignment_fence(self, updater, assignments, assignment_id, fence):
+        """One canonical transaction pins the old binding AND retired fence."""
+        from codex_web.execution_workers import ExecutionAssignment
+        if assignments.store is not self.store:
+            raise ValueError('Bootstrap fence CAS requires the same canonical store')
+        assignments.assignment(assignment_id)  # initialize existing keyed projection
+        selected={self.namespace:(None,),assignments.assignment_namespace:(assignment_id,)}
+        result=[]
+        def apply(rows):
+            original=rows[assignments.assignment_namespace][assignment_id]
+            if original is None:
+                raise ValueError('Retired bootstrap assignment unavailable')
+            assignment=ExecutionAssignment.model_validate(original)
+            if assignment.fence!=fence or assignment.status not in ('cancelled','failed','succeeded') or assignment.lease is not None:
+                raise ValueError('Retired bootstrap fence/status changed')
+            state=updater(self._decode(rows[self.namespace][None]))
+            result.append(state)
+            return {self.namespace:{None:state.model_dump(mode='json')}}
+        self.store.record_mutate_many(selected,apply)
+        return result[0]

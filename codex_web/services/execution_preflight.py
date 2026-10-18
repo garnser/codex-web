@@ -77,6 +77,7 @@ class ExecutionPreflightService:
             repository_resource_id=queued.repository_resource_id,
             writable_repository_resource_ids=queued.writable_repository_resource_ids,
             read_only_repository_resource_ids=queued.read_only_repository_resource_ids,
+            **({"resource_context":queued.resource_context} if queued.resource_context else {}),
             execution_profile_id=queued.execution_profile_id,
             agent_profile_id=queued.agent_profile_id,
             agent_profile_revision=queued.agent_profile_revision,
@@ -579,6 +580,7 @@ class ExecutionPreflightService:
                     effective.get("read_only_repository_resource_ids")
                     or ()
                 ),
+                **({"resource_context":effective["resource_context"]} if effective.get("resource_context") else {}),
                 execution_profile_id=effective.get(
                     "execution_profile_id"
                 ),
@@ -1004,6 +1006,8 @@ class ExecutionPreflightService:
         attempt: ExecutionPreflightAttempt,
     ) -> TurnCreate:
         return TurnCreate(
+            **({"read_only_resource_ids":attempt.resource_context.read_only_resource_ids,
+                "resource_context_work_item_ref":attempt.resource_context.work_item_ref} if attempt.resource_context else {}),
             message=attempt.message,
             project_id=attempt.project_id,
             model=attempt.model,

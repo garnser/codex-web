@@ -83,6 +83,7 @@ class ExecutionWorkerService:
     ) -> None:
         self.store = store
         self.identity = identity
+        self.resource_context_validator = None
         self.workspaces = workspaces
         self.skill_scan_admission = None
         self.maintenance_guard = maintenance_guard
@@ -993,6 +994,8 @@ class ExecutionWorkerService:
                 raise WorkerConflictError(
                     "assignment project does not match execution workspace"
                 )
+            if payload.resource_context != getattr(workspace,'resource_context',None):
+                raise WorkerConflictError("assignment Resource context differs from workspace")
             if set(payload.resource_ids) - set(workspace.resource_ids):
                 raise WorkerConflictError(
                     "assignment resources exceed execution workspace lease"
