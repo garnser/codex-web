@@ -41,6 +41,7 @@ export function createNotificationBatchUi({ api, addMessage, captureView, loadTh
         current,
         items: [...previous, ...(result.items || []).filter(item => !seen.has(item.id))],
         next: result.next_cursor || null,
+        queue: result.queue || null,
       });
     } catch (error) {
       if (current()) history.set(threadId, {
@@ -219,6 +220,17 @@ export function createNotificationBatchUi({ api, addMessage, captureView, loadTh
     if (snapshot.current && !snapshot.current()) return;
     if (snapshot.error) {
       rendered.push(addMessage("Notification history unavailable", snapshot.error, "tool", new Date()));
+    }
+    if (snapshot.queue) {
+      const queue = snapshot.queue;
+      rendered.push(addMessage("Retained notification queue",
+        `${queue.original_count} queued originals; ${queue.provider_pinned_count} carry provider-event pins; `
+        + `${queue.without_provider_pin_count} have no provider-event pin.\n`
+        + (queue.oldest_age_seconds == null ? "Queue is empty.\n"
+          : `Oldest queued original: ${Math.floor(queue.oldest_age_seconds)} seconds.\n`)
+        + "Pins do not establish batch eligibility. Current event proof, authority, profile, repository and reply compatibility still require verification. "
+        + "Queue age includes requests and handoffs; it is not oldest actionable notification age. Admission history below does not measure useful throughput.",
+        "tool", new Date()));
     }
     for (const batch of snapshot.items || []) {
       const receipt = batch.native_receipt;

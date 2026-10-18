@@ -234,7 +234,10 @@
           return {items:[{...batches[0],id:'fixture-older-batch',phase:'released',
             original_ids:['older-one','older-two'],recovery_state:'released_to_original_queue'}],next_cursor:null};
         }
-        return {items:batches,next_cursor:new URLSearchParams(location.search).has('pagedBatch') ? 'fixture-cursor' : null};
+        return {items:batches,next_cursor:new URLSearchParams(location.search).has('pagedBatch') ? 'fixture-cursor' : null,
+          queue:new URLSearchParams(location.search).has('batchQueue') ? {
+            original_count:6,provider_pinned_count:1,without_provider_pin_count:5,oldest_age_seconds:7200
+          } : null};
       }
       if (path.endsWith('/reconcile-prestart')) return {ok:true, threadId:'thread-1'};
       if (path.endsWith('/retire-scheduling')) return {ok:true, threadId:'thread-1'};

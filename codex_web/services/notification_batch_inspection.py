@@ -9,10 +9,29 @@ from codex_web.services.identity import IdentityService
 
 
 class NotificationBatchInspection:
-    def __init__(self, preflight, *, outcomes=None, clock=time.time):
+    def __init__(self, preflight, *, outcomes=None, queues=None, clock=time.time):
         self.preflight = preflight
         self.outcomes = outcomes
+        self.queues = queues
         self.clock = clock
+
+    def _queue_summary(self, thread_id, project):
+        if self.queues is None:
+            return None
+        # Read only the canonical thread row. Pins are provenance, not proof of
+        # current authority, compatible membership or successful processing.
+        items = [item for item in self.queues.get(thread_id)
+                 if item.thread_id == thread_id and item.project_id == project.id]
+        oldest = min((item.created_at for item in items), default=None)
+        pinned = sum(item.provider_notification_pin is not None for item in items)
+        return {
+            "original_count": len(items),
+            "provider_pinned_count": pinned,
+            "without_provider_pin_count": len(items) - pinned,
+            "oldest_created_at": oldest,
+            "oldest_age_seconds": max(0, self.clock() - oldest) if oldest is not None else None,
+            "eligibility": "requires_current_provenance_authority_and_compatibility_checks",
+        }
 
     @staticmethod
     def _authorize(batch, *, thread_id, project, actor):
@@ -151,6 +170,7 @@ class NotificationBatchInspection:
             "items": visible,
             "next_cursor": cursor,
             "history_scope": "indexed_admissions",
+            "queue": self._queue_summary(thread_id, project),
         }
 
     def detail(self, batch_id, *, thread_id, project, actor):
