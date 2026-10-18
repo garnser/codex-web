@@ -140,7 +140,18 @@ class RecoveryOperatorActions:
         return {'schema_version':'1.0','registered':self.storage_provider is not None,
             'blockers':blockers,'bindings':[{'id':b.id} for b in eligible],
             'configuration':config,'actions':[CAPTURE,VERIFY],
+            **self.storage_incarnation(),
             'boundary':'Whole-StateStore opaque storage only. Independent fresh capacity Evidence, current MFA/authority/procedure/security, actual disk reservation and isolated verification required. No semantic Recovery PASS or source repair.'}
+
+    def storage_incarnation(self):
+        # Read only the CURRENT process admission owner, never a historical
+        # firing, scheduler owner, PID or request-supplied identity.
+        return {'recovery_executor_owner_id': self.recovery._scheduled_admission.owner_id,
+            'incarnation_provenance': {
+                'source': 'current_runtime.recovery_schedule_admission',
+                'scope': 'current_process_incarnation',
+                'restart_invalidates_capacity_evidence': True,
+                'capacity_or_health_qualified': False}}
 
     def _storage_request(self,action,binding_id,payload,actor):
         from codex_web.recovery_preservation import ACTIONS
@@ -165,6 +176,7 @@ class RecoveryOperatorActions:
             stats=self.storage_provider.operations.inventory()
             return {'schema_version':'1.0','scope':'whole-StateStore',
                 'inventory':{k:v for k,v in stats.items() if not k.startswith('_')},
+                **self.storage_incarnation(),
                 'configuration_sha256':hashlib.sha256(canonical(pins)).hexdigest(),
                 'effective_budget':config,'key_id':key.id,'key_version':key.current_version,
                 'semantic_recovery_qualified':False,'mutated':False,

@@ -249,6 +249,25 @@ for (const width of [1280, 375]) {
   });
 }
 
+test('storage status renders escaped current incarnation provenance', async ({ page }) => {
+  await mount(page, { intercept: async (route, url) => {
+    if (!url.pathname.endsWith('/storage-preservation/status')) return false;
+    await route.fulfill({ json: { schema_version: '1.0', registered: true, blockers: [],
+      bindings: [{ id: 'storage-only' }], configuration: { resource_id: 'whole-database',
+        memory_bytes: 536870912, disk_bytes: 8589934592, wall_seconds: 85 },
+      recovery_executor_owner_id: 'recovery-current<img src=x onerror="window.ownerInjected=true">',
+      incarnation_provenance: { source: 'current_runtime.recovery_schedule_admission',
+        scope: 'current_process_incarnation', restart_invalidates_capacity_evidence: true,
+        capacity_or_health_qualified: false } } });
+    return true;
+  } });
+  await expect(page.locator('#recovery-policy-content')).toContainText('recovery-current<img');
+  await expect(page.locator('#recovery-policy-content')).toContainText('current_runtime.recovery_schedule_admission');
+  await expect(page.locator('#recovery-policy-content')).toContainText('Restart invalidates capacity Evidence');
+  expect(await page.evaluate(() => !!window.ownerInjected)).toBe(false);
+  await expect(page.getByRole('button', { name: 'Submit once through canonical ActionIntent' })).toBeDisabled();
+});
+
 test('opaque storage unavailable and ordinary-reader states expose no mutation controls', async ({ page }) => {
   await mount(page, { readonly: true });
   await expect(page.locator('#recovery-policy-content')).toContainText('Detailed storage diagnostics and actions require');

@@ -533,7 +533,7 @@ class ControlPlaneBrokerService:
             "authority_level": item.authority_level.value,
         }
         if item.id.startswith("verification."):
-            result["scope"] = "Current assignment Work Item and writable repository only"
+            result["scope"] = "Current assignment Work Item and exact admitted Resources; writable repository remains required"
             result["authorizer"] = "Current assignment requester, exact API capability"
             result["verifier"] = "Actual authenticated registered worker; no identity overrides"
             result["response_loss"] = "Read-only exact execution/method/source lookup; never blind POST retry"
@@ -541,6 +541,7 @@ class ControlPlaneBrokerService:
             if item.id == "verification.create":
                 result["request_body"] = {"schema": "VerificationCreate",
                     "method": "recovery-owner-disposition.v2",
+                    "methods": ["recovery-owner-disposition.v2", "recovery-storage-capacity.v1"],
                     "source": "sha256:<review digest>", "original_evidence_count": 1,
                     "max_artifacts": 8, "identity_and_independence_overrides": False}
             if item.id == "verification.read":

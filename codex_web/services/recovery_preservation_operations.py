@@ -34,6 +34,45 @@ def fingerprint(request):
     return hashlib.sha256(canonical(request.model_dump(mode='json'))).hexdigest()
 
 
+def validate_capacity_evidence(evidence, proof, actor, config, pins, owner_id, *, now=None, starting=True):
+    """One fail-closed capacity contract for admission and independent review.
+
+    This validates references/metadata, not the truth of kernel measurements.
+    The actual independent verifier must inspect original protected observations.
+    """
+    now = time.time() if now is None else now
+    if (evidence.lifecycle!=EvidenceLifecycle.VALID or evidence.result!=EvidenceResult.PASS or proof is None
+        or proof.organization_id!=actor.organization_id or proof.workspace_id!=actor.workspace_id
+        or proof.result!=VerificationResult.VERIFIED or not proof.independent
+        or proof.verifier_identity_id==evidence.producer_identity_id
+        or evidence.id not in proof.evidence_ids or proof.verified_at<evidence.observed_at
+        or not math.isfinite(evidence.observed_at) or not math.isfinite(proof.verified_at)
+        or evidence.observed_at>now or proof.verified_at>now
+        or now-evidence.observed_at>(60 if starting else config['wall_seconds']+60)
+        or evidence.retention_expires_at is not None and evidence.retention_expires_at<=now
+        or config['resource_id'] not in evidence.resource_ids):
+        raise RecoveryConflictError('Fresh independently verified resource capacity Evidence required')
+    m=evidence.metadata
+    expected={'contract':CAPACITY_CONTRACT,'resource_id':config['resource_id'],
+              'recovery_executor_owner_id':owner_id,
+              'memory_enforcement':'kernel-cgroup-aggregate',
+              'memory_max_bytes':config['memory_bytes'],'memory_swap_max_bytes':0,
+              'configuration_sha256':hashlib.sha256(canonical(pins)).hexdigest()}
+    if any(type(m.get(k)) is not type(v) or m.get(k)!=v for k,v in expected.items()):
+        raise RecoveryConflictError('Capacity proof does not bind current Resource/configuration')
+    if type(m.get('expires_at')) not in (int,float) or not math.isfinite(m['expires_at']) or m['expires_at'] < now+(config['wall_seconds'] if starting else 0):
+        raise RecoveryConflictError('Capacity reservation proof expires before operation budget')
+    for name in ('memory_bytes','disk_bytes','wall_seconds'):
+        if type(m.get(name)) is not int or m[name]<config[name]:
+            raise RecoveryConflictError('Capacity proof does not cover effective operation budget')
+    for name in ('database_reservation_directory','database_directory'):
+        if not isinstance(m.get(name),str) or not Path(m[name]).is_absolute():
+            raise RecoveryConflictError('Verified same-host database filesystem mapping required')
+    return m
+
+
+
+
 class StoragePreservationOperations:
     def __init__(self, recovery, configuration, resources, resolve_actor):
         self.recovery, self.configuration, self.resources = recovery,configuration,resources
@@ -62,35 +101,8 @@ class StoragePreservationOperations:
         evidence = self.recovery.evidence.get_evidence(payload.capacity_evidence_id,actor=actor)
         state = self.recovery.evidence.store.load()
         proof = next((v for v in state.verifications if v.id==payload.capacity_verification_id),None)
-        now = time.time()
-        if (evidence.lifecycle!=EvidenceLifecycle.VALID or evidence.result!=EvidenceResult.PASS or proof is None
-            or proof.organization_id!=actor.organization_id or proof.workspace_id!=actor.workspace_id
-            or proof.result!=VerificationResult.VERIFIED or not proof.independent
-            or proof.verifier_identity_id==evidence.producer_identity_id
-            or evidence.id not in proof.evidence_ids or proof.verified_at<evidence.observed_at
-            or not math.isfinite(evidence.observed_at) or not math.isfinite(proof.verified_at)
-            or evidence.observed_at>now or proof.verified_at>now
-            or now-evidence.observed_at>(60 if starting else config['wall_seconds']+60)
-            or evidence.retention_expires_at is not None and evidence.retention_expires_at<=now
-            or payload.resource_id not in evidence.resource_ids):
-            raise RecoveryConflictError('Fresh independently verified resource capacity Evidence required')
-        m=evidence.metadata
-        expected={'contract':CAPACITY_CONTRACT,'resource_id':payload.resource_id,
-                  'recovery_executor_owner_id':self.recovery._scheduled_admission.owner_id,
-                  'memory_enforcement':'kernel-cgroup-aggregate',
-                  'memory_max_bytes':config['memory_bytes'],'memory_swap_max_bytes':0,
-                  'configuration_sha256':hashlib.sha256(canonical(pins)).hexdigest()}
-        if any(type(m.get(k)) is not type(v) or m.get(k)!=v for k,v in expected.items()):
-            raise RecoveryConflictError('Capacity proof does not bind current Resource/configuration')
-        if type(m.get('expires_at')) not in (int,float) or not math.isfinite(m['expires_at']) or m['expires_at'] < now+(config['wall_seconds'] if starting else 0):
-            raise RecoveryConflictError('Capacity reservation proof expires before operation budget')
-        for name in ('memory_bytes','disk_bytes','wall_seconds'):
-            if type(m.get(name)) is not int or m[name]<config[name]:
-                raise RecoveryConflictError('Capacity proof does not cover effective operation budget')
-        for name in ('database_reservation_directory','database_directory'):
-            if not isinstance(m.get(name),str) or not Path(m[name]).is_absolute():
-                raise RecoveryConflictError('Verified same-host database filesystem mapping required')
-        return m
+        return validate_capacity_evidence(evidence, proof, actor, config, pins,
+            self.recovery._scheduled_admission.owner_id, starting=starting)
 
     def committed(self,payload,actor,*,intent_id,action_id,binding_id):
         actor,config,pins,key=self.current(payload,actor,capacity=False)

@@ -15,8 +15,12 @@ from codex_web.data_governance import ContextFilterRequest
 from codex_web.execution_workers import AssignmentStatus, WorkerLifecycle
 from codex_web.identity import PrincipalKind
 from codex_web.recovery import RecoveryReconcileRequest
+from codex_web.recovery_preservation import CAPACITY_CONTRACT
+from codex_web.resources import ResourceType, ResourceLifecycle
 from codex_web.services.artifact_evidence import ArtifactEvidenceError
 from codex_web.services.recovery import RecoveryConflictError
+from codex_web.services.action_providers import ActionProviderError
+from codex_web.services.resources import ResourceCatalogError
 from codex_web.services.recovery_reconciliation import PROOF_CONTRACT, fingerprint, validate_proof
 from codex_web.storage.recovery import RecoveryStore
 from codex_web.storage.scheduler import SchedulerStore
@@ -239,17 +243,64 @@ class WorkerVerificationAdapter:
                 selected[name] = () if store.record_collection_exists(name) else (None,)
         return selected
 
+    def capacity_provider(self, assignment, worker):
+        from codex_web.services.recovery_preservation_provider import RecoveryPreservationProvider
+        try:
+            provider = self.broker.action_intents.execution.registry.provider(
+                'recovery-storage', 'canonical-state-preservation', actor=worker)
+        except ActionProviderError:
+            self.denied('Current trusted capacity provider unavailable')
+        if (not isinstance(provider, RecoveryPreservationProvider)
+                or provider.recovery.state_store is not self.service().store.store):
+            self.denied('Current trusted capacity provider/shared canonical store unavailable')
+        return provider
+
+    def validate_capacity(self, assignment, worker, requester, evidence, verification, provider):
+        from codex_web.services.recovery_preservation_configuration import preservation_configuration
+        from codex_web.services.recovery_preservation_operations import validate_capacity_evidence
+        from codex_web.services.recovery_policy import RecoveryPolicyControl
+        if self.capacity_provider(assignment, worker) is not provider:
+            self.denied('Current capacity provider incarnation changed')
+        config, pins = preservation_configuration(provider.operations.configuration)
+        resource_id = config['resource_id']
+        item = self.scope(assignment, evidence.work_item_ref)
+        # A Project binding is additional provenance, NOT an assignment grant.
+        # Normal source-only admission may lack the DATABASE. Fail closed and
+        # require supported Resource-scoped admission; never borrow repository
+        # authority for a whole-StateStore proof.
+        if (evidence.resource_ids != (resource_id,) or evidence.project_id != assignment.project_id
+                or resource_id not in assignment.resource_ids or resource_id not in item.resource_ids):
+            self.denied('Capacity DATABASE requires exact current Work Item/assignment Resource admission')
+        resources = self.broker.action_intents.execution.resources
+        resource = resources.get(resource_id, worker)
+        catalog = resources.store.load()
+        if (resource.resource_type != ResourceType.DATABASE or resource.lifecycle != ResourceLifecycle.ACTIVE
+                or not any(b.project_id == assignment.project_id and b.resource_id == resource_id
+                    and (b.organization_id, b.workspace_id) == (worker.organization_id, worker.workspace_id)
+                    for b in catalog.project_bindings)):
+            self.denied('Capacity DATABASE must be active and bound to the current Project')
+        registry = self.broker.action_intents.execution.registry
+        if not any(b.enabled and b.provider_type == 'recovery-storage'
+                and b.provider_instance == 'canonical-state-preservation'
+                and b.resource_ids == (resource_id,) for b in registry.list_bindings(worker)):
+            self.denied('Current enabled exact-Resource capacity binding required')
+        RecoveryPolicyControl(provider.recovery).require_scope(provider.recovery.store.load(), requester)
+        # This is the actual derived Verification after canonical independence
+        # calculation, not a synthetic verifier or a caller-supplied boolean.
+        validate_capacity_evidence(evidence, verification, worker, config, pins,
+            provider.recovery._scheduled_admission.owner_id, now=self.broker._clock())
+
     def create(self, assignment, worker_actor, resolved, payload, validator):
         service = self.service()
         try:
             request = VerificationCreate.model_validate(payload)
         except ValidationError:
             self.denied('Invalid VerificationCreate; caller identity/independence overrides are forbidden')
-        if (request.method != PROOF_CONTRACT or not request.evidence_ids
+        if (request.method not in (PROOF_CONTRACT, CAPACITY_CONTRACT) or not request.evidence_ids
                 or len(request.evidence_ids) != 1 or len(request.artifact_ids) > 8
                 or request.execution_id not in (None, assignment.execution_id)
                 or not re.fullmatch(r'sha256:[0-9a-f]{64}', request.source or '')):
-            self.denied('Exact owner-proof method, original Evidence and review digest required')
+            self.denied('Exact supported proof method, original Evidence and review digest required')
         self.scope(assignment, request.work_item_ref)
         original = service.get_evidence(request.evidence_ids[0], actor=self.broker._actor(assignment, worker_actor))
         # Referenced original artifacts participate in independence as well; a
@@ -260,6 +311,15 @@ class WorkerVerificationAdapter:
         request = request.model_copy(update={'execution_id': assignment.execution_id,
             'artifact_ids': artifact_ids})
         selected = self.guard_rows(assignment, request.work_item_ref, validator)
+        capacity_provider = None
+        if request.method == CAPACITY_CONTRACT:
+            capacity_provider = self.capacity_provider(assignment, worker_actor)
+            config_store = capacity_provider.operations.configuration.store
+            registry_store = self.broker.action_intents.execution.registry.store
+            for repository in (config_store, registry_store):
+                if repository.store is not service.store.store:
+                    self.denied('Capacity verification requires the shared configuration/provider store')
+                selected[repository.namespace] = (None,)
         original_worker, _, _ = self.principals(assignment, worker_actor, resolved, validator, payload)
         attribution = {}
         def commit(updater):
@@ -283,29 +343,32 @@ class WorkerVerificationAdapter:
                 proof = records[0]
                 if not set(proof.artifact_ids).issubset(set(request.artifact_ids)):
                     self.denied('Original proof artifact references changed before append')
-                recovery = RecoveryStore._decode(rows[RecoveryStore.namespace][None])
-                schedules = SchedulerStore(service.store.store)._decode(rows[SchedulerStore.namespace][None])
-                firing = recovery.scheduled_firings.get(proof.metadata.get('event_id'))
-                schedule = schedules.schedules.get(firing.schedule_id) if firing is not None else None
-                tenant = (worker.organization_id, worker.workspace_id)
-                if (firing is None or schedule is None or recovery.policy is None
-                        or (firing.organization_id, firing.workspace_id) != tenant
-                        or (recovery.policy_organization_id, recovery.policy_workspace_id) != tenant
-                        or (schedule.tenant_id, schedule.workspace_id) != tenant):
-                    self.denied('Original Recovery firing/schedule/policy unavailable in current tenant')
-                snapshot = {'state_sha256': fingerprint(recovery), 'firing_sha256': fingerprint(firing),
-                    'schedule_sha256': fingerprint(schedule),
-                    'policy_fingerprint': recovery.policy.fingerprint()}
-                if any(proof.metadata.get(k) != v for k, v in snapshot.items()):
-                    self.denied('Original Recovery writer/effect proof snapshot changed')
-                if request.result == VerificationResult.VERIFIED:
-                    validate_proof(updated, RecoveryReconcileRequest(event_id=firing.event_id,
-                        expected_state_sha256=snapshot['state_sha256'],
-                        expected_firing_sha256=snapshot['firing_sha256'],
-                        expected_schedule_sha256=snapshot['schedule_sha256'],
-                        expected_policy_fingerprint=snapshot['policy_fingerprint'],
-                        evidence_id=proof.id, verification_id=verification.id,
-                        idempotency_key=request.source), firing, worker, self.broker._clock())
+                if request.method == CAPACITY_CONTRACT:
+                    self.validate_capacity(assignment, worker, requester, proof, verification, capacity_provider)
+                else:
+                    recovery = RecoveryStore._decode(rows[RecoveryStore.namespace][None])
+                    schedules = SchedulerStore(service.store.store)._decode(rows[SchedulerStore.namespace][None])
+                    firing = recovery.scheduled_firings.get(proof.metadata.get('event_id'))
+                    schedule = schedules.schedules.get(firing.schedule_id) if firing is not None else None
+                    tenant = (worker.organization_id, worker.workspace_id)
+                    if (firing is None or schedule is None or recovery.policy is None
+                            or (firing.organization_id, firing.workspace_id) != tenant
+                            or (recovery.policy_organization_id, recovery.policy_workspace_id) != tenant
+                            or (schedule.tenant_id, schedule.workspace_id) != tenant):
+                        self.denied('Original Recovery firing/schedule/policy unavailable in current tenant')
+                    snapshot = {'state_sha256': fingerprint(recovery), 'firing_sha256': fingerprint(firing),
+                        'schedule_sha256': fingerprint(schedule),
+                        'policy_fingerprint': recovery.policy.fingerprint()}
+                    if any(proof.metadata.get(k) != v for k, v in snapshot.items()):
+                        self.denied('Original Recovery writer/effect proof snapshot changed')
+                    if request.result == VerificationResult.VERIFIED:
+                        validate_proof(updated, RecoveryReconcileRequest(event_id=firing.event_id,
+                            expected_state_sha256=snapshot['state_sha256'],
+                            expected_firing_sha256=snapshot['firing_sha256'],
+                            expected_schedule_sha256=snapshot['schedule_sha256'],
+                            expected_policy_fingerprint=snapshot['policy_fingerprint'],
+                            evidence_id=proof.id, verification_id=verification.id,
+                            idempotency_key=request.source), firing, worker, self.broker._clock())
                 self.principals(assignment, worker_actor, resolved, validator, payload)
                 attribution.update(authorizer_identity_id=requester.identity_id,
                     verifier_identity_id=worker.identity_id, authority_decision_id=decision.id)
@@ -313,7 +376,7 @@ class WorkerVerificationAdapter:
             service.store.store.record_mutate_many(selected, apply)
         try:
             record = service.create_verification(request, actor=original_worker, _commit=commit)
-        except (ArtifactEvidenceError, RecoveryConflictError):
+        except (ArtifactEvidenceError, RecoveryConflictError, ResourceCatalogError, ActionProviderError, ValueError):
             self.denied('Current original records or owner/effect proof refused Verification append')
         return {'item': record.model_dump(mode='json'), 'attribution': attribution,
             'next_action': 'No retry on response loss; reconcile exact execution/method/source digest by read-only lookup'}
@@ -331,7 +394,7 @@ class WorkerVerificationAdapter:
                 self.denied('Exact review digest required for reconciliation lookup')
             items = [v for v in service.list_verifications(worker, work_item_ref=ref)
                 if v.execution_id == assignment.execution_id and v.source == source
-                and v.method == PROOF_CONTRACT and v.verifier_identity_id == worker.identity_id]
+                and v.method in (PROOF_CONTRACT, CAPACITY_CONTRACT) and v.verifier_identity_id == worker.identity_id]
             self.principals(assignment, worker_actor, resolved, validator, {})
             self.scope(assignment, ref)
             return {'items': [v.model_dump(mode='json') for v in items[:32]],

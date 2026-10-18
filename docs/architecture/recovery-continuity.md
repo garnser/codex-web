@@ -736,6 +736,37 @@ required: neither RLIMIT_AS nor cooperative row estimates establish a job cgroup
 No API call here provisions a cgroup, raises a quota, invents independent proof or
 creates any production binding/configuration.
 
+Admin/MFA-scoped storage status and preview expose
+`recovery_executor_owner_id` from the **current** Recovery schedule-admission
+instance, with `incarnation_provenance.source=current_runtime.recovery_schedule_admission`.
+This is read-only process-incarnation provenance, not a capacity/health assertion
+or a historical firing owner. A restart produces a different owner and invalidates
+old capacity proof; no firing needs to run to discover it. The existing operator
+surface renders the escaped reference and restart warning.
+
+The existing assignment-bound Verification adapter additionally accepts exactly
+`recovery-storage-capacity.v1`. It retains requester API authority, actual worker
+attribution, governance, profile/lease/fence/current-owner and shared transaction
+guards. The original capacity Evidence and its artifacts must remain requester-
+produced, reviewable and independent of the actual worker. Configuration and
+provider binding records join the append read set. The currently registered
+trusted preservation provider, exact enabled DATABASE binding, published config
+pins, active Project-associated DATABASE, runtime owner and original fresh
+kernel/filesystem metadata are rechecked using the same capacity predicate as
+execution. No caller assertion establishes real enforcement.
+
+Project association does **not** grant an assignment access to that DATABASE.
+The exact DATABASE must already be admitted in both canonical Work Item and
+assignment resources, alongside the writable repository and lease. A repository-
+only thread cannot borrow its repository permission for capacity review. When
+absent, ordinary operator Work Item/resource and fresh execution/workspace
+admission is a prerequisite; publication-recovery alone does not expand it.
+No adapter fallback, Role grant or actor substitution is introduced. Verification
+only records reviewed storage capacity; CAPTURE/VERIFY still require the existing
+current admin/MFA operator and all actual execution controls. Response loss uses
+exact execution/Work Item/review-digest readback for either supported method,
+never automatic append retry. Ambiguous lookup stays unknown.
+
 Before reading payloads, a consistent key/length-only snapshot computes exact
 base64 row-frame sizes using a bounded PG server cursor. Reservation includes
 explicit bounded growth headroom, encrypted-frame maxima, content overlap and
