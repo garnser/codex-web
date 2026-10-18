@@ -4,6 +4,8 @@ import tempfile
 import time
 import unittest
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -225,6 +227,37 @@ class ExecutionWorkspaceTests(unittest.TestCase):
             with self.assertRaises(ExecutionWorkspaceNotFoundError):
                 self.service.get("missing", self.actor)
 
+    def test_point_reads_observe_committed_state_during_catalog_mutation(self) -> None:
+        workspace = self._acquire("point-concurrent-writer")
+        store = self.service.store
+        lease = store.lease(workspace.lease_id)
+        entered, release = threading.Event(), threading.Event()
+
+        def change(state):
+            state.workspaces = [item.model_copy(update={"status": ExecutionWorkspaceStatus.RELEASED})
+                                if item.id == workspace.id else item for item in state.workspaces]
+            state.leases = [item.model_copy(update={"released_at": time.time()})
+                            if item.id == lease.id else item for item in state.leases]
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("catalog mutation was not released")
+            return state
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            writer = executor.submit(store.update, change)
+            try:
+                self.assertTrue(entered.wait(2))
+                reader = executor.submit(lambda: (store.workspace(workspace.id), store.lease(lease.id)))
+                # A real transaction holds an uncommitted catalog mutation. A
+                # watchdog must read the prior committed records without waiting
+                # for that unrelated writer's compatibility mutex.
+                self.assertEqual(reader.result(timeout=1), (workspace, lease))
+            finally:
+                release.set()
+                writer.result(timeout=3)
+        self.assertEqual(store.workspace(workspace.id).status, ExecutionWorkspaceStatus.RELEASED)
+        self.assertIsNotNone(store.lease(lease.id).released_at)
+
     def test_workspace_lookup_preserves_tenant_and_owner_checks(self) -> None:
         workspace = self._acquire("point-authority")
         other_tenant = self.actor.model_copy(update={"workspace_id": "other"})
@@ -261,6 +294,34 @@ class ExecutionWorkspaceTests(unittest.TestCase):
         self.assertIsNone(legacy.get(store.namespace))
         with patch.object(legacy, "record_items", side_effect=AssertionError("bulk read")):
             self.assertEqual(store.workspace(workspace.id), workspace)
+
+    def test_concurrent_point_readers_serialize_legacy_migration(self) -> None:
+        workspace = self._acquire("point-concurrent-migration")
+        legacy = SQLiteStateStore(Path(self.temp.name) / "concurrent-legacy.db")
+        legacy.put(self.service.store.namespace, self.service.store.load().model_dump(mode="json"))
+        store = ExecutionWorkspaceStateStore(legacy)
+        entered, release = threading.Event(), threading.Event()
+        decode = store._decode
+
+        def held_decode(payload):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("legacy migration was not released")
+            return decode(payload)
+
+        with patch.object(store, "_decode", side_effect=held_decode) as migration, \
+             ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(store.workspace, workspace.id)
+            try:
+                self.assertTrue(entered.wait(2))
+                second = executor.submit(store.lease, workspace.lease_id)
+                self.assertFalse(second.done())
+            finally:
+                release.set()
+            self.assertEqual(first.result(timeout=3), workspace)
+            self.assertEqual(second.result(timeout=3).id, workspace.lease_id)
+            self.assertEqual(migration.call_count, 1)
+        self.assertIsNone(legacy.get(store.namespace))
 
     def _acquire(
         self,
