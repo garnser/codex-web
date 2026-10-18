@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Request, HTTPException
@@ -50,7 +51,8 @@ def build_control_plane_broker_router(
         limit: int = 200,
     ) -> dict[str, Any]:
         actor = _operator_actor(request)
-        events = service.audit_events(
+        # Retained audit loading/decoding must not delay native supervision.
+        events = await asyncio.to_thread(service.audit_events,
             actor=actor,
             assignment_id=assignment_id,
             limit=limit,
