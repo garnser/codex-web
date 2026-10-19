@@ -442,7 +442,18 @@ class NativeProcedureAdmissionService:
                 or lease.execution_workspace_id != workspace.id or lease.execution_id != assignment.execution_id):
                 return "native_tools", source
             targets = [self.discovery.resources.get(r, actor) for r in assignment.resource_ids]
-            if any(r.resource_type != ResourceType.REPOSITORY for r in targets):
+            # A frozen READ context is metadata for canonical broker operations,
+            # not a database credential, mount or native mutation capability.
+            # The binding/session boundary revalidates current requester/owner
+            # authority; retain its exact context and live READ lease here.
+            context = assignment.resource_context
+            context_ids = set(context.read_only_resource_ids) if context is not None else set()
+            if (workspace.resource_context != context
+                or set(workspace.read_only_resource_ids) != context_ids
+                or (context is not None and context.requester_identity_id != actor.identity_id)
+                or not context_ids.issubset(assignment.resource_ids)
+                or any(lease.resource_modes.get(r) != "read" for r in context_ids)
+                or {r.id for r in targets if r.resource_type != ResourceType.REPOSITORY} != context_ids):
                 return "native_tools", source
             if profile.workspace_mode == "repository":
                 if workspace.kind != "git_worktree" or not targets or profile.repository_access == "none":
