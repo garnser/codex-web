@@ -137,3 +137,26 @@ diagnostic and rollback qualification. No completed checkpoint or receipt is
 fabricated or shared between cases. Each fixture owns its mutable database,
 repository, HTTP server and cleanup; a short server shutdown poll and joined
 thread avoid unnecessary teardown waits without changing HTTP behavior.
+
+## Readiness fixture coverage
+
+`test_pull_request_ready` prepares its scoped execution profile before the real
+worker assignment is created, claimed and started. Shared broker fixtures can
+prepare that foundation without starting an unused metadata endpoint or binding
+an unrelated issue-creation provider. The readiness fixture starts its own
+assignment-bound endpoint with canonical ActionIntents, SecretBroker and the
+GitHub HTTP adapter. The default administrative fixture still qualifies issue
+creation, and the metadata fixture still owns its endpoint lifecycle tests.
+
+Every readiness case owns its database, assignment, socket, credential backend
+and provider state, including a reusable broker HTTP client. An idle SQLite
+connection keeps that case's WAL alive between service transactions, avoiding
+repeated journal teardown/recovery. It holds no transaction; service operations
+still open their own connections and execute the real storage guards. It closes
+before the private directory is removed. The PostgreSQL subclass uses no such
+connection and runs the same contracts with a private schema and real
+single-connection pool; its independent writer uses a separate pool to prove
+transaction-lock custody. Fixture preparation does not cache completed actions
+or replace admission, revocation or settlement checks.
+The successful transition/idempotent duplicate case explicitly closes SQLite's
+idle handle before the duplicate request, retaining cold-reopen qualification.

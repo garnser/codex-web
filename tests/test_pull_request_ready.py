@@ -26,6 +26,7 @@ from codex_web.services.skills import SkillService
 from codex_web.storage.action_intents import ActionIntentStore
 from codex_web.storage.action_providers import ActionProviderStateStore
 from codex_web.storage.secret_state import SecretStateStore
+from codex_web.storage.sqlite_state import SQLiteStateStore
 from tests import test_administrative_broker_runtime as fixture
 
 HEAD = 'a' * 40
@@ -42,28 +43,23 @@ class PullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
         # Unlike the borrowed metadata fixture's two-second read, this waits
         # for a full governed action with repeated durable admission checks.
         # The provider action retains its independent 120-second engine bound.
-        async with httpx.AsyncClient(base_url="http://control-plane.invalid",
-                transport=httpx.AsyncHTTPTransport(uds=str(self.broker.socket_path)), timeout=10) as client:
-            response = await client.request(method, target, json=payload, headers=headers)
+        response = await self.broker_client.request(method, target, json=payload, headers=headers)
         return response.status_code, dict(response.headers), response.json()
     _publish_profile = fixture.AdministrativeBrokerRuntimeTests._publish_profile
-    asyncTearDown = fixture.AdministrativeBrokerRuntimeTests.asyncTearDown
 
     async def asyncSetUp(self):
-        await fixture.AdministrativeBrokerRuntimeTests.asyncSetUp(self)
-        await self.broker.stop()
+        await fixture.AdministrativeBrokerRuntimeTests.asyncSetUp(self,
+            operations=(OPERATION, 'action_intent.reconcile', 'repository.read.delivery-evidence'),
+            prepare_only=True)
+        # Keep the private SQLite WAL alive between service transactions. This
+        # idle handle never executes a transaction or replaces their connections.
+        # PostgreSQL retains its actual per-test pool and independent writers.
+        self.sqlite_lifetime_connection = (
+            self.sqlite._connect() if isinstance(self.sqlite, SQLiteStateStore) else None)
+        if self.sqlite_lifetime_connection is not None:
+            self.addCleanup(self.sqlite_lifetime_connection.close)
         self.resources.update(self.target.id, ResourceUpdate(aliases=[
             ResourceAlias(namespace='repository', provider='github', value='acme/app')]), actor=self.admin)
-        self.profile_payload = execution_profile_catalog_seed_payload()
-        self.profile_payload['profiles'].append({'id':'orchestration-admin', 'name':'Ready fixture',
-            'description':'Explicit test-only readiness opt-in', 'workspace_mode':'scratch',
-            'repository_access':'none', 'required_worker_capabilities':['command_execution'],
-            'administrative_repository_ids':[self.target.id],
-            'control_plane_operations':[OPERATION, 'action_intent.reconcile', 'repository.read.delivery-evidence']})
-        self._publish_profile(self.profile_payload, '1.1', project='project-a')
-        _, pin = self.profiles.resolve('orchestration-admin', project_id='project-a')
-        self.change_assignment(execution_profile_definition=pin)
-        self.assignment = self.workers.assignment_for_execution(self.assignment.execution_id, actor=self.admin)
         self.secret_broker = SecretBroker(SecretStateStore(self.sqlite),
             {'local':LocalFileSecretBackend(Path(self.temp.name) / 'ready-secrets')})
         self.secret = self.secret_broker.create(SecretCreate(name='Offline fixture', value='ready-fixture-token',
@@ -95,6 +91,17 @@ class PullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
             worker_id=self.worker.id, worker_actor=self.worker_actor, fence=self.assignment.fence,
             validator=lambda:self.workers.assignment_for_execution(self.assignment.execution_id, actor=self.admin))
         await self.broker.start()
+        self.broker_client = httpx.AsyncClient(base_url="http://control-plane.invalid",
+            transport=httpx.AsyncHTTPTransport(uds=str(self.broker.socket_path)), timeout=10)
+        self.addAsyncCleanup(self.broker_client.aclose)
+
+    async def asyncTearDown(self):
+        try:
+            await self.broker.stop()
+        finally:
+            if self.sqlite_lifetime_connection is not None:
+                self.sqlite_lifetime_connection.close()
+            self.temp.cleanup()
 
     def change_assignment(self, **values):
         def update(state):
@@ -159,6 +166,11 @@ class PullRequestReadyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(history['verifications'][-1]['verified'])
         self.assertNotIn('ready-fixture-token',json.dumps(history))
         self.assertNotIn(self.assignment.lease.lease_token,json.dumps(history))
+        # Retain a cold SQLite reopen as well as ordinary independent service
+        # transactions: the durable duplicate must survive the WAL's last close.
+        if self.sqlite_lifetime_connection is not None:
+            self.assertFalse(self.sqlite_lifetime_connection.in_transaction)
+            self.sqlite_lifetime_connection.close()
         _,_,again=await self.submit()
         self.assertEqual(again['item']['id'],body['item']['id'])
         self.assertEqual(sum(m=='POST' for m,_ in self.calls),1)
