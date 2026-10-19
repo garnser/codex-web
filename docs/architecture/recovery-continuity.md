@@ -974,6 +974,12 @@ apply. Same execution reuse requires identical provenance/modes. Session/proxy
 validation rechecks actual assignment/workspace/lease and current authorization;
 new work cannot silently change a live assignment. Scope change first refuses,
 then requires supported terminal custody/fencing and fresh SAME-thread bootstrap.
+Native procedure discovery recognizes this existing READ context only when the
+frozen assignment/workspace context, original requester and every live READ lease
+mode match. Unbound nonrepository targets remain unsupported native tools.
+This preserves isolated preparation; it grants no database credential, mount,
+network or host mutation capability. Selected operational procedures still require
+their canonical action boundary, even when their targets are READ context.
 Binding replacement pins the previous assignment and retired fence in one shared
 canonical transaction, and a failed CAS cancels/releases only the new candidate.
 Renewal retains the previous context and limits, not newer settings.
