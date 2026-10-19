@@ -60,6 +60,13 @@ filesystem and the server reports the same absolute PGDATA path. PGDATA retains
 its server-managed permissions. No production DSN or runtime data is accepted;
 the command generates a private loopback DSN for a new synthetic-only database.
 
+Plan for several minutes on an otherwise idle local SSD runner, with a hard
+20-minute command ceiling. A reference PostgreSQL 17.11 / Python 3.14 run took
+194 seconds including setup/cleanup: raw SQLite 44 seconds, raw PostgreSQL
+46 seconds, encrypted capture 44 seconds and isolated verify/SQL 42 seconds.
+These are planning measurements, not a portable performance guarantee; obtain
+current timings from each run rather than reusing historical qualification.
+
 The pinned PostgreSQL image is recorded in each report. Its container has two
 CPUs, 2 GiB memory, 256 PIDs, a read-only root filesystem, bounded temporary
 mounts and a 10 MiB log cap. The test client has 4 GiB virtual memory and a
