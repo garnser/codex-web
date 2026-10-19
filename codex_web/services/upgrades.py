@@ -71,6 +71,7 @@ from codex_web.upgrades import (
     UpgradeStatus,
     UpgradeStep,
     UpgradeStepExecute,
+    UpgradeStepKind,
     UpgradeStepStatus,
 )
 
@@ -234,7 +235,8 @@ class UpgradeService:
         if self.admission.active_count():
             raise UpgradeConflictError("Skill scan contract requires all service admissions drained")
         state = self.workers.store.load()
-        if any(a.status not in {AssignmentStatus.SUCCEEDED, AssignmentStatus.FAILED, AssignmentStatus.CANCELLED, AssignmentStatus.LOST} for a in state.assignments):
+        if any(a.status not in {AssignmentStatus.SUCCEEDED, AssignmentStatus.FAILED, AssignmentStatus.CANCELLED, AssignmentStatus.LOST}
+               and not self._held_before_first_claim(a, plan) for a in state.assignments):
             raise UpgradeConflictError("Skill scan contract requires all worker assignments terminal")
         if any(w.lifecycle in {WorkerLifecycle.ACTIVE, WorkerLifecycle.DRAINING}
                and "skill-scan/1.0" not in w.supported_execution_contract_versions for w in state.workers):
@@ -243,6 +245,20 @@ class UpgradeService:
         if verification.status != "pass":
             raise UpgradeConflictError("Skill scan contract requires verified pre-upgrade snapshot")
         return {"backup_verification_id": verification.id, "contract": SKILL_SCAN_CONTRACT_HANDLER}
+
+    @staticmethod
+    def _held_before_first_claim(assignment, plan):
+        # Drain fences all new claims. Retained compatible input is not an old
+        # writer, and must not be cancelled or declared externally completed.
+        return (assignment.status == AssignmentStatus.PENDING
+                and assignment.fence == 0 and assignment.lease is None
+                and assignment.assigned_worker_id is None
+                and assignment.started_at is None and assignment.completed_at is None
+                and assignment.failure is None and assignment.failure_code is None
+                and assignment.failure_message is None
+                and not assignment.artifact_ids and not assignment.evidence_ids
+                and assignment.execution_contract_version in
+                    plan.compatibility.supported_execution_contract_versions)
 
     @contextmanager
     def skill_scan_admission(self, actor):
@@ -1180,6 +1196,55 @@ class UpgradeService:
                 return previous.id
         return None
 
+    def _blocked_scan_contract_proof(self, plan, *, actor, locked=None):
+        """Recognize only the engine's exact refusal before scanner enablement.
+
+        This does not classify arbitrary failed migrations or external effects.
+        Admission cannot write scanner records without an enabled contract marker.
+        """
+        if (plan.status != UpgradeStatus.FAILED or plan.completed_at is not None
+                or not plan.maintenance_mode or not self._service_wide(plan)
+                or plan.irreversible_boundary_crossed
+                or plan.definition_migrations or not plan.pre_upgrade_backup_id
+                or len(plan.steps) != 1):
+            return None
+        step = plan.steps[0]
+        error = "UpgradeConflictError: Skill scan contract requires all worker assignments terminal"
+        if (step.handler_id != SKILL_SCAN_CONTRACT_HANDLER
+                or step.phase != UpgradePhase.CONTRACT or step.kind != UpgradeStepKind.STATE_SCHEMA
+                or not step.irreversible or step.reversible or not step.idempotent
+                or not step.requires_backup or not step.requires_drain
+                or step.status != UpgradeStepStatus.FAILED or step.attempts != 1
+                or not step.approval_request_id
+                or step.last_error != error or step.result or not step.evidence_id
+                or step.started_at is None or step.completed_at is None):
+            return None
+        plans = (self.store.load().plans.values() if locked is None else
+                 self.store._decode(locked[self.store.namespace][None]).plans.values())
+        if any((p.irreversible_boundary_crossed or s.status in {
+                    UpgradeStepStatus.RUNNING, UpgradeStepStatus.SUCCEEDED})
+                for p in plans for s in p.steps if s.handler_id == SKILL_SCAN_CONTRACT_HANDLER):
+            return None
+        try:
+            state = None if locked is None else self.evidence.store._decode(
+                locked[self.evidence.store.namespace][None])
+            evidence = self.evidence.get_evidence(step.evidence_id, actor=actor, state=state)
+        except (ArtifactEvidenceError, KeyError):
+            return None
+        if (evidence.lifecycle != EvidenceLifecycle.VALID
+                or evidence.retention_expires_at is not None and evidence.retention_expires_at <= self.clock()
+                or evidence.result != EvidenceResult.FAIL
+                or evidence.evidence_type != EvidenceType.POLICY_EVALUATION
+                or evidence.provider != "codex-web" or evidence.source != "upgrade-step-verification"
+                or evidence.summary != f"Upgrade step {step.id} failed: {error}"
+                or evidence.metadata.get("upgrade_plan_id") != plan.id
+                or evidence.metadata.get("step_id") != step.id
+                or evidence.metadata.get("phase") != step.phase.value
+                or evidence.metadata.get("kind") != step.kind.value
+                or evidence.metadata.get("attempt") != step.attempts):
+            return None
+        return evidence.id
+
     def cancel_unexecuted(self, plan_id, payload, *, actor):
         self._require_service_drain_authority(actor)
 
@@ -1190,14 +1255,16 @@ class UpgradeService:
                 raise UpgradeConflictError("cancellation service instance is stale")
             if payload.expected_admission_epoch != plan.admission_epoch:
                 raise UpgradeConflictError("upgrade admission epoch changed")
+            blocked_scan_proof = (self._blocked_scan_contract_proof(plan, actor=actor)
+                                  if any(s.attempts for s in plan.steps) else None)
             if (plan.compatibility.deployment_mode.value != "local"
                     or plan.status not in {UpgradeStatus.DRAFT, UpgradeStatus.PREFLIGHT_BLOCKED,
                         UpgradeStatus.READY, UpgradeStatus.DRAINING, UpgradeStatus.FAILED}
                     or plan.completed_at is not None
                     or plan.irreversible_boundary_crossed or plan.definition_migrations
-                    or any(step.attempts or step.status not in {
+                    or (not blocked_scan_proof and any(step.attempts or step.status not in {
                         UpgradeStepStatus.PENDING, UpgradeStepStatus.AWAITING_APPROVAL,
-                        UpgradeStepStatus.READY} for step in plan.steps)):
+                        UpgradeStepStatus.READY} for step in plan.steps))):
                 raise UpgradeConflictError("only an unexecuted local upgrade may be cancelled")
             if self.cancellation_guard is None:
                 raise UpgradeConflictError("local installation cancellation guard is unavailable")
@@ -1206,14 +1273,14 @@ class UpgradeService:
                     if running_revision != payload.running_revision:
                         raise UpgradeConflictError("running installation revision changed")
                     previous_deployment = None
-                    if running_revision == plan.target_app_version:
+                    if running_revision == plan.target_app_version or blocked_scan_proof:
                         if not plan.steps or any(step.phase != UpgradePhase.CONTRACT for step in plan.steps):
                             raise UpgradeConflictError("upgrade target is already installed")
                         repositories = (self.releases.store, self.evidence.store)
                         if any(repository.store is not self.store.store for repository in repositories):
                             raise UpgradeConflictError("contract cancellation requires one canonical transaction store")
                         previous_deployment = self._previous_contract_deployment(
-                            plan, running_revision, actor=actor)
+                            plan, plan.target_app_version if blocked_scan_proof else running_revision, actor=actor)
                         if previous_deployment is None:
                             raise UpgradeConflictError("upgrade target is already installed without a prior verified contract baseline")
                     if (self.admission.active_count()
@@ -1235,6 +1302,7 @@ class UpgradeService:
                             "reason": payload.reason, "cancellation_attempt": True,
                             "installation_verified": False,
                             "rollback_performed": False,
+                            "blocked_scan_contract_evidence_id": blocked_scan_proof,
                             "previous_verified_deployment_id": previous_deployment},
                     ), actor=actor)
 
@@ -1256,7 +1324,11 @@ class UpgradeService:
                             current = state.plans.get(plan.id)
                             if current != plan:
                                 raise UpgradeConflictError("upgrade changed during cancellation")
-                            if self._previous_contract_deployment(plan, running_revision,
+                            if blocked_scan_proof and self._blocked_scan_contract_proof(
+                                    current, actor=actor, locked=rows) != blocked_scan_proof:
+                                raise UpgradeConflictError("blocked scanner refusal proof changed")
+                            if self._previous_contract_deployment(plan,
+                                    plan.target_app_version if blocked_scan_proof else running_revision,
                                     actor=actor, locked=rows) != previous_deployment:
                                 raise UpgradeConflictError("previous verified contract baseline changed")
                             cancelled = update(current)

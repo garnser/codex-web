@@ -350,6 +350,41 @@ class UpgradeTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(UpgradeConflictError):
                 with self.service.skill_scan_admission(self.actor): pass
 
+    async def test_scanner_contract_preserves_compatible_never_claimed_pending_inputs(self):
+        from unittest.mock import Mock
+        plan = await self.scanner_contract_plan()
+        pending = SimpleNamespace(status=AssignmentStatus.PENDING, fence=0, lease=None,
+            assigned_worker_id=None, started_at=None, completed_at=None, failure=None,
+            failure_code=None, failure_message=None, artifact_ids=(), evidence_ids=(),
+            execution_contract_version=plan.compatibility.supported_execution_contract_versions[0])
+        before = dict(vars(pending))
+        self.workers._assignments.append(pending)
+        self.assertFalse(self.service.worker_assignment_allowed(self.actor.organization_id, self.actor.workspace_id))
+        self.recovery.verify_restore = Mock(return_value=SimpleNamespace(status='pass', id='verified-snapshot'))
+        passed = await self.service.execute_step(plan.id, 'scanner-contract',
+            UpgradeStepExecute(idempotency_key='held-input'), actor=self.actor)
+        self.assertEqual(passed.steps[0].status, UpgradeStepStatus.SUCCEEDED)
+        self.assertTrue(passed.irreversible_boundary_crossed)
+        self.assertEqual(vars(pending), before)
+
+    async def test_scanner_contract_refuses_ambiguous_pending_custody_and_unknown_contract(self):
+        from unittest.mock import Mock
+        plan = await self.scanner_contract_plan()
+        pending = SimpleNamespace(status=AssignmentStatus.PENDING, fence=0, lease=None,
+            assigned_worker_id=None, started_at=None, completed_at=None, failure=None,
+            failure_code=None, failure_message=None, artifact_ids=(), evidence_ids=(),
+            execution_contract_version=plan.compatibility.supported_execution_contract_versions[0])
+        self.recovery.verify_restore = Mock(return_value=SimpleNamespace(status='pass', id='verified-snapshot'))
+        for changes in ({'fence':1}, {'assigned_worker_id':'old-worker'}, {'lease':object()},
+                        {'started_at':1}, {'completed_at':1}, {'failure_code':'unknown'},
+                        {'artifact_ids':('prior-output',)}, {'execution_contract_version':'unknown/1.0'}):
+            with self.subTest(changes=changes):
+                self.workers._assignments[:] = [SimpleNamespace(**{**vars(pending), **changes})]
+                with self.assertRaisesRegex(UpgradeConflictError, 'worker assignments terminal'):
+                    self.service._enable_skill_scan_contract(plan, plan.steps[0], self.actor)
+        self.recovery.verify_restore.assert_not_called()
+        self.assertFalse(self.service.get(plan.id, actor=self.actor).irreversible_boundary_crossed)
+
     async def test_scanner_contract_rejects_old_active_workers_and_mixed_writers(self):
         from unittest.mock import Mock
         plan = await self.scanner_contract_plan()

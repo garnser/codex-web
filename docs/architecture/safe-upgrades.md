@@ -16,7 +16,7 @@ service instance, expected running revision, plan admission epoch and bounded
 reason. Under the same host lock used by the qualified installer and the
 canonical admission coordinator, the service verifies checkout/build agreement
 and rejects an active installer, unknown or changed build, installed target,
-active operations, executed steps, definition migrations or irreversible state.
+active operations, arbitrary attempted steps, definition migrations or irreversible state.
 An absent host guard fails closed. This local operation does not extend to
 replicated or shared deployments.
 
@@ -30,6 +30,25 @@ use this exception. Missing, revoked, changed, foreign or nonpassing baseline
 records refuse cancellation. Cancellation Evidence links the previous verified
 deployment and continues to claim neither installation nor rollback. The existing
 Upgrade cancellation control and refusal/Evidence surfaces apply unchanged.
+
+A single failed `skill-scan-contract/1.0` activation may also release its hold
+when its sole attempt has exact, valid engine-owned failure Evidence for the
+worker-assignment refusal before enablement. The handler, phase, kind, attempt,
+error, empty result and mandatory approval/backup/drain references must match.
+Any enabled scanner marker or another running/succeeded scanner contract refuses
+this disposition. Unknown failures, additional attempts and arbitrary handlers
+remain ineligible. This proof relies on scanner admission requiring the persisted
+enablement marker before any incompatible scanner record can be written.
+
+The original target must have a verified completed binary baseline predating the
+failed activation. The current running revision may be its subsequently installed
+source fix, as proven independently by the host checkout/build guard; cancellation
+does not assert installation of either revision. Failed-step Evidence, baseline
+Release/Evidence and the absence of enablement are rechecked in the canonical
+transaction. The failed attempt, error, Evidence and consumed approval remain
+unchanged. Cancellation Evidence links the original failure. The inspector labels
+this action **Cancel blocked scanner activation** and shows its failed-step
+Evidence. A fresh immutable Release/plan and approval are required for activation.
 
 Cancellation records separate attributed `upgrade-unexecuted-cancellation`
 Evidence with a failure result, invalidates the admission epoch and clears only
@@ -158,6 +177,15 @@ uncertain/reconciliation activity has reached a safe state.
 
 This avoids a race where preflight succeeds and new ordinary work starts while a
 migration begins.
+
+Scanner activation can retain a pending assignment only when it is provably
+before its first claim: fence zero, no worker or lease, no start/completion,
+failure or output references, and an execution contract explicitly supported by
+the plan. Whole-service maintenance continues to fence its claim. Retaining that
+input does not settle an original provider effect, classify an unknown outcome,
+replay input or authorize unrelated work. Ambiguous/requeued pending custody and
+active assignments still refuse activation; old-worker and writer-version guards
+are unchanged.
 
 Native Thread turns use the same boundary. Admission owns a short-lived fenced
 lease from before bootstrap/session resolution until the provider turn is

@@ -284,7 +284,7 @@ function accRender(card, data) {
               accSetStatus(card, 'Enter a cancellation reason of at least 10 characters.', true);
               return;
             }
-            if (!await confirmAction({action:'Cancel unexecuted upgrade', target:details.plan_id,
+            if (!await confirmAction({action:details.cancellation_kind === 'blocked_scanner_activation' ? 'Cancel blocked scanner activation' : 'Cancel unexecuted upgrade', target:details.plan_id,
               risk:'high', consequence:`Release only this plan’s maintenance hold for ${details.source_revision} → ${details.target_revision}. Other holds and paused controls remain effective.`,
               recovery:'Cancellation records failure and invalidates this plan’s admission epoch; it does not install or roll back code.',
               current:()=>region.isConnected, trigger:cancelButton})) return;
@@ -296,7 +296,7 @@ function accRender(card, data) {
                   service_instance_id:details.current_service_instance_id,
                   expected_admission_epoch:details.admission_epoch})});
               await accLoad(card);
-              accSetStatus(card, 'Unexecuted plan cancelled; inspect Cancellation Evidence ' + result.cancellation_evidence_id, false);
+              accSetStatus(card, (details.cancellation_kind === 'blocked_scanner_activation' ? 'Blocked scanner activation cancelled;' : 'Unexecuted plan cancelled;') + ' inspect Cancellation Evidence ' + result.cancellation_evidence_id, false);
             } catch (error) {
               if (cancelButton.isConnected) cancelButton.disabled = false;
               accSetStatus(card, 'Cancellation denied or unavailable: ' + error.message, true);

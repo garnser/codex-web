@@ -42,6 +42,7 @@ class LocalInstallationInspector:
         reports = []
         evidence_items = self.upgrades.evidence.list_evidence(actor, include_inactive=False)
         cancellation = next(({"href": f"/api/evidence/{e.id}",
+            "blocked_scanner_activation": bool(e.metadata.get("blocked_scan_contract_evidence_id")),
             "reason": str(e.metadata.get("reason", ""))[:500]}
             for e in evidence_items if e.provider == "codex-web"
             and e.source == "upgrade-unexecuted-cancellation"
@@ -90,6 +91,9 @@ class LocalInstallationInspector:
         process = ({"status": "unknown", "reason": "No live tracked installer handle"}
                    if self.process_reader is None else self.process_reader(plan))
         verified = bool(plan.status == UpgradeStatus.COMPLETED and verification and verification["valid"])
+        blocked_scan_proof = (self.upgrades._blocked_scan_contract_proof(plan, actor=actor)
+                              if any(step.attempts for step in plan.steps) else None)
+        blocked_scan = isinstance(blocked_scan_proof, str)
         return {"plan_id": plan.id, "plan_href": f"/api/upgrades/{plan.id}",
                 "release_id": release.id, "release_href": f"/api/releases/{release.id}",
                 "source_revision": plan.current_app_version, "target_revision": plan.target_app_version,
@@ -98,13 +102,15 @@ class LocalInstallationInspector:
                 "admission_epoch": plan.admission_epoch,
                 "current_service_instance_id": self.upgrades.service_instance_id,
                 "cancellation": cancellation,
+                "cancellation_kind": "blocked_scanner_activation" if blocked_scan else "unexecuted",
+                "blocked_scan_contract_evidence_href": (f"/api/evidence/{blocked_scan_proof}" if blocked_scan else None),
                 "cancellation_request_available": bool(
                     plan.compatibility.deployment_mode.value == "local"
                     and plan.completed_at is None and not plan.irreversible_boundary_crossed
                     and not plan.definition_migrations
                     and plan.status in {UpgradeStatus.DRAFT, UpgradeStatus.PREFLIGHT_BLOCKED,
                         UpgradeStatus.READY, UpgradeStatus.DRAINING, UpgradeStatus.FAILED}
-                    and not any(step.attempts for step in plan.steps)),
+                    and (blocked_scan or not any(step.attempts for step in plan.steps))),
                 "canonical_verification": verification, "installation_verified": verified,
                 "process": process, "reported_diagnostics": reports,
                 "preflight_evidence_href": (f"/api/evidence/{plan.preflight.evidence_id}"

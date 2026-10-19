@@ -65,6 +65,17 @@ class LocalInstallationInspectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result['reported_diagnostics'][0]['reported_only'])
         self.assertNotIn('never-show-this-secret', str(result))
 
+    def test_blocked_scanner_cancellation_has_separate_label_and_failed_step_reference(self):
+        self.plan.status = UpgradeStatus.FAILED
+        self.plan.steps = (N(attempts=1),)
+        self.service._blocked_scan_contract_proof.return_value = 'engine-failure'
+        result = self.inspector.inspect('plan',actor=self.actor)
+        self.assertTrue(result['cancellation_request_available'])
+        self.assertEqual(result['cancellation_kind'],'blocked_scanner_activation')
+        self.assertEqual(result['blocked_scan_contract_evidence_href'],'/api/evidence/engine-failure')
+        self.service._blocked_scan_contract_proof.return_value = None
+        self.assertFalse(self.inspector.inspect('plan',actor=self.actor)['cancellation_request_available'])
+
     def test_completed_plan_requires_correct_valid_post_evidence(self):
         self.plan.status = UpgradeStatus.COMPLETED
         self.assertFalse(self.inspector.inspect('plan', actor=self.actor)['installation_verified'])
