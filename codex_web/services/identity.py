@@ -764,6 +764,23 @@ class IdentityService:
     ) -> AuthenticationActor:
         """Ensure one internal service principal exists and return its actor."""
 
+        current = self.store.load()
+        if (
+            any(item.id == identity_id for item in current.services)
+            and any(
+                item.identity_id == identity_id
+                and item.principal_kind == PrincipalKind.SERVICE
+                and item.organization_id == scope.organization_id
+                and item.workspace_id == scope.workspace_id
+                and item.revoked_at is None
+                for item in current.memberships
+            )
+        ):
+            return self._actor(current, identity_id=identity_id,
+                principal_kind=PrincipalKind.SERVICE, scope=scope,
+                assurance=AuthenticationAssurance.SERVICE_TOKEN,
+                service_scopes=service_scopes)
+
         def apply(state: IdentityState) -> IdentityState:
             if not any(item.id == identity_id for item in state.services):
                 state.services.append(
