@@ -177,3 +177,7 @@ transaction-lock custody. Fixture preparation does not cache completed actions
 or replace admission, revocation or settlement checks.
 The successful transition/idempotent duplicate case explicitly closes SQLite's
 idle handle before the duplicate request, retaining cold-reopen qualification.
+
+Full-shape preservation has a separate [serialized qualification owner](full-shape-qualification.md).
+Default gates report it as NOT EXECUTED; 29 conditional skips represent three
+distinct scale methods plus 26 inherited ordinary cases, not scale evidence.
