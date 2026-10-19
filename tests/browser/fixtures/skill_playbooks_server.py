@@ -34,7 +34,7 @@ from codex_web.services.identity import TenantIsolationError
 from codex_web.identity import MembershipRole
 from codex_web.skill_security import SkillScanRequest, SkillSecurityPolicyUpdate
 from codex_web.skills import SkillCreate, SkillPublish
-from tests.test_procedure_outcomes import ProcedureOutcomeTests
+from tests.test_procedure_outcomes import FullProcedureOutcomeTests
 from tests.test_skills import actor as fixture_actor
 
 if "codex_web.application" in sys.modules or "server" in sys.modules:
@@ -42,7 +42,7 @@ if "codex_web.application" in sys.modules or "server" in sys.modules:
 
 
 async def make_app():
-    fixture = ProcedureOutcomeTests(methodName="runTest")
+    fixture = FullProcedureOutcomeTests(methodName="runTest")
     if "--approval" in sys.argv:
         fixture._testMethodName = "test_awaiting_approval_browser"
     elif "--deviation" in sys.argv:

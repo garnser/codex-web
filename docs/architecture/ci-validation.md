@@ -120,3 +120,20 @@ retained idempotency/history, including a retry through a replacement Unix socke
 broker that preserves the unknown receipt without another provider execution.
 A fresh interpreter separately verifies persisted receipt history. Original-provider
 input delivery and genuine independent review require their own evidence.
+
+## Procedure fixture coverage
+
+`test_procedure_execution` owns the complete backup, isolated diagnostic,
+mutation, HTTP verification and conditional rollback workflow, including unknown
+effects, restart, authority and secret-reference boundaries.
+`FullProcedureOutcomeTests` runs that complete contract before concurrent outcome
+conversion; the canonical playbook browser fixture also uses this full fixture.
+
+The remaining `ProcedureOutcomeTests` qualify outcome policy after a smaller real
+backup, mutation and HTTP verification procedure. They retain private SQLite,
+provider receipts, artifacts, governance, scan/publication checks and actual
+process/concurrency tests. Their prerequisite does not repeat the unrelated
+diagnostic and rollback qualification. No completed checkpoint or receipt is
+fabricated or shared between cases. Each fixture owns its mutable database,
+repository, HTTP server and cleanup; a short server shutdown poll and joined
+thread avoid unnecessary teardown waits without changing HTTP behavior.
