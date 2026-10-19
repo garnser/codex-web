@@ -30,10 +30,10 @@ if __name__ == "__main__":
     # caller's cwd. Bind discovery and relative fixture paths to the same root.
     os.chdir(root)
     sys.path.insert(0, str(root))
-    discovered = unittest.defaultTestLoader.discover("tests", pattern="test_*.py")
+    discovered = unittest.defaultTestLoader.discover("tests", pattern="test_*.py", top_level_dir=str(root))
     suite = unittest.TestSuite(selected_tests(discovered))
     if not suite.countTestCases():
         raise SystemExit("No unit tests selected")
     print(f"Selected {suite.countTestCases()} unit tests; dedicated qualification modules run separately.", flush=True)
-    result = unittest.TextTestRunner().run(suite)
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
     sys.exit(not result.wasSuccessful())

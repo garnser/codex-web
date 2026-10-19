@@ -13,14 +13,14 @@ from codex_web.resources import (
     ResourceUpdate,
 )
 from codex_web.services.turn_execution_binding import TurnExecutionBindingError
-from tests.test_turn_execution_binding import TurnExecutionBindingTests
+from tests import test_turn_execution_binding as binding_fixture
 
 
 class ExplicitRepositoryTargetQualificationTests(unittest.TestCase):
     """End-to-end qualification for explicit per-turn multi-repository targeting."""
 
     def setUp(self) -> None:
-        self.fx = TurnExecutionBindingTests(
+        self.fx = binding_fixture.TurnExecutionBindingTests(
             "test_explicit_repository_target_is_persisted"
         )
         self.fx.setUp()

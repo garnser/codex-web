@@ -17,14 +17,14 @@ from codex_web.storage.state_store import state_record_storage_key
 from codex_web.services.agent_teams import AgentTeamService
 from codex_web.services.agent_profiles import AgentProfileService
 from codex_web.services.definitions import DefinitionRegistryService
-from tests.test_task_source_project_resolution import ProjectSourceResolutionTests
+from tests import test_task_source_project_resolution as source_fixture
 
 
 class UsageHistoryPreservationTests(unittest.TestCase):
     def setUp(self):
         # Reuse actual configured-source/service fixture, not mocked usage or
         # fabricated successful WorkItem history. HTTP provider is synthetic.
-        ProjectSourceResolutionTests.setUp(self)
+        source_fixture.ProjectSourceResolutionTests.setUp(self)
         response = self.client.post('/api/work-items/sync/project-a', json={'reason':'fixture'})
         self.assertEqual(response.status_code,200,response.text)
         self.sqlite = SQLiteStateStore(Path(self.temp.name)/'usage-fixture.sqlite')

@@ -1,5 +1,5 @@
 """KMS batch pins and final admission; no raw material leaves its service."""
-from tests.test_crypto_keys import CryptoKeyServiceTests
+from tests import test_crypto_keys as crypto_fixture
 from codex_web.services.crypto_keys import CryptoKeyConflictError, CryptoDecryptError
 from codex_web.crypto import ManagedKeyCreate, KeyPurpose
 import unittest
@@ -7,7 +7,7 @@ import unittest
 
 class PreservationCryptoBatchTests(unittest.TestCase):
     def setUp(self):
-        CryptoKeyServiceTests.setUp(self)
+        crypto_fixture.CryptoKeyServiceTests.setUp(self)
         self.addCleanup(self.temp.cleanup)
         self.key = self.service.create_key(ManagedKeyCreate(project_id='project-a',purpose=KeyPurpose.DECISION),actor=self.actor)
 

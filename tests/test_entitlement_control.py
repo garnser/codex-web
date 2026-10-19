@@ -18,7 +18,7 @@ from codex_web.services.identity import AuthorizationError
 
 class EntitlementControlTests(unittest.TestCase):
     def setUp(self):
-        from test_entitlements import EntitlementServiceTests
+        from tests.test_entitlements import EntitlementServiceTests
         EntitlementServiceTests.setUp(self)
         self.addCleanup(self.temp.cleanup)
         self.admin = EntitlementAdministration(self.service)

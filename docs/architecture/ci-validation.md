@@ -46,6 +46,23 @@ suite. Named cross-cutting checks may still overlap; removing those small repeat
 would add brittle case-level selection. Container and distributed executions are
 retained because their environments add distinct validation.
 
+Broad discovery and explicit qualification use the canonical `tests.*` package
+identities. Reusable fixtures are imported as modules (for example,
+`from tests import test_project_readiness as fixture`), rather than exposing an
+imported `TestCase` class at a consumer module's top level. Standard unittest
+otherwise collects that imported class again. The original owning module keeps
+all its cases; inherited backend contract classes remain distinct owners.
+Discovery regressions audit concrete source class/method identities without
+filtering any cases from the runner.
+
+The repository-target job runs its module's own qualification cases, an explicit
+project-readiness case and named coordinated-scope checks. The reused binding
+fixture's ordinary cases belong to the broad suite. The named overlaps above
+remain intentional; an imported fixture class is not qualification evidence.
+The broad runner emits full case IDs and named skip reasons, including optional
+backend/native exclusions. Discovery failures remain failing cases even when
+the broken module would otherwise belong to a dedicated qualification job.
+
 Readiness settlement qualification runs the composed provider, broker and intent
 cases on SQLite and again against real PostgreSQL in the distributed job. Its
 additional broad-suite cases retain the same required unit/static check with a

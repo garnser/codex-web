@@ -5,12 +5,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from codex_web.api.project_readiness import build_project_readiness_router
 from codex_web.execution_workers import ExecutionRuntimeBinding
-from tests.test_project_readiness import ProjectReadinessTests, _actor
+from tests import test_project_readiness as readiness_fixture
 
 
 class ProjectReadinessRefreshTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.fixture = ProjectReadinessTests()
+        self.fixture = readiness_fixture.ProjectReadinessTests()
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.available = False
@@ -28,14 +28,14 @@ class ProjectReadinessRefreshTests(unittest.IsolatedAsyncioTestCase):
         self.available = True
 
     async def test_expired_account_evidence_is_refreshed_and_recorded(self):
-        value = await self.service.evaluate_with_refresh('project-a', actor=_actor())
+        value = await self.service.evaluate_with_refresh('project-a', actor=readiness_fixture._actor())
         self.assertTrue(value.execution_ready)
         self.assertEqual(self.refreshes, 1)
         self.assertEqual(value.last_successful_verification_at, value.generated_at)
-        await self.service.evaluate_with_refresh('project-a', actor=_actor())
+        await self.service.evaluate_with_refresh('project-a', actor=readiness_fixture._actor())
         self.assertEqual(self.refreshes, 1)
         self.available = False
-        value = await self.service.evaluate_with_refresh('project-a', actor=_actor())
+        value = await self.service.evaluate_with_refresh('project-a', actor=readiness_fixture._actor())
         self.assertTrue(value.execution_ready)
         self.assertEqual(self.refreshes, 2)
 
@@ -43,7 +43,7 @@ class ProjectReadinessRefreshTests(unittest.IsolatedAsyncioTestCase):
         async def fail():
             raise RuntimeError('metadata unavailable')
         self.service.local_session_refresh = fail
-        value = await self.service.evaluate_with_refresh('project-a', actor=_actor())
+        value = await self.service.evaluate_with_refresh('project-a', actor=readiness_fixture._actor())
         self.assertFalse(value.execution_ready)
         self.assertIn('local_session_unavailable', [c.code for c in value.checks])
 
@@ -51,20 +51,20 @@ class ProjectReadinessRefreshTests(unittest.IsolatedAsyncioTestCase):
         async def negative():
             self.refreshes += 1
         self.service.local_session_refresh = negative
-        value = await self.service.evaluate_with_refresh('project-a', actor=_actor())
+        value = await self.service.evaluate_with_refresh('project-a', actor=readiness_fixture._actor())
         self.assertFalse(value.execution_ready)
         self.assertEqual(self.refreshes, 1)
 
     async def test_scope_is_checked_before_account_refresh(self):
         with self.assertRaises(LookupError):
-            await self.service.evaluate_with_refresh('other-project', actor=_actor())
+            await self.service.evaluate_with_refresh('other-project', actor=readiness_fixture._actor())
         self.assertEqual(self.refreshes, 0)
 
     async def test_readiness_http_route_refreshes_expired_evidence(self):
         app = FastAPI()
         @app.middleware('http')
         async def actor(request, call_next):
-            request.state.identity_actor = _actor()
+            request.state.identity_actor = readiness_fixture._actor()
             return await call_next(request)
         app.include_router(build_project_readiness_router(self.service))
         with TestClient(app) as client:
