@@ -367,7 +367,7 @@ class _ActionIntents:
 
 
 class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self) -> None:
+    async def asyncSetUp(self, *, start_broker=True) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.sqlite = SQLiteStateStore(Path(self.temp.name) / "state.sqlite3")
         self.identity = IdentityService(IdentityStateStore(self.sqlite))
@@ -429,15 +429,16 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assignment = self._assignment()
         self.current_assignment = self.assignment
-        self.broker = AssignmentBoundControlPlaneBroker(
-            self.service,
-            assignment=self.assignment,
-            worker_id="worker-1",
-            worker_actor=self.worker_actor,
-            fence=1,
-            validator=lambda: self.current_assignment,
-        )
-        await self.broker.start()
+        if start_broker:
+            self.broker = AssignmentBoundControlPlaneBroker(
+                self.service,
+                assignment=self.assignment,
+                worker_id="worker-1",
+                worker_actor=self.worker_actor,
+                fence=1,
+                validator=lambda: self.current_assignment,
+            )
+            await self.broker.start()
 
     async def _assert_stop_retires_incomplete_client(self, request: bytes) -> None:
         reader, writer = await asyncio.open_unix_connection(str(self.broker.socket_path))

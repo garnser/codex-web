@@ -62,9 +62,10 @@ class AdministrativeBrokerRuntimeTests(unittest.IsolatedAsyncioTestCase):
     _request = broker_fixture.ControlPlaneBrokerTests._request
     asyncTearDown = broker_fixture.ControlPlaneBrokerTests.asyncTearDown
 
-    async def asyncSetUp(self):
-        await broker_fixture.ControlPlaneBrokerTests.asyncSetUp(self)
-        await self.broker.stop()
+    async def asyncSetUp(self, *, operations=None, prepare_only=False):
+        # Consumers may prepare their own endpoint without first constructing
+        # and discarding a metadata broker and issue-creation provider.
+        await broker_fixture.ControlPlaneBrokerTests.asyncSetUp(self, start_broker=False)
         self.admin = self.identity.local_trusted_actor()
         self.resources = ResourceCatalogService(ResourceCatalogStore(self.sqlite))
         self.target = self.resources.create(ResourceCreate(name='Fixture prerequisite repository',
@@ -79,13 +80,14 @@ class AdministrativeBrokerRuntimeTests(unittest.IsolatedAsyncioTestCase):
         payload['profiles'].append({'id':'orchestration-admin','name':'Fixture administration',
             'description':'Synthetic qualification only','workspace_mode':'scratch',
             'repository_access':'none','required_worker_capabilities':['command_execution'],
-            'control_plane_operations':['repository.issue.create']})
+            'control_plane_operations':list(operations) if operations is not None else ['repository.issue.create']})
         # Reusable profile selection has a global template without authority.
         # Only the exact Project override supplies administrative target scope.
         self._publish_profile(payload, '1.0')
         project_payload = deepcopy(payload)
         project_payload['profiles'][-1]['administrative_repository_ids'] = [self.target.id]
         self._publish_profile(project_payload, '1.1', project='project-a')
+        self.profile_payload = project_payload
         self.agent_profiles = AgentProfileService(AgentProfileStore(self.sqlite),
             definitions=self.registry, authority=self.authority, execution_profiles=self.profiles,
             role_resolver=lambda role, actor:self.roles.reference(
@@ -114,6 +116,9 @@ class AdministrativeBrokerRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.current_assignment = self.workers.start(self.worker.id,claimed.id,AssignmentStartRequest(
             fence=claimed.fence,lease_token=claimed.lease.lease_token),actor=self.worker_actor)
         self.assignment = self.current_assignment
+        self.service.execution_profiles = self.profiles
+        if prepare_only:
+            return
         self.provider = _AdministrativeProvider()
         action_registry = ActionProviderRegistry(ActionProviderStateStore(self.sqlite))
         action_registry.register(self.provider)
@@ -123,7 +128,6 @@ class AdministrativeBrokerRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.intents = ActionIntentService(ActionIntentStore(self.sqlite),
             ActionExecutionService(action_registry,self.resources),authority=self.authority,
             identity=self.identity,execution_workers=self.workers,execution_profiles=self.profiles)
-        self.service.execution_profiles = self.profiles
         self.service.action_intents = self.intents
         self.broker = AssignmentBoundControlPlaneBroker(self.service,assignment=self.assignment,
             worker_id=self.worker.id,worker_actor=self.worker_actor,fence=self.assignment.fence,
