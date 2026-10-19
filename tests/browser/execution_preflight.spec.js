@@ -226,3 +226,23 @@ test('captured archived resume exposes provenance and explicit reconciliation wi
   await expect(page.getByRole('button',{name:'Retry',exact:true})).toHaveCount(0);
   expect(await page.evaluate(() => window.__apiCalls.filter(x => x.method==='POST'))).toEqual([]);
 });
+
+test('custody refusal shows previous and requested scope and explicit bootstrap recovery', async ({page}) => {
+  await page.goto('http://127.0.0.1:18766/tests/browser/execution_preflight_fixture.html?custodyRefusal');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ready))).toBe(true);
+  const card = page.locator('.message.tool');
+  await expect(card).toContainText('Previous repositories: repo-prior');
+  await expect(card).toContainText('Requested repositories: repo-app, repo-docs');
+  await expect(card).toContainText('Controller refused before provider resume or Turn input.');
+  await expect(card).toContainText('assignment-prior');
+  await expect(page.getByRole('button', {name:'Retry',exact:true})).toHaveCount(0);
+  expect(await page.evaluate(() => window.__apiCalls.filter(x => x.method === 'POST'))).toEqual([]);
+  await page.getByRole('button', {name:'Inspect fresh bootstrap recovery'}).click();
+  await expect(card).toContainText('Actor: original-actor');
+  await expect(card).toContainText('Read-only repositories: repo-docs');
+  await page.getByRole('textbox', {name:'Fresh bootstrap recovery reason'}).fill('Recover this exact retained original');
+  await page.getByRole('button', {name:'Create fresh bootstrap',exact:true}).click();
+  await expect(card).toContainText('The original request remains blocked until Retry.');
+  expect(await page.evaluate(() => window.__custodyRecoveryBody)).toEqual({
+    expected_snapshot_sha256:'d'.repeat(64),reason:'Recover this exact retained original',expected_source_thread_id:'thread-1'});
+});

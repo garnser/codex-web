@@ -202,6 +202,9 @@ class QueuedOperatorAdmissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_remote_initial_process_code_cannot_prove_input_was_unstarted(self):
         await self.assert_remote_code_remains_uncertain('initial_bootstrap_process_lost')
 
+    async def test_remote_custody_code_cannot_prove_input_was_unstarted(self):
+        await self.assert_remote_code_remains_uncertain('native_session_scope_incompatible')
+
     async def test_controller_binding_failure_restores_original_without_native_input(self):
         from codex_web.services.turn_execution_binding import TurnExecutionBindingError
         before = [q.model_dump(mode='json') for q in self.queues.get('thread-a')]

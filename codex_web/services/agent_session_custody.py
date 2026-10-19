@@ -1,4 +1,4 @@
-"""Guarded current-session projection after a successful native resume.
+"""Transactional pre-resume custody validation and guarded post-resume projection.
 
 This is a control-plane lifecycle hook, never a worker/API rebind operation.
 Historical assignments and RuntimeUsage are not mutated here.
@@ -14,6 +14,25 @@ from codex_web.execution_workspaces import ExecutionWorkspace, ExecutionWorkspac
 from codex_web.identity import TenantScope
 from codex_web.services.agent_runtime import AgentRuntimeError
 from codex_web.thread_bootstrap import ThreadBootstrapBindingState
+
+
+class AgentSessionCustodyPrestartRefusal(AgentRuntimeError):
+    """Controller-owned refusal, raised before invoking the provider adapter."""
+
+    def __init__(self, session, previous, assignment):
+        super().__init__("Native session repository custody differs from the requested scope")
+        self.detail = {
+            "code": "native_session_scope_incompatible", "message": str(self),
+            "phase": "before_provider_resume", "agent_session_id": session.id,
+            "previous_assignment_id": previous.id, "assignment_id": assignment.id,
+            "assignment_fence": assignment.fence, "execution_id": assignment.execution_id,
+            "execution_workspace_id": assignment.execution_workspace_id,
+            "original_resource_ids": list(previous.resource_ids),
+            "requested_resource_ids": list(assignment.resource_ids),
+            "original_repository_scope": previous.repository_scope.model_dump(mode="json") if previous.repository_scope else None,
+            "requested_repository_scope": assignment.repository_scope.model_dump(mode="json") if assignment.repository_scope else None,
+            "remediation": "Inspect fresh bootstrap recovery for this exact retained original.",
+        }
 
 
 class AgentSessionCustodyService:
@@ -45,6 +64,8 @@ class AgentSessionCustodyService:
         )
         self.require(assignment.id == request.assignment_id and assignment.fence == fence,
                      "admitted assignment changed before resume")
+        self._transition((session, assignment), thread_id, adapter, worker_session,
+            request, fence, None, prepare_only=True)
         return session, assignment
 
     def complete(self, expected, thread_id, adapter, worker_session, request, fence, result):
@@ -53,9 +74,13 @@ class AgentSessionCustodyService:
         Cross-domain row/namespace locks are the existing StateStore primitive.
         Never update the aggregate compatibility mirror or historical usage.
         """
+        return self._transition(expected, thread_id, adapter, worker_session, request, fence, result)
+
+    def _transition(self, expected, thread_id, adapter, worker_session, request, fence, result, *, prepare_only=False):
         expected, admitted = expected
-        self.require(result.provider_native_session_id in {None, thread_id},
-                     "resume returned another native session identity")
+        if not prepare_only:
+            self.require(result.provider_native_session_id in {None, thread_id},
+                         "resume returned another native session identity")
         snapshot = worker_session.validate_current()
         self.require(snapshot.id == request.assignment_id, "worker owns another assignment")
         actor = self.workers.identity.actor_for_identity(snapshot.created_by, scope=TenantScope(
@@ -169,11 +194,14 @@ class AgentSessionCustodyService:
                 previous = ExecutionAssignment.model_validate(prior)
                 self.require(
                     (previous.organization_id, previous.workspace_id, previous.project_id, previous.created_by) ==
-                    (assignment.organization_id, assignment.workspace_id, assignment.project_id, assignment.created_by)
-                    and set(previous.resource_ids) == set(assignment.resource_ids)
-                    and previous.repository_scope == assignment.repository_scope,
-                    "rollover changed prior owner, tenant or repository scope",
+                    (assignment.organization_id, assignment.workspace_id, assignment.project_id, assignment.created_by),
+                    "rollover changed prior owner or tenant",
                 )
+                compatible = (set(previous.resource_ids) == set(assignment.resource_ids)
+                    and previous.repository_scope == assignment.repository_scope)
+                if prepare_only and not compatible:
+                    raise AgentSessionCustodyPrestartRefusal(current, previous, assignment)
+                self.require(compatible, "rollover changed prior repository scope")
             self.require(assignment.execution_profile_definition is not None,
                          "exact execution Definition missing")
             profile, definition = self.profiles.resolve(assignment.execution_profile_id,
@@ -190,6 +218,11 @@ class AgentSessionCustodyService:
             validated = worker_session.validate_current()
             self.require(validated.id == assignment.id and validated.fence == fence,
                          "worker validation changed custody")
+            if prepare_only:
+                # Validate under the same canonical locks without reassociation,
+                # status recovery, or an event claiming provider success.
+                updated.append(current)
+                return {}
             replacement = current.model_copy(update={
                 "execution_id": assignment.execution_id, "assignment_id": assignment.id,
                 "execution_workspace_id": assignment.execution_workspace_id,

@@ -1565,3 +1565,32 @@ remain control-plane owned. See [Skill security](skill-security.md) for bounds,
 readiness, native CLI compatibility and the worker-state 1.12 / workspace-state
 1.8 migration. Older binaries cannot read new subjects; mixed writers and
 binary-only rollback after new writes are unsupported.
+
+### Pre-resume repository custody refusal
+
+A controller-owned `native_session_scope_incompatible` refusal records the
+original/current assignment and repository scope before invoking native resume.
+For a retained queued original, its existing blocker binds the exact snapshot
+digest, admission claim, native Thread, Session, bootstrap, assignment, execution,
+workspace and fence. It is not inferred from provider text, queue absence or a
+missing Turn receipt. Other pre-resume custody denials remain visible without
+claiming permission to create a replacement. Already resumed/unknown originals
+remain nonretryable; this change does not backfill their evidence.
+
+The existing explicit fresh-bootstrap recovery accepts that proven-unstarted
+original without archiving its thread history. It requires an authorized
+administrator, human assurance, exact original actor/profile and repository
+scope, an idle original/current target, and the exact terminal, lease-free
+refused binding. A changed fence, scope, actor or binding refuses. Recovery uses
+the existing snapshot reservation, bounded history, bootstrap creation and
+replacement graph. Final publication locks the source binding and assignments
+alongside the retained original and graph; it rechecks source custody and the
+fresh correlated receipt. Other queued work and historical usage remain intact.
+A pending creation is reconciled rather than repeated. Bootstrap creation never
+submits the original input; separate ordinary admission is still required.
+
+The preflight inspector exposes previous/requested repositories and scope,
+Session/assignment attribution, the pre-resume refusal and its existing explicit
+recovery action. Existing Session traces continue separating current custody
+from historical execution. No new registry, persisted field or compatibility
+version is introduced; refusal metadata uses the existing extensible blocker.

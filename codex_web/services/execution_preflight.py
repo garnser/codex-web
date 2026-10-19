@@ -327,7 +327,33 @@ class ExecutionPreflightService:
             except ValueError:
                 return False
         return (self.recorded_profile_refusal(attempt) or self.recorded_maintenance_refusal(attempt)
-                or self.recorded_initial_process_refusal(attempt))
+                or self.recorded_initial_process_refusal(attempt)
+                or self.recorded_custody_refusal(attempt))
+
+    def recorded_custody_refusal(self, attempt: ExecutionPreflightAttempt) -> bool:
+        # Only a controller-owned, claim/snapshot-bound pre-resume refusal.
+        # Historical resumed/unknown attempts never acquire recovery authority.
+        snapshot = attempt.queued_turn_snapshot
+        if (attempt.status != 'blocked' or snapshot is None or attempt.scheduling_retirement is not None
+                or attempt.queued_start_correlation is not None or attempt.queued_resume_correlation is not None
+                or attempt.queued_start_evidence is not None or attempt.queued_resume_evidence is not None
+                or attempt.queued_start_receipt is not None or attempt.started_at is not None
+                or not attempt.queued_admission_claim_id):
+            return False
+        return any(
+            row.get('code') == 'native_session_scope_incompatible'
+            and row.get('phase') == 'before_provider_resume'
+            and row.get('preflight_attempt_id') == attempt.id
+            and row.get('admission_claim_id') == attempt.queued_admission_claim_id
+            and row.get('threadId') == (attempt.replacement_thread_id or attempt.thread_id)
+            and row.get('snapshot_sha256') == self.queued_snapshot_digest(snapshot)
+            and isinstance(row.get('original_resource_ids'), list)
+            and isinstance(row.get('requested_resource_ids'), list) and bool(row['requested_resource_ids'])
+            and 'requested_repository_scope' in row and 'original_repository_scope' in row
+            and type(row.get('assignment_fence')) is int and row['assignment_fence'] >= 1
+            and all(row.get(key) for key in ('bootstrap_id', 'assignment_id', 'previous_assignment_id', 'agent_session_id',
+                'execution_id', 'execution_workspace_id'))
+            for row in (b.model_dump(mode='json') for b in attempt.blockers))
 
     def reconcile_prestart_refusal(self, attempt_id: str, *, actor: AuthenticationActor) -> ExecutionPreflightAttempt:
         initial = self.get(attempt_id, actor=actor)
@@ -988,6 +1014,7 @@ class ExecutionPreflightService:
             f'{attempt.id}/operator-admission')
         payload["can_retry"] = (self.can_retry(actor)
             and attempt.scheduling_retirement is None
+            and not self.recorded_custody_refusal(attempt)
             and (attempt.bootstrap_recovery is None or attempt.bootstrap_recovery.state == 'created')
             and attempt.status not in {"queued", "reconciliation_required", "started"})
         payload['can_recover_bootstrap'] = (self.can_retry(actor)

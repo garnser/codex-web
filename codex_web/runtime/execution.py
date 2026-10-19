@@ -3203,9 +3203,28 @@ class TurnExecutionService:
                 try:
                     custody_before = None
                     if self.session_custody is not None and bootstrap is not None and not trusted_local_codex_session:
-                        custody_before = await self._settle_custody_call(self.session_custody.capture,
-                            thread_id, runtime_adapter, session, runtime_session_request, fence,
-                            work_owner=session)
+                        from codex_web.services.agent_runtime import AgentRuntimeError
+                        from codex_web.services.agent_session_custody import AgentSessionCustodyPrestartRefusal
+                        def capture_custody():
+                            try:
+                                return self.session_custody.capture(thread_id, runtime_adapter,
+                                    session, runtime_session_request, fence)
+                            except AgentRuntimeError as refusal:
+                                retained = (self.queued_preflight.store.get(queued_admission_attempt_id)
+                                    if queued_admission_attempt_id and self.queued_preflight else None)
+                                raise ExecutionPrestartRefusal(status_code=409, detail={
+                                    **(refusal.detail if isinstance(refusal, AgentSessionCustodyPrestartRefusal) else {
+                                        "code": "native_session_custody_unavailable", "message": str(refusal),
+                                        "phase": "before_provider_resume",
+                                        "remediation": "Inspect native session, assignment and binding provenance before retrying.",
+                                    }), "threadId": thread_id,
+                                    "bootstrap_id": bootstrap.bootstrap_id,
+                                    "preflight_attempt_id": queued_admission_attempt_id,
+                                    "admission_claim_id": queued_admission_claim_id,
+                                    "snapshot_sha256": self.queued_preflight.queued_snapshot_digest(retained.queued_turn_snapshot)
+                                        if retained and retained.queued_turn_snapshot is not None else None,
+                                }) from refusal
+                        custody_before = await self._settle_custody_call(capture_custody, work_owner=session)
                     if (queued_admission_attempt_id and queued_admission_claim_id
                             and self.queued_preflight is not None
                             and isinstance(runtime_adapter, CodexAgentRuntimeAdapter)):
@@ -3214,6 +3233,11 @@ class TurnExecutionService:
                             if operator_admission_validator is not None:
                                 operator_admission_validator()
                             owner_admission_validator()
+                            if custody_before is not None and capture_custody() != custody_before:
+                                raise ExecutionPrestartRefusal(status_code=409, detail={
+                                    "code":"native_session_custody_changed", "phase":"before_provider_resume",
+                                    "message":"Native custody changed before the resume write; inspect its current binding.",
+                                    "threadId":thread_id})
                         resume_options['resume_capture'] = QueuedNativeResumeCapture(
                             self.queued_preflight, queued_admission_attempt_id,
                             queued_admission_claim_id, requested_execution_id, thread_id,

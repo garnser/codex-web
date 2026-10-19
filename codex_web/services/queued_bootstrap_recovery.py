@@ -6,7 +6,6 @@ from fastapi import HTTPException
 
 from codex_web.identity import AuthenticationAssurance, PrincipalKind
 from codex_web.models import QueuedTurn, ExecutionPreflightAttempt
-from codex_web.storage.state_store import state_record_storage_key
 from codex_web.services.identity import IdentityService
 from codex_web.services.thread_bootstrap_bindings import ThreadBootstrapBindingNotFoundError
 from codex_web.services.threads import ThreadBootstrapPrestartRefusal
@@ -42,6 +41,12 @@ class QueuedBootstrapRecoveryService:
             self.refused('bootstrap_recovery_route_changed', 'The reserved recovery source has acquired another successor.')
         if not target:
             return attempt.thread_id
+        if self.preflight.recorded_custody_refusal(attempt):
+            queued = QueuedTurn.model_validate(attempt.queued_turn_snapshot)
+            proof = self.verify_custody_source(attempt, queued, actor)
+            if proof['threadId'] != target:
+                self.refused('bootstrap_recovery_route_changed', 'The custody refusal belongs to another source.')
+            return target
         # A verified route normally wins. Only a pending initial destination
         # whose worker is affirmatively terminal/fenced can acquire a successor.
         # This says nothing about another original's possible native outcome.
@@ -64,6 +69,38 @@ class QueuedBootstrapRecoveryService:
             if (proof.get('bootstrap_id'), proof.get('assignment_id')) != (binding.bootstrap_id, binding.assignment_id):
                 self.refused('bootstrap_recovery_route_changed', 'The controller refusal belongs to another bootstrap.')
         return target
+
+    def verify_custody_source(self, attempt, queued, actor):
+        """A live-history thread may acquire a successor only after fencing.
+
+        This checks the controller's exact refused assignment, never the lack
+        of a provider receipt or the thread's display name.
+        """
+        proof = next(b.model_dump(mode='json') for b in attempt.blockers
+            if b.code == 'native_session_scope_incompatible')
+        try:
+            binding = self.bootstrap_bindings.get_by_thread(proof['threadId'], actor)
+        except ThreadBootstrapBindingNotFoundError:
+            self.refused('bootstrap_recovery_source_unverified', 'Native custody binding is unavailable.')
+        assignment = self.assignments(proof['assignment_id'])
+        if (binding.assignment_id != proof['assignment_id'] or binding.bootstrap_id != proof['bootstrap_id']
+                or assignment is None or assignment.status not in {'cancelled', 'failed', 'succeeded', 'lost'}
+                or assignment.lease is not None
+                or assignment.fence not in {proof['assignment_fence'], proof['assignment_fence'] + 1}
+                or assignment.execution_id != proof['execution_id']
+                or assignment.execution_workspace_id != proof['execution_workspace_id']
+                or assignment.execution_id != binding.execution_id
+                or assignment.execution_workspace_id != binding.execution_workspace_id
+                or (assignment.organization_id, assignment.workspace_id, assignment.project_id, assignment.created_by)
+                    != (attempt.organization_id, attempt.workspace_id, attempt.project_id, queued.agent_profile_actor_id)
+                or assignment.agent_profile is None
+                or (assignment.agent_profile.profile_id, assignment.agent_profile.profile_revision)
+                    != (queued.agent_profile_id, queued.agent_profile_revision)
+                or set(assignment.resource_ids) != set(proof['requested_resource_ids'])
+                or (assignment.repository_scope.model_dump(mode='json') if assignment.repository_scope else None)
+                    != proof['requested_repository_scope']):
+            self.refused('bootstrap_recovery_source_unverified', 'Refused native custody is not terminal, fenced and unchanged.')
+        return proof
 
     def context(self, attempt_id, *, project, actor, thread_id=None):
         attempt = self.preflight.get(attempt_id, actor=actor)
@@ -94,8 +131,13 @@ class QueuedBootstrapRecoveryService:
                 or queued.approval_policy is None or not queued.execution_profile_id):
             self.refused('bootstrap_recovery_provenance_missing', 'Exact original actor, profile and execution settings are required.')
         original = self.thread_index.get(attempt.thread_id)
-        if original is None or not original.archived or original.project_id != project.id:
+        custody_refusal = self.preflight.recorded_custody_refusal(attempt)
+        custody_recovered = (recovery is not None and recovery.state == 'created'
+            and recovery.destination_thread_id == attempt.replacement_thread_id)
+        if original is None or (not original.archived and not custody_refusal and not custody_recovered) or original.project_id != project.id:
             self.refused('bootstrap_recovery_source_unverified', 'Fresh recovery requires the canonical archived original thread.')
+        if custody_refusal:
+            self.verify_custody_source(attempt, queued, actor)
         target = attempt.replacement_thread_id or attempt.thread_id
         if self.thread_is_active(attempt.thread_id) or self.thread_is_active(target):
             self.refused('bootstrap_recovery_thread_active', 'Original or scheduling thread has active work.')
@@ -178,6 +220,7 @@ class QueuedBootstrapRecoveryService:
             if source_fence_name:
                 self.ownership.require_fence(source_fence_name)
         recovery = attempt.bootstrap_recovery
+        custody_refusal = self.preflight.recorded_custody_refusal(attempt)
         # This is an observed fresh bootstrap edge, never reconstructed history.
         graph_updater = self.thread_index.replacement_updater(attempt.replacement_thread_id or attempt.thread_id, binding.thread_id,
             project_id=attempt.project_id, provenance={
@@ -195,6 +238,12 @@ class QueuedBootstrapRecoveryService:
                 'preflight_attempt_id':attempt.id, 'requested_by':recovery.requested_by})
         def update(current):
             self.preflight._authorize(current, actor, require_admin=True)
+            if custody_refusal and (not self.preflight.recorded_custody_refusal(current)
+                    or current.blockers != attempt.blockers
+                    or current.queued_admission_claim_id != attempt.queued_admission_claim_id):
+                self.refused('bootstrap_recovery_changed', 'Controller custody proof changed during bootstrap creation.')
+            if self.preflight.recorded_custody_refusal(current):
+                self.verify_custody_source(current, queued, actor)
             if (current.status != 'blocked' or current.bootstrap_recovery != recovery
                     or current.queued_turn_snapshot != attempt.queued_turn_snapshot
                     or current.replacement_thread_id != attempt.replacement_thread_id
@@ -205,23 +254,37 @@ class QueuedBootstrapRecoveryService:
                     'state':'created', 'destination_thread_id':binding.thread_id}),
                 'replacement_thread_id':binding.thread_id,
                 'updated_at':float(self.preflight.clock())})
-        attempt_key = state_record_storage_key(self.preflight.store.NAMESPACE,
-            self.preflight.store._attempt_key(attempt.id))
-        graph_key = self.thread_index.REPLACEMENTS_NAMESPACE
+        attempt_key = self.preflight.store._attempt_key(attempt.id)
+        attempt_ns = self.preflight.store.NAMESPACE
+        graph_ns = self.thread_index.REPLACEMENTS_NAMESPACE
+        selected = {attempt_ns:(attempt_key,), graph_ns:(None,)}
+        if self.preflight.recorded_custody_refusal(attempt):
+            # Hold the canonical source binding and assignment against a
+            # concurrent rebind/reclaim through final route publication.
+            selected[self.bootstrap_bindings.store.namespace] = (None,)
+            assignment_store = getattr(self.assignments, '__self__', None)
+            if hasattr(assignment_store, 'assignment_namespace'):
+                if assignment_store.store is not self.preflight.store.store:
+                    raise ValueError('Custody recovery requires one canonical store')
+                proof = next(b.model_dump(mode='json') for b in attempt.blockers
+                    if b.code == 'native_session_scope_incompatible')
+                selected[assignment_store.assignment_namespace] = (proof['assignment_id'], binding.assignment_id)
         def commit(values):
             if self.ownership is not None:
                 self.ownership.require_fence(fence_name)
                 if source_fence_name:
                     self.ownership.require_fence(source_fence_name)
-            current = ExecutionPreflightAttempt.model_validate(values[attempt_key])
+            current = ExecutionPreflightAttempt.model_validate(values[attempt_ns][attempt_key])
+            if self.preflight.recorded_custody_refusal(current):
+                self.verify_binding(current, queued, actor, expected_thread=binding.thread_id)
+                if self.assignments(binding.assignment_id).created_by != queued.agent_profile_actor_id:
+                    self.refused('bootstrap_recovery_binding_mismatch', 'Fresh custody changed the original actor.')
             completed = update(current)
-            return {attempt_key:completed.model_dump(mode='json'),
-                graph_key:graph_updater(values[graph_key])}
-        # The fresh edge and its retained admission fence commit together. A
-        # late original receipt wins or loses the same row lock, never leaving
-        # an edge published after a rejected preflight transition.
-        self.preflight.store.store.update_many(
-            {attempt_key:None, graph_key:{'version':1, 'edges':{}}}, commit)
+            return {attempt_ns:{attempt_key:completed.model_dump(mode='json')},
+                graph_ns:{None:graph_updater(values[graph_ns][None] or {'version':1, 'edges':{}})}}
+        # Read locks on source custody share the original/graph transaction;
+        # only the original's route and new observed edge are written.
+        self.preflight.store.store.record_mutate_many(selected, commit)
         # Rebuild the existing projected inspection indexes. Failure here does
         # not undo the authoritative commit or authorize another bootstrap.
         return self.preflight.store.update(attempt.id, lambda current:current)

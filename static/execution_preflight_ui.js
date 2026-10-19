@@ -164,6 +164,13 @@ export function createExecutionPreflightUi({
               : "";
             return `${blocker?.code || "execution_preflight_blocked"}: ${blocker?.message || "Execution could not start."}${target}${remediation}`;
           }),
+          ...blockers.filter(blocker => blocker.code === 'native_session_scope_incompatible').map(blocker =>
+            `Native session ${blocker.agent_session_id} · previous assignment ${blocker.previous_assignment_id} · refused assignment ${blocker.assignment_id}\n`
+            + `Previous repositories: ${(blocker.original_resource_ids || []).join(', ')}\n`
+            + `Requested repositories: ${(blocker.requested_resource_ids || []).join(', ')}\n`
+            + `Previous repository scope: ${JSON.stringify(blocker.original_repository_scope)}\n`
+            + `Requested repository scope: ${JSON.stringify(blocker.requested_repository_scope)}\n`
+            + 'Controller refused before provider resume or Turn input. Inspect fresh bootstrap recovery; the original remains retained.'),
         ].filter(Boolean);
 
         const card = addMessage(

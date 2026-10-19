@@ -12,12 +12,12 @@ from unittest.mock import patch
 
 from codex_web.agent_runtime import AgentRuntimeResult, AgentRuntimeSessionRequest, AgentSessionStatus
 from codex_web.execution_workers import AssignmentCancelRequest, AssignmentClaimRequest, AssignmentStartRequest
-from codex_web.models import ProjectCoordinationDispatch
+from codex_web.models import ProjectCoordinationDispatch, QueuedTurn
 from codex_web.services.agent_runtime import AgentRuntimeError
 from codex_web.services.agent_session_custody import AgentSessionCustodyService
 from codex_web.services.control_plane_broker import AssignmentBoundControlPlaneBroker
 from codex_web.services.codex_agent_runtime import CodexAgentRuntimeAdapter
-from codex_web.runtime.execution import TurnExecutionService
+from codex_web.runtime.execution import TurnExecutionService, ExecutionPrestartRefusal
 from tests import test_project_coordination_delegation as delegated
 from tests import test_turn_execution as execution_tests
 
@@ -200,7 +200,7 @@ class SessionCustodyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.complete(self.capture()), before)
         self.assertEqual(events(), original_events)
 
-    async def exercise_actual_resume_path(self, outcome, *, legacy_adoption=False):
+    async def exercise_actual_resume_path(self, outcome, *, legacy_adoption=False, prior_changes=None):
         child, _ = await self.create()
         # This is an existing native thread being resumed after rollover, not
         # the special newly-created thread whose first input skips resume.
@@ -211,6 +211,11 @@ class SessionCustodyTests(unittest.IsolatedAsyncioTestCase):
         # Real adapter identity, not the shortened type used by the older fixture.
         baseline = self.original_session.model_copy(update={'runtime_type': CodexAgentRuntimeAdapter.runtime_type})
         self.sessions.store.upsert(baseline)
+        if prior_changes:
+            previous = self.f.workers.store.assignment(self.old.id)
+            self.f.sqlite.record_apply(self.f.workers.store.assignment_namespace,
+                upserts={previous.id:previous.model_copy(update=prior_changes).model_dump(mode='json')})
+        historical = self.f.workers.store.assignment(self.old.id)
         if legacy_adoption:
             # Legacy discovery is idempotent, even with caller-supplied new
             # provenance. Only the subsequent trusted resume may change custody.
@@ -256,6 +261,8 @@ class SessionCustodyTests(unittest.IsolatedAsyncioTestCase):
         actual = TurnExecutionService(self.host, binding_service=self.f.service,
             session_manager=manager, bootstrap_bindings=self.bindings, control_actor=self.actor)
         actual.session_custody = self.custody
+        actual.queued_preflight = self.execution.queued_preflight
+        actual.actor_resolver = self.execution.actor_resolver
         actual.automated_admission_allowed = lambda: False
         # Force the canonical isolated path; trusted-host fallback cannot fix a join.
         actual._trusted_local_codex_session_enabled = lambda **kwargs: False
@@ -268,7 +275,24 @@ class SessionCustodyTests(unittest.IsolatedAsyncioTestCase):
             operation = actual.start_thread_turn_now('native-governor', project=self.f.project,
                 message='bounded governor turn', sandbox='workspace-write', approval_policy='on-request',
                 repository_resource_id=self.f.repository.id, execution_profile_id='project-governor', source='web')
-            if outcome == 'success':
+            if outcome == 'scope_queued':
+                operation.close()
+                queued = QueuedTurn(id='retained-custody-original', thread_id='native-governor',
+                    project_id='home', message='bounded governor turn', source='web', created_at=time.time(),
+                    execution_id='retained-original-execution', sandbox='workspace-write', approval_policy='on-request',
+                    repository_resource_id=self.f.repository.id, writable_repository_resource_ids=(self.f.repository.id,),
+                    execution_profile_id='project-governor', agent_profile_actor_id=self.actor.identity_id)
+                original_snapshot = queued.model_dump(mode='json')
+                self.host.queues['native-governor'] = [queued]
+                await actual.drain_thread_queue('native-governor')
+                retained = actual.queued_preflight.store.for_thread('native-governor')[0]
+                self.assertEqual(retained.status, 'blocked')
+                self.assertEqual(retained.queued_turn_snapshot, original_snapshot)
+                self.assertTrue(actual.queued_preflight.recorded_custody_refusal(retained))
+                self.assertIsNone(retained.queued_resume_correlation)
+                self.assertIsNone(retained.queued_start_correlation)
+                self.assertIsNone(retained.queued_start_receipt)
+            elif outcome == 'success':
                 response = await operation
                 self.assertEqual(response['turn']['id'], 'governor-turn')
             elif outcome == 'failure':
@@ -277,9 +301,20 @@ class SessionCustodyTests(unittest.IsolatedAsyncioTestCase):
             elif outcome == 'unknown':
                 with self.assertRaisesRegex(TimeoutError, 'resume outcome unknown'):
                     await operation
+            elif outcome in {'scope', 'custody'}:
+                with self.assertRaises(ExecutionPrestartRefusal) as caught:
+                    await operation
+                self.assertEqual(caught.exception.detail['phase'], 'before_provider_resume')
+                self.assertEqual(caught.exception.detail['code'], 'native_session_scope_incompatible' if outcome == 'scope' else 'native_session_custody_unavailable')
             else:
                 with self.assertRaises(asyncio.CancelledError):
                     await operation
+        self.assertEqual(self.f.workers.store.assignment(self.old.id), historical)
+        if outcome in {'scope', 'custody', 'scope_queued'}:
+            self.assertEqual(observed, [])
+            self.assertEqual(requests, [])
+            self.assertEqual(self.sessions.get(baseline.id, self.actor), baseline)
+            return
         self.assertEqual(len(observed), 1)
         self.assertEqual(observed[0].resource_ids, self.assignment.resource_ids)
         self.assertEqual(observed[0].assignment_id, self.assignment.id)
@@ -297,6 +332,24 @@ class SessionCustodyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_actual_turn_resume_hook_precedes_input_and_goal_bound_child_admission(self):
         await self.exercise_actual_resume_path('success')
+
+    async def test_incompatible_repository_is_refused_before_actual_provider_resume(self):
+        await self.exercise_actual_resume_path('scope', prior_changes={'resource_ids':('previous-repo',)})
+
+    async def test_changed_readonly_scope_is_refused_before_actual_provider_resume(self):
+        previous = self.f.workers.store.assignment(self.old.id)
+        await self.exercise_actual_resume_path('scope', prior_changes={
+            'repository_scope': previous.repository_scope.model_copy(update={
+                'read_only_repository_ids':('previous-readonly',)})})
+
+    async def test_real_queue_drain_retains_claim_bound_custody_proof_without_provider_io(self):
+        await self.exercise_actual_resume_path('scope_queued', prior_changes={'resource_ids':('previous-repo',)})
+
+    async def test_foreign_prior_actor_refuses_before_actual_provider_resume(self):
+        await self.exercise_actual_resume_path('custody', prior_changes={'created_by':'another-actor'})
+
+    async def test_foreign_prior_tenant_refuses_before_actual_provider_resume(self):
+        await self.exercise_actual_resume_path('custody', prior_changes={'workspace_id':'another-tenant'})
 
     async def test_actual_turn_failed_resume_does_not_reassociate_or_send_input(self):
         await self.exercise_actual_resume_path('failure')
@@ -393,10 +446,13 @@ class SessionCustodyTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     self.f.sqlite.record_apply(store.assignment_namespace, upserts={self.assignment.id: original})
         worker = self.f.sqlite.record_get(store.worker_namespace, self.f.worker.id)
+        proof = self.capture()
         try:
             self.f.sqlite.record_apply(store.worker_namespace,
                 upserts={self.f.worker.id: {**worker, 'organization_id': 'foreign-tenant'}})
-            self.assert_refused_without_writes(self.capture())
+            with self.assertRaises(AgentRuntimeError):
+                self.capture()
+            self.assert_refused_without_writes(proof)
         finally:
             self.f.sqlite.record_apply(store.worker_namespace, upserts={self.f.worker.id: worker})
 
