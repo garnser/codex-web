@@ -3233,11 +3233,6 @@ class TurnExecutionService:
                             if operator_admission_validator is not None:
                                 operator_admission_validator()
                             owner_admission_validator()
-                            if custody_before is not None and capture_custody() != custody_before:
-                                raise ExecutionPrestartRefusal(status_code=409, detail={
-                                    "code":"native_session_custody_changed", "phase":"before_provider_resume",
-                                    "message":"Native custody changed before the resume write; inspect its current binding.",
-                                    "threadId":thread_id})
                         resume_options['resume_capture'] = QueuedNativeResumeCapture(
                             self.queued_preflight, queued_admission_attempt_id,
                             queued_admission_claim_id, requested_execution_id, thread_id,

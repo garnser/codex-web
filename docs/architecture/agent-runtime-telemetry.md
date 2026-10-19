@@ -56,9 +56,10 @@ before the provider await. Capture validates the same assignment, worker,
 identity, exact profile, binding, workspace and lease invariants under canonical
 transaction locks without changing custody or emitting a reassociation event.
 Known incompatible prior owner, tenant or repository scope refuses before any
-provider resume or Turn input. Queued resume rechecks capture at its guarded
-transport write; a changed projection refuses the write. Only successful resume
-may invoke the internal custody projection hook. The hook revalidates the trusted worker session and
+provider resume or Turn input. This validation uses the owned worker executor;
+the native writer retains its existing live assignment and admission guards,
+without another catalog transaction on the native event loop. Only successful
+resume may invoke the internal custody projection hook. The hook revalidates the trusted worker session and
 requires exact tenant/Project/provider/runtime/native-thread identity, current
 bootstrap binding, assignment/worker/fence/deadline, workspace and lease, and
 published execution/Profile Definition pins. Compare-and-swap refuses a
