@@ -92,6 +92,8 @@ class QueuedBootstrapRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 'read_only_repository_ids':['reference']})
         self.attempt = self.service.store.update(self.attempt.id, lambda current: current.model_copy(update={
             'blockers':(ExecutionPreflightBlocker(**proof),), 'queued_admission_claim_id':'owned-claim'}))
+        self.attempt = self.service.queued_disposition(self.attempt.id, status='blocked', detail=proof,
+            claim_id='owned-claim', preinput_refusal=True)
         self.bindings.bind(bootstrap_id='old-bootstrap', thread_id='archived', execution_id='old-execution',
             assignment_id='old-assignment', execution_workspace_id='old-workspace', actor=self.admin)
         self.assignments['old-assignment'] = SimpleNamespace(status='failed', lease=None, fence=1,

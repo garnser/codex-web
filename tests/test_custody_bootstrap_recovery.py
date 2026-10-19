@@ -45,7 +45,9 @@ class CustodyBootstrapRecoveryTests(unittest.IsolatedAsyncioTestCase):
             current = self.service.store.get(self.attempt.id)
             blocker = current.blockers[0].model_copy(update={
                 'requested_repository_scope':model.repository_scope.model_dump(mode='json')})
-            self.attempt = self.service.store.update(current.id, lambda row:row.model_copy(update={'blockers':(blocker,)}))
+            history = (*current.blocker_history[:-1], current.blocker_history[-1].model_copy(update={'blockers':(blocker,)}))
+            self.attempt = self.service.store.update(current.id, lambda row:row.model_copy(update={
+                'blockers':(blocker,), 'blocker_history':history}))
 
     async def create(self, **values):
         result = await fixtures.QueuedBootstrapRuntimeTests.create(self, **values)
@@ -111,3 +113,19 @@ class CustodyBootstrapRecoveryTests(unittest.IsolatedAsyncioTestCase):
             await self.recover()
         self.assertIsNone(self.index.replacement_thread_id('archived'))
         self.assertEqual(self.service.store.get(self.attempt.id).bootstrap_recovery.state, 'pending')
+
+    async def test_retry_retains_old_controller_proof_without_authorizing_the_next_unknown_attempt(self):
+        proof = self.attempt.blockers
+        await self.recover()
+        current, claim, acquired = self.service.claim_retry(self.attempt.id, actor=self.admin)
+        self.assertTrue(acquired)
+        self.service.queue_retry_committed(current.id, claim_id=claim)
+        current, next_claim = self.service.claim_queued_admission(current.id)
+        self.assertTrue(self.service.begin_queued_start(current.id, claim_id=next_claim))
+        current = self.service.store.get(current.id)
+        self.assertEqual(current.blocker_history[-1].blockers, proof)
+        self.assertEqual(current.queued_turn_snapshot, self.attempt.queued_turn_snapshot)
+        self.assertEqual(current.status, 'reconciliation_required')
+        self.assertEqual(current.blockers, ())
+        self.assertFalse(self.service.recorded_prestart_refusal(current))
+        self.assertFalse(self.service.public(current, actor=self.admin)['can_recover_bootstrap'])

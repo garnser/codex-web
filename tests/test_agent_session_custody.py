@@ -289,6 +289,7 @@ class SessionCustodyTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(retained.status, 'blocked')
                 self.assertEqual(retained.queued_turn_snapshot, original_snapshot)
                 self.assertTrue(actual.queued_preflight.recorded_custody_refusal(retained))
+                self.assertEqual(retained.blocker_history[-1].blockers, retained.blockers)
                 self.assertIsNone(retained.queued_resume_correlation)
                 self.assertIsNone(retained.queued_start_correlation)
                 self.assertIsNone(retained.queued_start_receipt)

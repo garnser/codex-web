@@ -242,10 +242,17 @@ class ExecutionPreflightService:
                             'queued_resume_history':(*current.queued_resume_history,history)})
             disposition = 'reconciliation_required' if (current.queued_start_correlation is not None
                 or current.queued_resume_correlation is not None) else status
+            blockers = self._blockers(detail) if detail else ()
+            history = current.blocker_history
+            if (disposition == 'blocked' and preinput_refusal
+                    and (detail or {}).get('code') == 'native_session_scope_incompatible'
+                    and (not history or history[-1].blockers != blockers)):
+                history = (*history, ExecutionPreflightBlockerSnapshot(blockers=blockers,
+                    recorded_at=now, attempt_number=current.attempt_number))[-self.MAX_HISTORY:]
             return current.model_copy(update={
                 'status':disposition, 'updated_at':now,
                 'started_at':now if disposition == 'started' else None,
-                'blockers':self._blockers(detail) if detail else (),
+                'blockers':blockers, 'blocker_history':history,
                 'last_error':str((detail or {}).get('message') or '') or None,
             })
         return self.store.update(attempt_id, update)
