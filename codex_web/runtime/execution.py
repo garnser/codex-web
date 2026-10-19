@@ -3262,6 +3262,11 @@ class TurnExecutionService:
                                 assignment_id,
                                 succeeded=False,
                                 failure_code=(
+                                    "native_session_custody_refused"
+                                    if isinstance(exc, ExecutionPrestartRefusal)
+                                    and isinstance(exc.detail, dict)
+                                    and str(exc.detail.get("code", "")).startswith("native_session_")
+                                    else
                                     "codex_thread_resume_failed"
                                     if runtime_binding is None
                                     or (

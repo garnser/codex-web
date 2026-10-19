@@ -311,6 +311,7 @@ class SessionCustodyTests(unittest.IsolatedAsyncioTestCase):
                     await operation
         self.assertEqual(self.f.workers.store.assignment(self.old.id), historical)
         if outcome in {'scope', 'custody', 'scope_queued'}:
+            self.assertEqual(manager.completed[0][1]['failure_code'], 'native_session_custody_refused')
             self.assertEqual(observed, [])
             self.assertEqual(requests, [])
             self.assertEqual(self.sessions.get(baseline.id, self.actor), baseline)

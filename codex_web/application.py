@@ -3695,6 +3695,7 @@ queued_bootstrap_recovery_service = QueuedBootstrapRecoveryService(
     thread_is_active=turn_execution_service.thread_is_active,
     ownership=turn_execution_service.ownership,
     queue_lock=turn_execution_service.queue_admission_lock,
+    identity=identity_service,
 )
 app.state.queued_bootstrap_recovery_service = queued_bootstrap_recovery_service
 queued_operator_admission_service = QueuedOperatorAdmissionService(

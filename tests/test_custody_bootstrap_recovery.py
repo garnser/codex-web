@@ -86,3 +86,28 @@ class CustodyBootstrapRecoveryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException):
             await self.recover()
         self.assertIsNone(self.index.replacement_thread_id('archived'))
+
+    async def test_revoked_operator_during_creation_refuses_publication(self):
+        from tests.test_execution_preflight import actor
+        async def revoke(**values):
+            result = await self.create(**values)
+            revoked = actor(admin=False).model_copy(update={'identity_id':'admin'})
+            self.runtime.actor_resolver = lambda identity, project:revoked
+            return result
+        self.threads.create.side_effect = revoke
+        with self.assertRaises(HTTPException) as caught:
+            await self.recover()
+        self.assertEqual(caught.exception.status_code, 403)
+        self.assertIsNone(self.index.replacement_thread_id('archived'))
+
+    async def test_changed_controller_claim_during_creation_refuses_publication(self):
+        async def change_claim(**values):
+            result = await self.create(**values)
+            self.service.store.update(self.attempt.id, lambda current:current.model_copy(update={
+                'queued_admission_claim_id':'another-claim'}))
+            return result
+        self.threads.create.side_effect = change_claim
+        with self.assertRaises(HTTPException):
+            await self.recover()
+        self.assertIsNone(self.index.replacement_thread_id('archived'))
+        self.assertEqual(self.service.store.get(self.attempt.id).bootstrap_recovery.state, 'pending')

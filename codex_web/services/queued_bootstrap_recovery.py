@@ -15,7 +15,7 @@ class QueuedBootstrapRecoveryService:
     """Create a fresh, correlated bootstrap without claiming a native Turn."""
 
     def __init__(self, *, preflight, threads, bootstrap_bindings, assignments,
-                 thread_index, actor_resolver, thread_is_active, ownership=None, queue_lock=None):
+                 thread_index, actor_resolver, thread_is_active, ownership=None, queue_lock=None, identity=None):
         self.preflight = preflight
         self.threads = threads
         self.bootstrap_bindings = bootstrap_bindings
@@ -25,6 +25,7 @@ class QueuedBootstrapRecoveryService:
         self.thread_is_active = thread_is_active
         self.ownership = ownership
         self.queue_lock = queue_lock
+        self.identity = identity
 
     @staticmethod
     def refused(code, message):
@@ -214,7 +215,7 @@ class QueuedBootstrapRecoveryService:
             self.refused('bootstrap_recovery_binding_mismatch', 'Correlated bootstrap does not match the exact original scope.')
         return binding
 
-    def complete(self, attempt, queued, binding, *, actor, fence_name, source_fence_name=None):
+    def complete(self, attempt, queued, binding, *, actor, project, fence_name, source_fence_name=None):
         if self.ownership is not None:
             self.ownership.require_fence(fence_name)
             if source_fence_name:
@@ -238,6 +239,12 @@ class QueuedBootstrapRecoveryService:
                 'preflight_attempt_id':attempt.id, 'requested_by':recovery.requested_by})
         def update(current):
             self.preflight._authorize(current, actor, require_admin=True)
+            if custody_refusal:
+                fresh = self.actor_resolver(actor.identity_id, project)
+                self.preflight._authorize(current, fresh, require_admin=True)
+                if (fresh.identity_id, fresh.organization_id, fresh.workspace_id) != (
+                        actor.identity_id, actor.organization_id, actor.workspace_id):
+                    raise HTTPException(status_code=403, detail='Recovery operator identity changed.')
             if custody_refusal and (not self.preflight.recorded_custody_refusal(current)
                     or current.blockers != attempt.blockers
                     or current.queued_admission_claim_id != attempt.queued_admission_claim_id):
@@ -262,6 +269,10 @@ class QueuedBootstrapRecoveryService:
             # Hold the canonical source binding and assignment against a
             # concurrent rebind/reclaim through final route publication.
             selected[self.bootstrap_bindings.store.namespace] = (None,)
+            if self.identity is not None:
+                if self.identity.store.store is not self.preflight.store.store:
+                    raise ValueError('Custody recovery identity requires one canonical store')
+                selected[self.identity.store.namespace] = (None,)
             assignment_store = getattr(self.assignments, '__self__', None)
             if hasattr(assignment_store, 'assignment_namespace'):
                 if assignment_store.store is not self.preflight.store.store:
@@ -357,7 +368,7 @@ class QueuedBootstrapRecoveryService:
                 if self.recovery_source(attempt, project=project, actor=actor) != source:
                     self.refused('bootstrap_recovery_route_changed', 'The reserved recovery source changed during creation.')
                 attempt = await asyncio.to_thread(self.complete, attempt, queued, binding,
-                    actor=actor, fence_name=name,
+                    actor=actor, project=project, fence_name=name,
                     source_fence_name='thread-queue:' + owned_source if owned_source else None)
             return {'ok':True, 'threadId':binding.thread_id,
                 'bootstrap_created':True, 'native_turn_started':False,
