@@ -1070,3 +1070,13 @@ The content leaf and descendants are not resolved away: preservation still
 rejects symlinks there and enforces the existing binding's real filesystem roots.
 This changes neither stored content locators nor capacity, authority, or unknown
 outcome rules; it performs no data move or repair.
+
+Recovery's irreversible-write guard holds the existing secret-state namespace
+lock and pins its complete metadata outside the use-audit list. Secret creation,
+rotation, revocation, ACL and expiry changes still invalidate admission; normal
+secret-use audit appends remain recorded and do not represent a grant change.
+Other guarded namespace revisions, current actor/credential checks, lease/fence,
+procedure and final transactional guards remain enforced. Repeated local-trusted
+identity bootstrap reads an already complete default state without rewriting it;
+missing defaults still initialize through the existing atomic updater. This
+neither adds membership authority nor suppresses audit records.

@@ -41,8 +41,10 @@ def mutation_guard(provider, binding, request):
     recovery = provider.recovery
     repositories = [service.identity.store, service.execution.registry.store,
         service.execution.resources.store, service.authority.registry.store]
-    if service.execution.secret_broker is not None:
-        repositories.append(service.execution.secret_broker.store)
+    secret_store = (service.execution.secret_broker.store
+                    if service.execution.secret_broker is not None else None)
+    if secret_store is not None:
+        repositories.append(secret_store)
     if service.execution_profiles is not None:
         repositories.append(service.execution_profiles.registry.store)
         if service.execution_profiles.agent_profiles is not None:
@@ -79,16 +81,26 @@ def mutation_guard(provider, binding, request):
             raise ActionRequirementError('Recovery assignment has no current worker')
         domains.update({ASSIGNMENTS: (assignment.id,), WORKERS: (assignment.assigned_worker_id,)})
     domains[service.store.records_namespace] = ('intents:' + intent_id,)
-    pins = {n: recovery.store.store.namespace_revision(n) for n in domains if n != service.store.records_namespace}
+    # Secret use appends audit observations, not credential authority. Keep the
+    # same secret namespace in the transaction's locks, but pin every metadata
+    # field outside its audit list (including rotation/revocation/ACL/expiry).
+    secret_namespace = secret_store.namespace if secret_store is not None else None
+    secret_authority = (secret_store.load().model_dump(mode='json', exclude={'audit'})
+                        if secret_store is not None else None)
+    pins = {n: recovery.store.store.namespace_revision(n) for n in domains
+            if n != service.store.records_namespace and n != secret_namespace}
     configurations = (service.security_boundary, service.procedure_discovery, service.procedure_execution,
-                      service.execution.procedure_admission)
+                      service.execution.procedure_admission, service.execution.secret_broker)
 
     def guard(_documents):
         if configurations != (service.security_boundary, service.procedure_discovery,
-                service.procedure_execution, service.execution.procedure_admission):
+                service.procedure_execution, service.execution.procedure_admission, service.execution.secret_broker):
             raise ActionRequirementError('Recovery runtime admission configuration changed')
         if any(recovery.store.store.namespace_revision(n) != revision for n, revision in pins.items()):
             raise ActionRequirementError('Recovery admission changed before irreversible write')
+        if (secret_store is not None
+                and secret_store.load().model_dump(mode='json', exclude={'audit'}) != secret_authority):
+            raise ActionRequirementError('Recovery secret authority changed before irreversible write')
         current = service._intent(intent_id, worker)
         if (current.status != ActionIntentStatus.EXECUTING or current.request != request
                 or current.binding_id != binding.id or current.action_definition != initial.action_definition

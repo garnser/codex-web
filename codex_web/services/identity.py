@@ -136,6 +136,21 @@ class IdentityService:
     def bootstrap_local(self) -> IdentityState:
         """Create deterministic single-user defaults for existing installations."""
 
+        current = self.store.load()
+        if (
+            any(item.id == DEFAULT_ORGANIZATION_ID for item in current.organizations)
+            and any(item.id == DEFAULT_WORKSPACE_ID for item in current.workspaces)
+            and any(item.id == DEFAULT_HUMAN_IDENTITY_ID for item in current.humans)
+            and any(
+                item.identity_id == DEFAULT_HUMAN_IDENTITY_ID
+                and item.organization_id == DEFAULT_ORGANIZATION_ID
+                and item.workspace_id == DEFAULT_WORKSPACE_ID
+                and item.revoked_at is None
+                for item in current.memberships
+            )
+        ):
+            return current
+
         def apply(state: IdentityState) -> IdentityState:
             if not any(item.id == DEFAULT_ORGANIZATION_ID for item in state.organizations):
                 state.organizations.append(
