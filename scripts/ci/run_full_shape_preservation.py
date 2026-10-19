@@ -153,7 +153,8 @@ def qualify(parent, engine, sudo_engine):
         device = run(prefix + ['losetup', '--find', '--show', str(image)])
         require(re.fullmatch(r'/dev/loop[0-9]+', device), 'unexpected allocated loop device')
         report['loop_device'] = device
-        run(prefix + ['mkfs.ext4', '-q', '-m', '0', '-F', device])
+        run(prefix + ['mkfs.ext4', '-q', '-E', 'nodiscard', '-m', '0', '-F', device])
+        require(image.stat().st_blocks * 512 >= DISK_BYTES, 'formatting released the reserved disk blocks')
         run(prefix + ['mount', '-o', 'nodev,nosuid,noatime', device, str(mount)])
         mounted = True
         run(prefix + ['chown', f'{os.getuid()}:{os.getgid()}', str(mount)])
