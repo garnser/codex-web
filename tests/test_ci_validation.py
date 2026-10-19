@@ -194,6 +194,7 @@ class UnitOwnershipTests(unittest.TestCase):
                 runner = self.copy_runner(root)
                 (root / "data").mkdir()
                 (root / "tests").mkdir()
+                (root / "tests/__init__.py").write_text("")
                 (caller / "tests").mkdir(parents=True)
                 (caller / "tests/test_foreign.py").write_text("raise RuntimeError('foreign tests imported')\n")
                 (root / "tests/test_local.py").write_text(
@@ -219,21 +220,24 @@ class UnitOwnershipTests(unittest.TestCase):
                 self.assertFalse((caller / "data").exists())
 
     def test_runner_keeps_discovery_failures_from_its_own_repository(self):
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            root, caller = base / "repository", base / "caller"
-            runner = self.copy_runner(root)
-            (root / "data").mkdir()
-            (root / "tests").mkdir()
-            caller.mkdir()
-            (root / "tests/test_broken.py").write_text("raise RuntimeError('local discovery failure')\n")
-            result = subprocess.run(
-                [sys.executable, str(runner)], cwd=caller,
-                capture_output=True, text=True, timeout=10,
-            )
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("local discovery failure", result.stderr)
-            self.assertIn("Selected 1 unit tests", result.stdout)
+        for module in ("test_broken", "test_gitlab_sync_scaling"):
+            with self.subTest(module=module), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                root, caller = base / "repository", base / "caller"
+                runner = self.copy_runner(root)
+                (root / "data").mkdir()
+                (root / "tests").mkdir()
+                (root / "tests/__init__.py").write_text("")
+                caller.mkdir()
+                (root / "tests" / (module + ".py")).write_text("raise RuntimeError('local discovery failure')\n")
+                result = subprocess.run(
+                    [sys.executable, str(runner)], cwd=caller,
+                    capture_output=True, text=True, timeout=10,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("local discovery failure", result.stderr)
+                self.assertIn("tests." + module, result.stderr)
+                self.assertIn("Selected 1 unit tests", result.stdout)
 
     def test_nested_suites_keep_ordinary_tests_and_discovery_failures(self):
         regular = unittest.FunctionTestCase(lambda: None)
@@ -241,6 +245,39 @@ class UnitOwnershipTests(unittest.TestCase):
         dedicated = dedicated_class()
         suite = unittest.TestSuite([unittest.TestSuite([regular, dedicated])])
         self.assertEqual(list(selected_tests(suite)), [regular])
+
+    def test_canonical_discovery_retains_inherited_environments_and_named_skips(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = self.copy_runner(root)
+            (root / "data").mkdir()
+            (root / "tests").mkdir()
+            (root / "tests/__init__.py").write_text("")
+            (root / "tests/test_owner.py").write_text(
+                "import unittest\nfrom pathlib import Path\n"
+                "class Contract(unittest.TestCase):\n"
+                " def test_once(self):\n"
+                "  with Path('data/executions').open('a') as out: out.write(type(self).__name__+'\\n')\n"
+                " @unittest.skip('isolated backend unavailable')\n"
+                " def test_optional(self): pass\n"
+                "class OtherEnvironment(Contract): pass\n"
+            )
+            (root / "tests/test_consumer.py").write_text(
+                "import sys, unittest\nfrom tests import test_owner as fixture\n"
+                "class Consumer(unittest.TestCase):\n"
+                " def test_identity(self):\n"
+                "  self.assertIs(fixture,sys.modules['tests.test_owner'])\n"
+                "  self.assertNotIn('test_owner',sys.modules)\n"
+            )
+            result = subprocess.run([sys.executable, str(runner)], cwd=root,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Selected 5 unit tests", result.stdout)
+            self.assertEqual((root / "data/executions").read_text().splitlines(),
+                             ["Contract", "OtherEnvironment"])
+            for environment in ("Contract", "OtherEnvironment"):
+                self.assertIn(f"tests.test_owner.{environment}.test_optional", result.stderr)
+            self.assertEqual(result.stderr.count("skipped 'isolated backend unavailable'"), 2)
 
 
 if __name__ == "__main__":

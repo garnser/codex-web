@@ -16,7 +16,7 @@ from codex_web.services.model_provider_administration import ModelProviderAdmini
 
 class ModelProviderAdministrationTests(unittest.TestCase):
     def setUp(self):
-        from test_agent_providers import AgentProviderServiceTests
+        from tests.test_agent_providers import AgentProviderServiceTests
         AgentProviderServiceTests.setUp(self)
         self.addCleanup(self.temp.cleanup)
         self.gateway = ModelGatewayService(self.models)

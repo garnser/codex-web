@@ -16,7 +16,7 @@ from codex_web.api.agent_providers import build_agent_providers_router
 
 class AgentProviderAdministrationTests(unittest.TestCase):
     def setUp(self):
-        from test_agent_providers import AgentProviderServiceTests
+        from tests.test_agent_providers import AgentProviderServiceTests
         AgentProviderServiceTests.setUp(self)
         self.addCleanup(self.temp.cleanup)
         self.payload = AgentProviderUpsert(id='runner', display_name='Runner', declared_capabilities=('agent_execution',), granted_capabilities=('agent_execution',))
@@ -95,7 +95,7 @@ class AgentProviderAdministrationTests(unittest.TestCase):
         self.assertIn('routing.default', str(result['consumers']))
 
     def test_synthesized_model_provider_retains_model_gateway_owner(self):
-        from test_agent_providers import AgentProviderServiceTests
+        from tests.test_agent_providers import AgentProviderServiceTests
         AgentProviderServiceTests._model_provider(self, 'model-only')
         provider = next(item for item in self.service.list(self.actor) if item.synthesized_from_model_gateway)
         result = self.admin.impact(provider.id, self.actor)
