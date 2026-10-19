@@ -153,9 +153,9 @@ def qualify(parent, engine, sudo_engine):
         device = run(prefix + ['losetup', '--find', '--show', str(image)])
         require(re.fullmatch(r'/dev/loop[0-9]+', device), 'unexpected allocated loop device')
         report['loop_device'] = device
-        run(prefix + ['mkfs.ext4', '-q', '-E', 'nodiscard', '-m', '0', '-F', device])
+        run(prefix + ['mkfs.ext4', '-q', '-E', 'nodiscard,lazy_itable_init=0,lazy_journal_init=0', '-m', '0', '-F', device])
         require(image.stat().st_blocks * 512 >= DISK_BYTES, 'formatting released the reserved disk blocks')
-        run(prefix + ['mount', '-o', 'nodev,nosuid,noatime', device, str(mount)])
+        run(prefix + ['mount', '-o', 'nodev,nosuid,noatime,nodiscard', device, str(mount)])
         mounted = True
         run(prefix + ['chown', f'{os.getuid()}:{os.getgid()}', str(mount)])
         source = mount / 'source'
@@ -171,6 +171,11 @@ def qualify(parent, engine, sudo_engine):
         (source / 'data').mkdir()
         for name in ('postgres', 'tmp', 'home', 'reservations'):
             (mount / name).mkdir()
+        # Loop zero-write optimizations during formatting can punch backing holes.
+        # Re-reserve after synchronous initialization and before admitting tests.
+        with image.open('r+b') as allocated:
+            os.posix_fallocate(allocated.fileno(), 0, DISK_BYTES)
+        require(image.stat().st_blocks * 512 >= DISK_BYTES, 'mounted disk reservation incomplete')
         pgdata = mount / 'postgres'
         # Bind the real server files at the SAME absolute path returned by SHOW.
         container_attempted = True
