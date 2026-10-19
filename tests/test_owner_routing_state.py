@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 import unittest
 
@@ -11,7 +12,9 @@ from codex_web.services.task_sources import TaskSourceSnapshot
 from codex_web.services.task_source_work_items import TaskSourceWorkItemProjector
 from codex_web.services.work_item_dependencies import WorkItemRuntimeDependencies
 from codex_web.services.work_item_state import WorkItemStateMachine
+from codex_web.services.work_items import WorkItemService
 from codex_web.storage.runtime_state import ModelMapRepository
+from codex_web.storage.work_item_list_index import WorkItemListIndex
 from tests import test_owner_routing as fixtures
 
 
@@ -189,6 +192,56 @@ class OwnerRoutingStateTests(unittest.TestCase):
         denied = self.machine._work_item_state_public(foreign)
         self.assertEqual(denied['owner_routing']['status'], 'blocked')
         self.assertEqual(denied['next_owner'], 'operator')
+
+    def test_pages_retain_conflicting_claim_and_continue_without_rewriting_history(self):
+        for claim in ('implementation_owner', 'validation_owner', 'release_owner'):
+            with self.subTest(claim=claim):
+                normal = self.pending()
+                original = normal.model_copy(update={claim: 'operator'})
+                self.states.put(original.ref, original)
+                neighbors = [normal.model_copy(update={
+                    'ref': 'acme/widgets#' + str(number),
+                    'updated_at': timestamp,
+                }) for number, timestamp in ((2, 2.0), (3, 0.5))]
+                for neighbor in neighbors:
+                    self.states.put(neighbor.ref, neighbor)
+                before = self.states.load()
+                index = WorkItemListIndex(self.env.state)
+                index.rebuild(before)
+                service = object.__new__(WorkItemService)
+                service.work_items = self.dependencies
+                service.state_machine = self.machine
+                service.work_item_list_index = index
+
+                async def pages():
+                    rows, cursor = [], None
+                    for _ in range(4):
+                        page = await service.list(project_id='project-a', owner=None,
+                            stage=None, release_gate=None, scope=self.env.scope,
+                            limit=1, cursor=cursor)
+                        rows.extend(page['items'])
+                        cursor = page['nextCursor']
+                    self.assertIsNone(cursor)
+                    return rows
+
+                rows = asyncio.run(pages())
+                self.assertEqual([row['ref'] for row in rows],
+                    [neighbors[0].ref, original.ref, neighbors[1].ref])
+                self.assertEqual(rows[1]['routingError'], 'owner_alias_cannot_change_claimed_lane')
+                self.assertEqual(rows[1]['current_owner'], original.current_owner)
+                self.assertEqual(rows[1]['next_owner'], original.next_owner)
+                self.assertEqual(self.machine._work_item_state_public(original)['routingError'],
+                    rows[1]['routingError'])
+                service.work_item_list_index = None
+                fallback = asyncio.run(service.list(project_id='project-a', owner=None,
+                    stage=None, release_gate=None, scope=self.env.scope, limit=3))
+                self.assertEqual([row['ref'] for row in fallback['items']],
+                    [row['ref'] for row in rows])
+                with self.assertRaises(HTTPException) as denied:
+                    self.machine._structured_ack(original.ref, WorkItemAckCreate(actor='orchestrator'))
+                self.assertEqual(denied.exception.status_code, 409)
+                self.assertEqual(self.states.load(), before)
+                self.assertFalse(self.machine.event_store.load())
 
     def test_intake_keeps_source_alias_and_does_not_invent_an_implementation_claim(self):
         self.env.publish({'coordinator': 'orchestrator'})

@@ -8,6 +8,7 @@ from typing import Any
 
 from codex_web.integrations.gitlab_client import GitLabClient
 from codex_web.identity import TenantScope
+from codex_web.owner_routing import OwnerRoutingError
 from codex_web.models import (
     TaskSourceConfiguration,
     WorkItemAckCreate,
@@ -801,9 +802,14 @@ class WorkItemService:
         return payload
 
     def _work_item_list_public(self, state: Any) -> dict[str, Any]:
-        routing_errors = self.state_machine._work_item_split_brain_findings(
-            state
-        )
+        try:
+            routing_errors = self.state_machine._work_item_split_brain_findings(
+                state
+            )
+        except OwnerRoutingError as exc:
+            # Like the detail inspector, retain invalid historical claims and
+            # expose their refusal without hiding the rest of the page.
+            routing_errors = [str(exc)]
         return {
             "ref": state.ref,
             "project_id": state.project_id,
