@@ -20,7 +20,7 @@ from codex_web.skills import SkillUpdate, SkillPublish
 from codex_web.data_governance import GovernanceActionRequest
 
 
-class ProcedureOutcomeTests(unittest.IsolatedAsyncioTestCase):
+class _ProcedureOutcomeFixture:
     asyncSetUp = execution_fixtures.ProcedureExecutionTests.asyncSetUp
     tearDown = execution_fixtures.ProcedureExecutionTests.tearDown
     configure = execution_fixtures.ProcedureExecutionTests.configure
@@ -43,32 +43,18 @@ class ProcedureOutcomeTests(unittest.IsolatedAsyncioTestCase):
         from codex_web.skill_security import SkillScanRequest
         return self.skills.security.scan(draft,SkillScanRequest(),actor=self.actor)
 
-    async def test_concurrent_duplicate_delivery_one_inactive_revision_exact_sources(self):
-        await self.finish()
-        service = self.outcomes()
-        def deliver(_):
-            return service.convert(self.assignment.id, actor=self.actor)
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            results = list(pool.map(deliver, range(8)))
-        drafts = {r['draft']['recordId'] for r in results}
-        self.assertEqual(len(drafts), 1)
-        derived=[r for r in service.memory.governance.store.load().records if r.object_type=='procedure_skill']
-        self.assertEqual(len(derived),1)
-        self.assertEqual(len(self.skills.revisions(self.pin.definition_id, actor=self.actor)), 2)
-        draft = results[0]['draft']
-        self.assertEqual(draft['definitionLifecycle'], 'draft')
-        self.assertEqual(results[0]['report']['prior_definition'], self.pin.model_dump(mode='json'))
-        self.assertIn(self.pin.record_id, results[0]['diff'])
-        self.assertIn('unconfirmed', draft['skill']['instructions'])
-        self.assertEqual(draft['skill']['provenance']['upstream_digest'], self.pin.checksum)
-        self.assertTrue(results[0]['publication_required'])
-        knowledge=service.memory.get(results[0]['knowledge_id'],actor=self.actor)
-        self.assertEqual(knowledge.provenance.origin,'secondary_research')
-        from codex_web.definitions import DefinitionReference
-        with self.assertRaises(SkillConflict):
-            self.skills.validate_reference(DefinitionReference.model_validate(draft['definitionReference']), actor=self.actor)
-        self.assertEqual(self.runner.get(self.assignment.id,self.actor).procedure_checkpoint.definition,self.pin)
-        self.runner.models.invoke.assert_not_called()
+class ProcedureOutcomeTests(_ProcedureOutcomeFixture, unittest.IsolatedAsyncioTestCase):
+    def configure(self, content):
+        # Outcome policy needs real provider effects and verification, not a new
+        # diagnostic/rollback qualification before every publication or erasure.
+        content = super().configure(content)
+        steps = {step['id']: step for step in content['steps']}
+        steps['change']['preconditions'] = [
+            {'source': 'step', 'name': 'backup', 'predicate': 'succeeded'}]
+        steps['ready']['failure'].update(outcome='escalate')
+        steps['ready']['failure'].pop('recovery_step_id')
+        content['steps'] = [steps[name] for name in ('backup', 'change', 'ready')]
+        return content
 
     async def test_preseeded_memory_cannot_supply_unverified_observations(self):
         from codex_web.organizational_memory import KnowledgeCreate, KnowledgeProvenance
@@ -423,3 +409,38 @@ class ProcedureOutcomeTests(unittest.IsolatedAsyncioTestCase):
         self.scan(result['draft'])
         with self.assertRaises(DefinitionConflictError):
             self.skills.publish(result['draft']['skillId'],result['draft']['recordId'],SkillPublish(),actor=self.actor)
+
+
+class FullProcedureOutcomeTests(_ProcedureOutcomeFixture, unittest.IsolatedAsyncioTestCase):
+    """Full diagnostic/recovery contract followed by real concurrent conversion."""
+    async def test_concurrent_duplicate_delivery_one_inactive_revision_exact_sources(self):
+        checkpoint = await self.finish()
+        self.assertEqual(set(checkpoint.steps),
+            {'backup', 'disk', 'change', 'ready', 'rollback', 'restored'})
+        self.assertEqual(checkpoint.steps['disk'].status, 'succeeded')
+        self.assertEqual(self.provider.calls,
+            ['fixture.backup', 'fixture.change', 'fixture.readiness'])
+        service = self.outcomes()
+        def deliver(_):
+            return service.convert(self.assignment.id, actor=self.actor)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(deliver, range(8)))
+        drafts = {r['draft']['recordId'] for r in results}
+        self.assertEqual(len(drafts), 1)
+        derived=[r for r in service.memory.governance.store.load().records if r.object_type=='procedure_skill']
+        self.assertEqual(len(derived),1)
+        self.assertEqual(len(self.skills.revisions(self.pin.definition_id, actor=self.actor)), 2)
+        draft = results[0]['draft']
+        self.assertEqual(draft['definitionLifecycle'], 'draft')
+        self.assertEqual(results[0]['report']['prior_definition'], self.pin.model_dump(mode='json'))
+        self.assertIn(self.pin.record_id, results[0]['diff'])
+        self.assertIn('unconfirmed', draft['skill']['instructions'])
+        self.assertEqual(draft['skill']['provenance']['upstream_digest'], self.pin.checksum)
+        self.assertTrue(results[0]['publication_required'])
+        knowledge=service.memory.get(results[0]['knowledge_id'],actor=self.actor)
+        self.assertEqual(knowledge.provenance.origin,'secondary_research')
+        from codex_web.definitions import DefinitionReference
+        with self.assertRaises(SkillConflict):
+            self.skills.validate_reference(DefinitionReference.model_validate(draft['definitionReference']), actor=self.actor)
+        self.assertEqual(self.runner.get(self.assignment.id,self.actor).procedure_checkpoint.definition,self.pin)
+        self.runner.models.invoke.assert_not_called()

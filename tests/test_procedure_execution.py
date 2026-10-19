@@ -259,7 +259,12 @@ class ProcedureExecutionTests(unittest.IsolatedAsyncioTestCase):
             def log_message(self, *args):
                 pass
         self.http_server = http.server.ThreadingHTTPServer(('127.0.0.1',0), Handler)
-        threading.Thread(target=self.http_server.serve_forever, daemon=True).start()
+        # Keep real HTTP qualification while avoiding the server's default
+        # half-second shutdown poll for every private fixture.
+        self.http_thread = threading.Thread(
+            target=self.http_server.serve_forever,
+            kwargs={'poll_interval': 0.01}, daemon=True)
+        self.http_thread.start()
         self.http_url = 'http://127.0.0.1:' + str(self.http_server.server_port) + '/ready'
         from codex_web.resources import ResourceUpdate
         self.resource = self.resources.update(self.resource.id, ResourceUpdate(aliases=[ResourceAlias(namespace='readiness_url', value=self.http_url)]), actor=self.actor)
@@ -387,6 +392,8 @@ class ProcedureExecutionTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         if hasattr(self, 'http_server'):
             self.http_server.shutdown(); self.http_server.server_close()
+            self.http_thread.join(timeout=2)
+            self.assertFalse(self.http_thread.is_alive(), 'fixture HTTP server did not stop')
         self.temp.cleanup()
 
     async def advance(self):
