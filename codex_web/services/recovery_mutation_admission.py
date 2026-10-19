@@ -112,11 +112,9 @@ def mutation_guard(provider, binding, request):
                 or current.security_policy != binding.security_policy):
             raise ActionRequirementError('Recovery current authority/security denied')
         if service.security_boundary is not None:
-            security = service.security_boundary.evaluate_action(binding=binding, definition=definition,
+            security = service.security_boundary.assess_action(binding=binding, definition=definition,
                 request=request, authority_outcome=decision.outcome.value, authority_source=decision.source,
-                policy_outcome=current.policy_decision.outcome.value, policy_source=current.policy_decision.source,
-                actor=operator, action_intent_id=current.id, work_item_ref=current.work_item_ref,
-                execution_id=current.execution_id)
+                policy_outcome=current.policy_decision.outcome.value, policy_source=current.policy_decision.source)
             if security.outcome != SecurityDecisionOutcome.ALLOW:
                 raise ActionRequirementError('Current Recovery security denied')
         required_procedures = ()
