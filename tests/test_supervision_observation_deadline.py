@@ -1,16 +1,64 @@
-"""Real session/watchdog and executor futures, with a deliberately delayed loop."""
+"""Real executor/process custody with explicitly controlled deadline observation."""
 import asyncio
 import subprocess
 import sys
 import threading
 import time
 import unittest
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from codex_web.execution_workers import WorkerLifecycle
 from codex_web.local_execution_backend import BubblewrapExecutionBackend
 from codex_web.services.codex_auth_delegation import CodexAuthDelegationStaleError
+from codex_web.services import agent_process_session
+from codex_web.storage import state_store
 from tests import test_runtime_supervision_custody as custody
+
+
+class ObservationClock:
+    """Advance test deadlines at barriers, independently of runner scheduling.
+
+    asyncio and executor futures remain real. The real two-second wait below
+    is a fixture deadlock guard, not a claim about production performance.
+    """
+    def __init__(self):
+        self.now = 0.0
+        self.loop = asyncio.get_running_loop()
+        self.changed = asyncio.Event()
+        self.lock = threading.Lock()
+
+    def monotonic(self):
+        with self.lock:
+            return self.now
+
+    def advance(self, seconds):
+        with self.lock:
+            self.now += seconds
+        self.loop.call_soon_threadsafe(self.changed.set)
+
+    async def wait_for(self, awaitable, seconds):
+        deadline = self.monotonic() + seconds
+        future = asyncio.ensure_future(awaitable)
+        while True:
+            if self.monotonic() >= deadline:
+                if future.done() and not future.cancelled():
+                    future.exception()  # The owned executor future retains the actual outcome.
+                else:
+                    future.cancel()
+                raise TimeoutError('controlled observation deadline')
+            if future.done():
+                return future.result()
+            tick = asyncio.create_task(self.changed.wait())
+            try:
+                done, _ = await asyncio.wait((future, tick), timeout=2,
+                    return_when=asyncio.FIRST_COMPLETED)
+                if not done:
+                    raise AssertionError('fixture work did not complete or reach its deadline barrier')
+            finally:
+                tick.cancel()
+                await asyncio.gather(tick, return_exceptions=True)
+                self.changed.clear()
 
 
 class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
@@ -22,8 +70,18 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
     session = custody.SupervisionCustodyTests.session
     observations = custody.SupervisionCustodyTests.observations
 
-    async def exercise(self, *, phase="validation", fault=None):
+    async def exercise(self, *, phase="validation", fault=None, worker_delay=0):
         session, _ = await self.session()
+        clock = ObservationClock()
+        # Patch only these two consumers, never asyncio's own real clock/timers.
+        controlled_time = SimpleNamespace(**{**vars(time), 'monotonic': clock.monotonic})
+        controlled_asyncio = SimpleNamespace(**{**vars(asyncio), 'wait_for': clock.wait_for})
+        patches = (patch.object(agent_process_session, 'time', controlled_time),
+            patch.object(agent_process_session, 'asyncio', controlled_asyncio),
+            patch.object(state_store, 'time', controlled_time))
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
         # All process stop/kill/wait behavior below is real, without a provider.
         process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
                                    start_new_session=True)
@@ -82,6 +140,8 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
             entered.set()
             if not release.wait(2):
                 raise AssertionError("fixture failed to release bounded work")
+            if worker_delay:
+                time.sleep(worker_delay)
             if fault == "unfinished":
                 # Remain genuinely running while watchdog retires the process.
                 # Cancellation must keep custody and refuse any later work.
@@ -90,7 +150,7 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
                     raise AssertionError("unfinished fixture was not reaped")
                 check_operation_budget()
             if fault == "over_budget":
-                time.sleep(.18)
+                clock.advance(.18)
             if fault == "worker_failure":
                 raise RuntimeError("actual worker validation failed")
             return function(*args)
@@ -104,7 +164,7 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
             # Wait on the *same actual submitted future*, not a fabricated DTO.
             release.set()
             if fault == "unfinished":
-                time.sleep(.17)
+                clock.advance(.17)
             else:
                 self.assertTrue(completed.wait(2))
             before_observation.append(session._bound_assignment.model_dump(mode="json"))
@@ -113,6 +173,7 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
             if fault == "authority_gate_unfinished":
                 authority = session._validate_current_authority
                 def hold_authority():
+                    loop.call_soon_threadsafe(clock.advance, .2)
                     if not finish_unfinished.wait(2):
                         raise AssertionError("authority gate fixture was not reaped")
                     return authority()
@@ -122,7 +183,7 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
                 authority = session._validate_current_authority
                 def delay_authority_observation():
                     self.assertTrue(authority_completed.wait(2))
-                    time.sleep(.2)
+                    clock.advance(.2)
                 def timely_authority():
                     result = authority()
                     loop.call_soon_threadsafe(delay_authority_observation)
@@ -141,7 +202,7 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
                             state.assignments[index] = item.model_copy(update=values)
                     return state
                 self.worker_service.store.update(change)
-            time.sleep(.2)
+            clock.advance(.2)
 
         try:
             start.set()
@@ -211,6 +272,8 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(asyncio.gather(
                     *[asyncio.wrap_future(work) for work in pending], return_exceptions=True), 2)
             process.wait(timeout=2)
+            for item in reversed(patches):
+                item.stop()
         self.assertFalse(session._executor_work)
 
     async def test_completed_validation_observed_after_deadline_keeps_owner(self):
@@ -263,3 +326,12 @@ class SupervisionObservationDeadlineTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_late_observation_of_successful_authority_gate_fails_without_recursion(self):
         await self.exercise(phase="renewal", fault="authority_gate_late")
+
+    async def test_slow_runner_still_keeps_timely_renewal_alive(self):
+        # Exceed the old 150ms real-time budget, then exercise both dispositions.
+        # Timely work stays alive; the deliberately unfinished authority gate
+        # still stops its real owned process without repeating renewal.
+        await self.exercise(phase='renewal', worker_delay=.25)
+
+    async def test_slow_runner_still_reaches_deliberately_unfinished_authority_gate(self):
+        await self.exercise(phase='renewal', fault='authority_gate_unfinished', worker_delay=.25)
