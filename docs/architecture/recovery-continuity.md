@@ -1061,3 +1061,12 @@ the database identity's setting-read permission through existing database
 administration; this source change grants no role (including
 `pg_read_all_settings`), uses no privileged fallback and fabricates no directory.
 No capacity or preservation acceptance follows from a successful setting read.
+
+At trusted application startup, the artifact backend pins the resolved durable
+data directory before appending `artifact-content`. This supports an installed
+checkout whose operator-controlled `data` link points to persistent runtime
+storage. Retargeting that deployment link cannot redirect the running backend.
+The content leaf and descendants are not resolved away: preservation still
+rejects symlinks there and enforces the existing binding's real filesystem roots.
+This changes neither stored content locators nor capacity, authority, or unknown
+outcome rules; it performs no data move or repair.

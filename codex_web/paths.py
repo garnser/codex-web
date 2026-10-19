@@ -10,7 +10,14 @@ SECRET_MATERIAL_DIR = DATA_DIR / "secrets"
 KEY_MATERIAL_DIR = DATA_DIR / "keys"
 EXECUTION_WORKSPACE_DIR = DATA_DIR / "execution-workspaces"
 EXTENSION_PACKAGE_DIR = DATA_DIR / "extensions" / "packages"
-ARTIFACT_CONTENT_DIR = DATA_DIR / "artifact-content"
+def artifact_content_directory(data_dir: Path) -> Path:
+    # The deployment's data link is operator-controlled startup configuration.
+    # Pin that directory once; do not resolve the content leaf or its children,
+    # whose symlinks must still be rejected by preservation admission.
+    return Path(data_dir).resolve() / "artifact-content"
+
+
+ARTIFACT_CONTENT_DIR = artifact_content_directory(DATA_DIR)
 PROJECTS_FILE = DATA_DIR / "projects.json"
 BOTS_CONNECTIONS_FILE = DATA_DIR / "bot_connections.json"
 BOTS_BINDINGS_FILE = DATA_DIR / "bot_bindings.json"
