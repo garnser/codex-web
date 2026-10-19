@@ -447,7 +447,7 @@ class SecurityBoundaryService:
                         reasons.append(str(exc))
         return reasons
 
-    def evaluate_action(
+    def assess_action(
         self,
         *,
         binding: ActionProviderBinding,
@@ -457,11 +457,8 @@ class SecurityBoundaryService:
         authority_source: str,
         policy_outcome: str,
         policy_source: str,
-        actor: AuthenticationActor,
-        action_intent_id: str | None = None,
-        work_item_ref: str | None = None,
-        execution_id: str | None = None,
     ) -> SecurityTrustDecision:
+        """Compute the same decision without writing audit state inside a caller transaction."""
         security_policy = binding.security_policy
         reasons: list[str] = []
 
@@ -504,16 +501,38 @@ class SecurityBoundaryService:
             policy_source=policy_source,
             reasons=tuple(reasons),
         )
+        return decision
+
+    def evaluate_action(
+        self,
+        *,
+        binding: ActionProviderBinding,
+        definition: ActionDefinition,
+        request: ActionRequest,
+        authority_outcome: str,
+        authority_source: str,
+        policy_outcome: str,
+        policy_source: str,
+        actor: AuthenticationActor,
+        action_intent_id: str | None = None,
+        work_item_ref: str | None = None,
+        execution_id: str | None = None,
+    ) -> SecurityTrustDecision:
+        decision = self.assess_action(
+            binding=binding, definition=definition, request=request,
+            authority_outcome=authority_outcome, authority_source=authority_source,
+            policy_outcome=policy_outcome, policy_source=policy_source,
+        )
         self._record(
             actor,
             event_type="action_trust_evaluated",
-            outcome=outcome,
+            outcome=decision.outcome,
             violation_kind=(
                 SecurityViolationKind.ACTION_TRUST_BOUNDARY
-                if outcome == SecurityDecisionOutcome.DENY
+                if decision.outcome == SecurityDecisionOutcome.DENY
                 else None
             ),
-            reason="; ".join(reasons) if reasons else None,
+            reason="; ".join(decision.reasons) if decision.reasons else None,
             work_item_ref=work_item_ref,
             execution_id=execution_id,
             action_intent_id=action_intent_id,

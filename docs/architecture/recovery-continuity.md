@@ -711,7 +711,12 @@ quota and worker identity remain canonical admission requirements. The existing
 mutation guard locks/rechecks their shared transaction read set immediately
 around irreversible Artifact/Evidence publication; configuration, policy, key
 and capacity Evidence are also read under their shared canonical locks. A
-revocation committed before the final locked read prohibits publication. A
+security recheck inside a shared transaction uses the same pure boundary
+assessment as ordinary audited admission. It must not append a SecurityEvent
+from inside the transaction callback. Ordinary ActionIntent admission continues
+to record its security decision; both mutation and read-only receipt settlement
+recompute the boundary decision under the final locks without nested writes.
+A revocation committed before the final locked read prohibits publication. A
 writer arriving after that read serializes behind the transaction. No serialized
 caller parameter can install the internal worker context or lend worker scopes
 to a human.

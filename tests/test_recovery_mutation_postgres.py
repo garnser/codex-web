@@ -29,6 +29,9 @@ class MutationAdmissionPostgresTests(_PostgresFixture, unittest.IsolatedAsyncioT
         with patch.object(intent_fixtures, 'SQLiteStateStore', self.state_store_factory):
             await api.RecoveryOperatorApiTests.asyncSetUp(self)
         self.addCleanup(self.sqlite.close)
+        from codex_web.services.security_boundary import SecurityBoundaryService
+        from codex_web.storage.security_events import SecurityEventStore
+        self.service.security_boundary = SecurityBoundaryService(SecurityEventStore(self.sqlite))
 
     async def denied_at_write(self, change, *, stepped_session=False):
         async with self.client() as client:
@@ -189,3 +192,11 @@ class MutationAdmissionPostgresTests(_PostgresFixture, unittest.IsolatedAsyncioT
 
     async def test_positive_real_postgres_commit_has_one_original_unknown_receipt(self):
         await api.RecoveryOperatorApiTests.test_real_operator_route_commits_once_preserving_unknown_and_current_preview(self)
+
+    async def test_real_security_boundary_allows_atomic_recovery_without_nested_audit_write(self):
+        await api.RecoveryOperatorApiTests.test_real_operator_route_commits_once_preserving_unknown_and_current_preview(self)
+        events = self.service.security_boundary.store.load().events
+        self.assertTrue(any(e.event_type == 'action_trust_evaluated' for e in events))
+
+    async def test_real_security_boundary_settles_lost_receipt_without_nested_audit_or_replay(self):
+        await api.RecoveryOperatorApiTests.test_lost_result_observe_settles_same_receipt_without_engine_or_effect_replay(self)

@@ -116,11 +116,10 @@ async def reconcile_recovery_intent(service, intent, *, actor):
             if current.security_decision.outcome != SecurityDecisionOutcome.ALLOW or current.security_policy != binding.security_policy:
                 raise ActionRequirementError("Recovery security observation changed")
             if service.security_boundary is not None:
-                decision = service.security_boundary.evaluate_action(binding=binding,definition=definition,
+                decision = service.security_boundary.assess_action(binding=binding,definition=definition,
                     request=current_request,authority_outcome=decision.outcome.value,
                     authority_source=decision.source,policy_outcome=current.policy_decision.outcome.value,
-                    policy_source=current.policy_decision.source,actor=current_requester,
-                    action_intent_id=intent.id,work_item_ref=intent.work_item_ref,execution_id=intent.execution_id)
+                    policy_source=current.policy_decision.source)
                 if decision.outcome != SecurityDecisionOutcome.ALLOW:
                     raise ActionRequirementError("Current Recovery security denied settlement")
             if storage:
