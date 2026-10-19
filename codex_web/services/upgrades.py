@@ -23,6 +23,7 @@ from codex_web.approval_requests import (
 )
 from codex_web.artifact_evidence import (
     EvidenceCreate,
+    EvidenceLifecycle,
     EvidenceResult,
     EvidenceType,
 )
@@ -46,7 +47,7 @@ from codex_web.identity import (
 from codex_web.releases import ReleaseStatus
 from codex_web.services.action_intents import ActionIntentService
 from codex_web.services.approval_requests import ApprovalRequestService
-from codex_web.services.artifact_evidence import ArtifactEvidenceService
+from codex_web.services.artifact_evidence import ArtifactEvidenceError, ArtifactEvidenceService
 from codex_web.services.definitions import DefinitionRegistryService
 from codex_web.services.execution_workers import ExecutionWorkerService
 from codex_web.services.extensions import (
@@ -54,7 +55,7 @@ from codex_web.services.extensions import (
     extension_version_satisfies,
 )
 from codex_web.services.recovery import RecoveryService
-from codex_web.services.releases import ReleaseService
+from codex_web.services.releases import ReleaseError, ReleaseService
 from codex_web.storage.state_store import StateStore
 from codex_web.storage.upgrades import UpgradeNotFoundError, UpgradeStore
 from codex_web.upgrades import (
@@ -1128,6 +1129,57 @@ class UpgradeService:
             "covered_scopes": [item.model_dump(mode="json") for item in scopes],
         }
 
+    def _previous_contract_deployment(self, plan, running_revision, *, actor, locked=None):
+        """An installed binary is cancellable only as a previously verified baseline.
+
+        Contract-only work can start after rollout has completed. Its cancellation
+        must not turn an unverified binary installation into a completed rollout.
+        The earlier plan's engine-owned verification reference supplies that
+        distinction; a caller-supplied Evidence record is insufficient.
+        """
+        if not plan.steps or any(step.phase != UpgradePhase.CONTRACT for step in plan.steps):
+            return None
+        def release_record(release_id):
+            if locked is None:
+                return self.releases.get(release_id, actor=actor)
+            record = self.releases.store._decode(locked[self.releases.store.namespace][None]).releases[release_id]
+            if not self._same_scope(record, actor):
+                raise UpgradeConflictError("contract baseline release scope changed")
+            return record
+
+        release = release_record(plan.release_id)
+        if release.build.source_revision != running_revision:
+            return None
+        plans = (self.list(actor) if locked is None else sorted(
+            self.store._decode(locked[self.store.namespace][None]).plans.values(),
+            key=lambda item: (item.created_at, item.id), reverse=True))
+        for previous in plans:
+            if (previous.id == plan.id or previous.status != UpgradeStatus.COMPLETED
+                    or not self._same_scope(previous, actor)
+                    or previous.target_app_version != running_revision
+                    or previous.completed_at is None or previous.completed_at > plan.created_at
+                    or not previous.post_upgrade_evidence_id):
+                continue
+            try:
+                baseline = release_record(previous.release_id)
+                state = None if locked is None else self.evidence.store._decode(locked[self.evidence.store.namespace][None])
+                evidence = self.evidence.get_evidence(previous.post_upgrade_evidence_id, actor=actor, state=state)
+            except (ArtifactEvidenceError, ReleaseError, KeyError):
+                continue
+            if (baseline.build.source_revision == running_revision
+                    and baseline.build.digest == release.build.digest
+                    and baseline.status not in {ReleaseStatus.BLOCKED, ReleaseStatus.SUPERSEDED, ReleaseStatus.ROLLED_BACK}
+                    and evidence.lifecycle == EvidenceLifecycle.VALID
+                    and (evidence.retention_expires_at is None or evidence.retention_expires_at > self.clock())
+                    and evidence.result == EvidenceResult.PASS
+                    and evidence.evidence_type == EvidenceType.POLICY_EVALUATION
+                    and evidence.provider == "codex-web"
+                    and evidence.source == "upgrade-post-verification"
+                    and evidence.metadata.get("upgrade_plan_id") == previous.id
+                    and evidence.metadata.get("target_app_version") == running_revision):
+                return previous.id
+        return None
+
     def cancel_unexecuted(self, plan_id, payload, *, actor):
         self._require_service_drain_authority(actor)
 
@@ -1153,8 +1205,17 @@ class UpgradeService:
                 with self.cancellation_guard() as running_revision:
                     if running_revision != payload.running_revision:
                         raise UpgradeConflictError("running installation revision changed")
+                    previous_deployment = None
                     if running_revision == plan.target_app_version:
-                        raise UpgradeConflictError("upgrade target is already installed")
+                        if not plan.steps or any(step.phase != UpgradePhase.CONTRACT for step in plan.steps):
+                            raise UpgradeConflictError("upgrade target is already installed")
+                        repositories = (self.releases.store, self.evidence.store)
+                        if any(repository.store is not self.store.store for repository in repositories):
+                            raise UpgradeConflictError("contract cancellation requires one canonical transaction store")
+                        previous_deployment = self._previous_contract_deployment(
+                            plan, running_revision, actor=actor)
+                        if previous_deployment is None:
+                            raise UpgradeConflictError("upgrade target is already installed without a prior verified contract baseline")
                     if (self.admission.active_count()
                             or self._active_assignment_count(actor, service_wide=True)
                             or self._active_action_count(actor, service_wide=True)):
@@ -1173,7 +1234,8 @@ class UpgradeService:
                             "admission_epoch": plan.admission_epoch,
                             "reason": payload.reason, "cancellation_attempt": True,
                             "installation_verified": False,
-                            "rollback_performed": False},
+                            "rollback_performed": False,
+                            "previous_verified_deployment_id": previous_deployment},
                     ), actor=actor)
 
                     def update(current):
@@ -1185,7 +1247,26 @@ class UpgradeService:
                             "preflight": None, "completed_at": float(self.clock()),
                             "updated_at": float(self.clock()),
                         })
-                    cancelled = self._update(plan.id, actor, update)
+                    if previous_deployment is None:
+                        cancelled = self._update(plan.id, actor, update)
+                    else:
+                        result = []
+                        def commit(rows):
+                            state = self.store._decode(rows[self.store.namespace][None])
+                            current = state.plans.get(plan.id)
+                            if current != plan:
+                                raise UpgradeConflictError("upgrade changed during cancellation")
+                            if self._previous_contract_deployment(plan, running_revision,
+                                    actor=actor, locked=rows) != previous_deployment:
+                                raise UpgradeConflictError("previous verified contract baseline changed")
+                            cancelled = update(current)
+                            state.plans[plan.id] = cancelled
+                            result.append(cancelled)
+                            return {self.store.namespace: {None: state.model_dump(mode="json")}}
+                        selected = {repository.namespace: (None,) for repository in
+                                    (self.store, self.releases.store, self.evidence.store)}
+                        self.store.store.record_mutate_many(selected, commit)
+                        cancelled = result[0]
                     return {"item": cancelled.model_dump(mode="json"),
                             "cancellation_evidence_id": evidence.id,
                             "cancellation_evidence_href": f"/api/evidence/{evidence.id}"}
