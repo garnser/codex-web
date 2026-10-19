@@ -52,8 +52,14 @@ closed even when the filter would otherwise exclude their target.
 ### Current custody after admitted same-thread resume
 
 An assignment-bound native resume captures its existing canonical AgentSession
-before the provider await. Only successful resume may invoke the internal
-custody projection hook. The hook revalidates the trusted worker session and
+before the provider await. Capture validates the same assignment, worker,
+identity, exact profile, binding, workspace and lease invariants under canonical
+transaction locks without changing custody or emitting a reassociation event.
+Known incompatible prior owner, tenant or repository scope refuses before any
+provider resume or Turn input. This validation uses the owned worker executor;
+the native writer retains its existing live assignment and admission guards,
+without another catalog transaction on the native event loop. Only successful
+resume may invoke the internal custody projection hook. The hook revalidates the trusted worker session and
 requires exact tenant/Project/provider/runtime/native-thread identity, current
 bootstrap binding, assignment/worker/fence/deadline, workspace and lease, and
 published execution/Profile Definition pins. Compare-and-swap refuses a

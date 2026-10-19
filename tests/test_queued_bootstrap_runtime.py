@@ -46,7 +46,7 @@ class QueuedBootstrapRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(values['read_only_repository_resource_ids'], ('reference',))
         self.assertEqual(values['bootstrap_token'], recovery.bootstrap_id.removeprefix('bootstrap-'))
         self.index.upsert(IndexedThread(id='fresh', name='Fresh', project_id='project'))
-        self.assignments['assignment'] = SimpleNamespace(execution_id=recovery.execution_id,
+        self.assignments['assignment'] = SimpleNamespace(execution_id=recovery.execution_id, created_by='admin',
             status='running', organization_id='org', workspace_id='ws', project_id='project',
             subject=SimpleNamespace(kind='thread_bootstrap', ref=recovery.bootstrap_id),
             execution_workspace_id='workspace', sandbox='workspace-write', approval_policy='on-request',
@@ -78,6 +78,69 @@ class QueuedBootstrapRuntimeTests(unittest.IsolatedAsyncioTestCase):
         return await self.runtime.recover(self.attempt.id, project=self.project, actor=self.admin,
             expected_snapshot_sha256=self.digest, reason='Recover the exact original',
             expected_source_thread_id=source)
+
+    def custody_refusal(self):
+        self.index.upsert(IndexedThread(id='archived', name='Original with history', project_id='project'))
+        proof = dict(code='native_session_scope_incompatible', message='Refused before resume',
+            phase='before_provider_resume', threadId='archived',
+            preflight_attempt_id=self.attempt.id, admission_claim_id='owned-claim',
+            snapshot_sha256=self.digest, bootstrap_id='old-bootstrap', assignment_id='old-assignment',
+            previous_assignment_id='prior-assignment', agent_session_id='original-session',
+            assignment_fence=1, execution_id='old-execution', execution_workspace_id='old-workspace',
+            original_resource_ids=['other-repo'], requested_resource_ids=['repo', 'reference'],
+            original_repository_scope={}, requested_repository_scope={'writable_repository_ids':['repo'],
+                'read_only_repository_ids':['reference']})
+        self.attempt = self.service.store.update(self.attempt.id, lambda current: current.model_copy(update={
+            'blockers':(ExecutionPreflightBlocker(**proof),), 'queued_admission_claim_id':'owned-claim'}))
+        self.attempt = self.service.queued_disposition(self.attempt.id, status='blocked', detail=proof,
+            claim_id='owned-claim', preinput_refusal=True)
+        self.bindings.bind(bootstrap_id='old-bootstrap', thread_id='archived', execution_id='old-execution',
+            assignment_id='old-assignment', execution_workspace_id='old-workspace', actor=self.admin)
+        self.assignments['old-assignment'] = SimpleNamespace(status='failed', lease=None, fence=1,
+            execution_id='old-execution', execution_workspace_id='old-workspace', created_by='admin',
+            organization_id='org', workspace_id='ws', project_id='project',
+            agent_profile=SimpleNamespace(profile_id='james', profile_revision=6),
+            resource_ids=('repo','reference'), repository_scope=SimpleNamespace(
+                model_dump=lambda **kwargs:proof['requested_repository_scope']))
+        return proof
+
+    async def test_scoped_custody_refusal_recovers_without_archiving_history_or_claiming_input(self):
+        self.custody_refusal()
+        original = self.index.get('archived')
+        before = self.attempt.queued_turn_snapshot
+        self.assertTrue(self.runtime.preview(self.attempt.id, project=self.project, actor=self.admin)['can_create'])
+        result = await self.recover()
+        self.assertEqual(result['threadId'], 'fresh')
+        self.assertFalse(result['native_turn_started'])
+        self.assertEqual(self.index.get('archived'), original)
+        current = self.service.store.get(self.attempt.id)
+        self.assertEqual(current.queued_turn_snapshot, before)
+        self.assertEqual(current.status, 'blocked')
+        self.assertIsNone(current.queued_start_receipt)
+        self.assertEqual(self.index.replacement_thread_id('archived'), 'fresh')
+        # A lost HTTP response reconciles the existing creation, including for
+        # a source that keeps its unarchived history.
+        repeated = await self.recover()
+        self.assertEqual(repeated['threadId'], 'fresh')
+        self.assertEqual(self.threads.create.await_count, 1)
+
+    async def test_custody_recovery_refuses_live_lease_changed_binding_and_unknown_outcome(self):
+        self.custody_refusal()
+        assignment = self.assignments['old-assignment']
+        for field, value in (('status','running'), ('lease',object()), ('created_by','another-actor'),
+                             ('resource_ids',('wrong-repo',)), ('execution_id','changed'), ('fence',3)):
+            old = getattr(assignment, field)
+            setattr(assignment, field, value)
+            try:
+                with self.assertRaises(HTTPException):
+                    await self.recover()
+            finally:
+                setattr(assignment, field, old)
+        self.service.store.update(self.attempt.id, lambda current:current.model_copy(update={
+            'status':'reconciliation_required'}))
+        with self.assertRaises(HTTPException):
+            await self.recover()
+        self.threads.create.assert_not_called()
 
     async def test_fenced_pending_successor_extends_history_without_rewriting_the_old_edge(self):
         self.prior_pending_route()

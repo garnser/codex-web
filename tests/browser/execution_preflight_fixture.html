@@ -156,8 +156,28 @@
       attempts[0].blockers = [{code:'native_start_outcome_unknown',
         message:'Native resume or input requires authoritative reconciliation.'}];
     }
+    if (new URLSearchParams(location.search).has('custodyRefusal')) {
+      attempts[0].can_retry = false;
+      attempts[0].blockers = [{code:'native_session_scope_incompatible',message:'Native repository scope differs.',
+        agent_session_id:'session-original',previous_assignment_id:'assignment-prior',assignment_id:'assignment-refused',
+        original_resource_ids:['repo-prior'],requested_resource_ids:['repo-app','repo-docs'],
+        original_repository_scope:{writable_repository_ids:['repo-prior'],read_only_repository_ids:[]},
+        requested_repository_scope:{writable_repository_ids:['repo-app'],read_only_repository_ids:['repo-docs']}}];
+      attempts[0].can_recover_bootstrap = true;
+      attempts[0].bootstrap_recovery_href = '/fixture/custody-bootstrap-recovery';
+    }
     const api = async (path, options = {}) => {
       window.__apiCalls.push({ path, method: options.method || "GET" });
+      if (path === '/fixture/custody-bootstrap-recovery') {
+        if (options.method === 'POST') {
+          window.__custodyRecoveryBody = JSON.parse(options.body);
+          return {ok:true,threadId:'fresh-scoped-thread',native_turn_started:false};
+        }
+        return {queued_turn_id:'retained-original',project_id:'project-a',source_thread_id:'thread-1',
+          original_actor_id:'original-actor',agent_profile_id:'original-profile',agent_profile_revision:6,
+          execution_profile_id:'repository-write',writable_repository_resource_ids:['repo-app'],
+          read_only_repository_resource_ids:['repo-docs'],state:'not_requested',can_create:true,snapshot_sha256:'d'.repeat(64)};
+      }
       if (path === '/fixture/operator-admission') {
         return {queued_turn_id:'original-queue-id',project_id:'project-a',source:'gitlab',
           original_actor_id:'original-admin',agent_profile_id:'original-profile',agent_profile_revision:6,

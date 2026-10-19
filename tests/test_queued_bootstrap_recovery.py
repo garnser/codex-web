@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import HTTPException
 from codex_web.identity import AuthenticationAssurance
 
-from codex_web.models import QueuedTurn
+from codex_web.models import QueuedTurn, BotReplyTarget
 from codex_web.services.execution_preflight import ExecutionPreflightService
 from codex_web.storage.execution_preflight import ExecutionPreflightStore
 from codex_web.storage.sqlite_state import SQLiteStateStore
@@ -25,6 +25,9 @@ class QueuedBootstrapRecoveryTests(unittest.TestCase):
         self.admin = actor(admin=True)
         self.queued = QueuedTurn(id='original', thread_id='archived', project_id='project',
             message='Complete original message', source='web', created_at=100,
+            work_item_ref='fixture/saas!274', reply_target=BotReplyTarget(thread_id='archived',
+                provider='slack', external_conversation_id='fixture-conversation',
+                external_thread_id='fixture-reply-thread', updated_at=100),
             execution_id='original-turn', agent_profile_id='james', agent_profile_revision=6,
             agent_profile_actor_id='admin', execution_profile_id='repository-write',
             repository_resource_id='repo', writable_repository_resource_ids=('repo',),
