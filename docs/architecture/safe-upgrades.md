@@ -20,6 +20,17 @@ active operations, executed steps, definition migrations or irreversible state.
 An absent host guard fails closed. This local operation does not extend to
 replicated or shared deployments.
 
+An unexecuted, nonempty contract-only plan may release maintenance with its
+target binary installed when a distinct completed Upgrade plan predates its
+creation and carries valid, passing canonical post-verification Evidence for
+the same immutable build digest and source revision. That earlier plan and its
+Release/Evidence are rechecked under the shared canonical transaction before
+cancellation commits. An empty plan or a plan containing rollout steps cannot
+use this exception. Missing, revoked, changed, foreign or nonpassing baseline
+records refuse cancellation. Cancellation Evidence links the previous verified
+deployment and continues to claim neither installation nor rollback. The existing
+Upgrade cancellation control and refusal/Evidence surfaces apply unchanged.
+
 Cancellation records separate attributed `upgrade-unexecuted-cancellation`
 Evidence with a failure result, invalidates the admission epoch and clears only
 that plan's maintenance hold. It claims neither installation nor rollback and
