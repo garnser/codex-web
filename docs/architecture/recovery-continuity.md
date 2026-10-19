@@ -1077,6 +1077,7 @@ rotation, revocation, ACL and expiry changes still invalidate admission; normal
 secret-use audit appends remain recorded and do not represent a grant change.
 Other guarded namespace revisions, current actor/credential checks, lease/fence,
 procedure and final transactional guards remain enforced. Repeated local-trusted
-identity bootstrap reads an already complete default state without rewriting it;
-missing defaults still initialize through the existing atomic updater. This
+identity bootstrap and internal service bootstrap read an already complete state
+without rewriting it; missing principals or memberships still initialize through
+the existing atomic updater, and existing membership roles are preserved. This
 neither adds membership authority nor suppresses audit records.

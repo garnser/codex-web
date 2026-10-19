@@ -48,6 +48,44 @@ class LocalBootstrapReadTests(unittest.TestCase):
         self.assertIn(MembershipRole.ADMIN, actor.roles)
 
 
+class ServiceBootstrapReadTests(unittest.TestCase):
+    setUp = LocalBootstrapReadTests.setUp
+
+    def bootstrap(self):
+        scope = self.identity.local_trusted_actor().tenant
+        return self.identity.bootstrap_service_actor(identity_id='fixture-internal',
+            name='Fixture internal service', scope=scope, service_scopes=('secret:use',))
+
+    def test_complete_service_bootstrap_does_not_rewrite_identity(self):
+        actor = self.bootstrap()
+        original = self.identity.state()
+        revision = self.store.namespace_revision('identity_state')
+        self.assertEqual(self.bootstrap().model_dump(exclude={'authenticated_at'}),
+            actor.model_dump(exclude={'authenticated_at'}))
+        self.assertEqual(self.identity.state(), original)
+        self.assertEqual(self.store.namespace_revision('identity_state'), revision)
+
+    def test_existing_service_membership_roles_are_preserved(self):
+        actor = self.bootstrap()
+        admin = self.identity.local_trusted_actor()
+        membership = next(m for m in self.identity.state().memberships if m.identity_id == actor.identity_id)
+        self.identity.update_membership(membership.id, MembershipUpdate(roles=[MembershipRole.APPROVER]), actor=admin)
+        revision = self.store.namespace_revision('identity_state')
+        self.assertEqual(self.bootstrap().roles, (MembershipRole.APPROVER,))
+        self.assertEqual(self.store.namespace_revision('identity_state'), revision)
+
+    def test_missing_service_or_membership_still_initializes_atomically(self):
+        for missing in ('services', 'memberships'):
+            with self.subTest(missing=missing):
+                actor = self.bootstrap()
+                self.identity.store.update(lambda state: state.model_copy(update={missing: [v for v in getattr(state, missing) if (v.id if missing == 'services' else v.identity_id) != actor.identity_id]}))
+                restored = self.bootstrap()
+                state = self.identity.state()
+                self.assertEqual(restored.identity_id, actor.identity_id)
+                self.assertEqual(sum(v.id == actor.identity_id for v in state.services), 1)
+                self.assertEqual(sum(v.identity_id == actor.identity_id for v in state.memberships), 1)
+
+
 class RecoveryObservationAdmissionTests(unittest.IsolatedAsyncioTestCase):
     asyncTearDown = fixture.StorageOperatorTests.asyncTearDown
     publish = fixture.StorageOperatorTests.publish
@@ -67,6 +105,24 @@ class RecoveryObservationAdmissionTests(unittest.IsolatedAsyncioTestCase):
     def observe(self):
         self.identity.local_trusted_actor()
         return self.broker.use(self.secret.id, actor=self.actor, operation='synthetic-background-observation', consumer=lambda value: len(value))
+
+    async def test_internal_service_bootstrap_allows_capture_and_same_artifact_verify(self):
+        def bootstrap():
+            return self.identity.bootstrap_service_actor(identity_id='fixture-readiness',
+                name='Synthetic readiness observer', scope=self.actor.tenant,
+                service_scopes=('secret:use',))
+        bootstrap()
+        operations = self.operator.storage_provider.operations
+        inventory, assess = operations.inventory, operations._assess
+        def observed_inventory(*args, **kwargs):
+            bootstrap()
+            return inventory(*args, **kwargs)
+        def observed_assessment(*args, **kwargs):
+            report = assess(*args, **kwargs)
+            bootstrap()
+            return report
+        with patch.object(operations, 'inventory', side_effect=observed_inventory), patch.object(operations, '_assess', side_effect=observed_assessment):
+            await fixture.StorageOperatorTests.test_capture_verify_same_backend_once_preserves_invalid_rows_without_health_pass(self)
 
     async def test_audit_appends_and_bootstrap_reads_allow_capture_and_same_artifact_verify(self):
         references = self.broker.store.load().references
