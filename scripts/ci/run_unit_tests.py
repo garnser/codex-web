@@ -26,6 +26,10 @@ if __name__ == "__main__":
     root = Path(__file__).resolve().parents[2]
     if (root / "data").is_symlink():
         raise SystemExit("Refusing to run tests through a data symlink; use a runner-local data directory.")
+    if os.environ.get('CODEX_WEB_TEST_PRESERVATION_SCALE') == '1':
+        raise SystemExit('Use scripts/ci/run_full_shape_preservation.py for explicit full-shape qualification.')
+    print('Full-shape preservation: NOT EXECUTED by default gates; owner/invocation: '
+          'docs/architecture/full-shape-qualification.md', flush=True)
     # Application storage is rooted beside this runner's repository, not in the
     # caller's cwd. Bind discovery and relative fixture paths to the same root.
     os.chdir(root)

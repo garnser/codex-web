@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import os
 import shutil
 import subprocess
 import sys
@@ -153,6 +154,20 @@ class UnitOwnershipTests(unittest.TestCase):
         destination.parent.mkdir(parents=True)
         shutil.copyfile(runner, destination)
         return destination
+
+    def test_scale_flag_requires_the_separate_qualification_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = self.copy_runner(root)
+            (root / "data").mkdir()
+            (root / "tests").mkdir()
+            (root / "tests/test_probe.py").write_text("raise RuntimeError('imported application')")
+            result = subprocess.run([sys.executable, str(runner)], cwd=root,
+                                    env={**os.environ, "CODEX_WEB_TEST_PRESERVATION_SCALE": "1"},
+                                    capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("run_full_shape_preservation.py", result.stderr)
+            self.assertNotIn("imported application", result.stderr)
 
     def test_runner_rejects_shared_data_symlink_before_importing_application(self):
         for existing in [False, True]:

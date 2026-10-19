@@ -259,6 +259,7 @@ jobs:
       CODEX_WEB_TEST_POSTGRES_DATA_DIRECTORY: /tmp/codex-web-ci-postgres/data
       CODEX_WEB_TEST_PRESERVATION_RESERVATION_DIR: /tmp/codex-web-ci-postgres-reservations
       CODEX_WEB_TEST_REDIS_URL: redis://127.0.0.1:6379/15
+      CODEX_WEB_TEST_PRESERVATION_SCALE: '0'
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -325,6 +326,10 @@ jobs:
           tests.test_autonomy_append_scaling tests.test_agent_session_custody_postgres tests.test_custody_bootstrap_recovery_postgres tests.test_project_delegation_recovery_postgres tests.test_pull_request_ready_postgres
           tests.test_recovery_scheduled_postgres tests.test_recovery_operator_postgres tests.test_recovery_mutation_postgres tests.test_worker_verifications_postgres tests.test_worker_upgrade_approvals_postgres tests.test_upgrade_contract_cancellation_postgres tests.test_worker_capacity_verifications tests.test_read_only_resource_context_postgres tests.test_read_only_resource_context_reconciliation tests.test_read_only_resource_context_authenticated_steer tests.test_admitted_context_capacity tests.test_queued_native_resume_postgres
         if: ${{ needs.changes.outputs.full == 'true' }}
+      - name: Report separate full-shape qualification ownership
+        if: ${{ always() && needs.changes.outputs.full == 'true' }}
+        shell: bash
+        run: python scripts/ci/run_full_shape_preservation.py --status | tee -a "$GITHUB_STEP_SUMMARY"
     needs:
       - changes
       - documentation
