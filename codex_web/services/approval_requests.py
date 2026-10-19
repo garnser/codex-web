@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -346,6 +347,7 @@ class ApprovalRequestService:
         requester: AuthenticationActor,
         request_id: str | None = None,
         require_current_session: bool,
+        _commit=None,
     ) -> ApprovalRequest:
         now = float(self.clock())
         if require_current_session:
@@ -380,10 +382,8 @@ class ApprovalRequestService:
             actor_id=current.identity_id,
             now=now,
         )
-        stored = self.store.create(
-            request,
-            expiry_schedule=expiry_schedule,
-        )
+        stored = (self.store.create(request, expiry_schedule=expiry_schedule)
+                  if _commit is None else await asyncio.to_thread(_commit, request, expiry_schedule))
         if expiry_schedule is not None and self.scheduler is not None:
             self.scheduler.notify_state_changed()
         await self._emit(
@@ -425,12 +425,14 @@ class ApprovalRequestService:
         *,
         requester: AuthenticationActor,
         request_id: str | None = None,
+        _commit=None,
     ) -> ApprovalRequest:
         return await self._create_bound(
             payload,
             requester=requester,
             request_id=request_id,
             require_current_session=True,
+            _commit=_commit,
         )
 
     def list(
