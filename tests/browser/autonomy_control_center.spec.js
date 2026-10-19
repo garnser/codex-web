@@ -44,6 +44,25 @@ test('Cancellation denial is visible and keeps the request editable', async ({pa
   await expect(page.getByLabel('Cancellation reason')).toHaveValue('Target superseded before qualified installation');
 });
 
+test('Blocked scanner cancellation exposes its retained failure and uses the canonical cancellation API', async ({page})=>{
+  await cancellationFixture(page);
+  await page.evaluate(()=>Object.assign(window.__localInstallation,{
+    plan_status:'failed',cancellation_kind:'blocked_scanner_activation',
+    blocked_scan_contract_evidence_href:'/api/evidence/failed-scan-step'}));
+  await page.locator('[data-acc-installation="upgrade-1"]').click();
+  await expect(page.getByRole('link',{name:'Failed-step Evidence'})).toHaveAttribute('href','/api/evidence/failed-scan-step');
+  await expect(page.locator('#autonomy-control-center-card')).toContainText('The failed attempt and consumed approval remain recorded');
+  await page.getByLabel('Cancellation reason').fill('Release proven blocked scanner activation after its source fix');
+  await page.getByRole('button',{name:'Cancel blocked scanner activation',exact:true}).click();
+  const message=await resolveAction(page);
+  expect(message).toContain('Cancel blocked scanner activation');
+  await expect(page.locator('#autonomy-control-center-card')).toContainText('Blocked scanner activation cancelled; inspect Cancellation Evidence');
+  const requests=await page.evaluate(()=>window.__accRequests.filter(r=>r.method==='POST'));
+  expect(requests).toHaveLength(1);
+  expect(requests[0].path).toBe('/api/upgrades/upgrade-1/cancel-unexecuted');
+  expect(JSON.parse(requests[0].body).expected_admission_epoch).toBe(4);
+});
+
 test('Local installation separates reported materialization from canonical verification', async ({page}) => {
   await page.goto(fixtureURL);
   const button=page.locator('[data-acc-installation="upgrade-1"]');

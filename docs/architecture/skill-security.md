@@ -140,6 +140,16 @@ local integration. Execute the step through the existing Upgrade API and finish
 post-upgrade verification before using scans; scanner/configuration publication
 cannot enable the boundary. No upgrade is executed automatically by inspection.
 
+Compatible pending inputs may remain held during this transition only when they
+have never been claimed (zero fence, no worker/lease, execution timestamps,
+failure or output references). Maintenance fences their claims. This preserves
+historical custody and unknown external outcomes without replay or cancellation.
+All other nonterminal assignment states block activation. A deterministic first
+attempt refused at this assignment gate can be cancelled through the narrowly
+proven Upgrade cancellation disposition described in `safe-upgrades.md`; its
+failed attempt and consumed approval remain recorded, and a fresh exact-release
+plan needs its own approval.
+
 The completed step and rollback denial are persisted before scanner writes become
 eligible. The same Upgrade transaction disables binary rollback on prior plans;
 subsequent plans inherit the denial while this boundary remains in the database.
