@@ -104,7 +104,7 @@ function requestMarkup(item) {
 
       <div class="approval-meta">
         <span><strong>Scope:</strong> ${esc(item.organization_id)} / ${esc(item.workspace_id)}</span>
-        <span><strong>Requester:</strong> ${esc(item.requester_identity_id)}</span>
+        <span><strong>Requester:</strong> ${esc(item.requester_identity_id)} (${esc(item.requester_principal_kind || "unknown")})</span>
         <span><strong>Quorum:</strong> ${approved}/${esc(req.quorum ?? 1)}</span>
         <span><strong>Assurance:</strong> ${esc(req.required_assurance || "—")}</span>
         <span><strong>Expires:</strong> ${esc(formatTime(item.expires_at))}</span>
@@ -123,6 +123,8 @@ function requestMarkup(item) {
         </div>
         ${target.resource_ids?.length ? `<div><strong>Resources:</strong> ${target.resource_ids.map(esc).join(", ")}</div>` : ""}
       </div>
+
+      ${item.audit_refs?.length ? `<div><strong>Request audit:</strong> ${item.audit_refs.map(esc).join(", ")}</div>` : ""}
 
       <div class="approval-decisions">
         <strong>Decisions</strong>

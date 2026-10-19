@@ -195,8 +195,11 @@ class WorkerVerificationAdapter:
             self.denied('Pinned execution/Agent Profile no longer effective')
         api_path = resolved.operation.path_template.replace('{id}', resolved.target_ref or '')
         try:
-            ApiAuthorizationService(self.broker.authority).authorize_operation(
-                resolved.operation.method, api_path, worker)
+            # This one broker-only operation has no public HTTP handler. Its
+            # authenticated transport and scoped capability were checked above.
+            if resolved.operation.id != 'upgrade.approval.request':
+                ApiAuthorizationService(self.broker.authority).authorize_operation(
+                    resolved.operation.method, api_path, worker)
         except ApiAuthorizationError:
             self.denied('Current worker API policy refused this verification operation')
         procedures = self.broker.procedure_admission
@@ -246,11 +249,12 @@ class WorkerVerificationAdapter:
             if repository.store is not store:
                 self.denied('Verification admission requires one canonical transaction store')
         selected = {r.namespace: (None,) for r in repositories}
-        work_items = getattr(b.work_items.state_machine.dependencies.get_state, '__self__', None)
-        if work_items is None or getattr(work_items, 'store', None) is not store:
-            self.denied('Canonical transactional Work Item repository required')
-        work_items.get(ref)  # initialize an existing legacy collection before locks
-        selected[work_items.namespace] = (ref,)
+        if ref is not None:
+            work_items = getattr(b.work_items.state_machine.dependencies.get_state, '__self__', None)
+            if work_items is None or getattr(work_items, 'store', None) is not store:
+                self.denied('Canonical transactional Work Item repository required')
+            work_items.get(ref)  # initialize an existing legacy collection before locks
+            selected[work_items.namespace] = (ref,)
         workers, workspaces = b.execution_workers.store, b.execution_workspaces.store
         if workers.store is not store or workspaces.store is not store:
             self.denied('Execution custody stores differ from canonical Evidence store')

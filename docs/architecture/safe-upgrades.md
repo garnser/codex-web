@@ -276,6 +276,17 @@ Before execution:
 Once an irreversible step succeeds, irreversible_boundary_crossed becomes true
 and rollback_available becomes false permanently for that plan.
 
+For an agent-originated request, the assignment-bound broker can attach the
+canonical ApprovalRequest under the actual registered worker service identity.
+The original human authorizer is retained in its reason and audit references;
+no caller-supplied requester identity is accepted. Request approval while that
+bounded assignment is live, after capturing the required backup and before
+activating service-wide drain. Then release the assignment and refresh drain,
+backup, restore verification and preflight as required for execution. Human
+decision and exact-target consumption use the existing canonical APIs; this
+request-only bridge does not waive any execution gate or change an existing
+human request's requester.
+
 A process interruption after approval consumption can resume only by using the
 same canonical ApprovalRequest consumption/idempotency identity.
 

@@ -79,3 +79,30 @@ The UI performs deterministic API refresh only and must not trigger model reason
 ## Audit and evidence
 
 Approval records retain requester/approver identity, session/assurance metadata, policy/authority source, decisions, timestamps, resulting operation reference and audit/evidence references. Secret or authentication material is never embedded in the record.
+
+## Agent-originated Upgrade requests
+
+An authenticated native execution can request approval for an unattempted
+irreversible Upgrade step through the assignment-bound control-plane broker's
+`upgrade.approval.request` operation (`POST /api/agent-upgrade-approvals`). This
+is a broker-only route, not a public HTTP identity override. Its payload contains
+only the Plan ID, Step ID and expected target fingerprint.
+
+The requester is the authenticated registered worker service identity. The
+originating human remains the request-operation authorizer in the audit and
+request reason. The UI displays requester principal kind and request audit
+references. Existing human-originated requests retain their original identity;
+an agent must use a fresh plan rather than relabel them.
+
+The bridge revalidates the current assignment, fence, worker, immutable profile,
+authority, tenant, Project and writable workspace lease within the transaction
+that creates the canonical request and attaches it to the step. Target changes
+or admission revocation create neither an orphan request nor a step attachment.
+Repeating the same request observes its attached record, including after a lost
+response. The operation creates no expiry workflow or autonomous retry loop.
+
+The bridge grants no decision, consumption or Upgrade execution operation.
+Human eligibility, assurance, quorum, distinct humans and no-self-approval remain
+the canonical ApprovalRequest service's responsibility. A machine request can
+therefore be approved by its originating human when that human is independently
+eligible; a human-originated request still cannot approve itself.

@@ -140,6 +140,9 @@ class _ResolvedOperation:
 OPERATIONS: tuple[ControlPlaneBrokerOperation, ...] = (
     *PROJECT_COORDINATION_OPERATIONS,
     *VERIFICATION_OPERATIONS,
+    ControlPlaneBrokerOperation(id="upgrade.approval.request", method="POST",
+        path_template="/api/agent-upgrade-approvals", capability="upgrade.approval.request",
+        authority_level=AuthorityLevel.PREPARE),
     ControlPlaneBrokerOperation(
         id="work_graph.edge.create", method="POST", path_template="/api/work-graph/edges",
         capability="work_graph.manage", authority_level=AuthorityLevel.EXECUTE,
@@ -876,6 +879,11 @@ class ControlPlaneBrokerService:
         for key in ("member_path", "repository_resource_id"):
             if key in member_query:
                 query[key] = member_query[key]
+        if path == "/api/agent-upgrade-approvals":
+            operation = _OPERATION_BY_ID["upgrade.approval.request"]
+            if method != operation.method or parsed.query:
+                raise ControlPlaneBrokerDeniedError("Only POST without query is allowed for agent Upgrade approval")
+            return _ResolvedOperation(operation=operation, target_ref=None, query={})
         if path == "/api/work-graph/edges":
             operation = _OPERATION_BY_ID["work_graph.edge.create"]
             if method != operation.method:
@@ -1705,12 +1713,13 @@ class ControlPlaneBrokerService:
             or operation.id == "control_plane.operations.list"
             or operation.id.startswith("project.")
             or operation.id.startswith("verification.")
+            or operation.id == "upgrade.approval.request"
             else actor
         )
         authority_actor = actor if repository_read else requester_actor
         state = None
         resource_ids: tuple[str, ...] = ()
-        if operation.id.startswith("project.") or operation.id.startswith("verification."):
+        if operation.id.startswith("project.") or operation.id.startswith("verification.") or operation.id == "upgrade.approval.request":
             resource_ids = (self._writable_repository_id(assignment),)
         elif (
             operation.id.startswith("repository.")
@@ -1847,7 +1856,11 @@ class ControlPlaneBrokerService:
                     raise ControlPlaneBrokerDeniedError("administrative coordination must use its own agent Role attribution")
                 payload[attributed_field] = own_role
 
-        if operation.id.startswith("verification."):
+        if operation.id == "upgrade.approval.request":
+            from codex_web.services.worker_upgrade_approvals import WorkerUpgradeApprovalAdapter
+            result = await WorkerUpgradeApprovalAdapter(self).request(
+                assignment, worker_actor, resolved, payload, assignment_validator)
+        elif operation.id.startswith("verification."):
             adapter = WorkerVerificationAdapter(self)
             if operation.id == 'verification.create':
                 if resolved.query:

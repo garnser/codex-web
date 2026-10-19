@@ -422,7 +422,7 @@ class ControlPlaneBrokerTests(unittest.IsolatedAsyncioTestCase):
                 max_request_bytes=1024,
                 # Discovery includes the publication parameter contract. Keep
                 # the fixture bounded while allowing that supported response.
-                max_response_bytes=16384,
+                max_response_bytes=32768,
                 max_concurrent_requests=2,
                 max_requests_per_minute=8,
             ),
