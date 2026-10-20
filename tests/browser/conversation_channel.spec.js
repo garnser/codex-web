@@ -154,3 +154,26 @@ test('canonical retention and reconciliation remain distinct from transport and 
   await expect(page.locator('#conversation-channel-status')).toHaveText('Canonical state loaded');
   await expect(page.locator('body')).not.toContainText('ciphertext');
 });
+
+test('known pre-routing refusal shows its owner and bounded recovery without offering unknown replay', async ({ page }) => {
+  await page.route('**/api/conversation-channels/providers', route => route.fulfill({ json: { items: [] } }));
+  await page.route('**/api/conversation-channels/messages?*', route => route.fulfill({ json: { items: [] } }));
+  await page.route('**/api/conversation-channels/receipts?*', route => route.fulfill({ json: { items: [{
+    canonical_event_id:'held-human', message_key:'slack::connection::channel::::message',
+    outcome:'requires_reconciliation', input_retained:true, input_protected:true,
+    reason:'Input has not been routed: authority_changed:routing',
+    routing_result:{preRoutingAuthorityRefused:true,actionOwner:'project_operator',authorityRecoveryCount:0},
+  }, {
+    canonical_event_id:'unknown-native', message_key:'slack::connection::channel::::other',
+    outcome:'requires_reconciliation', input_retained:true,
+    reason:'Downstream routing outcome is uncertain', routing_result:{},
+  }] } }));
+  await page.goto(fixtureUrl);
+  await page.locator('#conversation-channel-inspector summary').click();
+  const rows = page.locator('#conversation-channel-receipts .comm-log-row');
+  await expect(rows.nth(0)).toContainText('Routing has not started');
+  await expect(rows.nth(0)).toContainText('project_operator');
+  await expect(rows.nth(0)).toContainText('one automatic recovery');
+  await expect(rows.nth(1)).not.toContainText('automatic recovery');
+  await expect(rows.nth(1).getByRole('button')).toHaveCount(0);
+});

@@ -4373,51 +4373,12 @@ conversation_channel_registry.register_provider(
     TeamsConversationChannel,
 )
 def _conversation_ingress_authority(event, actor):
-    from codex_web.models import BotBindingCreate, ThreadRunSettings
-    from codex_web.services.conversation_channels import capture_repository_selection
-    project = bot_connection_service._project(event.project_id)
-    snapshot = bot_connection_service.ingress_snapshot(event, actor)
-    rows = bot_connection_service.load_bindings()
-    rows = [item for item in rows if item.project_id == event.project_id and item.provider == "slack"]
-    if len(rows) > 1000:
-        raise ValueError("canonical routing authority exceeds bounded inspection")
-    snapshot["routing"] = []
-    default_profile, default_definition = execution_profile_definition_service.resolve(None,
-        organization_id=actor.organization_id, workspace_id=actor.workspace_id, project_id=event.project_id)
-    default_binding = BotBindingCreate(provider="slack", project_id=event.project_id,
-        external_conversation_id=event.message.conversation.conversation_id)
-    from codex_web.services.resources import RepositoryTargetSelectionError
-    try:
-        default_settings = capture_repository_selection(ThreadRunSettings(), project,
-            default_profile, resource_catalog_service, actor)
-    except RepositoryTargetSelectionError as exc:
-        snapshot["new_binding_error"] = exc.code
-        # An unusable auto-binding default does not disable an existing binding
-        # with its own proven scope (for example an orchestration-only profile).
-        snapshot["new_binding"] = None
-    else:
-        snapshot["new_binding"] = {
-            "binding": {"sandbox": default_binding.sandbox, "approval_policy": default_binding.approval_policy},
-            "settings": default_settings.model_dump(mode="json"), "profile": None,
-            "execution_profile": default_profile.model_dump(mode="json"),
-            "definition": default_definition.model_dump(mode="json"),
-        }
-    for binding in sorted(rows, key=lambda item: item.id):
-        settings = thread_execution_settings_service.get(binding.thread_id)
-        profile_context = _agent_profile_for_bot_binding(binding, actor=actor)
-        profile = profile_context[0] if profile_context else None
-        execution_profile, definition = execution_profile_definition_service.resolve(
-            getattr(profile, "execution_profile_id", None) or settings.execution_profile_id,
-            organization_id=actor.organization_id, workspace_id=actor.workspace_id, project_id=event.project_id)
-        snapshot["routing"].append({
-            "binding": binding.model_dump(mode="json", exclude={"updated_at", "created_at", "external_name", "thread_name"}),
-            "settings": capture_repository_selection(settings, project, execution_profile,
-                resource_catalog_service, actor).model_dump(mode="json"),
-            "profile": profile.model_dump(mode="json") if profile else None,
-            "execution_profile": execution_profile.model_dump(mode="json"),
-            "definition": definition.model_dump(mode="json"),
-        })
-    return snapshot
+    from codex_web.services.conversation_ingress_authority import capture_conversation_ingress_authority
+    return capture_conversation_ingress_authority(event, actor,
+        connections=bot_connection_service, routing=bot_routing_service,
+        bindings=bot_binding_selection_service, settings_service=thread_execution_settings_service,
+        profile_for_binding=_agent_profile_for_bot_binding,
+        execution_profiles=execution_profile_definition_service, resources=resource_catalog_service)
 
 conversation_channel_service = ConversationChannelService(
     conversation_channel_store,

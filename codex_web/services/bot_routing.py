@@ -155,7 +155,7 @@ class BotRoutingService:
             return message
         return f"{SLACK_RELAY_NOTICE}\n\n{message}"
 
-    def preview(self, payload: BotRouteTest) -> dict[str, Any]:
+    def preview(self, payload: BotRouteTest, *, inspect_execution: bool = True) -> dict[str, Any]:
         message = BotInboundMessage(**payload.model_dump())
         provider = message.provider.lower()
         if provider not in {"slack", "telegram"}:
@@ -242,19 +242,18 @@ class BotRoutingService:
             elif cross_ambiguous:
                 route_error = True
 
-        available_prefixes = [
-            self.presentation.binding_prefix(item)
-            for item in bindings
-            if self.presentation.binding_prefix(item)
-        ]
-        if not available_prefixes:
+        if route_error:
             available_prefixes = [
                 self.presentation.binding_prefix(item)
-                for item in self.bindings.for_project(provider, project_id)
+                for item in bindings
                 if self.presentation.binding_prefix(item)
             ]
-
-        if route_error:
+            if not available_prefixes:
+                available_prefixes = [
+                    self.presentation.binding_prefix(item)
+                    for item in self.bindings.for_project(provider, project_id)
+                    if self.presentation.binding_prefix(item)
+                ]
             return {
                 "ok": False,
                 "ambiguous": True,
@@ -281,8 +280,8 @@ class BotRoutingService:
                 "steer": steer_now,
             }
 
-        active = self.execution.thread_is_active(binding.thread_id)
-        queue_depth = self.queue_policy.depth(binding.thread_id)
+        active = self.execution.thread_is_active(binding.thread_id) if inspect_execution else False
+        queue_depth = self.queue_policy.depth(binding.thread_id) if inspect_execution else 0
         return {
             "ok": True,
             "wouldCreateThread": False,
@@ -335,6 +334,11 @@ class BotRoutingService:
     ) -> dict[str, Any]:
         if message.canonical_ingress_id and message._ingress_authority is None:
             raise ConversationChannelReconciliationError("captured_ingress_authority_unavailable")
+        if message.canonical_ingress_id and "route_selection" in message._ingress_authority:
+            expected_route = message._ingress_authority["route_selection"]
+            selected = self.preview(BotRouteTest(**message.model_dump()), inspect_execution=False)
+            if {key: selected.get(key) for key in expected_route} != expected_route:
+                raise ConversationChannelReconciliationError("selected_route_changed_before_dispatch")
         provider = message.provider.lower()
         bindings = self.bindings.for_connection(
             provider,

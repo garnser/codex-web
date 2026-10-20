@@ -43,15 +43,20 @@ class TurnQueuePolicy:
         return source
 
     @classmethod
+    def is_human_source(cls, source: str) -> bool:
+        return cls.source_origin(source) in {"web", "slack", "telegram", "operator-ui", "operator-retry"}
+
+    @classmethod
     def admission_priority(cls, source: str) -> str:
         # Slack intake filters bots before assigning this protocol provenance.
         # Message contents and caller-supplied labels are never consulted.
-        return "human_slack" if cls.source_origin(source) == "slack" else "standard"
+        origin = cls.source_origin(source)
+        return "human_slack" if origin == "slack" else "human_direct" if cls.is_human_source(source) else "standard"
 
     @classmethod
     def admission_candidates(cls, items: list[QueuedTurn]) -> list[QueuedTurn]:
         # Stable projection: keep the durable queue and request snapshots intact.
-        return sorted(items, key=lambda item: cls.admission_priority(item.source) != "human_slack")
+        return sorted(items, key=lambda item: {"human_slack": 0, "human_direct": 1, "standard": 2}[cls.admission_priority(item.source)])
 
     @staticmethod
     def max_depth() -> int:

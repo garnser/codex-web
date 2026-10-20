@@ -81,6 +81,7 @@ function receiptRows(items, selected) {
     ${item.queued_id ? `<small>Queue admission ${esc(item.queued_id)} · execution must be verified in queue/preflight inspection</small>` : ''}
     ${item.routing_result?.actionIntentId ? `<small>Details ActionIntent <a href="/api/action-intents/${encodeURIComponent(item.routing_result.actionIntentId)}" target="_blank" rel="noreferrer">${esc(item.routing_result.actionIntentId)}</a> · admitted status ${esc(item.routing_result.actionIntentStatus || 'unknown')} · inspect canonical action state for delivery/reconciliation</small>` : ''}
     ${item.input_retained ? `<small>Input retained · ingest identity ${esc(item.ingest_actor_id || 'unknown')} · project ${esc(item.project_id || 'unknown')}</small>` : ''}
+    ${item.routing_result?.preRoutingAuthorityRefused ? `<small>Routing has not started · action owner ${esc(item.routing_result.actionOwner || 'project_operator')} · ${Number(item.routing_result.authorityRecoveryCount || 0) >= 1 ? 'Automatic recovery exhausted; submit a new request after authority review.' : 'Review the changed authority. If the original authority is safely restored, one automatic recovery is allowed.'}</small>` : ''}
     ${item.reason ? `<small>${esc(item.reason)}</small>` : ''}
   </div>`).join('');
 }

@@ -414,15 +414,19 @@ class RetainedBotRoutingTests(unittest.IsolatedAsyncioTestCase):
         profiles = SimpleNamespace(resolve=lambda profile,**kwargs:(scratch if profile=="scratch" else default,definition))
         connections = SimpleNamespace(_project=lambda _:project,ingress_snapshot=lambda *args:{},
             load_bindings=f.connections.load_bindings)
-        event = SimpleNamespace(project_id="fixture",message=SimpleNamespace(conversation=SimpleNamespace(conversation_id="C1")))
+        event = (await f.service.registry.resolve("slack",f.connection.id).normalize_events(
+            payload(),connection_id=f.connection.id,project_id="fixture"))[0]
+        selected = f.connections.load_bindings()[0]
         with patch.object(application,"bot_connection_service",connections), \
+             patch.object(application,"bot_routing_service",SimpleNamespace(preview=lambda *args,**kwargs:{"bindingId":selected.id,"projectId":"fixture"})), \
+             patch.object(application,"bot_binding_selection_service",SimpleNamespace(by_id=lambda _:selected)), \
              patch.object(application,"execution_profile_definition_service",profiles), \
              patch.object(application,"resource_catalog_service",resources), \
              patch.object(application,"thread_execution_settings_service",SimpleNamespace(get=lambda _:ThreadRunSettings(execution_profile_id="scratch"))), \
              patch.object(application,"_agent_profile_for_bot_binding",return_value=None):
             snapshot = application._conversation_ingress_authority(event,actor)
         self.assertIsNone(snapshot["new_binding"])
-        self.assertEqual(snapshot["new_binding_error"],"repository_target_missing")
+        self.assertNotIn("new_binding_error",snapshot)
         self.assertEqual(snapshot["routing"][0]["settings"]["writable_repository_resource_ids"],[])
         self.assertEqual(snapshot["routing"][0]["execution_profile"]["id"],"scratch")
 

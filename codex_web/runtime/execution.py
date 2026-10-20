@@ -749,7 +749,7 @@ class TurnExecutionService:
 
     @staticmethod
     def _human_turn_source(source: str) -> bool:
-        return TurnQueuePolicy.source_origin(source) in {"web", "slack", "telegram", "operator-ui", "operator-retry"}
+        return TurnQueuePolicy.is_human_source(source)
 
     def automation_wait_reason(self, source: str) -> dict[str, Any] | None:
         # Sources are protocol provenance assigned by server-side producers,
@@ -839,14 +839,20 @@ class TurnExecutionService:
             if len(values) > 1:
                 actual_reason = {"code": "queue_admission_blocked", "message": " ".join(
                     str(v.get("message", "Admission blocked"))[:500] for v in values)}
-        priority_count = sum(TurnQueuePolicy.admission_priority(item.source) == "human_slack"
+        priority_count = sum(TurnQueuePolicy.admission_priority(item.source) != "standard"
                              for item in items)
+        slack_count = sum(TurnQueuePolicy.admission_priority(item.source) == "human_slack"
+                          for item in items)
         return {"automationWaiting": waiting,
                 "automationWaitReason": actual_reason,
-                "humanSlackPriorityCount": priority_count,
+                "humanPriorityCount": priority_count,
+                "humanPriorityReason": (
+                    "Human messages have priority over automated work when this thread is ready."
+                    if priority_count else None),
+                "humanSlackPriorityCount": slack_count,
                 "humanSlackPriorityReason": (
                     "Human Slack messages have priority when this thread is ready."
-                    if priority_count else None)}
+                    if slack_count else None)}
 
     async def publish_queue_status(self, thread_id: str) -> None:
         h = self.host
