@@ -151,7 +151,12 @@ context. Interrupted reports retain `running`, null exit/finish and result
 `unknown`. Existing Artifact/Evidence views expose their content and provenance;
 the runner projection displays registration/capture/unavailability separately
 from live custody. Repeated/concurrent stop callers share one owned cleanup task
-and capture attempt, including cancellation of an awaiting caller. Broker cleanup
+and capture attempt, including cancellation of an awaiting caller. A retry after
+partial persistence completes the linked INFO Evidence before reporting captured;
+existing immutable content and exact-provenance legacy Evidence are reused. New
+Evidence settlement uses canonical idempotency, and changed report content or
+conflicting assignment/fence observations refuse without reinterpreting the
+original observation. Broker cleanup
 still runs when another cleanup component fails.
 
 Unregistered commands and namespace-local `/tmp` files have no custody guarantee.
