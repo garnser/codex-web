@@ -298,3 +298,100 @@ class OwnerLaneRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.queue[1].work_item_ref, self.state.ref)
         runtime.replace_nonperforming_thread.assert_not_awaited()
         runtime.dispatch_event.assert_not_awaited()
+
+    async def test_unresolved_oldest_item_does_not_starve_another_independent_owned_item(self):
+        unknown = self.held.model_copy(update={'id': 'specific-unknown', 'work_item_ref': self.state.ref})
+        retained = self.preflight.retain_queued(unknown, organization_id='org', workspace_id='ws')
+        self.preflight.queued_disposition(retained.id, status='reconciliation_required')
+        next_item = self.state.model_copy(update={'ref': 'group/other!53'})
+        self.assertEqual(self.service.select_current_work(self.binding, [self.state, next_item]).ref, next_item.ref)
+        self.assertEqual(self.preflight.store.get(retained.id).status, 'reconciliation_required')
+
+    async def test_spent_current_revision_does_not_starve_another_owned_item(self):
+        await self.recover()
+        next_item = self.state.model_copy(update={'ref': 'group/other!53'})
+        self.assertEqual(self.service.select_current_work(self.binding, [self.state, next_item]).ref, next_item.ref)
+
+    async def test_downgrade_losing_recovery_context_cannot_match_retained_original(self):
+        await self.recover()
+        queued = self.queue[-1].model_copy(update={'owner_lane_recovery': None})
+        with self.assertRaises(ValueError):
+            self.preflight.retain_queued(queued, organization_id='org', workspace_id='ws')
+
+    async def test_scoped_replacement_is_used_without_editing_binding_or_old_queue(self):
+        from copy import copy
+        current = copy(self.binding)
+        current.thread_id = 'canonical-replacement'
+        self.service.resolve_binding = lambda binding: current
+        old_bytes = self.held.model_dump_json()
+        observed = []
+        original = self.execution._bootstrap_binding_for_thread
+        self.execution._bootstrap_binding_for_thread = lambda thread: (observed.append(thread) or original(thread))
+        result = await self.recover()
+        self.assertTrue(result['queued'])
+        self.assertEqual(self.queue[-1].thread_id, current.thread_id)
+        self.assertEqual(self.binding.thread_id, 'thread')
+        self.assertEqual(self.held.model_dump_json(), old_bytes)
+        self.assertEqual(set(observed), {current.thread_id})
+        # A later replacement revokes the retained request at the final guard.
+        current.thread_id = 'new-current'
+        with self.assertRaises(HTTPException) as raised:
+            self.service.validate_queued(self.queue[-1])
+        self.assertEqual(raised.exception.detail['code'], 'owner_recovery_work_changed')
+
+    async def test_explicitly_cancelled_custody_is_not_resurrected(self):
+        self.failed.status = 'cancelled'
+        self.failed.failure_code = 'thread_bootstrap_cancelled'
+        result = await self.recover()
+        self.assertFalse(result['ok'])
+        retained = self.preflight.store.get(result['preflightAttemptId'])
+        self.assertEqual(retained.blockers[0].code, 'owner_recovery_cancelled')
+        self.assertIn('actor', retained.blockers[0].message)
+        self.assertEqual(self.queue, [self.held])
+        self.execution.schedule_queue_drain.assert_not_called()
+        # Repeated watchdogs preserve the one visible blocker, without another request.
+        self.assertTrue((await self.recover())['deduplicated'])
+
+    async def test_bare_native_goal_is_visible_without_new_input_or_lease_changes(self):
+        from codex_web.goal_execution_bindings import ProjectDelegationAuthorization
+        goal_binding = NS(id='goal-binding', thread_id='thread', project_id='project',
+            organization_id='org', workspace_id='ws', goal_id='goal', goal_revision=4,
+            status='active', delegation_authorization=ProjectDelegationAuthorization.AUTHORIZED,
+            execution_owner_id='goal-owner', work_item_refs=())
+        self.service.goal_for = lambda _: NS(status='active', revision=4)
+        reason = self.service.native_goal_blocker(goal_binding)
+        self.assertIn('assignment failed fence 3 is lost', reason)
+        self.assertIn('Action owner: goal-owner', reason)
+        self.assertEqual(self.queue, [self.held])
+        self.execution.schedule_queue_drain.assert_not_called()
+        goal_binding.work_item_refs = (self.state.ref,)
+        self.assertIsNone(self.service.native_goal_blocker(goal_binding))
+        self.failed.status = 'running'
+        goal_binding.work_item_refs = ()
+        self.assertIsNone(self.service.native_goal_blocker(goal_binding))
+
+    async def test_terminal_native_lane_cannot_fall_through_to_generic_replacement(self):
+        from codex_web.services.autonomy import AutonomyService
+        runtime = NS(owner_lane_recovery=self.service, binding_prefix=lambda _: 'james',
+            replace_nonperforming_thread=AsyncMock(), dispatch_event=AsyncMock())
+        autonomy = AutonomyService(runtime=runtime)
+        async def dispatch(work):
+            return await autonomy._bounded_reasoning_dispatch(self.binding,
+                'current task', 'watchdog', cycle_key='cycle', payload={},
+                work_item=work, recovery_reason='watchdog')
+        # Cancelled custody gets the exact retained blocker rather than replacement.
+        self.failed.status = 'cancelled'
+        self.assertFalse((await dispatch(self.state))['ok'])
+        self.assertTrue((await dispatch(self.state))['deduplicated'])
+        # A bare terminal lane cannot reconstruct its historical objective.
+        self.assertEqual((await dispatch(None))['reason'], 'owner_recovery_current_work_required')
+        runtime.replace_nonperforming_thread.assert_not_awaited()
+        runtime.dispatch_event.assert_not_awaited()
+
+    async def test_existing_open_mr_work_precedes_older_issue_and_stale_merged_refs(self):
+        from codex_web.models import WorkItemArtifactRelation
+        mr = self.state.model_copy(deep=True, update={'ref': 'group/repo!53', 'mr_refs': ['group/repo!53']})
+        self.assertEqual(self.service.select_current_work(self.binding, [self.state, mr]).ref, mr.ref)
+        mr.verified_artifact_relations = [WorkItemArtifactRelation(source_type='gitlab',
+            source_instance='fixture', ref=mr.ref, head_revision='head', source_revision='source', state='merged')]
+        self.assertEqual(self.service.select_current_work(self.binding, [self.state, mr]).ref, self.state.ref)

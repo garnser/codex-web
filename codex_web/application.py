@@ -4112,8 +4112,16 @@ def _owner_recovery_project_enabled(project_id):
     return (routing.enabled and project is not None and project.enabled
         and bot_runtime_gate_reason(project_id) is None)
 
+def _owner_recovery_binding(binding):
+    project = project_service.get(binding.project_id)
+    replacement = thread_index_repository.replacement_thread_id(binding.thread_id,
+        project_id=project.id, organization_id=project.organization_id,
+        workspace_id=project.workspace_id)
+    return binding.model_copy(update={"thread_id": replacement}) if replacement else binding
+
 owner_lane_recovery_service = OwnerLaneRecoveryService(
     execution=turn_execution_service, preflight=execution_preflight_service,
+    resolve_binding=_owner_recovery_binding,
     dispatch=bot_event_dispatch_service,
     get_state=work_item_state_machine._work_item_state,
     load_bindings=bot_binding_repository.load,
@@ -4201,9 +4209,19 @@ autonomy_service = install_autonomy_service(
     canonical_events=canonical_event_ingestion,
     runtime=autonomy_runtime_dependencies,
 )
+async def _reconcile_native_goal_runners():
+    rows = await asyncio.to_thread(goal_execution_binding_store.load)
+    scopes = {(item.organization_id, item.workspace_id) for item in rows.bindings}
+    for organization_id, workspace_id in sorted(scopes):
+        await goal_continuation_recovery_service.reconcile_native_scope(
+            scope=TenantScope(organization_id=organization_id, workspace_id=workspace_id),
+            observer=owner_lane_recovery_service.native_goal_blocker)
+
+
 native_recovery_service = NativeRecoveryService(
     policy=runtime_policy,
     cycles=(
+        _reconcile_native_goal_runners,
         autonomy_service.run_owner_work_cycle,
         autonomy_service.run_release_gate_cycle,
         autonomy_service.run_work_item_sla_cycle,

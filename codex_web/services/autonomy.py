@@ -126,12 +126,17 @@ class AutonomyService:
             # an uncertain or failed replacement.
             prepared = binding
             native_recovery = getattr(self.runtime, "owner_lane_recovery", None)
-            if (recovery_reason is not None and work_item is not None and native_recovery is not None
-                    and await asyncio.to_thread(native_recovery.candidate, binding, work_item)):
-                # A retained uncertain input is not admissible current work.
-                # This path reserves a distinct exact current-work request and
-                # never transfers old queues or replaces their native history.
-                return await native_recovery.recover(binding, work_item, text)
+            if native_recovery is not None:
+                prepared = await asyncio.to_thread(native_recovery.resolve_binding, binding)
+                terminal = await asyncio.to_thread(native_recovery.terminal, prepared)
+                if recovery_reason is not None and terminal is not None:
+                    if work_item is not None:
+                        # Terminal native lanes never fall through to generic
+                        # replacement, including busy or spent recovery lanes.
+                        return await native_recovery.recover(prepared, work_item, text)
+                    return {"ok": False, "reason": "owner_recovery_current_work_required",
+                        "threadId": prepared.thread_id,
+                        "actionOwner": self.runtime.binding_prefix(binding)}
             if recovery_reason is not None:
                 if not recovery_attempted:
                     recovery_attempted = True
@@ -244,6 +249,9 @@ class AutonomyService:
     ) -> bool:
         """Blocking canonical reads; callers keep them off the observer loop."""
         d = self.runtime
+        recovery = getattr(d, "owner_lane_recovery", None)
+        if recovery is not None:
+            binding = recovery.resolve_binding(binding)
         return (
             (not allow_active and d.thread_is_active(binding.thread_id))
             or d.thread_queue_depth(binding.thread_id) >= queue_limit
@@ -366,6 +374,13 @@ class AutonomyService:
                 # the item; active/queued state and the dispatch cooldown are
                 # the duplicate-dispatch guards for this path.
                 selected = canonical_items[0] if canonical_items else None
+                native_recovery = getattr(d, "owner_lane_recovery", None)
+                if (selected is not None and native_recovery is not None
+                        and await asyncio.to_thread(native_recovery.terminal, binding) is not None):
+                    # Preserve spent/uncertain current-work originals while
+                    # selecting another independent, currently owned task.
+                    ready = await asyncio.to_thread(native_recovery.select_current_work, binding, canonical_items)
+                    selected = ready or selected
                 if missing_state_refs:
                     refs = ", ".join(missing_state_refs[:8])
                     extra_count = len(missing_state_refs) - 8
@@ -526,7 +541,8 @@ class AutonomyService:
                     if state.project_id == project_id and state.current_stage in self.ACTIONABLE_OWNER_STAGES
                     and recovery.owns(binding, state)]
                 owned.sort(key=lambda state: (d.owner_activity_timestamp(state), state.ref))
-                recovery_work = owned[0] if owned else None
+                recovery_work = (await asyncio.to_thread(recovery.select_current_work, binding, owned)
+                    or (owned[0] if owned else None))
             recoverable = (recovery_work is not None
                 and await asyncio.to_thread(recovery.candidate, binding, recovery_work))
             if not recoverable and await asyncio.to_thread(self._watchdog_lane_busy, binding, 3, True):

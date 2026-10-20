@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 
@@ -91,6 +92,19 @@ class GoalContinuationRecoveryService:
         except Exception:
             return False
         return session.status != AgentSessionStatus.RUNNING
+
+    async def reconcile_native_scope(self, *, scope: TenantScope, observer) -> int:
+        """Observe native custody without invoking application-mode continuation."""
+        rows = await asyncio.to_thread(self.bindings.list_all, scope=scope)
+        changed = 0
+        for binding in rows:
+            if binding.execution_mode != GoalExecutionMode.PROJECT_DELEGATION:
+                continue
+            reason = await asyncio.to_thread(observer, binding)
+            if reason is not None:
+                changed += await asyncio.to_thread(self.bindings.note_native_runner_blocker,
+                    binding, scope=scope, reason=reason)
+        return changed
 
     async def recover_scope(
         self,

@@ -1028,7 +1028,7 @@ visible reconciliation blocker, not proof of teardown.
 
 The deterministic request identity binds tenant, logical bot binding, Work Item
 and its current business intent. Changed ownership, stage, repository scope,
-provider revision, checkpoint, handoff or next action changes that intent;
+provider revision, handoff or next action changes that intent;
 runtime delivery, usage, workspace and timestamp bookkeeping do not. A committed
 preflight reservation survives restart, uncertain native start and repeated
 failure observations. There is no cooldown-based replay or automatic reset of
@@ -1057,3 +1057,18 @@ old queue. No new model-visible administrative recovery capability is granted.
 The deterministic watchdog has zero model calls for duplicate observations,
 blocked recovery or genuinely idle lanes. A useful continuation still uses the
 existing Goal/Work Item model accounting and execution budgets.
+
+
+The current thread is resolved through the complete tenant-scoped durable
+replacement graph, without retargeting bindings or moving predecessor queues.
+A subsequent graph change revokes the retained request at guarded admission.
+Explicitly cancelled custody produces one retained operator-owned blocker;
+automatic continuation cannot undo an intentional resource release.
+
+Native project-delegation Goals without a qualified independent current Work
+Item receive a deduplicated exact-snapshot blocker and canonical event on the
+existing Goal execution projection. This observer never invokes application-mode
+Goal continuation or a model. It preserves Goal status, delegation authorization,
+leases, recovery budgets and all provider outcome fields, and names the existing
+execution owner responsible for reconciliation. A stale observation cannot
+replace a newer binding or an existing unrelated stop reason.

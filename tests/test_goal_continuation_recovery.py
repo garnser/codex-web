@@ -195,5 +195,24 @@ class GoalContinuationRecoveryServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+    async def test_native_observer_never_dispatches_application_or_native_llm(self):
+        from codex_web.goal_execution_bindings import GoalExecutionMode
+        from unittest.mock import Mock
+        app = _binding('application')
+        app.execution_mode = GoalExecutionMode.APPLICATION
+        native = _binding('native')
+        native.execution_mode = GoalExecutionMode.PROJECT_DELEGATION
+        bindings = _Bindings([app, native])
+        bindings.note_native_runner_blocker = Mock(return_value=True)
+        continuation = _Continuation()
+        service = GoalContinuationRecoveryService(bindings, continuation, _Sessions())
+        observer = Mock(return_value='native_runner_recovery: Action owner: operator')
+        self.assertEqual(await service.reconcile_native_scope(scope=self.scope, observer=observer), 1)
+        observer.assert_called_once_with(native)
+        self.assertEqual(continuation.calls, [])
+        bindings.note_native_runner_blocker.assert_called_once_with(native, scope=self.scope,
+            reason='native_runner_recovery: Action owner: operator')
+
+
 if __name__ == "__main__":
     unittest.main()

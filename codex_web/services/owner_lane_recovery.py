@@ -18,11 +18,12 @@ class OwnerLaneRecoveryService:
     TERMINAL = frozenset({'lost', 'failed', 'cancelled'})
 
     def __init__(self, *, execution, preflight, dispatch, get_state,
-                 load_bindings, binding_owner, controller, project_enabled, goal_for=None):
+                 load_bindings, binding_owner, controller, project_enabled, goal_for=None, resolve_binding=None):
         self.execution, self.preflight = execution, preflight
         self.dispatch, self.get_state = dispatch, get_state
         self.load_bindings, self.binding_owner = load_bindings, binding_owner
         self.controller, self.project_enabled, self.goal_for = controller, project_enabled, goal_for
+        self.resolve_binding = resolve_binding or (lambda binding: binding)
 
     @staticmethod
     def revision(state):
@@ -35,20 +36,17 @@ class OwnerLaneRecoveryService:
                 'implementation_owner', 'validation_owner', 'release_owner', 'mr_refs')
         raw = state.model_dump(mode='json')
         context = {key: raw.get(key) for key in keys}
-        context['writable_repository_resource_ids'] = list(state.execution.writable_repository_resource_ids)
+        _, writable = work_item_repository_scope(state)
+        context['writable_repository_resource_ids'] = list(writable)
         context['retry_attempt'] = state.execution.retry.attempt
-        # Runtime delivery/usage/workspace bookkeeping must not invalidate its
-        # own admission or mint another recovery budget after an error.
-        checkpoints = [*state.execution.checkpoint_history]
-        if state.execution.latest_checkpoint is not None:
-            checkpoints.append(state.execution.latest_checkpoint)
-        checkpoint = next((item for item in reversed(checkpoints)
-            if item.source != 'turn-execution-runtime'), None)
-        context['checkpoint_id'] = checkpoint.id if checkpoint else None
+        # Runtime delivery/usage/workspace bookkeeping and checkpoint IDs must
+        # not mint another model budget. Current canonical business intent and
+        # provider/artifact revisions above supply changed-evidence wakeups.
         return hashlib.sha256(json.dumps(context, sort_keys=True,
             separators=(',', ':')).encode()).hexdigest()
 
     def terminal(self, binding):
+        binding = self.resolve_binding(binding)
         bootstrap = self.execution._bootstrap_binding_for_thread(binding.thread_id)
         if bootstrap is None:
             return None
@@ -69,6 +67,7 @@ class OwnerLaneRecoveryService:
                 == str(self.binding_owner(binding) or '').strip().lower())
 
     def candidate(self, binding, state):
+        binding = self.resolve_binding(binding)
         if not self.owns(binding, state) or self.terminal(binding) is None:
             return False
         # Fresh retained/in-flight requests already own the lane. Historical
@@ -86,6 +85,36 @@ class OwnerLaneRecoveryService:
         from codex_web.runtime.execution import ExecutionPrestartRefusal
         raise ExecutionPrestartRefusal(status_code=409,
             detail={'code': code, 'message': message, 'retryable': False})
+
+    @classmethod
+    def request_id(cls, binding, state):
+        key = hashlib.sha256(json.dumps([state.organization_id, state.workspace_id,
+            binding.id, state.ref, cls.revision(state)], separators=(',', ':')).encode()).hexdigest()
+        return 'owner-recovery-' + key
+
+    def select_current_work(self, binding, states):
+        """Bounded deterministic selection; an old held item cannot monopolize a lane."""
+        # Prefer existing open MRs and their correlated work, preserving the
+        # caller's deterministic age/stage ordering within each group. Verified
+        # closed/merged relations cannot be overridden by stale legacy refs.
+        def has_open_mr(state):
+            if state.verified_artifact_relations is not None:
+                return any(relation.state == 'opened' for relation in state.verified_artifact_relations)
+            return bool(state.mr_refs or state.kind == 'merge_request'
+                or state.artifact_state == 'merge_request')
+        ordered = sorted(states, key=lambda state: not has_open_mr(state))
+        for state in ordered[:32]:
+            if not self.owns(binding, state):
+                continue
+            if self.preflight.store.get('preflight-queued-' + self.request_id(binding, state)) is not None:
+                continue
+            unresolved = self.preflight.store.unresolved_work_item(
+                organization_id=state.organization_id, workspace_id=state.workspace_id,
+                project_id=state.project_id, ref=state.ref)
+            if unresolved is not None:
+                continue
+            return state
+        return None
 
     def observe_teardown(self, assignment):
         try:
@@ -108,8 +137,9 @@ class OwnerLaneRecoveryService:
         if context is None or queued.source != self.SOURCE:
             self.refuse('owner_recovery_provenance_missing', 'Current-work recovery provenance is unavailable.')
         project = self.dispatch.projects.get(queued.project_id)
-        matches = [b for b in self.load_bindings() if b.id == context.bot_binding_id
-            and b.thread_id == queued.thread_id and b.project_id == queued.project_id]
+        matches = [self.resolve_binding(b) for b in self.load_bindings()
+            if b.id == context.bot_binding_id and b.project_id == queued.project_id]
+        matches = [b for b in matches if b.thread_id == queued.thread_id]
         state = self.get_state(queued.work_item_ref)
         if len(matches) != 1 or not self.owns(matches[0], state) or self.revision(state) != context.work_revision:
             self.refuse('owner_recovery_work_changed', 'Current work or its responsible thread changed; action owner must reconcile this retained recovery.')
@@ -148,6 +178,8 @@ class OwnerLaneRecoveryService:
                 or (failed.organization_id, failed.workspace_id, failed.project_id)
                     != (state.organization_id, state.workspace_id, state.project_id)):
             self.refuse('owner_recovery_custody_changed', 'The observed failed assignment is no longer terminal and fenced in this scope.')
+        if str(failed.status) == 'cancelled':
+            self.refuse('owner_recovery_cancelled', 'Canonical custody was explicitly cancelled. Automatic continuation must not undo that resource release; a new authorized request must establish current custody. Action owner: ' + context.action_owner)
         try:
             _, session = self.execution._session_for_assignment(failed.id)
         except HTTPException:
@@ -186,8 +218,44 @@ class OwnerLaneRecoveryService:
         if unresolved is not None:
             self.refuse('owner_recovery_original_unresolved', 'Resolve the retained native outcome for this Work Item before automatic continuation. Action owner: ' + context.action_owner)
 
+    def native_goal_blocker(self, binding):
+        """Bare native Goals get a precise blocker, never a replayed objective."""
+        from codex_web.goal_execution_bindings import ProjectDelegationAuthorization
+        if (not binding.thread_id
+                or binding.delegation_authorization != ProjectDelegationAuthorization.AUTHORIZED
+                or str(binding.status) in {'completed', 'cancelled', 'unknown', 'blocked'}
+                or not self.project_enabled(binding.project_id)
+                or self.execution.automation_wait_reason(self.SOURCE)):
+            return None
+        goal = self.goal_for(binding) if self.goal_for is not None else None
+        if goal is None or str(goal.status) != 'active' or goal.revision != binding.goal_revision:
+            return None
+        current = self.resolve_binding(binding)
+        failed = self.terminal(current)
+        if failed is None or (failed.organization_id, failed.workspace_id) != (
+                binding.organization_id, binding.workspace_id):
+            return None
+        # Qualified Work Items are handled only by admitted owner cycles. A
+        # Goal alone cannot establish an independent safe new native task.
+        for bot in self.load_bindings():
+            if bot.project_id != binding.project_id:
+                continue
+            bot = self.resolve_binding(bot)
+            if bot.thread_id != current.thread_id:
+                continue
+            states = [self.get_state(ref) for ref in binding.work_item_refs[:32]]
+            states = [state for state in states if state is not None]
+            if self.select_current_work(bot, states) is not None:
+                return None
+        return ('native_runner_recovery: assignment ' + failed.id + ' fence '
+            + str(failed.fence) + ' is ' + str(failed.status)
+            + '; no independent current owned Work Item is qualified for automatic continuation. '
+            + 'Retained native inputs and provider outcomes require reconciliation; '
+            + 'do not replay the Goal objective. Action owner: ' + binding.execution_owner_id)
+
     async def recover(self, binding, state, text):
         """Called only inside the admitted controller reasoner; never replaces a thread."""
+        binding = await asyncio.to_thread(self.resolve_binding, binding)
         current = await asyncio.to_thread(self.get_state, state.ref)
         assignment = await asyncio.to_thread(self.terminal, binding)
         if assignment is None or not self.owns(binding, current):
@@ -195,9 +263,8 @@ class OwnerLaneRecoveryService:
         revision = self.revision(current)
         # One request per logical binding/current work revision, even if its
         # worker subsequently fails again. No cooldown expires this reservation.
-        key = hashlib.sha256(json.dumps([current.organization_id, current.workspace_id,
-            binding.id, current.ref, revision], separators=(',', ':')).encode()).hexdigest()
-        request_id = 'owner-recovery-' + key
+        request_id = self.request_id(binding, current)
+        key = request_id.removeprefix('owner-recovery-')
         attempt_id = 'preflight-queued-' + request_id
         existing = await asyncio.to_thread(self.preflight.store.get, attempt_id)
         if existing is not None:
