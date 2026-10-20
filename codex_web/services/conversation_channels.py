@@ -306,6 +306,7 @@ class ConversationChannelService:
         crypto=None,
         governance=None,
         authority_snapshot=None,
+        source_authority_snapshot=None,
         routing_gate=None,
     ) -> None:
         self.store = store
@@ -316,6 +317,9 @@ class ConversationChannelService:
         self.crypto = crypto
         self.governance = governance
         self.authority_snapshot = authority_snapshot
+        self.source_authority_snapshot = (
+            source_authority_snapshot if source_authority_snapshot is not None else authority_snapshot
+        )
         self.routing_gate = routing_gate
 
     def _context(self, receipt):
@@ -328,6 +332,19 @@ class ConversationChannelService:
             return None
         snapshot = self.authority_snapshot(event, actor)
         return hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    async def _capture_authority_snapshot(self, event, actor):
+        if self.authority_snapshot is None or event.message.conversation.provider_type != "slack":
+            return None
+        # Pin authenticated source metadata before yielding. The production
+        # callback omits the expensive routing/Profile inventory; a credential
+        # rotation during that awaited inventory cannot authorize an old socket
+        # as its new source. Direct callers retain the conservative full fallback.
+        expected_source = self._source_authority_digest(self.source_authority_snapshot(event, actor))
+        snapshot = await asyncio.to_thread(self.authority_snapshot, event, actor)
+        if self._source_authority_digest(snapshot) != expected_source:
+            raise ConversationChannelConflictError("authenticated source changed during authority capture; no acknowledgement")
+        return snapshot
 
     def retained_input(self, receipt, actor):
         if not self._same_scope(receipt, actor) or receipt.ingest_actor_id != actor.identity_id:
@@ -685,8 +702,7 @@ class ConversationChannelService:
     ) -> ConversationProjectionReceipt:
         source, key = self._retention_identity(event, actor)
         canonical_id = self.canonical_events._event_id(source, key)
-        authority_snapshot = (self.authority_snapshot(event, actor)
-            if self.authority_snapshot is not None and event.message.conversation.provider_type == "slack" else None)
+        authority_snapshot = await self._capture_authority_snapshot(event, actor)
         authority_digest = (hashlib.sha256(json.dumps(authority_snapshot, sort_keys=True,
             separators=(",", ":")).encode()).hexdigest() if authority_snapshot is not None else None)
         source_authority_digest = self._source_authority_digest(authority_snapshot)
@@ -816,7 +832,7 @@ class ConversationChannelService:
                 raise ConversationChannelConflictError("retained original input changed")
         if retained.outcome == ConversationProjectionOutcome.PENDING and retained.authority_digest is not None:
             try:
-                if self._authority(event, actor) != retained.authority_digest:
+                if await asyncio.to_thread(self._authority, event, actor) != retained.authority_digest:
                     raise ConversationChannelConflictError("canonical connection/routing authority changed")
             except Exception as exc:
                 return self._finish(retained.canonical_event_id, actor=actor,

@@ -4427,6 +4427,7 @@ conversation_channel_service = ConversationChannelService(
     crypto=crypto_key_service,
     governance=data_governance_service,
     authority_snapshot=_conversation_ingress_authority,
+    source_authority_snapshot=bot_connection_service.ingress_snapshot,
     routing_gate=bot_runtime_gate_reason,
 )
 data_governance_service.register_action_handler("conversation_ingress", conversation_channel_service.governance_action)

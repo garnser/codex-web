@@ -76,6 +76,12 @@ duplicate. Validation occurs inside the existing event/receipt transaction
 before transport ACK. A changed input or provenance gets no ACK and cannot
 replace the original retained input.
 
+Production ingress captures authenticated source metadata before awaiting the
+database-backed routing/Profile snapshot in the existing thread executor. Source
+changes during capture fail before retention. Routing authority is revalidated
+off the event loop against the immutable retained snapshot; these reads never
+replace the atomic event/receipt transaction or permit an early transport ACK.
+
 Only top-level Socket Mode `envelope_id`, `retry_attempt`, `retry_reason` and
 `accepts_response_payload` are transport retry variation for input compatibility.
 They remain in the first protected original payload when supplied, but are
