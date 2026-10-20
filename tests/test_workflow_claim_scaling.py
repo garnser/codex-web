@@ -41,3 +41,32 @@ class WorkflowClaimScalingTests(TestCase):
         self.assertEqual({s.ref for s in self.policy.mentioned_states('group/app#1 and #2')},
                          {self.item.ref, other.ref})
         self.selected.assert_not_called()
+
+    def test_delivery_precheck_skips_mentions_but_public_discovery_stays_unchanged(self):
+        text = '#1: inspecting the implementation and running tests.'
+        self.assertEqual(self.policy.outbound_findings(text), ([], []))
+        self.load.assert_not_called()
+        self.selected.assert_not_called()
+        self.assertEqual(self.policy.findings(text), ([], [self.item]))
+        self.load.assert_called_once()
+
+    def test_delivery_precheck_uses_all_existing_recognizers_and_lookup_rules(self):
+        for claim in ('current_owner=tester', 'current owner: tester', 'owned by tester',
+                      'ownership moved to tester', 'ownership transferred to tester',
+                      'current_stage=closed', 'current stage: closed', 'handoff accepted',
+                      'handoff is accepted', 'handoff was accepted'):
+            for ref in ('#1','group/app#1'):
+                with self.subTest(claim=claim,ref=ref):
+                    self.load.reset_mock()
+                    self.selected.reset_mock()
+                    findings,mentioned = self.policy.outbound_findings(f'{ref} {claim}')
+                    self.assertEqual(mentioned,[self.item])
+                    self.assertEqual(len(findings),1)
+                    (self.load if ref=='#1' else self.selected).assert_called_once()
+                    (self.selected if ref=='#1' else self.load).assert_not_called()
+
+    def test_delivery_claims_preserve_bare_reference_ambiguity(self):
+        self.load.return_value['other/app#1'] = self.item.model_copy(update={'ref':'other/app#1'})
+        self.assertEqual(self.policy.outbound_findings('#1 current_owner=tester'),([],[]))
+        self.load.assert_called_once()
+        self.selected.assert_not_called()

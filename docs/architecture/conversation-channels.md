@@ -441,3 +441,17 @@ inspect the exact reason and owner in the existing receipt inspector; changed
 authority must be reviewed rather than restored merely to silence the refusal.
 No new model calls, transport sends, permission grants or parallel queues are added.
 The reserved scalar metadata remains compatible with the 3.0 state schema.
+
+
+### Outbound workflow-claim read gate
+
+Outbound delivery first applies the existing deterministic owner, current-stage
+and accepted-handoff recognizers to formatted message text. With no recognized
+claim, it does not load canonical WorkItems: issue-number mentions alone cannot
+produce a workflow correction. Recognized claims still use the same canonical
+validation, current-state corrections and read-error failure behavior. Fully
+qualified references retain selected reads; bare references retain full-catalog
+ambiguity checks. This gate adds no cache, index, model call, authority exception
+or alternate delivery route. Public `findings` and `mentioned_states` continue to
+return mentioned states even when no claim exists; only the delivery-specific
+callback omits unused discovery.
