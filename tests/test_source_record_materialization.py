@@ -44,6 +44,7 @@ class SourceRecordMaterializationTests(unittest.TestCase):
         self.response_number = 59
         self.race = None
         self.transport_failure = False
+        self.pull_request_response = False
         f.service.builtin_task_source_runtime.github_client = GitHubClient(
             transport=httpx.MockTransport(self.respond))
         app = FastAPI()
@@ -74,7 +75,9 @@ class SourceRecordMaterializationTests(unittest.TestCase):
             'state': 'closed', 'body': 'Actual provider record; no replacement issue',
             'labels': [], 'assignees': [], 'updated_at': '2026-10-20T00:00:00Z',
             'references': {'full': f'acme/app#{self.response_number}'},
-            'html_url': 'https://github.test/acme/app/issues/59'})
+            'html_url': 'https://github.test/acme/app/issues/59',
+            **({'pull_request': {'url': 'https://github.test/acme/app/pulls/59'}}
+                if self.pull_request_response else {})})
 
     def fetch(self, reference='acme/app#59', **kwargs):
         return self.client.post('/api/work-items/sync-source-record-v1/project-a',
@@ -135,6 +138,22 @@ class SourceRecordMaterializationTests(unittest.TestCase):
                 response = self.fetch(reference)
                 self.assertEqual(response.status_code, 400, response.text)
         self.assertEqual(self.calls, [])
+        self.assert_no_projection()
+
+    def test_gitlab_merge_request_is_refused_before_provider_read(self):
+        self.gitlab()
+        result = self.fetch('acme/app!59')
+        self.assertEqual(result.status_code, 400, result.text)
+        self.assertEqual(result.json()['detail']['code'], 'invalid_source_reference')
+        self.assertEqual(self.calls, [])
+        self.assert_no_projection()
+
+    def test_github_pull_request_response_is_not_materialized_as_an_issue(self):
+        self.pull_request_response = True
+        result = self.fetch()
+        self.assertEqual(result.status_code, 400, result.text)
+        self.assertEqual(result.json()['detail']['code'], 'invalid_source_reference')
+        self.assertEqual(self.calls, [('GET', '/repos/acme/app/issues/59')])
         self.assert_no_projection()
 
     def test_provider_denials_are_not_empty_discovery_or_placeholder_records(self):

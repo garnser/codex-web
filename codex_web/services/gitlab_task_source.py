@@ -382,9 +382,9 @@ class GitLabTaskSource:
     async def read_scoped(self, identity: TaskSourceIdentity, *, scope: str) -> TaskSourceSnapshot:
         self.capabilities.require(TaskSourceCapability.SCOPED_READ)
         self._validate_identity(identity)
-        match = re.fullmatch(r"([\w.-]+(?:/[\w.-]+)+)[#!]([1-9][0-9]*)", identity.external_id)
+        match = re.fullmatch(r"([\w.-]+(?:/[\w.-]+)+)#([1-9][0-9]*)", identity.external_id)
         if match is None:
-            raise InvalidTaskSourceIdentity("Expected an exact GitLab project-path#issue or project-path!MR reference")
+            raise InvalidTaskSourceIdentity("Expected an exact GitLab project-path#issue reference; MR materialization is unsupported")
         project = match.group(1)
         configured = str(scope or "").strip().strip("/")
         # Scope is an existing GitLab group or project namespace, never a URL.

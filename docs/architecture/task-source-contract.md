@@ -271,7 +271,10 @@ The authenticated Project administrator action
 `POST /api/work-items/sync-source-record-v1/{project_id}` accepts `reference` and
 an optional `reason`. It resolves the Project's existing source and SecretReference,
 requires scoped reading, validates the exact returned source identity, and reuses
-the canonical projector. Materialization uses the existing point transaction to
+the canonical issue projector. This action imports existing issues only: GitLab
+MR references fail before provider access, and GitHub pull-request responses
+fail before projection. Existing artifact/merge-request reading is unchanged.
+Materialization uses the existing point transaction to
 create only an absent canonical record. An existing record, including one created
 concurrently, is a conflict; its scope, claims, handoffs and historical inputs are
 never overwritten. The backfill event is appended only after that creation commits.

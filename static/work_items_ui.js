@@ -71,7 +71,7 @@ function ensureShell() {
         <label>Search <input class="work-items-search" type="search" placeholder="Search Work Items" autocomplete="off" /></label>
         <button type="button" class="ghost-button work-items-refresh">Refresh</button>
         <button type="button" class="ghost-button work-items-sync">Resync source</button>
-        <label>Existing source reference <input class="work-items-source-reference" maxlength="500" placeholder="Exact original issue or MR reference" autocomplete="off" /></label>
+        <label>Existing source reference <input class="work-items-source-reference" maxlength="500" placeholder="Exact original issue reference" autocomplete="off" /></label>
         <button type="button" class="ghost-button work-items-fetch-source">Fetch existing record</button>
         <span class="work-items-status" role="status" aria-live="polite"></span>
       </div>
