@@ -305,7 +305,7 @@ class NotificationBatchRecoveryService:
         priorities = frozenset(
             member.id
             for member in self.queues.get(target)
-            if TurnQueuePolicy.admission_priority(member.source) == "human_slack"
+            if TurnQueuePolicy.admission_priority(member.source) != "standard"
         )
         self.queues.restore_many_exact(
             target,

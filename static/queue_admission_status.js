@@ -1,7 +1,8 @@
 // Presentation of canonical queue API/event state; grants no admission authority.
 export function applyQueueAdmissionStatus(state, status) {
   const message = [
-    status.humanSlackPriorityCount > 0 ? status.humanSlackPriorityReason : null,
+    status.humanPriorityCount > 0 ? status.humanPriorityReason
+      : status.humanSlackPriorityCount > 0 ? status.humanSlackPriorityReason : null,
     status.automationWaitReason?.message,
   ].filter(Boolean).join(" ");
   if (message) state.queueAdmissionMessageByThread.set(status.threadId, message);

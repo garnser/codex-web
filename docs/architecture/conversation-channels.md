@@ -257,7 +257,7 @@ older writer is unavailable without a separately qualified state restoration.
 The upgrade plan must declare this state migration and its compatibility boundary.
 Receipt APIs/UI show retention and provenance metadata without the stored body.
 
-## Human Slack queue preference
+## Human queue preference
 
 Slack live delivery and history/backfill reject bot-origin messages before the
 existing routing layer assigns the `slack` turn source. Queue admission uses that
@@ -265,7 +265,8 @@ server-assigned protocol provenance, including `queued:`/`steer:` wrappers;
 message text and provider identity claims cannot select a priority or grant
 execution authority.
 
-At a thread's scheduling selection, human Slack requests precede other origins.
+At a thread's scheduling selection, human Slack requests precede authenticated
+web, Telegram and operator requests, and all precede automated origins.
 FIFO is preserved within each group. This is a stable scheduling projection over
 the existing durable queue, not a rewrite of physical order or immutable request
 snapshots. Active and already-admitting turns are not interrupted. The preference
@@ -279,8 +280,8 @@ restore the selected request's original position and counter. Unknown native
 outcomes retain their existing recovery requirement and cannot be replayed merely
 because their source has scheduling preference.
 
-Queue API/events expose the same per-request classification and queued human
-Slack count. The conversation queue notice explains this preference independently
+Queue API/events expose the same per-request classification, total queued human
+count, and the backward-compatible Slack-only count. The conversation queue notice explains this preference independently
 of native activity/approval/uncertainty and automated admission pause. These UI
 fields are projections and do not alter permission or admission. The fixed intake
 protocol rule adds no mutable operational catalog, persisted priority schema,
@@ -406,3 +407,36 @@ upgrade all ingress owners to obtain the corrected behavior. Bot ingress uses
 the same mapper as direct conversation ingress, including truthful pending
 results. Historical backfill reports retained pending inputs as deferred rather
 than dispatched; its independent polling control is unchanged.
+
+
+### Selected-route authority and known pre-routing recovery
+
+Protected Slack originals capture the existing deterministic selector's result and
+only its selected binding, thread settings, published Agent Profile, execution
+Profile and exact Definition reference. Selecting an existing binding does not
+resolve an unused auto-binding default. A different role's replacement, settings
+or Profile cannot change this snapshot. Selection changes, selected-role authority,
+repository/tenant authorization and authenticated source/credential rotation still
+fail closed. The source digest excludes route-selection metadata; the source is
+pinned before the awaited full capture. All ingress owners must run the upgraded
+selector: older readers conservatively reject the changed routing snapshot.
+
+A failed authority check atomically compares the untouched PENDING receipt before
+recording reserved scalar metadata `preRoutingAuthorityRefused`, the changed
+snapshot components, `actionOwner` and `authorityRecoveryCount`. If another worker
+has already claimed ROUTING or admitted a queue entry, that receipt cannot become
+a known-unstarted refusal. Provider routing results cannot supply these reserved
+proof fields. Historical generic refusal text is not typed non-routing proof.
+
+The existing bounded pending-input/shard sampler may recover a typed refusal once,
+only when the original input/event provenance and its entire original authority
+are verified again. The original ciphertext, actor, input identity, scope and
+queue admission identity remain unchanged. Fresh PENDING inputs are sampled first,
+so an unrestored refusal cannot prevent a new human request from being delivered.
+The retry is an atomic compare-and-set to PENDING; normal authority and routing
+admission run again. A second refusal exhausts this recovery. ROUTING, unknown
+native/provider outcomes and historical generic refusals remain held. Operators
+inspect the exact reason and owner in the existing receipt inspector; changed
+authority must be reviewed rather than restored merely to silence the refusal.
+No new model calls, transport sends, permission grants or parallel queues are added.
+The reserved scalar metadata remains compatible with the 3.0 state schema.

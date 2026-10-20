@@ -327,6 +327,11 @@ class ConversationChannelService:
             workspace_id=receipt.workspace_id, project_id=receipt.project_id,
             object_type="conversation_ingress", object_id=receipt.canonical_event_id)
 
+    def _capture_current_authority(self, event, actor):
+        if self.authority_snapshot is None or event.message.conversation.provider_type != "slack":
+            return None
+        return self.authority_snapshot(event, actor)
+
     def _authority(self, event, actor):
         if self.authority_snapshot is None or event.message.conversation.provider_type != "slack":
             return None
@@ -418,7 +423,7 @@ class ConversationChannelService:
         # Source authentication is independent of routing state that this very
         # delivery can legitimately create/update. Routing pins stay immutable
         # and are revalidated separately before any retained routing resumes.
-        source = {key:value for key,value in snapshot.items() if key not in {"routing","new_binding","new_binding_error"}}
+        source = {key:value for key,value in snapshot.items() if key not in {"routing","route_selection","new_binding","new_binding_error"}}
         return hashlib.sha256(json.dumps(source, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     def _validate_retained(self, receipt, event, actor, *, input_digest=None,
@@ -815,6 +820,70 @@ class ConversationChannelService:
             check_authority=True, persisted_event=delivery.event)
         return receipt
 
+    def _refuse_authority_before_routing(self, retained, actor, reason):
+        """CAS only an untouched PENDING input; never overwrite a routing claim."""
+        saved = []
+        def apply(state):
+            current = state.receipts.get(retained.canonical_event_id)
+            if current is None or not self._same_scope(current, actor):
+                raise ConversationChannelNotFoundError("conversation projection receipt not found")
+            if (current.outcome == ConversationProjectionOutcome.PENDING
+                and current.ingest_actor_id == actor.identity_id
+                and current.thread_id is None and current.queued_id is None
+                and current.model_dump(mode="json") == retained.model_dump(mode="json")):
+                metadata = dict(current.routing_result)
+                metadata.update(preRoutingAuthorityRefused=True, actionOwner="project_operator",
+                    nextAction="restore_original_route_authority", authorityRefusalCode=reason,
+                    authorityRecoveryCount=int(metadata.get("authorityRecoveryCount", 0)))
+                current = current.model_copy(update={
+                    "outcome": ConversationProjectionOutcome.REQUIRES_RECONCILIATION,
+                    "reason": f"Input has not been routed: {reason}; " + (
+                        "automatic recovery exhausted; operator review required"
+                        if metadata["authorityRecoveryCount"] else
+                        "operator review required; exact original authority permits one recovery"),
+                    "routing_result": metadata, "updated_at": float(self.clock())})
+                state.receipts[current.canonical_event_id] = current
+            saved.append(current)
+            return state
+        self.store.update(apply)
+        return saved[0]
+
+    def _recover_authority_refusal(self, receipt, actor):
+        """One recovery, only from our atomic pre-claim proof and exact authority."""
+        metadata = receipt.routing_result
+        if (receipt.outcome != ConversationProjectionOutcome.REQUIRES_RECONCILIATION
+            or metadata.get("preRoutingAuthorityRefused") is not True
+            or metadata.get("authorityRecoveryCount") != 0
+            or receipt.thread_id is not None or receipt.queued_id is not None
+            or receipt.authority_digest is None):
+            return None
+        try:
+            content = self.retained_input(receipt, actor)
+            event = ConversationChannelEvent.model_validate(content["event"])
+            self._validate_retained(receipt, event, actor,
+                input_digest=self._input_digest(event, content.get("original_payload")),
+                authority_digest=receipt.authority_digest, source_authority_digest=receipt.source_authority_digest,
+                check_authority=True,
+                persisted_event=self.canonical_events.bus.store.event(receipt.canonical_event_id))
+            if self._authority(event, actor) != receipt.authority_digest:
+                return None
+        except Exception:
+            return None
+        recovered = []
+        def apply(state):
+            current = state.receipts.get(receipt.canonical_event_id)
+            if current is not None and current.model_dump(mode="json") == receipt.model_dump(mode="json"):
+                metadata = dict(current.routing_result)
+                metadata.update(authorityRecoveryCount=1, preRoutingAuthorityRefused=False)
+                current = current.model_copy(update={"outcome": ConversationProjectionOutcome.PENDING,
+                    "routing_result": metadata, "updated_at": float(self.clock()),
+                    "reason": "Original authority restored; bounded pre-routing recovery admitted"})
+                state.receipts[current.canonical_event_id] = current
+                recovered.append(current)
+            return state
+        self.store.update(apply)
+        return recovered[0] if recovered else None
+
     async def ingest(
         self,
         event: ConversationChannelEvent,
@@ -831,13 +900,29 @@ class ConversationChannelService:
             if content is None or content["event"] != event.model_dump(mode="json"):
                 raise ConversationChannelConflictError("retained original input changed")
         if retained.outcome == ConversationProjectionOutcome.PENDING and retained.authority_digest is not None:
+            refusal_reason = None
             try:
-                if await asyncio.to_thread(self._authority, event, actor) != retained.authority_digest:
-                    raise ConversationChannelConflictError("canonical connection/routing authority changed")
+                current = await asyncio.to_thread(self._capture_current_authority, event, actor)
+                current_digest = hashlib.sha256(json.dumps(current, sort_keys=True,
+                    separators=(",", ":")).encode()).hexdigest() if current is not None else None
+                if current_digest != retained.authority_digest:
+                    original = content.get("authority_snapshot") or {}
+                    changed = [key for key in sorted(set(original) | set(current or {}))
+                        if original.get(key) != (current or {}).get(key)]
+                    if "routing" in changed:
+                        changed.remove("routing")
+                        previous = original.get("routing") or []
+                        observed = (current or {}).get("routing") or []
+                        if len(previous) == len(observed) == 1:
+                            changed.extend("selected_" + key for key in sorted(set(previous[0]) | set(observed[0]))
+                                if previous[0].get(key) != observed[0].get(key))
+                        else:
+                            changed.append("selected_binding")
+                    refusal_reason = "authority_changed:" + ",".join(changed)
             except Exception as exc:
-                return self._finish(retained.canonical_event_id, actor=actor,
-                    outcome=ConversationProjectionOutcome.REQUIRES_RECONCILIATION,
-                    reason=f"retained authority no longer valid: {type(exc).__name__}")
+                refusal_reason = f"authority_unavailable:{type(exc).__name__}"
+            if refusal_reason is not None:
+                return self._refuse_authority_before_routing(retained, actor, refusal_reason)
         canonical_id = retained.canonical_event_id
         provider = event.message.conversation.provider_type
         if retained.outcome == ConversationProjectionOutcome.PENDING and self.routing_gate is not None:
@@ -1082,12 +1167,16 @@ class ConversationChannelService:
             receipt for receipt in state.receipts.values()
             if self._same_scope(receipt, actor)
             and receipt.ingest_actor_id == actor.identity_id
-            and receipt.outcome == ConversationProjectionOutcome.PENDING
+            and (receipt.outcome == ConversationProjectionOutcome.PENDING
+                or (receipt.outcome == ConversationProjectionOutcome.REQUIRES_RECONCILIATION
+                    and receipt.routing_result.get("preRoutingAuthorityRefused") is True
+                    and receipt.routing_result.get("authorityRecoveryCount") == 0))
             and (receipt.retained_event is not None or receipt.protected_input is not None)
             and (receipt.connection_id or (receipt.retained_event.connection_id if receipt.retained_event else None)) == connection_id
             and (receipt.project_id or (receipt.retained_event.project_id if receipt.retained_event else None)) == project_id
         ]
-        receipts.sort(key=lambda item: (item.retention_sequence, item.created_at, item.canonical_event_id))
+        receipts.sort(key=lambda item: (item.outcome != ConversationProjectionOutcome.PENDING,
+            item.retention_sequence, item.created_at, item.canonical_event_id))
         counts = [0] * partition_count
         selected = []
         for receipt in receipts:
@@ -1106,6 +1195,11 @@ class ConversationChannelService:
             if not isinstance(index, int) or not 0 <= index < partition_count:
                 raise ConversationChannelValidationError("invalid pending partition index")
             if counts[index] < limit:
+                counts[index] += 1
+                if receipt.outcome != ConversationProjectionOutcome.PENDING:
+                    receipt = self._recover_authority_refusal(receipt, actor)
+                    if receipt is None:
+                        continue
                 try:
                     content = self.retained_input(receipt, actor)
                     selected.append(ConversationChannelEvent.model_validate(content["event"]))
@@ -1113,7 +1207,6 @@ class ConversationChannelService:
                     self._finish(receipt.canonical_event_id, actor=actor,
                         outcome=ConversationProjectionOutcome.REQUIRES_RECONCILIATION,
                         reason=f"retained input recovery unavailable: {type(exc).__name__}")
-                counts[index] += 1
         return tuple(selected)
 
     @staticmethod

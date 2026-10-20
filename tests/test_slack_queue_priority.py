@@ -35,13 +35,23 @@ class SlackQueuePriorityTests(unittest.IsolatedAsyncioTestCase):
                     for i, source in enumerate(('gitlab', 'slack', 'web', 'queued:steer:slack', 'work-item-handoff'))]
                 before = {q.id:q.model_dump(mode='json') for q in items}
                 self.assertEqual([q.id for q in TurnQueuePolicy.admission_candidates(items)],
-                                 [items[i].id for i in (1,3,0,2,4)])
+                                 [items[i].id for i in (1,3,2,0,4)])
                 self.assertEqual([q.id for q in host.queues['t']], [q.id for q in items])
-                for index in (1,3,0,2,4):
+                for index in (1,3,2,0,4):
                     await service.drain_thread_queue('t')
                     self.assertEqual(service.start_thread_turn_now.await_args.kwargs['message'], items[index].message)
                     self.assertEqual([q.model_dump(mode='json') for q in host._thread_queue('t')],
                         [before[q.id] for q in items if q.id in {v.id for v in host._thread_queue('t')}])
+
+    def test_generic_human_count_keeps_slack_count_truthful(self):
+        with tempfile.TemporaryDirectory() as directory:
+            host, service = self.service(directory)
+            for source in ('gitlab','web','slack','operator-ui'):
+                service.enqueue_turn(thread_id='t',project_id='p',message=source,source=source)
+            status = service.queue_admission_status('t')
+            self.assertEqual(status['humanPriorityCount'],3)
+            self.assertEqual(status['humanSlackPriorityCount'],1)
+            self.assertIn('over automated work',status['humanPriorityReason'])
 
     async def test_unknown_priority_request_does_not_block_eligible_work_or_replay(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -116,6 +126,12 @@ class SlackQueuePriorityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(TurnQueuePolicy.admission_priority(source), 'human_slack')
         for source in ('gitlab','work-item-handoff','slack:bot','conversation-channel:slack:instance','queued:slack:other'):
             self.assertEqual(TurnQueuePolicy.admission_priority(source), 'standard')
+
+    def test_authenticated_web_origin_is_prioritized_over_automation(self):
+        for source in ("web", "queued:web", "steer:queued:web", "telegram", "operator-ui", "operator-retry"):
+            self.assertEqual(TurnQueuePolicy.admission_priority(source), "human_direct")
+        for source in ("web:bot", "work-item-handoff", "owner-lane-recovery"):
+            self.assertEqual(TurnQueuePolicy.admission_priority(source), "standard")
 
     async def test_restart_uses_the_same_priority_projection(self):
         with tempfile.TemporaryDirectory() as directory:
