@@ -708,3 +708,39 @@ test('incomplete usage retains canonical history and never renders unknown total
   await expect(dialog).toContainText('Chronological history');
   expect(errors).toEqual([]);
 });
+
+test('one existing source record uses the versioned scoped endpoint without bulk resync', async ({ page }) => {
+  await mockOperatorApis(page, []);
+  const calls = [];
+  await page.route('**/api/work-items/sync-source-record-v1/project-a', async route => {
+    calls.push({ path: new URL(route.request().url()).pathname, body: route.request().postDataJSON() });
+    await route.fulfill({ json: { ok: true, synced: 1, work_item_refs: ['team/project-a#59'] } });
+  });
+  await page.route('**/api/work-items/sync/project-a', async route => {
+    calls.push({ bulk: true });
+    await route.fulfill({ json: { ok: true, synced: 100 } });
+  });
+  await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html`);
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
+  await expect(page.locator('.work-items-status')).toHaveText('Up to date');
+  await page.getByLabel('Existing source reference', { exact: true }).fill('team/project-a#59');
+  await page.getByRole('button', { name: 'Fetch existing record', exact: true }).click();
+  await expect(page.locator('.work-items-status')).toHaveText('Fetched 1 existing source record');
+  expect(calls).toEqual([{ path: '/api/work-items/sync-source-record-v1/project-a', body: {
+    reference: 'team/project-a#59', reason: 'operator requested one existing source record',
+  } }]);
+});
+
+test('an older server refusing one-record fetch never triggers bulk resync', async ({ page }) => {
+  await mockOperatorApis(page, []);
+  let bulk = 0;
+  await page.route('**/api/work-items/sync-source-record-v1/project-a', route => route.fulfill({ status: 404, json: { detail: 'Scoped source fetch is unavailable' } }));
+  await page.route('**/api/work-items/sync/project-a', route => { bulk += 1; return route.fulfill({ json: { synced: 100 } }); });
+  await page.goto(`${fixtureBaseUrl}/tests/browser/work_items_fixture.html`);
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('codex:open-work-items')));
+  await expect(page.locator('.work-items-status')).toHaveText('Up to date');
+  await page.getByLabel('Existing source reference', { exact: true }).fill('team/project-a#59');
+  await page.getByRole('button', { name: 'Fetch existing record', exact: true }).click();
+  await expect(page.locator('.work-items-status')).toContainText('Scoped source fetch is unavailable');
+  expect(bulk).toBe(0);
+});

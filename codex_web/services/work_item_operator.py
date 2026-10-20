@@ -10,14 +10,18 @@ from typing import Any
 from fastapi import HTTPException
 
 from codex_web.identity import TenantScope
-from codex_web.models import WorkItemEvent, WorkItemState
+from codex_web.models import TaskSourceIdentity, WorkItemEvent, WorkItemState
+from codex_web.services.task_source_work_items import SourceRecordMaterializationConflict
 from codex_web.services.task_source_runtime import TaskSourceResolutionError
 from codex_web.services.task_source_reconciliation import same_task_source_identity
+from codex_web.services.task_source_projection import TaskSourceProjectionError
 from codex_web.services.task_sources import (
     InvalidTaskSourceIdentity,
     TaskSource,
     TaskSourceCapability,
     UnsupportedTaskSourceCapability,
+    ScopedTaskSourceReader,
+    TaskSourceRecordUnavailable,
 )
 from codex_web.services.work_item_dependencies import WorkItemRuntimeDependencies
 from codex_web.services.work_item_execution import WorkItemExecutionLifecycleService
@@ -565,6 +569,7 @@ class WorkItemOperatorService:
         *,
         actor: str | None,
         reason: str | None,
+        reference: str | None = None,
     ) -> dict[str, Any]:
         project = await asyncio.to_thread(self._project, project_id)
         if project is None:
@@ -578,8 +583,21 @@ class WorkItemOperatorService:
         try:
             source = await asyncio.to_thread(self._source_for_configuration, project_id, configuration, required=True)
             assert source is not None
-            source.capabilities.require(TaskSourceCapability.DISCOVERY)
-            snapshots = await source.discover(scope=configuration.scope)
+            if reference is None:
+                source.capabilities.require(TaskSourceCapability.DISCOVERY)
+                snapshots = await source.discover(scope=configuration.scope)
+            else:
+                if self.dependencies.update_state is None:
+                    raise HTTPException(status_code=409, detail={"code": "source_record_atomic_materialization_unavailable"})
+                source.capabilities.require(TaskSourceCapability.SCOPED_READ)
+                if not isinstance(source, ScopedTaskSourceReader):
+                    raise UnsupportedTaskSourceCapability(TaskSourceCapability.SCOPED_READ)
+                identity = TaskSourceIdentity(source_type=configuration.source_type,
+                    source_instance=configuration.source_instance, external_id=reference)
+                snapshot = await source.read_scoped(identity, scope=configuration.scope)
+                if not same_task_source_identity(snapshot.identity, identity):
+                    raise InvalidTaskSourceIdentity("Provider returned a different source identity")
+                snapshots = [snapshot]
         except UnsupportedTaskSourceCapability as exc:
             raise HTTPException(
                 status_code=409,
@@ -590,6 +608,18 @@ class WorkItemOperatorService:
                 status_code=409,
                 detail={"code": "task_source_unavailable", "message": str(exc)},
             ) from exc
+        except TaskSourceRecordUnavailable as exc:
+            raise HTTPException(status_code=409, detail={"code": "source_record_unavailable",
+                "provider_status": exc.provider_status, "message": str(exc)}) from exc
+        except TaskSourceProjectionError as exc:
+            if reference is None:
+                raise
+            raise HTTPException(status_code=409, detail={"code": "source_record_invalid_snapshot",
+                "reason": exc.reason}) from exc
+        except ValueError as exc:
+            if reference is None:
+                raise
+            raise HTTPException(status_code=400, detail={"code": "invalid_source_reference", "message": str(exc)}) from exc
 
         def project_snapshots():
             refs: list[str] = []
@@ -598,6 +628,7 @@ class WorkItemOperatorService:
                     source,
                     snapshot,
                     project_id=project_id,
+                    **({"missing_only": True} if reference is not None else {}),
                 )
                 refs.append(state.ref)
                 self.state_machine._append_work_item_event(
@@ -614,8 +645,12 @@ class WorkItemOperatorService:
 
             return refs
 
-        refs = await asyncio.to_thread(project_snapshots)
-        if self.sync_health is not None:
+        try:
+            refs = await asyncio.to_thread(project_snapshots)
+        except SourceRecordMaterializationConflict as exc:
+            raise HTTPException(status_code=409, detail={"code": "source_record_already_materialized",
+                "message": "Inspect the existing canonical Work Item; no record was overwritten"}) from exc
+        if self.sync_health is not None and reference is None:
             await asyncio.to_thread(self.sync_health.record_success)
         if callable(self.publish_event):
             await self.publish_event(

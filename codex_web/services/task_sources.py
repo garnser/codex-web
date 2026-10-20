@@ -18,6 +18,7 @@ class TaskSourceCapability(StrEnum):
     CREATE = "create"
     DISCOVERY = "discovery"
     READ = "read"
+    SCOPED_READ = "scoped_read"
     EVENTS = "events"
     OWNER_WRITE = "owner_write"
     STATE_WRITE = "state_write"
@@ -55,6 +56,12 @@ class UnsupportedTaskSourceCapability(RuntimeError):
 
 class InvalidTaskSourceIdentity(ValueError):
     """A provider identity cannot be routed without guessing its resource."""
+
+
+class TaskSourceRecordUnavailable(RuntimeError):
+    def __init__(self, provider_status: int | None = None) -> None:
+        self.provider_status = provider_status
+        super().__init__("The configured source did not return the original record")
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +102,16 @@ class TaskSourceSnapshot:
     # ``None`` means this snapshot did not query provider relations. An empty
     # tuple is fresh provider evidence that no supported relation exists.
     artifact_relations: tuple[WorkItemArtifactRelation, ...] | None = None
+
+
+@runtime_checkable
+class ScopedTaskSourceReader(Protocol):
+    """Read one existing provider record within a configured source scope."""
+
+    async def read_scoped(
+        self, identity: TaskSourceIdentity, *, scope: str,
+    ) -> TaskSourceSnapshot:
+        ...
 
 
 @dataclass(frozen=True, slots=True)

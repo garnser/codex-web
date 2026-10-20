@@ -1,3 +1,4 @@
+import { createWorkItemSourceActions } from './work_item_source_actions.js';
 import { requestedReference, rememberReference, projectPath } from './reference_navigation.js';
 import { installWorkItemCommands } from "./object_commands.js";
 import { createWorkItemViewScope, workItemLoadError } from "./work_item_view_scope.js";
@@ -44,6 +45,7 @@ const { resetPaging, captureScope, scopedPath } = createWorkItemViewScope(state,
 const openCommand = installWorkItemCommands(state, loadDetail);
 const sourceEditor = createTaskSourceEditor(state, { refreshAll, setStatus, esc, fmtTime });
 const renderSourceConfig = () => sourceEditor.render();
+const { syncSource, fetchSourceRecord } = createWorkItemSourceActions(state, { sourceEditor, refreshAll, setStatus });
 let catalogGeneration = 0;
 function ensureShell() {
   if (document.querySelector('#work-items-dialog')) return;
@@ -69,6 +71,8 @@ function ensureShell() {
         <label>Search <input class="work-items-search" type="search" placeholder="Search Work Items" autocomplete="off" /></label>
         <button type="button" class="ghost-button work-items-refresh">Refresh</button>
         <button type="button" class="ghost-button work-items-sync">Resync source</button>
+        <label>Existing source reference <input class="work-items-source-reference" maxlength="500" placeholder="Exact original issue reference" autocomplete="off" /></label>
+        <button type="button" class="ghost-button work-items-fetch-source">Fetch existing record</button>
         <span class="work-items-status" role="status" aria-live="polite"></span>
       </div>
       <details class="work-source-config" open>
@@ -134,6 +138,7 @@ function ensureShell() {
   });
   sourceEditor.bind(dialog.querySelector('.work-source-config'));
   dialog.querySelector('.work-items-sync').addEventListener('click', syncSource);
+  dialog.querySelector('.work-items-fetch-source').addEventListener('click', fetchSourceRecord);
 }
 function setStatus(message, isError = false) {
   const target = document.querySelector('.work-items-status');
@@ -180,22 +185,6 @@ function renderProjectSelect() {
       `<option value="${esc(project.id)}" ${project.id === state.projectId ? 'selected' : ''}>${esc(project.name)}</option>`
     )),
   ].join('');
-}
-async function syncSource() {
-  if (!state.projectId || !sourceEditor.canLeave()) return;
-  const op = sourceEditor.capture();
-  setStatus('Reconciling authoritative source…');
-  try {
-    const result = await request(`/api/work-items/sync/${encodeURIComponent(op.projectId)}`, {
-      method: 'POST',
-      body: JSON.stringify({ actor: 'operator', reason: 'operator requested source resync' }),
-    });
-    if (!op.current()) return;
-    await refreshAll();
-    if (op.current()) setStatus(`Synced ${result.synced ?? 0} work items`);
-  } catch (error) {
-    if (op.current()) setStatus(error.message || 'Source sync failed', true);
-  }
 }
 function renderItemList() {
   const startedAt = performance.now();
