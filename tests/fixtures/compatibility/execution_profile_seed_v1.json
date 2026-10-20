@@ -1,0 +1,63 @@
+{
+  "profiles": [
+    {
+      "id": "repository-write",
+      "name": "Repository write",
+      "description": "Isolated repository execution with one mutable canonical repository and optional read-only repository context.",
+      "workspace_mode": "repository",
+      "repository_access": "mutable",
+      "required_worker_capabilities": [
+        "git",
+        "command_execution"
+      ],
+      "control_plane_operations": [
+        "work_item.read",
+        "work_item.assign",
+        "work_item.handoff",
+        "work_item.progress",
+        "work_item.steer",
+        "work_item.acknowledge",
+        "work_item.reconcile",
+        "work_item.retry",
+        "execution.read",
+        "evidence.read",
+        "repository.branch.publish",
+        "repository.pull-request.upsert",
+        "repository.issue.comment",
+        "repository.issue.create",
+        "repository.issue.update",
+        "repository.pull-request.merge",
+        "repository.check.rerun",
+        "repository.workspace.refresh"
+      ],
+      "network_enabled": false,
+      "host_mutation": false
+    },
+    {
+      "id": "orchestration-only",
+      "name": "Orchestration only",
+      "description": "Isolated scratch execution for coordination/control-plane work without a Git worktree or repository mutation authority.",
+      "workspace_mode": "scratch",
+      "repository_access": "none",
+      "required_worker_capabilities": [
+        "command_execution"
+      ],
+      "control_plane_operations": [
+        "project.read",
+        "resource.read",
+        "work_item.read",
+        "work_item.assign",
+        "work_item.handoff",
+        "work_item.steer",
+        "work_item.acknowledge",
+        "work_item.reconcile",
+        "work_item.retry",
+        "execution.read",
+        "evidence.read"
+      ],
+      "network_enabled": false,
+      "host_mutation": false
+    }
+  ],
+  "default_profile_id": "repository-write"
+}
