@@ -177,14 +177,22 @@ class OwnerLaneRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.queue[-1].writable_repository_resource_ids, ())
 
     async def test_changed_work_evidence_wakes_one_new_revision_but_projection_writes_do_not(self):
-        await self.recover()
+        first = await self.recover()
         self.state.updated_at += 1
         self.state.last_meaningful_update_at += 1
         self.state.notes.append('display-only bookkeeping')
         self.assertTrue((await self.recover())['deduplicated'])
         self.state.next_action = 'CI terminal: validate exact new head'
         self.state.last_meaningful_update_at += 1
-        self.queue.pop()  # Prior fresh request is no longer queued after its terminal outcome.
+        previous = self.queue[-1]
+        with self.assertRaises(HTTPException) as stale:
+            self.service.validate_queued(previous)
+        self.assertEqual(stale.exception.detail['code'], 'owner_recovery_work_changed')
+        # Queue removal alone cannot prove the earlier admission ended. Record
+        # the actual typed pre-write refusal before another revision can wake.
+        self.preflight.queued_disposition(first['preflightAttemptId'], status='blocked',
+            detail=stale.exception.detail)
+        self.queue.pop()
         self.assertTrue((await self.recover())['queued'])
         self.assertEqual(len(self.queue), 2)
 
