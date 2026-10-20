@@ -19,6 +19,7 @@ from typing import Any, Callable
 from fastapi import HTTPException
 
 from codex_web.observability import RuntimeMetrics, log_event
+from codex_web.services.async_operations import run_settled
 
 
 logger = logging.getLogger(__name__)
@@ -218,6 +219,7 @@ class CodexRuntime:
         self.reader_task: asyncio.Task[None] | None = None
         self.stderr_task: asyncio.Task[None] | None = None
         self.lifecycle_lock = asyncio.Lock()
+        self._retired_transports: list[dict[str, Any]] = []
         self._pipe_executor: ThreadPoolExecutor | None = None
         self._authentication_epoch = 0
         self._authenticated_account_proof = None
@@ -291,24 +293,25 @@ class CodexRuntime:
         async with self.lifecycle_lock:
             if self.proc and self.proc.poll() is None and self.ready.is_set():
                 return
-            if self.proc and self.proc.poll() is None:
-                await self.stop()
+            if self.proc or self._retired_transports:
+                await self._stop_locked()
 
-            self.ready.clear()
-            self.last_error = None
-            self._fail_pending(RuntimeError("Codex app-server restarted"))
-            self.generation = uuid.uuid4().hex
-            self._pipe_reader_executor()
-            self.proc = self._popen(
-                list(self.command),
-                cwd=str(self.cwd),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-                close_fds=True,
-            )
+            async with self.write_lock:
+                self.ready.clear()
+                self.last_error = None
+                self._fail_pending(RuntimeError("Codex app-server restarted"))
+                self.generation = uuid.uuid4().hex
+                self._pipe_reader_executor()
+                self.proc = self._popen(
+                    list(self.command),
+                    cwd=str(self.cwd),
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=1,
+                    close_fds=True,
+                )
             if self.metrics:
                 self.metrics.increment("codex.process_starts")
             log_event(
@@ -320,8 +323,9 @@ class CodexRuntime:
                 command=" ".join(self.command),
             )
             process = self.proc
+            generation = self.generation
             self.reader_task = asyncio.create_task(
-                self._read_loop(process, generation=self.generation),
+                self._read_loop(process, generation=generation),
                 name="codex-app-server-stdout",
             )
             self.stderr_task = asyncio.create_task(
@@ -348,8 +352,14 @@ class CodexRuntime:
                 import re
                 agent = init.get("userAgent") if isinstance(init, dict) else None
                 match = re.match(r"^(?:codex_web_local|codex_cli_rs)/(0\.160\.0)(?:\s|$)", agent) if isinstance(agent, str) else None
-                self.native_runtime_version = match.group(1) if match else None
+                native_runtime_version = match.group(1) if match else None
                 await self.notify("initialized", {})
+                # The settled initialized write can yield while stop fences
+                # this process. Never publish readiness/handshake for that
+                # retired generation when its worker operation completes.
+                if self.proc is not process or self.generation != generation or process.poll() is not None:
+                    raise RuntimeError("Codex app-server retired during initialization")
+                self.native_runtime_version = native_runtime_version
                 self.ready.set()
                 if self.metrics:
                     self.metrics.increment("codex.ready")
@@ -368,55 +378,79 @@ class CodexRuntime:
                 )
                 await self.host.hub.publish({"type": "codex.error", "error": self.last_error})
                 with contextlib.suppress(Exception):
-                    await self.stop()
+                    await self._stop_locked()
                 self.last_error = safe_error
                 raise
 
-    async def stop(self) -> None:
-        self.generation = uuid.uuid4().hex
-        self._fail_pending(RuntimeError("Codex app-server stopped"))
-        process = self.proc
-        # Retire this generation before terminating it. Reader tasks retain
-        # their own process reference and can now distinguish an intentional
-        # stop from an unexpected close without racing a cleared self.proc.
-        if self.proc is process:
-            self.proc = None
-        self.ready.clear()
-        if process and process.poll() is None:
-            pid = process.pid
-            process.terminate()
-            try:
-                await asyncio.wait_for(asyncio.to_thread(process.wait), timeout=5)
-            except asyncio.TimeoutError:
-                process.kill()
-                with contextlib.suppress(Exception):
-                    await asyncio.to_thread(process.wait)
-            log_event(
-                logger,
-                logging.INFO,
-                "codex.process_stopped",
-                "Codex app-server process stopped",
-                pid=pid,
-            )
+    def _retire_transport(self) -> None:
+        """Fence the current process immediately, even while a writer is blocked.
 
-        auth_refresh = getattr(self, "_authenticated_account_refresh_task", None)
+        Only the event-loop thread publishes/retires transport references. A
+        writer owns captured references and rechecks their generation before
+        writing; it can never borrow a replacement process's stdin.
+        """
+        process = self.proc
         tasks = (self.reader_task, self.stderr_task, getattr(self, "notification_task", None),
-                 auth_refresh if auth_refresh is not asyncio.current_task() else None)
-        for task in tasks:
-            if task and not task.done():
-                task.cancel()
-        for task in tasks:
-            if task:
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
-        self.reader_task = None
-        self.stderr_task = None
+                 getattr(self, "_authenticated_account_refresh_task", None))
+        executor = self._pipe_executor
+        self.generation = uuid.uuid4().hex
+        self.proc = None
+        self.ready.clear()
+        self._fail_pending(RuntimeError("Codex app-server stopped"))
+        self.reader_task = self.stderr_task = None
         self.notification_task = None
         self.notification_queue = None
-        pipe_executor = self._pipe_executor
         self._pipe_executor = None
-        if pipe_executor is not None:
-            pipe_executor.shutdown(wait=False, cancel_futures=True)
+        if process is not None or any(tasks) or executor is not None:
+            self._retired_transports.append({"process": process, "tasks": tasks, "executor": executor})
+        if process is not None and process.poll() is None:
+            # Never wait for the writer lock before signalling termination: a
+            # full native pipe may require process exit to release that writer.
+            with contextlib.suppress(ProcessLookupError):
+                process.terminate()
+
+    async def stop(self) -> None:
+        # Initialization holds lifecycle_lock while awaiting native responses.
+        # Immediate retirement wakes that request before waiting for lifecycle
+        # ownership, avoiding a start/stop lock cycle.
+        self._retire_transport()
+        async with self.lifecycle_lock:
+            await self._stop_locked()
+
+    async def _stop_locked(self) -> None:
+        """Lifecycle owner only; internal start/timeout paths avoid reentry."""
+        self._retire_transport()
+        while self._retired_transports:
+            retired = self._retired_transports[0]
+            process = retired["process"]
+            if process is not None:
+                try:
+                    await asyncio.wait_for(asyncio.to_thread(process.wait), timeout=5)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    with contextlib.suppress(Exception):
+                        await asyncio.to_thread(process.wait)
+                log_event(logger, logging.INFO, "codex.process_stopped",
+                    "Codex app-server process stopped", pid=process.pid)
+            # Termination/kill precedes joining the writer: an uncooperative
+            # process with a full pipe must not prevent its own kill deadline.
+            # _send retains ownership until its actual worker settles.
+            async with self.write_lock:
+                pass
+            tasks = [task for task in retired["tasks"]
+                     if task is not None and task is not asyncio.current_task()]
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            for task in tasks:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            executor = retired["executor"]
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
+            self._retired_transports.pop(0)
+        async with self.write_lock:
+            pass
         self.pending_approvals.clear()
         self.pending_approval_rpc_ids.clear()
 
@@ -746,15 +780,29 @@ class CodexRuntime:
 
     async def _send(self, message: dict[str, Any], *, expected_generation: str | None = None,
                     start_guard: Callable[[], None] | None = None) -> None:
-        if not self.proc or self.proc.poll() is not None or not self.proc.stdin:
-            raise HTTPException(status_code=503, detail="Codex app-server is not running")
         async with self.write_lock:
-            if expected_generation is not None and expected_generation != self.generation:
-                raise RuntimeError('native start transport generation changed before send')
-            if start_guard is not None:
-                start_guard()
-            self.proc.stdin.write(json.dumps(message) + "\n")
-            self.proc.stdin.flush()
+            process, generation = self.proc, self.generation
+            if process is None or process.poll() is not None or not process.stdin:
+                raise HTTPException(status_code=503, detail="Codex app-server is not running")
+            stdin = process.stdin
+            payload = json.dumps(message) + "\n"
+            def require_current():
+                if (self.proc is not process or self.generation != generation
+                        or process.stdin is not stdin or process.poll() is not None
+                        or (expected_generation is not None and expected_generation != generation)):
+                    raise RuntimeError('native start transport generation changed before send')
+            def guarded_write():
+                require_current()
+                if start_guard is not None:
+                    start_guard()
+                # The guard can block in canonical storage. Retirement during
+                # that interval must prevent a write to either old or new stdin.
+                require_current()
+                stdin.write(payload)
+                stdin.flush()
+            # Authority and actual write stay in ONE settled worker operation.
+            # Cancellation is not a no-write witness and never permits replay.
+            await run_settled(guarded_write)
 
     async def request(self, method: str, params: Any = None, *, start_capture: Any = None) -> dict[str, Any]:
         if method in {"account/logout", "account/login/start"}:
@@ -793,7 +841,12 @@ class CodexRuntime:
             await self._send({"method": method, "id": message_id, "params": params}, **send_options)
         except BaseException:
             self.pending.pop(message_id, None)
-            future.cancel()
+            # stop may fail this Future while the actual writer is settling.
+            # Observe that terminal error even if this caller fails earlier.
+            if future.done() and not future.cancelled():
+                future.exception()
+            else:
+                future.cancel()
             raise
 
         timeout = request_timeout(method)
@@ -893,7 +946,7 @@ class CodexRuntime:
                 restart_generation = False
                 async with self.lifecycle_lock:
                     if self.proc is timed_out_proc:
-                        await self.stop()
+                        await self._stop_locked()
                         restart_generation = True
                 if restart_generation:
                     try:
