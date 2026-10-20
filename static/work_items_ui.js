@@ -69,6 +69,8 @@ function ensureShell() {
         <label>Search <input class="work-items-search" type="search" placeholder="Search Work Items" autocomplete="off" /></label>
         <button type="button" class="ghost-button work-items-refresh">Refresh</button>
         <button type="button" class="ghost-button work-items-sync">Resync source</button>
+        <label>Existing source reference <input class="work-items-source-reference" maxlength="500" placeholder="Exact original issue or MR reference" autocomplete="off" /></label>
+        <button type="button" class="ghost-button work-items-fetch-source">Fetch existing record</button>
         <span class="work-items-status" role="status" aria-live="polite"></span>
       </div>
       <details class="work-source-config" open>
@@ -134,6 +136,7 @@ function ensureShell() {
   });
   sourceEditor.bind(dialog.querySelector('.work-source-config'));
   dialog.querySelector('.work-items-sync').addEventListener('click', syncSource);
+  dialog.querySelector('.work-items-fetch-source').addEventListener('click', fetchSourceRecord);
 }
 function setStatus(message, isError = false) {
   const target = document.querySelector('.work-items-status');
@@ -195,6 +198,28 @@ async function syncSource() {
     if (op.current()) setStatus(`Synced ${result.synced ?? 0} work items`);
   } catch (error) {
     if (op.current()) setStatus(error.message || 'Source sync failed', true);
+  }
+}
+async function fetchSourceRecord() {
+  if (!state.projectId || !sourceEditor.canLeave()) return;
+  const reference = document.querySelector('.work-items-source-reference').value.trim();
+  if (!reference) {
+    setStatus('Enter the exact existing source reference', true);
+    return;
+  }
+  const op = sourceEditor.capture();
+  setStatus('Fetching the existing source record…');
+  try {
+    // No fallback: old servers must refuse this action, never resync all items.
+    const result = await request(`/api/work-items/sync-source-record-v1/${encodeURIComponent(op.projectId)}`, {
+      method: 'POST',
+      body: JSON.stringify({ reference, reason: 'operator requested one existing source record' }),
+    });
+    if (!op.current()) return;
+    await refreshAll();
+    if (op.current()) setStatus(`Fetched ${result.synced ?? 0} existing source record`);
+  } catch (error) {
+    if (op.current()) setStatus(error.message || 'Source record could not be fetched', true);
   }
 }
 function renderItemList() {

@@ -31,6 +31,12 @@ class WorkItemOperatorAction(BaseModel):
     reason: str | None = None
 
 
+class SourceRecordMaterializeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    reference: str = Field(min_length=1, max_length=500)
+    reason: str | None = Field(default=None, max_length=2000)
+
+
 class WorkItemProjectionRetry(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -238,6 +244,19 @@ def build_work_items_router(
             actor=payload.actor,
             reason=payload.reason,
         )
+
+    @router.post("/api/work-items/sync-source-record-v1/{project_id}")
+    async def materialize_source_record(
+        project_id: str, payload: SourceRecordMaterializeRequest, request: Request,
+    ) -> dict[str, Any]:
+        require_project_scope(project_id, request)
+        actor = request.state.identity_actor
+        try:
+            IdentityService.require_admin(actor)
+        except IdentityError as exc:
+            raise identity_http_error(exc) from exc
+        return await operator.sync_project(project_id, actor=actor.identity_id,
+            reason=payload.reason, reference=payload.reference)
 
     @router.get("/api/work-items/{ref:path}/runs/{execution_id}")
     async def get_work_item_run(

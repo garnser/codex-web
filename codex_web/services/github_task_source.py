@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import contextlib
 import re
+import httpx
 from datetime import datetime, timezone
 from typing import Any, get_args
 
 from codex_web.compatibility import TASK_SOURCE_CONTRACT
-from codex_web.integrations.github_client import GitHubClient
+from codex_web.integrations.github_client import GitHubAPIError, GitHubClient
 from codex_web.models import GitHubTaskSourceSettings, TaskSourceIdentity, WorkItemStage
 from codex_web.services.task_source_projection import TaskSourceProjectionError
 from urllib.parse import quote
@@ -15,6 +16,7 @@ import json
 from codex_web.services.task_sources import (
     TaskSourceCanonicalProjection, TaskSourceCapabilities, TaskSourceCapability,
     TaskSourceCreateRequest, TaskSourceEvent, TaskSourceSnapshot, TaskSourceWritebackResult,
+    TaskSourceRecordUnavailable,
 )
 
 
@@ -25,7 +27,7 @@ class GitHubTaskSource:
     contract_version = TASK_SOURCE_CONTRACT.current
     capabilities = TaskSourceCapabilities(frozenset({
         TaskSourceCapability.CREATE, TaskSourceCapability.DISCOVERY,
-        TaskSourceCapability.READ, TaskSourceCapability.EVENTS,
+        TaskSourceCapability.READ, TaskSourceCapability.SCOPED_READ, TaskSourceCapability.EVENTS,
         TaskSourceCapability.OWNER_WRITE, TaskSourceCapability.STATE_WRITE,
         TaskSourceCapability.COMMENTS, TaskSourceCapability.DISCUSSIONS,
     }))
@@ -163,6 +165,20 @@ class GitHubTaskSource:
     async def discover(self, *, scope: str) -> list[TaskSourceSnapshot]:
         repo = self._repo(scope)
         return [self._snapshot(item, repo=repo) for item in await self.client.list_issues(self.api_base, repo, token=self.token)]
+
+    async def read_scoped(self, identity: TaskSourceIdentity, *, scope: str) -> TaskSourceSnapshot:
+        self.capabilities.require(TaskSourceCapability.SCOPED_READ)
+        repo, _ = self._split(identity.external_id)
+        if any(not re.fullmatch(r"[\w.-]+", part) or part in {".", ".."} for part in repo.split("/")):
+            raise ValueError("Invalid GitHub repository reference")
+        if repo != self._repo(scope):
+            raise ValueError("Reference is outside the configured GitHub repository")
+        try:
+            return await self.read(identity)
+        except GitHubAPIError as exc:
+            raise TaskSourceRecordUnavailable(exc.status_code) from exc
+        except httpx.RequestError as exc:
+            raise TaskSourceRecordUnavailable() from exc
 
     async def read(self, identity: TaskSourceIdentity) -> TaskSourceSnapshot:
         repo, number = self._split(identity.external_id)

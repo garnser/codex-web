@@ -163,6 +163,12 @@ class SecretBoundTaskSource:
         self.capabilities.require(TaskSourceCapability.READ)
         return await self._use("read", lambda source: source.read(identity))
 
+    async def read_scoped(self, identity, *, scope: str) -> TaskSourceSnapshot:
+        self.capabilities.require(TaskSourceCapability.SCOPED_READ)
+        return await self._use(
+            "read", lambda source: source.read_scoped(identity, scope=scope),
+        )
+
     async def normalize_event(self, payload: object) -> TaskSourceEvent | None:
         self.capabilities.require(TaskSourceCapability.EVENTS)
         # Event normalization is pure adapter logic and needs no credential.

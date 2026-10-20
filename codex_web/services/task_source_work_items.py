@@ -14,6 +14,10 @@ from codex_web.services.task_sources import TaskSource, TaskSourceSnapshot
 from codex_web.services.work_item_state import WorkItemStateMachine
 
 
+class SourceRecordMaterializationConflict(ValueError):
+    """An existing canonical record must be inspected rather than overwritten."""
+
+
 class TaskSourceWorkItemProjector:
     """Project normalized authoritative task snapshots into canonical work state.
 
@@ -177,7 +181,20 @@ class TaskSourceWorkItemProjector:
         self,
         state: WorkItemState,
         states: dict[str, WorkItemState] | None,
+        *,
+        missing_only: bool = False,
     ) -> None:
+        if missing_only:
+            if self.dependencies.update_state is None:
+                raise RuntimeError("Atomic source materialization is unavailable")
+
+            def create(current):
+                if current is not None:
+                    raise SourceRecordMaterializationConflict("Source record is already materialized")
+                return state
+
+            self.dependencies.update_state(state.ref, create)
+            return
         # Reconciliation supersedes an existing outbound desired revision,
         # without creating outbound work for read-only source discovery.
         if state.source_projection is not None:
@@ -202,6 +219,7 @@ class TaskSourceWorkItemProjector:
         reconcile_implementation_owner: bool = False,
         reconciliation_actor: str | None = None,
         reconciliation_reason: str | None = None,
+        missing_only: bool = False,
     ) -> WorkItemState:
         self.conformance.validate_snapshot(source, snapshot)
         external_ref = snapshot.identity.external_id.strip()
@@ -232,6 +250,8 @@ class TaskSourceWorkItemProjector:
             states = self.dependencies.load_states()
             state = self._find_existing_state(states, snapshot)
 
+        if missing_only and state is not None:
+            raise SourceRecordMaterializationConflict("Source record is already materialized")
         ref = state.ref if state is not None else external_ref
         projection = source.project(
             snapshot,
@@ -266,6 +286,7 @@ class TaskSourceWorkItemProjector:
         ):
             projected_stage = "ready_for_validation"
 
+        backfill_event = None
         if state is None:
             state = WorkItemState(
                 ref=ref,
@@ -302,19 +323,19 @@ class TaskSourceWorkItemProjector:
                 updated_at=now,
                 closed_at=(source_timestamp or now) if projected_stage == "closed" else None,
             )
-            self.state_machine._append_work_item_event(
-                self.state_machine._work_item_event(
-                    ref,
-                    "task_source_snapshot_backfilled",
-                    payload={
-                        "project_id": project_id,
-                        "source_type": snapshot.identity.source_type,
-                        "current_owner": state.current_owner,
-                        "current_stage": state.current_stage,
-                        "priority": state.priority,
-                    },
-                )
+            backfill_event = self.state_machine._work_item_event(
+                ref,
+                "task_source_snapshot_backfilled",
+                payload={
+                    "project_id": project_id,
+                    "source_type": snapshot.identity.source_type,
+                    "current_owner": state.current_owner,
+                    "current_stage": state.current_stage,
+                    "priority": state.priority,
+                },
             )
+            if not missing_only:
+                self.state_machine._append_work_item_event(backfill_event)
             if state.current_stage == "failed_with_action_owner":
                 state = self.state_machine._reconcile_blocked_work_item_state(
                     state,
@@ -518,5 +539,7 @@ class TaskSourceWorkItemProjector:
 
         state = self.state_machine._ensure_work_item_lane_defaults(state)
         state.artifact_state = self.state_machine._infer_artifact_state_from_state(state)
-        self._persist(state, states)
+        self._persist(state, states, **({"missing_only": True} if missing_only else {}))
+        if missing_only and backfill_event is not None:
+            self.state_machine._append_work_item_event(backfill_event)
         return state

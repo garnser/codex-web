@@ -257,3 +257,31 @@ Each step must preserve the existing canonical work-item, Executive, queue, sand
 ## Token efficiency
 
 Task-source selection, capability checks, identity, event ordering, provider mapping, idempotency, stale-event detection, and drift/conflict checks are deterministic application concerns. They must not invoke an LLM.
+
+## Materializing one original source record
+
+Open-item discovery is not proof that a missing canonical record is absent from
+its provider. A closed original can remain a required recovery input. Sources
+may declare the additive `scoped_read` capability and implement
+`ScopedTaskSourceReader.read_scoped(identity, scope=...)`. The adapter validates
+its configured group/repository boundary before any provider request; the caller
+supplies only an external reference, never an instance URL or credential.
+
+The authenticated Project administrator action
+`POST /api/work-items/sync-source-record-v1/{project_id}` accepts `reference` and
+an optional `reason`. It resolves the Project's existing source and SecretReference,
+requires scoped reading, validates the exact returned source identity, and reuses
+the canonical projector. Materialization uses the existing point transaction to
+create only an absent canonical record. An existing record, including one created
+concurrently, is a conflict; its scope, claims, handoffs and historical inputs are
+never overwritten. The backfill event is appended only after that creation commits.
+Implementations without atomic point updates refuse the action.
+
+The existing Work Items source surface exposes **Fetch existing record**. This is
+separate from bulk resync and provider issue creation. Unsupported providers fail
+closed; an older server returns404 at the versioned endpoint. Neither case falls
+back to broad discovery. Actual provider HTTP refusals retain their status without
+response bodies or credentials; a transport failure remains unqualified. Missing,
+denied, mismatched or malformed responses create no placeholder. A closed source
+record stays closed, and this action does not dispatch an owner, consume a queue,
+acknowledge input, grant authority or qualify overall source-sync health.

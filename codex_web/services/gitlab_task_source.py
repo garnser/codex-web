@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import contextlib
 import re
+import httpx
 from datetime import datetime, timezone
 from typing import Any, get_args
 
-from codex_web.integrations.gitlab_client import GitLabClient
+from codex_web.integrations.gitlab_client import GitLabAPIError, GitLabClient
 from codex_web.compatibility import TASK_SOURCE_CONTRACT
+from codex_web.services.task_source_projection import TaskSourceProjectionError
 from codex_web.models import (
     TaskSourceIdentity,
     WorkItemArtifactRelation,
@@ -21,6 +23,7 @@ from codex_web.services.task_sources import (
     TaskSourceEvent,
     TaskSourceSnapshot,
     TaskSourceWritebackResult,
+    TaskSourceRecordUnavailable,
 )
 
 
@@ -40,6 +43,7 @@ class GitLabTaskSource:
                 TaskSourceCapability.CREATE,
                 TaskSourceCapability.DISCOVERY,
                 TaskSourceCapability.READ,
+                TaskSourceCapability.SCOPED_READ,
                 TaskSourceCapability.EVENTS,
                 TaskSourceCapability.OWNER_WRITE,
                 TaskSourceCapability.STATE_WRITE,
@@ -374,6 +378,31 @@ class GitLabTaskSource:
             owners=self._normalize_assignees(merge_request.get("assignees")),
             labels=self._normalize_labels(merge_request.get("labels")),
         )
+
+    async def read_scoped(self, identity: TaskSourceIdentity, *, scope: str) -> TaskSourceSnapshot:
+        self.capabilities.require(TaskSourceCapability.SCOPED_READ)
+        self._validate_identity(identity)
+        match = re.fullmatch(r"([\w.-]+(?:/[\w.-]+)+)[#!]([1-9][0-9]*)", identity.external_id)
+        if match is None:
+            raise InvalidTaskSourceIdentity("Expected an exact GitLab project-path#issue or project-path!MR reference")
+        project = match.group(1)
+        configured = str(scope or "").strip().strip("/")
+        # Scope is an existing GitLab group or project namespace, never a URL.
+        for path in (configured, project):
+            if not path or any(not re.fullmatch(r"[\w.-]+", part) or part in {".", ".."}
+                               for part in path.split("/")):
+                raise InvalidTaskSourceIdentity("Invalid GitLab source scope/reference")
+        if project != configured and not project.startswith(configured + "/"):
+            raise InvalidTaskSourceIdentity("Reference is outside the configured GitLab scope")
+        try:
+            snapshot = await self.read(identity)
+        except GitLabAPIError as exc:
+            raise TaskSourceRecordUnavailable(exc.status_code) from exc
+        except httpx.RequestError as exc:
+            raise TaskSourceRecordUnavailable() from exc
+        if snapshot.identity.external_id != identity.external_id:
+            raise TaskSourceProjectionError("provider_identity_mismatch", conflict=True)
+        return snapshot
 
     async def read(self, identity: TaskSourceIdentity) -> TaskSourceSnapshot:
         self.capabilities.require(TaskSourceCapability.READ)

@@ -8,6 +8,12 @@ from urllib.parse import quote, quote_plus
 import httpx
 
 
+class GitLabAPIError(RuntimeError):
+    def __init__(self, status_code: int, path: str) -> None:
+        self.status_code = status_code
+        super().__init__(f"GitLab API returned HTTP {status_code} for {path}")
+
+
 class GitLabClient:
     """Small async GitLab API transport used by extracted services."""
 
@@ -36,7 +42,7 @@ class GitLabClient:
                 json=json_body,
             )
         if response.status_code >= 400:
-            raise RuntimeError(f"GitLab API returned HTTP {response.status_code} for {path}")
+            raise GitLabAPIError(response.status_code, path)
         try:
             return response.json()
         except ValueError as exc:
@@ -335,9 +341,7 @@ class GitLabClient:
                         params={"per_page": 100, "page": page},
                     ) as response:
                         if response.status_code != 200:
-                            raise RuntimeError(
-                                f"GitLab API returned HTTP {response.status_code} for {path}"
-                            )
+                            raise GitLabAPIError(response.status_code, path)
                         chunks: list[bytes] = []
                         page_bytes = 0
                         async for chunk in response.aiter_bytes():
