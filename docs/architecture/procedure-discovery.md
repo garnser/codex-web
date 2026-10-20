@@ -212,3 +212,21 @@ replay. A cancelled renewal inspection leaves the original blocked and recoverab
 The existing preflight UI exposes renewal requirements and hides Retry for unknown
 outcomes. Existing fields/statuses are reused without a persisted schema change;
 the platform's existing drain, compatibility and rollback constraints still apply.
+
+Assignment-bound broker admission also translates a full discovery history into
+HTTP 409 `procedure_assignment_exhausted` before invoking that request's handler.
+Its discovery context remains inspectable in the existing broker error/audit
+surface. This refusal does not settle any earlier request's unknown outcome and
+does not authorize replay, a new idempotency key, or automatic agent retries.
+
+The same bounded idle renewal accepts canonical scratch workspaces with an exact
+empty orchestration-only repository/resource scope. Scratch needs no Git checkout
+or fabricated repository baseline. All owner, live-fence, pending-executor,
+managed-validation, provider idle and canonical resume-custody checks still apply.
+Predecessor scratch files remain preserved by canonical bootstrap cancellation,
+and all 64 original discoveries remain on that retired assignment. A fresh
+assignment preserves the exact runtime/profile/limits and native identity. Existing
+unknown preflights and coordination receipts retain their reconciliation state;
+renewal only admits a separately retained current request. Existing thread and
+assignment inspectors expose blockers/history; there is no new UI object, schema,
+queue, Definition, timer or model call.

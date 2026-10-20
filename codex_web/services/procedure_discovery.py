@@ -566,8 +566,24 @@ class BrokerProcedureAdmissionService:
         from codex_web.services.control_plane_broker import ControlPlaneBrokerRequestError
         discovery = await asyncio.to_thread(self.inspect_current, assignment=assignment,
             actor=actor, operation=operation, resource_ids=resource_ids, payload=payload)
-        await asyncio.to_thread(self.workers.record_procedure_discovery, assignment.id, discovery,
-            expected_fence=assignment.fence, actor=self.control_actor)
+        from codex_web.services.execution_workers import ProcedureHistoryExhaustedError
+        try:
+            await asyncio.to_thread(self.workers.record_procedure_discovery, assignment.id, discovery,
+                expected_fence=assignment.fence, actor=self.control_actor)
+        except ProcedureHistoryExhaustedError as exc:
+            # Admission precedes the broker handler. This refusal proves only
+            # that THIS request did not reach it; earlier unknown dispatches
+            # remain unknown and must never be retried from this observation.
+            error = ControlPlaneBrokerRequestError(
+                "This assignment has retained its maximum procedure history. "
+                "Finish the current turn, then renew its positively idle custody "
+                "through retained native admission before submitting new coordination.",
+                status_code=409, code="procedure_assignment_exhausted")
+            error.procedure_discovery = discovery.model_copy(update={
+                "outcome": "failed",
+                "blockers": (*discovery.blockers, "procedure_assignment_exhausted"),
+            }).model_dump(mode="json")
+            raise error from exc
         if not discovery.admitted:
             error = ControlPlaneBrokerRequestError("; ".join(discovery.blockers), status_code=409)
             error.code = "procedure_" + discovery.outcome

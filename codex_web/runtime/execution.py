@@ -4929,23 +4929,41 @@ class TurnExecutionService:
             workspace = await self._settle_custody_call(local_worker.workspace_service.get,
                 assignment.execution_workspace_id, current_actor, work_owner=session)
             members = workspace.repository_members
-            if not workspace.path or not members or len(members) > 64:
-                raise blocked('Automatic renewal requires an inspectable repository workspace; use canonical recovery for this workspace.')
-            root = Path(workspace.path).resolve(strict=True)
-            readonly_mounts, writable_mounts = await self._settle_custody_call(
-                local_worker.repository_mounts, assignment, work_owner=session)
-            # Secondary members are canonical sibling worktrees, not children
-            # of the primary checkout. Reuse the worker's scoped mount boundary.
-            allowed_paths = {root, *(Path(source).resolve(strict=True)
-                for source, _ in (*readonly_mounts, *writable_mounts))}
-            for member in members:
-                path = Path(member.workspace_path).resolve(strict=True)
-                if path not in allowed_paths:
-                    raise blocked('A repository member is outside the canonical workspace.')
-                observed = await self._settle_custody_call(local_worker.inspect_git_metadata,
-                    assignment, workspace_path=path, source_path=Path(member.source_path), work_owner=session)
-                if observed['dirty'] or observed['head'] != member.base_revision or observed['branch'] != (member.branch_name or ''):
-                    raise blocked('Preserve and hand off the current repository changes before renewing this assignment.')
+            if workspace.kind == 'scratch':
+                # Scratch custody has no Git baseline to inspect. Its files
+                # remain in the predecessor workspace after canonical fencing;
+                # idle/validation/provider checks below still apply unchanged.
+                target, scope = assignment.repository_target, assignment.repository_scope
+                if (not workspace.path or members or workspace.resource_ids
+                        or workspace.repository_resource_id is not None or workspace.resource_context is not None
+                        or workspace.writable_repository_ids or workspace.read_only_resource_ids
+                        or assignment.resource_ids or assignment.resource_context is not None
+                        or target is None or target.source != 'orchestration_only'
+                        or target.mutable_repository_id is not None or target.read_only_repository_ids
+                        or scope is None or scope.source != 'orchestration_only'
+                        or scope.writable_repository_ids or scope.read_only_repository_ids):
+                    raise blocked('Scratch renewal requires canonical empty repository and resource scope.')
+                Path(workspace.path).resolve(strict=True)
+            elif workspace.kind == 'git_worktree':
+                if not workspace.path or not members or len(members) > 64:
+                    raise blocked('Automatic renewal requires an inspectable repository workspace; use canonical recovery for this workspace.')
+                root = Path(workspace.path).resolve(strict=True)
+                readonly_mounts, writable_mounts = await self._settle_custody_call(
+                    local_worker.repository_mounts, assignment, work_owner=session)
+                # Secondary members are canonical sibling worktrees, not children
+                # of the primary checkout. Reuse the worker's scoped mount boundary.
+                allowed_paths = {root, *(Path(source).resolve(strict=True)
+                    for source, _ in (*readonly_mounts, *writable_mounts))}
+                for member in members:
+                    path = Path(member.workspace_path).resolve(strict=True)
+                    if path not in allowed_paths:
+                        raise blocked('A repository member is outside the canonical workspace.')
+                    observed = await self._settle_custody_call(local_worker.inspect_git_metadata,
+                        assignment, workspace_path=path, source_path=Path(member.source_path), work_owner=session)
+                    if observed['dirty'] or observed['head'] != member.base_revision or observed['branch'] != (member.branch_name or ''):
+                        raise blocked('Preserve and hand off the current repository changes before renewing this assignment.')
+            else:
+                raise blocked('Automatic renewal requires a canonical repository or scratch workspace.')
             runtime = assignment.runtime_binding
             native_id = getattr(getattr(session, 'runtime', None), 'native_session_id', None) or thread_id
             if runtime is None or (runtime.provider_id, runtime.runtime_id) != ('openai', 'codex') or native_id != thread_id:
