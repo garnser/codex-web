@@ -4443,6 +4443,7 @@ slack_provider_service = install_slack_provider_service(
     telemetry=bot_runtime_telemetry,
     webhook_security=bot_webhook_security_service,
     reconciliation_gates=reconciliation_gate_service,
+    gate_reason=bot_runtime_gate_reason,
 )
 bot_service = BotService(
     connections=bot_connection_service,

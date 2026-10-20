@@ -21,6 +21,8 @@ from codex_web.services.reconciliation_gates import ReconciliationGateService
 from codex_web.storage.sqlite_state import SQLiteStateStore
 from tests.test_bot_routing_delivery import _DeliveryHost, _FakeSlackClient, _FakeTelegramClient
 from tests import test_conversation_channels as conversation_fixtures
+from tests import test_slack_provider as slack_fixtures
+from codex_web.api.slack import build_slack_router
 from tests.test_reconciliation_gates import _actor
 
 
@@ -301,6 +303,68 @@ class BotRuntimePauseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(response.json()["detail"]["control"]["paused"])
         self.assertNotIn("private-transport-detail", response.text)
         self.assertFalse(self.gates.decision("bot-runtime", "home", actor=self.actor).eligible)
+
+    async def test_public_slack_notice_rechecks_pause_after_credentials(self):
+        host = slack_fixtures._Host(self.root)
+        host.connection.bot_token_secret_id = "fixture-reference"
+        slack, routing = slack_fixtures._Slack(), slack_fixtures._Routing()
+        routing.result = {"ok": True, "ambiguous": True, "availablePrefixes": ["Alice", "Bob"]}
+        service = slack_fixtures._service(host, slack, routing)
+        service.gate_reason = self.gate
+        service.bindings.first_for_connection = lambda *_: SimpleNamespace(connection_id=host.connection.id)
+        service.connections.get = lambda _: host.connection
+        credential_uses = []
+        async def use(secret_id, **kwargs):
+            credential_uses.append(secret_id)
+            self.pause()
+            return await kwargs["consumer"]("fixture-token")
+        service.secret_broker = SimpleNamespace(use_async=use)
+        app = FastAPI()
+        app.include_router(build_slack_router(service))
+        payload = {"type": "event_callback", "event_id": "notice-race", "event": {
+            "type": "message", "channel": "C1", "user": "U1", "text": "hello", "ts": "100.0"}}
+        original = deepcopy(payload)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://fixture") as client:
+            response = await client.post("/bots/slack/events", json=payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["notice"], {"sent": False, "reason": "operator_paused"})
+        self.assertEqual(credential_uses, ["fixture-reference"])
+        self.assertEqual(slack.posts, [])
+        self.assertEqual(payload, original)
+        self.assertEqual(len(routing.messages), 1)  # Already admitted input is not replayed or relabelled.
+        self.resume()
+        await service._with_outbound_credential(host.connection, "fixture-notice", lambda token:
+            slack.post_message(token, "C1", "resumed"))
+        self.assertEqual(slack.posts, [])  # This credential acquisition pauses again.
+        # Historical reads are governed separately and remain usable during this pause.
+        result = await service._with_credential(host.connection, "bot_token", "slack.history",
+            lambda token: slack.history(token, "C1", oldest="0"))
+        self.assertTrue(result["ok"])
+
+    async def test_public_slack_pause_preserves_canonical_pending_input(self):
+        f = self.conversation_fixture()
+        host = slack_fixtures._Host(self.root)
+        host.connection.project_id = "project-a"
+        service = slack_fixtures._service(host, slack_fixtures._Slack(), slack_fixtures._Routing())
+        service.connections.runtime_actor = lambda _: f.actor_a
+        service.conversation_channels = f.service
+        service.gate_reason = self.gate
+        app = FastAPI()
+        app.include_router(build_slack_router(service))
+        payload = {"type": "event_callback", **f.slack_payload(event_id="public-pending")}
+        self.pause("project-a")
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://fixture") as client:
+            response = await client.post("/bots/slack/events", json=payload)
+            self.assertEqual(response.status_code, 200)
+            first = f.store.load().model_dump(mode="json")
+            receipt = next(iter(f.store.load().receipts.values()))
+            self.assertEqual(receipt.outcome, ConversationProjectionOutcome.PENDING)
+            self.assertIsNotNone(receipt.retained_event)
+            response = await client.post("/bots/slack/events", json=payload)
+            self.assertEqual(response.status_code, 200)
+        self.assertEqual(f.store.load().model_dump(mode="json"), first)
+        self.assertEqual(f.router.messages, [])
+        self.assertEqual(service.slack.posts, [])
 
     def conversation_fixture(self):
         fixture = conversation_fixtures.ConversationChannelServiceTests()

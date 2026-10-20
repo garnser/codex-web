@@ -80,6 +80,11 @@ calls. A pause does not undo an operation already admitted or a provider request
 already sent; original receipts and uncertain outcomes retain their meaning.
 This control is independent of global autonomy pause and historical backfill.
 
+Older revisions did not enforce this pause consistently. Upgrade every owner of
+the Project bot runtime before relying on the control; stop older owners during
+the transition. A mixed deployment with an older active owner cannot provide the
+new pause guarantee.
+
 ### Emergency polling disable
 
 Set:
