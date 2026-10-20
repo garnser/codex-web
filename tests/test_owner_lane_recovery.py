@@ -395,3 +395,27 @@ class OwnerLaneRecoveryTests(unittest.IsolatedAsyncioTestCase):
         mr.verified_artifact_relations = [WorkItemArtifactRelation(source_type='gitlab',
             source_instance='fixture', ref=mr.ref, head_revision='head', source_revision='source', state='merged')]
         self.assertEqual(self.service.select_current_work(self.binding, [self.state, mr]).ref, self.state.ref)
+
+    async def test_positive_started_original_is_not_mistaken_for_completed_work(self):
+        from codex_web.models import QueuedNativeStartReceipt
+        original = self.held.model_copy(update={'id': 'previous-started', 'work_item_ref': self.state.ref})
+        retained = self.preflight.retain_queued(original, organization_id='org', workspace_id='ws')
+        receipt = QueuedNativeStartReceipt(admission_claim_id='claim',
+            requested_execution_id='execution', execution_id='execution', thread_id='thread',
+            provider_native_session_id='native-session', provider_native_turn_id='native-turn',
+            provider_id='openai', runtime_id='codex', observed_at=2)
+        self.preflight.store.update(retained.id, lambda current: current.model_copy(
+            update={'status': 'started', 'queued_start_receipt': receipt}))
+        before = self.preflight.store.get(retained.id).model_dump_json()
+        # A different business action/checkpoint is not proof of the prior turn outcome.
+        self.state.next_action = 'continue after runner loss'
+        next_item = self.state.model_copy(update={'ref': 'group/repo!99'})
+        self.assertEqual(self.service.select_current_work(self.binding, [self.state, next_item]).ref, next_item.ref)
+        result = await self.recover()
+        self.assertFalse(result['ok'])
+        blocker = self.preflight.store.get(result['preflightAttemptId']).blockers[0]
+        self.assertEqual(blocker.code, 'owner_recovery_prior_turn_unresolved')
+        self.assertIn('actor', blocker.message)
+        self.assertEqual(self.preflight.store.get(retained.id).model_dump_json(), before)
+        self.assertEqual(self.queue, [self.held])
+        self.execution.schedule_queue_drain.assert_not_called()

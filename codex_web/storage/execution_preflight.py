@@ -79,8 +79,9 @@ class ExecutionPreflightStore:
             upserts[marker] = {'schema_version': '1.0', 'after': cursor, 'complete': cursor is None}
             self.store.record_apply(self.NAMESPACE, upserts=upserts)
 
-    def unresolved_work_item(self, *, organization_id, workspace_id, project_id, ref,
-                             excluding_attempt_id=None):
+    def for_work_item(self, *, organization_id, workspace_id, project_id, ref,
+                      excluding_attempt_id=None):
+        """Bounded exact canonical originals; indexes locate but never authorize."""
         marker = self.store.record_get(self.NAMESPACE, 'metadata/work-item-index-1.0') or {}
         if marker.get('schema_version') != '1.0' or marker.get('complete') is not True:
             raise ValueError('owner_routing_retained_index_unavailable')
@@ -90,6 +91,7 @@ class ExecutionPreflightStore:
             raise ValueError('owner_routing_retained_lookup_truncated')
         keys = tuple(self._attempt_key(value['attemptId']) for value in rows.values())
         attempts = self.store.record_get_many(self.NAMESPACE, keys) if keys else {}
+        found = []
         for raw in attempts.values():
             if raw is None:
                 continue
@@ -99,6 +101,14 @@ class ExecutionPreflightStore:
                     or (current.queued_turn_snapshot or {}).get('work_item_ref') != ref
                     or current.id == excluding_attempt_id):
                 continue
+            found.append(current)
+        return tuple(found)
+
+    def unresolved_work_item(self, *, organization_id, workspace_id, project_id, ref,
+                             excluding_attempt_id=None):
+        for current in self.for_work_item(organization_id=organization_id,
+                workspace_id=workspace_id, project_id=project_id, ref=ref,
+                excluding_attempt_id=excluding_attempt_id):
             if current.status == 'reconciliation_required' and current.queued_start_receipt is None:
                 return current
         return None

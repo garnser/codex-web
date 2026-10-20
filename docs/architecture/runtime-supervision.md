@@ -1039,7 +1039,12 @@ Fresh queued/in-flight inputs keep ownership of the lane. Recovery appends at
 the durable queue tail and uses the existing admission priority policy; it never
 steers an active human turn. Historical uncertain inputs for unrelated Work Items
 remain byte-for-byte retained. An unresolved native outcome for the **same** Work
-Item blocks automatic continuation. Existing preflight and queue surfaces expose
+Item blocks automatic continuation. A positive START receipt also does not prove
+that its later native turn completed. This recovery path has no qualified
+generation-bound terminal witness for such prior same-item turns, so it exposes
+`owner_recovery_prior_turn_unresolved` for explicit reconciliation and can select
+another independent owned item. It never derives completion from usage, model
+text, stopped custody or synthetic transcript recovery. Existing preflight and queue surfaces expose
 the recovery provenance, exact blocker and recovery action owner.
 
 Worker admission, native history resume and actual input still cross canonical

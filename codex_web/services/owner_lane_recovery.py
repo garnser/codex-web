@@ -108,10 +108,10 @@ class OwnerLaneRecoveryService:
                 continue
             if self.preflight.store.get('preflight-queued-' + self.request_id(binding, state)) is not None:
                 continue
-            unresolved = self.preflight.store.unresolved_work_item(
-                organization_id=state.organization_id, workspace_id=state.workspace_id,
-                project_id=state.project_id, ref=state.ref)
-            if unresolved is not None:
+            originals = self.preflight.store.for_work_item(organization_id=state.organization_id,
+                workspace_id=state.workspace_id, project_id=state.project_id, ref=state.ref)
+            if any(original.queued_start_receipt is not None
+                    or original.status == 'reconciliation_required' for original in originals):
                 continue
             return state
         return None
@@ -217,6 +217,15 @@ class OwnerLaneRecoveryService:
             self.refuse('owner_recovery_retained_index_unavailable', 'The canonical retained-input index cannot establish independent current work; inspect it before recovery.')
         if unresolved is not None:
             self.refuse('owner_recovery_original_unresolved', 'Resolve the retained native outcome for this Work Item before automatic continuation. Action owner: ' + context.action_owner)
+        originals = self.preflight.store.for_work_item(organization_id=state.organization_id,
+            workspace_id=state.workspace_id, project_id=state.project_id, ref=state.ref,
+            excluding_attempt_id='preflight-queued-' + queued.id)
+        if any(original.queued_start_receipt is not None for original in originals):
+            # A positive START is a historical delivery fact, not a proof that
+            # its later turn completed. Neither lost custody nor generic usage
+            # and transcript display state supplies a generation-bound outcome.
+            self.refuse('owner_recovery_prior_turn_unresolved',
+                'A previous input for this Work Item positively started. Its later native turn outcome requires explicit reconciliation before automatic same-item continuation; do not retry that original. Action owner: ' + context.action_owner)
 
     def native_goal_blocker(self, binding):
         """Bare native Goals get a precise blocker, never a replayed objective."""
