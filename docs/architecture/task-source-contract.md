@@ -282,7 +282,7 @@ Implementations without atomic point updates refuse the action.
 
 The existing Work Items source surface exposes **Fetch existing record**. This is
 separate from bulk resync and provider issue creation. Unsupported providers fail
-closed; an older server returns404 at the versioned endpoint. Neither case falls
+closed; an older server refuses the versioned endpoint (for example404 or405). Neither case falls
 back to broad discovery. Actual provider HTTP refusals retain their status without
 response bodies or credentials; a transport failure remains unqualified. Missing,
 denied, mismatched or malformed responses create no placeholder. A closed source
